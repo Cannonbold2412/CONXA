@@ -1,0 +1,105 @@
+name: Build Studio
+
+# Builds the Conxa Build Studio Electron app (NSIS installer for Windows).
+# Publishes to a private GitHub Release on the stable or beta channel.
+# Tags: studio-v1.2.3 → stable, studio-v1.2.3-beta.1 → beta
+
+on:
+  push:
+    tags:
+      - "studio-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. studio-v1.2.0)"
+        required: true
+
+jobs:
+  build-studio:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    env:
+      STUDIO_VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # used by electron-builder publish
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: conxa-builder/electron/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # Install conxa-core from source (non-editable). This pulls its runtime
+          # deps — pydantic, pydantic-settings, SQLAlchemy — which PyInstaller must
+          # see to bundle them. A plain directory path is used (not a wheel glob):
+          # PowerShell does not expand `*` for native executables, so a
+          # `conxa_core-*.whl` glob would be passed literally to pip and silently
+          # fail. The spec collects conxa_core data files from the source tree, so
+          # a built wheel is not needed for package data.
+          python -m pip install packages/conxa-core
+          python -m pip install -r conxa-builder/python/requirements.txt pyinstaller
+        working-directory: .
+
+      - name: Bundle Python backend with PyInstaller
+        run: pyinstaller conxa-builder/pyinstaller.spec --noconfirm --distpath conxa-builder/dist
+        working-directory: .
+
+      - name: Install Electron dependencies
+        working-directory: conxa-builder/electron
+        run: npm ci
+
+      - name: Set Studio package version
+        working-directory: conxa-builder/electron
+        shell: pwsh
+        run: |
+          $version = "${{ env.STUDIO_VERSION }}" -replace "^studio-v", ""
+          npm version $version --no-git-tag-version
+
+      - name: Build renderer
+        working-directory: conxa-builder/electron
+        run: npm run build:renderer
+
+      - name: Build Studio installer (electron-builder)
+        working-directory: conxa-builder/electron
+        run: npx electron-builder --config electron-builder.yml --win --publish never
+        env:
+          GH_TOKEN: ""
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.STUDIO_VERSION }}
+          name: Build Studio ${{ env.STUDIO_VERSION }}
+          files: |
+            conxa-builder/electron/dist/studio/*.exe
+            conxa-builder/electron/dist/studio/*.exe.blockmap
+            conxa-builder/electron/dist/studio/latest*.yml
+          prerelease: ${{ contains(env.STUDIO_VERSION, 'beta') }}
+          fail_on_unmatched_files: true
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conxa-build-studio-installer
+          path: |
+            conxa-builder/electron/dist/studio/*.exe
+            conxa-builder/electron/dist/studio/*.exe.blockmap
+            conxa-builder/electron/dist/studio/latest*.yml
+          retention-days: 30

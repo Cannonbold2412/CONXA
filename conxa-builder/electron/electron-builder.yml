@@ -1,0 +1,52 @@
+# Conxa Build Studio — electron-builder configuration
+# Produces a per-user NSIS installer for Windows (no UAC prompt; installs under %LOCALAPPDATA%).
+# The backend PyInstaller bundle is injected as an extraResource so it lands in
+# resources/backend/ — matching process.resourcesPath used in main.js.
+
+appId: ai.conxa.build-studio
+productName: Conxa Build Studio
+copyright: "Copyright © Conxa AI"
+
+# Files to include in the app bundle
+files:
+  - "**/*"
+  - "!node_modules/.cache"
+  - "!renderer/src"      # compiled renderer goes to renderer/dist; exclude source
+  - "!test"
+
+# PyInstaller backend bundle — placed in resources/ so process.resourcesPath resolves it
+extraResources:
+  - from: "../dist/backend"
+    to: "backend"
+    filter:
+      - "**/*"
+
+directories:
+  buildResources: build
+  output: dist/studio
+
+# Auto-update via Conxa Cloud (generic provider).
+# The Render backend serves /api/v1/updates/studio/latest.yml with the correct
+# sha512 checksum sourced from the CONXA_STUDIO_WIN_SHA512 env var.
+# Actual .exe downloads directly from GitHub — the cloud only serves the manifest.
+publish:
+  provider: generic
+  url: https://apis.conxa.com/api/v1/updates/studio
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  # Per-user install: no UAC prompt, no wizard, silent update via quitAndInstall().
+  artifactName: "${productName}-Setup-${version}.${ext}"
+  perMachine: false
+  oneClick: true
+  shortcutName: Conxa Build Studio
+
+  # Register the conxa-studio:// OAuth callback URI scheme.
+  include: build/installer.nsh
+

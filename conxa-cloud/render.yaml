@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: conxa-api
+    plan: free
+    runtime: python
+    rootDir: conxa-cloud/backend/
+    buildCommand: bash build.sh
+    startCommand: bash start.sh
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: SKILL_AUTH_REQUIRED
+        value: true
+      - key: SKILL_API_PROXY_SHARED_SECRET
+        sync: false
+      - key: SKILL_DATABASE_URL
+        fromDatabase:
+          name: conxa-db
+          property: connectionString
+
+databases:
+  - name: conxa-db
+    plan: free
+    databaseName: conxa
+    user: conxa
