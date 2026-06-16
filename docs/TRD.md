@@ -584,14 +584,16 @@ sequenceDiagram
 | Raw recorded events | Build Studio | `data/sessions/{id}/events.jsonl` |
 | Compiled skills | Build Studio | `data/skills/{id}/skill.json` |
 | Built skill packs | Build Studio | `data/skill-packs/{co}/` |
-| Published skill packs | Conxa Cloud | `data/skill-packs/{co}/` on Render |
-| Installer binaries | Conxa Cloud | `data/installers/{co}/installer.exe` |
+| Published skill packs | Conxa Cloud | `data/skill-packs/{co}/` on Render (fast-path cache) + `kv_store` (`skillpack_files__{co}` namespace, durable) |
+| Installer binaries + version history | Conxa Cloud | `data/installers/{co}/` on Render (fast-path cache) + `kv_store` (`installer_versions__{co}` namespace, durable) |
 | Tracking tokens | Conxa Cloud | `kv_store` table (tracking_tokens namespace) |
 | Slug ownership | Conxa Cloud | `kv_store` table (publish_owners namespace) |
 | Telemetry / run events | Conxa Cloud | `kv_store` table (tracking/{co} namespace) |
 | Runtime skill packs | End-user machine | `~/.conxa/skill-packs/` |
 | Runtime auth tokens | End-user machine | OS keychain (keytar) |
 | Runtime browser sessions | End-user machine | `~/.conxa/cache/sessions/` |
+
+**Render disk durability:** the `conxa-api` web service runs on Render's free plan (`render.yaml`), which has no persistent disk and wipes the container filesystem on idle-timeout or redeploy. Local disk under `data/skill-packs/` and `data/installers/` is therefore a fast-path cache only — `publish_routes.py` and `skillpack_update_routes.py` write every published skill-pack file and every installer version (including binary content, base64-encoded) to the existing Postgres-backed KV store (`installer_versions__{slug}`, `skillpack_files__{slug}` namespaces) as the durable source of truth, and rehydrate local disk from there on cache miss (e.g. `_load_installer_from_db`, `_ensure_skill_pack_on_disk`). This closes the gap where a disk wipe between two installer uploads made the older version unrecoverable.
 
 ---
 
@@ -1111,5 +1113,5 @@ MCP registration is done by the NSIS installer itself: a generated PowerShell sc
 | `research/frontend/` is a dead prototype | `research/` dir | Low | Not deployed; delete or document |
 | Aptfile has Playwright deps | `conxa-cloud/backend/Aptfile` | Low | Cloud doesn't use Playwright; leftover from old arch |
 | `worker.py` scaffold | `app/worker.py` | Low | Queue scaffold, not implemented |
-| No multi-region blob storage | `blob_read_write_token` config | Medium | Config field exists; not wired |
+| No CDN/multi-region blob storage | `blob_read_write_token` config | Low | Config field still unwired, but durability gap is closed: installer versions and skill-pack files now persist to Postgres (`installer_versions__{slug}`, `skillpack_files__{slug}` KV namespaces), surviving Render disk wipes. Base64-in-Postgres doesn't scale indefinitely — revisit if installers approach `build_artifact_upload_max_bytes` (250 MB) regularly or DB storage cost/limits become an issue. |
 | `selector_cache_ttl_days` | Config | Low | Cache exists but no GC scheduler wired |

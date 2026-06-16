@@ -304,7 +304,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         tmp = target.with_suffix(target.suffix + ".tmp")
         tmp.write_bytes(raw)
         tmp.replace(target)
-        db_set(_skillpack_files_ns(slug), rel, {"content_base64": f.content_base64})
+        db_set(_skillpack_files_ns(slug), rel, {"path": rel, "content_base64": f.content_base64})
         written += 1
 
     published_at = time.time()
@@ -355,7 +355,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     db_set(
         _skillpack_files_ns(slug),
         "pack.json",
-        {"content_base64": base64.b64encode(pack_bytes).decode("ascii")},
+        {"path": "pack.json", "content_base64": base64.b64encode(pack_bytes).decode("ascii")},
     )
     _upsert_published_plugin(body, principal.workspace_id, principal.user_id)
 
@@ -467,12 +467,15 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
         version,
         {**meta, "content_base64": base64.b64encode(body).decode("ascii")},
     )
-    for other_key, other_meta in db_list_kv(_installer_versions_ns(slug)):
-        if other_key == version or not isinstance(other_meta, dict):
+    for _other_key, other_meta in db_list_kv(_installer_versions_ns(slug)):
+        if not isinstance(other_meta, dict):
+            continue
+        other_version = other_meta.get("version")
+        if other_version == version:
             continue
         if other_meta.get("is_latest"):
             other_meta["is_latest"] = False
-            db_set(_installer_versions_ns(slug), other_key, other_meta)
+            db_set(_installer_versions_ns(slug), other_version, other_meta)
 
     latest_exe_path = out_dir / "installer.exe"
     tmp_latest = latest_exe_path.with_suffix(".exe.tmp")
@@ -558,7 +561,8 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
         for key, meta in db_list_kv(_installer_versions_ns(slug)):
             if not isinstance(meta, dict) or meta.get("workspace_id") != principal.workspace_id:
                 continue
-            versions_by_key[key] = _row_from_meta(meta, key)
+            dedup_key = str(meta.get("version") or key)
+            versions_by_key[dedup_key] = _row_from_meta(meta, dedup_key)
 
     versions = list(versions_by_key.values())
     versions.sort(key=lambda item: float(item.get("uploaded_at") or 0), reverse=True)

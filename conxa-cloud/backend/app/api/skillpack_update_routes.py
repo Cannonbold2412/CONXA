@@ -96,7 +96,7 @@ def _ensure_skill_pack_on_disk(company: str) -> None:
     for rel, value in rows:
         if not isinstance(value, dict) or not value.get("content_base64"):
             continue
-        target = packs_dir / rel
+        target = packs_dir / str(value.get("path") or rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(base64.b64decode(value["content_base64"]))
 
