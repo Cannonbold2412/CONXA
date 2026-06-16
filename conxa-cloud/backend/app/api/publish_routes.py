@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import re
 import secrets
@@ -27,7 +28,7 @@ from pydantic import BaseModel, Field
 import uuid
 
 from conxa_core.config import settings
-from conxa_core.db import db_get, db_set
+from conxa_core.db import db_get, db_set, db_list_kv, using_database
 from conxa_core.models.plugin import PluginBuild, PluginInstaller, PluginWorkflow
 from conxa_core.storage.plugin_store import create_plugin, list_plugins, save_plugin
 from app.services.entitlements import EntitlementError, ensure_installer_slot_available
@@ -107,6 +108,44 @@ def _installer_dir(slug: str) -> Path:
 
 def _installer_version_dir(slug: str, version: str) -> Path:
     return _installer_dir(slug) / "versions" / version
+
+
+def _installer_versions_ns(slug: str) -> str:
+    # No ':' — the fs-fallback KV store (local dev / Windows) uses the namespace
+    # as a literal directory name, and ':' is illegal in Windows paths.
+    return f"installer_versions__{slug}"
+
+
+def _skillpack_files_ns(slug: str) -> str:
+    return f"skillpack_files__{slug}"
+
+
+def _load_installer_from_db(slug: str, version: str | None) -> tuple[dict[str, Any], bytes] | None:
+    """Durable fallback for when the Render local disk has been wiped (free plan has no
+    persistent disk and idles out, taking on-disk installer files with it). Postgres is the
+    source of truth; local disk is just a fast-path cache rehydrated from here on miss."""
+    if not using_database():
+        return None
+    if version:
+        meta = db_get(_installer_versions_ns(slug), version)
+        rows = [(version, meta)] if isinstance(meta, dict) else []
+    else:
+        rows = [(k, v) for k, v in db_list_kv(_installer_versions_ns(slug)) if isinstance(v, dict)]
+    if not rows:
+        return None
+    if version:
+        _key, meta = rows[0]
+    else:
+        latest = next((r for r in rows if r[1].get("is_latest")), None)
+        if latest is None:
+            latest = max(rows, key=lambda r: float(r[1].get("uploaded_at") or 0))
+        _key, meta = latest
+    content_b64 = meta.get("content_base64")
+    if not content_b64:
+        return None
+    content = base64.b64decode(content_b64)
+    meta_out = {k: v for k, v in meta.items() if k != "content_base64"}
+    return meta_out, content
 
 
 def _owner_of(slug: str) -> str | None:
@@ -265,6 +304,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         tmp = target.with_suffix(target.suffix + ".tmp")
         tmp.write_bytes(raw)
         tmp.replace(target)
+        db_set(_skillpack_files_ns(slug), rel, {"content_base64": f.content_base64})
         written += 1
 
     published_at = time.time()
@@ -283,7 +323,17 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         except json.JSONDecodeError:
             pack = {}
     else:
-        pack = {}
+        # Local disk may have been wiped (Render free plan has no persistent disk) since
+        # the last publish; recover the prior pack.json from Postgres so republishing
+        # doesn't lose fields like company_display.
+        stored_pack = db_get(_skillpack_files_ns(slug), "pack.json")
+        if isinstance(stored_pack, dict) and stored_pack.get("content_base64"):
+            try:
+                pack = json.loads(base64.b64decode(stored_pack["content_base64"]).decode("utf-8"))
+            except (ValueError, json.JSONDecodeError):
+                pack = {}
+        else:
+            pack = {}
     pack.update(
         {
             "company": pack.get("company") or slug,
@@ -298,9 +348,15 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
             "tracking": tracking,
         }
     )
+    pack_bytes = json.dumps(pack, ensure_ascii=False, indent=2).encode("utf-8")
     tmp = pack_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_bytes(pack_bytes)
     tmp.replace(pack_path)
+    db_set(
+        _skillpack_files_ns(slug),
+        "pack.json",
+        {"content_base64": base64.b64encode(pack_bytes).decode("ascii")},
+    )
     _upsert_published_plugin(body, principal.workspace_id, principal.user_id)
 
     add_audit_event(
@@ -369,7 +425,7 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     out_dir = _installer_dir(slug)
     out_dir.mkdir(parents=True, exist_ok=True)
     version_dir = _installer_version_dir(slug, version)
-    if version_dir.exists():
+    if version_dir.exists() or db_get(_installer_versions_ns(slug), version) is not None:
         raise HTTPException(status_code=409, detail="installer_version_exists")
     version_dir.mkdir(parents=True, exist_ok=False)
     version_exe_path = version_dir / "installer.exe"
@@ -402,6 +458,21 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
                 other_meta_path.write_text(json.dumps(other_meta, indent=2), encoding="utf-8")
         except Exception:
             continue
+
+    # Durable copy: Render's free plan has no persistent disk, so the files above can
+    # vanish on the next restart/redeploy. Postgres is the source of truth for version
+    # history and downloads; local disk is just a fast-path cache rehydrated on miss.
+    db_set(
+        _installer_versions_ns(slug),
+        version,
+        {**meta, "content_base64": base64.b64encode(body).decode("ascii")},
+    )
+    for other_key, other_meta in db_list_kv(_installer_versions_ns(slug)):
+        if other_key == version or not isinstance(other_meta, dict):
+            continue
+        if other_meta.get("is_latest"):
+            other_meta["is_latest"] = False
+            db_set(_installer_versions_ns(slug), other_key, other_meta)
 
     latest_exe_path = out_dir / "installer.exe"
     tmp_latest = latest_exe_path.with_suffix(".exe.tmp")
@@ -452,8 +523,28 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     if owner and owner != principal.workspace_id:
         raise HTTPException(status_code=403, detail="slug_owned_by_another_workspace")
 
+    def _row_from_meta(meta: dict[str, Any], fallback_version: str) -> dict[str, Any]:
+        version = str(meta.get("version") or fallback_version)
+        row = {
+            "slug": slug,
+            "version": version,
+            "release_notes": str(meta.get("release_notes") or ""),
+            "filename": str(meta.get("filename") or f"{slug}-Plugin-Setup.exe"),
+            "sha256": str(meta.get("sha256") or ""),
+            "size": int(meta.get("size") or 0),
+            "uploaded_at": float(meta.get("uploaded_at") or 0),
+            "workspace_id": str(meta.get("workspace_id") or ""),
+            "is_latest": bool(meta.get("is_latest")),
+            "download_url": f"/api/v1/installers/{slug}/versions/{version}",
+        }
+        if "workflow_count" in meta:
+            row["workflow_count"] = int(meta.get("workflow_count") or 0)
+        return row
+
+    # Merge disk (fast path, may be missing after a wipe) with Postgres (durable source
+    # of truth). Postgres wins on conflict since disk can only ever be stale or absent.
+    versions_by_key: dict[str, dict[str, Any]] = {}
     versions_dir = _installer_dir(slug) / "versions"
-    versions: list[dict[str, Any]] = []
     if versions_dir.is_dir():
         for meta_path in versions_dir.glob("*/meta.json"):
             try:
@@ -462,29 +553,41 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
                 continue
             if meta.get("workspace_id") != principal.workspace_id:
                 continue
-            version = str(meta.get("version") or meta_path.parent.name)
-            row = {
-                "slug": slug,
-                "version": version,
-                "release_notes": str(meta.get("release_notes") or ""),
-                "filename": str(meta.get("filename") or f"{slug}-Plugin-Setup.exe"),
-                "sha256": str(meta.get("sha256") or ""),
-                "size": int(meta.get("size") or 0),
-                "uploaded_at": float(meta.get("uploaded_at") or 0),
-                "workspace_id": str(meta.get("workspace_id") or ""),
-                "is_latest": bool(meta.get("is_latest")),
-                "download_url": f"/api/v1/installers/{slug}/versions/{version}",
-            }
-            if "workflow_count" in meta:
-                row["workflow_count"] = int(meta.get("workflow_count") or 0)
-            versions.append(row)
+            versions_by_key[meta_path.parent.name] = _row_from_meta(meta, meta_path.parent.name)
+    if using_database():
+        for key, meta in db_list_kv(_installer_versions_ns(slug)):
+            if not isinstance(meta, dict) or meta.get("workspace_id") != principal.workspace_id:
+                continue
+            versions_by_key[key] = _row_from_meta(meta, key)
+
+    versions = list(versions_by_key.values())
     versions.sort(key=lambda item: float(item.get("uploaded_at") or 0), reverse=True)
     return {"slug": slug, "versions": versions}
 
 
-def _stream_installer(exe_path: Path, meta_path: Path) -> StreamingResponse:
+def _stream_installer(
+    exe_path: Path, meta_path: Path, *, slug: str, version: str | None
+) -> StreamingResponse:
     if not exe_path.is_file() or not meta_path.is_file():
-        raise HTTPException(status_code=404, detail="installer_not_published")
+        fallback = _load_installer_from_db(slug, version)
+        if fallback is None:
+            raise HTTPException(status_code=404, detail="installer_not_published")
+        meta, content = fallback
+        try:
+            exe_path.parent.mkdir(parents=True, exist_ok=True)
+            exe_path.write_bytes(content)
+            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        headers = {
+            "Content-Disposition": f'attachment; filename="{meta.get("filename", "setup.exe")}"',
+            "X-Conxa-SHA256": str(meta.get("sha256", "")),
+        }
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="application/octet-stream",
+            headers=headers,
+        )
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     headers = {
         "Content-Disposition": f'attachment; filename="{meta.get("filename", "setup.exe")}"',
@@ -503,7 +606,7 @@ def get_installer_version(slug: str, version: str) -> StreamingResponse:
     slug = _validate_slug(slug)
     version = _validate_version(version)
     version_dir = _installer_version_dir(slug, version)
-    return _stream_installer(version_dir / "installer.exe", version_dir / "meta.json")
+    return _stream_installer(version_dir / "installer.exe", version_dir / "meta.json", slug=slug, version=version)
 
 
 @installers_router.get("/{slug}")
@@ -511,4 +614,4 @@ def get_installer(slug: str) -> StreamingResponse:
     """Public end-user installer download. SHA-256 returned in X-Conxa-SHA256."""
     slug = _validate_slug(slug)
     out_dir = _installer_dir(slug)
-    return _stream_installer(out_dir / "installer.exe", out_dir / "meta.json")
+    return _stream_installer(out_dir / "installer.exe", out_dir / "meta.json", slug=slug, version=None)

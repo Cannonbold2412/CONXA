@@ -424,7 +424,7 @@ Build Studio publishes skill pack
   → publish response returns sync_token
   → Build Studio writes sync_token into local pack.json (backend.py)
   → installer_builder stages pack.json verbatim into NSIS
-  → installer ships pack.json to %LOCALAPPDATA%\Conxa\skill-packs\{company}\
+  → installer ships pack.json to $PROFILE\.conxa\skill-packs\{company}\
 ```
 
 `installer_builder.py` guards that `pack.json` has `sync_token` before staging — build fails fast if the pack was never published.
@@ -724,10 +724,10 @@ output/skill_package/{company}-plugin/
 **Invariant:** Auth files (`auth.json`) are NEVER placed in the build output. The `build_installer` command explicitly checks and refuses if `auth.json` is found under the skill pack dir.
 
 The installer (`installer_builder.py`) wraps this with NSIS to produce a per-user `.exe` (no UAC) that:
-1. Installs the skill pack to `%LOCALAPPDATA%\Conxa\skill-packs\{company}\`.
-2. Installs `runtime.exe` to `%LOCALAPPDATA%\Conxa\runtime\`.
-3. Installs Chromium to `%LOCALAPPDATA%\Conxa\chromium\`.
-4. Registers the MCP server via a bundled `.mcpb` Desktop Extension (Claude's official one-click install mechanism). We never edit `claude_desktop_config.json` directly — this is robust to Claude Desktop's MSIX config-path virtualization.
+1. Installs the skill pack to `$PROFILE\.conxa\skill-packs\{company}\`.
+2. Installs `runtime.exe` to `$PROFILE\.conxa\runtime\`.
+3. Installs Chromium to `$PROFILE\.conxa\chromium\` (via `runtime.exe --install-playwright`, run with `CONXA_DIR` set explicitly to `$PROFILE\.conxa` so it lands in the same place the runtime reads from later).
+4. Registers the MCP server by generating a PowerShell script that does a non-destructive JSON merge into `claude_desktop_config.json` (auto-detecting the Microsoft Store/MSIX config path) and into `~/.claude.json` for Claude Code if it already exists, setting `env.CONXA_DIR = $PROFILE\.conxa` on the entry.
 
 ---
 
@@ -1089,10 +1089,10 @@ Distributed as a `.exe` installer built via `electron-builder` + NSIS. Ships:
 ### 16.4 Runtime (End-User Machine)
 
 Ships inside the company-specific installer produced by Build Studio. Per-user install (no UAC). Installs to:
-- Windows: `%LOCALAPPDATA%\Conxa\runtime\runtime.exe` (i.e. `C:\Users\<user>\AppData\Local\Conxa\runtime\`)
+- Windows: `$PROFILE\.conxa\runtime\runtime.exe` (i.e. `C:\Users\<user>\.conxa\runtime\`)
 - Mac: `~/.conxa/runtime/runtime` (planned; Mac support is in build scripts but Windows is the primary target)
 
-MCP registration uses the official **`.mcpb` Desktop Extension** mechanism (bundled in the installer). Claude Desktop handles config writes internally — we do not edit `claude_desktop_config.json` directly. This avoids MSIX filesystem virtualization issues that affect per-user config paths on Windows (see claude-code issue #26073).
+MCP registration is done by the NSIS installer itself: a generated PowerShell script merges a `conxa` entry directly into `claude_desktop_config.json` (and into `~/.claude.json` for Claude Code, if present), setting `env.CONXA_DIR = $PROFILE\.conxa`. The script auto-detects the Microsoft Store/MSIX config path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise, which avoids MSIX filesystem virtualization issues affecting per-user config paths on Windows (see claude-code issue #26073). An earlier design used a `.mcpb` Desktop Extension instead — that mechanism has been removed and no longer exists in the installer.
 
 ---
 

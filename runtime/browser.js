@@ -4,9 +4,7 @@ const fs   = require("fs");
 const path = require("path");
 const os   = require("os");
 
-const CONXA_DIR      = process.env.CONXA_DIR || (
-  process.platform === "win32" ? "C:\\Program Files\\Conxa" : path.join(os.homedir(), ".conxa")
-);
+const CONXA_DIR      = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 const CONXA_DATA_DIR = process.env.CONXA_DATA_DIR || (
   process.platform === "win32"
     ? path.join(os.homedir(), "AppData", "Roaming", "Conxa")

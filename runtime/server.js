@@ -8,11 +8,7 @@ const semver = require("semver");
 const { loadInstallId } = require("./install_identity");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
-const CONXA_DIR = process.env.CONXA_DIR || (
-  process.platform === "win32"
-    ? path.join(os.homedir(), "AppData", "Local", "Conxa")
-    : path.join(os.homedir(), ".conxa")
-);
+const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 const CONXA_DATA_DIR = process.env.CONXA_DATA_DIR || (
   process.platform === "win32"
     ? path.join(os.homedir(), "AppData", "Roaming", "Conxa")

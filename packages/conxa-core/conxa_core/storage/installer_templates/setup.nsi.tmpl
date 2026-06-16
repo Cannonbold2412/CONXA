@@ -56,7 +56,9 @@ SectionEnd
 ; ── Chromium section ──────────────────────────────────────────────────────────
 Section "Chromium" SEC_CHROMIUM
   IfFileExists "${CHROMIUM_DIR}\*" chromium_skip
-  ExecWait '"${RUNTIME_DIR}\runtime.exe" "--install-playwright"' $0
+  ; Explicit CONXA_DIR avoids relying on runtime.exe's built-in default matching
+  ; INSTALL_DIR — keeps install-time and run-time Chromium lookup in sync.
+  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& "${RUNTIME_DIR}\runtime.exe" --install-playwright' $0
   IntCmp $0 0 chromium_skip
   MessageBox MB_OK "Chromium installation failed (code $0). Automation may not work.$\nYou can retry by running:$\n${RUNTIME_DIR}\runtime.exe --install-playwright"
   chromium_skip:

@@ -122,6 +122,39 @@ def test_publish_and_sync_roundtrip():
     assert any(row["company"] == "acme-test" for row in companies.json()["companies"])
 
 
+def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
+    """Render's free plan has no persistent disk; this simulates an idle-out/redeploy
+    wiping local disk between requests and asserts the Postgres-backed copy heals it."""
+    monkeypatch.setattr("app.api.publish_routes.using_database", lambda: True)
+    monkeypatch.setattr("app.api.skillpack_update_routes.using_database", lambda: True)
+    slug = "wipe-skillpack-test"
+    files = [
+        {"path": "pack.json", "content_base64": base64.b64encode(b'{"company":"wipe-skillpack-test"}').decode()},
+        {"path": "deploy/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
+    ]
+    r = client.post(
+        "/api/v1/plugins/publish",
+        json={
+            "slug": slug,
+            "display_name": "Wipe Skillpack Test",
+            "target_url": "https://wipe.test",
+            "skill_pack_version": "1.0.0",
+            "skills": ["deploy"],
+            "files": files,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    import shutil
+    shutil.rmtree(tmp_path / "skill-packs", ignore_errors=True)
+    assert not (tmp_path / "skill-packs" / slug / "pack.json").exists()
+
+    d = client.get(f"/api/v1/skill-packs/{slug}/delta?since=0")
+    assert d.status_code == 200, d.text
+    assert d.json()["current_version"] == "1.0.0"
+    assert "deploy/execution.json" in {f["path"] for f in d.json()["files"]}
+
+
 def test_publish_upsert_updates_existing_plugin_slug(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
@@ -633,6 +666,48 @@ def test_installer_upload_rejects_duplicate_version_and_preserves_history():
     assert rows[0]["is_latest"] is True
     assert rows[0]["release_notes"] == "Second release"
     assert rows[1]["is_latest"] is False
+
+
+def test_installer_history_survives_disk_wipe(monkeypatch, tmp_path):
+    """Render's free plan has no persistent disk and idles out, wiping local files
+    between requests. The Postgres-backed copy (faked here via the fs KV fallback,
+    since `using_database` is forced on) must still serve old versions and history."""
+    monkeypatch.setattr("app.api.publish_routes.using_database", lambda: True)
+    slug = "wipe-installer-test"
+    first = b"MZfirst-wipe"
+    second = b"MZsecond-wipe"
+
+    up1 = client.post(
+        f"/api/v1/plugins/{slug}/installer/upload?filename=Wipe-Setup.exe&version=1.0.0&release_notes=v1",
+        content=first,
+    )
+    assert up1.status_code == 200, up1.text
+
+    import shutil
+    shutil.rmtree(tmp_path / "installers", ignore_errors=True)
+
+    up2 = client.post(
+        f"/api/v1/plugins/{slug}/installer/upload?filename=Wipe-Setup.exe&version=1.0.1&release_notes=v2",
+        content=second,
+    )
+    assert up2.status_code == 200, up2.text
+
+    versions = client.get(f"/api/v1/plugins/{slug}/installer/versions")
+    assert versions.status_code == 200, versions.text
+    rows = {row["version"]: row for row in versions.json()["versions"]}
+    assert set(rows) == {"1.0.0", "1.0.1"}
+    assert rows["1.0.1"]["is_latest"] is True
+    assert rows["1.0.0"]["is_latest"] is False
+
+    old_download = client.get(f"/api/v1/installers/{slug}/versions/1.0.0")
+    assert old_download.status_code == 200
+    assert old_download.content == first
+
+    # Wipe again to exercise the "latest" (no version) DB fallback path too.
+    shutil.rmtree(tmp_path / "installers", ignore_errors=True)
+    latest_download = client.get(f"/api/v1/installers/{slug}")
+    assert latest_download.status_code == 200
+    assert latest_download.content == second
 
 
 def test_installer_upload_updates_plugin_latest_metadata():

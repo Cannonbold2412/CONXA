@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from conxa_core.config import settings
-from conxa_core.db import db_get, db_set, db_list
+from conxa_core.db import db_get, db_set, db_list, db_list_kv, using_database
 from app.services.saas import principal_from_request, ensure_principal
 
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
@@ -73,6 +73,34 @@ def _skill_packs_dir(company: str) -> Path:
     return settings.data_dir / "skill-packs" / company
 
 
+def _skillpack_files_ns(company: str) -> str:
+    return f"skillpack_files__{company}"
+
+
+def _ensure_skill_pack_on_disk(company: str) -> None:
+    """Rehydrate the local skill-pack cache from Postgres if the disk was wiped.
+
+    Render's free plan has no persistent disk and idles out, so the files written by
+    publish_routes.post_publish can vanish between runtime sync requests. Postgres
+    (written at publish time under the same namespace) is the durable source of truth.
+    """
+    if not using_database():
+        return
+    pack_path = _skill_packs_dir(company) / "pack.json"
+    if pack_path.is_file():
+        return
+    rows = db_list_kv(_skillpack_files_ns(company))
+    if not rows:
+        return
+    packs_dir = _skill_packs_dir(company)
+    for rel, value in rows:
+        if not isinstance(value, dict) or not value.get("content_base64"):
+            continue
+        target = packs_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(value["content_base64"]))
+
+
 def _sha256_file(p: Path) -> str:
     h = hashlib.sha256()
     h.update(p.read_bytes())
@@ -96,6 +124,7 @@ def _build_delta(company: str, since_version: str) -> dict[str, Any]:
     differs from `since_version`. For production, this should diff by
     comparing individual file checksums against a version manifest.
     """
+    _ensure_skill_pack_on_disk(company)
     packs_dir = _skill_packs_dir(company)
     pack_path = packs_dir / "pack.json"
     if not pack_path.is_file():
