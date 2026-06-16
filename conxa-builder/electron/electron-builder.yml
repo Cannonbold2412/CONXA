@@ -34,7 +34,7 @@ publish:
   url: https://apis.conxa.com/api/v1/updates/studio
 
 win:
-  icon: build/icon.ico
+  icon: build/icon.png
   target:
     - target: nsis
       arch:
