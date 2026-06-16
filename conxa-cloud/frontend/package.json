@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^7.3.0",
+    "@clerk/themes": "^2.4.62",
     "@clerk/ui": "^0.3.24",
     "@fontsource-variable/geist": "^5.2.8",
     "@radix-ui/react-slot": "^1.2.4",

@@ -1,4 +1,4 @@
-import { dark } from '@clerk/ui/themes'
+import { dark } from '@clerk/themes'
 
 export const clerkAppearance = {
   theme: dark,
