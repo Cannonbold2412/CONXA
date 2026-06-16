@@ -40,7 +40,7 @@ credentials.json
 # Local app data and generated artifacts
 tmp/
 graphify-out/
-AI_NATIVE/
+CONXA/
 
 # Repo-local runtime downloads and generated execution state
 runtime/chromium/

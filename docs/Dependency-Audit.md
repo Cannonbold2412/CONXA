@@ -117,7 +117,7 @@ returns a directory that doesn't contain `runtime-win.exe`. Silently broken.
 
 ### FP-5 — Three different GitHub repos referenced
 **Impact:** High. Build-time and runtime paths reference different repos:
-- `installer_builder.py`: `github.com/Cannonbold2412/AI_NATIVE` (actual dev repo)
+- `installer_builder.py`: `github.com/Cannonbold2412/CONXA` (actual dev repo)
 - `updates_routes.py`: `github.com/conxa-ai/runtime` and `github.com/conxa-ai/conxa-build-studio` (do not exist)
 - CI workflow `build-runtime.yml`: correctly uses `$GITHUB_REPOSITORY` at runtime
 Any CDN download that goes through `updates_routes.py` will 404.
@@ -215,7 +215,7 @@ but clutters `git status` and can inadvertently commit user data.
 
 ```
 git clone <repo>
-cd AI_NATIVE
+cd CONXA
 ./scripts/setup.sh          # (or setup.ps1 on Windows)
 cd conxa-builder/electron
 npm run dev                 # Electron app starts; Python backend spawns; Chromium available

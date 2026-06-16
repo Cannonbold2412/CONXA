@@ -50,24 +50,40 @@ process.env.CONXA_DATA_DIR = CONXA_DATA_DIR;
 const [,, ...cliArgs] = process.argv;
 if (cliArgs.includes("--install-playwright")) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(CONXA_DIR, "chromium");
-  // Use playwright-core's bundled CLI runner — works inside the pkg exe without
-  // requiring system npm/npx, which is not guaranteed on end-user machines.
+
+  // NSIS's ExecWait needs a real exit code; don't let a silent hang block
+  // the installer UI forever.
+  const timeoutHandle = setTimeout(() => {
+    process.stderr.write("playwright install timed out\n");
+    process.exit(1);
+  }, 10 * 60 * 1000);
+  timeoutHandle.unref();
+
   try {
-    require("playwright-core/cli")
-      .main(["install", "--with-deps", "chromium"])
-      .then(() => process.exit(0))
-      .catch((e) => { process.stderr.write(e.message + "\n"); process.exit(1); });
-  } catch (_) {
-    // Dev / CI fallback: system npx (requires Node installed globally).
-    const { execSync } = require("child_process");
-    try {
-      execSync("npx playwright install chromium --with-deps", { stdio: "inherit" });
-      process.exit(0);
-    } catch (e) {
-      process.stderr.write(e.message + "\n");
-      process.exit(1);
-    }
+    // playwright-core's package.json "exports" map does not list "./cli",
+    // so require("playwright-core/cli") throws ERR_PACKAGE_PATH_NOT_EXPORTED
+    // from outside the package. Replicate cli.js's own body using the two
+    // subpaths it DOES export, with argv rewritten so Commander parses the
+    // install command we want instead of this runtime's own CLI flags.
+    const { libCli, libCliTestStub } = require("playwright-core/lib/coreBundle");
+    const { program } = require("playwright-core/lib/utilsBundle");
+    libCli.decorateProgram(program);
+    libCliTestStub.decorateProgram(program);
+
+    // --with-deps is Linux-only (apt); this pipeline only ships Windows/.exe.
+    program.parseAsync(["node", "cli", "install", "chromium"])
+      .then(() => { clearTimeout(timeoutHandle); process.exit(0); })
+      .catch((e) => {
+        clearTimeout(timeoutHandle);
+        process.stderr.write("playwright install failed: " + (e?.message || String(e)) + "\n");
+        process.exit(1);
+      });
+  } catch (e) {
+    clearTimeout(timeoutHandle);
+    process.stderr.write("playwright install init failed: " + (e?.message || String(e)) + "\n");
+    process.exit(1);
   }
+  return; // don't fall through into logger / MCP server setup while install is pending
 }
 
 // ─── 4. Logger ────────────────────────────────────────────────────────────────

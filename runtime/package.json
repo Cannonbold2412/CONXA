@@ -5,8 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build:win": "npx @yao-pkg/pkg server.js --targets node22-win-x64 --output dist/runtime-win.exe --no-bytecode --public",
-    "build:mac": "npx @yao-pkg/pkg server.js --targets node22-mac-x64 --output dist/runtime-mac --no-bytecode --public",
+    "build:win": "npx @yao-pkg/pkg server.js --targets node22-win-x64 --output dist/runtime-win.exe --public --fallback-to-source",
+    "build:mac": "npx @yao-pkg/pkg server.js --targets node22-mac-x64 --output dist/runtime-mac --public --fallback-to-source",
     "build:all": "npm run build:win && npm run build:mac"
   },
   "pkg": {
@@ -24,8 +24,9 @@
       "run.js",
       "browser.js",
       "tracker.js",
-      "node_modules/playwright-core/cli.js",
-      "node_modules/playwright-core/lib/cli/**"
+      "node_modules/playwright-core/lib/coreBundle.js",
+      "node_modules/playwright-core/lib/utilsBundle.js",
+      "node_modules/playwright-core/lib/entry/oopBrowserDownload.js"
     ]
   },
   "dependencies": {

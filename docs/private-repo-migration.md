@@ -8,7 +8,7 @@ The main migration is not a code visibility problem. It is an artifact hosting a
 
 ## Current Repo Touchpoints
 
-- Source remote: `https://github.com/Cannonbold2412/AI_NATIVE.git`.
+- Source remote: `https://github.com/Cannonbold2412/CONXA.git`.
 - Release build workflows: `.github/workflows/build-runtime.yml` and `.github/workflows/build-studio.yml`.
 - Default release URLs:
   - `.env.example`
@@ -56,7 +56,7 @@ The main migration is not a code visibility problem. It is an artifact hosting a
 ## What Probably Does Not Need To Change
 
 - Local developer setup scripts use repo-local paths and public package registries, not public GitHub source downloads.
-- The local git remote URL can remain `https://github.com/Cannonbold2412/AI_NATIVE.git`; developers just need GitHub authentication and repo access.
+- The local git remote URL can remain `https://github.com/Cannonbold2412/CONXA.git`; developers just need GitHub authentication and repo access.
 - The installer download route is separate from GitHub repo visibility. Conxa Cloud already serves installer downloads from its own API surface.
 - The supported release path is Build Installer packaging, not a public `npx conxa install` or GitHub-published CLI flow.
 - Package manifests and lockfiles mostly reference public dependency metadata; those are not affected by making this source repo private.

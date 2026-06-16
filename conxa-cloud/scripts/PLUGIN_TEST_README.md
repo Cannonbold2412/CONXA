@@ -1,6 +1,6 @@
 # Plugin Test Runner
 
-End-to-end validation for AI_NATIVE skill packages. Tests 5 phases:
+End-to-end validation for CONXA skill packages. Tests 5 phases:
 
 - **Phase 1**: Bundle structure (files present, JSON valid, manifest fields correct)
 - **Phase 2**: Claude live test (Claude evaluates plugin intelligibility)

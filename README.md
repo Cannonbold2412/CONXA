@@ -204,6 +204,5 @@ These are non-negotiable.
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** Never retried.
 - **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix.
 - **The cloud does not compile or execute.** Recording, compilation, and skill execution are local-only.
-# AI_NATIVE_V2
-# AI_NATIVE_V2
+
 # CONXA
