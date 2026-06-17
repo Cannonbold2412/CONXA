@@ -134,7 +134,7 @@ try {
   sync         = require("./sync");
   authManager  = require("./auth_manager");
   ({ runPlan, enrichStepsWithRecovery, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure } = require("./run"));
-  ({ getCachedBrowser, gracefulShutdown } = require("./browser"));
+  ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
 } catch (e) {
   log("error", "runtime_bootstrap_failed", { error: e.message, stack: e.stack });
@@ -746,39 +746,44 @@ async function _handleTool(name, args) {
       }
 
       const runtimeLog = { consoleErrors: [], pageErrors: [], failedRequests: [] };
-      page.on("console", msg => {
-        if (["error", "warning"].includes(msg.type()) && runtimeLog.consoleErrors.length < 50)
-          runtimeLog.consoleErrors.push({ type: msg.type(), text: msg.text() });
-      });
-      page.on("pageerror",     e  => { if (runtimeLog.pageErrors.length < 20) runtimeLog.pageErrors.push(e.message); });
-      page.on("requestfailed", req => {
-        if (runtimeLog.failedRequests.length < 30)
-          runtimeLog.failedRequests.push({ url: req.url(), failure: req.failure()?.errorText });
-      });
-
       const _downloadsDir = path.join(os.homedir(), ".conxa", "downloads", _runId);
       const _downloads = [];
       const _downloadSaves = [];
       const _downloadQueue = [];
-      page.on("download", (download) => {
-        let resolveEntry;
-        const entryPromise = new Promise(resolve => { resolveEntry = resolve; });
-        _downloadQueue.push(entryPromise);
-        const savePromise = (async () => {
-          fs.mkdirSync(_downloadsDir, { recursive: true });
-          const fname = download.suggestedFilename() || `download_${Date.now()}`;
-          const dest  = path.join(_downloadsDir, fname);
-          await download.saveAs(dest);
-          _downloads.push(dest);
-          resolveEntry({ filename: fname, path: dest });
-        })().catch(() => { resolveEntry(null); });
-        _downloadSaves.push(savePromise);
-      });
+
+      // Attach page diagnostic listeners — called on initial page and again after re-auth context rebuild.
+      const _attachPageListeners = (pg) => {
+        pg.on("console", msg => {
+          if (["error", "warning"].includes(msg.type()) && runtimeLog.consoleErrors.length < 50)
+            runtimeLog.consoleErrors.push({ type: msg.type(), text: msg.text() });
+        });
+        pg.on("pageerror",     e  => { if (runtimeLog.pageErrors.length < 20) runtimeLog.pageErrors.push(e.message); });
+        pg.on("requestfailed", req => {
+          if (runtimeLog.failedRequests.length < 30)
+            runtimeLog.failedRequests.push({ url: req.url(), failure: req.failure()?.errorText });
+        });
+        pg.on("download", (download) => {
+          let resolveEntry;
+          const entryPromise = new Promise(resolve => { resolveEntry = resolve; });
+          _downloadQueue.push(entryPromise);
+          const savePromise = (async () => {
+            fs.mkdirSync(_downloadsDir, { recursive: true });
+            const fname = download.suggestedFilename() || `download_${Date.now()}`;
+            const dest  = path.join(_downloadsDir, fname);
+            await download.saveAs(dest);
+            _downloads.push(dest);
+            resolveEntry({ filename: fname, path: dest });
+          })().catch(() => { resolveEntry(null); });
+          _downloadSaves.push(savePromise);
+        });
+      };
+
+      _attachPageListeners(page);
 
       for (let si = 0; si < resolved.length; si++) {
         const { entry, steps, inputs, resumeFrom } = resolved[si];
         let startAt = si === 0 ? resumeFrom : 0;
-        let authRetried = false;
+        let authAttempts = 0;
 
         while (true) { // eslint-disable-line no-constant-condition
           try {
@@ -792,27 +797,39 @@ async function _handleTool(name, args) {
             _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
             break;
           } catch (runErr) {
-            // Auth-failure recovery (Phase 5): detect login redirect, refresh session, resume.
+            // Auth-failure recovery (Phase 5): detect login redirect, open headed re-auth window, resume.
             const failedStep = runErr.failedAt ?? null;
-            if (!authRetried && failedStep !== null && await isAuthFailure(page)) {
-              authRetried = true;
-              appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
-              const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || page.url();
-              const refreshResult = await authManager.refreshSession(
-                entry.company, loginUrl, _context, SESSIONS_DIR
-              );
-              if (refreshResult.ok) {
-                appendRecoveryEvent({ event: "auth_refreshed", slug: entry.slug });
-                startAt = failedStep; // resume from the step that failed
-                continue;
+            const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || page.url();
+            if (failedStep !== null && await isAuthFailure(page)) {
+              if (authAttempts >= 3) {
+                throw Object.assign(
+                  new Error("Authentication still failing after 3 re-login attempts — giving up."),
+                  { session_expired: true, login_url: loginUrl, failedAt: failedStep, fromEntry: entry }
+                );
               }
-              // Headless or retry limit — surface to Claude as session_expired.
-              const authErr = Object.assign(
-                new Error(refreshResult.message),
-                { session_expired: true, login_url: refreshResult.login_url, failedAt: failedStep }
-              );
-              authErr.fromEntry = entry;
-              throw authErr;
+              authAttempts++;
+              appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep, attempt: authAttempts });
+              const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR);
+              if (!refreshResult.ok) {
+                // User cancelled the re-auth window — surface immediately.
+                throw Object.assign(
+                  new Error(refreshResult.message),
+                  { session_expired: true, login_url: loginUrl, failedAt: failedStep, fromEntry: entry }
+                );
+              }
+              appendRecoveryEvent({ event: "auth_refreshed", slug: entry.slug, attempt: authAttempts });
+              // Close stale execution context and rebuild with fresh session from disk.
+              await page.close().catch(() => {});
+              await _context.close().catch(() => {});
+              await _browser.close().catch(() => {});
+              ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } =
+                await getCachedBrowser(entry.company, authManager, { headless: !watch }));
+              page = await _context.newPage();
+              if (_protectedUrl)
+                await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+              _attachPageListeners(page);
+              startAt = failedStep;
+              continue;
             }
             runErr.fromEntry = entry;
             throw runErr;

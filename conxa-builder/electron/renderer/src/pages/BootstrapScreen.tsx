@@ -18,25 +18,7 @@ interface DepStatus {
   etaSeconds?: number;
 }
 
-function statusLabel(s: DepStatus): string {
-  switch (s.status) {
-    case "pending": return "Waiting...";
-    case "downloading": return s.pct != null ? `${s.pct}%` : "Downloading...";
-    case "installing": return s.pct != null ? `${s.pct}%` : "Installing...";
-    case "extracting": return "Extracting...";
-    case "verifying": return "Verifying...";
-    case "ready": return "Ready";
-    case "error": return "Failed";
-  }
-}
-
 const REQUIRED_DEPS: DepName[] = ["chromium", "nsis", "runtime"];
-
-const DEP_LABELS: Record<DepName, string> = {
-  chromium: "Chromium browser",
-  nsis: "Installer builder (NSIS)",
-  runtime: "Conxa runtime",
-};
 
 function initialDeps(): Record<DepName, DepStatus> {
   return {
@@ -63,34 +45,44 @@ function formatBytes(value?: number): string | null {
   return `${n.toFixed(digits)} ${units[unit]}`;
 }
 
-function formatEta(seconds?: number): string | null {
-  if (seconds == null || !Number.isFinite(seconds)) return null;
-  if (seconds <= 1) return "about 1s left";
-  if (seconds < 60) return `about ${Math.ceil(seconds)}s left`;
-  const minutes = Math.ceil(seconds / 60);
-  return `about ${minutes}m left`;
+interface CombinedProgress {
+  pct: number;
+  downloadedBytes: number;
+  totalBytes?: number;
+  bytesPerSec?: number;
 }
 
-function progressDetail(dep: DepStatus): string | null {
-  const parts: string[] = [];
-  const downloaded = formatBytes(dep.downloadedBytes);
-  const total = formatBytes(dep.totalBytes);
-  const remaining = formatBytes(dep.remainingBytes);
-  const speed = dep.bytesPerSec ? `${formatBytes(dep.bytesPerSec)}/s` : null;
-  const eta = formatEta(dep.etaSeconds);
+function combineProgress(deps: DepStatus[]): CombinedProgress {
+  let downloadedBytes = 0;
+  let totalBytes = 0;
+  let totalKnown = false;
+  let bytesPerSec = 0;
+  let speedKnown = false;
+  let pctSum = 0;
 
-  if (dep.fileName && dep.status !== "ready") parts.push(dep.fileName);
-  if (downloaded && total) parts.push(`${downloaded} of ${total}`);
-  else if (downloaded) parts.push(`${downloaded} received`);
-  if (remaining) parts.push(`${remaining} remaining`);
-  if (speed) parts.push(speed);
-  if (eta) parts.push(eta);
+  for (const dep of deps) {
+    if (dep.totalBytes) {
+      totalKnown = true;
+      totalBytes += dep.totalBytes;
+      downloadedBytes += Math.min(dep.downloadedBytes ?? 0, dep.totalBytes);
+    }
+    if (dep.bytesPerSec && (dep.status === "downloading" || dep.status === "installing")) {
+      speedKnown = true;
+      bytesPerSec += dep.bytesPerSec;
+    }
+    pctSum += dep.status === "ready" ? 100 : dep.pct ?? 0;
+  }
 
-  if (!parts.length && dep.status === "installing") return "Installing required browser files...";
-  if (!parts.length && dep.status === "extracting") return "Unpacking downloaded files...";
-  if (!parts.length && dep.status === "verifying") return "Checking downloaded files...";
-  if (!parts.length && dep.status === "error" && dep.message) return dep.message;
-  return parts.length ? parts.join(" - ") : null;
+  const pct = totalKnown && totalBytes > 0
+    ? Math.max(0, Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)))
+    : Math.round(pctSum / deps.length);
+
+  return {
+    pct,
+    downloadedBytes,
+    totalBytes: totalKnown ? totalBytes : undefined,
+    bytesPerSec: speedKnown ? bytesPerSec : undefined,
+  };
 }
 
 export function BootstrapScreen({ onComplete }: { onComplete: () => void }) {
@@ -190,10 +182,8 @@ export function BootstrapScreen({ onComplete }: { onComplete: () => void }) {
         </p>
       </div>
 
-      <div style={{ width: "100%", maxWidth: 560, display: "flex", flexDirection: "column", gap: 12 }}>
-        {rows.map((d) => (
-          <DepRow key={d.dep} dep={d} />
-        ))}
+      <div style={{ width: "100%", maxWidth: 560 }}>
+        <DownloadRow deps={rows} />
       </div>
 
       {hasError && (
@@ -253,76 +243,65 @@ export function BootstrapScreen({ onComplete }: { onComplete: () => void }) {
   );
 }
 
-function DepRow({ dep }: { dep: DepStatus }) {
-  const label = DEP_LABELS[dep.dep] ?? dep.dep;
-  const isReady = dep.status === "ready";
-  const isError = dep.status === "error";
-  const isActive = ["downloading", "installing", "extracting", "verifying"].includes(dep.status);
-  const detail = progressDetail(dep);
-  const progressPct = dep.pct != null ? Math.max(0, Math.min(100, dep.pct)) : undefined;
+function DownloadRow({ deps }: { deps: DepStatus[] }) {
+  const isReady = deps.every((d) => d.status === "ready");
+  const isActive = deps.some((d) => d.status === "downloading" || d.status === "installing");
+  const isFinishing = deps.some((d) => d.status === "extracting" || d.status === "verifying");
+  const { pct, downloadedBytes, totalBytes, bytesPerSec } = useMemo(() => combineProgress(deps), [deps]);
+
+  const title = isReady
+    ? "Setup complete"
+    : isActive
+      ? "Downloading setup files..."
+      : isFinishing
+        ? "Finishing setup..."
+        : "Preparing...";
+
+  const downloaded = formatBytes(downloadedBytes);
+  const total = formatBytes(totalBytes);
+  const speed = bytesPerSec ? `${formatBytes(bytesPerSec)}/s` : null;
+  const detailParts: string[] = [];
+  if (downloaded && total) detailParts.push(`${downloaded} of ${total}`);
+  else if (downloaded) detailParts.push(`${downloaded} downloaded`);
+  if (speed) detailParts.push(speed);
+  const detail = detailParts.length ? detailParts.join(" - ") : null;
 
   return (
     <div
       style={{
         background: "#0f1117",
-        border: `1px solid ${isError ? "#7f1d1d" : isReady ? "#14532d" : "#1e293b"}`,
+        border: `1px solid ${isReady ? "#14532d" : "#1e293b"}`,
         borderRadius: 8,
-        padding: "12px 16px",
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        minHeight: 70,
+        padding: "16px 18px",
       }}
     >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: isActive ? 6 : 0 }}>
-          {label}
-        </div>
-        {isActive && (
-          <div
-            style={{
-              height: 4,
-              background: "#1e293b",
-              borderRadius: 2,
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                height: "100%",
-                width: `${progressPct ?? 36}%`,
-                background: "#3b82f6",
-                borderRadius: 2,
-                transition: "width 0.2s",
-                opacity: progressPct == null ? 0.55 : 1,
-              }}
-            />
-          </div>
-        )}
-        {detail && (
-          <div
-            style={{
-              marginTop: 7,
-              color: isError ? "#fca5a5" : "#94a3b8",
-              fontSize: 12,
-              lineHeight: 1.35,
-              overflowWrap: "anywhere",
-            }}
-          >
-            {detail}
-          </div>
-        )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>{title}</span>
+        <span style={{ fontSize: 13, color: isReady ? "#4ade80" : "#64748b" }}>{pct}%</span>
       </div>
-      <span
+      <div
         style={{
-          fontSize: 13,
-          color: isReady ? "#4ade80" : isError ? "#f87171" : "#64748b",
-          minWidth: 96,
-          textAlign: "right",
+          height: 6,
+          background: "#1e293b",
+          borderRadius: 3,
+          overflow: "hidden",
         }}
       >
-        {statusLabel(dep)}
-      </span>
+        <div
+          style={{
+            height: "100%",
+            width: `${pct}%`,
+            background: "#3b82f6",
+            borderRadius: 3,
+            transition: "width 0.2s",
+          }}
+        />
+      </div>
+      {detail && (
+        <div style={{ marginTop: 8, color: "#94a3b8", fontSize: 12 }}>
+          {detail}
+        </div>
+      )}
     </div>
   );
 }

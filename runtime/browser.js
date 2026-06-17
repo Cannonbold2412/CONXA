@@ -139,6 +139,25 @@ async function _captureInteractiveAuth(company, targetUrl) {
   });
   let lastUrl = "";
   let lastState = null;
+  let _autoCloseScheduled = false;
+
+  // Capture storageState when the user lands on an authenticated page.
+  // On first successful capture, schedule auto-close after 1.5 s so the user
+  // does not need to close the window manually.  The 1.5 s gap lets the
+  // periodic interval fire once more to pick up any localStorage tokens
+  // written by post-login JS after the redirect completes.
+  // If the user closes the window before the timer fires, `disconnected`
+  // resolves the outer promise and the already-captured state is used.
+  const _captureIfAuthenticated = async () => {
+    if (_rejectReasonForProtectedUrl(lastUrl)) return;
+    try { lastState = await loginCtx.storageState(); } catch (_) { return; }
+    if (lastState && !_autoCloseScheduled) {
+      _autoCloseScheduled = true;
+      setTimeout(async () => {
+        try { if (loginBrowser.isConnected()) await loginBrowser.close(); } catch (_) {}
+      }, 1500);
+    }
+  };
 
   const rememberPage = async (page) => {
     if (!page) return;
@@ -153,9 +172,17 @@ async function _captureInteractiveAuth(company, targetUrl) {
     rememberPage(page).catch(() => {});
     page.on("framenavigated", (frame) => {
       try {
-        if (!frame.parentFrame()) rememberPage(page).catch(() => {});
+        if (!frame.parentFrame()) {
+          rememberPage(page)
+            .then(() => _captureIfAuthenticated())
+            .catch(() => {});
+        }
       } catch (_) {}
     });
+    // Capture right before the page closes — covers the case where the user closes
+    // the browser immediately after landing on the authenticated page, before the
+    // next framenavigated capture has a chance to run.
+    page.on("close", () => { _captureIfAuthenticated().catch(() => {}); });
   };
 
   loginCtx.on("page", attachPage);
@@ -170,19 +197,16 @@ async function _captureInteractiveAuth(company, targetUrl) {
   attachPage(loginPage);
   await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-  while (loginBrowser.isConnected()) {
-    const pages = loginCtx.pages().filter(page => !page.isClosed());
-    for (const page of pages) await rememberPage(page);
-    // Only capture storage when user is on an authenticated page — avoids interrupting
-    // Google OAuth mid-redirect by calling storageState() every 500ms.
-    if (!_rejectReasonForProtectedUrl(lastUrl)) {
-      try { lastState = await loginCtx.storageState(); } catch (_) {}
-    }
-    if (pages.length === 0) break;
-    await new Promise(resolve => setTimeout(resolve, 1500));
-  }
+  // Wait for the user to close all browser windows (event-driven).
+  // Also run a periodic re-capture every 1.5 s for apps that write session tokens
+  // into localStorage/sessionStorage via client JS after the page has loaded —
+  // framenavigated fires before that JS runs, so the one-shot capture misses them.
+  await new Promise(resolve => {
+    const interval = setInterval(() => { _captureIfAuthenticated().catch(() => {}); }, 1500);
+    loginBrowser.on("disconnected", () => { clearInterval(interval); resolve(); });
+  });
 
-  // Final capture once loop exits (covers case where user closes browser on login page)
+  // Last-resort fallback: try once more in case context is still accessible.
   if (lastState === null) {
     try { lastState = await loginCtx.storageState(); } catch (_) {}
   }
@@ -291,6 +315,27 @@ async function getAuthContext(company, authManager, opts = {}) {
   return { browser, context, protectedUrl: capturedProtectedUrl, sessionSource: "new" };
 }
 
+// Open a fresh headed Chromium at loginUrl for mid-execution re-auth.
+// Reuses _captureInteractiveAuth (auto-close + session capture) and saves
+// the result via authManager.  Called from server.js on auth failure.
+async function captureReAuth(company, loginUrl, authManager, sessionsDir) {
+  try {
+    const { state, protectedUrl } = await _captureInteractiveAuth(company, loginUrl);
+    if (authManager) {
+      try {
+        const sessionKey = await authManager.getSessionKey(company);
+        authManager.saveEncryptedSession(company, state, sessionKey, sessionsDir);
+      } catch (_) {
+        authManager.saveRawSession(company, state, sessionsDir);
+      }
+    }
+    _writeAuthMeta(company, { protected_url: protectedUrl });
+    return { ok: true, state, protectedUrl };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+}
+
 async function gracefulShutdown() {
   for (const [, entry] of _cache.entries()) {
     clearTimeout(entry.idleTimer);
@@ -303,6 +348,7 @@ async function gracefulShutdown() {
 module.exports = {
   getCachedBrowser,
   getAuthContext,
+  captureReAuth,
   gracefulShutdown,
   _authMetaPath,
   _readAuthMeta,

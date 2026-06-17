@@ -368,6 +368,8 @@ def ensure_nsis(manifest: dict[str, Any], on_event: EventSink | None = None) -> 
 
 def _run_playwright_install(cmd: list[str], on_event: EventSink | None) -> None:
     pct_re = re.compile(r"(\d{1,3})\s*%")
+    # Playwright's non-TTY progress line looks like "|####  |  45% of 167.7 MiB"
+    size_re = re.compile(r"([\d.]+)\s*MiB")
     output_tail: list[str] = []
     _emit(on_event, dep="chromium", status="installing", file_name="Chromium")
     proc = subprocess.Popen(
@@ -379,6 +381,9 @@ def _run_playwright_install(cmd: list[str], on_event: EventSink | None) -> None:
         errors='replace',
     )
     assert proc.stdout is not None
+    last_total: int | None = None
+    last_downloaded = 0
+    last_time = time.monotonic()
     for line in proc.stdout:
         text = line.strip()
         if text:
@@ -386,14 +391,30 @@ def _run_playwright_install(cmd: list[str], on_event: EventSink | None) -> None:
             output_tail = output_tail[-20:]
         match = pct_re.search(text)
         pct = min(100, int(match.group(1))) if match else None
-        _emit(
-            on_event,
-            dep="chromium",
-            status="installing",
-            file_name="Chromium",
-            pct=pct,
-            message=text[-240:] if text else None,
-        )
+        size_match = size_re.search(text)
+        fields: dict[str, Any] = {
+            "dep": "chromium",
+            "status": "installing",
+            "file_name": "Chromium",
+            "pct": pct,
+            "message": text[-240:] if text else None,
+        }
+        if size_match and pct is not None:
+            # Each browser component (Chromium, headless shell, ffmpeg...) restarts
+            # its own progress bar at a new total, so reset the speed baseline then.
+            total_bytes = round(float(size_match.group(1)) * 1024 * 1024)
+            downloaded_bytes = round(total_bytes * pct / 100)
+            now = time.monotonic()
+            if last_total != total_bytes:
+                last_total, last_downloaded, last_time = total_bytes, 0, now
+            elapsed = max(now - last_time, 0.001)
+            gained = max(downloaded_bytes - last_downloaded, 0)
+            if gained:
+                fields["bytes_per_sec"] = round(gained / elapsed)
+            fields["total_bytes"] = total_bytes
+            fields["downloaded_bytes"] = downloaded_bytes
+            last_downloaded, last_time = downloaded_bytes, now
+        _emit(on_event, **fields)
     code = proc.wait()
     if code != 0:
         message = "\n".join(output_tail)[-500:] or f"playwright install chromium exited with code {code}"
