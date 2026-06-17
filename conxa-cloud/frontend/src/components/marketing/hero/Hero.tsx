@@ -21,7 +21,6 @@ export function Hero() {
         className="mb-8 inline-flex items-center gap-2 rounded-full border border-[rgba(34,211,238,0.2)] bg-[rgba(34,211,238,0.06)] px-4 py-1.5"
       >
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />
-        <span className="text-xs font-medium tracking-wide text-cyan-400">Powered by Claude</span>
       </motion.div>
 
       {/* Headline */}

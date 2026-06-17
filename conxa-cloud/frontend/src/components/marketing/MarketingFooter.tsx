@@ -48,10 +48,7 @@ export function MarketingFooter() {
 
         <div className="mt-10 flex flex-col items-start justify-between gap-4 border-t border-white/6 pt-8 sm:flex-row sm:items-center">
           <p className="text-xs text-[#6b7280]">© {new Date().getFullYear()} CONXA. All rights reserved.</p>
-          <p className="text-xs text-[#6b7280]">
-            Powered by{' '}
-            <span className="text-[#9ba3af]">Claude</span>
-          </p>
+
         </div>
       </div>
     </footer>
