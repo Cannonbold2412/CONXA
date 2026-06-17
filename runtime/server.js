@@ -398,7 +398,10 @@ server.connect(transport);
 log("info", "mcp_connected", { version: RUNTIME_VERSION, conxa_dir: CONXA_DIR });
 
 // ─── 11. Async post-connect tasks ────────────────────────────────────────────
-(async () => {
+// Captured as a module-level promise so execute_skill can await it (with a
+// short bounded fallback) to pick up any same-day pack update before the first
+// run. The promise always resolves — never rejects — so it can never hard-block.
+const startupSync = (async () => {
   // Skill pack sync first — ensures companies[] in phonehome is accurate
   try {
     await sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 15000, log: (m) => log("info", m) });
@@ -749,6 +752,12 @@ async function _handleTool(name, args) {
 
     if (runs.length === 0) return err("No skills provided.");
 
+    // Wait briefly for the cold-start sync to finish so the first execution
+    // picks up any same-day pack update. Bounded to 2s with fallback — never
+    // a hard block. After the first call startupSync is already settled, so
+    // this resolves instantly on every subsequent execution.
+    await Promise.race([startupSync, new Promise(r => setTimeout(r, 2000))]);
+
     // Execution lock
     if (activeExecution) return err(`Execution already running: ${activeExecution.slug}. Call cancel_execution first.`);
 
@@ -773,23 +782,6 @@ async function _handleTool(name, args) {
       const required = entry.manifest.required_runtime || ">=0.0.0";
       if (!semver.satisfies(RUNTIME_VERSION, required))
         return err(`Skill ${run.skill} requires runtime ${required}, installed: ${RUNTIME_VERSION}. Please update the Conxa runtime.`);
-
-      // Minimum skill-pack version (from cached cloud manifest).
-      // Triggers a background re-sync so the next attempt picks up the updated pack.
-      try {
-        if (fs.existsSync(RUNTIME_UPDATE_CACHE)) {
-          const mf = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_CACHE, "utf8"));
-          const minPack = mf.min_skill_pack_version;
-          const packVer = entry.pack?.skill_pack_version || "0";
-          if (minPack && semver.valid(semver.coerce(packVer)) && semver.valid(semver.coerce(minPack))
-              && semver.lt(semver.coerce(packVer), semver.coerce(minPack))) {
-            sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 15000, log: (m) => log("info", m) })
-              .then(() => { skillIndex = skillLoader.loadSkillRegistry(SKILL_PACKS_DIR, CACHE_DIR); })
-              .catch(() => {});
-            return err(`Skill pack for ${entry.company} is outdated (v${packVer}, minimum: v${minPack}). A background sync has been triggered — please retry in a moment.`);
-          }
-        }
-      } catch (_) {}
 
       const execPath = path.join(entry.skillDir, "execution.json");
       const recPath  = path.join(entry.skillDir, "recovery.json");

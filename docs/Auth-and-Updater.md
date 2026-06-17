@@ -293,7 +293,6 @@ The Cloud API exposes `GET /api/v1/updates/runtime-manifest` (public, no auth). 
   "sha256": "<hex>",
   "keytar_url": "https://github.com/Cannonbold2412/CONXA/releases/download/runtime-v1.0.0/keytar.node",
   "keytar_sha256": "<hex>",
-  "min_skill_pack_version": "0.3.0",
   "playwright_version": "1.61.0",
   "chromium_revision": "1228"
 }

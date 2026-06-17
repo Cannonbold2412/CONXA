@@ -651,7 +651,6 @@ Response:
   "version": "v1.2.0",
   "url": "https://github.com/conxa-ai/runtime/releases/download/v1.2.0/runtime-win.exe",
   "sha256": "abc123...",
-  "min_skill_pack_version": "0.3.0",
   "playwright_version": "1.61.0",
   "chromium_revision": "1228"
 }

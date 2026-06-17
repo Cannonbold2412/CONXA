@@ -31,7 +31,7 @@ def test_runtime_manifest_public_no_auth():
     assert "version" in body
     assert "url" in body
     assert "sha256" in body
-    assert "min_skill_pack_version" in body
+    assert "min_skill_pack_version" not in body
     assert "playwright_version" in body
     assert "chromium_revision" in body
 

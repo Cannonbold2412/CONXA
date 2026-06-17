@@ -99,7 +99,6 @@ jobs:
             version               = "$env:RUNTIME_VERSION"
             url                   = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RUNTIME_VERSION/runtime-win.exe"
             sha256                = "$env:RUNTIME_WIN_SHA256"
-            min_skill_pack_version = "0.3.0"
             playwright_version    = "1.61.0"
             chromium_revision     = "1228"
           } | ConvertTo-Json

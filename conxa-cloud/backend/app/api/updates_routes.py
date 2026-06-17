@@ -46,7 +46,6 @@ _RUNTIME_KEYTAR_URL = os.environ.get(
 )
 _RUNTIME_KEYTAR_SHA256 = os.environ.get("CONXA_KEYTAR_WIN_SHA256", "")
 
-_MIN_SKILL_PACK_VERSION = os.environ.get("CONXA_MIN_SKILL_PACK_VERSION", "0.3.0")
 _PLAYWRIGHT_VERSION = os.environ.get("CONXA_PLAYWRIGHT_VERSION", "1.61.0")
 _CHROMIUM_REVISION = os.environ.get("CONXA_CHROMIUM_REVISION", "1228")
 
@@ -171,7 +170,6 @@ def runtime_manifest() -> dict:
         "sha256": _RUNTIME_WIN_SHA256,
         "keytar_url": _RUNTIME_KEYTAR_URL,
         "keytar_sha256": _RUNTIME_KEYTAR_SHA256,
-        "min_skill_pack_version": _MIN_SKILL_PACK_VERSION,
         "playwright_version": _PLAYWRIGHT_VERSION,
         "chromium_revision": _CHROMIUM_REVISION,
     }
