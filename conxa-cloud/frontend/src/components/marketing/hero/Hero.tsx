@@ -13,16 +13,6 @@ export function Hero() {
       <GradientMesh />
       <GridBackground />
 
-      {/* Badge */}
-      <motion.div
-        initial={{ opacity: 0, y: -12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-        className="mb-8 inline-flex items-center gap-2 rounded-full border border-[rgba(34,211,238,0.2)] bg-[rgba(34,211,238,0.06)] px-4 py-1.5"
-      >
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />
-      </motion.div>
-
       {/* Headline */}
       <motion.h1
         initial={{ opacity: 0, y: 20 }}
@@ -47,7 +37,7 @@ export function Hero() {
         transition={{ duration: 0.7, delay: 0.18, ease: [0.16, 1, 0.3, 1] }}
         className="relative z-10 mb-10 max-w-2xl text-center text-base leading-relaxed text-[#9ba3af] sm:text-lg"
       >
-        CONXA turns browser workflows into AI-executable operations through Claude. Teach once. Execute forever.
+        CONXA makes SaaS Platforms directly operatable through Claude.
       </motion.p>
 
       {/* CTAs */}
