@@ -8,7 +8,7 @@
 # (bridge.js, templates, policy JSON) materialize on disk.
 
 # Recording + compilation
-playwright==1.60.0
+playwright==1.61.0
 Pillow>=10.4.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0

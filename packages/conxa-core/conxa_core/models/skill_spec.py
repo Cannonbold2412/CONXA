@@ -15,6 +15,11 @@ class SkillMeta(BaseModel):
     source_session_id: str | None = None
     compiler_policy_version: str = ""
     compiler_policy_hash: str = ""
+    # Minimum runtime version required to execute this skill. Set by the compiler
+    # when features are used that require a specific runtime capability. The packager
+    # reads this and writes it into manifest.json / pack.json; the runtime enforces it
+    # at execute time via semver.satisfies(RUNTIME_VERSION, required_runtime).
+    required_runtime: str = ">=1.0.0"
     # Structural fingerprint of the first 3 steps' landmark selectors — used by
     # drift detection to detect site redesigns before execution begins.
     structural_fingerprint: dict[str, Any] = Field(default_factory=dict)

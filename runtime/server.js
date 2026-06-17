@@ -44,6 +44,37 @@ process.env.CONXA_DATA_DIR = CONXA_DATA_DIR;
 
 // ─── 3. Handle CLI flags (--install-playwright, --handle-auth-callback, etc.) ──
 const [,, ...cliArgs] = process.argv;
+// Fast selfcheck used by the update bat script to verify the new runtime boots cleanly.
+if (cliArgs.includes("--selfcheck")) {
+  process.exit(0);
+}
+
+// ─── 2b. Chromium revision preflight ──────────────────────────────────────────
+// If a .revision marker exists but the corresponding chromium-<rev> directory is
+// missing (e.g. a second installer brought a new runtime.exe with a different
+// Playwright, but the installer skip-guard left the old revision on disk), spawn
+// --install-playwright in the background to self-heal before the first skill run.
+// Skip this check when we're already running --install-playwright to avoid
+// spawning a duplicate install process.
+if (!cliArgs.includes("--install-playwright")) {
+  const _chromiumBase = path.join(CONXA_DIR, "chromium");
+  const _revFile = path.join(_chromiumBase, ".revision");
+  if (fs.existsSync(_revFile)) {
+    const _expectedRev = fs.readFileSync(_revFile, "utf8").trim();
+    if (_expectedRev && !fs.existsSync(path.join(_chromiumBase, _expectedRev))) {
+      const { spawn } = require("child_process");
+      const _child = spawn(process.execPath, ["--install-playwright"], {
+        env: { ...process.env, CONXA_DIR, PLAYWRIGHT_BROWSERS_PATH: _chromiumBase },
+        stdio: "ignore",
+        detached: true,
+      });
+      _child.unref();
+      process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), level: "warn",
+        msg: "chromium_revision_mismatch", expected: _expectedRev, action: "reinstalling_background" }) + "\n");
+    }
+  }
+}
+
 if (cliArgs.includes("--install-playwright")) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(CONXA_DIR, "chromium");
 
@@ -68,7 +99,17 @@ if (cliArgs.includes("--install-playwright")) {
 
     // --with-deps is Linux-only (apt); this pipeline only ships Windows/.exe.
     program.parseAsync(["node", "cli", "install", "chromium"])
-      .then(() => { clearTimeout(timeoutHandle); process.exit(0); })
+      .then(() => {
+        clearTimeout(timeoutHandle);
+        // Write a .revision marker so startup preflight can detect stale revisions.
+        try {
+          const chromiumBase = path.join(CONXA_DIR, "chromium");
+          const revDirs = fs.readdirSync(chromiumBase).filter(d => d.startsWith("chromium-"));
+          if (revDirs.length > 0)
+            fs.writeFileSync(path.join(chromiumBase, ".revision"), revDirs[0]);
+        } catch (_) {}
+        process.exit(0);
+      })
       .catch((e) => {
         clearTimeout(timeoutHandle);
         process.stderr.write("playwright install failed: " + (e?.message || String(e)) + "\n");
@@ -181,14 +222,14 @@ const RUNTIME_UPDATE_CACHE = path.join(CACHE_DIR, "runtime-update-cache.json");
 const RUNTIME_UPDATE_PENDING = path.join(CACHE_DIR, "runtime-update-pending.json");
 
 function _compareVersions(a, b) {
-  // Simple semver-ish compare: v1.2.3 → [1,2,3]
-  const parse = (v) => String(v).replace(/^v/, "").split(".").map(Number);
-  const [aP, bP] = [parse(a), parse(b)];
-  for (let i = 0; i < 3; i++) {
-    const diff = (aP[i] || 0) - (bP[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
+  // semver.coerce strips any non-numeric prefix ("runtime-v1.0.0" → "1.0.0"),
+  // fixing the default cloud manifest format which doubles as a GitHub release tag.
+  const pa = semver.coerce(String(a));
+  const pb = semver.coerce(String(b));
+  if (!pa && !pb) return 0;
+  if (!pa) return -1;
+  if (!pb) return 1;
+  return semver.compare(pa, pb);
 }
 
 async function _applyPendingUpdate() {
@@ -208,9 +249,19 @@ async function _applyPendingUpdate() {
   const batContent = [
     "@echo off",
     "timeout /t 3 /nobreak >nul",
+    // Back up old exe before overwriting so we can roll back if new one crashes.
+    `copy /Y "${runtimeExe}" "${runtimeExe}.bak" >nul`,
     `move /Y "${nextExe}" "${runtimeExe}"`,
-    // Swap keytar.node if a new one was staged alongside the exe.
     `if exist "${keytarNext}" move /Y "${keytarNext}" "${keytarCurrent}"`,
+    // Verify new runtime boots cleanly. On failure restore backup and abort.
+    `"${runtimeExe}" --selfcheck`,
+    `if %errorlevel% neq 0 (`,
+    `  copy /Y "${runtimeExe}.bak" "${runtimeExe}" >nul`,
+    `  del "${runtimeExe}.bak"`,
+    `  del "${batPath}"`,
+    `  exit /B 1`,
+    `)`,
+    `del "${runtimeExe}.bak"`,
     // Re-run Playwright browser install so Chromium revision matches the new exe.
     // Idempotent: no-op if the revision is already present on disk.
     `"${runtimeExe}" --install-playwright`,
@@ -472,6 +523,11 @@ function _toolDefinitions() {
       description: "Conxa automation: cancel the currently running skill execution. Safe to call at any time.",
       inputSchema: { type: "object", properties: {}, required: [] },
     },
+    {
+      name: "get_runtime_status",
+      description: "Conxa automation: return the installed runtime version, Chromium revision, skill pack versions, and pending self-update state. Use for diagnostics or to verify the runtime is up to date.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
     // Skill-specific tools: one per installed skill for direct intent routing
     ..._skillToolDefinitions(),
   ];
@@ -639,6 +695,50 @@ async function _handleTool(name, args) {
     return text('{"cancelled":true}');
   }
 
+  // ── get_runtime_status ───────────────────────────────────────────────────────
+  if (name === "get_runtime_status") {
+    const chromiumBase = path.join(CONXA_DIR, "chromium");
+    const revFile = path.join(chromiumBase, ".revision");
+    let chromiumRevision = null;
+    if (fs.existsSync(revFile)) {
+      chromiumRevision = fs.readFileSync(revFile, "utf8").trim() || null;
+    } else if (fs.existsSync(chromiumBase)) {
+      chromiumRevision = fs.readdirSync(chromiumBase).find(d => d.startsWith("chromium-")) || null;
+    }
+
+    let updatePending = null;
+    if (fs.existsSync(RUNTIME_UPDATE_PENDING)) {
+      try {
+        const p = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_PENDING, "utf8"));
+        updatePending = { version: p.version, ready: p.ready };
+      } catch (_) {}
+    }
+
+    const packsMap = {};
+    for (const entry of Object.values(skillIndex)) {
+      const co = entry.company;
+      if (!packsMap[co]) {
+        packsMap[co] = {
+          company: co,
+          skill_pack_version: entry.pack?.skill_pack_version || "unknown",
+          required_runtime: entry.pack?.required_runtime || "unknown",
+          skills: [],
+        };
+      }
+      packsMap[co].skills.push(entry.slug);
+    }
+
+    return text(JSON.stringify({
+      runtime_version: RUNTIME_VERSION,
+      chromium_revision: chromiumRevision,
+      platform: process.platform,
+      install_id: INSTALL_ID,
+      conxa_dir: CONXA_DIR,
+      skill_packs: Object.values(packsMap),
+      update_pending: updatePending,
+    }, null, 2));
+  }
+
   // ── execute_skill / execute_sequence ─────────────────────────────────────────
   if (name === "execute_skill" || name === "execute_sequence") {
     const watch = args.watch !== false;
@@ -672,6 +772,23 @@ async function _handleTool(name, args) {
       const required = entry.manifest.required_runtime || ">=0.0.0";
       if (!semver.satisfies(RUNTIME_VERSION, required))
         return err(`Skill ${run.skill} requires runtime ${required}, installed: ${RUNTIME_VERSION}. Please update the Conxa runtime.`);
+
+      // Minimum skill-pack version (from cached cloud manifest).
+      // Triggers a background re-sync so the next attempt picks up the updated pack.
+      try {
+        if (fs.existsSync(RUNTIME_UPDATE_CACHE)) {
+          const mf = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_CACHE, "utf8"));
+          const minPack = mf.min_skill_pack_version;
+          const packVer = entry.pack?.skill_pack_version || "0";
+          if (minPack && semver.valid(semver.coerce(packVer)) && semver.valid(semver.coerce(minPack))
+              && semver.lt(semver.coerce(packVer), semver.coerce(minPack))) {
+            sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 15000, log: (m) => log("info", m) })
+              .then(() => { skillIndex = skillLoader.loadSkillRegistry(SKILL_PACKS_DIR, CACHE_DIR); })
+              .catch(() => {});
+            return err(`Skill pack for ${entry.company} is outdated (v${packVer}, minimum: v${minPack}). A background sync has been triggered — please retry in a moment.`);
+          }
+        }
+      } catch (_) {}
 
       const execPath = path.join(entry.skillDir, "execution.json");
       const recPath  = path.join(entry.skillDir, "recovery.json");

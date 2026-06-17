@@ -803,6 +803,7 @@ def _write_skill_packs_format(
     skill_slugs: list[str],
     version: str,
     conxa_api_url: str = "",
+    required_runtime: str = "",
 ) -> None:
     """Write the skill-packs/{company}/ layout alongside the legacy build output.
 
@@ -891,7 +892,7 @@ def _write_skill_packs_format(
             "name":             skill_name,
             "description":      description,
             "version":          version,
-            "required_runtime": ">=1.0.0",
+            "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.0"),
             "company":          company,
             "target_url":       target_url,
             "inputs_required":  inputs_required,
@@ -903,11 +904,12 @@ def _write_skill_packs_format(
         written_slugs.append(slug)
 
     # pack.json at company root
+    _req_rt = required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.0")
     pack = {
         "company":            company,
         "company_display":    plugin_name,
         "skill_pack_version": version,
-        "required_runtime":   ">=1.0.0",
+        "required_runtime":   _req_rt,
         "target_url":         target_url,
         "protected_url":      protected_url,
         "skills":             written_slugs,
