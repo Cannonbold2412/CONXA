@@ -18,6 +18,7 @@ interface Props {
 export function OpenInStudioButton({ pluginId, size = 'sm', label = 'Open in Studio', primary = false }: Props) {
   const [open, setOpen] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [downloaded, setDownloaded] = useState(false)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -59,10 +60,18 @@ export function OpenInStudioButton({ pluginId, size = 'sm', label = 'Open in Stu
     setDownloading(true)
     try {
       const manifest = await getStudioManifest()
-      if (manifest.win_url) window.open(manifest.win_url, '_blank', 'noopener')
+      if (manifest.win_url) {
+        window.open(manifest.win_url, '_blank', 'noopener')
+        setDownloaded(true)
+      }
     } finally {
       setDownloading(false)
     }
+  }
+
+  function handleOpen(e: React.MouseEvent) {
+    e.stopPropagation()
+    window.location.href = deepLink
   }
 
   // Close popover on outside click
@@ -71,6 +80,7 @@ export function OpenInStudioButton({ pluginId, size = 'sm', label = 'Open in Stu
     function onPointerDown(e: PointerEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         setOpen(false)
+        setDownloaded(false)
       }
     }
     document.addEventListener('pointerdown', onPointerDown)
@@ -121,25 +131,49 @@ export function OpenInStudioButton({ pluginId, size = 'sm', label = 'Open in Stu
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1.5 w-64 rounded-lg border border-white/10 bg-[#0d0f12] p-3 shadow-xl">
           <div className="flex items-start justify-between gap-2 mb-2">
-            <p className="text-sm font-medium text-white">Build Studio not found</p>
+            <p className="text-sm font-medium text-white">
+              {downloaded ? 'Installer downloading…' : 'Build Studio not found'}
+            </p>
             <button
-              onClick={(e) => { e.stopPropagation(); setOpen(false) }}
+              onClick={(e) => { e.stopPropagation(); setOpen(false); setDownloaded(false) }}
               className="shrink-0 text-zinc-500 hover:text-zinc-300"
             >
               <X className="size-3.5" />
             </button>
           </div>
           <p className="mb-2.5 text-xs text-zinc-400">
-            Conxa Build Studio doesn&apos;t appear to be installed on this computer.
+            {downloaded
+              ? 'Run the downloaded installer, then click below to open Build Studio.'
+              : "Conxa Build Studio doesn’t appear to be installed on this computer."}
           </p>
-          <button
-            onClick={handleDownload}
-            disabled={downloading}
-            className="flex w-full items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300 transition-colors hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
-          >
-            <Download className="size-3.5 shrink-0" />
-            {downloading ? 'Getting download link…' : 'Download Conxa Build Studio'}
-          </button>
+          {downloaded ? (
+            <>
+              <button
+                onClick={handleOpen}
+                className="flex w-full items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300 transition-colors hover:bg-white/[0.08] hover:text-white mb-1.5"
+              >
+                <Monitor className="size-3.5 shrink-0" />
+                Open Build Studio
+              </button>
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                className="flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:opacity-50"
+              >
+                <Download className="size-3.5 shrink-0" />
+                {downloading ? 'Getting download link…' : 'Download again'}
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="flex w-full items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300 transition-colors hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
+            >
+              <Download className="size-3.5 shrink-0" />
+              {downloading ? 'Getting download link…' : 'Download Conxa Build Studio'}
+            </button>
+          )}
         </div>
       )}
     </div>
