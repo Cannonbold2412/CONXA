@@ -432,10 +432,10 @@ def ensure_chromium(on_event: EventSink | None = None) -> None:
         # Packaged build: redirect to a managed path under ~/.conxa/deps/
         browsers_path = chromium_dir()
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
-        if any(browsers_path.glob("chromium-*")):
-            _emit(on_event, dep="chromium", status="ready")
-            return
-        _emit(on_event, dep="chromium", status="installing")
+        # Always run the playwright installer — it checks the exact required revision
+        # internally and exits in under a second when already correct.  A version-blind
+        # glob check here caused stale revisions (from prior Playwright upgrades) to
+        # suppress the reinstall, leaving the packed runtime unable to find its browser.
         driver_dir = Path(sys._MEIPASS) / "playwright" / "driver"  # type: ignore[attr-defined]
         node_exe = driver_dir / ("node.exe" if sys.platform == "win32" else "node")
         driver_js = driver_dir / "package" / "cli.js"

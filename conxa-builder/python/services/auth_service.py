@@ -296,8 +296,11 @@ class AuthService:
 
         tokens = self._exchange_code(result["code"], verifier, redirect_uri)
         tokens["userinfo"] = self._fetch_userinfo_with_retry(tokens["access_token"])
+        identity = self._claims(tokens)
+        if not identity or not identity.get("user_id"):
+            raise RuntimeError("login_identity_missing")
         self._save(tokens)
-        return self._claims(tokens)
+        return identity
 
     def _exchange_code(self, code: str, verifier: str, redirect_uri: str) -> dict[str, Any]:
         params: dict[str, str] = {
@@ -416,13 +419,19 @@ class AuthService:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    def _claims(self, tokens: dict[str, Any]) -> dict[str, Any]:
-        """Extract identity from cached userinfo or fall back to JWT decode."""
+    def _claims(self, tokens: dict[str, Any]) -> dict[str, Any] | None:
+        """Extract identity from cached userinfo or fall back to JWT decode.
+
+        Returns None if no usable principal can be identified (no ``sub`` claim).
+        """
         userinfo = tokens.get("userinfo") or {}
         if userinfo:
+            sub = userinfo.get("sub")
+            if not sub:
+                return None
             return {
                 "org_id": userinfo.get("org_id"),
-                "user_id": userinfo.get("sub"),
+                "user_id": sub,
                 "name": userinfo.get("name") or userinfo.get("full_name"),
                 "email": userinfo.get("email"),
             }
@@ -432,14 +441,22 @@ class AuthService:
             payload_b64 += "=" * (-len(payload_b64) % 4)
             claims = json.loads(base64.urlsafe_b64decode(payload_b64))
         except (KeyError, IndexError, ValueError):
-            return {}
+            return None
+        sub = claims.get("sub")
+        if not sub:
+            return None
         return {
             "org_id": claims.get("org_id") or claims.get("orgid"),
-            "user_id": claims.get("sub"),
+            "user_id": sub,
             "name": claims.get("name") or claims.get("full_name"),
             "email": claims.get("email"),
         }
 
     def current_identity(self) -> dict[str, Any] | None:
         tokens = self._load()
-        return self._claims(tokens) if tokens else None
+        if not tokens:
+            return None
+        identity = self._claims(tokens)
+        if not identity or not identity.get("user_id"):
+            return None
+        return identity

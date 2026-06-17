@@ -86,7 +86,12 @@ export function App() {
   useEffect(() => {
     if (updateState !== 'ok') return
     cmd<{ identity: Identity | null }>('whoami')
-      .then((r) => setIdentity(r?.identity ?? null))
+      .then((r) => {
+        const id = r?.identity
+        // Require a user_id — rejects empty objects that can slip through on
+        // broken sessions where userinfo fetch failed and the token is opaque.
+        setIdentity(id?.user_id ? id as Identity : null)
+      })
       .catch(() => setIdentity(null))
   }, [updateState])
 
@@ -132,6 +137,18 @@ export function App() {
 
   const logout = () => performLogout(setIdentity)
 
+  // Hard gate: routes are never mounted until identity is confirmed.
+  // AppChrome is always present so the frameless window's title bar controls work.
+  if (!resolvedIdentity) {
+    return (
+      <AuthContext.Provider value={{ identity: null, setIdentity, logout }}>
+        <AppChrome>
+          <LoginOverlay onLogin={setIdentity} />
+        </AppChrome>
+      </AuthContext.Provider>
+    )
+  }
+
   return (
     <AuthContext.Provider value={{ identity: resolvedIdentity, setIdentity, logout }}>
       <ErrorBoundary>
@@ -155,7 +172,6 @@ export function App() {
           </Routes>
         </AppChrome>
       </ErrorBoundary>
-      {!resolvedIdentity && <LoginOverlay onLogin={setIdentity} />}
       {depUpdateBanner.phase !== 'idle' && (
         <div className="fixed bottom-0 left-0 right-0 z-50 flex items-center gap-3 border-t border-white/8 bg-[#0d0f12]/95 px-4 py-2 backdrop-blur">
           {depUpdateBanner.phase === 'updating' ? (
