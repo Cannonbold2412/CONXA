@@ -21,6 +21,21 @@ def build_installer(
     release_notes: str = "",
     realtime_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    # Ensure all deps (NSIS, runtime) are at the latest cloud version before packaging.
+    # This is a safety net for sessions started before a dep release was available.
+    cloud_api = os.environ.get("CONXA_CLOUD_API", "https://apis.conxa.in")
+    try:
+        from services import bootstrap as _bs
+
+        def _fwd(evt: dict) -> None:
+            if realtime_sink:
+                realtime_sink(evt)
+
+        _bs.ensure_all(cloud_api, on_event=_fwd)
+    except Exception as exc:
+        if realtime_sink:
+            realtime_sink({"kind": "installer_build", "message": f"Dep version check skipped: {exc}"})
+
     # Point the shared builder at the bootstrapped NSIS if not already set.
     # Verify makensisw.exe is beside any candidate — the top-level copy is a stub without it.
     if not os.environ.get("MAKENSIS_PATH"):

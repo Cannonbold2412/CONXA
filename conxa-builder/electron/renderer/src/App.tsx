@@ -42,6 +42,11 @@ function DeepLinkHandler() {
   return null
 }
 
+type DepUpdateBanner =
+  | { phase: 'idle' }
+  | { phase: 'updating'; pct: number | null }
+  | { phase: 'done' }
+
 export function App() {
   // 'checking' = deps status not yet known, 'needed' = bootstrap required, 'ready' = deps ok
   const [depsState, setDepsState] = useState<'checking' | 'needed' | 'ready'>('checking')
@@ -49,6 +54,7 @@ export function App() {
   const [updateState, setUpdateState] = useState<'checking' | 'required' | 'ok'>('checking')
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null)
   const [identity, setIdentity] = useState<Identity | null | 'checking'>('checking')
+  const [depUpdateBanner, setDepUpdateBanner] = useState<DepUpdateBanner>({ phase: 'idle' })
 
   useEffect(() => {
     // Skip the bootstrap gate entirely in dev (deps managed by the developer via scripts/setup.ps1).
@@ -83,6 +89,31 @@ export function App() {
       .then((r) => setIdentity(r?.identity ?? null))
       .catch(() => setIdentity(null))
   }, [updateState])
+
+  // When all deps are present, silently check for newer versions in the background.
+  useEffect(() => {
+    if (depsState !== 'ready' || !window.conxa.isPackaged) return
+    const unsub = window.conxa.onEvent((ev) => {
+      if (ev.phase !== 'bootstrap') return
+      if (!ev.dep) {
+        if (ev.status === 'complete') setDepUpdateBanner({ phase: 'done' })
+        return
+      }
+      if (ev.status === 'downloading') {
+        const pct = typeof ev.pct === 'number' ? Math.round(ev.pct as number) : null
+        setDepUpdateBanner({ phase: 'updating', pct })
+      }
+    })
+    cmd('bootstrap', {}).catch(() => {})
+    return unsub
+  }, [depsState])
+
+  // Auto-dismiss the 'done' banner after 2 s.
+  useEffect(() => {
+    if (depUpdateBanner.phase !== 'done') return
+    const t = setTimeout(() => setDepUpdateBanner({ phase: 'idle' }), 2000)
+    return () => clearTimeout(t)
+  }, [depUpdateBanner.phase])
 
   const handleBootstrapComplete = useCallback(() => setDepsState('ready'), [])
 
@@ -125,6 +156,29 @@ export function App() {
         </AppChrome>
       </ErrorBoundary>
       {!resolvedIdentity && <LoginOverlay onLogin={setIdentity} />}
+      {depUpdateBanner.phase !== 'idle' && (
+        <div className="fixed bottom-0 left-0 right-0 z-50 flex items-center gap-3 border-t border-white/8 bg-[#0d0f12]/95 px-4 py-2 backdrop-blur">
+          {depUpdateBanner.phase === 'updating' ? (
+            <span className="size-2 shrink-0 animate-pulse rounded-full bg-blue-500" />
+          ) : (
+            <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+          )}
+          <span className="flex-1 text-xs text-zinc-400">
+            {depUpdateBanner.phase === 'updating' ? 'Updating dependencies…' : 'Dependencies updated'}
+          </span>
+          {depUpdateBanner.phase === 'updating' && depUpdateBanner.pct != null && (
+            <>
+              <span className="text-xs tabular-nums text-zinc-500">{depUpdateBanner.pct}%</span>
+              <div className="h-1 w-28 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-all duration-300"
+                  style={{ width: `${depUpdateBanner.pct}%` }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </AuthContext.Provider>
   )
 }
