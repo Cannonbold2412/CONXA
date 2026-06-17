@@ -162,6 +162,7 @@ let clearRetryBudget;
 let checkRetryBudget;
 let isAuthFailure;
 let getCachedBrowser;
+let captureReAuth;
 let gracefulShutdown;
 let createTracker;
 let mapErrorToCode;
