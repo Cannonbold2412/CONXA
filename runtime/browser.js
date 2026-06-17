@@ -125,6 +125,31 @@ async function _isAuthenticated(page, protectedUrl) {
   return false;
 }
 
+async function _validateSession(stored, protectedUrl) {
+  if (!protectedUrl) return true;
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  try {
+    const context = await browser.newContext({ storageState: stored, acceptDownloads: true });
+    const page = await context.newPage();
+    await page.goto(protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    return await _isAuthenticated(page, protectedUrl);
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+async function _buildExecContext(stored, headless = false) {
+  const browser = await chromium.launch({
+    headless,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  const context = await browser.newContext({ storageState: stored, acceptDownloads: true });
+  return { browser, context };
+}
+
 async function _captureInteractiveAuth(company, targetUrl) {
   const loginBrowser = await chromium.launch({
     headless: false,
@@ -238,23 +263,13 @@ async function getAuthContext(company, authManager, opts = {}) {
       if (token) {
         const stored = authManager.loadDecryptedSession(company, token, SESSIONS_DIR);
         if (stored) {
-          const browser  = await chromium.launch({ headless, args: ["--disable-blink-features=AutomationControlled"] });
-          const context  = await browser.newContext({ storageState: stored, acceptDownloads: true });
-          if (protectedUrl) {
-            const page = await context.newPage();
-            await page.goto(protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-            if (await _isAuthenticated(page, protectedUrl)) {
-              _writeAuthMeta(company, { protected_url: protectedUrl });
-              await page.close();
-              return { browser, context, protectedUrl, sessionSource: "encrypted" };
-            }
-            await browser.close();
-            // Session expired — skip raw session (encrypted takes precedence), go to interactive auth
-            _hadEncryptedSession = true;
-          } else {
-            await browser.close();
-            _hadEncryptedSession = true;
+          if (await _validateSession(stored, protectedUrl)) {
+            _writeAuthMeta(company, { protected_url: protectedUrl });
+            const { browser, context } = await _buildExecContext(stored, headless);
+            return { browser, context, protectedUrl, sessionSource: "encrypted" };
           }
+          // Session expired — skip raw session (encrypted takes precedence), go to interactive auth
+          _hadEncryptedSession = true;
         }
       }
     } catch (_) {}
@@ -267,19 +282,10 @@ async function getAuthContext(company, authManager, opts = {}) {
     let stored;
     try { stored = JSON.parse(fs.readFileSync(rawSessionPath, "utf8")); } catch (_) {}
     if (stored) {
-      const browser  = await chromium.launch({ headless });
-      const context  = await browser.newContext({ storageState: stored, acceptDownloads: true });
-      if (protectedUrl) {
-        const page = await context.newPage();
-        await page.goto(protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-        if (await _isAuthenticated(page, protectedUrl)) {
-          _writeAuthMeta(company, { protected_url: protectedUrl });
-          await page.close();
-          return { browser, context, protectedUrl, sessionSource: "raw" };
-        }
-        await browser.close();
-      } else {
-        await browser.close();
+      if (await _validateSession(stored, protectedUrl)) {
+        _writeAuthMeta(company, { protected_url: protectedUrl });
+        const { browser, context } = await _buildExecContext(stored, headless);
+        return { browser, context, protectedUrl, sessionSource: "raw" };
       }
     }
   }
@@ -303,15 +309,7 @@ async function getAuthContext(company, authManager, opts = {}) {
     fs.writeFileSync(path.join(SESSIONS_DIR, `${company}_raw_state.json`), JSON.stringify(state, null, 2), { mode: 0o600 });
   }
 
-  const browser  = await chromium.launch({ headless });
-  const context  = await browser.newContext({ storageState: state, acceptDownloads: true });
-  const page = await context.newPage();
-  await page.goto(capturedProtectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-  if (!await _isAuthenticated(page, capturedProtectedUrl)) {
-    await browser.close();
-    throw new Error("Authenticated navigation failed after login — unexpected error.");
-  }
-  await page.close();
+  const { browser, context } = await _buildExecContext(state, headless);
   return { browser, context, protectedUrl: capturedProtectedUrl, sessionSource: "new" };
 }
 
