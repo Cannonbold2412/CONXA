@@ -459,13 +459,12 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
         except Exception:
             continue
 
-    # Durable copy: Render's free plan has no persistent disk, so the files above can
-    # vanish on the next restart/redeploy. Postgres is the source of truth for version
-    # history and downloads; local disk is just a fast-path cache rehydrated on miss.
+    # Store metadata only — the binary is too large (~20 MB) to fit in a JSONB field.
+    # Disk is the primary store; DB tracks version history and is_latest state.
     db_set(
         _installer_versions_ns(slug),
         version,
-        {**meta, "content_base64": base64.b64encode(body).decode("ascii")},
+        meta,
     )
     for _other_key, other_meta in db_list_kv(_installer_versions_ns(slug)):
         if not isinstance(other_meta, dict):
