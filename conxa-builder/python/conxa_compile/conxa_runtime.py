@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
 
 class RuntimeToolError(RuntimeError):
@@ -291,7 +294,7 @@ def call_runtime_tool(
         try:
             assert proc.stderr is not None
             for line in proc.stderr:
-                line = line.strip()
+                line = _ANSI_RE.sub('', line).strip()
                 if line:
                     stderr_lines.append(line)
                     del stderr_lines[:-20]
@@ -345,7 +348,7 @@ def call_runtime_tool(
                     err = message.get("error") or {}
                     raise RuntimeToolError(str(err.get("message") or err))
                 return message
-        tail = "\n".join(stderr_lines[-5:])
+        tail = "\n".join(_ANSI_RE.sub('', l) for l in stderr_lines[-5:])
         suffix = f"\nRuntime log tail:\n{tail}" if tail else ""
         raise RuntimeToolError(f"Runtime tool call timed out or exited before responding.{suffix}")
 

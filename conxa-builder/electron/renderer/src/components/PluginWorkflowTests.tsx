@@ -34,10 +34,13 @@ type InputSpec = {
 
 const TEMPLATE_INPUT_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g
 
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
+
 function formatRuntimeError(msg: string): string {
-  // Strip "Runtime log tail: {...}" suffix from timeout errors
-  const tailIdx = msg.indexOf('Runtime log tail:')
-  const cleaned = tailIdx !== -1 ? msg.slice(0, tailIdx).trim() : msg.trim()
+  const stripped = msg.replace(ANSI_RE, '')
+  const tailIdx = stripped.indexOf('Runtime log tail:')
+  const cleaned = tailIdx !== -1 ? stripped.slice(0, tailIdx).trim() : stripped.trim()
 
   // Playwright "Executable doesn't exist at <path>" → short user-facing message
   if (/browserType\.launch.*Executable doesn't exist/i.test(cleaned)) {
@@ -161,7 +164,7 @@ function WorkflowLogSection({
         <div className="space-y-2">
           <div className="flex min-w-0 items-start gap-2 text-xs text-red-300">
             <XCircle className="mt-0.5 size-3.5 shrink-0" />
-            <span className="min-w-0 break-all">{runError}</span>
+            <span className="min-w-0 max-h-24 overflow-y-auto break-all">{runError}</span>
           </div>
           {onRetry && (
             <Button size="sm" variant="outline" onClick={onRetry} className="border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10">
