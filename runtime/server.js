@@ -87,15 +87,9 @@ if (cliArgs.includes("--install-playwright")) {
   timeoutHandle.unref();
 
   try {
-    // playwright-core's package.json "exports" map does not list "./cli",
-    // so require("playwright-core/cli") throws ERR_PACKAGE_PATH_NOT_EXPORTED
-    // from outside the package. Replicate cli.js's own body using the two
-    // subpaths it DOES export, with argv rewritten so Commander parses the
-    // install command we want instead of this runtime's own CLI flags.
-    const { libCli, libCliTestStub } = require("playwright-core/lib/coreBundle");
-    const { program } = require("playwright-core/lib/utilsBundle");
-    libCli.decorateProgram(program);
-    libCliTestStub.decorateProgram(program);
+    // playwright-core 1.59.x exports ./lib/cli/program which is the fully-decorated
+    // Commander program — no manual decoration step needed.
+    const { program } = require("playwright-core/lib/cli/program");
 
     // --with-deps is Linux-only (apt); this pipeline only ships Windows/.exe.
     program.parseAsync(["node", "cli", "install", "chromium"])

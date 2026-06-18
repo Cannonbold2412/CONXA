@@ -24,9 +24,9 @@
       "run.js",
       "browser.js",
       "tracker.js",
-      "node_modules/playwright-core/lib/coreBundle.js",
+      "node_modules/playwright-core/lib/cli/program.js",
       "node_modules/playwright-core/lib/utilsBundle.js",
-      "node_modules/playwright-core/lib/entry/oopBrowserDownload.js"
+      "node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js"
     ]
   },
   "dependencies": {
