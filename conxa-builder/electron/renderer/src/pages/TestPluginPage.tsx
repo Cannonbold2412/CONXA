@@ -96,7 +96,7 @@ export function TestPluginPage() {
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-white/8 bg-white/[0.03]">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border border-white/8 bg-white/[0.03]">
           {selectedPlugin ? (
             <>
               <div className="border-b border-white/8 px-4 py-3">
@@ -105,7 +105,7 @@ export function TestPluginPage() {
                   {selectedPlugin.workflows.length} workflow{selectedPlugin.workflows.length !== 1 ? 's' : ''}
                 </p>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+              <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-4">
                 <PluginWorkflowTests plugin={selectedPlugin} onComplete={onTestComplete} />
               </div>
             </>
