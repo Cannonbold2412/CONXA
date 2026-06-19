@@ -36,7 +36,7 @@ graph TD
 
     subgraph "Tools — browser_use/tools/"
         N[Tools registry\nservice.py]
-        O[@registry.action decorator\nPydantic ActionModel]
+        O["@registry.action decorator\nPydantic ActionModel"]
     end
 
     subgraph "MCP — browser_use/mcp/"
@@ -100,14 +100,14 @@ sequenceDiagram
 flowchart LR
     subgraph "Page Perception"
         A[CDP: getFullAXTree\ngetDocument] -->|raw AX nodes + DOM| B
-        B[ClickableElementDetector\nheuristic: interactive nodes] -->|EnhancedAXNode[]| C
-        C[DOMTreeSerializer] -->|numbered list: '42[button:Submit]'| D
-        D[SerializedDOMState\n{selector_map, element_tree_text\nscreenshot_base64, url}]
+        B[ClickableElementDetector\nheuristic: interactive nodes] -->|EnhancedAXNode list| C
+        C[DOMTreeSerializer] -->|numbered element list| D
+        D["SerializedDOMState\nselector_map, element_tree_text\nscreenshot_base64, url"]
     end
 
     subgraph "LLM Reasoning"
         D -->|prompt| E[BaseChatModel]
-        E -->|structured output| F[AgentOutput\n{thinking, next_goal\naction:[{click:{index:42}}]}]
+        E -->|structured output| F["AgentOutput\n{thinking, next_goal\naction:[{click:{index:42}}]}"]
     end
 
     subgraph "Execution"
