@@ -1,5 +1,5 @@
 "use strict";
-const { chromium } = require("playwright");
+const { chromium } = (global.__hostRequire || require)("playwright");
 const fs   = require("fs");
 const path = require("path");
 const os   = require("os");

@@ -4,7 +4,7 @@ const path   = require("path");
 const fs     = require("fs");
 const os     = require("os");
 const https  = require("https");
-const semver = require("semver");
+const semver = (global.__hostRequire || require)("semver");
 const { loadInstallId } = require("./install_identity");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
@@ -162,9 +162,9 @@ let createTracker;
 let mapErrorToCode;
 
 try {
-  ({ Server }               = require("@modelcontextprotocol/sdk/server/index.js"));
-  ({ StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js"));
-  ({ CallToolRequestSchema, ListToolsRequestSchema } = require("@modelcontextprotocol/sdk/types.js"));
+  ({ Server }               = (global.__hostRequire || require)("@modelcontextprotocol/sdk/server/index.js"));
+  ({ StdioServerTransport } = (global.__hostRequire || require)("@modelcontextprotocol/sdk/server/stdio.js"));
+  ({ CallToolRequestSchema, ListToolsRequestSchema } = (global.__hostRequire || require)("@modelcontextprotocol/sdk/types.js"));
 
   skillLoader  = require("./skill_loader");
   sync         = require("./sync");
@@ -179,6 +179,14 @@ try {
 
 // ─── 6. Execution state (single lock per process) ─────────────────────────────
 let activeExecution = null;
+
+// Tracks whether the cold-start sync is complete so execute_skill can gate on it.
+const syncState = {
+  startedAt:  Date.now(),
+  complete:   false,
+  skillsDone: false,
+  appDone:    false,
+};
 
 // ─── 7. Skill index ───────────────────────────────────────────────────────────
 let skillIndex = {};
@@ -213,8 +221,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 // so the next invocation picks up the new binary. Otherwise, check the cloud
 // manifest and download in the background (applied on the next cold start).
 const CONXA_API = process.env.CONXA_API_URL || "https://apis.conxa.in";
-const RUNTIME_UPDATE_CACHE = path.join(CACHE_DIR, "runtime-update-cache.json");
-const RUNTIME_UPDATE_PENDING = path.join(CACHE_DIR, "runtime-update-pending.json");
+const RUNTIME_UPDATE_CACHE   = path.join(CACHE_DIR, "conxa-runtime-update-cache.json");
+const RUNTIME_UPDATE_PENDING = path.join(CACHE_DIR, "conxa-runtime-update-pending.json");
 
 function _compareVersions(a, b) {
   // semver.coerce strips any non-numeric prefix ("runtime-v1.0.0" → "1.0.0"),
@@ -232,13 +240,13 @@ async function _applyPendingUpdate() {
   let pending;
   try { pending = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_PENDING, "utf8")); } catch (_) { return false; }
   if (!pending.ready) return false;
-  const nextExe = path.join(CONXA_DIR, "runtime.exe.next");
+  const nextExe = path.join(CONXA_DIR, "conxa-runtime.exe.next");
   if (!fs.existsSync(nextExe)) return false;
 
   // Write update.bat with a random suffix to avoid predictable path attacks.
   const suffix = Math.random().toString(36).slice(2);
   const batPath = path.join(os.tmpdir(), `conxa-update-${suffix}.bat`);
-  const runtimeExe = path.join(CONXA_DIR, "runtime.exe");
+  const runtimeExe = path.join(CONXA_DIR, "conxa-runtime.exe");
   const keytarNext    = path.join(CONXA_DIR, "keytar.node.next");
   const keytarCurrent = path.join(CONXA_DIR, "keytar.node");
   const batContent = [
@@ -269,7 +277,7 @@ async function _applyPendingUpdate() {
   return true;
 }
 
-async function _checkRuntimeUpdate() {
+async function _checkHostUpdate() {
   if (process.env.CONXA_SKIP_SELF_UPDATE === "1") return;
   if (fs.existsSync(RUNTIME_UPDATE_PENDING)) return; // already downloaded, wait for next cold start
 
@@ -287,7 +295,7 @@ async function _checkRuntimeUpdate() {
   if (!manifest) {
     try {
       manifest = await new Promise((resolve, reject) => {
-        const req = https.get(`${CONXA_API}/api/v1/updates/runtime-manifest`, (res) => {
+        const req = https.get(`${CONXA_API}/api/v1/updates/conxa-runtime-manifest`, (res) => {
           let data = "";
           res.on("data", (c) => { data += c; });
           res.on("end", () => {
@@ -308,12 +316,12 @@ async function _checkRuntimeUpdate() {
     }
   }
 
-  if (!manifest || !manifest.version) return;
-  if (_compareVersions(manifest.version, RUNTIME_VERSION) <= 0) return;
+  if (!manifest || !manifest.host_version) return;
+  if (_compareVersions(manifest.host_version, RUNTIME_VERSION) <= 0) return;
 
   // Newer version available — download in background
-  log("info", `[runtime:update-pending] v${RUNTIME_VERSION}→${manifest.version} downloading`);
-  const nextExe = path.join(CONXA_DIR, "runtime.exe.next");
+  log("info", `[runtime:update-pending] v${RUNTIME_VERSION}→${manifest.host_version} downloading`);
+  const nextExe = path.join(CONXA_DIR, "conxa-runtime.exe.next");
   try {
     const buf = await new Promise((resolve, reject) => {
       const req = https.get(manifest.url, (res) => {
@@ -362,11 +370,102 @@ async function _checkRuntimeUpdate() {
       }
     }
 
-    fs.writeFileSync(RUNTIME_UPDATE_PENDING, JSON.stringify({ version: manifest.version, ready: true, has_keytar: hasKeytar }));
-    log("info", `[runtime:update-pending] v${RUNTIME_VERSION}→${manifest.version} ready (keytar=${hasKeytar})`);
+    fs.writeFileSync(RUNTIME_UPDATE_PENDING, JSON.stringify({ version: manifest.host_version, ready: true, has_keytar: hasKeytar }));
+    log("info", `[runtime:update-pending] v${RUNTIME_VERSION}→${manifest.host_version} ready (keytar=${hasKeytar})`);
   } catch (e) {
     log("warn", "runtime_update_download_failed", { reason: e.message });
   }
+}
+
+async function _checkAppUpdate() {
+  if (process.env.CONXA_SKIP_SELF_UPDATE === "1") return;
+
+  const appDir      = path.join(CONXA_DIR, "conxa-app");
+  const cacheFile   = path.join(CACHE_DIR, "conxa-app-update-cache.json");
+  const versionFile = path.join(appDir, "version.json");
+
+  let localVersion = "none";
+  try { localVersion = JSON.parse(fs.readFileSync(versionFile, "utf8")).app_version || "none"; } catch (_) {}
+
+  // Cache manifest for 1h
+  let manifest = null;
+  if (fs.existsSync(cacheFile)) {
+    try {
+      const c = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+      if (Date.now() - c._cached_at < 60 * 60 * 1000) manifest = c;
+    } catch (_) {}
+  }
+
+  if (!manifest) {
+    try {
+      manifest = await new Promise((resolve, reject) => {
+        const req = https.get(`${CONXA_API}/api/v1/updates/conxa-app-manifest`, (res) => {
+          let d = "";
+          res.on("data", c => { d += c; });
+          res.on("end", () => {
+            try {
+              const p = JSON.parse(d);
+              p._cached_at = Date.now();
+              fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+              fs.writeFileSync(cacheFile, JSON.stringify(p));
+              resolve(p);
+            } catch (e) { reject(e); }
+          });
+        });
+        req.setTimeout(8000, () => { req.destroy(); reject(new Error("timeout")); });
+        req.on("error", reject);
+      });
+    } catch (_) {
+      return; // network unavailable — skip silently
+    }
+  }
+
+  if (!manifest || !manifest.bundle_url) return;
+  if (manifest.app_version === localVersion) return; // already up to date
+
+  log("info", `[app:update] ${localVersion}→${manifest.app_version} downloading`);
+
+  const buf = await new Promise((resolve, reject) => {
+    const req = https.get(manifest.bundle_url, (res) => {
+      const chunks = [];
+      res.on("data", c => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+    req.setTimeout(30_000, () => { req.destroy(); reject(new Error("download timeout")); });
+    req.on("error", reject);
+  });
+
+  if (manifest.bundle_sha256) {
+    const { createHash } = require("crypto");
+    const actual = createHash("sha256").update(buf).digest("hex");
+    if (actual.toLowerCase() !== manifest.bundle_sha256.toLowerCase())
+      throw new Error("app bundle SHA-256 mismatch");
+  }
+
+  const tmpDir  = path.join(os.tmpdir(), `conxa-app-${Date.now()}`);
+  const zipPath = tmpDir + ".zip";
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.writeFileSync(zipPath, buf);
+
+  await new Promise((resolve, reject) => {
+    const { spawn } = require("child_process");
+    let cmd, args2;
+    if (process.platform === "win32") {
+      cmd   = "powershell";
+      args2 = ["-NonInteractive", "-Command",
+        `Expand-Archive -Path '${zipPath}' -DestinationPath '${tmpDir}' -Force`];
+    } else {
+      cmd   = "unzip";
+      args2 = ["-o", zipPath, "-d", tmpDir];
+    }
+    const ps = spawn(cmd, args2, { stdio: "ignore" });
+    ps.on("close", code => code === 0 ? resolve() : reject(new Error(`unzip exit ${code}`)));
+  });
+  try { fs.unlinkSync(zipPath); } catch (_) {}
+
+  if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true });
+  fs.renameSync(tmpDir, appDir);
+  log("info", `[app:update] ${manifest.app_version} installed — effective on next restart`);
 }
 
 // Apply pending update before connecting (may exit process on Windows).
@@ -379,7 +478,7 @@ if (process.platform === "win32") {
 if (fs.existsSync(RUNTIME_UPDATE_PENDING)) {
   try {
     const p = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_PENDING, "utf8"));
-    if (p.ready && !fs.existsSync(path.join(CONXA_DIR, "runtime.exe.next"))) {
+    if (p.ready && !fs.existsSync(path.join(CONXA_DIR, "conxa-runtime.exe.next"))) {
       fs.unlinkSync(RUNTIME_UPDATE_PENDING);
       log("info", "runtime_update_applied", { version: p.version });
     }
@@ -392,26 +491,28 @@ server.connect(transport);
 log("info", "mcp_connected", { version: RUNTIME_VERSION, conxa_dir: CONXA_DIR });
 
 // ─── 11. Async post-connect tasks ────────────────────────────────────────────
-// Captured as a module-level promise so execute_skill can await it (with a
-// short bounded fallback) to pick up any same-day pack update before the first
-// run. The promise always resolves — never rejects — so it can never hard-block.
+// execute_skill awaits this promise before running so it always sees fresh data.
+// The promise always resolves (failures caught internally) — never hangs.
 const startupSync = (async () => {
-  // Skill pack sync first — ensures companies[] in phonehome is accurate
   try {
-    await sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 15000, log: (m) => log("info", m) });
+    await Promise.all([
+      sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 4000, log: (m) => log("info", m) })
+        .then(()  => { syncState.skillsDone = true; })
+        .catch(() => { syncState.skillsDone = true; }),
+
+      _checkAppUpdate()
+        .then(()  => { syncState.appDone = true; })
+        .catch(e  => { log("warn", "app_update_skipped", { reason: e.message }); syncState.appDone = true; }),
+    ]);
+  } finally {
+    syncState.complete = true;
     skillIndex = skillLoader.loadSkillRegistry(SKILL_PACKS_DIR, CACHE_DIR);
     log("info", "sync_complete", { count: Object.keys(skillIndex).length });
-    // Notify client that the tool list changed (skill-specific tools may have updated).
     server.sendToolListChanged().catch(() => {});
-  } catch (e) {
-    log("warn", "sync_skipped", { reason: e.message });
   }
 
-  // Phonehome after sync so companies[] reflects current skill index
   _phonehome().catch(() => {});
-
-  // Background runtime self-update check (downloads update for next cold start)
-  _checkRuntimeUpdate().catch(() => {});
+  _checkHostUpdate().catch(() => {}); // background host binary check — never blocks execution
 })();
 
 // ─── 12. Graceful shutdown ────────────────────────────────────────────────────
@@ -746,11 +847,12 @@ async function _handleTool(name, args) {
 
     if (runs.length === 0) return err("No skills provided.");
 
-    // Wait briefly for the cold-start sync to finish so the first execution
-    // picks up any same-day pack update. Bounded to 2s with fallback — never
-    // a hard block. After the first call startupSync is already settled, so
-    // this resolves instantly on every subsequent execution.
-    await Promise.race([startupSync, new Promise(r => setTimeout(r, 2000))]);
+    // Hard gate: do not execute against stale data.
+    // startupSync always resolves (all failures caught internally) so this never hangs.
+    // After the first call the promise is already settled — subsequent calls are instant.
+    if (!syncState.complete) {
+      await startupSync;
+    }
 
     // Execution lock
     if (activeExecution) return err(`Execution already running: ${activeExecution.slug}. Call cancel_execution first.`);
@@ -766,7 +868,7 @@ async function _handleTool(name, args) {
         skillLoader.verifySkillIntegrity(entry.skillDir, entry.manifest);
       } catch (integrityErr) {
         // Trigger background re-sync
-        sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 15000, log: (m) => log("info", m) })
+        sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 4000, log: (m) => log("info", m) })
           .then(() => { skillIndex = skillLoader.loadSkillRegistry(SKILL_PACKS_DIR, CACHE_DIR); })
           .catch(() => {});
         return err(`Skill integrity check failed: ${integrityErr.message}. A background re-sync has been triggered — please retry in a moment.`);

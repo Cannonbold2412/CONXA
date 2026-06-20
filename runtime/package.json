@@ -1,12 +1,13 @@
 {
   "name": "conxa-runtime",
   "version": "1.0.0",
+  "host_version": "host-v1.0.0",
   "description": "Conxa local AI runtime — MCP server for company workflow skills",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build:win": "npx @yao-pkg/pkg server.js --targets node22-win-x64 --output dist/runtime-win.exe --public --fallback-to-source",
-    "build:mac": "npx @yao-pkg/pkg server.js --targets node22-mac-x64 --output dist/runtime-mac --public --fallback-to-source",
+    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node22-win-x64 --output dist/conxa-runtime.exe --public --fallback-to-source",
+    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node22-mac-x64 --output dist/conxa-runtime-mac --public --fallback-to-source",
     "build:all": "npm run build:win && npm run build:mac"
   },
   "pkg": {
@@ -16,14 +17,8 @@
       "node_modules/playwright-core/browsers.json"
     ],
     "scripts": [
-      "server.js",
-      "install_identity.js",
-      "skill_loader.js",
-      "sync.js",
-      "auth_manager.js",
-      "run.js",
-      "browser.js",
-      "tracker.js",
+      "bootstrap.js",
+      "node_modules/bytenode/lib/index.js",
       "node_modules/playwright-core/lib/cli/program.js",
       "node_modules/playwright-core/lib/utilsBundle.js",
       "node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js"
@@ -31,6 +26,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "bytenode": "^1.5.0",
     "playwright": "1.59.0",
     "keytar": "^7.9.0",
     "semver": "^7.6.0"
