@@ -206,7 +206,7 @@ For each: Current Architecture · Strengths · Weaknesses · Risks · Technical 
 
 ### 10. MCP
 
-**Current Architecture.** `server.js` — `@modelcontextprotocol/sdk` stdio server exposing 9 tools (`list_skills`, `execute_skill`, `execute_sequence`, `get_skill_inputs`, `get_execution_status`, `cancel_execution`, `refresh_skills`, `get_runtime_status`, `read_skill_files`) plus dynamic per-skill tools (`skill_{company}_{slug}`). Closed-world: the LLM calls `execute_skill`, the skill replays deterministically.
+**Current Architecture.** `server.js` — `@modelcontextprotocol/sdk` stdio server exposing 8 tools (`list_skills`, `execute_skill`, `execute_sequence`, `get_skill_inputs`, `get_execution_status`, `cancel_execution`, `refresh_skills`, `get_runtime_status`) plus dynamic per-skill tools (`skill_{company}_{slug}`). Closed-world: the LLM calls `execute_skill`, the skill replays deterministically.
 
 **Strengths.** **This is architecturally correct and ahead of playwright-mcp's philosophy** (`high-value-repo-review.md`): closed-world skill verbs, not open-world atomic browser tools — determinism, auditability, and licensing all flow from this. Integrity gate, runtime-compat (semver) gate, in-band errors, execution lock, cancellation, status. Stdio-only (correct for Claude Desktop). Dynamic per-skill tools reduce discovery round-trips.
 

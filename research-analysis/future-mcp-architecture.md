@@ -77,8 +77,6 @@ A **stable, small, closed-world** verb set plus entitlement-filtered per-skill t
 | `refresh_skills` | keep | action | force re-sync + re-list |
 | `skill_{company}_{slug}` | keep (dynamic) | action, per-skill annotation | direct intent routing, no discovery round-trip; entitlement-filtered |
 | **`resolve_handoff`** | **NEW** | action | host's reply to a `pause/handoff` response (§6): `re-authenticated` \| `confirmed` \| `cancelled` \| `corrected{resume_from}` |
-| **`read_skill_files`** | demote / gate | readOnly, **entitlement+audit** | data-only introspection; never auth files |
-
 **Rejected (philosophy violations, never added):** any atomic browser verb (`click`, `type`, `navigate`, `screenshot-and-act`); any tool that returns a live page handle or session to the host; any HTTP/SSE transport tool. Conxa's surface is **stable** precisely because it is closed-world: skills churn behind `list_skills`; the verb set does not.
 
 ## 4. Entitlement filtering — capability filtering becomes licensing (#20, G20)

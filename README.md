@@ -168,7 +168,6 @@ For every step, tiers run in order. LLM fires only at Tier 3+.
 | `cancel_execution` | Cancel the currently running execution. Safe to call at any time. |
 | `refresh_skills` | Force an immediate skill pack sync from Conxa servers. |
 | `get_runtime_status` | Return runtime diagnostics: loaded packs, sync URLs, log paths. |
-| `read_skill_files` | Debug — inspect raw execution.json and recovery.json for a skill. |
 
 ---
 

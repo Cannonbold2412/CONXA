@@ -204,7 +204,7 @@ Quick orientation:
 - **Cloud** (`conxa-cloud/`): coordination only — LLM proxy, skill pack hosting, telemetry ingest, billing. Does not record, compile, or execute.
 - **Runtime** (`runtime/`): Node MCP server on the customer's machine. Syncs packs from Cloud, executes skills step-by-step with 5-tier self-healing recovery, streams telemetry back.
 
-MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `list_skills`, `get_skill_inputs`, `get_execution_status`, `cancel_execution`, `refresh_skills`, `get_runtime_status`, `read_skill_files`.
+MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `list_skills`, `get_skill_inputs`, `get_execution_status`, `cancel_execution`, `refresh_skills`, `get_runtime_status`.
 
 ---
 
