@@ -1,4 +1,4 @@
-"""Endpoints consumed by runtime.exe at startup for skill pack sync."""
+"""Endpoints consumed by conxa-runtime.exe at startup for skill pack sync."""
 
 from __future__ import annotations
 

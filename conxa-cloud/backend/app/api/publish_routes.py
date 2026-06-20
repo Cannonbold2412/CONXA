@@ -1,7 +1,7 @@
 """Publish + installer-hosting endpoints used by Build Studio and end users.
 
 Build Studio compiles locally, then publishes the data-only skill pack here so
-runtime.exe instances can pull deltas (served by skillpack_update_routes), and
+conxa-runtime.exe instances can pull deltas (served by skillpack_update_routes), and
 uploads the built ``{Company}-Plugin-Setup.exe`` for end-user download.
 
 Ownership: the first workspace to publish a slug owns it. Subsequent publishes
@@ -32,6 +32,7 @@ from conxa_core.db import db_get, db_set, db_list_kv, using_database
 from conxa_core.models.plugin import PluginBuild, PluginInstaller, PluginWorkflow
 from conxa_core.storage.plugin_store import create_plugin, list_plugins, save_plugin
 from app.services.entitlements import EntitlementError, ensure_installer_slot_available
+from app.services.rbac import require_admin
 from app.services.saas import add_audit_event, ensure_principal, principal_from_request
 
 router = APIRouter(prefix="/plugins", tags=["publish"])
@@ -213,6 +214,8 @@ def _sync_token(slug: str, workspace_id: str, version: str, owner_user_id: str) 
 
 
 def _api_base(request: Request) -> str:
+    if settings.api_base_url:
+        return settings.api_base_url.rstrip("/")
     forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
     forwarded_host = request.headers.get("x-forwarded-host", "").split(",", 1)[0].strip()
     if forwarded_proto and forwarded_host:
@@ -285,6 +288,7 @@ def _upsert_published_plugin(body: PublishBody, workspace_id: str, owner_user_id
 def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     principal = principal_from_request(request)
     ensure_principal(principal)
+    require_admin(principal)
     slug = _validate_slug(body.slug)
     _assert_owner(slug, principal.workspace_id)
 
@@ -391,6 +395,7 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     """
     principal = principal_from_request(request)
     ensure_principal(principal)
+    require_admin(principal)
     slug = _validate_slug(slug)
     _assert_owner(slug, principal.workspace_id)
     try:
@@ -520,6 +525,7 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     """Authenticated installer release history for the dashboard."""
     principal = principal_from_request(request)
     ensure_principal(principal)
+    require_admin(principal)
     slug = _validate_slug(slug)
     owner = _owner_of(slug)
     if owner and owner != principal.workspace_id:

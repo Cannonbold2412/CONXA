@@ -1,13 +1,16 @@
 """
-Phase 4.5 — dependency manifest endpoint for Build Studio bootstrap.
+Phase 4.5 — dependency manifest endpoints for Build Studio bootstrap and runtime self-updater.
 
-GET /updates/deps-manifest    (public — fetched before Clerk login)
-GET /updates/runtime-manifest (public — fetched by runtime self-updater)
+Public GET endpoints (no auth):
+  GET /updates/deps-manifest          — fetched by Build Studio bootstrap before Clerk login
+  GET /updates/conxa-runtime-manifest  — fetched by runtime self-updater (host layer, ~85 MB, quarterly)
+  GET /updates/conxa-app-manifest   — fetched by runtime self-updater (app layer, ~60 KB zip, every release)
+  GET /updates/studio-manifest        — fetched by web frontend for download link
+  GET /updates/studio/latest.yml      — served to electron-updater
 
-The manifests are driven by environment variables so IT teams or CI can
-update them without redeploying. The Build Studio bootstrap.py reads
-deps-manifest on first launch; runtime/sync.js reads runtime-manifest
-on each cold start (cached 24h locally).
+Admin POST endpoints (Bearer CONXA_ADMIN_TOKEN required — called by CI after each build):
+  POST /updates/conxa-runtime-manifest — update host manifest vars in memory
+  POST /updates/conxa-app-manifest  — update app manifest vars in memory
 """
 
 import os
@@ -15,10 +18,12 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import unquote
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 
 router = APIRouter(tags=["updates"])
+
+_ADMIN_TOKEN = os.environ.get("CONXA_ADMIN_TOKEN", "")
 
 # ── Defaults baked in (CI overrides via env) ──────────────────────────────────
 
@@ -34,17 +39,24 @@ _NSIS_SHA256 = os.environ.get("CONXA_NSIS_SHA256", "")
 # publishes runtime and studio releases.
 _GITHUB_REPO = os.environ.get("CONXA_GITHUB_REPO", "Cannonbold2412/CONXA")
 
-_RUNTIME_VERSION = os.environ.get("CONXA_RUNTIME_VERSION", "runtime-v1.0.0")
-_RUNTIME_WIN_URL = os.environ.get(
-    "CONXA_RUNTIME_WIN_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_RUNTIME_VERSION}/runtime-win.exe",
+# Host layer (large binary, quarterly)
+_HOST_VERSION = os.environ.get("CONXA_HOST_VERSION", "host-v1.0.0")
+_HOST_WIN_URL = os.environ.get(
+    "CONXA_HOST_WIN_URL",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_HOST_VERSION}/conxa-runtime.exe",
 )
-_RUNTIME_WIN_SHA256 = os.environ.get("CONXA_RUNTIME_WIN_SHA256", "")
+_HOST_WIN_SHA256 = os.environ.get("CONXA_HOST_WIN_SHA256", "")
 _RUNTIME_KEYTAR_URL = os.environ.get(
     "CONXA_KEYTAR_WIN_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_RUNTIME_VERSION}/keytar.node",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_HOST_VERSION}/keytar.node",
 )
 _RUNTIME_KEYTAR_SHA256 = os.environ.get("CONXA_KEYTAR_WIN_SHA256", "")
+
+# App layer (small zip, every release)
+_APP_VERSION = os.environ.get("CONXA_APP_VERSION", "app-v1.0.0")
+_APP_MIN_HOST = os.environ.get("CONXA_APP_MIN_HOST", "host-v1.0.0")
+_APP_BUNDLE_URL = os.environ.get("CONXA_APP_BUNDLE_URL", "")
+_APP_BUNDLE_SHA = os.environ.get("CONXA_APP_BUNDLE_SHA256", "")
 
 _PLAYWRIGHT_VERSION = os.environ.get("CONXA_PLAYWRIGHT_VERSION", "1.61.0")
 _CHROMIUM_REVISION = os.environ.get("CONXA_CHROMIUM_REVISION", "1228")
@@ -81,11 +93,17 @@ def deps_manifest() -> dict:
             "sha256": _NSIS_SHA256,
         },
         "runtime": {
-            "version": _RUNTIME_VERSION,
-            "win_url": _RUNTIME_WIN_URL,
-            "win_sha256": _RUNTIME_WIN_SHA256,
+            "version": _HOST_VERSION,
+            "win_url": _HOST_WIN_URL,
+            "win_sha256": _HOST_WIN_SHA256,
             "keytar_url": _RUNTIME_KEYTAR_URL,
             "keytar_sha256": _RUNTIME_KEYTAR_SHA256,
+        },
+        "runtime_app": {
+            "app_version": _APP_VERSION,
+            "min_host": _APP_MIN_HOST,
+            "bundle_url": _APP_BUNDLE_URL,
+            "bundle_sha256": _APP_BUNDLE_SHA,
         },
         # ── v2 generic deps dict ─────────────────────────────────────────────
         "deps": {
@@ -101,12 +119,12 @@ def deps_manifest() -> dict:
                 ],
             },
             "runtime": {
-                "version": _RUNTIME_VERSION,
+                "version": _HOST_VERSION,
                 "files": [
                     {
-                        "filename": "runtime-win.exe",
-                        "url": _RUNTIME_WIN_URL,
-                        "sha256": _RUNTIME_WIN_SHA256,
+                        "filename": "conxa-runtime.exe",
+                        "url": _HOST_WIN_URL,
+                        "sha256": _HOST_WIN_SHA256,
                         "action": "copy",
                     },
                     {
@@ -158,18 +176,65 @@ def studio_manifest() -> dict:
     }
 
 
-@router.get("/updates/runtime-manifest", include_in_schema=False)
-def runtime_manifest() -> dict:
+@router.get("/updates/conxa-runtime-manifest", include_in_schema=False)
+def runtime_host_manifest() -> dict:
     """
-    runtime/sync.js fetches this on each cold start (cached 24h) to check
-    whether runtime-win.exe needs updating.
+    runtime/server.js fetches this on each cold start (cached 1h) to check whether
+    conxa-runtime.exe needs updating.
     """
     return {
-        "version": _RUNTIME_VERSION,
-        "url": _RUNTIME_WIN_URL,
-        "sha256": _RUNTIME_WIN_SHA256,
+        "host_version": _HOST_VERSION,
+        "url": _HOST_WIN_URL,
+        "sha256": _HOST_WIN_SHA256,
         "keytar_url": _RUNTIME_KEYTAR_URL,
         "keytar_sha256": _RUNTIME_KEYTAR_SHA256,
         "playwright_version": _PLAYWRIGHT_VERSION,
         "chromium_revision": _CHROMIUM_REVISION,
     }
+
+
+@router.get("/updates/conxa-app-manifest", include_in_schema=False)
+def runtime_app_manifest() -> dict:
+    """
+    runtime/server.js fetches this on each cold start (cached 1h) to check whether
+    the app layer zip needs updating. A new 60 KB zip ships on every code release.
+    """
+    return {
+        "app_version": _APP_VERSION,
+        "min_host": _APP_MIN_HOST,
+        "bundle_url": _APP_BUNDLE_URL,
+        "bundle_sha256": _APP_BUNDLE_SHA,
+    }
+
+
+def _require_admin(authorization: str = Header(default="")) -> None:
+    if not _ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Admin token not configured")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or token != _ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@router.post("/updates/conxa-runtime-manifest", include_in_schema=False)
+def update_runtime_host_manifest(body: dict, authorization: str = Header(default="")) -> dict:
+    """CI calls this after each host build to update in-memory manifest vars."""
+    _require_admin(authorization)
+    global _HOST_VERSION, _HOST_WIN_URL, _HOST_WIN_SHA256, _RUNTIME_KEYTAR_URL, _RUNTIME_KEYTAR_SHA256
+    if "host_version" in body: _HOST_VERSION       = body["host_version"]
+    if "url"          in body: _HOST_WIN_URL         = body["url"]
+    if "sha256"       in body: _HOST_WIN_SHA256      = body["sha256"]
+    if "keytar_url"   in body: _RUNTIME_KEYTAR_URL   = body["keytar_url"]
+    if "keytar_sha256" in body: _RUNTIME_KEYTAR_SHA256 = body["keytar_sha256"]
+    return {"ok": True}
+
+
+@router.post("/updates/conxa-app-manifest", include_in_schema=False)
+def update_runtime_app_manifest(body: dict, authorization: str = Header(default="")) -> dict:
+    """CI calls this after each app-layer build to update in-memory manifest vars."""
+    _require_admin(authorization)
+    global _APP_VERSION, _APP_MIN_HOST, _APP_BUNDLE_URL, _APP_BUNDLE_SHA
+    if "app_version"   in body: _APP_VERSION    = body["app_version"]
+    if "min_host"      in body: _APP_MIN_HOST   = body["min_host"]
+    if "bundle_url"    in body: _APP_BUNDLE_URL = body["bundle_url"]
+    if "bundle_sha256" in body: _APP_BUNDLE_SHA = body["bundle_sha256"]
+    return {"ok": True}

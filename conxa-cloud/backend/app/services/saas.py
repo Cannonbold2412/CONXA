@@ -8,6 +8,7 @@ database-backed repository.
 
 from __future__ import annotations
 
+import hmac
 import json
 import secrets
 import threading
@@ -159,19 +160,61 @@ def visible_workspace_ids_for(principal: Principal) -> list[str]:
 
 
 def _trusted_proxy_identity(request: Request, subject: str = "") -> tuple[dict[str, str], str]:
-    expected = settings.api_proxy_shared_secret.strip()
-    if not expected:
+    expected_secret = settings.api_proxy_shared_secret.strip()
+    if not expected_secret:
         return {}, "backend_secret_missing"
+
+    # HMAC path (preferred): X-Conxa-Proxy-Ts + X-Conxa-Proxy-Sig — replay-protected.
+    ts_header = request.headers.get("x-conxa-proxy-ts", "").strip()
+    sig_header = request.headers.get("x-conxa-proxy-sig", "").strip()
+
+    if ts_header and sig_header:
+        try:
+            ts = int(ts_header)
+        except (ValueError, TypeError):
+            return {}, "proxy_ts_invalid"
+
+        if abs(time.time() - ts) > settings.api_proxy_signing_window:
+            return {}, "proxy_ts_stale"
+
+        user_id = request.headers.get("x-conxa-user-id", "").strip()
+        if not user_id:
+            return {}, "proxy_user_missing"
+
+        expected_sig = hmac.new(
+            expected_secret.encode(),
+            f"{ts}:{user_id}".encode(),
+            "sha256",
+        ).hexdigest()
+        if not secrets.compare_digest(sig_header, expected_sig):
+            return {}, "proxy_sig_invalid"
+
+        if subject and user_id != subject:
+            return {}, "proxy_subject_mismatch"
+
+        return (
+            {
+                "user_id": user_id,
+                "org_id": request.headers.get("x-conxa-org-id", "").strip(),
+                "org_role": request.headers.get("x-conxa-org-role", "").strip(),
+                "org_name": request.headers.get("x-conxa-org-name", "").strip(),
+            },
+            "trusted",
+        )
+
+    # Legacy static-secret path (deprecated — no replay protection).
     provided = request.headers.get("x-conxa-proxy-secret", "").strip()
     if not provided:
         return {}, "proxy_secret_missing"
-    if not secrets.compare_digest(provided, expected):
+    if not secrets.compare_digest(provided, expected_secret):
         return {}, "proxy_secret_mismatch"
+
     user_id = request.headers.get("x-conxa-user-id", "").strip()
     if not user_id:
         return {}, "proxy_user_missing"
     if subject and user_id != subject:
         return {}, "proxy_subject_mismatch"
+
     return (
         {
             "user_id": user_id,
