@@ -2,13 +2,16 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { fetchPlugins, normalizePluginList, getStudioManifest, type Plugin } from '@/api/pluginApi'
+import { fetchPlugins, normalizePluginList, type Plugin } from '@/api/pluginApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { OpenInStudioButton } from '@/components/OpenInStudioButton'
+import { StudioDownloadDialog } from '@/components/StudioDownloadDialog'
 import { ChevronRight, Download, Globe, PackageCheck } from 'lucide-react'
+import { useState } from 'react'
 
 function formatCount(value: number | null | undefined) {
   if (value == null) return 'Unlimited'
@@ -73,12 +76,8 @@ function InstallerSlotSummary() {
   )
 }
 
-async function downloadStudio() {
-  const manifest = await getStudioManifest()
-  if (manifest.win_url) window.open(manifest.win_url, '_blank', 'noopener')
-}
-
 export function PluginsPage() {
+  const [downloadOpen, setDownloadOpen] = useState(false)
   const q = useQuery({ queryKey: ['plugins'], queryFn: fetchPlugins, staleTime: 10_000 })
   const plugins = normalizePluginList(q.data)
 
@@ -128,13 +127,15 @@ export function PluginsPage() {
                 Build and publish a plugin from the Build Studio. It will appear here once published.
               </p>
               <OpenInStudioButton label="Create a Plugin" primary />
-              <button
-                onClick={downloadStudio}
-                className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-white/10 bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white gap-1.5"
+                onClick={() => setDownloadOpen(true)}
               >
-                <Download className="size-3" />
-                Don&apos;t have Build Studio? Download it
-              </button>
+                <Download className="size-3.5" />
+                Download Build Studio
+              </Button>
             </CardContent>
           </Card>
         ) : (
@@ -199,6 +200,8 @@ export function PluginsPage() {
           </div>
         )}
       </div>
+
+      <StudioDownloadDialog open={downloadOpen} onOpenChange={setDownloadOpen} />
     </div>
   )
 }
