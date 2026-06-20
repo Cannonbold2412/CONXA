@@ -113,7 +113,7 @@ jobs:
           $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLower()
           Write-Output "APP_BUNDLE_ZIP=$zipName"    | Out-File -Append $env:GITHUB_ENV
           Write-Output "APP_BUNDLE_SHA256=$hash"    | Out-File -Append $env:GITHUB_ENV
-          Write-Output "$zipName: $hash"
+          Write-Output "${zipName}: $hash"
         shell: pwsh
 
       - name: Create GitHub Release
