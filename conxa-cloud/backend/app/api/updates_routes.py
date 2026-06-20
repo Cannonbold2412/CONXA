@@ -64,10 +64,13 @@ _CHROMIUM_REVISION = os.environ.get("CONXA_CHROMIUM_REVISION", "1228")
 _STUDIO_VERSION = os.environ.get("CONXA_STUDIO_VERSION", "studio-v1.0.0")
 _STUDIO_WIN_URL = os.environ.get(
     "CONXA_STUDIO_WIN_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/Conxa%20Build%20Studio%20Setup%201.0.0.exe",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/Conxa%20Build%20Studio-Setup-1.0.0.exe",
 )
 _STUDIO_WIN_SHA256 = os.environ.get("CONXA_STUDIO_WIN_SHA256", "")
 _STUDIO_WIN_SHA512 = os.environ.get("CONXA_STUDIO_WIN_SHA512", "")
+# When set, /updates/studio/latest.yml proxies this URL so electron-updater gets the
+# full electron-builder YAML (including blockMapSize) and uses differential download.
+_STUDIO_LATEST_YML_URL = os.environ.get("CONXA_STUDIO_LATEST_YML_URL", "")
 
 
 @router.get("/updates/deps-manifest", include_in_schema=False)
@@ -142,10 +145,37 @@ def deps_manifest() -> dict:
 @router.get("/updates/studio/latest.yml", include_in_schema=False)
 def studio_latest_yml() -> Response:
     """
-    Served to electron-updater's generic provider so the path: field is always
-    derived from CONXA_STUDIO_WIN_URL. Using absolute files[].url means the
-    actual .exe downloads directly from GitHub without proxying through the cloud.
+    Served to electron-updater's generic provider.
+
+    When CONXA_STUDIO_LATEST_YML_URL is set, proxies the real electron-builder
+    generated latest.yml from GitHub Releases, rewriting the relative files[].url
+    to an absolute URL so electron-updater fetches the .exe (and .blockmap) directly
+    from GitHub. The full YAML — including size and blockMapSize — comes through
+    unchanged, which is what engages blockmap-differential download.
+
+    Falls back to a minimal hand-crafted YAML if the env var is not set.
     """
+    import urllib.request as _urllib_request
+
+    if _STUDIO_LATEST_YML_URL:
+        try:
+            with _urllib_request.urlopen(_STUDIO_LATEST_YML_URL, timeout=8) as r:
+                content = r.read().decode()
+            # Rewrite relative files[].url to absolute GitHub URL.
+            # electron-builder emits: "  - url: Conxa Build Studio-Setup-1.0.0.exe"
+            # electron-updater then auto-fetches <absolute_url>.blockmap for differential.
+            base = _STUDIO_LATEST_YML_URL.rsplit("/", 1)[0]
+            content = re.sub(
+                r"(^\s*-\s*url:\s*)(.+\.exe)",
+                lambda m: m.group(1) + base + "/" + m.group(2).strip(),
+                content,
+                flags=re.MULTILINE,
+            )
+            return Response(content, media_type="text/yaml")
+        except Exception:
+            pass  # fall through to hand-crafted YAML on any fetch error
+
+    # Fallback: minimal YAML (no blockMapSize → full download, not differential).
     bare_version = re.sub(r"^studio-v", "", _STUDIO_VERSION).lstrip("v")
     filename = unquote(_STUDIO_WIN_URL.split("/")[-1])
     lines = [

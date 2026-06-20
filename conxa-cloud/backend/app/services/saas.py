@@ -13,6 +13,7 @@ import json
 import secrets
 import threading
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,29 @@ def personal_workspace_id(user_id: str) -> str:
     return f"personal_{user_id}"
 
 
+def _clerk_org_role(user_id: str, org_id: str) -> str | None:
+    """Query Clerk Backend API for the user's role in an org.
+
+    Called only when org_role is absent from the JWT claims (e.g. JWT template
+    doesn't include it). Requires CLERK_SECRET_KEY to be set.
+    """
+    secret = settings.clerk_secret_key.strip()
+    if not secret:
+        return None
+    url = f"https://api.clerk.com/v1/users/{user_id}/organization_memberships?limit=100"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {secret}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        for m in data.get("data", []):
+            if isinstance(m, dict) and m.get("organization", {}).get("id") == org_id:
+                return str(m.get("role") or "")
+    except Exception:
+        pass
+    return None
+
+
 def visible_workspace_ids_for(principal: Principal) -> list[str]:
     ids = [principal.workspace_id]
     personal_id = personal_workspace_id(principal.user_id)
@@ -258,9 +282,14 @@ def principal_from_request(request: Request) -> Principal:
     claims = auth.get("claims") if isinstance(auth.get("claims"), dict) else {}
     subject = str(auth["subject"])
     proxy_identity, proxy_identity_status = _trusted_proxy_identity(request, subject)
-    org_id = str(proxy_identity.get("org_id") or auth.get("org_id") or personal_workspace_id(subject))
+    raw_org_id = proxy_identity.get("org_id") or auth.get("org_id")
+    org_id = str(raw_org_id or personal_workspace_id(subject))
     workspace_slug = _slug_from_org_id(org_id)
-    org_role = _normalize_org_role(proxy_identity.get("org_role") or auth.get("org_role") or claims.get("org_role"))
+    raw_role = proxy_identity.get("org_role") or auth.get("org_role") or claims.get("org_role")
+    if not raw_role and raw_org_id:
+        # org_role absent from JWT (Clerk JWT template doesn't include it) — fall back to API
+        raw_role = _clerk_org_role(subject, str(raw_org_id))
+    org_role = _normalize_org_role(raw_role)
     identity_source = "trusted_proxy" if proxy_identity else "clerk_jwt"
     return Principal(
         user_id=subject,

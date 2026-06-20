@@ -406,6 +406,12 @@ class Backend:
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 published = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+            raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body}") from exc
         except Exception as exc:
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc}") from exc
 
@@ -1161,8 +1167,15 @@ class Backend:
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self._auth_service().get_token()}")
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+            raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body}") from exc
 
     def cmd_get_usage(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         import urllib.request
