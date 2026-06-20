@@ -1,27 +1,29 @@
-name: Build Runtime
+name: Build Runtime Host Layer
 
-# Builds runtime-win.exe and keytar.node, publishes to a private GitHub Release.
-# Also posts a runtime-manifest.json to the cloud API so the self-updater can
-# pick up the new version on the next cold start.
+# Builds the large host binary (~85 MB) that ships quarterly.
+# Contains: Node.js runtime + all bundled npm deps + bootstrap.js entry point.
+# Also builds keytar.node which must match the Node ABI in the pkg binary.
+#
+# Tag format: host-v<semver>  (e.g. host-v1.0.0)
 
 on:
   push:
     tags:
-      - "runtime-v*"
+      - "host-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. runtime-v1.2.0)"
+        description: "Release tag (e.g. host-v1.0.0)"
         required: true
 
 jobs:
-  build-runtime:
+  build-conxa-runtime:
     runs-on: windows-latest
     permissions:
       contents: write  # needed to create GitHub Releases
 
     env:
-      RUNTIME_VERSION: ${{ github.ref_name || inputs.tag }}
+      HOST_VERSION: ${{ github.ref_name || inputs.tag }}
 
     steps:
       - name: Checkout
@@ -44,7 +46,7 @@ jobs:
         working-directory: runtime
         run: npm ci
 
-      - name: Build runtime-win.exe
+      - name: Build conxa-runtime.exe
         working-directory: runtime
         run: npm run build:win
 
@@ -63,49 +65,51 @@ jobs:
       - name: Compute SHA-256 checksums
         working-directory: runtime
         run: |
-          $winHash    = (Get-FileHash dist/runtime-win.exe -Algorithm SHA256).Hash.ToLower()
-          $keytarHash = (Get-FileHash keytar.node          -Algorithm SHA256).Hash.ToLower()
-          Write-Output "RUNTIME_WIN_SHA256=$winHash"   | Out-File -Append $env:GITHUB_ENV
-          Write-Output "KEYTAR_SHA256=$keytarHash"      | Out-File -Append $env:GITHUB_ENV
-          Write-Output "runtime-win.exe: $winHash"
-          Write-Output "keytar.node:     $keytarHash"
+          $winHash    = (Get-FileHash dist/conxa-runtime.exe -Algorithm SHA256).Hash.ToLower()
+          $keytarHash = (Get-FileHash keytar.node               -Algorithm SHA256).Hash.ToLower()
+          Write-Output "HOST_WIN_SHA256=$winHash"   | Out-File -Append $env:GITHUB_ENV
+          Write-Output "KEYTAR_SHA256=$keytarHash"  | Out-File -Append $env:GITHUB_ENV
+          Write-Output "conxa-runtime.exe: $winHash"
+          Write-Output "keytar.node:          $keytarHash"
         shell: pwsh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RUNTIME_VERSION }}
-          name: Runtime ${{ env.RUNTIME_VERSION }}
+          tag_name: ${{ env.HOST_VERSION }}
+          name: Runtime Host ${{ env.HOST_VERSION }}
           body: |
-            ## Runtime ${{ env.RUNTIME_VERSION }}
+            ## Runtime Host ${{ env.HOST_VERSION }}
+
+            Large host binary (~85 MB). Ships quarterly or when Node/npm deps change.
 
             ### SHA-256 checksums
             ```
-            runtime-win.exe  ${{ env.RUNTIME_WIN_SHA256 }}
-            keytar.node      ${{ env.KEYTAR_SHA256 }}
+            conxa-runtime.exe  ${{ env.HOST_WIN_SHA256 }}
+            keytar.node           ${{ env.KEYTAR_SHA256 }}
             ```
           files: |
-            runtime/dist/runtime-win.exe
+            runtime/dist/conxa-runtime.exe
             runtime/keytar.node
           prerelease: false
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish runtime-manifest to cloud API
+      - name: Publish host-manifest to cloud API
         if: vars.CLOUD_API_URL != ''
         run: |
           $body = @{
-            version               = "$env:RUNTIME_VERSION"
-            url                   = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RUNTIME_VERSION/runtime-win.exe"
-            sha256                = "$env:RUNTIME_WIN_SHA256"
-            playwright_version    = "1.61.0"
-            chromium_revision     = "1228"
+            host_version  = "$env:HOST_VERSION"
+            url           = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:HOST_VERSION/conxa-runtime.exe"
+            sha256        = "$env:HOST_WIN_SHA256"
+            keytar_url    = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:HOST_VERSION/keytar.node"
+            keytar_sha256 = "$env:KEYTAR_SHA256"
           } | ConvertTo-Json
-          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/updates/runtime-manifest-admin" `
+          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/updates/conxa-runtime-manifest" `
             -Method POST -Body $body -ContentType "application/json" `
             -Headers @{ Authorization = "Bearer $env:CLOUD_ADMIN_TOKEN" }
         shell: pwsh
         env:
-          CLOUD_API_URL: ${{ vars.CLOUD_API_URL }}
+          CLOUD_API_URL:    ${{ vars.CLOUD_API_URL }}
           CLOUD_ADMIN_TOKEN: ${{ secrets.CLOUD_ADMIN_TOKEN }}

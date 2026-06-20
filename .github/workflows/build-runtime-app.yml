@@ -1,0 +1,157 @@
+name: Build Runtime App Layer
+
+# Builds the lightweight app layer zip (~60 KB) that ships on every code release.
+# Obfuscates JS → compiles to V8 bytecode → zips → uploads to GitHub Release →
+# posts the new manifest to the cloud API so the runtime self-updater picks it up.
+#
+# Tag format: app-v<semver>  (e.g. app-v1.2.0)
+
+on:
+  push:
+    tags:
+      - "app-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. app-v1.2.0)"
+        required: true
+
+jobs:
+  build-conxa-app:
+    runs-on: windows-latest
+    permissions:
+      contents: write  # needed to create GitHub Releases
+
+    env:
+      APP_VERSION: ${{ github.ref_name || inputs.tag }}
+      MIN_HOST:    "host-v1.0.0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: runtime/package-lock.json
+
+      - name: Install runtime dependencies
+        working-directory: runtime
+        run: npm ci
+
+      - name: Install obfuscation and bytecode tools
+        run: npm install -g javascript-obfuscator bytenode
+
+      - name: Obfuscate app JS files
+        working-directory: runtime
+        run: |
+          New-Item -ItemType Directory -Force -Path obfuscated
+          $files = @(
+            "server.js", "sync.js", "run.js", "browser.js",
+            "skill_loader.js", "auth_manager.js", "tracker.js", "install_identity.js"
+          )
+          foreach ($f in $files) {
+            javascript-obfuscator $f `
+              --output obfuscated/$f `
+              --compact true `
+              --self-defending true `
+              --identifier-names-generator mangled `
+              --string-array true `
+              --string-array-encoding rc4 `
+              --string-array-rotate true `
+              --string-array-shuffle true `
+              --string-array-threshold 0.75 `
+              --dead-code-injection false `
+              --debug-protection false
+            Write-Output "Obfuscated: $f"
+          }
+        shell: pwsh
+
+      - name: Compile obfuscated JS to V8 bytecode
+        working-directory: runtime
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-app
+          $files = @(
+            "server", "sync", "run", "browser",
+            "skill_loader", "auth_manager", "tracker", "install_identity"
+          )
+          foreach ($base in $files) {
+            node -e @"
+          const bytenode = require('bytenode');
+          bytenode.compileFile({ filename: 'obfuscated/$base.js', output: 'dist-app/$base.jsc', electron: false });
+          "@
+            Write-Output "Compiled: $base.jsc"
+          }
+        shell: pwsh
+
+      - name: Generate version.json and compute per-file SHA-256
+        working-directory: runtime
+        run: |
+          $hashes = @{}
+          Get-ChildItem dist-app/*.jsc | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            $hashes[$_.Name] = $hash
+            Write-Output "$($_.Name): $hash"
+          }
+          $meta = @{
+            app_version  = $env:APP_VERSION
+            min_host     = $env:MIN_HOST
+            built_at     = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+            files        = $hashes
+          } | ConvertTo-Json -Depth 5
+          $meta | Out-File -Encoding UTF8 dist-app/version.json
+          Write-Output "version.json written"
+        shell: pwsh
+
+      - name: Zip app layer
+        working-directory: runtime
+        run: |
+          $zipName = "conxa-app-$env:APP_VERSION.zip"
+          Compress-Archive -Path dist-app/* -DestinationPath $zipName -Force
+          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLower()
+          Write-Output "APP_BUNDLE_ZIP=$zipName"    | Out-File -Append $env:GITHUB_ENV
+          Write-Output "APP_BUNDLE_SHA256=$hash"    | Out-File -Append $env:GITHUB_ENV
+          Write-Output "$zipName: $hash"
+        shell: pwsh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.APP_VERSION }}
+          name: App Layer ${{ env.APP_VERSION }}
+          body: |
+            ## App Layer ${{ env.APP_VERSION }}
+
+            Lightweight bytecode-compiled app update (~60 KB).
+            Minimum host: ${{ env.MIN_HOST }}
+
+            ### SHA-256
+            ```
+            ${{ env.APP_BUNDLE_ZIP }}  ${{ env.APP_BUNDLE_SHA256 }}
+            ```
+          files: runtime/${{ env.APP_BUNDLE_ZIP }}
+          prerelease: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish app-manifest to cloud API
+        if: vars.CLOUD_API_URL != ''
+        run: |
+          $bundleUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:APP_VERSION/$env:APP_BUNDLE_ZIP"
+          $body = @{
+            app_version   = "$env:APP_VERSION"
+            min_host      = "$env:MIN_HOST"
+            bundle_url    = $bundleUrl
+            bundle_sha256 = "$env:APP_BUNDLE_SHA256"
+          } | ConvertTo-Json
+          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/updates/conxa-app-manifest" `
+            -Method POST -Body $body -ContentType "application/json" `
+            -Headers @{ Authorization = "Bearer $env:CLOUD_ADMIN_TOKEN" }
+          Write-Output "Manifest posted: $bundleUrl"
+        shell: pwsh
+        env:
+          CLOUD_API_URL:    ${{ vars.CLOUD_API_URL }}
+          CLOUD_ADMIN_TOKEN: ${{ secrets.CLOUD_ADMIN_TOKEN }}
