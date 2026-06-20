@@ -2,13 +2,13 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { fetchPlugins, normalizePluginList, type Plugin } from '@/api/pluginApi'
+import { fetchPlugins, normalizePluginList, getStudioManifest, type Plugin } from '@/api/pluginApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { OpenInStudioButton } from '@/components/OpenInStudioButton'
-import { ChevronRight, Globe, PackageCheck } from 'lucide-react'
+import { ChevronRight, Download, Globe, PackageCheck } from 'lucide-react'
 
 function formatCount(value: number | null | undefined) {
   if (value == null) return 'Unlimited'
@@ -73,6 +73,11 @@ function InstallerSlotSummary() {
   )
 }
 
+async function downloadStudio() {
+  const manifest = await getStudioManifest()
+  if (manifest.win_url) window.open(manifest.win_url, '_blank', 'noopener')
+}
+
 export function PluginsPage() {
   const q = useQuery({ queryKey: ['plugins'], queryFn: fetchPlugins, staleTime: 10_000 })
   const plugins = normalizePluginList(q.data)
@@ -123,6 +128,13 @@ export function PluginsPage() {
                 Build and publish a plugin from the Build Studio. It will appear here once published.
               </p>
               <OpenInStudioButton label="Create a Plugin" primary />
+              <button
+                onClick={downloadStudio}
+                className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              >
+                <Download className="size-3" />
+                Don&apos;t have Build Studio? Download it
+              </button>
             </CardContent>
           </Card>
         ) : (

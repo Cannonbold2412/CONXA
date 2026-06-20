@@ -29,27 +29,37 @@ export function OpenInStudioButton({ pluginId, size = 'sm', label = 'Open in Stu
   function launch(e: React.MouseEvent) {
     e.stopPropagation()
 
-    // Detect whether the deep link successfully opened the app by watching
-    // whether the tab loses focus (blur / visibilitychange). If it doesn't
-    // within 1500 ms, assume Build Studio is not installed and show the
-    // download popover.
+    // Detect whether the deep link successfully opened the app.
+    //
+    // On Windows, clicking a custom protocol link can trigger a system dialog
+    // ("Open this link in Build Studio?"). That dialog causes window.blur even
+    // when Studio is NOT installed — so we can't treat any blur as "success."
+    //
+    // Instead: blur sets didHide=true, but focus returning resets it to false
+    // (the user dismissed the dialog without Studio opening). Only if blur
+    // fires AND focus never returns within 1500 ms do we assume Studio opened.
     let didHide = false
 
     function onHide() {
       didHide = true
     }
+    function onReturn() {
+      // Focus came back — the OS dialog was dismissed without opening Studio
+      didHide = false
+    }
 
     document.addEventListener('visibilitychange', onHide)
     window.addEventListener('blur', onHide)
+    window.addEventListener('focus', onReturn)
 
     window.location.href = deepLink
 
     timerRef.current = setTimeout(() => {
       document.removeEventListener('visibilitychange', onHide)
       window.removeEventListener('blur', onHide)
+      window.removeEventListener('focus', onReturn)
       timerRef.current = null
       if (!didHide) {
-        // Tab is still focused — app probably isn't installed
         setOpen(true)
       }
     }, 1500)
