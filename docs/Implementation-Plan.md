@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status:** Current as of 2026-06-02 (1.1, 1.2, sync-token model, 2.1, 2.3 done)
+**Status:** Current as of 2026-06-20 (1.1, 1.2, sync-token model, 2.1, 2.3, runtime-split-arch done)
 **Audience:** Engineering team
 
 This plan is grounded in the actual codebase. Each item references the specific file or system that needs to change. Items are ordered by risk and dependency, not effort.
@@ -201,6 +201,27 @@ This plan is grounded in the actual codebase. Each item references the specific 
 **Fields per entry:** `id`, `workspace_id`, `user_id`, `action`, `resource_type`, `resource_id`, `metadata`, `created_at` (epoch seconds), `ip`.
 
 **Files:** `audit_routes.py` (new), `publish_routes.py`, `plugin_routes.py`, `v1_alias_routes.py`, `main.py`
+
+---
+
+### ✅ Runtime Split Architecture — DONE 2026-06-20
+
+**What was built:** Eliminated the 89 MB self-update download on every code release by splitting the monolithic `runtime-win.exe` into two independently-updateable layers.
+
+**Changes:**
+- **Host layer** (`conxa-runtime.exe`, ~85 MB): Node.js + all npm deps + `bootstrap.js`. Updated only when Node.js, Playwright, or native deps change (quarterly).
+- **App layer** (`conxa-app/`, ~60 KB zip): all application JS compiled to V8 bytecode (`.jsc`) via `javascript-obfuscator` → `bytenode`. Hot-synced on every cold start with no restart required.
+- `bootstrap.js` (new) is the pkg entry point. Loads `conxa-app/server.jsc` from disk; falls back to bundled copy if absent or `min_host` incompatible.
+- `(global.__hostRequire || require)` bridge lets disk-loaded `.jsc` files resolve npm deps bundled in the host VFS.
+- **Sync optimisation:** `sync.js` rewritten — parallel company sync (`Promise.allSettled`), parallel file downloads (`Promise.all`), 5-min recency skip (client-side, prevents 429s), reduced timeouts (delta: 3s, files: 8s). Outer timeout: 15s → 4s.
+- **`syncState` execution gate:** `execute_skill` awaits both skill-pack sync and app-layer update before running. Never hangs (all failures caught, gate opens with cached data).
+- **Cloud API:** new endpoints `GET/POST /api/v1/updates/conxa-runtime-manifest` and `GET/POST /api/v1/updates/conxa-app-manifest`. POST endpoints require `CONXA_ADMIN_TOKEN` (CI-only). Old `runtime-manifest` endpoint replaced.
+- **CI workflows** split into `build-runtime-host.yml` (`host-v*` tags) and `build-runtime-app.yml` (`app-v*` tags).
+- **Installer** now stages `conxa-runtime.exe` + `runtime-app/` (pre-extracted) so first run needs no network.
+
+**Result:** Code-only release download: 89 MB → ~60 KB. Update time: ~70s → <1s on any connection.
+
+**Files:** `runtime/bootstrap.js` (new), `runtime/server.js`, `runtime/sync.js`, `runtime/browser.js`, `runtime/package.json`, `conxa-cloud/backend/app/api/updates_routes.py`, `conxa-builder/python/conxa_compile/installer_builder.py`, `conxa-builder/python/services/bootstrap.py`, `packages/conxa-core/conxa_core/storage/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-app.yml` (new), `.github/workflows/build-runtime-host.yml` (new), `.env.example`
 
 ---
 

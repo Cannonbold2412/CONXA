@@ -23,9 +23,9 @@ This document is the detailed reference for known security gaps across all three
 
 | ID | Title | Tier | Severity | File(s) |
 |---|---|---|---|---|
-| [SG-01](#sg-01-rbac-not-enforced-on-routes) | RBAC not enforced on routes | Cloud API | High | `app/services/rbac.py`, `app/api/` |
-| [SG-02](#sg-02-proxy-identity-bypass) | Proxy identity bypass via shared header secret | Cloud API | High | `app/services/saas.py` |
-| [SG-03](#sg-03-x-forwarded-host-not-sanitised) | X-Forwarded-Host not sanitised in `_api_base()` | Cloud API | Medium | `app/api/publish_routes.py` |
+| [SG-01](#sg-01-rbac-not-enforced-on-routes) | RBAC not enforced on routes | Cloud API | High ✅ Fixed | `app/services/rbac.py`, `app/api/` |
+| [SG-02](#sg-02-proxy-identity-bypass) | Proxy identity bypass via shared header secret | Cloud API | High ✅ Fixed | `app/services/saas.py` |
+| [SG-03](#sg-03-x-forwarded-host-not-sanitised) | X-Forwarded-Host not sanitised in `_api_base()` | Cloud API | Medium ✅ Fixed | `app/api/publish_routes.py` |
 | [SG-04](#sg-04-in-memory-rate-limit-on-delta-endpoint) | In-memory rate limit cleared on restart | Cloud API | Medium | `app/api/skillpack_update_routes.py` |
 | [SG-05](#sg-05-tracking-hmac-secret-is-optional) | Tracking HMAC secret optional — fallback accepts any token | Cloud API | Medium | `app/api/tracking_routes.py` |
 | [SG-06](#sg-06-telemetry-payload-unbounded) | Telemetry payload unbounded — no event count or field size cap | Cloud API | Medium | `app/api/tracking_routes.py` |
@@ -36,7 +36,6 @@ This document is the detailed reference for known security gaps across all three
 | [SG-11](#sg-11-plaintext-session-fallback-is-silent) | Plaintext session fallback is silent on keytar failure | Runtime | Medium | `runtime/auth_manager.js` |
 | [SG-12](#sg-12-company-name-used-in-file-paths-without-re-validation) | Company name used in file paths without re-validation | Runtime | Low | `runtime/auth_manager.js`, `runtime/sync.js` |
 | [SG-13](#sg-13-no-per-user-identity-at-runtime) | No per-user identity at runtime — `uid` is spoofable | Runtime | Low | `runtime/server.js`, `runtime/tracker.js` |
-| [SG-14](#sg-14-read_skill_files-mcp-tool-exposes-skill-logic-to-llm-context) | `read_skill_files` MCP tool exposes skill logic to LLM context | Runtime | Low | `runtime/server.js` |
 
 ---
 
@@ -58,6 +57,16 @@ Clerk's org membership system is the outer gate. A member first needs to be invi
 ### Recommended Fix
 
 Wire `require_admin()` (or a new `require_role(principal, min_role)`) into publish, installer-upload, and installer-delete endpoints. Add role checks to LLM proxy if per-role quota tiers are needed. The scaffold is in place — it just needs to be called.
+
+### Fix Applied
+
+`require_admin` is now imported in `app/api/publish_routes.py` and called immediately after `ensure_principal(principal)` in three endpoints:
+
+- `post_publish()` — POST `/api/v1/plugins/publish`
+- `post_installer_upload()` — POST `/api/v1/plugins/{slug}/installer/upload`
+- `get_installer_versions()` — GET `/api/v1/plugins/{slug}/installer/versions`
+
+Any caller whose `principal.role` is not `"admin"` or `"owner"` receives `HTTP 403 admin role required`. Local dev is unaffected (the anonymous local `Principal` defaults to `role="owner"`).
 
 ---
 
@@ -82,6 +91,24 @@ The secret is never sent to end users or embedded in installers. Risk is limited
 - Require a valid Clerk JWT **plus** the proxy header (the proxy path should never need to bypass JWT verification — it just needs to augment claims).
 - Implement a secret rotation procedure and document it in `ROUTER_SETUP.md`.
 
+### Fix Applied
+
+`_trusted_proxy_identity()` in `app/services/saas.py` now supports two validation paths, tried in order:
+
+**New HMAC path (preferred):** If both `X-Conxa-Proxy-Ts` and `X-Conxa-Proxy-Sig` headers are present:
+1. Parses `X-Conxa-Proxy-Ts` as a unix timestamp (integer seconds). Rejects with `proxy_ts_invalid` if non-numeric.
+2. Rejects with `proxy_ts_stale` if `|now − ts| > SKILL_API_PROXY_SIGNING_WINDOW` (default 60 s).
+3. Computes `HMAC-SHA256(key=shared_secret, msg="{ts}:{user_id}")` and compares with `X-Conxa-Proxy-Sig` via `secrets.compare_digest`. Rejects with `proxy_sig_invalid` on mismatch.
+
+The Vercel route handler must send:
+- `X-Conxa-Proxy-Ts: <unix_ts>` — `Math.floor(Date.now() / 1000)`
+- `X-Conxa-Proxy-Sig: <hex>` — `HMAC-SHA256(SKILL_API_PROXY_SHARED_SECRET, "{ts}:{userId}")`
+- `X-Conxa-User-Id`, `X-Conxa-Org-Id`, `X-Conxa-Org-Role`, `X-Conxa-Org-Name` as before
+
+**Legacy static-secret path (deprecated):** If the new headers are absent, falls back to the original `X-Conxa-Proxy-Secret` comparison. This path has no replay protection and should be migrated away from once the Vercel handler is updated.
+
+New config field: `SKILL_API_PROXY_SIGNING_WINDOW` (int, default `60`).
+
 ---
 
 ## SG-03 — X-Forwarded-Host Not Sanitised in `_api_base()`
@@ -102,6 +129,14 @@ Render's infrastructure typically forwards only its own `X-Forwarded-*` headers.
 ### Recommended Fix
 
 Harden `_api_base()` to only trust headers from known reverse proxies (validate against an allowlist in config), or always use a configured `SKILL_API_BASE_URL` env var and ignore forwarded host headers entirely. This is the simpler and more robust fix.
+
+### Fix Applied
+
+`_api_base()` in `app/api/publish_routes.py` now checks `settings.api_base_url` first. If `SKILL_API_BASE_URL` is set, it is returned directly and forwarded host headers are ignored entirely. Fallback to `X-Forwarded-Proto`/`X-Forwarded-Host` only occurs when the env var is empty (local dev / staging without explicit config).
+
+`_validate_production_config()` in `app/main.py` now requires `SKILL_API_BASE_URL` to be set when `SKILL_AUTH_REQUIRED=true` — the backend refuses to start in production without it.
+
+New config field: `SKILL_API_BASE_URL` (string, default `""`). Set to the canonical API origin (e.g. `https://api.conxa.in`) on Render before deploying.
 
 ---
 
@@ -322,32 +357,6 @@ This means telemetry run counts are advisory and can be spoofed, and there is no
 ### Recommended Fix
 
 This is acceptable for the current product stage where Conxa is a per-company distribution model. Document that `uid` is an installation identifier, not a user identifier, and do not surface it as a "user" metric in the dashboard.
-
----
-
-## SG-14 — `read_skill_files` MCP Tool Exposes Skill Logic to LLM Context
-
-**Severity:** Low  
-**Component:** Runtime — `runtime/server.js:_toolDefinitions()` (read_skill_files tool)
-
-### Description
-
-The MCP tool `read_skill_files` allows Claude Desktop (and by extension, the active Claude conversation) to read the raw `execution.json` and `recovery.json` files for any installed skill. These files contain:
-
-- Compiled CSS/XPath selectors for every interactive element in the automated workflow
-- Semantic descriptions of each workflow step
-- Recovery strategies and anchor phrases
-- Target URLs and application-specific context
-
-While this data is not secret (it's already installed on the end-user machine), surfacing it in the LLM context means a user asking Claude to "explain how this skill works" will receive a detailed technical breakdown of the compiled automation — including selectors that could be used to interact with the target application outside of the skill's intended scope.
-
-### Current Mitigation
-
-The tool is labelled `Debug` in its description. Actual exploitation requires the end user to explicitly invoke it (or Claude to decide to call it unprompted, which the MCP protocol allows).
-
-### Recommended Fix
-
-Consider restricting `read_skill_files` to a debug-mode flag (`CONXA_DEBUG=1`) so it is not available in standard production installs. Alternatively, strip or summarise the raw selector data before returning it to the LLM (return intent descriptions only, not raw CSS/XPath).
 
 ---
 

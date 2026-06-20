@@ -151,7 +151,7 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 │   └── sessions/              (staged auth for runtime test)
 ├── deps/
 │   ├── nsis/makensis.exe
-│   └── runtime/{ver}/runtime-win.exe
+│   └── runtime/{ver}/conxa-runtime.exe + keytar.node + runtime-app/
 └── kv/                        (filesystem fallback for DB)
 ```
 
@@ -161,8 +161,9 @@ On first launch, `services/bootstrap.py` runs `ensure_all()`:
 
 1. Fetches `GET /api/v1/updates/deps-manifest` (public, no auth).
 2. Downloads and SHA-256 verifies NSIS zip → extracts to `deps/nsis/`.
-3. Downloads and verifies `runtime-win.exe` → places in `deps/runtime/{ver}/`.
-4. Runs `playwright install chromium` to install the bundled browser.
+3. Downloads and verifies `conxa-runtime.exe` + `keytar.node` → places in `deps/runtime/{ver}/`.
+4. Downloads and extracts the app-layer zip (`runtime_app.bundle_url`) → `deps/runtime/{ver}/runtime-app/`.
+5. Runs `playwright install chromium` to install the bundled browser.
 
 This is idempotent — already-present deps are skipped.
 
@@ -209,7 +210,10 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/tracking/{co}/runs` | Run summaries | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline | Clerk JWT |
 | `GET /api/v1/updates/deps-manifest` | Bootstrap manifest | Public |
-| `GET /api/v1/updates/runtime-manifest` | Runtime self-update manifest | Public |
+| `GET /api/v1/updates/conxa-runtime-manifest` | Host binary self-update manifest (quarterly, ~85 MB) | Public |
+| `GET /api/v1/updates/conxa-app-manifest` | App layer update manifest (every release, ~60 KB zip) | Public |
+| `POST /api/v1/updates/conxa-runtime-manifest` | CI: update in-memory host manifest vars | Bearer: `CONXA_ADMIN_TOKEN` |
+| `POST /api/v1/updates/conxa-app-manifest` | CI: update in-memory app manifest vars | Bearer: `CONXA_ADMIN_TOKEN` |
 | `GET /api/v1/updates/studio-manifest` | Studio download info | Public |
 | `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — authenticated by installer-embedded sync_token | Bearer: `pack.json.sync_token`; 401 if invalid |
 | `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
@@ -264,20 +268,27 @@ Razorpay is the wired payment gateway (`app/api/razorpay_routes.py`). Production
 
 ### 4.1 Process Model
 
+The runtime uses a **split architecture** — a large infrequent host binary and a small frequently-updated app layer:
+
 ```
 Claude Desktop (host)
         │  MCP stdio transport
         ▼
-runtime-win.exe (runtime/server.js bundled by @yao-pkg/pkg)
+conxa-runtime.exe  ← host layer (Node.js + all npm deps + bootstrap.js, ~85 MB, updated quarterly)
+        │  loads from disk
+        ▼
+~/.conxa/conxa-app/server.jsc  ← app layer (V8 bytecode, ~60 KB zip, updated every release)
         │
-        ├── @modelcontextprotocol/sdk  (MCP protocol)
-        ├── run.js                     (step executor)
-        ├── skill_loader.js            (skill registry)
-        ├── sync.js                    (skill pack sync)
-        ├── auth_manager.js            (token + session management)
-        ├── browser.js                 (Playwright browser lifecycle)
-        └── tracker.js                 (telemetry event emission)
+        ├── @modelcontextprotocol/sdk  (bundled in host, accessed via global.__hostRequire bridge)
+        ├── run.jsc                    (step executor)
+        ├── skill_loader.jsc           (skill registry)
+        ├── sync.jsc                   (skill pack sync)
+        ├── auth_manager.jsc           (token + session management)
+        ├── browser.jsc                (Playwright browser lifecycle)
+        └── tracker.jsc                (telemetry event emission)
 ```
+
+`bootstrap.js` (bundled in host): checks `conxa-app/version.json` for `min_host` compatibility, then loads `conxa-app/server.jsc` from disk. Falls back to the bundled copy if the app layer is absent or incompatible. App-layer files are V8 bytecode (`.jsc`) compiled from obfuscated JS — not human-readable on disk.
 
 ### 4.2 MCP Tools
 
@@ -293,43 +304,61 @@ Defined in `server.js` `_toolDefinitions()`:
 | `cancel_execution` | Stop the running execution |
 | `refresh_skills` | Force immediate skill pack sync |
 | `get_runtime_status` | Runtime diagnostics (non-mutating) |
-| `read_skill_files` | Debug: inspect raw execution.json / recovery.json |
 
 ### 4.3 Startup Sequence
 
 ```mermaid
 sequenceDiagram
     participant CD as Claude Desktop
-    participant RT as Runtime (server.js)
+    participant RT as bootstrap.js (host)
+    participant App as conxa-app/server.jsc
     participant Cloud as Conxa Cloud
 
-    CD->>RT: spawn process (MCP stdio)
-    RT->>RT: resolve CONXA_DIR, CONXA_DATA_DIR
-    RT->>RT: set PLAYWRIGHT_BROWSERS_PATH
-    RT->>RT: load skill index from cache (SKILL_PACKS_DIR)
-    RT->>Cloud: GET /updates/runtime-manifest (cached 24h)
-    Cloud-->>RT: {version, url, sha256}
-    RT->>RT: if newer version → download runtime-win.exe.next
-    RT->>CD: MCP connect (StdioServerTransport)
-    RT->>RT: syncSkillPacks() — 15s timeout
-    RT->>Cloud: GET /skill-packs/{co}/delta?since={ver}
-    Cloud-->>RT: {files: [...base64 content...]}
-    RT->>RT: atomic write + SHA-256 verify each file
-    RT->>RT: reload skill index
-    RT->>Cloud: POST /api/v1/telemetry/runtime-start (fire-and-forget, after sync)
-    RT-->>CD: ready (skill index loaded)
+    CD->>RT: spawn conxa-runtime.exe (MCP stdio)
+    RT->>RT: check conxa-app/version.json min_host compatibility
+    RT->>App: require conxa-app/server.jsc (or bundled fallback)
+    App->>App: resolve CONXA_DIR, CONXA_DATA_DIR
+    App->>App: load skill index from cache (SKILL_PACKS_DIR)
+    App->>CD: MCP connect (StdioServerTransport)
+    par Startup sync (parallel)
+        App->>Cloud: GET /api/v1/updates/conxa-app-manifest (cached 1h)
+        Cloud-->>App: {app_version, bundle_url, bundle_sha256}
+        App->>App: if newer → download zip, verify SHA-256, extract to conxa-app/
+        and
+        App->>Cloud: GET /skill-packs/{co}/delta?since={ver} (skipped if synced <5min ago)
+        Cloud-->>App: {files: [...]}
+        App->>App: parallel file downloads → atomic writes
+    end
+    App->>App: syncState.complete = true; reload skill index
+    App->>CD: sendToolListChanged()
+    App->>Cloud: POST /api/v1/telemetry/runtime-start (fire-and-forget)
+    App->>Cloud: GET /api/v1/updates/conxa-runtime-manifest (background, cached 1h)
+    Note over App: if host update available → download conxa-runtime.exe.next in background
 ```
+
+**Execution gate:** `execute_skill` awaits `startupSync` before running. Both skill-pack sync and app-layer update must complete (or fail gracefully) before any workflow executes. On a normal connection this resolves in under 1 second. Sync failures fall through to cached data — the user is never permanently blocked.
 
 ### 4.4 Skill Pack Directory Layout (Runtime)
 
 ```
 ~/.conxa/                       (CONXA_DIR)
-├── runtime/
-│   └── runtime-win.exe         (the MCP server itself)
+├── conxa-runtime.exe           (host layer — Node.js + npm deps + bootstrap, ~85 MB)
+├── conxa-runtime.exe.next      (staged host download, applied via update.bat on next cold start)
+├── keytar.node                 (native Windows credential addon, Node-ABI-specific)
+├── conxa-app/                  (app layer — hot-synced, no restart needed)
+│   ├── version.json            ({app_version, min_host, updated_at, file_hashes})
+│   ├── server.jsc              (MCP server + tool handlers — V8 bytecode)
+│   ├── sync.jsc
+│   ├── run.jsc
+│   ├── browser.jsc
+│   ├── auth_manager.jsc
+│   ├── tracker.jsc
+│   ├── skill_loader.jsc
+│   └── install_identity.jsc
 ├── chromium/                   (Playwright browser)
 ├── skill-packs/
 │   └── {company}/
-│       ├── pack.json           (manifest: sync_endpoint, tracking, version)
+│       ├── pack.json           (manifest: sync_endpoint, tracking, version, last_synced)
 │       └── {skill_slug}/
 │           ├── execution.json  (SkillPackage steps + selectors)
 │           ├── recovery.json   (recovery blocks + anchors)
@@ -338,14 +367,15 @@ sequenceDiagram
     ├── runtime.log             (JSONL, rotated at 10MB)
     └── recovery.log            (recovery event log, rotated at 10MB)
 
-~/.conxa/ or %APPDATA%/Conxa/  (CONXA_DATA_DIR)
+%APPDATA%/Conxa/               (CONXA_DATA_DIR)
 ├── cache/
 │   ├── sessions/
-│   │   ├── {co}_state.json         (AES-256-GCM encrypted storageState)
-│   │   ├── {co}_raw_state.json     (plaintext fallback)
+│   │   ├── {co}_state.json             (AES-256-GCM encrypted storageState)
+│   │   ├── {co}_raw_state.json         (plaintext fallback)
 │   │   └── {co}_auth_meta.json
-│   ├── runtime-update-cache.json
-│   └── runtime-update-pending.json
+│   ├── conxa-runtime-update-cache.json (host manifest cache, 1h TTL)
+│   ├── conxa-runtime-update-pending.json
+│   └── conxa-app-update-cache.json     (app manifest cache, 1h TTL)
 └── data/
     ├── executions/{id}/
     │   ├── state.json
@@ -537,7 +567,13 @@ Telemetry is compact: short event codes (`wf_start`, `wf_ok`, `wf_fail`, `step_o
 
 ### 5.8 Runtime Self-Update Flow
 
-Three files are updated atomically on every runtime release: `runtime-win.exe` (the Node pkg bundle), `keytar.node` (native module — Node-ABI-specific), and Chromium (Playwright-revision-specific). All three must stay in sync or the runtime crashes.
+The runtime uses a **two-layer update strategy**:
+
+**App layer** (every code release — `_checkAppUpdate()`)  
+Downloads a ~60 KB zip of `.jsc` files from `GET /api/v1/updates/conxa-app-manifest` (1h cache). If `app_version` differs from `conxa-app/version.json`, the zip is downloaded, SHA-256 verified, extracted, and replaces `conxa-app/`. Effective on next cold start (or immediately if the process reloads). No host restart required.
+
+**Host layer** (quarterly — `_checkHostUpdate()`)  
+Downloads `conxa-runtime.exe` (~85 MB) in the background via `GET /api/v1/updates/conxa-runtime-manifest` (1h cache). Applied via `update.bat` on the next cold start.
 
 ```mermaid
 sequenceDiagram
@@ -545,35 +581,45 @@ sequenceDiagram
     participant Cloud as Conxa Cloud
     participant FS as Filesystem
 
-    RT->>FS: check runtime-update-pending.json
-    alt pending update exists and runtime.exe.next present
+    RT->>FS: check conxa-runtime-update-pending.json
+    alt pending host update exists and conxa-runtime.exe.next present
         RT->>RT: write update.bat to tmp dir
         RT->>RT: spawn cmd.exe /C update.bat (detached)
-        Note over RT: bat (runs after 3s delay, detached):<br/>1. move runtime.exe.next → runtime.exe<br/>2. if keytar.node.next exists: move → keytar.node<br/>3. runtime.exe --install-playwright (idempotent)<br/>4. delete bat
-        RT->>RT: continue serving (process replaced on next cold start)
+        Note over RT: bat (runs after 3s delay):<br/>1. move conxa-runtime.exe.next → conxa-runtime.exe<br/>2. if keytar.node.next: move → keytar.node<br/>3. conxa-runtime.exe --install-playwright<br/>4. delete bat
     end
-    
-    RT->>FS: check runtime-update-cache.json (24h TTL)
+
+    Note over RT: App-layer update (fast path, during startupSync)
+    RT->>FS: check conxa-app-update-cache.json (1h TTL)
     alt cache miss or expired
-        RT->>Cloud: GET /api/v1/updates/runtime-manifest
-        Cloud-->>RT: {version, url, sha256, keytar_url, keytar_sha256, playwright_version, chromium_revision}
-        RT->>FS: write runtime-update-cache.json
+        RT->>Cloud: GET /api/v1/updates/conxa-app-manifest
+        Cloud-->>RT: {app_version, min_host, bundle_url, bundle_sha256}
+        RT->>FS: write conxa-app-update-cache.json
     end
-    
-    RT->>RT: compare manifest.version vs RUNTIME_VERSION
-    alt newer version available
-        RT->>Cloud: GET manifest.url (download runtime-win.exe)
+    RT->>RT: compare app_version vs conxa-app/version.json
+    alt newer app available
+        RT->>Cloud: GET bundle_url (~60 KB zip)
         RT->>RT: SHA-256 verify
-        RT->>FS: write runtime.exe.next
-        RT->>Cloud: GET manifest.keytar_url (download keytar.node)
+        RT->>FS: extract zip → conxa-app/ (replaces .jsc files)
+    end
+
+    Note over RT: Host-layer check (background only)
+    RT->>FS: check conxa-runtime-update-cache.json (1h TTL)
+    alt cache miss or expired
+        RT->>Cloud: GET /api/v1/updates/conxa-runtime-manifest
+        Cloud-->>RT: {host_version, url, sha256, keytar_url, keytar_sha256}
+        RT->>FS: write conxa-runtime-update-cache.json
+    end
+    RT->>RT: compare host_version vs HOST_VERSION constant
+    alt newer host available
+        RT->>Cloud: GET manifest.url (~85 MB, background)
         RT->>RT: SHA-256 verify
-        RT->>FS: write keytar.node.next
-        RT->>FS: write runtime-update-pending.json {version, ready, has_keytar}
-        Note over RT: Update applied on NEXT cold start
+        RT->>FS: write conxa-runtime.exe.next
+        RT->>FS: write conxa-runtime-update-pending.json {version, ready, has_keytar}
+        Note over RT: Applied on NEXT cold start
     end
 ```
 
-**`--install-playwright` behaviour:** Uses `playwright-core/cli` bundled inside the exe (no system npm/npx dependency). Playwright checks if the exact Chromium revision from `browsers.json` is already on disk; if so, exits immediately. Only downloads on a Playwright version bump (~120 MB).
+**`--install-playwright` behaviour:** Uses `playwright-core/cli` bundled inside `conxa-runtime.exe` (no system npm/npx dependency). Idempotent — exits immediately if the correct Chromium revision is already on disk.
 
 ### 5.9 Data Ownership Summary
 
@@ -727,8 +773,8 @@ output/skill_package/{company}-plugin/
 
 The installer (`installer_builder.py`) wraps this with NSIS to produce a per-user `.exe` (no UAC) that:
 1. Installs the skill pack to `$PROFILE\.conxa\skill-packs\{company}\`.
-2. Installs `runtime.exe` to `$PROFILE\.conxa\runtime\`.
-3. Installs Chromium to `$PROFILE\.conxa\chromium\` (via `runtime.exe --install-playwright`, run with `CONXA_DIR` set explicitly to `$PROFILE\.conxa` so it lands in the same place the runtime reads from later).
+2. Installs `conxa-runtime.exe` + `keytar.node` + `conxa-app\` (pre-extracted app layer) to `$PROFILE\.conxa\`.
+3. Installs Chromium to `$PROFILE\.conxa\chromium\` (via `conxa-runtime.exe --install-playwright`, run with `CONXA_DIR` set explicitly to `$PROFILE\.conxa` so it lands in the same place the runtime reads from later).
 4. Registers the MCP server by generating a PowerShell script that does a non-destructive JSON merge into `claude_desktop_config.json` (auto-detecting the Microsoft Store/MSIX config path) and into `~/.claude.json` for Claude Code if it already exists, setting `env.CONXA_DIR = $PROFILE\.conxa` on the entry.
 
 ---
@@ -841,17 +887,19 @@ If the element is expected inside a dialog, recovery first restricts the search 
 
 ### 11.3 Runtime Self-Update
 
-Checked on every cold start via `/api/v1/updates/runtime-manifest` (24h local cache). Three interdependent files are staged and applied together:
+Two independent update paths; see §5.8 for the full sequence diagram.
+
+**App layer** — checked during every cold-start `startupSync` via `/api/v1/updates/conxa-app-manifest` (1h cache). A ~60 KB zip replaces `conxa-app/*.jsc`. No restart required; effective immediately after extraction.
+
+**Host layer** — checked in the background after sync via `/api/v1/updates/conxa-runtime-manifest` (1h cache). Staged files applied on next cold start:
 
 | File | Staged as | Applied by |
 |---|---|---|
-| `runtime-win.exe` | `runtime.exe.next` | bat: `move /Y` |
+| `conxa-runtime.exe` | `conxa-runtime.exe.next` | bat: `move /Y` |
 | `keytar.node` | `keytar.node.next` | bat: `move /Y` (if present) |
-| Chromium | N/A (downloaded by Playwright) | bat: `runtime.exe --install-playwright` |
+| Chromium | N/A (downloaded by Playwright) | bat: `conxa-runtime.exe --install-playwright` |
 
-The bat runs detached after a 3-second delay (giving the current process time to exit). `--install-playwright` uses `playwright-core/cli` bundled inside the exe and is idempotent — it exits immediately if the correct Chromium revision is already on disk.
-
-The manifest includes `keytar_url` and `keytar_sha256` so the runtime knows which `keytar.node` build matches the new Node ABI. If the keytar download fails (network issue), the old file stays; the update still applies but token storage may break if the Node ABI changed.
+The bat runs detached after a 3-second delay. `--install-playwright` is idempotent. If the keytar download fails, the old file stays; the host update still applies but token storage may break if the Node ABI changed.
 
 ---
 
@@ -1086,12 +1134,12 @@ Environment:
 Distributed as a `.exe` installer built via `electron-builder` + NSIS. Ships:
 - Electron app (Node.js bundled)
 - PyInstaller backend bundle (`dist/backend/`)
-- Does NOT ship: Chromium, NSIS, runtime-win.exe (fetched on first launch via bootstrap)
+- Does NOT ship: Chromium, NSIS, conxa-runtime.exe (fetched on first launch via bootstrap)
 
 ### 16.4 Runtime (End-User Machine)
 
 Ships inside the company-specific installer produced by Build Studio. Per-user install (no UAC). Installs to:
-- Windows: `$PROFILE\.conxa\runtime\runtime.exe` (i.e. `C:\Users\<user>\.conxa\runtime\`)
+- Windows: `$PROFILE\.conxa\conxa-runtime.exe` (i.e. `C:\Users\<user>\.conxa\`) plus `conxa-app\` for the pre-extracted app layer
 - Mac: `~/.conxa/runtime/runtime` (planned; Mac support is in build scripts but Windows is the primary target)
 
 MCP registration is done by the NSIS installer itself: a generated PowerShell script merges a `conxa` entry directly into `claude_desktop_config.json` (and into `~/.claude.json` for Claude Code, if present), setting `env.CONXA_DIR = $PROFILE\.conxa`. The script auto-detects the Microsoft Store/MSIX config path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise, which avoids MSIX filesystem virtualization issues affecting per-user config paths on Windows (see claude-code issue #26073). An earlier design used a `.mcpb` Desktop Extension instead — that mechanism has been removed and no longer exists in the installer.

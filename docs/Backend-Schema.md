@@ -641,20 +641,38 @@ Response:
 }
 ```
 
-### 5.8 Runtime Manifest
+### 5.8 Runtime Manifest Endpoints
 
-**GET /api/v1/updates/runtime-manifest**
+**GET /api/v1/updates/conxa-runtime-manifest** — host binary self-update (quarterly, ~85 MB)
 
 Response:
 ```json
 {
-  "version": "v1.2.0",
-  "url": "https://github.com/conxa-ai/runtime/releases/download/v1.2.0/runtime-win.exe",
+  "host_version": "host-v1.1.0",
+  "url": "https://github.com/Cannonbold2412/CONXA/releases/download/host-v1.1.0/conxa-runtime.exe",
   "sha256": "abc123...",
+  "keytar_url": "https://github.com/Cannonbold2412/CONXA/releases/download/host-v1.1.0/keytar.node",
+  "keytar_sha256": "def456...",
   "playwright_version": "1.61.0",
   "chromium_revision": "1228"
 }
 ```
+
+**GET /api/v1/updates/conxa-app-manifest** — app layer update (every release, ~60 KB zip)
+
+Response:
+```json
+{
+  "app_version": "app-v1.5.0",
+  "min_host": "host-v1.0.0",
+  "bundle_url": "https://github.com/Cannonbold2412/CONXA/releases/download/app-v1.5.0/conxa-app-v1.5.0.zip",
+  "bundle_sha256": "abc123..."
+}
+```
+
+**POST /api/v1/updates/conxa-runtime-manifest** — CI updates host manifest vars in memory  
+**POST /api/v1/updates/conxa-app-manifest** — CI updates app manifest vars in memory  
+Both require `Authorization: Bearer <CONXA_ADMIN_TOKEN>`.
 
 ### 5.9 Skill-Pack Delta Sync
 
@@ -935,7 +953,7 @@ erDiagram
 ├── saas/metadata.json            ← local workspace metadata
 └── deps/
     ├── nsis/makensis.exe
-    └── runtime/{ver}/runtime-win.exe
+    └── runtime/{ver}/conxa-runtime.exe + keytar.node + runtime-app/
 ```
 
 ### Conxa Cloud (Render)
@@ -957,12 +975,16 @@ data/  (SKILL_DATA_DIR on Render, or cloud blob storage)
 ### End-User Machine (Runtime)
 
 ```
-~/.conxa/  or  C:\Program Files\Conxa\
-├── runtime/
-│   └── runtime-win.exe
+~/.conxa/  (CONXA_DIR)
+├── conxa-runtime.exe             ← host layer (Node.js + npm deps + bootstrap, ~85 MB)
+├── conxa-runtime.exe.next        ← staged host update (applied via update.bat on next cold start)
+├── keytar.node                   ← native Windows credential addon
+├── conxa-app/                    ← app layer (hot-synced, no restart)
+│   ├── version.json
+│   └── *.jsc                     ← V8 bytecode (server, sync, run, browser, etc.)
 ├── chromium/                     ← Playwright browser
 ├── skill-packs/{company}/
-│   ├── pack.json                 ← sync_endpoint + tracking config embedded
+│   ├── pack.json                 ← sync_endpoint + tracking config embedded + last_synced
 │   └── {skill_slug}/
 │       ├── execution.json
 │       ├── recovery.json
@@ -971,14 +993,15 @@ data/  (SKILL_DATA_DIR on Render, or cloud blob storage)
     ├── runtime.log
     └── recovery.log
 
-~/.conxa/  or  %APPDATA%/Conxa/  (CONXA_DATA_DIR)
+%APPDATA%/Conxa/  (CONXA_DATA_DIR)
 └── cache/
     ├── sessions/
-    │   ├── {co}_state.json       ← AES-256-GCM encrypted storageState
-    │   ├── {co}_raw_state.json   ← plaintext fallback (no Conxa token)
+    │   ├── {co}_state.json             ← AES-256-GCM encrypted storageState
+    │   ├── {co}_raw_state.json         ← plaintext fallback (no Conxa token)
     │   └── {co}_auth_meta.json
-    ├── runtime-update-cache.json
-    └── runtime-update-pending.json
+    ├── conxa-runtime-update-cache.json ← host manifest cache (1h TTL)
+    ├── conxa-runtime-update-pending.json
+    └── conxa-app-update-cache.json     ← app manifest cache (1h TTL)
 ```
 
 ---
