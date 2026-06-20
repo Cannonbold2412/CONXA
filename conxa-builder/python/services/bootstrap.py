@@ -5,7 +5,7 @@ All other dependencies are managed independently from the app version:
 
 - NSIS (makensis.exe)  -> deps/nsis/{version}/   (versioned, cloud manifest)
 - Chromium             -> playwright-managed       (playwright install chromium)
-- runtime-win.exe      -> deps/runtime/{version}/  (versioned, cloud manifest)
+- conxa-runtime.exe -> deps/runtime/{version}/  (versioned, cloud manifest)
 
 On every startup, ``ensure_all()`` fetches the cloud manifest (cached 24 h),
 compares each dep version against ``deps/installed.json``, and downloads only
@@ -447,14 +447,17 @@ def ensure_chromium(on_event: EventSink | None = None) -> None:
 
 
 def ensure_runtime(manifest: dict[str, Any], on_event: EventSink | None = None) -> Path:
-    """Ensure runtime-win.exe + keytar.node are cached. Returns the runtime dir."""
+    """Ensure conxa-runtime.exe + keytar.node + runtime-app/ are cached. Returns the runtime dir."""
     spec = manifest.get("runtime") or {}
     version = spec.get("version") or "v0.0.0"
     runtime_dir = _deps_dir() / "runtime" / version
-    exe = runtime_dir / "runtime-win.exe"
+    exe = runtime_dir / "conxa-runtime.exe"
     keytar_url = spec.get("keytar_url")
     keytar = runtime_dir / "keytar.node"
-    if exe.is_file() and (not keytar_url or keytar.is_file()):
+    app_spec = manifest.get("runtime_app") or {}
+    app_bundle_url = app_spec.get("bundle_url")
+    app_dir = runtime_dir / "runtime-app"
+    if exe.is_file() and (not keytar_url or keytar.is_file()) and (not app_bundle_url or app_dir.is_dir()):
         os.environ["CONXA_RUNTIME_LOCAL_DIR"] = str(runtime_dir)
         _emit(on_event, dep="runtime", status="ready", version=version)
         return runtime_dir
@@ -473,6 +476,18 @@ def ensure_runtime(manifest: dict[str, Any], on_event: EventSink | None = None) 
             raise RuntimeError("runtime checksum mismatch")
     if keytar_url and not keytar.is_file():
         _download(keytar_url, keytar, on_event, "runtime", file_name=keytar.name)
+    if app_bundle_url and not app_dir.is_dir():
+        import zipfile
+        zip_path = runtime_dir / "runtime-app.zip"
+        _download(app_bundle_url, zip_path, on_event, "runtime", file_name="runtime-app.zip")
+        app_sha = app_spec.get("bundle_sha256")
+        if app_sha and _sha256(zip_path) != app_sha:
+            zip_path.unlink(missing_ok=True)
+            raise RuntimeError("runtime-app bundle checksum mismatch")
+        app_dir.mkdir(exist_ok=True)
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(app_dir)
+        zip_path.unlink(missing_ok=True)
     os.environ["CONXA_RUNTIME_LOCAL_DIR"] = str(runtime_dir)
     _emit(on_event, dep="runtime", status="ready", version=version)
     return runtime_dir
@@ -500,7 +515,7 @@ def check_status() -> dict[str, Any]:
     runtime_dir = deps / "runtime"
     if runtime_dir.is_dir():
         for ver_dir in runtime_dir.iterdir():
-            if (ver_dir / "runtime-win.exe").is_file():
+            if (ver_dir / "conxa-runtime.exe").is_file():
                 runtime_ready = True
                 break
 

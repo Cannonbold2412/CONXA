@@ -22,10 +22,9 @@ class RuntimeToolError(RuntimeError):
 def _runtime_exe(path: Path) -> Path | None:
     """Return the packed runtime executable in ``path``, or None.
 
-    The customer installer stages it as ``runtime.exe``; the Studio deps bootstrap
-    caches it as ``runtime-win.exe``. Either is a self-contained MCP stdio server.
+    Both the customer installer and the Studio deps bootstrap use ``conxa-runtime.exe``.
     """
-    names = ("runtime.exe", "runtime-win.exe") if sys.platform == "win32" else ("runtime", "runtime-mac")
+    names = ("conxa-runtime.exe",) if sys.platform == "win32" else ("conxa-runtime-mac",)
     for name in names:
         exe = path / name
         if exe.is_file():
@@ -129,9 +128,9 @@ def sync_skill_pack(
 def _find_local_runtime_source() -> Path | None:
     """Return the repo-local runtime/ source tree when running from a dev checkout.
 
-    The packed exe (runtime-win.exe) has no package.json, so npx playwright install
-    would pick up the globally-installed Playwright instead of the version the runtime
-    was built against.  The source tree fixes this by supplying the correct package.json.
+    The packed exe (conxa-runtime.exe) has no package.json. When a local source tree
+    is found, it supplies the correct package.json so node_modules resolves Playwright 1.59.0
+    (chromium-1227). Without it, the install command pins the version explicitly via npx playwright@1.59.0.
     """
     # conxa_runtime.py lives at conxa-builder/python/conxa_compile/conxa_runtime.py
     # The repo-local runtime source is three parents up, then "runtime/".
@@ -202,13 +201,19 @@ def ensure_chromium_installed(
         if local_src is not None:
             install_dir = local_src
 
+    # Pin the version when no package.json is available so we always get chromium-1227
+    if (install_dir / "package.json").is_file():
+        pw_cmd = [npx, "playwright", "install", "chromium"]
+    else:
+        pw_cmd = [npx, "playwright@1.59.0", "install", "chromium"]
+
     env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(browsers_dir)}
 
     if log_sink:
         log_sink("Installing Playwright Chromium for the test runtime…")
 
     proc = subprocess.Popen(
-        [npx, "playwright", "install", "chromium"],
+        pw_cmd,
         cwd=str(install_dir),
         env=env,
         stdout=subprocess.PIPE,

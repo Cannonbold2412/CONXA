@@ -995,7 +995,7 @@ class Backend:
             result["cloud_tracking_token_present"] = bool(publish_info.get("tracking_token_present"))
             result["cloud_sync_endpoint"] = publish_info.get("sync_endpoint", "")
             result["installed_runtime_path"] = (
-                r"C:\Program Files\Conxa\runtime\runtime.exe"
+                r"C:\Program Files\Conxa\runtime\conxa-runtime.exe"
                 if sys.platform == "win32"
                 else str(Path.home() / ".conxa" / "runtime" / "runtime")
             )

@@ -807,7 +807,7 @@ def _write_skill_packs_format(
 ) -> None:
     """Write the skill-packs/{company}/ layout alongside the legacy build output.
 
-    This format is consumed by runtime.exe (the new installer-distributed MCP server).
+    This format is consumed by conxa-runtime.exe (the installer-distributed MCP server).
     The legacy skills/ layout is kept untouched for backward compatibility.
     """
     from conxa_core.config import settings

@@ -71,26 +71,30 @@ Section "Runtime" SEC_RUNTIME
   ; "last installer wins" would silently downgrade the runtime and break skills.
   StrCmp $RuntimePresent "1" runtime_skip
 
-  nsExec::ExecToLog 'taskkill /F /IM runtime.exe'
+  nsExec::ExecToLog 'taskkill /F /IM conxa-runtime.exe'
   Pop $0  ; discard — taskkill fails when runtime isn't running, that's fine
   SetOutPath "${RUNTIME_DIR}"
-  File "${STAGING_DIR}\runtime\runtime.exe"
+  File "${STAGING_DIR}\runtime\conxa-runtime.exe"
   File "${STAGING_DIR}\runtime\keytar.node"
   File "${STAGING_DIR}\runtime\version.json"
+  ; Pre-extracted app layer — /nonfatal is a no-op if source dir is absent
+  SetOutPath "${RUNTIME_DIR}\runtime-app"
+  File /nonfatal /r "${STAGING_DIR}\runtime\runtime-app\*.*"
+  SetOutPath "${RUNTIME_DIR}"
 
   runtime_skip:
 SectionEnd
 
 ; ── Chromium section ──────────────────────────────────────────────────────────
 Section "Chromium" SEC_CHROMIUM
-  ; Always run --install-playwright so Chromium revision matches runtime.exe.
+  ; Always run --install-playwright so Chromium revision matches conxa-runtime.exe.
   ; The command is idempotent and revision-aware: no-op if the correct revision is
   ; already on disk; downloads only the missing revision otherwise.
   ; Skipping when a chromium/ dir exists was the root bug: the dir may contain a
   ; stale revision from an older runtime, causing chromium.launch() to fail.
-  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& "${RUNTIME_DIR}\runtime.exe" --install-playwright' $0
+  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& "${RUNTIME_DIR}\conxa-runtime.exe" --install-playwright' $0
   IntCmp $0 0 chromium_done
-  MessageBox MB_OK "Chromium installation failed (code $0). Automation may not work.$\nYou can retry by running:$\n${RUNTIME_DIR}\runtime.exe --install-playwright"
+  MessageBox MB_OK "Chromium installation failed (code $0). Automation may not work.$\nYou can retry by running:$\n${RUNTIME_DIR}\conxa-runtime.exe --install-playwright"
   chromium_done:
 SectionEnd
 
@@ -99,7 +103,7 @@ Section "SkillPacks" SEC_SKILLS
   SetOutPath "${SKILL_DIR}"
   ; Copy company skill pack — preserves other companies' directories
   File /r "${STAGING_DIR}\skill-packs\${COMPANY_SLUG}\*.*"
-  ; Force runtime.exe to rescan the newly installed pack instead of using stale cache.
+  ; Force conxa-runtime.exe to rescan the newly installed pack instead of using stale cache.
   Delete "${INSTALL_DIR}\cache\manifests.json"
 SectionEnd
 
@@ -112,7 +116,7 @@ SectionEnd
 ; to this user's profile — no admin wrong-profile bug.
 Section "MCPRegistration" SEC_MCP
   ; Kill Claude Desktop so the config file isn't locked and the new MCP entry
-  ; is picked up on next launch (same pattern as runtime.exe kill above).
+  ; is picked up on next launch (same pattern as conxa-runtime.exe kill above).
   nsExec::ExecToLog 'taskkill /F /IM claude.exe'
   Pop $0  ; discard — taskkill fails when Claude isn't running, that's fine
 
@@ -128,7 +132,7 @@ Section "MCPRegistration" SEC_MCP
   FileWrite $0 "$$dir = Split-Path $$p; if (-not (Test-Path $$dir)) { New-Item -ItemType Directory -Force $$dir | Out-Null }$\r$\n"
   FileWrite $0 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { $$c = [PSCustomObject]@{} }$\r$\n"
   FileWrite $0 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $0 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_DIR}\runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
+  FileWrite $0 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_DIR}\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
   FileWrite $0 "$$c.mcpServers | Add-Member conxa $$entry -Force$\r$\n"
   FileWrite $0 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
   FileClose $0
@@ -147,7 +151,7 @@ Section "MCPRegistration" SEC_MCP
   FileWrite $1 "if (-not (Test-Path $$p)) { exit 0 }$\r$\n"
   FileWrite $1 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { exit 0 }$\r$\n"
   FileWrite $1 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $1 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_DIR}\runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
+  FileWrite $1 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_DIR}\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
   FileWrite $1 "$$c.mcpServers | Add-Member conxa $$entry -Force$\r$\n"
   FileWrite $1 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
   FileClose $1
@@ -166,7 +170,7 @@ Section "MCPRegistration" SEC_MCP
   Goto mcp_done
 
   mcp_err:
-  MessageBox MB_OK "Setup complete — skill files installed.$\n$\nCould not auto-configure Claude Desktop (code $0).$\n$\nTo finish manually, add this to claude_desktop_config.json:$\n  Store app: %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\$\n  Standard:  %APPDATA%\Claude\$\n$\n  mcpServers > conxa:$\n    command: ${RUNTIME_DIR}\runtime.exe$\n    env.CONXA_DIR: ${INSTALL_DIR}$\n$\nThen restart Claude Desktop."
+  MessageBox MB_OK "Setup complete — skill files installed.$\n$\nCould not auto-configure Claude Desktop (code $0).$\n$\nTo finish manually, add this to claude_desktop_config.json:$\n  Store app: %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\$\n  Standard:  %APPDATA%\Claude\$\n$\n  mcpServers > conxa:$\n    command: ${RUNTIME_DIR}\conxa-runtime.exe$\n    env.CONXA_DIR: ${INSTALL_DIR}$\n$\nThen restart Claude Desktop."
   mcp_done:
 SectionEnd
 

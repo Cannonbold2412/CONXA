@@ -1,7 +1,7 @@
 """Build a signed Windows NSIS installer for a compiled skill pack.
 
 The installer bundles:
-- runtime.exe + keytar.node from the Build Studio runtime cache
+- conxa-runtime.exe + keytar.node from the Build Studio runtime cache
 - skill-packs/{company}/ directory
 - NSIS install script that registers the Conxa MCP server in Claude Desktop
 
@@ -317,11 +317,11 @@ def _find_studio_cache_runtime_dir() -> Path:
         raise RuntimeError(_STUDIO_RUNTIME_MISSING)
 
     candidate = max(candidates, key=_runtime_version_sort_key)
-    runtime_exe = candidate / "runtime-win.exe"
+    runtime_exe = candidate / "conxa-runtime.exe"
     keytar_node = candidate / "keytar.node"
     if not runtime_exe.is_file():
         raise RuntimeError(
-            f"Latest Build Studio runtime is missing runtime-win.exe: {runtime_exe}. "
+            f"Latest Build Studio runtime is missing conxa-runtime.exe: {candidate}. "
             "Run dependency bootstrap first."
         )
     if not keytar_node.is_file():
@@ -341,7 +341,7 @@ def _stage_studio_cache_runtime_binary(
         if log:
             log(msg)
 
-    runtime_exe = runtime_dir / "runtime-win.exe"
+    runtime_exe = runtime_dir / "conxa-runtime.exe"
     keytar_node = runtime_dir / "keytar.node"
     if not runtime_exe.is_file():
         raise RuntimeError(_STUDIO_RUNTIME_MISSING)
@@ -351,9 +351,9 @@ def _stage_studio_cache_runtime_binary(
             "Run dependency bootstrap first."
         )
 
-    _info(f"Copying local Build Studio runtime.exe from {runtime_exe}")
-    shutil.copy2(runtime_exe, dest / "runtime.exe")
-    _info(f"runtime.exe staged ({(dest / 'runtime.exe').stat().st_size // 1024} KB)")
+    _info(f"Copying local Build Studio conxa-runtime.exe from {runtime_exe}")
+    shutil.copy2(runtime_exe, dest / "conxa-runtime.exe")
+    _info(f"conxa-runtime.exe staged ({(dest / 'conxa-runtime.exe').stat().st_size // 1024} KB)")
 
     _info(f"Copying local Build Studio keytar.node from {keytar_node}")
     shutil.copy2(keytar_node, dest / "keytar.node")
@@ -362,6 +362,12 @@ def _stage_studio_cache_runtime_binary(
     )
     _info("version.json written")
 
+    app_dir = runtime_dir / "runtime-app"
+    if app_dir.is_dir():
+        shutil.copytree(app_dir, dest / "runtime-app")
+        kb = sum(f.stat().st_size for f in (dest / "runtime-app").rglob("*") if f.is_file()) // 1024
+        _info(f"runtime-app/ staged ({kb} KB)")
+
 
 def _stage_runtime_binary(
     dest: Path,
@@ -369,7 +375,7 @@ def _stage_runtime_binary(
     *,
     studio_runtime_dir: Path | None = None,
 ) -> None:
-    """Stage runtime.exe + keytar.node into dest/.
+    """Stage conxa-runtime.exe + keytar.node into dest/.
 
     Always uses the hardcoded Build Studio deps cache.
     """
