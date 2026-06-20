@@ -32,7 +32,7 @@ def _write_runtime_cache(
     runtime_dir = home / ".conxa-build-studio" / "deps" / "runtime" / version
     runtime_dir.mkdir(parents=True, exist_ok=True)
     if runtime is not None:
-        (runtime_dir / "runtime-win.exe").write_bytes(runtime)
+        (runtime_dir / "conxa-runtime.exe").write_bytes(runtime)
     if keytar is not None:
         (runtime_dir / "keytar.node").write_bytes(keytar)
     return runtime_dir
@@ -50,13 +50,13 @@ class StudioRuntimeStagingTests(unittest.TestCase):
             with patch.object(installer_builder.Path, "home", return_value=home):
                 installer_builder._stage_runtime_binary(dest, logs.append)
 
-            self.assertEqual((dest / "runtime.exe").read_bytes(), b"exe")
+            self.assertEqual((dest / "conxa-runtime.exe").read_bytes(), b"exe")
             self.assertEqual((dest / "keytar.node").read_bytes(), b"node")
             self.assertEqual(
                 json.loads((dest / "version.json").read_text(encoding="utf-8")),
                 {"runtime_version": "v1.0.0"},
             )
-            self.assertTrue(any("Build Studio runtime.exe" in line for line in logs))
+            self.assertTrue(any("conxa-runtime.exe" in line for line in logs))
 
     def test_studio_cache_selects_newest_valid_runtime_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -69,7 +69,7 @@ class StudioRuntimeStagingTests(unittest.TestCase):
             with patch.object(installer_builder.Path, "home", return_value=home):
                 installer_builder._stage_runtime_binary(dest)
 
-            self.assertEqual((dest / "runtime.exe").read_bytes(), b"new")
+            self.assertEqual((dest / "conxa-runtime.exe").read_bytes(), b"new")
             self.assertEqual(
                 json.loads((dest / "version.json").read_text(encoding="utf-8"))["runtime_version"],
                 "v1.0.10",

@@ -1,4 +1,4 @@
-"""Phase 4.5: deps-manifest and runtime-manifest endpoints."""
+"""Phase 4.5: deps-manifest, conxa-runtime-manifest, and conxa-app-manifest endpoints."""
 
 from __future__ import annotations
 
@@ -24,16 +24,30 @@ def test_deps_manifest_public_no_auth():
     assert "win_url" in runtime
 
 
-def test_runtime_manifest_public_no_auth():
-    r = client.get("/api/v1/updates/runtime-manifest")
+def test_runtime_host_manifest_public_no_auth():
+    r = client.get("/api/v1/updates/conxa-runtime-manifest")
     assert r.status_code == 200
     body = r.json()
-    assert "version" in body
+    assert "host_version" in body
     assert "url" in body
     assert "sha256" in body
-    assert "min_skill_pack_version" not in body
     assert "playwright_version" in body
     assert "chromium_revision" in body
+
+
+def test_runtime_app_manifest_public_no_auth():
+    r = client.get("/api/v1/updates/conxa-app-manifest")
+    assert r.status_code == 200
+    body = r.json()
+    assert "app_version" in body
+    assert "min_host" in body
+    assert "bundle_url" in body
+    assert "bundle_sha256" in body
+
+
+def test_old_runtime_manifest_url_gone():
+    r = client.get("/api/v1/updates/runtime-manifest")
+    assert r.status_code == 404
 
 
 def test_deps_manifest_not_in_openapi():
@@ -42,7 +56,8 @@ def test_deps_manifest_not_in_openapi():
     assert r.status_code == 200
     paths = r.json().get("paths", {})
     assert "/api/v1/updates/deps-manifest" not in paths
-    assert "/api/v1/updates/runtime-manifest" not in paths
+    assert "/api/v1/updates/conxa-runtime-manifest" not in paths
+    assert "/api/v1/updates/conxa-app-manifest" not in paths
 
 
 def test_deps_manifest_env_override(monkeypatch):

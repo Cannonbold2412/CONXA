@@ -44,7 +44,7 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
     studio_runtime_dir.mkdir(parents=True)
 
     def fake_stage_runtime(dest, log=None, *, studio_runtime_dir=None):
-        (dest / "runtime.exe").write_bytes(b"runtime")
+        (dest / "conxa-runtime.exe").write_bytes(b"runtime")
         (dest / "keytar.node").write_bytes(b"keytar")
         (dest / "version.json").write_text('{"runtime_version":"runtime-v-local"}', encoding="utf-8")
 

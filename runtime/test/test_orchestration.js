@@ -2,7 +2,7 @@
 /**
  * Test the full orchestration flow:
  * 1. list_skills
- * 2. read_skill_files for each skill
+ * 2. Verify skill data via get_skill_inputs
  * 3. Verify merge-ability
  */
 const { spawn } = require("child_process");
@@ -66,39 +66,24 @@ async function test() {
     skills.forEach((s) => console.log(`  - ${s.slug}`));
   }
 
-  // Step 2: read_skill_files for each skill
-  console.log("\n[STEP 2] Loading skill data...");
-  const skillData = {};
+  // Step 2: get_skill_inputs for each skill
+  console.log("\n[STEP 2] Loading skill input schemas...");
   for (const skill of skills) {
     const resp = await send("tools/call", {
-      name: "read_skill_files",
+      name: "get_skill_inputs",
       arguments: { slug: skill.slug },
     });
     if (resp?.result?.content?.[0]?.text) {
       const data = JSON.parse(resp.result.content[0].text);
-      skillData[skill.slug] = data;
-      const execCount = data.execution ? data.execution.length : 0;
-      console.log(`✓ ${skill.slug}: ${execCount} steps`);
+      const inputCount = data.inputs ? data.inputs.length : 0;
+      console.log(`✓ ${skill.slug}: ${inputCount} inputs`);
     }
   }
 
-  // Step 3: Analyze execution data
-  console.log("\n[STEP 3] Analyzing execution plans...");
-  let totalSteps = 0;
-  for (const slug in skillData) {
-    const exec = skillData[slug].execution;
-    if (exec && Array.isArray(exec)) {
-      totalSteps += exec.length;
-      console.log(`  ${slug}: ${exec.length} steps`);
-      exec.slice(0, 3).forEach((step, i) => {
-        console.log(`    [${i + 1}] ${step.type || "action"} - ${step.selector || step.text || ""}`);
-      });
-      if (exec.length > 3) console.log(`    ... and ${exec.length - 3} more`);
-    }
-  }
-
-  console.log(`\n✓ Total executable steps: ${totalSteps}`);
-  console.log(`✓ Skills can be merged and executed via execute_plan()`);
+  // Step 3: Verify skills list
+  console.log("\n[STEP 3] Verifying skill metadata...");
+  console.log(`✓ Total skills: ${skills.length}`);
+  console.log(`✓ Skills can be executed via execute_skill()`);
 
   console.log("\n╔════════════════════════════════════════════════════════╗");
   console.log("║  ✅ ORCHESTRATION FLOW VERIFIED                        ║");

@@ -42,11 +42,11 @@ class BootstrapDownloadTests(unittest.TestCase):
             return now
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            dest = Path(tmpdir) / "runtime-win.exe"
+            dest = Path(tmpdir) / "conxa-runtime.exe"
             with patch.object(bootstrap.urllib.request, "urlopen", return_value=response), patch.object(
                 bootstrap.time, "monotonic", side_effect=monotonic
             ):
-                bootstrap._download("https://example.test/runtime-win.exe", dest, events.append, "runtime")
+                bootstrap._download("https://example.test/conxa-runtime.exe", dest, events.append, "runtime")
 
             self.assertEqual(dest.read_bytes(), b"abcdef")
 
@@ -56,7 +56,7 @@ class BootstrapDownloadTests(unittest.TestCase):
         self.assertEqual(progress[-1]["total_bytes"], 6)
         self.assertEqual(progress[-1]["remaining_bytes"], 0)
         self.assertEqual(progress[-1]["pct"], 100)
-        self.assertEqual(progress[-1]["file_name"], "runtime-win.exe")
+        self.assertEqual(progress[-1]["file_name"], "conxa-runtime.exe")
         self.assertGreater(progress[-1]["bytes_per_sec"], 0)
         in_progress = [e for e in progress if e.get("remaining_bytes", 0) > 0]
         self.assertTrue(any("eta_seconds" in e for e in in_progress))

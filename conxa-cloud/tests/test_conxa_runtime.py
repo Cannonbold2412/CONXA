@@ -38,7 +38,7 @@ class TestResolveRuntimeDir:
         invalid_env = tmp_path / "invalid"
         runtime_dir = tmp_path / "runtime-v1.2.3"
         runtime_dir.mkdir()
-        (runtime_dir / "runtime-win.exe").touch()
+        (runtime_dir / "conxa-runtime.exe").touch()
         monkeypatch.setenv("CONXA_DIR", str(invalid_env))
         monkeypatch.setenv("CONXA_RUNTIME_LOCAL_DIR", str(runtime_dir))
 
@@ -54,7 +54,7 @@ class TestResolveRuntimeDir:
         monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path / "data"))
         runtime_dir = tmp_path / "data" / "deps" / "runtime" / "runtime-v1.0.0"
         runtime_dir.mkdir(parents=True)
-        (runtime_dir / "runtime-win.exe").touch()
+        (runtime_dir / "conxa-runtime.exe").touch()
 
         from conxa_compile.conxa_runtime import resolve_runtime_dir
 
