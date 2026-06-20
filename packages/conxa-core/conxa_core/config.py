@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     clerk_audience: str = ""
     clerk_secret_key: str = Field(default="", validation_alias="CLERK_SECRET_KEY")
     api_proxy_shared_secret: str = ""
+    api_proxy_signing_window: int = 60  # max age in seconds for HMAC proxy timestamps
 
     # Metered LLM proxy used by Build Studio. Quota is per org per calendar month
     # (input + output tokens). 0 disables enforcement. The proxy only accepts
@@ -127,6 +128,7 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_price_id: str = ""
     app_url: str = "http://localhost:5173"
+    api_base_url: str = ""  # Set in production to prevent X-Forwarded-Host injection
 
     # Tracking HMAC secret for signing runtime telemetry tokens.
     # Set SKILL_TRACKING_HMAC_SECRET in production to enable company-scoped tracking.
