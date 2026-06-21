@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchEntitlements, type EntitlementMeter, type EntitlementMeterKey } from '@/api/usageApi'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 const LABELS: Record<EntitlementMeterKey, string> = {
@@ -21,6 +22,70 @@ function meterText(meter: EntitlementMeter | undefined, key: EntitlementMeterKey
   if (!meter) return 'Unavailable'
   if (meter.unlimited) return `${formatCount(meter.used, key)} used`
   return `${formatCount(meter.used, key)} of ${formatCount(meter.limit, key)}`
+}
+
+/**
+ * Compact toolbar pill for the Human Edit pool — label + used/limit + a thin
+ * clay usage bar, with full detail on hover. Designed to sit in a page toolbar.
+ * Must render inside a TooltipProvider. Renders nothing if the meter is unavailable.
+ */
+export function HumanEditPoolBadge({ className }: { className?: string }) {
+  const key: EntitlementMeterKey = 'human_edit_tokens'
+  const usageQ = useQuery({
+    queryKey: ['entitlements'],
+    queryFn: fetchEntitlements,
+    staleTime: 30_000,
+    retry: 1,
+  })
+
+  if (usageQ.isLoading) {
+    return <div className={cn('hidden h-8 w-36 animate-pulse rounded-md border border-white/10 bg-white/[0.03] lg:block', className)} />
+  }
+
+  const meter = usageQ.data?.meters?.[key]
+  if (!meter || usageQ.isError || usageQ.data?.entitlements_unavailable) return null
+
+  const used = meter.used ?? 0
+  const unlimited = meter.unlimited || meter.limit == null
+  const pct = unlimited || !meter.limit ? 0 : Math.min(100, Math.round((used / meter.limit) * 100))
+  const barColor = pct >= 90 ? 'bg-red-400' : pct >= 75 ? 'bg-amber-400' : 'bg-brand'
+  const valueText = unlimited ? `${formatCount(used, key)} used` : `${formatCount(used, key)} / ${formatCount(meter.limit, key)}`
+  const remainingText = unlimited ? 'Unlimited' : `${formatCount(meter.remaining, key)} remaining`
+
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div
+            role="status"
+            aria-label={`Human Edit pool: ${valueText}, ${remainingText}`}
+            className={cn(
+              'hidden h-8 cursor-default items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-2.5 lg:flex',
+              className,
+            )}
+          >
+            <span className="text-[11px] font-medium text-zinc-400">Human edit</span>
+            <span className="text-[11px] font-semibold tabular-nums text-zinc-200">{valueText}</span>
+            {!unlimited && (
+              <span className="h-1.5 w-10 overflow-hidden rounded-full bg-white/10">
+                <span className={cn('block h-full rounded-full', barColor)} style={{ width: `${pct}%` }} />
+              </span>
+            )}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="space-y-0.5">
+            <p className="font-medium text-zinc-100">Human Edit pool</p>
+            <p className="text-zinc-300">
+              {valueText}
+              {unlimited ? '' : ` · ${remainingText}`}
+            </p>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+      <div className="mx-0.5 hidden h-5 w-px bg-white/10 lg:block" aria-hidden />
+    </>
+  )
 }
 
 export function EntitlementMeters({

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { EntitlementMeters } from '@/components/EntitlementMeters'
+import { HumanEditPoolBadge } from '@/components/EntitlementMeters'
 import type { WorkflowResponse } from '@/types/workflow'
 import {
   deleteStep,
@@ -806,6 +806,7 @@ export function HumanEditPage() {
       }
       actions={
         <div className="flex items-center gap-2">
+          <HumanEditPoolBadge />
           {dirtyCount > 0 && (
             <span
               className="hidden items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[0.7rem] font-medium text-amber-200 sm:inline-flex"
@@ -883,9 +884,6 @@ export function HumanEditPage() {
         </div>
       }
     />
-    <div className="border-b border-white/8 px-4 py-2">
-      <EntitlementMeters meters={['human_edit_tokens']} compact />
-    </div>
     <div
       ref={splitPaneRef}
         className="relative grid flex-1 min-h-0 w-full min-w-0 grid-cols-1 overflow-hidden border-t border-white/8 md:min-h-0 md:[grid-template-columns:var(--workflow-pane-width)_minmax(0,1fr)_var(--tools-pane-width)] md:items-stretch"
@@ -1030,7 +1028,7 @@ export function HumanEditPage() {
                       </CardHeader>
                       <CardContent className="space-y-2 pb-3">
                         <p className="text-xs text-zinc-300 leading-relaxed">
-                          {(currentStep as Record<string, unknown>)?.semantic_description as string || '(none)'}
+                          {currentStep.semantic_description || '(none)'}
                         </p>
                       </CardContent>
                     </Card>
@@ -1042,9 +1040,8 @@ export function HumanEditPage() {
                         <CardDescription className="text-xs">Ranked by confidence</CardDescription>
                       </CardHeader>
                       <CardContent className="space-y-1 pb-3">
-                        {Array.isArray((currentStep as Record<string, unknown>)?.compiled_selectors) &&
-                        ((currentStep as Record<string, unknown>).compiled_selectors as string[]).length > 0 ? (
-                          ((currentStep as Record<string, unknown>).compiled_selectors as string[]).map((sel, idx) => (
+                        {currentStep.compiled_selectors && currentStep.compiled_selectors.length > 0 ? (
+                          currentStep.compiled_selectors.map((sel, idx) => (
                             <div key={idx} className="text-xs font-mono text-cyan-200 bg-black/20 p-2 rounded break-all">
                               {idx + 1}. {sel}
                             </div>
@@ -1055,13 +1052,13 @@ export function HumanEditPage() {
                       </CardContent>
                     </Card>
                   ) : null}
-                  {currentStep && (currentStep as Record<string, unknown>)?.intent ? (
+                  {currentStep && currentStep.intent ? (
                     <Card className="border-white/10 bg-white/[0.02]">
                       <CardHeader className="pb-3">
                         <CardTitle className="text-sm">Step Intent</CardTitle>
                       </CardHeader>
                       <CardContent className="pb-3">
-                        <p className="text-xs text-zinc-300">{(currentStep as Record<string, unknown>).intent as string}</p>
+                        <p className="text-xs text-zinc-300">{currentStep.intent}</p>
                       </CardContent>
                     </Card>
                   ) : null}

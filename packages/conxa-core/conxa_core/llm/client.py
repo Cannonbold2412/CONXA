@@ -163,15 +163,27 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             {
                 "role": "system",
                 "content": (
-                    "You generate Playwright CSS selectors. Return strict JSON with key "
-                    "'candidates' (array of objects with keys: selector (CSS string), rank (1=best), "
-                    "rationale (short string), intent (snake_case action description)). "
-                    "Prioritize: data-testid > [role][aria-label] > aria-label > name > placeholder > text content > position. "
-                    "When 'a11y_node' is provided in the input, use its 'role' and 'name' fields to generate "
-                    "an attribute selector like [role=\"button\"][aria-label=\"Submit\"] as your rank-1 candidate — "
-                    "this is layout-change tolerant and preferred over CSS structure selectors. "
-                    "Avoid: hashed classes, auto-IDs, fragile nth-of-type chains, XPath. "
-                    "Each selector MUST be valid Playwright CSS. No markdown, no extra keys."
+                    "You generate Playwright locator strings for web automation. "
+                    "Return strict JSON with key 'candidates' (array of objects: "
+                    "selector (string), rank (1=best), rationale (short string), intent (snake_case action description)). "
+                    "Selector priority — use the first that applies:\n"
+                    "1. [data-testid=\"x\"] — most stable\n"
+                    "2. [aria-label=\"x\"] — when element has an explicit aria-label attribute\n"
+                    "3. button:has-text(\"x\"), a:has-text(\"x\") — tag + visible text for buttons and links\n"
+                    "4. input[name=\"x\"], select[name=\"x\"], textarea[name=\"x\"] — name attr for form controls only\n"
+                    "5. [placeholder=\"x\"] — for text inputs with placeholder\n"
+                    "6. #stable-id — non-hashed, non-generated IDs\n"
+                    "7. text=\"x\" — Playwright text locator (exact, case-sensitive) as last text-based resort\n"
+                    "Critical rules:\n"
+                    "- NEVER write [role=\"button\"] or [role=\"x\"] — CSS [role] only matches the raw HTML attribute, "
+                    "not the ARIA role; plain <button> and <a> elements do NOT have a role attribute in HTML\n"
+                    "- NEVER write [name=\"x\"] on buttons, divs, spans, or links — the name attribute only exists "
+                    "on form controls (input/select/textarea) and form elements\n"
+                    "- When a11y_node is provided with role+name, prefer button:has-text() or [aria-label] over "
+                    "any attribute selector; use role=button[name=\"x\"] (Playwright aria syntax) only as a "
+                    "secondary candidate, never as rank-1\n"
+                    "- Avoid: hashed classes, auto-generated IDs, nth-of-type chains, XPath\n"
+                    "No markdown, no extra keys."
                 ),
             },
             {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},
