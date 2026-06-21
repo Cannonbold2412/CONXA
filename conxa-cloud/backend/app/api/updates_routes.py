@@ -64,7 +64,7 @@ _CHROMIUM_REVISION = os.environ.get("CONXA_CHROMIUM_REVISION", "1228")
 _STUDIO_VERSION = os.environ.get("CONXA_STUDIO_VERSION", "studio-v1.0.0")
 _STUDIO_WIN_URL = os.environ.get(
     "CONXA_STUDIO_WIN_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/Conxa%20Build%20Studio-Setup-1.0.0.exe",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/Conxa-Build-Studio-Setup-1.0.0.exe",
 )
 _STUDIO_WIN_SHA256 = os.environ.get("CONXA_STUDIO_WIN_SHA256", "")
 _STUDIO_WIN_SHA512 = os.environ.get("CONXA_STUDIO_WIN_SHA512", "")
@@ -167,7 +167,7 @@ def studio_latest_yml() -> Response:
             base = _STUDIO_LATEST_YML_URL.rsplit("/", 1)[0]
             content = re.sub(
                 r"(^\s*-\s*url:\s*)(.+\.exe)",
-                lambda m: m.group(1) + base + "/" + m.group(2).strip().replace(" ", "."),
+                lambda m: m.group(1) + base + "/" + m.group(2).strip(),
                 content,
                 flags=re.MULTILINE,
             )
