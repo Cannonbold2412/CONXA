@@ -559,26 +559,20 @@ def ensure_all(cloud_api: str, on_event: EventSink | None = None) -> dict[str, A
               message=f"Manifest fetch failed: {exc}. Using installed deps.")
         manifest = {}
 
-    deps = manifest.get("deps", {})
-    if deps:
-        installed = load_installed()
-        for dep_name, dep_spec in deps.items():
-            if dep_spec.get("managed_by"):
-                continue
-            avail_ver = dep_spec.get("version")
-            if not avail_ver:
-                continue
-            inst_ver = installed.get(dep_name, {}).get("version")
-            version_dir = _deps_dir() / dep_name / avail_ver
-            if inst_ver == avail_ver and version_dir.is_dir():
-                _configure_dep_env(dep_name, version_dir)
-                _emit(on_event, dep=dep_name, status="ready", version=avail_ver)
-            else:
-                apply_dep_update(dep_name, dep_spec, on_event=on_event)
-    else:
-        # Legacy fallback: cloud manifest predates v2 (no deps dict)
-        ensure_nsis(manifest, on_event)
-        ensure_runtime(manifest, on_event)
+    installed = load_installed()
+    for dep_name, dep_spec in manifest.get("deps", {}).items():
+        if dep_spec.get("managed_by"):
+            continue
+        avail_ver = dep_spec.get("version")
+        if not avail_ver:
+            continue
+        inst_ver = installed.get(dep_name, {}).get("version")
+        version_dir = _deps_dir() / dep_name / avail_ver
+        if inst_ver == avail_ver and version_dir.is_dir():
+            _configure_dep_env(dep_name, version_dir)
+            _emit(on_event, dep=dep_name, status="ready", version=avail_ver)
+        else:
+            apply_dep_update(dep_name, dep_spec, on_event=on_event)
 
     _emit(on_event, status="complete")
     return {"ok": True, "manifest_version": manifest.get("manifest_version", manifest.get("version"))}

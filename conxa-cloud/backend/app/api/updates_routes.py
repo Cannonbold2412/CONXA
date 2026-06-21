@@ -89,29 +89,8 @@ def deps_manifest() -> dict:
     ("copy" or "extract_zip").
     """
     return {
-        # ── v2 envelope ──────────────────────────────────────────────────────
         "manifest_version": 2,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        # ── legacy keys (v1 clients) ─────────────────────────────────────────
-        "nsis": {
-            "version": _NSIS_VERSION,
-            "url": _NSIS_URL,
-            "sha256": _NSIS_SHA256,
-        },
-        "runtime": {
-            "version": _HOST_VERSION,
-            "win_url": _HOST_WIN_URL,
-            "win_sha256": _HOST_WIN_SHA256,
-            "keytar_url": _RUNTIME_KEYTAR_URL,
-            "keytar_sha256": _RUNTIME_KEYTAR_SHA256,
-        },
-        "runtime_app": {
-            "app_version": _APP_VERSION,
-            "min_host": _APP_MIN_HOST,
-            "bundle_url": _APP_BUNDLE_URL,
-            "bundle_sha256": _APP_BUNDLE_SHA,
-        },
-        # ── v2 generic deps dict ─────────────────────────────────────────────
         "deps": {
             "nsis": {
                 "version": _NSIS_VERSION,
@@ -139,6 +118,17 @@ def deps_manifest() -> dict:
                         "sha256": _RUNTIME_KEYTAR_SHA256,
                         "action": "copy",
                     },
+                ],
+            },
+            "runtime_app": {
+                "version": _APP_VERSION,
+                "files": [
+                    {
+                        "filename": f"conxa-app-{_APP_VERSION}.zip",
+                        "url": _APP_BUNDLE_URL,
+                        "sha256": _APP_BUNDLE_SHA,
+                        "action": "extract_zip",
+                    }
                 ],
             },
         },

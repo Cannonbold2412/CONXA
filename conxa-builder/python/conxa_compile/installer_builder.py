@@ -362,11 +362,20 @@ def _stage_studio_cache_runtime_binary(
     )
     _info("version.json written")
 
-    app_dir = runtime_dir / "runtime-app"
-    if app_dir.is_dir():
+    _base = os.environ.get("SKILL_DATA_DIR") or str(Path.home() / ".conxa-build-studio")
+    runtime_app_root = Path(_base) / "deps" / "runtime_app"
+    app_dir: Path | None = None
+    if runtime_app_root.is_dir():
+        _candidates = [p for p in runtime_app_root.iterdir()
+                       if p.is_dir() and not p.name.startswith(".")]
+        if _candidates:
+            app_dir = max(_candidates, key=_runtime_version_sort_key)
+    if app_dir and app_dir.is_dir():
         shutil.copytree(app_dir, dest / "runtime-app")
         kb = sum(f.stat().st_size for f in (dest / "runtime-app").rglob("*") if f.is_file()) // 1024
-        _info(f"runtime-app/ staged ({kb} KB)")
+        _info(f"runtime-app/ staged ({kb} KB, from {app_dir})")
+    else:
+        _info("WARNING: runtime_app not found in deps cache — app layer will not be pre-installed")
 
 
 def _stage_runtime_binary(
