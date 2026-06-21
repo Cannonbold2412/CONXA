@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import secrets
 import threading
 import time
 import urllib.request
+
+_log = logging.getLogger(__name__)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -158,10 +161,11 @@ def _clerk_org_role(user_id: str, org_id: str) -> str | None:
     Clerk OAuth access tokens (used by Build Studio's PKCE login) carry org_id
     but NOT org_role — the session-token JWT template does not apply to OAuth
     tokens. When org_role is absent from the claims we resolve it here. Requires
-    CLERK_SECRET_KEY to be set.
+    CLERK_SECRET_KEY to be set on the backend.
     """
     secret = settings.clerk_secret_key.strip()
     if not secret:
+        _log.warning("clerk_org_role: CLERK_SECRET_KEY not set — cannot resolve org role for %s", user_id)
         return None
     url = f"https://api.clerk.com/v1/users/{user_id}/organization_memberships?limit=100"
     req = urllib.request.Request(url)
@@ -171,9 +175,19 @@ def _clerk_org_role(user_id: str, org_id: str) -> str | None:
             data = json.loads(resp.read().decode("utf-8"))
         for m in data.get("data", []):
             if isinstance(m, dict) and m.get("organization", {}).get("id") == org_id:
-                return str(m.get("role") or "")
-    except Exception:
-        pass
+                role = str(m.get("role") or "")
+                _log.info("clerk_org_role: resolved %s in %s → %s", user_id, org_id, role)
+                return role
+        _log.warning("clerk_org_role: user %s has no membership in org %s", user_id, org_id)
+    except urllib.error.HTTPError as exc:
+        body = b""
+        try:
+            body = exc.read()
+        except Exception:
+            pass
+        _log.error("clerk_org_role: Clerk API returned HTTP %s: %s", exc.code, body.decode("utf-8", errors="replace")[:300])
+    except Exception as exc:
+        _log.error("clerk_org_role: unexpected error: %s", exc)
     return None
 
 

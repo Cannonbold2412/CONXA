@@ -54,6 +54,7 @@ def get_me(principal: Principal = Depends(current_principal)) -> dict[str, Any]:
         "identity_source": principal.identity_source,
         "proxy_identity_trusted": principal.proxy_identity_trusted,
         "proxy_identity_status": principal.proxy_identity_status,
+        "clerk_secret_key_configured": bool(settings.clerk_secret_key.strip()),
     }
 
 
