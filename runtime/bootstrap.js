@@ -44,7 +44,8 @@ function loadAppLayer() {
 }
 
 if (!loadAppLayer()) {
-  // Fallback: load the server.jsc compiled into the pkg VFS at build time.
+  // Fallback: load bundled source from the pkg VFS.
   // This handles: first boot before any app-layer download, corrupted conxa-app/, host/app mismatch.
-  require("./server.jsc");
+  // All app JS files are listed in pkg.scripts so they are included in the VFS at build time.
+  require("./server");
 }
