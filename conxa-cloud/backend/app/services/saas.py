@@ -170,6 +170,13 @@ def _clerk_org_role(user_id: str, org_id: str) -> str | None:
     url = f"https://api.clerk.com/v1/users/{user_id}/organization_memberships?limit=100"
     req = urllib.request.Request(url)
     req.add_header("Authorization", f"Bearer {secret}")
+    req.add_header(
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36",
+    )
+    req.add_header("Accept", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
