@@ -26,12 +26,14 @@ directories:
   output: dist/studio
 
 # Auto-update via Conxa Cloud (generic provider).
-# The Render backend serves /api/v1/updates/studio/latest.yml with the correct
-# sha512 checksum sourced from the CONXA_STUDIO_WIN_SHA512 env var.
-# Actual .exe downloads directly from GitHub — the cloud only serves the manifest.
+# The Render backend proxies the real electron-builder latest.yml from GitHub,
+# rewriting files[].url to an absolute GitHub URL. The .exe and .blockmap files
+# download directly from GitHub — the cloud only serves the manifest.
+# useMultipleRangeRequest is disabled at runtime (see main.js setFeedURL) because
+# GitHub release assets (Azure Blob) don't support multi-range HTTP requests.
 publish:
   provider: generic
-  url: https://apis.conxa.com/api/v1/updates/studio
+  url: https://apis.conxa.in/api/v1/updates/studio
 
 win:
   icon: build/icon.png
