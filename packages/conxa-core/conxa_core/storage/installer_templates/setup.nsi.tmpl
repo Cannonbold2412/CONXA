@@ -78,7 +78,7 @@ Section "Runtime" SEC_RUNTIME
   File "${STAGING_DIR}\runtime\keytar.node"
   File "${STAGING_DIR}\runtime\version.json"
   ; Pre-extracted app layer — /nonfatal is a no-op if source dir is absent
-  SetOutPath "${RUNTIME_DIR}\runtime-app"
+  SetOutPath "${INSTALL_DIR}\conxa-app"
   File /nonfatal /r "${STAGING_DIR}\runtime\runtime-app\*.*"
   SetOutPath "${RUNTIME_DIR}"
 
