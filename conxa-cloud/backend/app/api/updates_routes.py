@@ -167,7 +167,7 @@ def studio_latest_yml() -> Response:
             base = _STUDIO_LATEST_YML_URL.rsplit("/", 1)[0]
             content = re.sub(
                 r"(^\s*-\s*url:\s*)(.+\.exe)",
-                lambda m: m.group(1) + base + "/" + m.group(2).strip(),
+                lambda m: m.group(1) + base + "/" + m.group(2).strip().replace(" ", "."),
                 content,
                 flags=re.MULTILINE,
             )
