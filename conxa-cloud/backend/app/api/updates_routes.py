@@ -65,15 +65,20 @@ _PLAYWRIGHT_VERSION = os.environ.get("CONXA_PLAYWRIGHT_VERSION", "1.61.0")
 _CHROMIUM_REVISION = os.environ.get("CONXA_CHROMIUM_REVISION", "1228")
 
 _STUDIO_VERSION = os.environ.get("CONXA_STUDIO_VERSION", "studio-v1.0.0")
+_STUDIO_BARE_VERSION = re.sub(r"^studio-v", "", _STUDIO_VERSION).lstrip("v")
 _STUDIO_WIN_URL = os.environ.get(
     "CONXA_STUDIO_WIN_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/Conxa-Build-Studio-Setup-1.0.0.exe",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/Conxa-Build-Studio-Setup-{_STUDIO_BARE_VERSION}.exe",
 )
 _STUDIO_WIN_SHA256 = os.environ.get("CONXA_STUDIO_WIN_SHA256", "")
 _STUDIO_WIN_SHA512 = os.environ.get("CONXA_STUDIO_WIN_SHA512", "")
-# When set, /updates/studio/latest.yml proxies this URL so electron-updater gets the
-# full electron-builder YAML (including blockMapSize) and uses differential download.
-_STUDIO_LATEST_YML_URL = os.environ.get("CONXA_STUDIO_LATEST_YML_URL", "")
+# Proxied by /updates/studio/latest.yml so electron-updater gets the full
+# electron-builder YAML (including blockMapSize) for differential download.
+# Override only when hosting artifacts outside GitHub Releases.
+_STUDIO_LATEST_YML_URL = os.environ.get(
+    "CONXA_STUDIO_LATEST_YML_URL",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/latest.yml",
+)
 
 
 @router.get("/updates/deps-manifest", include_in_schema=False)
@@ -169,10 +174,9 @@ def studio_latest_yml() -> Response:
             pass  # fall through to hand-crafted YAML on any fetch error
 
     # Fallback: minimal YAML (no blockMapSize → full download, not differential).
-    bare_version = re.sub(r"^studio-v", "", _STUDIO_VERSION).lstrip("v")
     filename = unquote(_STUDIO_WIN_URL.split("/")[-1])
     lines = [
-        f"version: {bare_version}",
+        f"version: {_STUDIO_BARE_VERSION}",
         "files:",
         f"  - url: {_STUDIO_WIN_URL}",
     ]

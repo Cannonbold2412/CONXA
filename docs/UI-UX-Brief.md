@@ -187,14 +187,26 @@ The `research/frontend/` directory contains a prototype/research copy of both th
 ### 2.9 Build Page (`BuildPage.tsx`)
 
 **Purpose:** Build the data-only plugin folder from compiled workflows.  
-**Inputs:** Plugin ID, version string.  
+**Inputs:** Plugin ID (selected from sidebar), version hardcoded to `0.1.0`.  
 **Outputs:** Build success confirmation, output path.  
-**User goal:** Package all workflows into a distributable format.
+**User goal:** Package all workflows into a distributable format and verify tests pass before creating the installer.
 
-**UX issues:**
-- Version input is free text — no semver validation or auto-increment.
-- No preview of which workflows will be included in the build.
-- Unsigned-off workflows are included by default — should warn or block.
+**Layout (enterprise redesign 2026-06-22):** Two-column — left plugin rail (272 px) + right workspace. Left rail shows plugins with a brand-clay accent bar on the selected item and a status dot (green/amber/red). Right workspace has: plugin header, 3-stat strip (Workflows / Tests / Last build), a 5-step release pipeline stepper (Compile → Edit → Build → Test → Installer), blocked/stale alert banners, action row, and a terminal/test panel at the bottom that fills remaining height.
+
+**Terminal / Build Log panel:** Dark terminal background (`#080a0c`), monospace font, anchored severity coloring — `^Warning:` and `^Skipping ` lines in amber, everything else zinc-300. A blinking cursor line renders while building. Line count shown in header. A "Live" pulse badge appears during active builds.
+
+**Log / Tests toggle:** "Build Log" and "Workflow Tests" are tab buttons within the panel header. The log tab is always accessible; the tests tab appears once a build has completed. This replaces the previous hard-swap behavior so logs stay reachable after build.
+
+**Resolved UX issues:**
+- Build log is now a flex-1 panel that fills available height — no more truncated `max-h-64` area.
+- Plugin status shown as a colored dot (not a badge) in the list for cleaner scanning.
+- Build CTA uses the brand-clay color when active and enabled.
+- Workflow tests are always reachable via tab without losing the build log.
+
+**Remaining UX issues:**
+- Version is still hardcoded to `0.1.0` — no semver validation or auto-increment.
+- No preview of which workflows will be included before triggering the build.
+- Unsigned-off workflows are included silently — should warn or block per workflow.
 
 ---
 
