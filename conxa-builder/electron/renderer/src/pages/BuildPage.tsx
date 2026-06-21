@@ -9,7 +9,6 @@ import {
   type PipelineStep,
   type StepState,
 } from '@/components/build/BuildPipelineStepper'
-import { StatCard } from '@/components/build/StatCard'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -21,8 +20,6 @@ import {
   PackageCheck,
   XCircle,
   Layers,
-  FlaskConical,
-  CalendarDays,
   Cpu,
   Terminal,
 } from 'lucide-react'
@@ -420,45 +417,6 @@ export function BuildPage() {
                 >
                   {selectedPlugin.status}
                 </Badge>
-              </div>
-
-              {/* stat strip */}
-              <div className="grid grid-cols-3 gap-3 border-b border-white/8 px-5 py-3.5">
-                <StatCard
-                  label="Workflows"
-                  value={selectedPlugin.workflows.length}
-                  subvalue={
-                    uncompiled.length > 0 ? `${uncompiled.length} uncompiled` : 'all compiled'
-                  }
-                  accent={uncompiled.length > 0 ? 'amber' : 'emerald'}
-                  icon={<Layers />}
-                />
-                <StatCard
-                  label="Tests"
-                  value={testSummary.total === 0 ? '—' : `${testSummary.passed}/${testSummary.total}`}
-                  subvalue={
-                    testSummary.allPassed
-                      ? 'All clear'
-                      : testSummary.total > 0
-                        ? 'Pending'
-                        : 'Run after build'
-                  }
-                  accent={
-                    testSummary.allPassed ? 'emerald' : testSummary.total > 0 ? 'amber' : 'zinc'
-                  }
-                  icon={<FlaskConical />}
-                />
-                <StatCard
-                  label="Last build"
-                  value={selectedPlugin.build ? `v${selectedPlugin.build.version}` : '—'}
-                  subvalue={
-                    selectedPlugin.build
-                      ? fmtDate(selectedPlugin.build.last_built_at)
-                      : 'No build yet'
-                  }
-                  accent={selectedPlugin.build ? 'sky' : 'zinc'}
-                  icon={<CalendarDays />}
-                />
               </div>
 
               {/* pipeline stepper */}
