@@ -55,7 +55,10 @@ _RUNTIME_KEYTAR_SHA256 = os.environ.get("CONXA_KEYTAR_WIN_SHA256", "")
 # App layer (small zip, every release)
 _APP_VERSION = os.environ.get("CONXA_APP_VERSION", "app-v1.0.0")
 _APP_MIN_HOST = os.environ.get("CONXA_APP_MIN_HOST", "host-v1.0.0")
-_APP_BUNDLE_URL = os.environ.get("CONXA_APP_BUNDLE_URL", "")
+_APP_BUNDLE_URL = os.environ.get(
+    "CONXA_APP_BUNDLE_URL",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_APP_VERSION}/conxa-app-{_APP_VERSION}.zip",
+)
 _APP_BUNDLE_SHA = os.environ.get("CONXA_APP_BUNDLE_SHA256", "")
 
 _PLAYWRIGHT_VERSION = os.environ.get("CONXA_PLAYWRIGHT_VERSION", "1.61.0")
