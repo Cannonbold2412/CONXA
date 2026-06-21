@@ -12,6 +12,7 @@ import { BoxSelect, ImageIcon } from 'lucide-react'
 import type { StepScreenshotDTO } from '../types/workflow'
 import { RECORDING_DRAG_MODE_CLEAR_VISUAL, RECORDING_SCREENSHOT_DRAG_MIME } from '@/api/workflowApi'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 /** Matches ``app/confidence/uncertainty.py`` audit (non-scroll, w or h under 2). */
@@ -338,24 +339,30 @@ function ScreenshotViewInner({
           </span>
           {bboxToolUi ? (
             <div className="pointer-events-auto shrink-0">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={bboxToolUi.saving}
-                className={cn(
-                  'h-7 gap-1 rounded-full border bg-transparent px-2 text-[11px] font-bold text-zinc-950 shadow-sm hover:bg-transparent hover:text-zinc-950',
-                  bboxToolUi.active
-                    ? 'border-black/70'
-                    : 'border-black/50',
-                )}
-                title="Draw a rectangle on the screenshot to save signals.visual bbox and recompute anchors"
-                aria-pressed={bboxToolUi.active}
-                onClick={() => bboxToolUi.onToggle()}
-              >
-                <BoxSelect className="size-3.5 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
-                Visual bbox
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={bboxToolUi.saving}
+                    className={cn(
+                      'h-7 gap-1 rounded-full border bg-transparent px-2 text-[11px] font-bold text-zinc-950 shadow-sm hover:bg-transparent hover:text-zinc-950',
+                      bboxToolUi.active
+                        ? 'border-black/70'
+                        : 'border-black/50',
+                    )}
+                    aria-pressed={bboxToolUi.active}
+                    onClick={() => bboxToolUi.onToggle()}
+                  >
+                    <BoxSelect className="size-3.5 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
+                    Visual bbox
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  Draw a rectangle on the screenshot to save the visual region and recompute anchors
+                </TooltipContent>
+              </Tooltip>
             </div>
           ) : null}
         </div>

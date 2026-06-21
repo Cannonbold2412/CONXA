@@ -34,9 +34,14 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { InfoHint } from '@/components/ui/info-hint'
 import { ValidationReportPanel } from '@/components/ValidationReportPanel'
+import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
   ChevronDown,
@@ -44,8 +49,8 @@ import {
   Copy,
   Home,
   Image as ImageIcon,
-  Info,
   Lightbulb,
+  type LucideIcon,
   Redo2,
   RefreshCw,
   ShieldCheck,
@@ -53,9 +58,40 @@ import {
   Undo2,
   Zap,
 } from 'lucide-react'
+import type { HelpEntry } from '@/lib/editorHelp'
+
+type ToolPaneKey = 'validation' | 'suggestions' | 'variables' | 'screenshots' | 'selectors'
 
 const SKILL_ID_CAPTION_CLASS =
   'max-w-[12rem] truncate font-mono text-[10px] leading-none text-zinc-500 sm:max-w-[16rem]'
+
+const BRAND_BUTTON_CLASS =
+  'bg-brand text-brand-foreground hover:bg-brand-hover focus-visible:ring-brand-ring'
+
+const FLOW_STEPS = ['Record', 'Compile', 'Edit', 'Finish'] as const
+
+/** Compact "how editing works" strip for newcomers on the landing screen. */
+function FlowExplainer() {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+      {FLOW_STEPS.map((step, i) => (
+        <span key={step} className="flex items-center gap-1.5">
+          <span
+            className={cn(
+              'rounded-md border px-1.5 py-0.5 font-medium',
+              step === 'Edit'
+                ? 'border-brand/40 bg-brand/10 text-brand'
+                : 'border-white/10 bg-white/[0.03] text-zinc-400',
+            )}
+          >
+            {step}
+          </span>
+          {i < FLOW_STEPS.length - 1 ? <span className="text-zinc-600">→</span> : null}
+        </span>
+      ))}
+    </div>
+  )
+}
 
 export function HumanEditPage() {
   const EDITOR_SIDEBAR_WIDTH_KEY = 'ai-native-editor-sidebar-width'
@@ -79,6 +115,7 @@ export function HumanEditPage() {
   const [activeToolsPane, setActiveToolsPane] = useState<string | null>('suggestions')
   const [recordingShotDragActive, setRecordingShotDragActive] = useState(false)
   const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const splitPaneRef = useRef<HTMLDivElement | null>(null)
   const stepEditorRef = useRef<StepEditorPanelHandle>(null)
   const selected = useEditorStore((s) => s.selectedStepIndex)
@@ -87,8 +124,10 @@ export function HumanEditPage() {
   const setSelectedStepIndex = useEditorStore((s) => s.setSelectedStepIndex)
   const canUndo = useEditorStore((s) => s.canUndo)
   const canRedo = useEditorStore((s) => s.canRedo)
+  const dirtyCount = useEditorStore((s) => s.dirtySteps.size)
   const setHistoryState = useEditorStore((s) => s.setHistoryState)
   const resetHistory = useEditorStore((s) => s.resetHistory)
+  const prefersReducedMotion = useReducedMotion()
 
   const skillsListQ = useQuery({
     queryKey: ['skillList'],
@@ -481,29 +520,18 @@ export function HumanEditPage() {
               <CardHeader className="border-b border-white/8">
                 <CardTitle className="flex items-center gap-2 text-white">
                   Open a skill
-                  <span
-                    className="inline-flex text-zinc-500 hover:text-zinc-400"
-                    title="Record and compile produce a skill package. Editing here updates that same skill on disk until you rebuild from recording (which resets to a fresh compile)."
-                  >
-                    <Info className="size-3.5 shrink-0" aria-hidden />
-                    <span className="sr-only">More about opening and editing skills</span>
-                  </span>
+                  <InfoHint {...editorHelp.openSkill} side="bottom" align="start" />
                 </CardTitle>
                 <CardDescription className="text-zinc-500">
-                  Flow: Record → Compile → tune steps here → Finish saves to the same skill id. Use "Rebuild from recording" only if you want to discard edits and regenerate from raw events.
+                  Fine-tune a compiled workflow, then Finish to save it back to the same skill.
                 </CardDescription>
+                <FlowExplainer />
               </CardHeader>
               <CardContent className="space-y-6 pt-6">
                 <fieldset className="space-y-4 rounded-xl border border-white/8 bg-black/20 p-4">
                   <legend className="flex items-center gap-1.5 px-1.5 text-sm font-semibold text-zinc-200">
                     <span>Resume a skill</span>
-                    <span
-                      className="inline-flex font-normal text-zinc-500 hover:text-zinc-400"
-                      title='Choose from the dropdown or paste a skill id manually, then tap "Load and edit".'
-                    >
-                      <Info className="size-3.5" aria-hidden />
-                      <span className="sr-only">How to resume</span>
-                    </span>
+                    <InfoHint {...editorHelp.resume} side="top" align="start" />
                   </legend>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="grid gap-2">
@@ -558,7 +586,7 @@ export function HumanEditPage() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" onClick={() => openSkillForEdit(resumePick || manualSkillId)} className="bg-white text-black hover:bg-zinc-200">
+                    <Button type="button" onClick={() => openSkillForEdit(resumePick || manualSkillId)} className={BRAND_BUTTON_CLASS}>
                       Load and edit
                     </Button>
                     <Button
@@ -588,23 +616,35 @@ export function HumanEditPage() {
             <Card className="border-white/8 bg-white/[0.035] shadow-none">
               <CardHeader className="border-b border-white/8">
                 <CardTitle className="flex items-center gap-2 text-white">
-                  Workspace signals
-                  <span
-                    className="inline-flex font-normal text-zinc-500 hover:text-zinc-400"
-                    title="Raw JSON from the backend metrics endpoint — counts, caches, or errors useful when debugging compile or edit issues."
-                  >
-                    <Info className="size-3.5 shrink-0" aria-hidden />
-                    <span className="sr-only">What workspace signals shows</span>
-                  </span>
+                  Diagnostics
+                  <Badge variant="outline" className="border-white/10 text-[0.6rem] font-normal uppercase tracking-wide text-zinc-500">
+                    Technical
+                  </Badge>
+                  <InfoHint {...editorHelp.diagnostics} side="bottom" align="end" className="ml-auto" />
                 </CardTitle>
-                <CardDescription className="text-zinc-500">Current backend metrics for the editor and compiler workflow.</CardDescription>
+                <CardDescription className="text-zinc-500">
+                  Optional behind-the-scenes signals. You don't need these to edit — they help when reporting an issue.
+                </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4 pt-6">
-                <ScrollArea className="h-64 rounded-lg border border-white/8 bg-black/20 p-3">
-                  <pre className="font-mono text-xs leading-6 break-words whitespace-pre-wrap text-zinc-400">
-                    {JSON.stringify(metrics ?? { info: 'Click "Refresh metrics"' }, null, 2)}
-                  </pre>
-                </ScrollArea>
+              <CardContent className="space-y-3 pt-6">
+                <Collapsible open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen}>
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between gap-2 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-sm text-zinc-300 outline-none transition-colors hover:bg-white/[0.05] focus-visible:ring-2 focus-visible:ring-brand-ring"
+                    >
+                      <span>{diagnosticsOpen ? 'Hide raw metrics' : 'Show raw metrics'}</span>
+                      <ChevronDown className={cn('size-4 text-zinc-500 transition-transform duration-200', diagnosticsOpen && 'rotate-180')} />
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <ScrollArea className="mt-3 h-64 rounded-lg border border-white/8 bg-black/20 p-3">
+                      <pre className="font-mono text-xs leading-6 break-words whitespace-pre-wrap text-zinc-400">
+                        {JSON.stringify(metrics ?? { info: 'Click "Refresh metrics"' }, null, 2)}
+                      </pre>
+                    </ScrollArea>
+                  </CollapsibleContent>
+                </Collapsible>
                 <Button
                   type="button"
                   variant="outline"
@@ -704,7 +744,24 @@ export function HumanEditPage() {
     ['--tools-pane-width' as string]: `${toolsPaneWidth}px`,
   } as CSSProperties
 
+  const toolPanes: {
+    key: ToolPaneKey
+    label: string
+    icon: LucideIcon
+    iconClass: string
+    help: HelpEntry
+    controls: string
+    count?: number | string
+  }[] = [
+    { key: 'validation', label: 'Validation', icon: ShieldCheck, iconClass: 'text-emerald-300', help: editorHelp.toolValidation, controls: 'validation-pane' },
+    { key: 'suggestions', label: 'Suggestions', icon: Lightbulb, iconClass: 'text-amber-300', help: editorHelp.toolSuggestions, controls: 'suggestions-pane', count: suggestionCount },
+    { key: 'variables', label: 'Input variables', icon: SlidersHorizontal, iconClass: 'text-sky-300', help: editorHelp.toolVariables, controls: 'variables-pane' },
+    { key: 'screenshots', label: 'Recording screenshots', icon: ImageIcon, iconClass: 'text-fuchsia-300', help: editorHelp.toolScreenshots, controls: 'recording-screenshots-pane', count: currentStep?.screenshot?.frames?.length ?? '—' },
+    { key: 'selectors', label: 'Compiled selectors', icon: Zap, iconClass: 'text-cyan-300', help: editorHelp.toolSelectors, controls: 'compiled-selectors-pane' },
+  ]
+
   return (
+    <TooltipProvider>
     <div className="flex h-full min-h-0 flex-col">
     <PageHeader
       title={`Skill: ${skillTitle}`}
@@ -718,22 +775,26 @@ export function HumanEditPage() {
               <span className={cn(SKILL_ID_CAPTION_CLASS, 'min-w-0 text-left')} title={skillId}>
                 {skillId}
               </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="h-5 w-5 shrink-0 p-0 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 [&_svg]:size-2.5"
-                title="Copy skill id"
-                aria-label="Copy skill id"
-                onClick={() =>
-                  navigator.clipboard
-                    .writeText(skillId)
-                    .then(() => toast.success('Skill id copied'))
-                    .catch(() => toast.error('Could not copy'))
-                }
-              >
-                <Copy className="size-2.5" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-5 w-5 shrink-0 p-0 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 [&_svg]:size-2.5"
+                    aria-label="Copy skill id"
+                    onClick={() =>
+                      navigator.clipboard
+                        .writeText(skillId)
+                        .then(() => toast.success('Skill id copied'))
+                        .catch(() => toast.error('Could not copy'))
+                    }
+                  >
+                    <Copy className="size-2.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Copy skill id</TooltipContent>
+              </Tooltip>
             </div>
             {version > 0 && (
               <Badge variant="outline" className="border-white/10 font-mono text-[0.65rem] text-zinc-500">
@@ -745,54 +806,80 @@ export function HumanEditPage() {
       }
       actions={
         <div className="flex items-center gap-2">
+          {dirtyCount > 0 && (
+            <span
+              className="hidden items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[0.7rem] font-medium text-amber-200 sm:inline-flex"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="size-1.5 rounded-full bg-amber-300" aria-hidden />
+              {dirtyCount} unsaved
+            </span>
+          )}
           <div className="flex items-center overflow-hidden rounded-md border border-white/10 bg-white/[0.03]">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-none px-2.5 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100 disabled:opacity-30"
-              onClick={() => void handleUndo()}
-              disabled={!canUndo}
-              title="Undo (Ctrl+Z)"
-              aria-label="Undo"
-            >
-              <Undo2 className="size-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 rounded-none px-2.5 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100 disabled:opacity-30"
+                  onClick={() => void handleUndo()}
+                  disabled={!canUndo}
+                  aria-label="Undo"
+                >
+                  <Undo2 className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Undo · Ctrl+Z</TooltipContent>
+            </Tooltip>
             <div className="h-4 w-px bg-white/10" />
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-none px-2.5 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100 disabled:opacity-30"
-              onClick={() => void handleRedo()}
-              disabled={!canRedo}
-              title="Redo (Ctrl+Y)"
-              aria-label="Redo"
-            >
-              <Redo2 className="size-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 rounded-none px-2.5 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100 disabled:opacity-30"
+                  onClick={() => void handleRedo()}
+                  disabled={!canRedo}
+                  aria-label="Redo"
+                >
+                  <Redo2 className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Redo · Ctrl+Y</TooltipContent>
+            </Tooltip>
           </div>
           {fromPath && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
-              onClick={() => navigate(fromPath)}
-              title="Back to plugin"
-            >
-              <ChevronLeft className="size-3.5" />
-              <span className="hidden sm:inline">Back</span>
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                  onClick={() => navigate(fromPath)}
+                >
+                  <ChevronLeft className="size-3.5" />
+                  <span className="hidden sm:inline">Back</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Back to plugin</TooltipContent>
+            </Tooltip>
           )}
-          <Button
-            type="button"
-            size="sm"
-            className="h-8 bg-white px-4 text-sm font-semibold text-black hover:bg-zinc-100"
-            onClick={() => void finishEditing()}
-            title="Save all changes and return to the skill list"
-          >
-            Finish editing
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                className={cn('h-8 px-4 text-sm font-semibold', BRAND_BUTTON_CLASS)}
+                onClick={() => void finishEditing()}
+              >
+                Finish editing
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Save all changes and return to the skill list</TooltipContent>
+          </Tooltip>
         </div>
       }
     />
@@ -857,164 +944,64 @@ export function HumanEditPage() {
         <aside className="border-border/60 bg-card/20 supports-[backdrop-filter]:bg-card/10 hidden min-h-0 overflow-hidden border-l p-2 backdrop-blur-sm md:flex md:flex-col md:gap-2">
           <section className="shrink-0 space-y-2 px-1 py-1">
             <h2 className="px-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">Tools</h2>
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant={activeToolsPane === 'validation' ? 'default' : 'outline'}
-                className={cn(
-                  'relative h-10 w-full items-center justify-start gap-2 px-3 pr-7',
-                  activeToolsPane === 'validation'
-                    ? 'bg-white text-black hover:bg-zinc-200'
-                    : 'border-white/12 bg-white/[0.02] text-zinc-200 hover:bg-white/[0.07]',
-                )}
-                onClick={() => toggleToolsPane('validation')}
-                aria-pressed={activeToolsPane === 'validation'}
-                aria-controls="validation-pane"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <ShieldCheck className={cn('size-4 shrink-0', activeToolsPane === 'validation' ? 'text-black' : 'text-emerald-300')} />
-                  <span className="truncate text-sm font-medium">Validation</span>
-                </span>
-                <span
-                  className={cn(
-                    'absolute top-1 right-1 inline-flex shrink-0',
-                    activeToolsPane === 'validation' ? 'text-zinc-700' : 'text-zinc-400',
-                  )}
-                  title="View validation checks and failure details."
-                >
-                  <Info className="size-3" />
-                </span>
-              </Button>
-              <Button
-                type="button"
-                variant={activeToolsPane === 'suggestions' ? 'default' : 'outline'}
-                className={cn(
-                  'relative h-10 w-full items-center justify-start gap-2 px-3 pr-7',
-                  activeToolsPane === 'suggestions'
-                    ? 'bg-white text-black hover:bg-zinc-200'
-                    : 'border-white/12 bg-white/[0.02] text-zinc-200 hover:bg-white/[0.07]',
-                )}
-                onClick={() => toggleToolsPane('suggestions')}
-                aria-pressed={activeToolsPane === 'suggestions'}
-                aria-controls="suggestions-pane"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <Lightbulb className={cn('size-4 shrink-0', activeToolsPane === 'suggestions' ? 'text-black' : 'text-amber-300')} />
-                  <span className="truncate text-sm font-medium">Suggestions</span>
-                </span>
-                <span className="ml-auto flex items-center gap-1.5 pr-3">
-                  <Badge
-                    variant="outline"
-                    className={cn('text-[0.65rem]', activeToolsPane === 'suggestions' ? 'border-black/20 text-black' : 'border-white/15 text-zinc-300')}
-                  >
-                    {suggestionCount}
-                  </Badge>
-                  <span
-                    className={cn(
-                      'absolute top-1 right-1 inline-flex shrink-0',
-                      activeToolsPane === 'suggestions' ? 'text-zinc-700' : 'text-zinc-400',
-                    )}
-                    title="Review AI suggestions to improve this workflow."
-                  >
-                    <Info className="size-3" />
-                  </span>
-                </span>
-              </Button>
-              <Button
-                type="button"
-                variant={activeToolsPane === 'variables' ? 'default' : 'outline'}
-                className={cn(
-                  'relative h-10 w-full items-center justify-start gap-2 px-3 pr-7',
-                  activeToolsPane === 'variables'
-                    ? 'bg-white text-black hover:bg-zinc-200'
-                    : 'border-white/12 bg-white/[0.02] text-zinc-200 hover:bg-white/[0.07]',
-                )}
-                onClick={() => toggleToolsPane('variables')}
-                aria-pressed={activeToolsPane === 'variables'}
-                aria-controls="variables-pane"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <SlidersHorizontal className={cn('size-4 shrink-0', activeToolsPane === 'variables' ? 'text-black' : 'text-sky-300')} />
-                  <span className="truncate text-sm font-medium">Input variables</span>
-                </span>
-                <span
-                  className={cn(
-                    'absolute top-1 right-1 inline-flex shrink-0',
-                    activeToolsPane === 'variables' ? 'text-zinc-700' : 'text-zinc-400',
-                  )}
-                  title="Configure input variables and replace literals with {{id}} across the workflow."
-                >
-                  <Info className="size-3" />
-                </span>
-              </Button>
-              <Button
-                type="button"
-                variant={activeToolsPane === 'screenshots' ? 'default' : 'outline'}
-                className={cn(
-                  'relative h-10 w-full items-center justify-start gap-2 px-3 pr-7',
-                  activeToolsPane === 'screenshots'
-                    ? 'bg-white text-black hover:bg-zinc-200'
-                    : 'border-white/12 bg-white/[0.02] text-zinc-200 hover:bg-white/[0.07]',
-                )}
-                onClick={() => toggleToolsPane('screenshots')}
-                aria-pressed={activeToolsPane === 'screenshots'}
-                aria-controls="recording-screenshots-pane"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <ImageIcon className={cn('size-4 shrink-0', activeToolsPane === 'screenshots' ? 'text-black' : 'text-fuchsia-300')} />
-                  <span className="truncate text-sm font-medium">Recording screenshots</span>
-                </span>
-                <span className="ml-auto flex items-center gap-1.5 pr-3">
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      'text-[0.65rem]',
-                      activeToolsPane === 'screenshots' ? 'border-black/20 text-black' : 'border-white/15 text-zinc-300',
-                    )}
-                  >
-                    {currentStep?.screenshot?.frames?.length ?? '—'}
-                  </Badge>
-                  <span
-                    className={cn(
-                      'absolute top-1 right-1 inline-flex shrink-0',
-                      activeToolsPane === 'screenshots' ? 'text-zinc-700' : 'text-zinc-400',
-                    )}
-                    title="5 video frames per step (−0.5 s to +0.5 s): click or drag to set the representative, or drag 'No image' to detach."
-                  >
-                    <Info className="size-3" />
-                  </span>
-                </span>
-              </Button>
-              <Button
-                type="button"
-                variant={activeToolsPane === 'selectors' ? 'default' : 'outline'}
-                className={cn(
-                  'relative h-10 w-full items-center justify-start gap-2 px-3 pr-7',
-                  activeToolsPane === 'selectors'
-                    ? 'bg-white text-black hover:bg-zinc-200'
-                    : 'border-white/12 bg-white/[0.02] text-zinc-200 hover:bg-white/[0.07]',
-                )}
-                onClick={() => toggleToolsPane('selectors')}
-                aria-pressed={activeToolsPane === 'selectors'}
-                aria-controls="compiled-selectors-pane"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <Zap className={cn('size-4 shrink-0', activeToolsPane === 'selectors' ? 'text-black' : 'text-cyan-300')} />
-                  <span className="truncate text-sm font-medium">Compiled selectors</span>
-                </span>
-                <span
-                  className={cn(
-                    'absolute top-1 right-1 inline-flex shrink-0',
-                    activeToolsPane === 'selectors' ? 'text-zinc-700' : 'text-zinc-400',
-                  )}
-                  title="View and regenerate compiled selectors for this step."
-                >
-                  <Info className="size-3" />
-                </span>
-              </Button>
+            <div className="flex flex-col gap-1">
+              {toolPanes.map((tool) => {
+                const active = activeToolsPane === tool.key
+                const Icon = tool.icon
+                return (
+                  <div key={tool.key} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => toggleToolsPane(tool.key)}
+                      aria-pressed={active}
+                      aria-controls={tool.controls}
+                      className={cn(
+                        'relative flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg border px-3 text-left outline-none transition-colors',
+                        'focus-visible:ring-2 focus-visible:ring-brand-ring',
+                        active
+                          ? 'border-brand/40 text-white'
+                          : 'border-white/12 bg-white/[0.02] text-zinc-200 hover:bg-white/[0.07]',
+                      )}
+                    >
+                      {active && (
+                        <motion.span
+                          layoutId="tool-active-bg"
+                          className="absolute inset-0 -z-0 rounded-lg bg-brand/12"
+                          transition={prefersReducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 40 }}
+                          aria-hidden
+                        />
+                      )}
+                      <span className="relative z-10 flex min-w-0 flex-1 items-center gap-2">
+                        <Icon className={cn('size-4 shrink-0', tool.iconClass)} />
+                        <span className="truncate text-sm font-medium">{tool.label}</span>
+                      </span>
+                      {tool.count !== undefined && (
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            'relative z-10 shrink-0 text-[0.65rem]',
+                            active ? 'border-brand/40 text-brand' : 'border-white/15 text-zinc-300',
+                          )}
+                        >
+                          {tool.count}
+                        </Badge>
+                      )}
+                    </button>
+                    <InfoHint {...tool.help} side="left" align="start" triggerLabel={`About ${tool.label}`} className="p-1.5" />
+                  </div>
+                )
+              })}
             </div>
           </section>
           <ScrollArea className="min-h-0 flex-1">
+            <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={activeToolsPane ?? 'none'}
+              initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+              transition={{ duration: prefersReducedMotion ? 0 : 0.15, ease: 'easeOut' }}
+            >
             <div id="validation-pane">{activeToolsPane === 'validation' ? <ValidationReportPanel data={validationReport} defaultOpen /> : null}</div>
             <div id="suggestions-pane">{activeToolsPane === 'suggestions' ? <SuggestionsInlinePanel suggestions={wf.suggestions} /> : null}</div>
             <div id="variables-pane">{activeToolsPane === 'variables' ? <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} /> : null}</div>
@@ -1036,7 +1023,10 @@ export function HumanEditPage() {
                   {currentStep ? (
                     <Card className="border-white/10 bg-white/[0.02]">
                       <CardHeader className="pb-3">
-                        <CardTitle className="text-sm">Semantic Description</CardTitle>
+                        <CardTitle className="flex items-center gap-1.5 text-sm">
+                          Semantic Description
+                          <InfoHint {...editorHelp.semanticDescription} side="left" align="start" />
+                        </CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-2 pb-3">
                         <p className="text-xs text-zinc-300 leading-relaxed">
@@ -1081,9 +1071,12 @@ export function HumanEditPage() {
                 </>
               ) : null}
             </div>
+            </motion.div>
+            </AnimatePresence>
           </ScrollArea>
         </aside>
       </div>
     </div>
+    </TooltipProvider>
   )
 }

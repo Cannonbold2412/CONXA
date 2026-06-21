@@ -147,13 +147,20 @@ The `research/frontend/` directory contains a prototype/research copy of both th
 - `CompiledSkillsTab.tsx` — view raw compiled output
 - `EntitlementMeters.tsx` — shows Human Edit pool for LLM-assisted edits
 
-**UX issues:**
-- Step editor opens in a panel but there's no visual "save" feedback — saves are implicit.
-- The screenshot panel requires manual matching of recording screenshots to steps — should be auto-matched.
-- Parameterization drawer is not discoverable (no affordance from the step view).
-- No diff view when editing (can't see what changed from compiled original).
-- Validation report is a tab, not inline — users miss compiler warnings.
-- Drag-and-drop reordering (`dragConstants.ts`) exists but its discoverability is unclear.
+**Layout (3-zone editor):** A top toolbar (skill title + id/copy, version, undo/redo, Back, and the brand-clay **Finish editing** CTA with a live "N unsaved" indicator driven by the editor store's `dirtySteps`), a slim entitlement-meter strip, then a resizable three-pane body: left **Workflow** step list (`WorkflowViewer`), center **Step editor** (`StepEditorPanel`), right **Tools** rail. The Tools rail is a vertical segmented control (Validation / Suggestions / Input variables / Recording screenshots / Compiled selectors) with a framer-motion active indicator and cross-faded panels; each tool sits beside its own info affordance. The "no skill" state is a guided landing with a Record → Compile → Edit → Finish explainer, a primary **Resume a skill** card, and a **Diagnostics** card whose raw metrics JSON is collapsed by default.
+
+**Two-tier contextual help (`InfoHint` + `Tooltip`):** Every "i" affordance is a themed click-to-open popover (`components/ui/info-hint.tsx`) showing a plain-language **summary** for non-technical users plus an expandable **"Technical details"** section for power users. Help copy is centralized in `lib/editorHelp.tsx`. Short icon-button labels use a themed `Tooltip` (`components/ui/tooltip.tsx`) instead of native `title=`. Both build on Radix (`components/ui/popover.tsx`) and animate via the `.anim-pop` CSS layer in `globals.css`, degrading to instant under `prefers-reduced-motion`. The clay brand accent is the `--brand*` token set in `globals.css`.
+
+**Resolved UX issues:**
+- Tool affordances now carry first-class, themed help (summary + technical detail) rather than terse native tooltips.
+- Validation/Suggestions/Variables/Screenshots/Selectors are switchable in a single animated rail; selected step uses the brand-clay highlight.
+- Unsaved edits are now surfaced explicitly in the toolbar; the empty workflow shows an "Add first action" state.
+
+**Remaining UX issues:**
+- Saves are still per-step and implicit beyond the unsaved-count badge — no inline per-field "saved" confirmation.
+- The screenshot panel still requires manual matching of recording screenshots to steps — should be auto-matched.
+- No diff view when editing (can't see what changed from the compiled original).
+- No guided sign-off checklist before Finish.
 
 ---
 

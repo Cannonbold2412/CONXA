@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
+import { useState, type DragEvent, type KeyboardEvent } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,11 +12,15 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { InfoHint } from '@/components/ui/info-hint'
+import { editorHelp } from '@/lib/editorHelp'
 import { cn } from '@/lib/utils'
 import type { StepEditorDTO } from '../types/workflow'
 import { useEditorStore } from '../store/editorStore'
 import { RECORDING_DRAG_MODE_CLEAR_VISUAL, RECORDING_SCREENSHOT_DRAG_MIME } from '@/api/workflowApi'
-import { BoxSelect, ChevronDown, GripVertical, Info, Plus, Trash2 } from 'lucide-react'
+import { BoxSelect, ChevronDown, GripVertical, ListPlus, Plus, Trash2 } from 'lucide-react'
 
 const ADD_ACTION_OPTIONS = [
   { value: 'navigate', label: 'Navigate', category: 'Flow' },
@@ -93,79 +97,55 @@ type WorkflowHeaderProps = {
 
 function WorkflowHeader({ version, onAddAction }: WorkflowHeaderProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const addMenuRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!addMenuOpen) return
-    const onPointerDown = (event: PointerEvent) => {
-      if (addMenuRef.current?.contains(event.target as Node)) return
-      setAddMenuOpen(false)
-    }
-    window.addEventListener('pointerdown', onPointerDown)
-    return () => window.removeEventListener('pointerdown', onPointerDown)
-  }, [addMenuOpen])
 
   return (
     <div className="border-border/80 space-y-2 border-b bg-muted/5 p-3">
       <div className="flex items-center gap-1.5">
         <h2 className="text-foreground text-sm font-semibold tracking-tight">Workflow</h2>
-        <span
-          className="text-muted-foreground hover:text-foreground/80 inline-flex shrink-0"
-          title="Drag steps to reorder. From Tools → Recording screenshots: drag a frame or No image onto a step to swap/clear screenshots and anchors."
-        >
-          <Info className="size-3.5" aria-hidden />
-          <span className="sr-only">Workflow tips</span>
-        </span>
+        <InfoHint {...editorHelp.workflowTips} side="bottom" align="start" />
       </div>
       <div className="flex items-center gap-2">
         <p className="text-muted-foreground min-w-0 flex-1 text-xs">Version {version}</p>
-        <div ref={addMenuRef} className="relative shrink-0">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1.5 px-2.5 text-xs"
-            title="Add action after the selected step"
-            aria-haspopup="menu"
-            aria-expanded={addMenuOpen}
-            onClick={() => setAddMenuOpen((open) => !open)}
-          >
-            <Plus className="size-3.5" />
-            Add
-            <ChevronDown className="size-3.5" />
-          </Button>
-          {addMenuOpen ? (
-            <div
-              role="menu"
-              className="border-border bg-popover text-popover-foreground absolute right-0 top-full z-30 mt-1 max-h-96 w-52 overflow-y-auto rounded-md border p-1 shadow-lg"
+        <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 px-2.5 text-xs"
+              aria-label="Add action after the selected step"
             >
-              {ADD_ACTION_OPTIONS.map((option, index) => {
-                const prev = ADD_ACTION_OPTIONS[index - 1]
-                const showCategory = !prev || prev.category !== option.category
-                return (
-                  <div key={option.value}>
-                    {showCategory ? (
-                      <div className="px-2 pb-1 pt-2 text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground first:pt-1">
-                        {option.category}
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="hover:bg-muted focus-visible:bg-muted flex h-8 w-full items-center rounded-sm px-2 text-left text-xs outline-none"
-                      onClick={() => {
-                        setAddMenuOpen(false)
-                        onAddAction(option.value)
-                      }}
-                    >
-                      {option.label}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          ) : null}
-        </div>
+              <Plus className="size-3.5" />
+              Add
+              <ChevronDown className="size-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" side="bottom" className="max-h-96 w-52 overflow-y-auto p-1">
+            {ADD_ACTION_OPTIONS.map((option, index) => {
+              const prev = ADD_ACTION_OPTIONS[index - 1]
+              const showCategory = !prev || prev.category !== option.category
+              return (
+                <div key={option.value}>
+                  {showCategory ? (
+                    <div className="px-2 pb-1 pt-2 text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground first:pt-1">
+                      {option.category}
+                    </div>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="hover:bg-white/[0.07] focus-visible:bg-white/[0.07] flex h-8 w-full items-center rounded-sm px-2 text-left text-xs text-zinc-200 outline-none"
+                    onClick={() => {
+                      setAddMenuOpen(false)
+                      onAddAction(option.value)
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                </div>
+              )
+            })}
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
   )
@@ -244,9 +224,10 @@ function WorkflowStepItem({
         onClick={selectStep}
         onKeyDown={onRowKeyDown}
         className={cn(
-          'border-border bg-background hover:bg-muted/50 flex w-full min-w-0 items-start gap-2 rounded-lg border p-2.5 text-left text-sm transition-colors',
-          'focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none',
-          isSelected && 'ring-ring border-primary/50 bg-primary/5 ring-1',
+          'border-border bg-background hover:bg-muted/50 relative flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-lg border p-2.5 text-left text-sm transition-colors',
+          'focus-visible:ring-brand-ring focus-visible:ring-2 focus-visible:outline-none',
+          isSelected &&
+            'border-brand/40 bg-brand-subtle before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-brand',
           isDragging && 'opacity-70',
         )}
       >
@@ -294,16 +275,20 @@ type BboxState = NonNullable<ReturnType<typeof visualBboxState>>
 
 function VisualBboxBadge({ state }: { state: BboxState }) {
   return (
-    <span
-      className={cn(
-        'mt-1 inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[0.65rem] leading-none',
-        state.usable ? 'border-sky-400/25 bg-sky-400/10 text-sky-300' : 'border-white/10 bg-white/[0.03] text-zinc-500',
-      )}
-      title={state.title}
-    >
-      <BoxSelect className="size-3 shrink-0" aria-hidden />
-      <span className="min-w-0 truncate">bbox {state.label}</span>
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            'mt-1 inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[0.65rem] leading-none',
+            state.usable ? 'border-sky-400/25 bg-sky-400/10 text-sky-300' : 'border-white/10 bg-white/[0.03] text-zinc-500',
+          )}
+        >
+          <BoxSelect className="size-3 shrink-0" aria-hidden />
+          <span className="min-w-0 truncate">bbox {state.label}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">{state.title}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -333,20 +318,24 @@ function StepBadges({
           intent
         </Badge>
       ) : null}
-      <Button
-        type="button"
-        size="icon-sm"
-        variant="ghost"
-        className="text-destructive hover:text-destructive -mr-1 h-7 w-7"
-        title="Remove step"
-        onClick={(event) => {
-          event.stopPropagation()
-          onDeleteRequest(step.step_index)
-        }}
-        aria-label="Remove step"
-      >
-        <Trash2 className="size-3.5" />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            className="text-destructive hover:text-destructive -mr-1 h-7 w-7"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDeleteRequest(step.step_index)
+            }}
+            aria-label="Remove step"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">Remove step</TooltipContent>
+      </Tooltip>
     </span>
   )
 }
@@ -408,6 +397,27 @@ export function WorkflowViewer({
       <aside className="border-border bg-card/35 supports-[backdrop-filter]:bg-card/25 relative z-10 flex min-h-0 min-w-0 flex-col border-b backdrop-blur-[2px] md:border-r md:border-b-0">
         <WorkflowHeader version={version} onAddAction={onAddAction} />
         <ScrollArea className="min-h-[12rem] w-full flex-1 md:min-h-0">
+          {steps.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+              <span className="flex size-11 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-zinc-400" aria-hidden>
+                <ListPlus className="size-5" />
+              </span>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-zinc-200">No steps yet</p>
+                <p className="text-xs text-zinc-500">Add your first action to start building this workflow.</p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={() => onAddAction('click')}
+              >
+                <Plus className="size-3.5" />
+                Add first action
+              </Button>
+            </div>
+          ) : (
           <ol className="w-full space-y-1.5 p-2">
             {steps.map((step) => (
               <WorkflowStepItem
@@ -428,6 +438,7 @@ export function WorkflowViewer({
               />
             ))}
           </ol>
+          )}
         </ScrollArea>
       </aside>
 

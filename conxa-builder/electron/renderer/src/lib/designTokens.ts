@@ -14,6 +14,8 @@ export const tokens = {
   "--text-muted": "#5a5a5a",
   "--accent": "#d97757",
   "--accent-hover": "#e08565",
+  "--brand": "#d97757",
+  "--brand-hover": "#e08565",
   "--green": "#4ade80",
   "--amber": "#fbbf24",
   "--red": "#f87171",

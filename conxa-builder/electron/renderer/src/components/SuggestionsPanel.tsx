@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { AlertCircle, Info } from 'lucide-react'
 
@@ -56,17 +57,21 @@ function SuggestionsList({ suggestions }: { suggestions: SuggestionItem[] }) {
           >
             <div className="flex flex-wrap items-center gap-2">
               {severityIcon(s.severity)}
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 w-fit min-w-0 flex-1 justify-start gap-1 px-2 font-normal text-zinc-100 hover:bg-white/5 hover:text-white"
-                onClick={() => setSel(s.step_index)}
-                title="Jump to step"
-              >
-                <span className="text-xs font-medium">Step {s.step_index + 1}</span>
-                <span className="min-w-0 break-all font-mono text-xs">{s.code}</span>
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-fit min-w-0 flex-1 justify-start gap-1 px-2 font-normal text-zinc-100 hover:bg-white/5 hover:text-white"
+                    onClick={() => setSel(s.step_index)}
+                  >
+                    <span className="text-xs font-medium">Step {s.step_index + 1}</span>
+                    <span className="min-w-0 break-all font-mono text-xs">{s.code}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Jump to this step</TooltipContent>
+              </Tooltip>
             </div>
             <p className="pl-0.5 text-sm leading-relaxed text-zinc-400">{s.message}</p>
             <div className="pl-0.5">

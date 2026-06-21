@@ -11,9 +11,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import { InfoHint } from '@/components/ui/info-hint'
+import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
-import { BoxSelect, Info, Trash2 } from 'lucide-react'
+import { BoxSelect, Trash2 } from 'lucide-react'
 
 type FormValues = {
   intent: string
@@ -581,11 +583,13 @@ export const StepEditorPanel = forwardRef<StepEditorPanelHandle, Props>(
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="shrink-0 font-medium text-zinc-300">Visual bbox</span>
-            <span className="inline-flex shrink-0 text-zinc-500 hover:text-zinc-400" title={bboxSummary.title}>
-              <Info className="size-3.5" aria-hidden />
-              <span className="sr-only">Visual bbox usage</span>
-            </span>
+            <span className="shrink-0 font-medium text-zinc-300">Visual region</span>
+            <InfoHint
+              {...editorHelp.bbox}
+              summary={bboxSummary.usable ? editorHelp.bbox.summary : 'No usable visual region is saved for this action yet.'}
+              side="top"
+              align="start"
+            />
           </div>
           <p className="mt-0.5 min-w-0 font-mono text-[11px] leading-5 break-words text-zinc-400">
             {bboxSummary.label}
@@ -597,7 +601,10 @@ export const StepEditorPanel = forwardRef<StepEditorPanelHandle, Props>(
             <form onSubmit={onSubmit} className="space-y-2">
           <Card className="gap-2 py-3">
             <CardHeader className="p-2.5 pb-1">
-              <CardTitle className="text-lg font-semibold tracking-tight">Action: {humanizeAction(step.action_type)}</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+                Action: {humanizeAction(step.action_type)}
+                <InfoHint {...editorHelp.actionStep} size="md" side="bottom" align="start" />
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 p-2.5 pt-0">
               <div className="grid gap-2">
@@ -641,7 +648,10 @@ export const StepEditorPanel = forwardRef<StepEditorPanelHandle, Props>(
                   )}
                   {checkKind === 'snapshot' && (
                     <div className="grid gap-2">
-                      <Label htmlFor="check_threshold">Similarity threshold (0.0 - 1.0)</Label>
+                      <Label htmlFor="check_threshold" className="flex items-center gap-1.5">
+                        Similarity threshold (0.0 - 1.0)
+                        <InfoHint {...editorHelp.matchThreshold} side="top" align="start" />
+                      </Label>
                       <Input
                         id="check_threshold"
                         type="number"
