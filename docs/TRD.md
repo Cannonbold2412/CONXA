@@ -843,20 +843,24 @@ Retry budget: `RETRY_BUDGET_MAX = 3` per (skill, step_index). On exhaustion → 
 
 ### 10.2 Selector Scoring
 
-`ElementFingerprint` gives runtime a stable identity to score DOM candidates against:
+The resolver's scoring oracle is `IdentityBundle.fingerprint` (an `ElementFingerprint`) — a stable
+identity to score DOM candidates against:
 - `data_testid` — highest stability signal
 - `aria_label`, `role`, `name` — a11y tree signals
 - `inner_text` — visible text (max 120 chars)
 - `anchor_phrases` — relational context phrases
 - `position_hint` — normalized x/y (0.0–1.0)
 
-Each candidate gets a weighted score. Highest scorer is used.
+Each candidate gets a weighted score; the uniqueness/margin gate (below) decides the winner.
 
-### 10.2a IdentityBundle Resolution (Final Selector Architecture)
+### 10.2a IdentityBundle Resolution (primary runtime path)
 
-Compiled steps now carry an `identity_bundle` alongside `ElementFingerprint`. It is a
-durability-ranked, orthogonality-deduplicated set of `IdentitySignal`s plus a `stable_hash`,
-`frame_chain`, `shadow_path`, and `guid_like_attrs`.
+`IdentityBundle` is the **single source of truth** for element identity: a durability-ranked,
+orthogonality-deduplicated set of `IdentitySignal`s plus the scoring `fingerprint`, `stable_hash`,
+`frame_chain`, `shadow_path`, and `guid_like_attrs`. The runtime resolves every step's primary
+target through it — there is **no legacy `compiled_selectors` / single-selector primary path**, and
+frame roots are driven solely by `identity_bundle.frame_chain`. Packs without an `identity_bundle`
+fail fast (recompile required).
 
 - **Compile (`conxa_compile/compiler/identity_bundle.py`, `selector_score.py`,
   `selector_filters.py`):** signals are generated in Playwright native grammar
@@ -867,11 +871,17 @@ durability-ranked, orthogonality-deduplicated set of `IdentitySignal`s plus a `s
   PII-binding, and an xpath/shadow guard. `stable_hash` (`stable_hash.py`) is
   SHA-256 over tag-path + sorted static attrs + AX name, with dynamic
   (focus/hover/active/animation/`is-*`) classes stripped.
-- **Replay (`runtime/resolver.js`):** pure `resolve()` walks signals in durability order with a
+- **Replay (`runtime/resolver.js` + `runtime/resolve_adapter.js`):** the **primary** resolution
+  path. `resolve_adapter.js` maps each `IdentitySignal` to a Playwright locator
+  (`signalToLocator`: engine → `getByTestId`/`getByRole`/`getByText`/`locator`), pre-gathers
+  candidate descriptors per signal (`gatherCandidates`), then hands the pure `resolve()`
+  (`resolver.js`) a synchronous map view. `resolve()` walks signals in durability order with a
   strict uniqueness gate — it never blindly takes candidate `[0]`. On multi-match it scores each
-  candidate against the fingerprint and only accepts a winner when its margin over the runner-up
+  candidate against `fingerprint` and accepts a winner only when its margin over the runner-up
   clears the threshold; otherwise it falls through to the next signal. `stable_hash` is the
-  tie-breaker. Falls back to legacy `compiled_selectors` when `identity_bundle` is absent.
+  tie-breaker. `run.js` `withLocator(…, PRIMARY, …)` calls `resolveStep()`; a miss/ambiguous throw
+  engages the recovery cascade. (Recovery still uses an explicit-selector mode via
+  `stepWithSelector`.)
 - **GATE (`run.js` `gateLocator`):** before every action — attached → visible → RAF-stable
   (bounding box unchanged across two frames) → enabled (`disabled`/`aria-disabled`). Budget is
   confidence-adaptive. Zero LLM.

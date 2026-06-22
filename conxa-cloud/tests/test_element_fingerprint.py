@@ -207,7 +207,7 @@ def _make_step(intent="click_button", primary_selector="button.submit", data_tes
         action="click",
         intent=intent,
         target={"primary_selector": primary_selector},
-        element_fingerprint=fp,
+        identity_bundle=IdentityBundle(fingerprint=fp),
     )
 
 
@@ -223,7 +223,6 @@ def test_structural_fingerprint_collects_landmarks():
         action={"action": "navigate", "url": "https://example.com"},
         intent="navigate_to_start_url",
         target={},
-        element_fingerprint=ElementFingerprint(),
     )
     fp = _build_structural_fingerprint(steps)
     assert fp["landmark_count"] >= 1
@@ -490,6 +489,10 @@ def test_build_identity_bundle_from_ev():
     assert "testid" in engines
     # At least 1 signal present
     assert len(bundle.signals) >= 1
+    # Cutover: the bundle is the single identity object — it carries the scoring fingerprint.
+    assert isinstance(bundle.fingerprint, ElementFingerprint)
+    assert bundle.fingerprint.role == "button"
+    assert bundle.fingerprint.data_testid == "submit-order"
 
 
 # ─── Phase 4: Playwright grammar + deterministic-floor generator ──────────────
@@ -622,16 +625,15 @@ def test_build_identity_bundle_populates_frame_chain():
     assert bundle.frame_chain[0].signals[0].engine == "name"
 
 
-def test_build_identity_bundle_frame_chain_backward_compat():
+def test_build_identity_bundle_frame_chain_requires_fingerprint():
+    """Cutover: a legacy chain entry without a fingerprint is ignored (no signal synthesis)."""
     from conxa_compile.compiler.build import _build_identity_bundle
     ev = _make_ev(tag="button", inner_text="Submit", role="button", aria_label="Submit")
-    # Legacy chain without fingerprint key
     ev["frame"] = {
         "chain": [{"selector": 'iframe[id="main"]', "fallback_selectors": []}]
     }
     bundle = _build_identity_bundle(ev)
-    assert len(bundle.frame_chain) == 1
-    assert bundle.frame_chain[0].signals[0].selector == 'iframe[id="main"]'
+    assert bundle.frame_chain == []
 
 
 # ─── Phase 6: Shadow DOM ──────────────────────────────────────────────────────

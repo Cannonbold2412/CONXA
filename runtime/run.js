@@ -6,6 +6,8 @@ const path = require("path");
 
 const { mapErrorToCode } = require("./tracker");
 const { classifyException, remedyFor, buildRepairEvent, CLASS } = require("./recovery");
+const { resolve: resolveSignals } = require("./resolver");
+const { signalToLocator, gatherCandidates, bundleFingerprint } = require("./resolve_adapter");
 
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 
@@ -150,45 +152,23 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function frameChain(step) {
-  return asArray(asObject(step && step.frame).chain).filter(item => item && typeof item === "object");
-}
-
-function frameSelectors(spec, inputs, bundleFrameSpec) {
-  // Phase 5: prefer IdentityBundle FrameFingerprint signals (durability-ordered) when available.
-  // bundleFrameSpec is the matching FrameFingerprint from identity_bundle.frame_chain.
-  const bundleSignals = bundleFrameSpec
-    ? asArray(bundleFrameSpec.signals)
-        .filter(s => s && s.selector)
-        .sort((a, b) => (b.durability || 0) - (a.durability || 0))
-        .map(s => interpolate(String(s.selector), inputs))
-    : [];
-
-  const legacySelectors = unique([
-    spec.selector,
-    ...asArray(spec.fallback_selectors),
-  ].map(selector => interpolate(String(selector || ""), inputs)));
-
-  return unique([...bundleSignals, ...legacySelectors]);
-}
-
+// Frame roots are driven solely by identity_bundle.frame_chain (durability-ranked signals per
+// iframe level). Each frame signal selector is a CSS attribute selector (iframe[name=…] etc.),
+// so it feeds frameLocator() directly.
 function rootCandidates(page, step, inputs) {
-  const chain = frameChain(step);
-  if (!chain.length) return [page];
-
-  const bundleChain = asArray(
-    asObject(step && step.identity_bundle).frame_chain
-  );
+  const frameChain = asArray(asObject(step && step.identity_bundle).frame_chain);
+  if (!frameChain.length) return [page];
 
   let roots = [page];
-  for (let i = 0; i < chain.length; i++) {
-    const spec = chain[i];
-    const bundleFrameSpec = bundleChain[i] || null;
+  for (const frameSpec of frameChain) {
+    const sigs = asArray(frameSpec.signals)
+      .filter(s => s && s.selector)
+      .sort((a, b) => (b.durability || 0) - (a.durability || 0));
     const next = [];
     for (const root of roots) {
       if (!root || typeof root.frameLocator !== "function") continue;
-      for (const selector of frameSelectors(spec, inputs, bundleFrameSpec)) {
-        next.push(root.frameLocator(selector));
+      for (const s of sigs) {
+        next.push(root.frameLocator(interpolate(String(s.selector), inputs)));
       }
     }
     roots = next;
@@ -202,6 +182,33 @@ function locatorCandidates(page, step, inputs, selector) {
   const resolved = interpolate(selector || "", inputs);
   if (!resolved) return [];
   return rootCandidates(page, step, inputs).map(root => root.locator(resolved));
+}
+
+// Sentinel selector marking "resolve the step's primary target via identity_bundle.signals".
+const PRIMARY = Symbol("primary-target");
+
+// Resolve the step's primary target through the pure resolver over the live DOM.
+// Returns a single Playwright locator for the chosen element, or throws a classified error.
+async function resolveStep(page, step, inputs) {
+  const bundle = asObject(step.identity_bundle);
+  const signals = asArray(bundle.signals).filter(s => s && s.selector);
+  if (!signals.length) {
+    throw Object.assign(
+      new Error("Step has no identity_bundle.signals — pack must be recompiled"),
+      { recompileRequired: true },
+    );
+  }
+  const roots = rootCandidates(page, step, inputs);
+  const map = await gatherCandidates(roots, signals, interpolate, inputs);
+  const fp = bundleFingerprint(bundle);
+  const result = resolveSignals(signals, fp, { queryAll: sel => map[sel] || [] }, {});
+  if (result && result.node && result.node._loc) {
+    return result.node._loc;
+  }
+  if (result && result.ambiguous) {
+    throw Object.assign(new Error("Ambiguous element resolution (no signal cleared uniqueness gate)"), { ambiguous: true });
+  }
+  throw Object.assign(new Error("Element not found (resolve miss)"), { resolveMiss: true });
 }
 
 const GATE_ENABLED = process.env.CONXA_GATE !== "0";
@@ -247,13 +254,24 @@ async function gateLocator(loc, step) {
 }
 
 async function withLocator(page, step, inputs, selector, timeout, fn) {
-  const candidates = locatorCandidates(page, step, inputs, selector);
+  // PRIMARY → resolve the step's target via identity_bundle.signals, unless an explicit recovery
+  // selector was injected (string mode). Any other selector value is explicit string mode.
+  let candidates;
+  if (selector === PRIMARY) {
+    if (step._explicit_selector) {
+      candidates = locatorCandidates(page, step, inputs, step._explicit_selector);
+    } else {
+      candidates = [await resolveStep(page, step, inputs)];
+    }
+  } else {
+    candidates = locatorCandidates(page, step, inputs, selector);
+  }
   if (!candidates.length) throw new Error("Missing selector");
 
   let lastErr = null;
   for (const locator of candidates) {
     try {
-      if (timeout) await locator.first().waitFor({ state: "visible", timeout });
+      if (timeout && selector !== PRIMARY) await locator.first().waitFor({ state: "visible", timeout });
       await gateLocator(locator.first(), step);
       return await fn(locator);
     } catch (err) {
@@ -261,7 +279,7 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
     }
   }
 
-  throw lastErr || new Error(`Locator not found: ${selector}`);
+  throw lastErr || new Error(`Locator not found: ${String(selector)}`);
 }
 
 async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, timeout, fn) {
@@ -326,7 +344,8 @@ function stepSelector(step, inputs) {
 }
 
 function stepWithSelector(step, selector) {
-  return { ...step, compiled_selectors: [], selector };
+  // Recovery injects an explicit selector — force string mode in withLocator/PRIMARY.
+  return { ...step, _explicit_selector: selector };
 }
 
 function textSelector(value) {
@@ -383,9 +402,16 @@ function enrichStepsWithRecovery(steps, recovery) {
 
 // Step executor
 
-async function runLocatorStep(page, step, inputs, action, paceType, selector = stepSelector(step, inputs)) {
+async function runLocatorStep(page, step, inputs, action, paceType, selector = PRIMARY) {
   await withLocator(page, step, inputs, selector, 0, async locator => action(locator.first(), locator));
   await humanDelay(paceType);
+}
+
+// True when the step has a resolvable primary target (identity_bundle signals or an explicit
+// recovery selector) — used by optional-target handlers (scroll/focus).
+function hasTarget(step, inputs) {
+  if (step._explicit_selector) return true;
+  return asArray(asObject(step.identity_bundle).signals).some(s => s && s.selector);
 }
 
 async function clickFirst(locator, options) {
@@ -404,15 +430,20 @@ function checkboxValue(step, inputs) {
 }
 
 // Phase 7: hover each element in the precompiled hover_chain before acting (menu reveals, etc.).
+// Hover signals use Playwright grammar, so resolve each via signalToLocator (not raw locator()).
 async function walkHoverChain(page, step, inputs) {
   const chain = asArray(asObject(step.handler_hints).hover_chain)
     .filter(sig => sig && sig.selector)
     .sort((a, b) => (b.durability || 0) - (a.durability || 0));
+  const roots = rootCandidates(page, step, inputs);
   for (const sig of chain) {
     try {
-      await withLocator(page, step, inputs, sig.selector, 0, async locator => {
-        await locator.first().hover({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
-      });
+      for (const root of roots) {
+        const loc = signalToLocator(root, sig, interpolate, inputs);
+        if (!loc) continue;
+        await loc.first().hover({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+        break;
+      }
       await humanDelay("focus");
     } catch (err) {
       // Hover is best-effort — if the reveal element is gone the target may already be visible.
@@ -461,9 +492,8 @@ const HANDLERS = {
   },
 
   scroll: async (page, step, inputs) => {
-    const selector = stepSelector(step, inputs);
-    if (selector) {
-      await withLocator(page, step, inputs, selector, 0, async locator => {
+    if (hasTarget(step, inputs)) {
+      await withLocator(page, step, inputs, PRIMARY, 0, async locator => {
         await locator.first().scrollIntoViewIfNeeded({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
       }).catch(() => {});
     } else {
@@ -488,7 +518,7 @@ const HANDLERS = {
 
   click: async (page, step, inputs) => {
     await walkHoverChain(page, step, inputs);
-    await withLocator(page, step, inputs, stepSelector(step, inputs), 0, async locator => {
+    await withLocator(page, step, inputs, PRIMARY, 0, async locator => {
       await clickFirst(locator, { timeout: ACTION_TIMEOUT_MS });
     });
     await humanDelay("click");
@@ -523,9 +553,8 @@ const HANDLERS = {
   },
 
   focus: async (page, step, inputs) => {
-    const selector = stepSelector(step, inputs);
-    if (selector) {
-      await withLocator(page, step, inputs, selector, 0, async locator => {
+    if (hasTarget(step, inputs)) {
+      await withLocator(page, step, inputs, PRIMARY, 0, async locator => {
         const first = locator.first();
         try {
           await first.click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
@@ -592,17 +621,17 @@ const HANDLERS = {
       return;
     }
 
-    const selector = stepSelector(step, inputs);
-    if ((kind === "selector" || kind === "visible") && selector) {
-      await withLocator(page, step, inputs, selector, step.timeout || SECONDARY_ACTION_TIMEOUT_MS, async locator => locator.first());
+    const hasTgt = hasTarget(step, inputs);
+    if ((kind === "selector" || kind === "visible") && hasTgt) {
+      await withLocator(page, step, inputs, PRIMARY, step.timeout || SECONDARY_ACTION_TIMEOUT_MS, async locator => locator.first());
       return;
     }
 
-    if (kind === "text" && selector) {
+    if (kind === "text" && hasTgt) {
       const expected = interpolate(step.value || "", inputs);
       if (!expected) return;
 
-      const actual = await withLocator(page, step, inputs, selector, 0, locator => {
+      const actual = await withLocator(page, step, inputs, PRIMARY, 0, locator => {
         return locator.first().innerText({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
       }).catch(() => "");
       if (!actual.includes(expected)) {
@@ -703,7 +732,7 @@ async function recoverWithSelector(page, step, inputs, selector, onSuccess) {
 }
 
 async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker) {
-  const fingerprint = asObject(step.element_fingerprint);
+  const fingerprint = asObject(asObject(step.identity_bundle).fingerprint);
   const role = String(fingerprint.role || "").trim();
   const name = String(fingerprint.aria_label || fingerprint.name || fingerprint.label_text || fingerprint.inner_text || "").trim();
 
@@ -817,18 +846,12 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
 
 async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null) {
   // Layer 1 — deterministic exception ladder (targeted single remedy).
+  // (Alternate-signal recovery is inherent: resolveStep already walks all bundle signals in
+  // durability order, so there is no separate legacy compiled-selector tier.)
   const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr);
   if (l1) {
     tracker.emit("tier_ok", { si: stepIndex, tier: "layer1", sel: l1 });
     return { tier: "L1", method: l1 };
-  }
-
-  for (const selector of compiledSelectors(step, inputs).slice(1)) {
-    const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
-      appendRecoveryEvent({ event: "tier1_compiled_alt", slug, step_index: stepIndex, recovery_selector: selector });
-      tracker.emit("tier_ok", { si: stepIndex, tier: "tier1_compiled", sel: selector });
-    });
-    if (recovered) return { tier: "L1", method: "compiled_alt" };
   }
 
   if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker)) return { tier: "L2", method: "a11y" };

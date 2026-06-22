@@ -12,7 +12,32 @@
 | 8. Replay verification | DONE | runtime/resolver.js (new), runtime/run.js (GATE+VERIFY), test_resolver.js, test_verify.js | 16/16 node pass |
 | 9. Recovery integration | DONE | runtime/recovery.js (new), runtime/run.js (L1 ladder+repair_event), tracking_routes.py (drift queue), test_recovery.js | 27/27 node pass; 218 py pass |
 
-## All phases complete
+## Cutover: IdentityBundle is the single source of truth (backward-compat removed)
+
+The dual-path backward compatibility was removed and the pure resolver was wired in as the
+**primary** runtime resolution path.
+
+| Change | Files |
+|--------|-------|
+| Resolver wired in as primary path (adapter pattern reusing pure `resolve()`) | `runtime/resolve_adapter.js` (new), `runtime/run.js` (`resolveStep`, `PRIMARY`, `withLocator`) |
+| `IdentityBundle` carries nested `fingerprint`; `SkillStep.element_fingerprint` removed; `identity_bundle` required | `packages/conxa-core/.../skill_spec.py`, `compiler/build.py`, `compiler/patch.py` |
+| Frame resolution driven solely by `identity_bundle.frame_chain` (legacy `selector`/merge removed) | `recorder/session.py`, `compiler/build.py`, `runtime/run.js` (`rootCandidates`) |
+| Legacy compiled-selector recovery tier removed (alternate-signal recovery now inherent) | `runtime/run.js` (`recoverStep`, `recoverWithA11y`) |
+| Tests updated + new adapter test | `tests/test_element_fingerprint.py`, `tests/test_recorder_session.py`, `tests/test_phases.py`, `runtime/test/test_resolve_adapter.js` (new) |
+
+**Intended consequence:** packs compiled before the cutover (no `identity_bundle`) fail fast and
+must be recompiled — no runtime fallback remains.
+
+**Known follow-up (out of scope):** the Build Studio **saved-skill export**
+(`plugin_builder.py:_saved_step_to_execution_step`) still emits legacy `{type, selector}` steps
+without an `identity_bundle`; those packs will not replay post-cutover until that path also
+generates IdentityBundles. The compiled record→compile pipeline is fully cut over.
+
+**Tests:** Python `test_element_fingerprint.py` 66/66; broader compile suite 211 passed.
+Node `test_resolve_adapter.js`(9) + `test_resolver.js`(9) + `test_verify.js`(7) +
+`test_recovery.js`(11) + auth/dashboard regression — 36/36 green.
+
+## All phases complete (pre-cutover history below)
 
 **Pipeline now implemented end-to-end** (Record → Compile → Build → Replay → Recover → Verify):
 

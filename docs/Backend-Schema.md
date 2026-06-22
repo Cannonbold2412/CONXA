@@ -239,10 +239,9 @@ class SkillStep(BaseModel):
     action: str | dict         # Action type + params
     intent: str                # "Click the Submit button"
     url: str                   # Expected URL for this step
-    frame: dict                # Iframe chain context
+    frame: dict                # Iframe chain structural marker (url/url_pattern per level)
     target: dict               # Raw recorded target element data
-    element_fingerprint: ElementFingerprint
-    identity_bundle: IdentityBundle | None   # durability-ranked signals (see §3.4a)
+    identity_bundle: IdentityBundle          # REQUIRED — single source of element identity (see §3.4a)
     handler_hints: HandlerHints              # hover_chain, virtualization (see §3.4b)
     signals: dict              # Additional DOM signals
     state: dict                # Page state at recording time
@@ -258,9 +257,16 @@ class SkillStep(BaseModel):
     snapshot_dom_hash: str         # For cross-compilation cache lookup
 ```
 
+> **Single identity object (cutover):** `element_fingerprint` is no longer a top-level
+> `SkillStep` field — it lives **inside** `IdentityBundle.fingerprint` (§3.4a). `identity_bundle`
+> is required; the runtime resolves the primary target through `identity_bundle.signals` (no legacy
+> `compiled_selectors` primary path), and frame roots are driven solely by
+> `identity_bundle.frame_chain`. Packs compiled before this change must be recompiled.
+
 ### 3.4 ElementFingerprint
 
-The stable element identity used to score DOM candidates at runtime:
+The stable element identity used to score DOM candidates at runtime (carried as
+`IdentityBundle.fingerprint`):
 
 ```python
 class ElementFingerprint(BaseModel):
@@ -303,8 +309,9 @@ class ShadowHost(BaseModel):
 
 class IdentityBundle(BaseModel):
     signals: list[IdentitySignal]        # durability-ordered, ≤1 per orthogonality class
+    fingerprint: ElementFingerprint      # the resolver's scoring oracle (recorded element attrs)
     stable_hash: str                     # SHA256(tag_path + static attrs + AX name), dynamic classes stripped
-    frame_chain: list[FrameFingerprint]
+    frame_chain: list[FrameFingerprint]  # sole frame-resolution source (durability-ranked per level)
     shadow_path: list[ShadowHost]
     compat_fingerprint: str              # app-version indicators
     guid_like_attrs: list[str]
