@@ -14,7 +14,6 @@ from conxa_compile.editor.action_registry import MARKER_ACTIONS
 from conxa_compile.compiler.decision_layer import rank_merged_anchors
 from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
 from conxa_compile.compiler.input_binding_v2 import derive_input_binding_v2
-from conxa_compile.compiler.llm_selector_generator_v2 import generate_selector_with_objective_confidence
 from conxa_compile.compiler.recovery_policy import (
     default_recovery_block,
     merge_recovery_strategies_for_wait_shape,
@@ -67,7 +66,6 @@ from conxa_core.models.skill_spec import (
 from conxa_compile.policy.bundle import PolicyBundle, get_policy_bundle
 from conxa_compile.policy.intent_ontology import intent_specificity_score, normalize_compiler_intent
 from conxa_core.progress import append_current_job_event
-from conxa_core.storage import snapshots
 
 
 _RECOVERABLE_VISION_ANCHOR_REASONS = frozenset({
@@ -322,12 +320,11 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
 
     distinct_classes = {s.orthogonality_class for s in signals}
     if len(distinct_classes) < 2:
-        # Log only — LLM enrichment (run after all steps are built) will add semantic signals
-        # for elements whose recorded data lacks role/text fields. A UserWarning here is
-        # misleading because it fires before _llm_compile_selectors has a chance to run.
+        # Log only — single orthogonality class means the recorded data lacks role/text fields.
+        # Capture richer data in the recorder (bridge.js) to improve signal diversity.
         _compile_log(
             "compile_step",
-            f"Deterministic floor has {len(distinct_classes)} orthogonality class(es): {distinct_classes or set()} — LLM will enrich.",
+            f"Deterministic floor has {len(distinct_classes)} orthogonality class(es): {distinct_classes or set()} — consider enriching recorder capture.",
             {"phase": "identity_bundle_low_orthogonality", "classes": list(distinct_classes)},
         )
 
@@ -488,7 +485,28 @@ def _build_structural_fingerprint(steps: list[SkillStep]) -> dict[str, Any]:
     return {"landmarks": landmarks, "landmark_count": len(landmarks)}
 
 
-def _build_target(ev: dict[str, Any], policy: dict[str, Any], session_id: str = "") -> dict[str, Any]:
+def _confidence_from_identity_bundle(bundle: Any) -> float:
+    """Derive selector confidence from IdentityBundle signal quality (the runtime's resolver oracle).
+
+    The deterministic floor is the sole selector generator; confidence reflects how strong that
+    floor is for this element — more orthogonal classes and a unique top signal mean higher
+    confidence. No LLM agreement is consulted.
+    """
+    signals = list(getattr(bundle, "signals", None) or [])
+    if not signals:
+        return 0.0
+    base = max((float(getattr(s, "durability", 0.0) or 0.0) for s in signals), default=0.0)
+    classes = {str(getattr(s, "orthogonality_class", "") or "") for s in signals}
+    classes.discard("")
+    ortho_factor = 1.0 if len(classes) >= 2 else 0.7
+    has_unique = any(bool(getattr(s, "unique_at_compile", False)) for s in signals)
+    unique_factor = 1.0 if has_unique else 0.6
+    return round(min(1.0, base * ortho_factor * unique_factor), 3)
+
+
+def _build_target(
+    ev: dict[str, Any], policy: dict[str, Any], identity_bundle: Any = None
+) -> dict[str, Any]:
     if str((ev.get("action") or {}).get("action") or "").lower() in MARKER_ACTIONS:
         return {}
     raw_selectors = ev.get("selectors") or {}
@@ -540,46 +558,14 @@ def _build_target(ev: dict[str, Any], policy: dict[str, Any], session_id: str = 
 
     confidence_breakdown: dict[str, float] | None = None
     selector_rationale = ""
-    selector_source = "heuristic"
+    selector_source = "deterministic"
 
-    # Heuristic survives ONLY at perfect confidence == 1.0 with a non-bare selector.
-    # Anything below 1.0 MUST go through the LLM with full multi-frame context.
-    _primary_is_bare_tag = bool(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9]*", primary.strip()))
-    use_heuristic = (
-        selector_confidence >= 1.0
-        and bool(primary.strip())
-        and not _primary_is_bare_tag
-    )
-    if not use_heuristic:
-        # Mandatory LLM call. Failure raises and aborts the compile — no silent fallback.
-        llm_selector, llm_confidence, llm_breakdown, llm_rationale = _call_llm_native_selector(
-            ev, target, semantic, session_id=session_id
-        )
-        if not llm_selector:
-            _action_kind = str((ev.get("action") or {}).get("action") or "").lower()
-            if _action_kind == "focus":
-                # Focus is a soft action — the runtime recovery cascade is designed to
-                # handle weak selectors. Record confidence 0.0; compile report flags it.
-                selector_confidence = 0.0
-                confidence_breakdown = {
-                    "dom_uniqueness": 0.0,
-                    "self_consistency": 0.0,
-                    "visual_verification": 0.0,
-                }
-                selector_rationale = "focus: LLM selector unavailable; heuristic fallback"
-                selector_source = "heuristic_fallback"
-                # primary remains whatever the heuristic produced above
-            else:
-                raise RuntimeError(
-                    f"LLM-native selector generation returned empty selector for action "
-                    f"{ev.get('action', {}).get('action')!r}; cannot produce reliable compile."
-                )
-        else:
-            primary = llm_selector
-            selector_confidence = llm_confidence
-            confidence_breakdown = llm_breakdown
-            selector_rationale = llm_rationale
-            selector_source = "llm_native"
+    # Selector generation is fully deterministic — the LLM is never asked to write a selector
+    # (SeeAct Finding 3: ~30% hallucination). `target.primary_selector`/`fallback_selectors` are
+    # used only by the recovery cascade (layer 2+); the runtime hot path resolves off
+    # `identity_bundle.signals`. Confidence therefore reflects the IdentityBundle's strength.
+    if identity_bundle is not None:
+        selector_confidence = _confidence_from_identity_bundle(identity_bundle)
 
     fallback_raw = list(stable.get("fallback_selectors") or []) + ranked_extra
     # Re-score the merged pool so high-durability signals (aria/label) rank above structural
@@ -602,9 +588,16 @@ def _build_target(ev: dict[str, Any], policy: dict[str, Any], session_id: str = 
         target_type = "button"
     elif target_type not in {"button", "input"}:
         target_type = "input" if target_type in {"textarea", "select"} else target_type
+    # Plain CSS/text selector for the recovery cascade (`run.js` baseSelector reads target.css)
+    # and the drag_drop destination — both need a raw locator string, not Playwright internal:
+    # grammar. Prefer the recorded css; fall back to the deterministic primary.
+    css_for_recovery = str(selectors.get("css") or "").strip()
+    if not css_for_recovery or not selector_passes_filters(css_for_recovery):
+        css_for_recovery = primary
     result = {
         "primary_selector": primary,
         "fallback_selectors": fallback,
+        "css": css_for_recovery,
         "role": str(semantic.get("role") or target.get("role") or ""),
         "type": target_type or "input",
         "selector_confidence": selector_confidence,
@@ -615,58 +608,6 @@ def _build_target(ev: dict[str, Any], policy: dict[str, Any], session_id: str = 
     if selector_rationale:
         result["selector_rationale"] = selector_rationale
     return result
-
-
-def _call_llm_native_selector(
-    ev: dict[str, Any],
-    target: dict[str, Any],
-    semantic: dict[str, Any],
-    session_id: str = "",
-) -> tuple[str, float, dict[str, float], str]:
-    """LLM-native selector generation. Raises on failure — compile must fail loudly."""
-    action = ev.get("action") or {}
-    action_type = str(action.get("action") or "")
-    ancestors = ev.get("ancestors") or []
-    surrounding = str(ev.get("surrounding_text") or "")
-    visual = ev.get("visual") or {}
-    bbox = visual.get("bbox") or {}
-
-    # Load full-page DOM + a11y when snapshot is available; fall back to ancestor snippet.
-    dom_hash = str((ev.get("snapshot") or {}).get("dom_hash") or "")
-    full_html: str | None = None
-    a11y_node: dict[str, Any] | None = None
-    if session_id and dom_hash:
-        full_html = snapshots.read_dom_snapshot(session_id, dom_hash)
-        a11y_tree = snapshots.read_a11y_snapshot(session_id, dom_hash)
-        if a11y_tree:
-            from conxa_compile.compiler.llm_selector_generator import _extract_a11y_node  # noqa: PLC0415
-            a11y_node = _extract_a11y_node(a11y_tree, target)
-
-    if full_html:
-        from conxa_compile.compiler.llm_selector_generator import _dom_snippet_for_llm  # noqa: PLC0415
-        dom_snippet = _dom_snippet_for_llm(full_html)
-    else:
-        # Build a DOM snippet from ancestors + target
-        dom_parts = []
-        for anc in ancestors[:3]:
-            if isinstance(anc, dict):
-                outer = str(anc.get("outer_html") or "")[:2000]
-                if outer:
-                    dom_parts.append(outer)
-        dom_snippet = "\n".join(dom_parts) or json.dumps(target, ensure_ascii=False)
-
-    return generate_selector_with_objective_confidence(
-        dom_snippet=dom_snippet,
-        element_bbox=bbox if isinstance(bbox, dict) else {},
-        element_ancestors=ancestors if isinstance(ancestors, list) else [],
-        surrounding_text=surrounding,
-        action_type=action_type,
-        target_dom=target,
-        a11y_node=a11y_node,
-        full_page_html=full_html,
-        candidates_wanted=1,
-        num_samples=3,  # Reduced from 5 to keep compile times reasonable
-    )
 
 
 def _build_signals(
@@ -891,7 +832,8 @@ def _build_step(
     else:
         recovery_dict = no_recovery_block(intent)
     recovery = RecoveryBlock(**recovery_dict)
-    target = _build_target(ev, policy, session_id=session_root.name)
+    identity_bundle = _build_identity_bundle(ev_with_intent)
+    target = _build_target(ev, policy, identity_bundle=identity_bundle)
     signals = _build_signals(
         ev,
         resolved_intent=intent,
@@ -912,7 +854,6 @@ def _build_step(
         cw = dict(confidence_protocol.get("compile_warnings") or {})
         cw["selector_confidence"] = sel_conf
         confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
-    identity_bundle = _build_identity_bundle(ev_with_intent)
     assertions = _build_assertions(ev_with_intent, validation)
     if assertions:
         validation = ValidationBlock(
@@ -1090,10 +1031,9 @@ def compile_skill_package(
     # Phase 7: populate hover_chain handler hints from hover-then-act sequences.
     _populate_hover_chains(steps, cleaned_events)
 
-    # Phase 3: LLM-driven selector compilation. Only runs when snapshots exist and
-    # LLM is enabled. Failures degrade gracefully — runtime falls back to existing
-    # heuristic selectors plus a11y tier 2.
-    intent_graph = _llm_compile_selectors(steps, cleaned_events, session_id=sid)
+    # Phase 3: Build the workflow-level intent graph (one LLM call). Selector generation
+    # is fully deterministic and already complete — no LLM selector passes run here.
+    intent_graph = _build_intent_graph(steps, cleaned_events, session_id=sid)
 
     _deduplicate_input_bindings(steps)
 
@@ -1140,68 +1080,30 @@ def compile_skill_package(
     )
 
 
-def _llm_compile_selectors(
+def _build_intent_graph(
     steps: list[SkillStep],
     cleaned_events: list[dict[str, Any]],
     *,
     session_id: str,
 ) -> "WorkflowIntentGraph":
-    """Populate steps[i].compiled_selectors + semantic_description from LLM.
+    """Build the workflow-level intent graph (one LLM call).
 
-    Returns the workflow intent graph. Raises if the LLM router has no
-    providers configured.
+    Selector generation is fully deterministic and runs in _build_step via
+    generate_deterministic_signals(). This function does not generate selectors.
     """
     from conxa_core.models.skill_spec import WorkflowIntentGraph  # noqa: PLC0415 — local import to avoid circular ref
 
     try:
         from conxa_compile.compiler.llm_selector_generator import (  # noqa: PLC0415
             build_workflow_intent_graph,
-            compile_workflow_selectors,
-            task_from_recorded_event,
         )
     except ImportError:
         return WorkflowIntentGraph()
 
-    # Build compile tasks for steps that have snapshot data.
-    tasks = []
-    for i, ev in enumerate(cleaned_events):
-        snap = ev.get("snapshot") or {}
-        if not snap.get("dom_hash"):
-            continue
-        tasks.append(task_from_recorded_event(ev, step_index=i))
-
-    _compile_log(
-        "compile_phase",
-        "Preparing LLM selector compilation.",
-        {"phase": "llm_selector_prepare", "task_count": len(tasks), "step_count": len(cleaned_events)},
-    )
-
-    if tasks:
-        _compile_log(
-            "compile_phase",
-            "Compiling LLM selector candidates.",
-            {"phase": "llm_selector_start", "task_count": len(tasks)},
-        )
-        candidates_by_step = compile_workflow_selectors(tasks, session_id=session_id)
-        _compile_log(
-            "compile_phase",
-            "LLM selector compilation finished.",
-            {
-                "phase": "llm_selector_done",
-                "task_count": len(tasks),
-                "steps_with_candidates": sum(1 for cands in candidates_by_step.values() if cands),
-            },
-        )
-        for i, step in enumerate(steps):
-            cands = candidates_by_step.get(i) or []
-            if not cands:
-                continue
-            step.compiled_selectors = [c.selector for c in cands[:3]]
-            # Use the top candidate's intent string as semantic description.
-            for c in cands:
-                if c.intent:
-                    step.semantic_description = c.intent
-                    break
+    # Populate semantic_description from the already-computed per-step intent.
+    for step in steps:
+        if step.intent and not step.semantic_description:
+            step.semantic_description = step.intent
 
     # Workflow-level intent graph (one LLM call).
     steps_summary = [

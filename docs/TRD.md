@@ -701,9 +701,10 @@ events.jsonl (raw RecordedEvents)
            ├── LLM: intent_llm.py → WorkflowIntentGraph (one call per workflow)
            │
            ├── For each step:
-           │   ├── LLM: llm_selector_generator_v2.py
-           │   │   → ElementFingerprint + compiled_selectors[]
-           │   ├── LLM: semantic_llm.py → semantic_description
+           │   ├── identity_bundle.py → IdentityBundle (deterministic, zero-LLM)
+           │   │   generate_deterministic_signals() produces Playwright-native signals
+           │   │   ranked by durability. LLM is never asked to write a selector string.
+           │   ├── anchor_vision_llm.py → relational anchor phrases (optional)
            │   ├── validation_planner.py → Assertion[]
            │   ├── recovery_policy.py → RecoveryBlock
            │   └── confidence/layered.py → confidence score
@@ -717,11 +718,11 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 
 | LLM Client | Call | Token cost (approx) |
 |---|---|---|
-| `intent_llm.py` | Per-workflow intent graph | High (full DOM context) |
-| `llm_selector_generator_v2.py` | Per-step selector generation | Medium (DOM snippet) |
-| `semantic_llm.py` | Per-step semantic description | Low (element context) |
+| `intent_llm.py` | Per-step intent string + per-workflow intent graph | Low–High |
+| `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
 | `recovery_llm.py` | Per-step recovery block | Medium |
-| `anchor_vision_llm.py` | Per-step vision anchors (if enabled) | Medium (screenshot) |
+
+Selector generation is **fully deterministic** — `identity_bundle.py:generate_deterministic_signals()` reads the recorded DOM at compile time and emits Playwright-native-grammar signals ranked by durability. No LLM call is made to produce or score selector strings (SeeAct Finding 3: ~30% hallucination rate for LLM-written selectors). `llm_selector_generator_v2.to_playwright_grammar()` is still used as a pure string-formatting utility by `identity_bundle.py`.
 
 ### 7.3 SkillPackage Output Schema
 
