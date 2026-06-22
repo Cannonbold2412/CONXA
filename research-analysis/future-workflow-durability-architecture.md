@@ -1,8 +1,8 @@
 # Future Workflow Durability Architecture (Phase 8)
 
-**The most important document in the program.** Goal: **Conxa workflows survive for years** — across UI changes, DOM changes, text changes, layout changes, and platform evolution — with minimal human intervention, while preserving determinism, signing, and auditability.
+**The most important document in the program.** Goal: **Conxa workflows survive for years** — across UI changes, DOM changes, text changes, layout changes, and platform evolution — while preserving determinism, signing, auditability, and **explicit admin control over every published change**.
 
-**Thesis.** Durability is not a property of a single skill package; it is a property of the **fleet**. A static compiled package is, by itself, *less* durable run-to-run than Stagehand's self-refreshing cache (`conxa-vs-state-of-the-art.md`, Durability row). Conxa wins durability only by exploiting the one thing no competitor has: **the same compiled artifact distributed to many customers with centralized telemetry** — so drift is detected on *first* occurrence anywhere and fixed for *everyone* before they hit it. This is the fleet flywheel (`top-25-insights.md` #1), and durability is its primary application.
+**Thesis.** Durability is not a property of a single skill package; it is a property of the **fleet**. A static compiled package is, by itself, *less* durable run-to-run than Stagehand's self-refreshing cache (`conxa-vs-state-of-the-art.md`, Durability row). Conxa wins durability only by exploiting the one thing no competitor has: **the same compiled artifact distributed to many customers with centralized telemetry** — so drift is **detected** on *first* occurrence anywhere and **surfaced to the conxa-cloud admin**, who reviews and publishes a fix that then reaches *everyone*. This is the fleet flywheel (`top-25-insights.md` #1), and durability is its primary application. **Detection is automatic and fleet-wide; the fix is built and published manually by an admin — nothing reaches customers without explicit admin approval.**
 
 **This is a design document. No implementation.**
 
@@ -16,32 +16,37 @@
 - There is **no change classification, no repair suggestion, no repair validation, no regression prevention.**
 - Result: durability today = "the deterministic ladder happens to still match." That decays monotonically as the target evolves.
 
-The durability system makes drift a **managed, observable, self-correcting lifecycle**.
+The durability system makes drift a **managed, observable, admin-governed lifecycle**: the fleet detects and surfaces it automatically; an admin builds and publishes every fix manually.
 
 ---
 
-## 2. The durability lifecycle (closed loop)
+## 2. The durability lifecycle (detect automatically, fix manually)
 
 ```
         ┌──────────────────────────────────────────────────────────────┐
         │                      FLEET (Cloud)                            │
         │                                                              │
  runtime telemetry ─▶ (1) Breakage Detection ─▶ (2) Change Classification
-        ▲                                              │
+        ▲                                              │   (advisory diagnosis)
         │                                              ▼
-        │                                   (3) Repair Suggestion (CIR-level)
+        │                          (3) Surface DriftEvent to conxa-cloud admin
+        │                                   (review queue, with full evidence)
         │                                              │
         │                                              ▼
-        │                                   (4) Repair Validation (replay vs golden)
+        │                          (4) Admin builds the fix  (re-record /
+        │                              re-compile / edit in Build Studio)
         │                                              │
-        │                          ┌──── confident ────┤──── uncertain ────┐
-        │                          ▼                                       ▼
-        │              (5) Re-sign + push new version            (7) Review queue (human)
-        │                          │                                       │
-        └──────────────────────────┴─────────── (6) Regression Prevention ─┘
+        │                                              ▼
+        │                          (5) Admin publishes new signed version
+        │                              (regression check at publish — §6)
+        │                                              │
+        └──────────────────────────────────────────────┴─▶ fleet delta-sync
 ```
 
-Each stage below is a designed component.
+Detection and classification are automatic; **everything from "surface" onward is
+manual and admin-gated.** No version is generated, validated, or shipped to
+customers without an admin building and publishing it. Each stage below is a
+designed component.
 
 ---
 
@@ -60,99 +65,80 @@ Output: a `DriftEvent {skill, step, app_version_from→to, signal_type, confiden
 
 ---
 
-### Stage 2 — Change Classification
+### Stage 2 — Change Classification (advisory diagnosis)
 
-Classify *what changed* (drives the repair strategy and how risky the auto-repair is):
+Classify *what changed* to give the admin context for the fix — this is **diagnostic, not an auto-repair trigger**:
 
-| Class | Example | Repair strategy | Auto-repair risk |
+| Class | Example | Suggested fix (for the admin) | Risk to get wrong |
 |---|---|---|---|
 | **Text change** | button label "Save" → "Save changes" | Update text/aria signal; semantic signals survive | Low |
 | **DOM change** | wrapper div added, class renamed | Re-resolve via orthogonal signals; structural signal updated | Low-Med |
 | **Layout change** | element moved, position_hint stale | Position hint refreshed; identity unchanged | Low |
 | **Attribute change** | data-testid removed/renamed | Demote testid, promote semantic; flag | Med |
 | **Flow change** | new step inserted (consent, MFA, confirm) | Promote a *conditional* step (G6) into the package | Med-High |
-| **Semantic change** | the action's meaning changed (field repurposed) | Cannot auto-repair — escalate | High |
+| **Semantic change** | the action's meaning changed (field repurposed) | Re-record / re-author the step | High |
 
-Classification uses the recorded fingerprint + the new live AX/DOM digest (from repair_events) + the intent graph. **Mind2Web's finding is the backbone:** semantic signals (role+name+text) survive most changes; structural signals fail first — so most classes are auto-repairable by re-grounding semantic identity. The dangerous class (semantic/flow) is the one that must escalate.
-
----
-
-### Stage 3 — Repair Suggestion (at the IR/CIR level)
-
-Repairs are proposed **against the compiler IR** (`future-compiler-architecture.md`'s CIR), not by patching `execution.json` strings. This is what makes repair *safe and diffable*:
-- A repair is a CIR delta: "for step N, replace identity signal set S with S′ (corroborated repaired signals from the fleet)," or "insert conditional `if_present(banner)→dismiss` before step N."
-- Repairs aggregate fleet evidence: the repaired identity proposed is the one that multiple installs *validated* (passed post-conditions), weighted by confidence — not a single guess.
-- Text/DOM/layout/attribute classes → automatic CIR delta. Flow class → CIR delta proposing a conditional branch. Semantic class → no auto-delta; route to review.
+Classification uses the recorded fingerprint + the new live AX/DOM digest (from repair_events) + the intent graph. **Mind2Web's finding is the backbone:** semantic signals (role+name+text) survive most changes; structural signals fail first — so most classes are *easy for the admin to fix* by re-grounding semantic identity. The diagnosis and a suggested fix are presented to the admin; the admin decides and publishes — the system never applies the change itself.
 
 ---
 
-### Stage 4 — Repair Validation (before anything ships)
+### Stage 3 — Surface to Admin (the review queue is the only path)
 
-A proposed CIR delta is **never published unvalidated**:
-1. **Replay-against-golden:** re-run the affected step(s) against a captured golden DOM snapshot (the recording's snapshot + the latest fleet-observed snapshot) and confirm the **independent post-condition** passes (the verifier from runtime/recovery — gap G2). This is the same trust gate recovery uses, applied at fleet scale.
-2. **Cross-install corroboration:** confirm the repair worked on ≥K independent installs (the repair_events that fed it).
-3. **Confidence threshold:** only repairs above threshold proceed to auto-publish; the rest go to the review queue.
-
-This is the discipline browser-use/UI-TARS lack (they trust model self-report) and that Stagehand only does offline — here it is the *gate on shipping a fix to the fleet*.
+Every DriftEvent is routed to a **conxa-cloud admin review queue** — there is no automatic-repair branch. The queue item carries the full evidence so the admin can decide quickly:
+- The drift evidence: recovered tier history, affected installs, app-version delta, the recorded identity, and the runtime `repair_event`(s) that healed it at execution time.
+- An **advisory suggested fix** at the compiler-IR (CIR) level: e.g. "for step N, replace identity signal set S with S′ (the signals multiple installs healed to)," or "insert conditional `if_present(banner)→dismiss` before step N." This is a *suggestion the admin can accept, edit, or reject* — never an auto-applied delta.
+- Items are ranked by classification + corroboration so the admin triages the highest-impact drift first.
 
 ---
 
-### Stage 5 — Re-sign + Push (controlled rollout)
+### Stage 4 — Admin builds the fix
 
-A validated repair becomes a **new signed package version** (signing + version graph from `future-skill-pack-architecture.md`). Rollout is **staged, not all-at-once**:
-- Canary to a small fraction of installs → watch their post-condition/recovery telemetry → promote to the fleet on success, auto-rollback on regression.
-- The customer (publishing company) sees the repair in their dashboard with a diff and can require manual approval (governance) or allow auto-apply (convenience) per their policy.
-
-This converts "a workflow broke" from a support ticket into a background, observable, reversible fleet event.
-
----
-
-### Stage 6 — Regression Prevention
-
-Durability must not *introduce* breakage:
-- **Golden corpus per skill:** the original recording's snapshots + accumulated fleet snapshots form a regression suite (WebArena/WorkArena's version-pinned, functional-outcome philosophy — `high-value-paper-review.md`). Every CIR delta must pass the full corpus's post-conditions, not just the changed step.
-- **Semantic-diff guard:** a repair that would change the *intent* of a step (vs just its identity) is blocked — intent is the invariant; identity is mutable.
-- **Rollback-ready:** every version is a CIR snapshot; rollback is a version-graph operation (`future-compiler-architecture.md`).
+The admin resolves the drift in Build Studio — the system assists but does not act on its own:
+- Accept the suggested CIR delta, edit it, re-record the affected step(s), or LLM-assisted-edit them — the same authoring tools used for the original recording.
+- Repairs are expressed as **CIR deltas** (`future-compiler-architecture.md`'s CIR), not raw `execution.json` patches, so the change stays *safe and diffable*.
+- The **intent graph is the fixed point**: the admin changes *how* a step is achieved, never *what* it intends; an edit that alters intent is a deliberate re-authoring, surfaced as such.
 
 ---
 
-### Stage 7 — Review Queue (human-in-the-loop for the hard cases)
+### Stage 5 — Admin publishes a new signed version (with a regression gate)
 
-Semantic/flow changes and low-confidence repairs route to a Cloud review queue consumed by the publishing company:
-- Presented as: the drift evidence, the proposed change, the affected installs, and a one-click "recompile this step" (re-record or LLM-assisted edit in Build Studio).
-- The human resolution becomes a validated CIR delta → re-enters Stage 5.
-- This is the controlled escape valve: the system auto-handles the ~80% (text/DOM/layout/attribute) and routes the ~20% (semantic/flow) to a human with full context — instead of today's "every break is a manual resume with no memory."
+When the admin is satisfied, they **publish** — producing a **new signed package version** (signing + version graph from `future-skill-pack-architecture.md`) that then delta-syncs to the fleet. Publishing is a deliberate admin action, never automatic, and it is gated by:
+1. **Replay-against-golden:** the affected step(s) re-run against the golden DOM corpus (the recording's snapshot + accumulated fleet snapshots) and the **independent post-condition** must pass (the verifier from runtime/recovery — gap G2). The admin cannot publish a fix that fails its own post-condition.
+2. **Golden-corpus regression:** the full per-skill corpus must still pass, not just the changed step (WebArena/WorkArena's version-pinned, functional-outcome philosophy — `high-value-paper-review.md`) — a fix must not *introduce* breakage.
+3. **Rollback-ready:** every version is a CIR snapshot; rollback is a one-click version-graph operation (`future-compiler-architecture.md`) if a published fix regresses in the field.
+
+This converts "a workflow broke" from a silent support ticket into an **observable, admin-governed, reversible** publish event. The discipline browser-use/UI-TARS lack (they trust model self-report) and that Stagehand only does offline lives here — as a gate the admin clears before shipping, not an automated push.
 
 ---
 
-## 3. Confidence model (the spine of auto- vs human-repair)
+## 3. Governance model (the spine: detect automatically, publish manually)
 
-A repair's confidence is a function of: change class (text < semantic risk), number of corroborating installs, post-condition strength, orthogonal-signal agreement, and app-version-fingerprint certainty. Three bands:
-- **High → auto-repair + canary + auto-promote.**
-- **Medium → auto-repair proposed, customer approval required.**
-- **Low / semantic / flow → review queue (human).**
+There is exactly one rule and no auto-apply band: **the fleet detects and diagnoses drift automatically; an admin builds and publishes every fix manually.** Nothing reaches a customer without an explicit publish action in conxa-cloud.
 
-Confidence is auditable and tunable per customer (a regulated customer can set the auto-band threshold to "never," getting detection + suggestion but always human-approved application).
+- **Automatic, no approval needed:** breakage detection, change classification, evidence aggregation, ranking the review queue, and producing an *advisory* suggested fix.
+- **Always admin-gated:** building the fix, clearing the regression gate, and **publishing** the new signed version.
+
+Classification and corroboration no longer decide *whether* something ships — they only **rank the admin's queue** so the highest-impact, highest-confidence drift is triaged first. A regulated customer gets exactly what they need by construction: full detection and suggestion, but every applied change is human-approved. Auditability follows directly — each published version traces to a named admin, the evidence they saw, and the regression result at publish.
 
 ---
 
 ## 4. Workflow evolution (beyond repair)
 
-Durability also means *graceful evolution*, not just patching:
-- **Conditional promotion:** stochastic states observed at runtime/recovery (banners, MFA) are promoted into compiled conditional steps (G6) — the workflow *learns* the branches the original recording missed.
-- **Step deprecation:** if the fleet consistently skips/auto-recovers a step that no longer exists in the app, the durability system proposes removing it.
-- **Input drift:** if input fields change shape, the inputs schema evolves with validation.
-- **Intent stability:** through all of this, the **intent graph is the fixed point** — evolution changes *how* the goal is achieved, never *what* the goal is. Any proposed change that alters intent is escalated, never auto-applied.
+Durability also means *graceful evolution*, not just patching. Each of these is surfaced to the admin as a **proposal** in the review queue, never auto-applied:
+- **Conditional promotion:** stochastic states observed at runtime/recovery (banners, MFA) are proposed as compiled conditional steps (G6) — the admin can accept them so the workflow *learns* the branches the original recording missed.
+- **Step deprecation:** if the fleet consistently skips/auto-recovers a step that no longer exists in the app, the durability system proposes removing it for the admin to confirm.
+- **Input drift:** if input fields change shape, an updated inputs schema (with validation) is proposed for the admin to publish.
+- **Intent stability:** through all of this, the **intent graph is the fixed point** — evolution changes *how* the goal is achieved, never *what* the goal is. Any change that would alter intent is a deliberate, admin-driven re-authoring, never an automatic one.
 
 ---
 
 ## 5. Lessons mapped to sources
 
-- **Stagehand:** self-heal-then-refresh and the independent probe — but moved from *local in-place* to *fleet-validated re-sign* (the only model compatible with Conxa's signing + central compile; `research-audit.md` C.3).
+- **Stagehand:** self-heal-then-refresh and the independent probe — but moved from *local in-place* to *fleet-detected drift + an admin-published re-sign* (the only model compatible with Conxa's signing + central compile; `research-audit.md` C.3).
 - **Browser Use:** AX-tree re-grounding and page-fingerprint drift signals feed Stage 1/2; reject its per-step LLM loop.
-- **Playwright:** semantic-over-structural identity (Mind2Web-confirmed) is why most change classes are auto-repairable; the scored generator floor makes re-grounding deterministic.
-- **Fable / host model:** used (via the recovery subsystem) to *propose* re-groundings, never to *ship* them unvalidated.
-- **WebArena/WorkArena papers:** version-pinned, functional-outcome regression corpus (Stage 6) — the only durable validation philosophy.
+- **Playwright:** semantic-over-structural identity (Mind2Web-confirmed) is why most change classes are easy for the admin to fix; the scored generator floor makes re-grounding deterministic.
+- **Fable / host model:** used (via the recovery subsystem) to *propose* re-groundings to the admin, never to *ship* them unvalidated.
+- **WebArena/WorkArena papers:** version-pinned, functional-outcome regression corpus (the Stage 5 publish gate) — the only durable validation philosophy.
 
 ---
 
@@ -163,9 +149,9 @@ G2 post-condition verifier ──┐
 G5 runtime fingerprint score ─┤
 G1 autonomous recovery + ─────┼─▶ repair_events (validated, fleet) ─▶ Stage 1-2 detect/classify
    write-back                 │
-app-version fingerprint ──────┘                                   ─▶ Stage 3-4 suggest/validate (CIR)
-G10 compiler CIR + versioning ────────────────────────────────────▶ Stage 5-6 re-sign/regress
-G9 package signing + rollback ────────────────────────────────────▶ Stage 5 controlled rollout
+app-version fingerprint ──────┘                                   ─▶ Stage 3-4 surface + admin fix (CIR)
+G10 compiler CIR + versioning ────────────────────────────────────▶ Stage 4-5 admin edit / publish
+G9 package signing + rollback ────────────────────────────────────▶ Stage 5 admin publish + rollback
 G3 fleet telemetry aggregation ───────────────────────────────────▶ the whole loop
 ```
 
@@ -176,13 +162,13 @@ Durability is the **integration layer** over recovery (G1), runtime verification
 ## 7. The durability promise, quantified as targets
 
 - **Detection latency:** drift detected within the first N fleet occurrences (target: single-digit) of an app-version change.
-- **Auto-repair coverage:** ≥80% of drift events (text/DOM/layout/attribute classes) auto-repaired without human action.
-- **Time-to-fleet-fix:** validated fix pushed to the fleet within hours of first detection, not days/weeks of support tickets.
-- **Regression rate:** ~0 — every fix passes the golden corpus before rollout.
-- **Mean workflow lifespan:** years, with the *artifact* continuously evolving while the *intent* stays fixed.
+- **Time-to-admin-surface:** a confirmed DriftEvent reaches the admin's conxa-cloud review queue within minutes of first detection, with full evidence and a suggested fix.
+- **Suggestion quality:** for ≥80% of drift events (text/DOM/layout/attribute classes), the surfaced suggested fix is accept-as-is — minimizing admin effort, even though the publish stays manual.
+- **Regression rate:** ~0 — every published fix passes the golden corpus at the publish gate.
+- **Mean workflow lifespan:** years, with the *artifact* evolving through admin-published versions while the *intent* stays fixed.
 
 ---
 
 ## 8. Philosophy compliance
 
-✅ Determinism preserved — repairs are validated CIR deltas producing signed deterministic packages; the runtime hot path stays zero-LLM. ✅ AI used at recovery/repair-suggestion (heavy), never in the runtime hot path. ✅ Central compile + signing respected — no local mutation; fixes are re-signed centrally (the cloud coordinates; it still does not *execute*). ✅ Not an agent — the system heals *recorded, compiled* workflows toward their *recorded intent*; it never improvises new behavior. ✅ Human governance preserved — regulated customers can gate every auto-repair. **No violations.** The judgment call: auto-repair shifts some trust to fleet-validated automation; the confidence bands + golden-corpus regression gate + per-customer approval policy keep it safe and auditable.
+✅ Determinism preserved — fixes are admin-published CIR deltas producing signed deterministic packages; the runtime hot path stays zero-LLM. ✅ AI used at recovery/repair-suggestion (heavy), never in the runtime hot path. ✅ Central compile + signing respected — no local mutation; fixes are re-signed centrally and published by an admin (the cloud coordinates; it still does not *execute*). ✅ Not an agent — the system heals *recorded, compiled* workflows toward their *recorded intent*; it never improvises new behavior. ✅ Human governance is **mandatory, not optional** — every change to a fielded pack is built and published by an admin; no trust is shifted to fleet-validated automation. **No violations.** The system detects and diagnoses automatically and applies nothing on its own; the golden-corpus regression gate at publish keeps each admin-approved change safe and auditable.
