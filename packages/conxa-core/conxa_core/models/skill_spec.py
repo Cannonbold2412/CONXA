@@ -105,8 +105,14 @@ class FrameFingerprint(BaseModel):
 
 
 class IdentityBundle(BaseModel):
-    """Compiled, signed element identity: durability-ordered signals + stable fingerprint."""
+    """Compiled, signed element identity: durability-ordered signals + stable fingerprint.
+
+    The single source of truth for element identity. `fingerprint` is the resolver's scoring
+    oracle (the recorded element's stable attributes); `signals` are the durability-ranked
+    candidate selectors the runtime resolves against.
+    """
     signals: list[IdentitySignal] = Field(default_factory=list)
+    fingerprint: ElementFingerprint = Field(default_factory=ElementFingerprint)
     stable_hash: str = ""                  # SHA256 of (tag_path + static_attrs + AX_name)
     frame_chain: list[FrameFingerprint] = Field(default_factory=list)
     shadow_path: list[ShadowHost] = Field(default_factory=list)
@@ -128,11 +134,9 @@ class SkillStep(BaseModel):
     url: str = ""
     frame: dict[str, Any] = Field(default_factory=dict)
     target: dict[str, Any] = Field(default_factory=dict)
-    # Scoring-based element identity — runtime uses this to rank all candidates
-    # against the recorded element instead of trying selectors blindly in order.
-    element_fingerprint: ElementFingerprint = Field(default_factory=ElementFingerprint)
-    # Phase 3: durability-ranked, orthogonality-deduplicated identity bundle.
-    identity_bundle: IdentityBundle | None = None
+    # Durability-ranked, orthogonality-deduplicated identity bundle — the single source of
+    # truth for element identity (signals + scoring fingerprint). Runtime resolves against it.
+    identity_bundle: IdentityBundle = Field(default_factory=IdentityBundle)
     # Phase 7: precompiled handler hints (hover chain, virtualization).
     handler_hints: HandlerHints = Field(default_factory=HandlerHints)
     signals: dict[str, Any] = Field(default_factory=dict)

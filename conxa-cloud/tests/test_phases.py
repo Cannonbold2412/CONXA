@@ -168,13 +168,25 @@ class PhaseTests(unittest.TestCase):
         from conxa_compile.pipeline.run import run_pipeline
 
         ev = _minimal_click_event()
+        url = "https://app-na2.hubspot.com/object-builder/246242636/0-1/embed?"
+        url_pattern = "^https://app\\-na2\\.hubspot\\.com/object\\-builder/[^/]+/0\\-1/embed$"
         ev["frame"] = {
             "chain": [
                 {
-                    "selector": 'iframe[id="object-builder-ui"]',
-                    "fallback_selectors": ['iframe[data-test-id="object-builder-ui-iframe"]'],
-                    "url": "https://app-na2.hubspot.com/object-builder/246242636/0-1/embed?",
-                    "url_pattern": "^https://app\\-na2\\.hubspot\\.com/object\\-builder/[^/]+/0\\-1/embed$",
+                    "url": url,
+                    "url_pattern": url_pattern,
+                    "fingerprint": {
+                        "signals": [
+                            {"engine": "css-id", "selector": 'iframe[id="object-builder-ui"]',
+                             "durability": 0.45, "orthogonality_class": "structural",
+                             "unique_at_compile": False, "source": "compiler"},
+                            {"engine": "testid", "selector": 'iframe[data-test-id="object-builder-ui-iframe"]',
+                             "durability": 0.99, "orthogonality_class": "test-contract",
+                             "unique_at_compile": False, "source": "compiler"},
+                        ],
+                        "url": url,
+                        "url_pattern": url_pattern,
+                    },
                 }
             ]
         }
@@ -195,8 +207,12 @@ class PhaseTests(unittest.TestCase):
             shutil.rmtree(data_dir, ignore_errors=True)
 
         step = pkg.skills[0].steps[0].model_dump(mode="json")
-        assert step["frame"]["chain"][0]["selector"] == 'iframe[id="object-builder-ui"]'
-        assert step["frame"]["chain"][0]["fallback_selectors"] == ['iframe[data-test-id="object-builder-ui-iframe"]']
+        # Cutover: structural marker keeps url/url_pattern only (no selector field).
+        assert step["frame"]["chain"][0]["url_pattern"] == url_pattern
+        assert "selector" not in step["frame"]["chain"][0]
+        # Frame resolution is driven by identity_bundle.frame_chain signals.
+        frame_sigs = step["identity_bundle"]["frame_chain"][0]["signals"]
+        assert any(s["selector"] == 'iframe[data-test-id="object-builder-ui-iframe"]' for s in frame_sigs)
 
     def test_phase6_patch_bumps_version(self) -> None:
         from conxa_compile.compiler.build import compile_skill_package

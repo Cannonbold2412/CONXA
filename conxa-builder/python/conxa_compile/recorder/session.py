@@ -69,15 +69,6 @@ def _css_attr_selector(tag: str, attr: str, value: Any) -> str:
     return f'{tag}[{attr}="{escaped}"]'
 
 
-def _iframe_selectors_from_attrs(attrs: dict[str, Any]) -> list[str]:
-    selectors: list[str] = []
-    for attr in ("id", "data-test-id", "data-selenium-test", "name", "title", "aria-label"):
-        selector = _css_attr_selector("iframe", attr, attrs.get(attr))
-        if selector and selector not in selectors:
-            selectors.append(selector)
-    return selectors
-
-
 # Maps (attr_name, css_attr) → (engine, base_durability) for FrameFingerprint signal ranking.
 _FRAME_ATTR_SIGNALS: list[tuple[str, str, str, float]] = [
     ("data-test-id",       "data-test-id",       "testid",        0.99),
@@ -194,14 +185,11 @@ def _frame_context_and_offset_sync(frame: Any | None) -> tuple[dict[str, Any], d
             attrs, rect = _frame_element_attrs_and_rect(item)
         except Exception:
             continue
-        selectors = _iframe_selectors_from_attrs(attrs)
-        if not selectors:
-            continue
         frame_url = _frame_url(item)
         fingerprint = _iframe_fingerprint_from_attrs(attrs, frame_url)
+        if not fingerprint.get("signals"):
+            continue
         spec = {
-            "selector": selectors[0],
-            "fallback_selectors": selectors[1:],
             "url": frame_url or str(attrs.get("src") or ""),
             "url_pattern": _normalize_frame_url_pattern(frame_url),
             "fingerprint": fingerprint,

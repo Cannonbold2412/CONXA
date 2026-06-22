@@ -112,6 +112,11 @@ def _infer_selector_kind(selector: str) -> str:
 
 
 def _build_frame_context(ev: dict[str, Any]) -> dict[str, Any]:
+    """Structural iframe-chain marker (url/url_pattern per level).
+
+    Frame element resolution at runtime is driven by `identity_bundle.frame_chain`; this carries
+    only the chain depth + url markers needed for frame_enter/frame_exit and diagnostics.
+    """
     frame = ev.get("frame")
     if not isinstance(frame, dict):
         return {}
@@ -122,18 +127,10 @@ def _build_frame_context(ev: dict[str, Any]) -> dict[str, Any]:
     for raw in chain:
         if not isinstance(raw, dict):
             continue
-        selector = str(raw.get("selector") or "").strip()
-        if not selector:
+        if not (raw.get("fingerprint") or {}).get("signals"):
             continue
-        fallbacks = [
-            str(item).strip()
-            for item in (raw.get("fallback_selectors") or [])
-            if str(item or "").strip()
-        ][:5]
         out_chain.append(
             {
-                "selector": selector,
-                "fallback_selectors": fallbacks,
                 "url": str(raw.get("url") or "").strip(),
                 "url_pattern": str(raw.get("url_pattern") or "").strip(),
             }
@@ -307,10 +304,15 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
     """Build durability-ranked, orthogonality-deduplicated IdentityBundle from a recorded event.
 
     Uses the deterministic-floor generator (Playwright grammar, zero-LLM) as the signal base.
+    The bundle also carries the scoring `fingerprint` (the resolver's oracle) — single source
+    of truth for element identity.
     """
     import warnings
     target = ev.get("target") or {}
     selectors = ev.get("selectors") or {}
+
+    # The scoring oracle the runtime resolver ranks candidates against.
+    fingerprint = _build_element_fingerprint(ev)
 
     # Phase 4: use deterministic-floor generator (Playwright grammar)
     signals = generate_deterministic_signals(ev)
@@ -360,7 +362,7 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
         from conxa_compile.compiler.selector_filters import xpath_shadow_guard
         signals = [s for s in signals if xpath_shadow_guard(s.engine, shadow_path)]
 
-    # Phase 5: build frame_chain from per-frame fingerprints
+    # Phase 5: build frame_chain from per-frame fingerprints (the sole frame identity source).
     frame_chain: list[FrameFingerprint] = []
     for spec in ((ev.get("frame") or {}).get("chain") or []):
         fp_dict = spec.get("fingerprint") or {}
@@ -369,17 +371,7 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
             for sig_dict in (fp_dict.get("signals") or [])
             if isinstance(sig_dict, dict)
         ]
-        if fp_signals or spec.get("selector"):
-            if not fp_signals and spec.get("selector"):
-                # Backward compat: create a minimal signal from the legacy selector field
-                fp_signals = [IdentitySignal(
-                    engine="css-structural",
-                    selector=str(spec["selector"]),
-                    durability=0.45,
-                    orthogonality_class="structural",
-                    unique_at_compile=False,
-                    source="compiler",
-                )]
+        if fp_signals:
             frame_chain.append(FrameFingerprint(
                 signals=fp_signals,
                 url=str(spec.get("url") or fp_dict.get("url") or ""),
@@ -388,6 +380,7 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
 
     return IdentityBundle(
         signals=signals,
+        fingerprint=fingerprint,
         stable_hash=s_hash,
         frame_chain=frame_chain,
         shadow_path=shadow_path,
@@ -473,7 +466,7 @@ def _build_structural_fingerprint(steps: list[SkillStep]) -> dict[str, Any]:
         action = step.action if isinstance(step.action, str) else (step.action or {}).get("action", "")
         if action in {"navigate", "scroll"}:
             continue
-        fp = step.element_fingerprint
+        fp = step.identity_bundle.fingerprint
         primary = step.target.get("primary_selector", "")
         if primary or fp.data_testid or fp.aria_label or fp.inner_text:
             landmarks.append({
@@ -900,7 +893,6 @@ def _build_step(
         cw = dict(confidence_protocol.get("compile_warnings") or {})
         cw["selector_confidence"] = sel_conf
         confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
-    fingerprint = _build_element_fingerprint(ev_with_intent)
     identity_bundle = _build_identity_bundle(ev_with_intent)
     assertions = _build_assertions(ev_with_intent, validation)
     if assertions:
@@ -915,7 +907,6 @@ def _build_step(
         intent=intent,
         frame=_build_frame_context(ev),
         target=target,
-        element_fingerprint=fingerprint,
         identity_bundle=identity_bundle,
         signals=signals,
         state={"before": state_before, "after": state_after},
