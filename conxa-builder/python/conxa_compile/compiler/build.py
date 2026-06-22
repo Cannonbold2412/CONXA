@@ -102,6 +102,10 @@ def _infer_selector_kind(selector: str) -> str:
         return "label"
     if s.startswith("[aria-label="):
         return "aria"
+    if re.match(r"\[role=", s):
+        # [role="button"][name="New"] — ARIA attribute selector with semantic role + name.
+        # Score as "aria" (100) not "css" (50): carries semantic identity, not structure.
+        return "aria"
     if re.match(r"input\[name=", s):
         return "name"
     if s.lower().startswith("text="):
@@ -307,7 +311,6 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
     The bundle also carries the scoring `fingerprint` (the resolver's oracle) — single source
     of truth for element identity.
     """
-    import warnings
     target = ev.get("target") or {}
     selectors = ev.get("selectors") or {}
 
@@ -319,10 +322,13 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
 
     distinct_classes = {s.orthogonality_class for s in signals}
     if len(distinct_classes) < 2:
-        warnings.warn(
-            f"IdentityBundle has only {len(distinct_classes)} orthogonality class(es): {distinct_classes or '{}'} — "
-            "consider adding more signal generators",
-            stacklevel=3,
+        # Log only — LLM enrichment (run after all steps are built) will add semantic signals
+        # for elements whose recorded data lacks role/text fields. A UserWarning here is
+        # misleading because it fires before _llm_compile_selectors has a chance to run.
+        _compile_log(
+            "compile_step",
+            f"Deterministic floor has {len(distinct_classes)} orthogonality class(es): {distinct_classes or set()} — LLM will enrich.",
+            {"phase": "identity_bundle_low_orthogonality", "classes": list(distinct_classes)},
         )
 
     element_data = {
@@ -576,7 +582,20 @@ def _build_target(ev: dict[str, Any], policy: dict[str, Any], session_id: str = 
             selector_source = "llm_native"
 
     fallback_raw = list(stable.get("fallback_selectors") or []) + ranked_extra
-    fallback = [s for s in fallback_raw if selector_passes_filters(str(s)) and str(s) != primary]
+    # Re-score the merged pool so high-durability signals (aria/label) rank above structural
+    # ones (css/input-type) regardless of which source placed them in fallback_raw.
+    # Without this, ranked_extra items like [role="button"][name="New"] (score 100 via aria)
+    # land after stable fallbacks like input[type="button"] (score 50) due to concatenation order.
+    _seen_fb: set[str] = set()
+    _scored_fb: list[tuple[float, str]] = []
+    for _s in fallback_raw:
+        _s = str(_s).strip()
+        if not _s or _s == primary or not selector_passes_filters(_s) or _s in _seen_fb:
+            continue
+        _seen_fb.add(_s)
+        _scored_fb.append((score_selector_row(_infer_selector_kind(_s), _s, policy), _s))
+    _scored_fb.sort(key=lambda r: r[0], reverse=True)
+    fallback = [_s for _, _s in _scored_fb]
     input_type = semantic.get("input_type")
     target_type = "input" if input_type else str(target.get("tag") or "")
     if target_type == "button" or semantic.get("role") == "button":
