@@ -349,6 +349,51 @@ def _run_has_recovery(record: dict[str, Any]) -> bool:
     return any(_event_recovery_type(evt) for evt in record.get("events") or [])
 
 
+def _drift_review_queue(principal: Principal) -> list[dict[str, Any]]:
+    """Aggregate runtime repair_event drift signals into an admin review queue.
+
+    Detection is automatic and fleet-wide; this surfaces the evidence to the conxa-cloud
+    admin. Nothing here re-signs or publishes — a durable fix is always an admin-reviewed,
+    manually published new version (see the durability-flywheel design docs).
+    """
+    by_key: dict[tuple[str, str, Any], dict[str, Any]] = {}
+    for record in _visible_run_records(principal):
+        summary = record.get("summary") or {}
+        plugin_id = str(summary.get("plugin_id") or "")
+        plugin_ver = str(summary.get("plugin_ver") or "")
+        for evt in record.get("events") or []:
+            if evt.get("e") != "repair_event":
+                continue
+            step_id = evt.get("step_id")
+            key = (plugin_id, plugin_ver, step_id)
+            entry = by_key.get(key)
+            if entry is None:
+                entry = {
+                    "plugin_id": plugin_id,
+                    "plugin_ver": plugin_ver,
+                    "step_id": step_id,
+                    "occurrences": 0,
+                    "tiers": {},
+                    "methods": {},
+                    "stable_hash": evt.get("stable_hash", ""),
+                    "app_version_fingerprint": evt.get("app_version_fingerprint", ""),
+                    "last_seen": 0,
+                    "status": "needs_review",  # admin-gated; never auto-published
+                }
+                by_key[key] = entry
+            entry["occurrences"] += 1
+            tier = str(evt.get("tier") or "")
+            method = str(evt.get("method") or evt.get("drift_hint") or "")
+            if tier:
+                entry["tiers"][tier] = entry["tiers"].get(tier, 0) + 1
+            if method:
+                entry["methods"][method] = entry["methods"].get(method, 0) + 1
+            entry["last_seen"] = max(int(entry["last_seen"]), _epoch_ms(evt.get("ts")))
+    queue = list(by_key.values())
+    queue.sort(key=lambda e: (e["occurrences"], e["last_seen"]), reverse=True)
+    return queue
+
+
 def _failed_step_index(record: dict[str, Any]) -> int | None:
     summary = record.get("summary") or {}
     value = summary.get("failed_step_id")
@@ -705,6 +750,19 @@ def tracking_dashboard(
 ) -> dict[str, Any]:
     """Return workspace-scoped adoption, reliability, and recovery aggregates."""
     return _dashboard_metrics(principal, range)
+
+
+@router.get("/drift")
+def tracking_drift_queue(
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Return the admin drift-review queue derived from runtime repair_event signals.
+
+    Surfaces detected drift for manual review only — publishing a re-signed version is
+    always an explicit admin action, never automatic.
+    """
+    queue = _drift_review_queue(principal)
+    return {"queue": queue, "total": len(queue)}
 
 
 @router.get("/{company}/runs")

@@ -291,3 +291,41 @@ def generate_selector_with_objective_confidence(
         return "", total_confidence, breakdown, rationale
 
     return primary_selector, total_confidence, breakdown, rationale
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Playwright native grammar conversion
+# ---------------------------------------------------------------------------
+
+def to_playwright_grammar(engine: str, value: str, name: str = "") -> str:
+    """Convert an (engine, value) selector to Playwright's native internal: grammar.
+
+    Grammar reference (selectorParser.ts):
+      testid   → internal:testid=[data-testid="X"]
+      role     → internal:role=button[name="X"]
+      text     → internal:text="X"
+      relational → passed through as-is (caller already formatted)
+      frame    → internal:control=enter-frame
+      css/xpath → passed through unchanged
+    """
+    eng = engine.lower()
+    if eng == "testid":
+        m = re.match(r'\[data-testid=["\']?([^"\'>\s\]]+)["\']?\]', value)
+        testid_val = m.group(1) if m else value
+        return f'internal:testid=[data-testid="{testid_val}"]'
+    if eng in ("role", "aria"):
+        # Normalise: strip existing internal:role= prefix if already there
+        role_val = re.sub(r'^internal:role=', '', value).strip()
+        role_name = role_val.split("[")[0].strip()
+        n = name.strip()
+        if n:
+            return f'internal:role={role_name}[name="{n}"]'
+        return f'internal:role={role_name}'
+    if eng in ("text", "text_based"):
+        text = re.sub(r'^text=["\']?|["\']?$', '', value.strip())
+        return f'internal:text="{text}"'
+    if eng == "frame":
+        return "internal:control=enter-frame"
+    if eng == "relational":
+        return value  # already formatted by caller
+    return value  # css, xpath, css-id, css-structural: pass through

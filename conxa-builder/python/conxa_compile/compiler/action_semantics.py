@@ -69,3 +69,21 @@ def commit_intent_hit(step: Step, policy: dict[str, Any]) -> bool:
     if any(sub in intent for sub in subs):
         return True
     return looks_like_submit(step, policy)
+
+
+def detect_hover_precondition(ev: Step, prev_ev: Step | None) -> bool:
+    """Whether the immediately preceding recorded event was a hover over a different element.
+
+    A hover-then-click sequence (e.g. menu reveal) means the target only becomes
+    interactable after re-hovering the parent at runtime.
+    """
+    if prev_ev is None:
+        return False
+    if action_name(prev_ev).lower() != "hover":
+        return False
+    # Different element → the hover revealed the current target
+    prev_target = (prev_ev.get("target") or {})
+    cur_target = (ev.get("target") or {})
+    prev_key = (prev_target.get("inner_text") or "", prev_target.get("aria_label") or "")
+    cur_key = (cur_target.get("inner_text") or "", cur_target.get("aria_label") or "")
+    return prev_key != cur_key
