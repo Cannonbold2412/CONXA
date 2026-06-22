@@ -239,9 +239,10 @@ class SkillStep(BaseModel):
     action: str | dict         # Action type + params
     intent: str                # "Click the Submit button"
     url: str                   # Expected URL for this step
-    frame: dict                # Iframe chain context
+    frame: dict                # Iframe chain structural marker (url/url_pattern per level)
     target: dict               # Raw recorded target element data
-    element_fingerprint: ElementFingerprint
+    identity_bundle: IdentityBundle          # REQUIRED — single source of element identity (see §3.4a)
+    handler_hints: HandlerHints              # hover_chain, virtualization (see §3.4b)
     signals: dict              # Additional DOM signals
     state: dict                # Page state at recording time
     value: Any                 # Input value (may be {{variable}})
@@ -256,9 +257,16 @@ class SkillStep(BaseModel):
     snapshot_dom_hash: str         # For cross-compilation cache lookup
 ```
 
+> **Single identity object (cutover):** `element_fingerprint` is no longer a top-level
+> `SkillStep` field — it lives **inside** `IdentityBundle.fingerprint` (§3.4a). `identity_bundle`
+> is required; the runtime resolves the primary target through `identity_bundle.signals` (no legacy
+> `compiled_selectors` primary path), and frame roots are driven solely by
+> `identity_bundle.frame_chain`. Packs compiled before this change must be recompiled.
+
 ### 3.4 ElementFingerprint
 
-The stable element identity used to score DOM candidates at runtime:
+The stable element identity used to score DOM candidates at runtime (carried as
+`IdentityBundle.fingerprint`):
 
 ```python
 class ElementFingerprint(BaseModel):
@@ -274,6 +282,49 @@ class ElementFingerprint(BaseModel):
     css_class_tokens: list[str]   # Stable class tokens only
     anchor_phrases: list[str]     # Relational context phrases
     position_hint: dict           # {x: 0.0-1.0, y: 0.0-1.0}
+```
+
+### 3.4a IdentityBundle (Final Selector Architecture)
+
+The durability-ranked, orthogonality-deduplicated element identity used by the pure runtime
+resolver. Retained alongside `ElementFingerprint` for backward compatibility.
+
+```python
+class IdentitySignal(BaseModel):
+    engine: str                # testid | role | aria | text | relational | css-id | css-structural | xpath
+    selector: str              # Playwright native grammar (internal:role=…, internal:testid=…)
+    durability: float          # 0.0–1.0, base_durability(engine) × survival_prior × stability_adj
+    orthogonality_class: str   # test-contract | semantic-aria | visible-text | spatial-anchor | structural
+    unique_at_compile: bool    # matched exactly 1 node in recorded DOM
+    source: str                # compiler | llm | input_bound
+
+class FrameFingerprint(BaseModel):
+    signals: list[IdentitySignal]   # durability-ranked per frame level
+    url: str
+    url_pattern: str
+
+class ShadowHost(BaseModel):
+    host: str                  # CSS selector of the shadow host
+    mode: str                  # "open" | "closed"
+
+class IdentityBundle(BaseModel):
+    signals: list[IdentitySignal]        # durability-ordered, ≤1 per orthogonality class
+    fingerprint: ElementFingerprint      # the resolver's scoring oracle (recorded element attrs)
+    stable_hash: str                     # SHA256(tag_path + static attrs + AX name), dynamic classes stripped
+    frame_chain: list[FrameFingerprint]  # sole frame-resolution source (durability-ranked per level)
+    shadow_path: list[ShadowHost]
+    compat_fingerprint: str              # app-version indicators
+    guid_like_attrs: list[str]
+    destructive: bool
+```
+
+### 3.4b HandlerHints
+
+```python
+class HandlerHints(BaseModel):
+    hover_chain: list[IdentitySignal]    # elements to hover before acting (menu reveals)
+    virtualized_container: str           # scroll container selector for virtualized rows
+    allow_forced_action: bool
 ```
 
 ### 3.5 RecoveryBlock
@@ -355,8 +406,16 @@ class WorkflowIntentGraph(BaseModel):
 | `step_ok` | Step succeeded | `si` (step index), `tier` (1–4) |
 | `step_fail` | Step failed | `si`, `code` (error code) |
 | `recovery_tier{N}` | Recovery tier N attempted | `si` |
+| `tier_ok` | A resolution/recovery tier succeeded | `si`, `tier`, `sel` |
+| `verify_fail` | Post-action VERIFY failed | `si`, `ch` (assertion channel) |
+| `repair_event` | A step was recovered — drift signal for the admin flywheel queue | `step_id`, `tier` (L1/L2), `method`, `score`, `margin`, `stable_hash_match`, `stable_hash`, `drift_hint`, `app_version_fingerprint` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
 | `wf_fail` | Workflow failed | `dur`, `fsi` (failed step index), `fc` (failure code) |
+
+**`repair_event` is ephemeral per-run telemetry** — it never mutates the signed local pack.
+It aggregates into the admin drift-review queue at `GET /api/v1/tracking/{company}/drift`
+(keyed by plugin/version/step). Detection is automatic and fleet-wide; a durable fix is always
+an admin-reviewed, manually published re-sign — publishing is never automatic.
 
 ### 4.2 Stored Event Batch (Cloud)
 

@@ -78,7 +78,7 @@ The exclusion list is what makes the pack **safely fleet-distributable**: the sa
 - **Immutable + signed:** a pack version is never edited in place; a change produces a new signed version.
 - **Delta-sync:** true per-file SHA-256 delta (G9) — a recovery-metadata or single-step change ships only the changed file, not the whole pack.
 - **Compatibility gating:** `compatibility.runtime_min` + `app_version_fingerprint` prevent a stale pack from silently running against a drifted app (the audit B.2 trap: a content-hash *hit* on a stale selector guarantees failure).
-- **Rollback:** any version can be re-pushed instantly if a new version regresses — the safety net that makes the flywheel's auto-republish safe.
+- **Rollback:** any version can be re-pushed instantly if a new version regresses — the safety net for admin-published flywheel fixes.
 
 ---
 
@@ -86,13 +86,13 @@ The exclusion list is what makes the pack **safely fleet-distributable**: the sa
 
 ```
 runtime verified repair_event ──▶ Cloud aggregation (per skill, across ALL customers)
-   ──▶ drift detection (first occurrence) ──▶ change classification (text/DOM/layout/flow)
-      ──▶ repair suggestion ──▶ regression test on version-pinned env ──▶ RE-SIGN new version
-         ──▶ canary rollout ──▶ fleet delta-sync  (before other customers hit the drift)
+   ──▶ drift detection (first occurrence) ──▶ surface to conxa-cloud admin (review queue, with evidence)
+      ──▶ admin builds the fix (re-record / re-compile / edit) ──▶ admin publishes new signed version
+         ──▶ regression check at publish ──▶ fleet delta-sync
 ```
 
-- A heal on **one** runtime, once verified, becomes a re-signed pack version pushed to **all** customers of that skill — drift is fixed fleet-wide on first occurrence, not rediscovered N times (insight #1, the moat).
-- **Write-back is telemetry-driven, never local mutation** (insight #11): the signed local pack is never silently rewritten; the durable fix is always a Cloud re-sign. This preserves determinism + signing while still self-improving — a combination competitors with mutable local caches (Stagehand) structurally cannot claim.
+- A drift detected on **one** runtime is surfaced to the conxa-cloud admin; once the admin reviews and **publishes** a new signed version, the fix delta-syncs to **all** customers of that skill — drift is fixed fleet-wide on first *detection*, not rediscovered N times (insight #1, the moat). Detection is automatic and fleet-wide; **publishing is always admin-approved, never automatic.**
+- **Write-back is telemetry-driven, never local mutation** (insight #11): the signed local pack is never silently rewritten; the durable fix is always an **admin-approved, manually published** re-sign. This preserves determinism + signing while still self-improving — a combination competitors with mutable local caches (Stagehand) structurally cannot claim.
 - `durability_score` per step ranks which steps are drift-prone, focusing flywheel attention.
 
 This is detailed in `future-workflow-durability-architecture.md`; the pack structure above is what makes it possible.

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from conxa_core.models.skill_spec import IdentitySignal
 
 
 def is_dynamic_id(selector: str) -> bool:
@@ -163,3 +166,113 @@ def selector_passes_filters(selector: str) -> bool:
 def prefilter_selector_candidate(selector: str) -> bool:
     """Gate before scoring: same as selector_passes_filters (explicit alias for ranking pipelines)."""
     return selector_passes_filters(selector)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 compile-time gates (Final Selector Architecture)
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+_METACHAR_RE = re.compile(r"[>+~|^$]")  # CSS combinators / unsanitisable metacharacters
+
+
+def _count_selector_matches_dom(selector: str, dom: dict[str, Any]) -> int:
+    """Minimal DOM counter for common selector patterns (data-testid, aria-label, text=)."""
+    selector = selector.strip()
+    if not selector:
+        return 0
+    m = re.match(r'\[data-testid=["\']?([^"\']+)["\']?\]', selector)
+    if m:
+        return _count_attr(dom, "data-testid", m.group(1))
+    m = re.match(r'\[aria-label=["\']?([^"\']+)["\']?\]', selector)
+    if m:
+        return _count_attr(dom, "aria-label", m.group(1))
+    m = re.match(r'text=["\']?([^"\']+)["\']?', selector)
+    if m:
+        return _count_text(dom, m.group(1))
+    return 1  # complex selectors: assume unique
+
+
+def _count_attr(dom: dict[str, Any], attr: str, value: str) -> int:
+    count = 0
+    if isinstance(dom, dict):
+        attrs = dom.get("attributes") or {}
+        if isinstance(attrs, dict) and str(attrs.get(attr) or "") == value:
+            count = 1
+        for child in dom.get("children") or []:
+            count += _count_attr(child, attr, value)
+    return count
+
+
+def _count_text(dom: dict[str, Any], text: str) -> int:
+    count = 0
+    if isinstance(dom, dict):
+        inner = str(dom.get("inner_text") or "").strip()
+        if inner.lower() == text.lower() or text.lower() in inner.lower():
+            count = 1
+        for child in dom.get("children") or []:
+            count += _count_text(child, text)
+    return count
+
+
+def uniqueness_gate(selector: str, dom_snapshot: dict[str, Any] | None) -> bool:
+    """Return True if selector matches exactly 1 node in the recorded DOM snapshot.
+
+    Returns True when no snapshot is available (can't verify, allow through).
+    """
+    if not dom_snapshot:
+        return True
+    return _count_selector_matches_dom(selector, dom_snapshot) == 1
+
+
+def dedup_by_orthogonality(signals: list["IdentitySignal"]) -> list["IdentitySignal"]:
+    """Keep the highest-durability signal per orthogonality class; drop the rest."""
+    best: dict[str, "IdentitySignal"] = {}
+    for sig in signals:
+        oc = sig.orthogonality_class
+        if oc not in best or sig.durability > best[oc].durability:
+            best[oc] = sig
+    # Return in original durability-descending order
+    kept = set(id(s) for s in best.values())
+    return [s for s in signals if id(s) in kept]
+
+
+def pii_bind(
+    selector: str, inputs: dict[str, Any] | None = None
+) -> tuple[str, bool]:
+    """Replace PII literals in selector with {{var}} references.
+
+    Returns (modified_selector, was_bound). If un-escapable metacharacters remain
+    after binding, returns ("", True) to signal the selector must be dropped.
+    """
+    modified = selector
+    bound = False
+
+    # Replace email addresses
+    if _EMAIL_RE.search(modified):
+        modified = _EMAIL_RE.sub("{{email}}", modified)
+        bound = True
+
+    # Replace input literal values found verbatim in selector
+    if inputs:
+        for key, val in inputs.items():
+            if not val or not isinstance(val, str) or len(val) < 4:
+                continue
+            if val in modified:
+                modified = modified.replace(val, f"{{{{{key}}}}}")
+                bound = True
+
+    if bound and _METACHAR_RE.search(modified.replace("{{", "").replace("}}", "")):
+        return ("", True)
+
+    return (modified, bound)
+
+
+def xpath_shadow_guard(engine: str, shadow_path: list[Any] | None) -> bool:
+    """Return False (block) if engine is xpath and shadow_path is non-empty.
+
+    XPath cannot cross shadow roots; such selectors must be dropped.
+    """
+    if not shadow_path:
+        return True
+    return engine != "xpath"

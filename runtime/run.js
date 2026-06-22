@@ -5,6 +5,9 @@ const os = require("os");
 const path = require("path");
 
 const { mapErrorToCode } = require("./tracker");
+const { classifyException, remedyFor, buildRepairEvent, CLASS } = require("./recovery");
+const { resolve: resolveSignals } = require("./resolver");
+const { signalToLocator, gatherCandidates, bundleFingerprint } = require("./resolve_adapter");
 
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 
@@ -149,28 +152,23 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function frameChain(step) {
-  return asArray(asObject(step && step.frame).chain).filter(item => item && typeof item === "object");
-}
-
-function frameSelectors(spec, inputs) {
-  return unique([
-    spec.selector,
-    ...asArray(spec.fallback_selectors),
-  ].map(selector => interpolate(String(selector || ""), inputs)));
-}
-
+// Frame roots are driven solely by identity_bundle.frame_chain (durability-ranked signals per
+// iframe level). Each frame signal selector is a CSS attribute selector (iframe[name=…] etc.),
+// so it feeds frameLocator() directly.
 function rootCandidates(page, step, inputs) {
-  const chain = frameChain(step);
-  if (!chain.length) return [page];
+  const frameChain = asArray(asObject(step && step.identity_bundle).frame_chain);
+  if (!frameChain.length) return [page];
 
   let roots = [page];
-  for (const spec of chain) {
+  for (const frameSpec of frameChain) {
+    const sigs = asArray(frameSpec.signals)
+      .filter(s => s && s.selector)
+      .sort((a, b) => (b.durability || 0) - (a.durability || 0));
     const next = [];
     for (const root of roots) {
       if (!root || typeof root.frameLocator !== "function") continue;
-      for (const selector of frameSelectors(spec, inputs)) {
-        next.push(root.frameLocator(selector));
+      for (const s of sigs) {
+        next.push(root.frameLocator(interpolate(String(s.selector), inputs)));
       }
     }
     roots = next;
@@ -186,21 +184,102 @@ function locatorCandidates(page, step, inputs, selector) {
   return rootCandidates(page, step, inputs).map(root => root.locator(resolved));
 }
 
+// Sentinel selector marking "resolve the step's primary target via identity_bundle.signals".
+const PRIMARY = Symbol("primary-target");
+
+// Resolve the step's primary target through the pure resolver over the live DOM.
+// Returns a single Playwright locator for the chosen element, or throws a classified error.
+async function resolveStep(page, step, inputs) {
+  const bundle = asObject(step.identity_bundle);
+  const signals = asArray(bundle.signals).filter(s => s && s.selector);
+  if (!signals.length) {
+    throw Object.assign(
+      new Error("Step has no identity_bundle.signals — pack must be recompiled"),
+      { recompileRequired: true },
+    );
+  }
+  const roots = rootCandidates(page, step, inputs);
+  const map = await gatherCandidates(roots, signals, interpolate, inputs);
+  const fp = bundleFingerprint(bundle);
+  const result = resolveSignals(signals, fp, { queryAll: sel => map[sel] || [] }, {});
+  if (result && result.node && result.node._loc) {
+    return result.node._loc;
+  }
+  if (result && result.ambiguous) {
+    throw Object.assign(new Error("Ambiguous element resolution (no signal cleared uniqueness gate)"), { ambiguous: true });
+  }
+  throw Object.assign(new Error("Element not found (resolve miss)"), { resolveMiss: true });
+}
+
+const GATE_ENABLED = process.env.CONXA_GATE !== "0";
+const GATE_BUDGET_MS = envNumber("CONXA_GATE_BUDGET_MS", 600);
+
+// Phase 8: pre-action GATE — confirm the element is attached, visible, RAF-stable, and enabled
+// before acting. Budget is confidence-adaptive (a high-confidence step gets a shorter wait).
+// Best-effort: gate failures throw so the caller can try the next candidate / recovery.
+async function gateLocator(loc, step) {
+  if (!GATE_ENABLED) return;
+  const conf = Number(asObject(step).confidence);
+  const budget = Number.isFinite(conf) && conf >= 0.85
+    ? Math.round(GATE_BUDGET_MS / 2)
+    : GATE_BUDGET_MS;
+
+  await loc.waitFor({ state: "visible", timeout: budget });
+
+  // RAF-stable: bounding box must be unchanged across two animation frames.
+  try {
+    const stable = await loc.evaluate(el => new Promise(resolve => {
+      const r1 = el.getBoundingClientRect();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const r2 = el.getBoundingClientRect();
+        resolve(Math.abs(r1.x - r2.x) < 1 && Math.abs(r1.y - r2.y) < 1
+          && Math.abs(r1.width - r2.width) < 1 && Math.abs(r1.height - r2.height) < 1);
+      }));
+    }));
+    if (!stable) {
+      await loc.waitFor({ state: "visible", timeout: budget }); // settle once more
+    }
+  } catch (_) {
+    // evaluate may fail on detach — let the action path surface the real error.
+  }
+
+  // Enabled: reject disabled / aria-disabled controls.
+  try {
+    const disabled = await loc.evaluate(el =>
+      el.disabled === true || el.getAttribute("aria-disabled") === "true");
+    if (disabled) throw new Error("Element is disabled");
+  } catch (err) {
+    if (err && /disabled/i.test(String(err.message))) throw err;
+  }
+}
+
 async function withLocator(page, step, inputs, selector, timeout, fn) {
-  const candidates = locatorCandidates(page, step, inputs, selector);
+  // PRIMARY → resolve the step's target via identity_bundle.signals, unless an explicit recovery
+  // selector was injected (string mode). Any other selector value is explicit string mode.
+  let candidates;
+  if (selector === PRIMARY) {
+    if (step._explicit_selector) {
+      candidates = locatorCandidates(page, step, inputs, step._explicit_selector);
+    } else {
+      candidates = [await resolveStep(page, step, inputs)];
+    }
+  } else {
+    candidates = locatorCandidates(page, step, inputs, selector);
+  }
   if (!candidates.length) throw new Error("Missing selector");
 
   let lastErr = null;
   for (const locator of candidates) {
     try {
-      if (timeout) await locator.first().waitFor({ state: "visible", timeout });
+      if (timeout && selector !== PRIMARY) await locator.first().waitFor({ state: "visible", timeout });
+      await gateLocator(locator.first(), step);
       return await fn(locator);
     } catch (err) {
       lastErr = err;
     }
   }
 
-  throw lastErr || new Error(`Locator not found: ${selector}`);
+  throw lastErr || new Error(`Locator not found: ${String(selector)}`);
 }
 
 async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, timeout, fn) {
@@ -265,7 +344,8 @@ function stepSelector(step, inputs) {
 }
 
 function stepWithSelector(step, selector) {
-  return { ...step, compiled_selectors: [], selector };
+  // Recovery injects an explicit selector — force string mode in withLocator/PRIMARY.
+  return { ...step, _explicit_selector: selector };
 }
 
 function textSelector(value) {
@@ -322,9 +402,16 @@ function enrichStepsWithRecovery(steps, recovery) {
 
 // Step executor
 
-async function runLocatorStep(page, step, inputs, action, paceType, selector = stepSelector(step, inputs)) {
+async function runLocatorStep(page, step, inputs, action, paceType, selector = PRIMARY) {
   await withLocator(page, step, inputs, selector, 0, async locator => action(locator.first(), locator));
   await humanDelay(paceType);
+}
+
+// True when the step has a resolvable primary target (identity_bundle signals or an explicit
+// recovery selector) — used by optional-target handlers (scroll/focus).
+function hasTarget(step, inputs) {
+  if (step._explicit_selector) return true;
+  return asArray(asObject(step.identity_bundle).signals).some(s => s && s.selector);
 }
 
 async function clickFirst(locator, options) {
@@ -340,6 +427,28 @@ async function clickFirst(locator, options) {
 
 function checkboxValue(step, inputs) {
   return String(interpolate(step.value || "true", inputs)).toLowerCase() !== "false";
+}
+
+// Phase 7: hover each element in the precompiled hover_chain before acting (menu reveals, etc.).
+// Hover signals use Playwright grammar, so resolve each via signalToLocator (not raw locator()).
+async function walkHoverChain(page, step, inputs) {
+  const chain = asArray(asObject(step.handler_hints).hover_chain)
+    .filter(sig => sig && sig.selector)
+    .sort((a, b) => (b.durability || 0) - (a.durability || 0));
+  const roots = rootCandidates(page, step, inputs);
+  for (const sig of chain) {
+    try {
+      for (const root of roots) {
+        const loc = signalToLocator(root, sig, interpolate, inputs);
+        if (!loc) continue;
+        await loc.first().hover({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+        break;
+      }
+      await humanDelay("focus");
+    } catch (err) {
+      // Hover is best-effort — if the reveal element is gone the target may already be visible.
+    }
+  }
 }
 
 function parseDragSelectors(step, inputs) {
@@ -383,9 +492,8 @@ const HANDLERS = {
   },
 
   scroll: async (page, step, inputs) => {
-    const selector = stepSelector(step, inputs);
-    if (selector) {
-      await withLocator(page, step, inputs, selector, 0, async locator => {
+    if (hasTarget(step, inputs)) {
+      await withLocator(page, step, inputs, PRIMARY, 0, async locator => {
         await locator.first().scrollIntoViewIfNeeded({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
       }).catch(() => {});
     } else {
@@ -409,7 +517,8 @@ const HANDLERS = {
   },
 
   click: async (page, step, inputs) => {
-    await withLocator(page, step, inputs, stepSelector(step, inputs), 0, async locator => {
+    await walkHoverChain(page, step, inputs);
+    await withLocator(page, step, inputs, PRIMARY, 0, async locator => {
       await clickFirst(locator, { timeout: ACTION_TIMEOUT_MS });
     });
     await humanDelay("click");
@@ -444,9 +553,8 @@ const HANDLERS = {
   },
 
   focus: async (page, step, inputs) => {
-    const selector = stepSelector(step, inputs);
-    if (selector) {
-      await withLocator(page, step, inputs, selector, 0, async locator => {
+    if (hasTarget(step, inputs)) {
+      await withLocator(page, step, inputs, PRIMARY, 0, async locator => {
         const first = locator.first();
         try {
           await first.click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
@@ -513,17 +621,17 @@ const HANDLERS = {
       return;
     }
 
-    const selector = stepSelector(step, inputs);
-    if ((kind === "selector" || kind === "visible") && selector) {
-      await withLocator(page, step, inputs, selector, step.timeout || SECONDARY_ACTION_TIMEOUT_MS, async locator => locator.first());
+    const hasTgt = hasTarget(step, inputs);
+    if ((kind === "selector" || kind === "visible") && hasTgt) {
+      await withLocator(page, step, inputs, PRIMARY, step.timeout || SECONDARY_ACTION_TIMEOUT_MS, async locator => locator.first());
       return;
     }
 
-    if (kind === "text" && selector) {
+    if (kind === "text" && hasTgt) {
       const expected = interpolate(step.value || "", inputs);
       if (!expected) return;
 
-      const actual = await withLocator(page, step, inputs, selector, 0, locator => {
+      const actual = await withLocator(page, step, inputs, PRIMARY, 0, locator => {
         return locator.first().innerText({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
       }).catch(() => "");
       if (!actual.includes(expected)) {
@@ -565,6 +673,50 @@ async function executeStep(page, step, inputs, ctx = {}) {
   if (handler) await handler(page, step, inputs, ctx);
 }
 
+// Phase 8: post-action VERIFY — check compiled post-condition assertions independently of the
+// action's own success. Returns { pass, channel, evidence }. Absent assertions → pass (no-op).
+function stepAssertions(step) {
+  const v = asObject(step.validation);
+  const fromValidation = asArray(v.assertions);
+  const direct = asArray(step.assertions);
+  return [...fromValidation, ...direct].filter(a => a && typeof a === "object");
+}
+
+async function verifyStep(page, step, inputs) {
+  const assertions = stepAssertions(step);
+  if (!assertions.length) return { pass: true, channel: "none", evidence: "no-assertions" };
+
+  for (const a of assertions) {
+    const type = String(a.type || "").toLowerCase();
+    const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
+    const required = a.required !== false;
+    const timeout = Number(a.timeout_ms) || 3000;
+    let ok = true;
+    try {
+      if (type === "url_changed" || type === "url_exact") {
+        ok = page.url() === target || (!!target && page.url().startsWith(target));
+      } else if (type === "url_pattern" || type === "url") {
+        ok = !target || new RegExp(target).test(page.url());
+      } else if (type === "selector_present") {
+        await page.locator(target).first().waitFor({ state: "attached", timeout });
+        ok = true;
+      } else if (type === "selector_absent") {
+        ok = (await page.locator(target).count()) === 0;
+      } else if (type === "text_present") {
+        ok = (await page.locator(`text=${JSON.stringify(target)}`).count()) > 0;
+      } else if (type === "text_absent") {
+        ok = (await page.locator(`text=${JSON.stringify(target)}`).count()) === 0;
+      }
+    } catch (err) {
+      ok = false;
+    }
+    if (!ok && required) {
+      return { pass: false, channel: type, evidence: target };
+    }
+  }
+  return { pass: true, channel: "all", evidence: `${assertions.length} assertion(s)` };
+}
+
 // Recovery cascade
 
 async function recoverWithSelector(page, step, inputs, selector, onSuccess) {
@@ -580,7 +732,7 @@ async function recoverWithSelector(page, step, inputs, selector, onSuccess) {
 }
 
 async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker) {
-  const fingerprint = asObject(step.element_fingerprint);
+  const fingerprint = asObject(asObject(step.identity_bundle).fingerprint);
   const role = String(fingerprint.role || "").trim();
   const name = String(fingerprint.aria_label || fingerprint.name || fingerprint.label_text || fingerprint.inner_text || "").trim();
 
@@ -668,25 +820,58 @@ async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primary
   }
 }
 
-async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker) {
-  for (const selector of compiledSelectors(step, inputs).slice(1)) {
-    const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
-      appendRecoveryEvent({ event: "tier1_compiled_alt", slug, step_index: stepIndex, recovery_selector: selector });
-      tracker.emit("tier_ok", { si: stepIndex, tier: "tier1_compiled", sel: selector });
-    });
-    if (recovered) return true;
+// Layer 1 deterministic ladder: apply a single targeted remedy keyed off the exception class,
+// then retry the primary selector once. Zero-token. Returns true if the retry succeeded.
+async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr) {
+  const klass = classifyException(primaryErr);
+  const remedy = remedyFor(klass);
+  try {
+    if (remedy === "scroll-into-view" && primarySelector) {
+      await page.locator(primarySelector).first().scrollIntoViewIfNeeded({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+    } else if (remedy === "dismiss-overlay") {
+      await page.keyboard.press("Escape").catch(() => {});
+    } else if (remedy === "wait-stable" || remedy === "wait-enabled") {
+      await page.waitForTimeout(300);
+    } else {
+      return false; // re-resolve / retry-cascade handled by the broader cascade below
+    }
+  } catch (_) {
+    return false;
+  }
+  const ok = await recoverWithSelector(page, step, inputs, primarySelector, () => {
+    appendRecoveryEvent({ event: "layer1_ladder", slug, step_index: stepIndex, remedy });
+  });
+  return ok ? remedy : false;
+}
+
+async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null) {
+  // Layer 1 — deterministic exception ladder (targeted single remedy).
+  // (Alternate-signal recovery is inherent: resolveStep already walks all bundle signals in
+  // durability order, so there is no separate legacy compiled-selector tier.)
+  const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr);
+  if (l1) {
+    tracker.emit("tier_ok", { si: stepIndex, tier: "layer1", sel: l1 });
+    return { tier: "L1", method: l1 };
   }
 
-  if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker)) return true;
+  if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker)) return { tier: "L2", method: "a11y" };
 
   await page.waitForTimeout(250);
   if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "transient_recovered", slug, step_index: stepIndex });
-  })) return true;
+  })) return { tier: "L2", method: "transient" };
 
-  if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return true;
-  if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return true;
-  return recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker);
+  // Layer 2 — re-hover-then-retry (menu reveals), then the existing fallback mechanisms.
+  if (asArray(asObject(step.handler_hints).hover_chain).length) {
+    await walkHoverChain(page, step, inputs);
+    if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
+      appendRecoveryEvent({ event: "layer2_rehover", slug, step_index: stepIndex });
+    })) return { tier: "L2", method: "rehover" };
+  }
+
+  if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return { tier: "L2", method: "fallback" };
+  if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return { tier: "L2", method: "dialog" };
+  return (await recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker)) ? { tier: "L2", method: "fuzzy" } : false;
 }
 
 async function maybeCapturePreStep(page, step) {
@@ -724,6 +909,12 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
     let primaryErr = null;
     try {
       await executeStep(page, step, inputs, { downloadQueue });
+      // Phase 8: independent post-condition verification.
+      const verdict = await verifyStep(page, step, inputs);
+      if (!verdict.pass) {
+        t.emit("verify_fail", { si: i, ch: verdict.channel });
+        throw Object.assign(new Error(`Verification failed: ${verdict.channel}`), { verifyFail: true });
+      }
       t.emit("tier_ok", { si: i, tier: "tier1_compiled" });
       hasExecutedStep = true;
       prevStepType = step.type;
@@ -732,11 +923,21 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       primaryErr = err;
     }
 
-    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t);
+    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr);
     if (!recovered) {
       t.emit("step_fail", { si: i, fc: mapErrorToCode(primaryErr) });
       throw stepFailure(step, i, primaryErr, preShot);
     }
+
+    // Phase 9: emit a structured drift signal for the fleet flywheel (admin-gated; never
+    // mutates the local pack). `recovered` carries the winning tier/method when available.
+    const klass = classifyException(primaryErr);
+    t.emit("repair_event", buildRepairEvent(step, i, {
+      tier: recovered && recovered.tier ? recovered.tier : "L2",
+      method: recovered && recovered.method ? recovered.method : "",
+      klass,
+      driftHint: remedyFor(klass),
+    }));
 
     recoveredSteps++;
     hasExecutedStep = true;
@@ -771,4 +972,6 @@ module.exports = {
   clearRetryBudget,
   mapErrorToCode,
   isAuthFailure,
+  verifyStep,
+  gateLocator,
 };

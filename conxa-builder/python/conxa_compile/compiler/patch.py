@@ -39,7 +39,7 @@ def _build_reference_from_signals(step: dict[str, Any]) -> dict[str, Any]:
 
 def _target_identity_changed(patch: dict[str, Any]) -> bool:
     """True if patch touches fields that define which element is being targeted."""
-    identity_keys = {"target", "element_fingerprint"}
+    identity_keys = {"target", "identity_bundle"}
     signals_patch = patch.get("signals") or {}
     if signals_patch.get("dom") is not None or signals_patch.get("selectors") is not None:
         return True

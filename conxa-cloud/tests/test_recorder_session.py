@@ -163,8 +163,14 @@ def test_binding_source_child_frame_adds_frame_context() -> None:
     )
 
     queued_payload, _page = sess._pending_payloads.get_nowait()
-    assert queued_payload["frame"]["chain"][0]["selector"] == 'iframe[id="object-builder-ui"]'
-    assert 'iframe[data-test-id="object-builder-ui-iframe"]' in queued_payload["frame"]["chain"][0]["fallback_selectors"]
+    # Cutover: frame chain carries durability-ranked fingerprint signals, not a single selector.
+    chain0 = queued_payload["frame"]["chain"][0]
+    signals = chain0["fingerprint"]["signals"]
+    selectors = [s["selector"] for s in signals]
+    # Highest-durability frame signal is a test-id attribute selector.
+    assert signals[0]["selector"].startswith("iframe[data-")
+    assert 'iframe[data-test-id="object-builder-ui-iframe"]' in selectors
+    assert 'iframe[id="object-builder-ui"]' in selectors
     assert queued_payload["_frame_offset"] == {"x": 42.0, "y": 18.0}
 
 

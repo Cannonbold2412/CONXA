@@ -8,7 +8,7 @@ The 25 highest-value insights distilled across all repositories and papers, rank
 
 ### 1. Fleet-level drift-detection flywheel
 - **Source:** Synthesis (no competitor can do this — all are single-tenant/local)
-- **Description:** Distribute one compiled skill to many tenants; centralize recovery telemetry; when one runtime heals a drifted selector on a site, Cloud validates and pushes an updated package to all customers *before* they hit the failure.
+- **Description:** Distribute one compiled skill to many tenants; centralize recovery telemetry; when one runtime heals a drifted selector on a site, the drift is detected fleet-wide on first occurrence and **surfaced to the conxa-cloud admin**, who reviews and **manually publishes** an updated signed package that then delta-syncs to all customers. Detection is automatic and fleet-wide; **publishing is always admin-approved, never automatic.**
 - **Problem solved:** Site drift is rediscovered N times across customers; here it's detected on first occurrence and fixed fleet-wide.
 - **Reliability:** 9 · **Enterprise:** 8 · **Complexity:** High · **Risk:** Med
 - **Strategic value:** 10 — the only compounding asset in the corpus.
@@ -88,7 +88,7 @@ The 25 highest-value insights distilled across all repositories and papers, rank
 
 ### 11. Recovery write-back via telemetry, never in-place local mutation
 - **Source:** Stagehand (adapted around central-compile invariant)
-- **Description:** A successful heal is used *ephemerally* for the current run; a telemetry event lets Cloud validate and re-sign a new version. The signed local artifact is never silently rewritten.
+- **Description:** A successful heal is used *ephemerally* for the current run; a telemetry event surfaces the drift to the conxa-cloud admin, who reviews and publishes a new signed version. The signed local artifact is never silently rewritten, and no version is published without admin approval.
 - **Problem solved:** In-place self-heal conflicts with signing + central compilation (audit C.3).
 - **Reliability:** 7 · **Enterprise:** 8 · **Complexity:** Med · **Risk:** Med
 - **Strategic value:** 8 — self-improvement *without* surrendering determinism/signing.

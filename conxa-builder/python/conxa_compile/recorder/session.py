@@ -69,13 +69,58 @@ def _css_attr_selector(tag: str, attr: str, value: Any) -> str:
     return f'{tag}[{attr}="{escaped}"]'
 
 
-def _iframe_selectors_from_attrs(attrs: dict[str, Any]) -> list[str]:
-    selectors: list[str] = []
-    for attr in ("id", "data-test-id", "data-selenium-test", "name", "title", "aria-label"):
-        selector = _css_attr_selector("iframe", attr, attrs.get(attr))
-        if selector and selector not in selectors:
-            selectors.append(selector)
-    return selectors
+# Maps (attr_name, css_attr) → (engine, base_durability) for FrameFingerprint signal ranking.
+_FRAME_ATTR_SIGNALS: list[tuple[str, str, str, float]] = [
+    ("data-test-id",       "data-test-id",       "testid",        0.99),
+    ("data-selenium-test", "data-selenium-test",  "testid",        0.99),
+    ("aria-label",         "aria-label",          "aria",          0.95),
+    ("name",               "name",                "name",          0.95),
+    ("title",              "title",               "text_based",    0.85),
+    ("id",                 "id",                  "css-id",        0.45),
+]
+
+
+def _iframe_fingerprint_from_attrs(attrs: dict[str, Any], frame_url: str = "") -> dict[str, Any]:
+    """Return a FrameFingerprint-compatible dict with durability-ranked signals."""
+    from conxa_compile.compiler.selector_score import tag_orthogonality_class
+    signals: list[dict[str, Any]] = []
+    seen_selectors: set[str] = set()
+    for attr, css_attr, engine, durability in _FRAME_ATTR_SIGNALS:
+        val = str(attrs.get(attr) or "").strip()
+        if not val:
+            continue
+        selector = _css_attr_selector("iframe", css_attr, val)
+        if not selector or selector in seen_selectors:
+            continue
+        seen_selectors.add(selector)
+        signals.append({
+            "engine": engine,
+            "selector": selector,
+            "durability": durability,
+            "orthogonality_class": tag_orthogonality_class(engine),
+            "unique_at_compile": False,
+            "source": "compiler",
+        })
+    # src_pattern signal (structural, url-based)
+    src = str(attrs.get("src") or "").strip()
+    if src:
+        url_pattern = _normalize_frame_url_pattern(src)
+        if url_pattern:
+            signals.append({
+                "engine": "css-structural",
+                "selector": f'iframe[src="{src}"]',
+                "durability": 0.50,
+                "orthogonality_class": tag_orthogonality_class("css-structural"),
+                "unique_at_compile": False,
+                "source": "compiler",
+            })
+    # Sort descending by durability
+    signals.sort(key=lambda s: s["durability"], reverse=True)
+    return {
+        "signals": signals,
+        "url": frame_url,
+        "url_pattern": _normalize_frame_url_pattern(frame_url),
+    }
 
 
 def _frame_parent(frame: Any) -> Any | None:
@@ -140,15 +185,14 @@ def _frame_context_and_offset_sync(frame: Any | None) -> tuple[dict[str, Any], d
             attrs, rect = _frame_element_attrs_and_rect(item)
         except Exception:
             continue
-        selectors = _iframe_selectors_from_attrs(attrs)
-        if not selectors:
-            continue
         frame_url = _frame_url(item)
+        fingerprint = _iframe_fingerprint_from_attrs(attrs, frame_url)
+        if not fingerprint.get("signals"):
+            continue
         spec = {
-            "selector": selectors[0],
-            "fallback_selectors": selectors[1:],
             "url": frame_url or str(attrs.get("src") or ""),
             "url_pattern": _normalize_frame_url_pattern(frame_url),
+            "fingerprint": fingerprint,
         }
         chain.append(spec)
         try:

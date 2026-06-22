@@ -185,6 +185,36 @@ This plan is grounded in the actual codebase. Each item references the specific 
 
 **Files:** `runtime/run.js`, `runtime/tracker.js`
 
+**Partially addressed by the Final Selector Architecture (§2.9):** runtime now emits structured
+`repair_event` drift signals on every recovery, aggregated into an admin review queue at
+`GET /api/v1/tracking/{company}/drift`. Pre-execution `structural_fingerprint` matching is still
+open; runtime-side post-hoc drift surfacing is implemented.
+
+---
+
+### ✅ 2.9 Final Selector Architecture — DONE 2026-06-22
+
+**What was built:** end-to-end durability-ranked element identity + zero-token replay/recovery.
+
+- **Compile (Python):** `IdentityBundle` / `IdentitySignal` (`packages/conxa-core/.../skill_spec.py`),
+  durability scoring + orthogonality classes (`selector_score.py`), uniqueness / PII-bind /
+  xpath-shadow gates (`selector_filters.py`), `stable_hash.py`, deterministic-floor Playwright-grammar
+  generator (`identity_bundle.py`), wired through `compiler/build.py`. Multi-signal
+  `FrameFingerprint` (`recorder/session.py`), `shadow_path`, and `hover_chain` hints
+  (`action_semantics.py`).
+- **Replay (Node):** pure `runtime/resolver.js` (strict uniqueness gate, stable_hash tie-break),
+  GATE + VERIFY in `runtime/run.js`.
+- **Recover (Node):** `runtime/recovery.js` L1 exception ladder + L2 re-hover/a11y cascade,
+  structured `repair_event` emission.
+- **Flywheel (Cloud):** admin-gated drift queue `GET /api/v1/tracking/{company}/drift`
+  (`tracking_routes.py`).
+
+**Tests:** `tests/test_element_fingerprint.py` 66/66; Node `test_resolver.js` / `test_verify.js`
+/ `test_recovery.js` all green. See `implementation-status.md` for the full phase log.
+
+**Still open:** LLM enrichment of residual-uncertainty signals (deterministic floor ships now);
+closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift gate (§2.2).
+
 ---
 
 ### ✅ 2.3 Audit Log — DONE 2026-06-02
