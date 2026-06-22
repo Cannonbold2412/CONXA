@@ -65,6 +65,16 @@ class DecisionPolicy(BaseModel):
     max_retries: int = 2
 
 
+class IdentitySignal(BaseModel):
+    """A single scored, classified selector signal within an IdentityBundle."""
+    engine: str                      # testid | role | aria | text | relational | css-id | css-structural | xpath
+    selector: str                    # selector string (Playwright grammar preferred)
+    durability: float                # 0.0–1.0 from durability_score()
+    orthogonality_class: str         # test-contract | semantic-aria | visible-text | spatial-anchor | structural
+    unique_at_compile: bool = False  # matched exactly 1 node in recorded DOM
+    source: str = "compiler"         # compiler | llm | input_bound
+
+
 class ElementFingerprint(BaseModel):
     """Stable element identity for scoring-based resolution. Compiled from recorded signals."""
     role: str = ""
@@ -81,6 +91,37 @@ class ElementFingerprint(BaseModel):
     position_hint: dict[str, Any] = Field(default_factory=dict) # normalized x/y as 0.0–1.0
 
 
+class ShadowHost(BaseModel):
+    """A shadow DOM host in the element's containment path."""
+    host: str          # CSS selector of the shadow host element
+    mode: str = "open"  # "open" | "closed"
+
+
+class FrameFingerprint(BaseModel):
+    """Multi-signal frame identity for one level in an iframe chain."""
+    signals: list[IdentitySignal] = Field(default_factory=list)  # durability-ranked
+    url: str = ""
+    url_pattern: str = ""
+
+
+class IdentityBundle(BaseModel):
+    """Compiled, signed element identity: durability-ordered signals + stable fingerprint."""
+    signals: list[IdentitySignal] = Field(default_factory=list)
+    stable_hash: str = ""                  # SHA256 of (tag_path + static_attrs + AX_name)
+    frame_chain: list[FrameFingerprint] = Field(default_factory=list)
+    shadow_path: list[ShadowHost] = Field(default_factory=list)
+    compat_fingerprint: str = ""           # SHA256 of app-version indicators
+    guid_like_attrs: list[str] = Field(default_factory=list)
+    destructive: bool = False
+
+
+class HandlerHints(BaseModel):
+    """Precompiled runtime hints for an action handler (hover preconditions, virtualization, etc.)."""
+    hover_chain: list[IdentitySignal] = Field(default_factory=list)  # elements to hover before acting
+    virtualized_container: str = ""   # selector of a scroll container that virtualizes rows
+    allow_forced_action: bool = False
+
+
 class SkillStep(BaseModel):
     action: str | dict[str, Any]
     intent: str = ""
@@ -90,6 +131,10 @@ class SkillStep(BaseModel):
     # Scoring-based element identity — runtime uses this to rank all candidates
     # against the recorded element instead of trying selectors blindly in order.
     element_fingerprint: ElementFingerprint = Field(default_factory=ElementFingerprint)
+    # Phase 3: durability-ranked, orthogonality-deduplicated identity bundle.
+    identity_bundle: IdentityBundle | None = None
+    # Phase 7: precompiled handler hints (hover chain, virtualization).
+    handler_hints: HandlerHints = Field(default_factory=HandlerHints)
     signals: dict[str, Any] = Field(default_factory=dict)
     state: dict[str, Any] = Field(default_factory=dict)
     value: Any = None

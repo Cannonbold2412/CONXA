@@ -19,8 +19,20 @@ from conxa_compile.compiler.recovery_policy import (
     default_recovery_block,
     merge_recovery_strategies_for_wait_shape,
 )
-from conxa_compile.compiler.selector_filters import filter_selectors_dict, selector_passes_filters
-from conxa_compile.compiler.selector_score import rank_selectors_scored, score_selector_row
+from conxa_compile.compiler.selector_filters import (
+    dedup_by_orthogonality,
+    filter_selectors_dict,
+    is_dynamic_id,
+    selector_passes_filters,
+    uniqueness_gate,
+)
+from conxa_compile.compiler.selector_score import (
+    rank_by_durability,
+    rank_selectors_scored,
+    score_selector_row,
+)
+from conxa_compile.compiler.stable_hash import compute_stable_hash
+from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
 from conxa_compile.compiler.v3 import (
     capture_state_snapshot,
     clean_steps,
@@ -40,7 +52,11 @@ from conxa_core.models.skill_spec import (
     Assertion,
     DecisionPolicy,
     ElementFingerprint,
+    FrameFingerprint,
+    IdentityBundle,
+    IdentitySignal,
     RecoveryBlock,
+    ShadowHost,
     SkillBlock,
     SkillMeta,
     SkillPackage,
@@ -285,6 +301,112 @@ def _build_element_fingerprint(ev: dict[str, Any]) -> ElementFingerprint:
             "y_pct": round(int(bbox.get("y") or 0) / vh, 3),
         },
     )
+
+
+def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
+    """Build durability-ranked, orthogonality-deduplicated IdentityBundle from a recorded event.
+
+    Uses the deterministic-floor generator (Playwright grammar, zero-LLM) as the signal base.
+    """
+    import warnings
+    target = ev.get("target") or {}
+    selectors = ev.get("selectors") or {}
+
+    # Phase 4: use deterministic-floor generator (Playwright grammar)
+    signals = generate_deterministic_signals(ev)
+
+    distinct_classes = {s.orthogonality_class for s in signals}
+    if len(distinct_classes) < 2:
+        warnings.warn(
+            f"IdentityBundle has only {len(distinct_classes)} orthogonality class(es): {distinct_classes or '{}'} — "
+            "consider adding more signal generators",
+            stacklevel=3,
+        )
+
+    element_data = {
+        "tag": str(target.get("tag") or ""),
+        "parent_tag": "",
+        "aria_label": str(target.get("aria_label") or ""),
+        "name": str(target.get("name") or ""),
+        "inner_text": str(target.get("inner_text") or "")[:80],
+        "attributes": target.get("attributes") or {},
+    }
+    s_hash = compute_stable_hash(element_data)
+
+    # Extract testid for guid_like_attrs check
+    data_testid = ""
+    for key in ("css", "aria"):
+        m = re.search(r'data-testid=["\']?([^"\'>\s\]]+)', str(selectors.get(key) or ""))
+        if m:
+            data_testid = m.group(1)
+            break
+    guid_like_attrs = [data_testid] if data_testid and is_dynamic_id(f"#{data_testid}") else []
+
+    # Phase 6: detect and populate shadow_path
+    shadow_path_raw = ev.get("shadow_path") or []
+    if not shadow_path_raw:
+        for sel_key in ("css", "aria"):
+            sel_val = str((ev.get("selectors") or {}).get(sel_key) or "")
+            if "::part(" in sel_val or ":host(" in sel_val:
+                shadow_path_raw = [{"host": "unknown", "mode": "open"}]
+                break
+    shadow_path = [
+        ShadowHost(**h) if isinstance(h, dict) else h
+        for h in shadow_path_raw
+        if isinstance(h, (dict, ShadowHost))
+    ]
+    # Apply XPath guard: drop XPath signals when element is inside a shadow root
+    if shadow_path:
+        from conxa_compile.compiler.selector_filters import xpath_shadow_guard
+        signals = [s for s in signals if xpath_shadow_guard(s.engine, shadow_path)]
+
+    # Phase 5: build frame_chain from per-frame fingerprints
+    frame_chain: list[FrameFingerprint] = []
+    for spec in ((ev.get("frame") or {}).get("chain") or []):
+        fp_dict = spec.get("fingerprint") or {}
+        fp_signals = [
+            IdentitySignal(**sig_dict)
+            for sig_dict in (fp_dict.get("signals") or [])
+            if isinstance(sig_dict, dict)
+        ]
+        if fp_signals or spec.get("selector"):
+            if not fp_signals and spec.get("selector"):
+                # Backward compat: create a minimal signal from the legacy selector field
+                fp_signals = [IdentitySignal(
+                    engine="css-structural",
+                    selector=str(spec["selector"]),
+                    durability=0.45,
+                    orthogonality_class="structural",
+                    unique_at_compile=False,
+                    source="compiler",
+                )]
+            frame_chain.append(FrameFingerprint(
+                signals=fp_signals,
+                url=str(spec.get("url") or fp_dict.get("url") or ""),
+                url_pattern=str(spec.get("url_pattern") or fp_dict.get("url_pattern") or ""),
+            ))
+
+    return IdentityBundle(
+        signals=signals,
+        stable_hash=s_hash,
+        frame_chain=frame_chain,
+        shadow_path=shadow_path,
+        compat_fingerprint="",
+        guid_like_attrs=guid_like_attrs,
+        destructive=bool(ev.get("destructive", False)),
+    )
+
+
+def _populate_hover_chains(steps: list[SkillStep], events: list[dict[str, Any]]) -> None:
+    """Set handler_hints.hover_chain on steps whose recorded predecessor was a hover (Phase 7)."""
+    from conxa_compile.compiler.action_semantics import detect_hover_precondition
+    for i, ev in enumerate(events):
+        prev_ev = events[i - 1] if i > 0 else None
+        if not detect_hover_precondition(ev, prev_ev):
+            continue
+        hover_signals = generate_deterministic_signals(prev_ev)
+        if hover_signals and i < len(steps):
+            steps[i].handler_hints.hover_chain = hover_signals
 
 
 def _build_assertions(
@@ -779,6 +901,7 @@ def _build_step(
         cw["selector_confidence"] = sel_conf
         confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
     fingerprint = _build_element_fingerprint(ev_with_intent)
+    identity_bundle = _build_identity_bundle(ev_with_intent)
     assertions = _build_assertions(ev_with_intent, validation)
     if assertions:
         validation = ValidationBlock(
@@ -793,6 +916,7 @@ def _build_step(
         frame=_build_frame_context(ev),
         target=target,
         element_fingerprint=fingerprint,
+        identity_bundle=identity_bundle,
         signals=signals,
         state={"before": state_before, "after": state_after},
         value=value,
@@ -952,6 +1076,9 @@ def compile_skill_package(
         {"phase": "compiler_prepare_done", "cleaned_event_count": len(cleaned_events)},
     )
     steps = [_build_step(e, bundle, session_root=session_root, step_index=i) for i, e in enumerate(cleaned_events)]
+
+    # Phase 7: populate hover_chain handler hints from hover-then-act sequences.
+    _populate_hover_chains(steps, cleaned_events)
 
     # Phase 3: LLM-driven selector compilation. Only runs when snapshots exist and
     # LLM is enabled. Failures degrade gracefully — runtime falls back to existing

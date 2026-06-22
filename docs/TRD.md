@@ -209,6 +209,7 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/tracking/companies` | Company list | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs` | Run summaries | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline | Clerk JWT |
+| `GET /api/v1/tracking/{co}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) | Clerk JWT |
 | `GET /api/v1/updates/deps-manifest` | Bootstrap manifest | Public |
 | `GET /api/v1/updates/conxa-runtime-manifest` | Host binary self-update manifest (quarterly, ~85 MB) | Public |
 | `GET /api/v1/updates/conxa-app-manifest` | App layer update manifest (every release, ~60 KB zip) | Public |
@@ -850,6 +851,57 @@ Retry budget: `RETRY_BUDGET_MAX = 3` per (skill, step_index). On exhaustion → 
 - `position_hint` — normalized x/y (0.0–1.0)
 
 Each candidate gets a weighted score. Highest scorer is used.
+
+### 10.2a IdentityBundle Resolution (Final Selector Architecture)
+
+Compiled steps now carry an `identity_bundle` alongside `ElementFingerprint`. It is a
+durability-ranked, orthogonality-deduplicated set of `IdentitySignal`s plus a `stable_hash`,
+`frame_chain`, `shadow_path`, and `guid_like_attrs`.
+
+- **Compile (`conxa_compile/compiler/identity_bundle.py`, `selector_score.py`,
+  `selector_filters.py`):** signals are generated in Playwright native grammar
+  (`internal:testid=`, `internal:role=…[name=…]`, `internal:text=`, relational
+  `>> right-of=`), scored by `durability = base_durability(engine) × survival_prior ×
+  stability_adjustments`, deduplicated to one signal per orthogonality class (test-contract,
+  semantic-aria, visible-text, spatial-anchor, structural), and gated by uniqueness-at-compile,
+  PII-binding, and an xpath/shadow guard. `stable_hash` (`stable_hash.py`) is
+  SHA-256 over tag-path + sorted static attrs + AX name, with dynamic
+  (focus/hover/active/animation/`is-*`) classes stripped.
+- **Replay (`runtime/resolver.js`):** pure `resolve()` walks signals in durability order with a
+  strict uniqueness gate — it never blindly takes candidate `[0]`. On multi-match it scores each
+  candidate against the fingerprint and only accepts a winner when its margin over the runner-up
+  clears the threshold; otherwise it falls through to the next signal. `stable_hash` is the
+  tie-breaker. Falls back to legacy `compiled_selectors` when `identity_bundle` is absent.
+- **GATE (`run.js` `gateLocator`):** before every action — attached → visible → RAF-stable
+  (bounding box unchanged across two frames) → enabled (`disabled`/`aria-disabled`). Budget is
+  confidence-adaptive. Zero LLM.
+- **VERIFY (`run.js` `verifyStep`):** after every action — independent post-condition check of
+  the step's compiled assertions (`url_pattern`, `selector_present/absent`, `text_present/absent`).
+  A failed *required* assertion descends into recovery; advisory failures are recorded only.
+
+### 10.2b Layer 1 / Layer 2 zero-token recovery
+
+`runtime/recovery.js` adds an exception-classified ladder ahead of the existing cascade:
+
+- **Layer 1 (`classifyException` → `layer1Ladder`):** maps the thrown error to a single
+  deterministic remedy — stale → re-resolve, intercepted → dismiss-overlay (Escape),
+  out-of-bounds → scroll-into-view, not-stable → wait-stable, not-enabled → wait-enabled — then
+  retries the primary selector once.
+- **Layer 2:** a11y re-probe, transient retry, **re-hover-then-retry** (walks the precompiled
+  `handler_hints.hover_chain` for menu reveals), fallback selectors, dialog scope, fuzzy text.
+
+On any recovery success the runner emits a structured **`repair_event`** (step id, tier, method,
+score/margin, `stable_hash`, app-version fingerprint, drift hint). This is **ephemeral per-run
+telemetry** — the signed local pack is never mutated; a durable fix is only ever an
+admin-reviewed, manually published re-sign (see §10.5).
+
+### 10.5 Drift Flywheel (admin-gated)
+
+`repair_event`s ingest via `POST /tracking/{company}/events` and aggregate into an admin review
+queue at **`GET /api/v1/tracking/{company}/drift`** (`_drift_review_queue`), keyed by
+(plugin, version, step). **Detection is automatic and fleet-wide; publishing is always
+admin-approved, never automatic** — the endpoint surfaces evidence only and marks entries
+`needs_review`. No re-sign or fleet push happens without an explicit admin action.
 
 ### 10.3 Dialog-Scoped Recovery
 
