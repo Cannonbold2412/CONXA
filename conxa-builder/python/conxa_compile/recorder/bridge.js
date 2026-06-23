@@ -418,11 +418,16 @@
     const nonSemanticTags = { path: 1, svg: 1, g: 1, div: 1, span: 1, input: 1, textarea: 1, select: 1 };
     const role = explicitRole || implicitAriaRole(el);
     if (!role || nonSemanticTags[role]) return null;
+    // Do NOT use safeText here: CSS [name=...] matches the HTML name attribute,
+    // not element text content. Using text content produced selectors like
+    // [role="button"][name="New"] that never match native <button> elements
+    // whose role is implicit and whose text is not a name= attribute.
+    // Text-content-based resolution is handled by the text_based and role
+    // signals in identity_bundle (compiler/identity_bundle.py).
     const name =
       el.getAttribute("aria-label") ||
       el.getAttribute("name") ||
-      el.getAttribute("placeholder") ||
-      safeText(el, 60);
+      el.getAttribute("placeholder");
     if (!name) return null;
     const esc = name.replace(/"/g, '\\"');
     return `[role="${role}"][name="${esc}"]`;

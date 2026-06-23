@@ -269,6 +269,14 @@ def _action_value_json(step: dict[str, Any]) -> dict[str, Any]:
 
 def _copy_saved_common(step: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
     _copy_frame(step, out)
+    # Final Selector Architecture: the runtime resolves the primary target from
+    # identity_bundle.signals (run.js:resolveStep). Carry it (and the other fields
+    # the runtime reads) through to execution.json; without it every step falls into
+    # recovery using the legacy CSS selector string, which may not match.
+    for key in ("identity_bundle", "confidence", "handler_hints", "compiled_selectors"):
+        val = step.get(key)
+        if val:
+            out[key] = val
     return out
 
 
@@ -892,7 +900,7 @@ def _write_skill_packs_format(
             "name":             skill_name,
             "description":      description,
             "version":          version,
-            "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.0"),
+            "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3"),
             "company":          company,
             "target_url":       target_url,
             "inputs_required":  inputs_required,
@@ -904,7 +912,7 @@ def _write_skill_packs_format(
         written_slugs.append(slug)
 
     # pack.json at company root
-    _req_rt = required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.0")
+    _req_rt = required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3")
     pack = {
         "company":            company,
         "company_display":    plugin_name,

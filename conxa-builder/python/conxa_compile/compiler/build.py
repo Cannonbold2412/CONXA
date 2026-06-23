@@ -101,15 +101,20 @@ def _infer_selector_kind(selector: str) -> str:
     if s.startswith("[aria-label="):
         return "aria"
     if re.match(r"\[role=", s):
-        # [role="button"][name="New"] — ARIA attribute selector with semantic role + name.
-        # Score as "aria" (100) not "css" (50): carries semantic identity, not structure.
-        return "aria"
+        # CSS [role=...][name=...] selectors look semantic but aren't: CSS [name=...] matches the
+        # HTML `name` attribute only, not an element's accessible name. A <button>New</button> has
+        # no `name` HTML attribute so [role="button"][name="New"] can never match it. Score as "css"
+        # (70) rather than "aria" (100) so these brittle CSS attribute selectors don't win the
+        # primary slot over proper Playwright internal:role= signals.
+        return "css"
     if re.match(r"input\[name=", s):
         return "name"
     if s.lower().startswith("text="):
         return "text_based"
     if s.startswith("/") or s.startswith("(//"):
         return "xpath"
+    if re.match(r"#[a-zA-Z][\w-]*$", s):
+        return "name"  # ID selectors are as stable as name attrs — score 95, not generic css 70
     return "css"
 
 
@@ -528,20 +533,29 @@ def _build_target(
     )
     ranked = [v for _, _, v in ranked_scored]
     top_score = ranked_scored[0][0] if ranked_scored else 0.0
-    # Also score the synthesized stable primary — it may be higher (e.g. label selector)
+    # Score the stable synthesized primary.
     stable_primary = str(stable.get("primary_selector") or "").strip()
+    stable_score = 0.0
     if stable_primary:
         stable_kind = _infer_selector_kind(stable_primary)
         stable_score = max(0.0, score_selector_row(stable_kind, stable_primary, policy))
         top_score = max(top_score, stable_score)
     selector_confidence = round(top_score / 100.0, 3)
 
-    ranked_extra = [
-        selector
-        for selector in ranked
-        if selector not in {stable.get("primary_selector"), *(stable.get("fallback_selectors") or [])}
-    ]
-    primary = str(stable.get("primary_selector") or (ranked[0] if ranked else str(selectors.get("css") or "")))
+    # Elect primary: whichever source scores highest wins.
+    # If a recorded selector beats the stable synthesized primary, promote it and demote
+    # stable_primary into the fallback pool — prevents e.g. a label selector (93) from
+    # shadowing an aria selector (100) that came from the recorded selectors dict.
+    ranked_top_score = ranked_scored[0][0] if ranked_scored else 0.0
+    if ranked_scored and ranked_top_score > stable_score and selector_passes_filters(ranked[0]):
+        primary = ranked[0]
+        stable_pool = ([stable_primary] if stable_primary else []) + list(stable.get("fallback_selectors") or [])
+        fallback_raw = stable_pool + [s for s in ranked[1:] if s not in set(stable_pool)]
+    else:
+        primary = stable_primary or (ranked[0] if ranked else str(selectors.get("css") or ""))
+        ranked_extra = [s for s in ranked if s not in {stable_primary, *(stable.get("fallback_selectors") or [])}]
+        fallback_raw = list(stable.get("fallback_selectors") or []) + ranked_extra
+
     _is_bare_tag = bool(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9]*", primary.strip()))
     if not selector_passes_filters(primary) or _is_bare_tag:
         primary = next((r for r in ranked if selector_passes_filters(str(r))), "")
@@ -567,11 +581,7 @@ def _build_target(
     if identity_bundle is not None:
         selector_confidence = _confidence_from_identity_bundle(identity_bundle)
 
-    fallback_raw = list(stable.get("fallback_selectors") or []) + ranked_extra
-    # Re-score the merged pool so high-durability signals (aria/label) rank above structural
-    # ones (css/input-type) regardless of which source placed them in fallback_raw.
-    # Without this, ranked_extra items like [role="button"][name="New"] (score 100 via aria)
-    # land after stable fallbacks like input[type="button"] (score 50) due to concatenation order.
+    # Re-score the merged fallback pool so high-durability signals rank above structural ones.
     _seen_fb: set[str] = set()
     _scored_fb: list[tuple[float, str]] = []
     for _s in fallback_raw:

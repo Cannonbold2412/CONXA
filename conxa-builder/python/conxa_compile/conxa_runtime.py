@@ -82,6 +82,12 @@ def resolve_runtime_dir() -> Path | None:
     if deps_runtime is not None:
         return deps_runtime
 
+    # Dev-checkout fallback: use the repo-local runtime/ source tree so that Test
+    # (Replay) works in a dev environment with no downloaded binary.
+    local_source = _find_local_runtime_source()
+    if local_source is not None:
+        return local_source
+
     return None
 
 

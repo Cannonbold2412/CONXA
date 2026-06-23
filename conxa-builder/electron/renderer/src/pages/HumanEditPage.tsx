@@ -37,7 +37,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { InfoHint } from '@/components/ui/info-hint'
-import { ValidationReportPanel } from '@/components/ValidationReportPanel'
 import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
@@ -53,14 +52,12 @@ import {
   type LucideIcon,
   Redo2,
   RefreshCw,
-  ShieldCheck,
   SlidersHorizontal,
   Undo2,
-  Zap,
 } from 'lucide-react'
 import type { HelpEntry } from '@/lib/editorHelp'
 
-type ToolPaneKey = 'validation' | 'suggestions' | 'variables' | 'screenshots' | 'selectors'
+type ToolPaneKey = 'suggestions' | 'variables' | 'screenshots'
 
 const SKILL_ID_CAPTION_CLASS =
   'max-w-[12rem] truncate font-mono text-[10px] leading-none text-zinc-500 sm:max-w-[16rem]'
@@ -120,7 +117,6 @@ export function HumanEditPage() {
   const stepEditorRef = useRef<StepEditorPanelHandle>(null)
   const selected = useEditorStore((s) => s.selectedStepIndex)
   const setValidationReport = useEditorStore((s) => s.setValidationReport)
-  const validationReport = useEditorStore((s) => s.validationReport)
   const setSelectedStepIndex = useEditorStore((s) => s.setSelectedStepIndex)
   const canUndo = useEditorStore((s) => s.canUndo)
   const canRedo = useEditorStore((s) => s.canRedo)
@@ -414,7 +410,7 @@ export function HumanEditPage() {
     navigate(fromPath ?? '/edit')
   }
 
-  const toggleToolsPane = (pane: 'validation' | 'suggestions' | 'variables' | 'screenshots' | 'selectors') => {
+  const toggleToolsPane = (pane: 'suggestions' | 'variables' | 'screenshots') => {
     setActiveToolsPane((current) => (current === pane ? null : pane))
   }
 
@@ -753,11 +749,9 @@ export function HumanEditPage() {
     controls: string
     count?: number | string
   }[] = [
-    { key: 'validation', label: 'Validation', icon: ShieldCheck, iconClass: 'text-emerald-300', help: editorHelp.toolValidation, controls: 'validation-pane' },
     { key: 'suggestions', label: 'Suggestions', icon: Lightbulb, iconClass: 'text-amber-300', help: editorHelp.toolSuggestions, controls: 'suggestions-pane', count: suggestionCount },
     { key: 'variables', label: 'Input variables', icon: SlidersHorizontal, iconClass: 'text-sky-300', help: editorHelp.toolVariables, controls: 'variables-pane' },
     { key: 'screenshots', label: 'Recording screenshots', icon: ImageIcon, iconClass: 'text-fuchsia-300', help: editorHelp.toolScreenshots, controls: 'recording-screenshots-pane', count: currentStep?.screenshot?.frames?.length ?? '—' },
-    { key: 'selectors', label: 'Compiled selectors', icon: Zap, iconClass: 'text-cyan-300', help: editorHelp.toolSelectors, controls: 'compiled-selectors-pane' },
   ]
 
   return (
@@ -1000,7 +994,6 @@ export function HumanEditPage() {
               exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
               transition={{ duration: prefersReducedMotion ? 0 : 0.15, ease: 'easeOut' }}
             >
-            <div id="validation-pane">{activeToolsPane === 'validation' ? <ValidationReportPanel data={validationReport} defaultOpen /> : null}</div>
             <div id="suggestions-pane">{activeToolsPane === 'suggestions' ? <SuggestionsInlinePanel suggestions={wf.suggestions} /> : null}</div>
             <div id="variables-pane">{activeToolsPane === 'variables' ? <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} /> : null}</div>
             <div id="recording-screenshots-pane" className="h-full min-h-0 px-1 py-2">
@@ -1013,59 +1006,6 @@ export function HumanEditPage() {
                   onDragShotStart={() => setRecordingShotDragActive(true)}
                   onDragShotEnd={() => setRecordingShotDragActive(false)}
                 />
-              ) : null}
-            </div>
-            <div id="compiled-selectors-pane" className="min-h-0 space-y-2 px-1 py-2">
-              {activeToolsPane === 'selectors' ? (
-                <>
-                  {currentStep ? (
-                    <Card className="border-white/10 bg-white/[0.02]">
-                      <CardHeader className="pb-3">
-                        <CardTitle className="flex items-center gap-1.5 text-sm">
-                          Semantic Description
-                          <InfoHint {...editorHelp.semanticDescription} side="left" align="start" />
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-2 pb-3">
-                        <p className="text-xs text-zinc-300 leading-relaxed">
-                          {currentStep.semantic_description || '(none)'}
-                        </p>
-                      </CardContent>
-                    </Card>
-                  ) : null}
-                  {currentStep ? (
-                    <Card className="border-white/10 bg-white/[0.02]">
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-sm">Compiled Selectors</CardTitle>
-                        <CardDescription className="text-xs">Ranked by confidence</CardDescription>
-                      </CardHeader>
-                      <CardContent className="space-y-1 pb-3">
-                        {currentStep.compiled_selectors && currentStep.compiled_selectors.length > 0 ? (
-                          currentStep.compiled_selectors.map((sel, idx) => (
-                            <div key={idx} className="text-xs font-mono text-cyan-200 bg-black/20 p-2 rounded break-all">
-                              {idx + 1}. {sel}
-                            </div>
-                          ))
-                        ) : (
-                          <p className="text-xs text-zinc-400">(no compiled selectors)</p>
-                        )}
-                      </CardContent>
-                    </Card>
-                  ) : null}
-                  {currentStep && currentStep.intent ? (
-                    <Card className="border-white/10 bg-white/[0.02]">
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-sm">Step Intent</CardTitle>
-                      </CardHeader>
-                      <CardContent className="pb-3">
-                        <p className="text-xs text-zinc-300">{currentStep.intent}</p>
-                      </CardContent>
-                    </Card>
-                  ) : null}
-                  {!currentStep ? (
-                    <p className="text-xs text-zinc-400 px-1">Select a step to view compiled selectors.</p>
-                  ) : null}
-                </>
               ) : null}
             </div>
             </motion.div>
