@@ -38,7 +38,11 @@ function scoreCandidate(node, fingerprint) {
   const fpRole = norm(fp.role);
   if (fpRole) add(0.20, norm(node.role) === fpRole);
 
-  const fpName = norm(fp.aria_label || fp.name || fp.label_text || fp.inner_text);
+  // aria_label and name are the element's own accessible-name attributes.
+  // label_text is the nearest <label>'s text — for nav buttons this is surrounding
+  // context (e.g. "Projects Search CTRL + K K"), not the element's identity. Exclude it
+  // from fpName so it doesn't shadow inner_text ("New") and drop the score below threshold.
+  const fpName = norm(fp.aria_label || fp.name || fp.inner_text);
   if (fpName) {
     const nodeName = norm(node.name || node.text);
     add(0.25, nodeName === fpName || (!!nodeName && (nodeName.includes(fpName) || fpName.includes(nodeName))));
