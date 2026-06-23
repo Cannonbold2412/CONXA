@@ -60,9 +60,12 @@ def resolve_runtime_dir() -> Path | None:
     """Find a runnable Conxa runtime directory (packed exe or server.js tree).
 
     Priority:
-      1. $CONXA_DIR env var (explicit override — trusted as-is)
-      2. $CONXA_RUNTIME_LOCAL_DIR env var (selected by bootstrap)
-      3. Studio deps-managed runtime (~/.conxa-build-studio/deps/runtime/<version>/)
+      1. $CONXA_DIR env var (explicit override — always wins)
+      2. Repo-local runtime/ source tree when running from a dev checkout (not frozen).
+         JS changes take effect immediately without a binary rebuild. Use $CONXA_DIR to
+         force a specific binary instead.
+      3. $CONXA_RUNTIME_LOCAL_DIR env var (set by bootstrap when binary is downloaded)
+      4. Studio deps-managed runtime (~/.conxa-build-studio/deps/runtime/<version>/)
 
     Returns None if no valid runtime is found.
     """
@@ -71,6 +74,12 @@ def resolve_runtime_dir() -> Path | None:
         p = Path(env_dir)
         if _is_runtime_dir(p):
             return p
+
+    # In a dev checkout prefer the source tree so JS edits are reflected immediately.
+    if not getattr(sys, "frozen", False):
+        local_source = _find_local_runtime_source()
+        if local_source is not None:
+            return local_source
 
     local_dir = os.environ.get("CONXA_RUNTIME_LOCAL_DIR", "").strip()
     if local_dir:
@@ -81,12 +90,6 @@ def resolve_runtime_dir() -> Path | None:
     deps_runtime = _bootstrap_runtime_dir()
     if deps_runtime is not None:
         return deps_runtime
-
-    # Dev-checkout fallback: use the repo-local runtime/ source tree so that Test
-    # (Replay) works in a dev environment with no downloaded binary.
-    local_source = _find_local_runtime_source()
-    if local_source is not None:
-        return local_source
 
     return None
 

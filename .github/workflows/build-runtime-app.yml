@@ -142,17 +142,15 @@ jobs:
       - name: Publish app-manifest to cloud API
         if: vars.CLOUD_API_URL != ''
         run: |
-          $bundleUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:APP_VERSION/$env:APP_BUNDLE_ZIP"
           $body = @{
             app_version   = "$env:APP_VERSION"
             min_host      = "$env:MIN_HOST"
-            bundle_url    = $bundleUrl
             bundle_sha256 = "$env:APP_BUNDLE_SHA256"
           } | ConvertTo-Json
           Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/updates/conxa-app-manifest" `
             -Method POST -Body $body -ContentType "application/json" `
             -Headers @{ Authorization = "Bearer $env:CLOUD_ADMIN_TOKEN" }
-          Write-Output "Manifest posted: $bundleUrl"
+          Write-Output "Manifest posted: app-$env:APP_VERSION"
         shell: pwsh
         env:
           CLOUD_API_URL:    ${{ vars.CLOUD_API_URL }}

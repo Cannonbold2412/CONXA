@@ -101,9 +101,7 @@ jobs:
         run: |
           $body = @{
             host_version  = "$env:HOST_VERSION"
-            url           = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:HOST_VERSION/conxa-runtime.exe"
             sha256        = "$env:HOST_WIN_SHA256"
-            keytar_url    = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:HOST_VERSION/keytar.node"
             keytar_sha256 = "$env:KEYTAR_SHA256"
           } | ConvertTo-Json
           Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/updates/conxa-runtime-manifest" `

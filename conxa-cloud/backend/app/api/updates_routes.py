@@ -39,26 +39,19 @@ _NSIS_SHA256 = os.environ.get("CONXA_NSIS_SHA256", "")
 # publishes runtime and studio releases.
 _GITHUB_REPO = os.environ.get("CONXA_GITHUB_REPO", "Cannonbold2412/CONXA")
 
+
+def _release_url(version: str, filename: str) -> str:
+    return f"https://github.com/{_GITHUB_REPO}/releases/download/{version}/{filename}"
+
+
 # Host layer (large binary, quarterly)
 _HOST_VERSION = os.environ.get("CONXA_HOST_VERSION", "host-v1.0.0")
-_HOST_WIN_URL = os.environ.get(
-    "CONXA_HOST_WIN_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_HOST_VERSION}/conxa-runtime.exe",
-)
 _HOST_WIN_SHA256 = os.environ.get("CONXA_HOST_WIN_SHA256", "")
-_RUNTIME_KEYTAR_URL = os.environ.get(
-    "CONXA_KEYTAR_WIN_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_HOST_VERSION}/keytar.node",
-)
 _RUNTIME_KEYTAR_SHA256 = os.environ.get("CONXA_KEYTAR_WIN_SHA256", "")
 
 # App layer (small zip, every release)
 _APP_VERSION = os.environ.get("CONXA_APP_VERSION", "app-v1.0.0")
 _APP_MIN_HOST = os.environ.get("CONXA_APP_MIN_HOST", "host-v1.0.0")
-_APP_BUNDLE_URL = os.environ.get(
-    "CONXA_APP_BUNDLE_URL",
-    f"https://github.com/{_GITHUB_REPO}/releases/download/{_APP_VERSION}/conxa-app-{_APP_VERSION}.zip",
-)
 _APP_BUNDLE_SHA = os.environ.get("CONXA_APP_BUNDLE_SHA256", "")
 
 _PLAYWRIGHT_VERSION = os.environ.get("CONXA_PLAYWRIGHT_VERSION", "1.61.0")
@@ -113,13 +106,13 @@ def deps_manifest() -> dict:
                 "files": [
                     {
                         "filename": "conxa-runtime.exe",
-                        "url": _HOST_WIN_URL,
+                        "url": _release_url(_HOST_VERSION, "conxa-runtime.exe"),
                         "sha256": _HOST_WIN_SHA256,
                         "action": "copy",
                     },
                     {
                         "filename": "keytar.node",
-                        "url": _RUNTIME_KEYTAR_URL,
+                        "url": _release_url(_HOST_VERSION, "keytar.node"),
                         "sha256": _RUNTIME_KEYTAR_SHA256,
                         "action": "copy",
                     },
@@ -130,7 +123,7 @@ def deps_manifest() -> dict:
                 "files": [
                     {
                         "filename": f"conxa-app-{_APP_VERSION}.zip",
-                        "url": _APP_BUNDLE_URL,
+                        "url": _release_url(_APP_VERSION, f"conxa-app-{_APP_VERSION}.zip"),
                         "sha256": _APP_BUNDLE_SHA,
                         "action": "extract_zip",
                     }
@@ -211,9 +204,9 @@ def runtime_host_manifest() -> dict:
     """
     return {
         "host_version": _HOST_VERSION,
-        "url": _HOST_WIN_URL,
+        "url": _release_url(_HOST_VERSION, "conxa-runtime.exe"),
         "sha256": _HOST_WIN_SHA256,
-        "keytar_url": _RUNTIME_KEYTAR_URL,
+        "keytar_url": _release_url(_HOST_VERSION, "keytar.node"),
         "keytar_sha256": _RUNTIME_KEYTAR_SHA256,
         "playwright_version": _PLAYWRIGHT_VERSION,
         "chromium_revision": _CHROMIUM_REVISION,
@@ -229,7 +222,7 @@ def runtime_app_manifest() -> dict:
     return {
         "app_version": _APP_VERSION,
         "min_host": _APP_MIN_HOST,
-        "bundle_url": _APP_BUNDLE_URL,
+        "bundle_url": _release_url(_APP_VERSION, f"conxa-app-{_APP_VERSION}.zip"),
         "bundle_sha256": _APP_BUNDLE_SHA,
     }
 
@@ -246,12 +239,10 @@ def _require_admin(authorization: str = Header(default="")) -> None:
 def update_runtime_host_manifest(body: dict, authorization: str = Header(default="")) -> dict:
     """CI calls this after each host build to update in-memory manifest vars."""
     _require_admin(authorization)
-    global _HOST_VERSION, _HOST_WIN_URL, _HOST_WIN_SHA256, _RUNTIME_KEYTAR_URL, _RUNTIME_KEYTAR_SHA256
-    if "host_version" in body: _HOST_VERSION       = body["host_version"]
-    if "url"          in body: _HOST_WIN_URL         = body["url"]
-    if "sha256"       in body: _HOST_WIN_SHA256      = body["sha256"]
-    if "keytar_url"   in body: _RUNTIME_KEYTAR_URL   = body["keytar_url"]
-    if "keytar_sha256" in body: _RUNTIME_KEYTAR_SHA256 = body["keytar_sha256"]
+    global _HOST_VERSION, _HOST_WIN_SHA256, _RUNTIME_KEYTAR_SHA256
+    if "host_version"  in body: _HOST_VERSION          = body["host_version"]
+    if "sha256"        in body: _HOST_WIN_SHA256        = body["sha256"]
+    if "keytar_sha256" in body: _RUNTIME_KEYTAR_SHA256  = body["keytar_sha256"]
     return {"ok": True}
 
 
@@ -259,9 +250,8 @@ def update_runtime_host_manifest(body: dict, authorization: str = Header(default
 def update_runtime_app_manifest(body: dict, authorization: str = Header(default="")) -> dict:
     """CI calls this after each app-layer build to update in-memory manifest vars."""
     _require_admin(authorization)
-    global _APP_VERSION, _APP_MIN_HOST, _APP_BUNDLE_URL, _APP_BUNDLE_SHA
+    global _APP_VERSION, _APP_MIN_HOST, _APP_BUNDLE_SHA
     if "app_version"   in body: _APP_VERSION    = body["app_version"]
     if "min_host"      in body: _APP_MIN_HOST   = body["min_host"]
-    if "bundle_url"    in body: _APP_BUNDLE_URL = body["bundle_url"]
     if "bundle_sha256" in body: _APP_BUNDLE_SHA = body["bundle_sha256"]
     return {"ok": True}
