@@ -50,7 +50,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path obfuscated
           $files = @(
             "server.js", "sync.js", "run.js", "browser.js",
-            "skill_loader.js", "auth_manager.js", "tracker.js", "install_identity.js"
+            "skill_loader.js", "auth_manager.js", "tracker.js", "install_identity.js",
+            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js"
           )
           foreach ($f in $files) {
             javascript-obfuscator $f `
@@ -75,7 +76,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist-app
           $files = @(
             "server", "sync", "run", "browser",
-            "skill_loader", "auth_manager", "tracker", "install_identity"
+            "skill_loader", "auth_manager", "tracker", "install_identity",
+            "bootstrap", "recovery", "resolve_adapter", "resolver"
           )
           foreach ($base in $files) {
             node -e @"
