@@ -211,6 +211,23 @@ async function resolveStep(page, step, inputs) {
   throw Object.assign(new Error("Element not found (resolve miss)"), { resolveMiss: true });
 }
 
+// Poll-retry wrapper around resolveStep: keeps re-attempting on a genuine miss until
+// deadlineMs elapses, then re-throws.  This gives SPAs time to hydrate before we give
+// up — restoring, for the PRIMARY path, the auto-wait that string selectors already
+// receive via waitFor({state:"visible"}) in withLocator.  Ambiguous / recompileRequired
+// errors surface immediately (retrying cannot resolve them).
+async function resolveStepWithWait(page, step, inputs, deadlineMs = ACTION_TIMEOUT_MS) {
+  const end = Date.now() + deadlineMs;
+  for (;;) {
+    try {
+      return await resolveStep(page, step, inputs);
+    } catch (err) {
+      if (!err || !err.resolveMiss || Date.now() >= end) throw err;
+      await page.waitForTimeout(120);
+    }
+  }
+}
+
 const GATE_ENABLED = process.env.CONXA_GATE !== "0";
 const GATE_BUDGET_MS = envNumber("CONXA_GATE_BUDGET_MS", 600);
 
@@ -261,7 +278,7 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
     if (step._explicit_selector) {
       candidates = locatorCandidates(page, step, inputs, step._explicit_selector);
     } else {
-      candidates = [await resolveStep(page, step, inputs)];
+      candidates = [await resolveStepWithWait(page, step, inputs, timeout || ACTION_TIMEOUT_MS)];
     }
   } else {
     candidates = locatorCandidates(page, step, inputs, selector);
@@ -893,6 +910,10 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
   let recoveredSteps = 0;
   let hasExecutedStep = false;
   let prevStepType = null;
+
+  // Settle the page before the first step so step 0 doesn't fire against a still-hydrating SPA.
+  // Uses the same timeout constant as navigation waits; best-effort (catch swallowed).
+  await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
 
   for (let i = startFrom; i < steps.length; i++) {
     if (cancelCheck && cancelCheck()) {
