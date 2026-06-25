@@ -117,13 +117,37 @@ jobs:
         working-directory: runtime
         run: |
           node -e @"
+          // Validate each .jsc exactly the way bytenode loads it at runtime, so a
+          // PASS here means 'the runtime can load this bytecode'. Do NOT validate
+          // with an empty source string: V8 keys its code-cache sanity check on the
+          // source LENGTH (stored at bytes 8-12 of the .jsc), so an empty source
+          // mismatches every file and spuriously trips cachedDataRejected for some
+          // of them (this is what flagged auth_manager.jsc as a false positive).
+          // Instead, read the stored length and build a dummy of that exact length,
+          // and apply bytenode's flag-hash normalization (fixBytecode) first — the
+          // same steps bytenode's loader performs. This checks V8 version/format
+          // compatibility; payload integrity is already covered by the SHA-256 step.
+          const bytenode = require('bytenode'); // sets the V8 flags used at compile
           const vm = require('vm');
           const fs = require('fs');
+          const dummyBC = new vm.Script('\"ಠ_ಠ\"', { produceCachedData: true }).cachedData;
+          const v = parseFloat(process.version.slice(1, 5));
+          function fixBytecode(buf) {
+            dummyBC.subarray(12, 16).copy(buf, 12);
+            if (v >= 24) dummyBC.subarray(16, 20).copy(buf, 16);
+          }
+          function readSourceLength(buf) {
+            return buf.subarray(8, 12).reduce((s, n, p) => s + n * Math.pow(256, p), 0);
+          }
           const files = fs.readdirSync('./dist-app').filter(f => f.endsWith('.jsc'));
           let ok = true;
           for (const f of files) {
-            const bytecode = fs.readFileSync('./dist-app/' + f);
-            const script = new vm.Script('', { cachedData: bytecode });
+            const buf = fs.readFileSync('./dist-app/' + f);
+            fixBytecode(buf);
+            const len = readSourceLength(buf);
+            const zwsp = String.fromCharCode(0x200b); // zero-width space, as bytenode uses
+            const dummy = len > 1 ? '\"' + zwsp.repeat(len - 2) + '\"' : '';
+            const script = new vm.Script(dummy, { cachedData: buf });
             if (script.cachedDataRejected) {
               console.error('INCOMPATIBLE: ' + f);
               ok = false;
