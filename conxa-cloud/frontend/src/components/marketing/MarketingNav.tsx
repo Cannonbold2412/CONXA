@@ -36,13 +36,13 @@ export function MarketingNav() {
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="relative flex h-8 w-8 items-center justify-center rounded-lg overflow-hidden">
-            <div
-              className="absolute inset-0 opacity-80 group-hover:opacity-100 transition-opacity"
-              style={{ background: 'linear-gradient(135deg, #22d3ee, #5eead4)' }}
-            />
-            <span className="relative text-xs font-bold text-[#06080b]">C</span>
-          </div>
+          <img
+            src="/conxa-icon.png"
+            alt="CONXA"
+            width={32}
+            height={32}
+            className="h-8 w-8 rounded-lg object-contain transition-transform duration-200 group-hover:scale-[1.02]"
+          />
           <span className="text-base font-semibold tracking-tight text-white">CONXA</span>
         </Link>
 
