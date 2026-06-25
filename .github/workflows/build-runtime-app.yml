@@ -73,6 +73,7 @@ jobs:
       - name: Compile obfuscated JS to V8 bytecode
         working-directory: runtime
         run: |
+          Remove-Item -Recurse -Force dist-app -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist-app
           $files = @(
             "server", "sync", "run", "browser",
@@ -84,7 +85,8 @@ jobs:
           const bytenode = require('bytenode');
           bytenode.compileFile({ filename: 'obfuscated/$base.js', output: 'dist-app/$base.jsc', electron: false });
           "@
-            Write-Output "Compiled: $base.jsc"
+            if (`$LASTEXITCODE -ne 0) { Write-Error "Failed to compile ${base}.js"; exit 1 }
+            Write-Output "Compiled: ${base}.jsc"
           }
         shell: pwsh
 
@@ -127,6 +129,7 @@ jobs:
           }
           if (!ok) process.exit(1);
           "@
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           Write-Output "Bytecode validation passed"
         shell: pwsh
 
