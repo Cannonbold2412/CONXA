@@ -514,7 +514,8 @@ def call_runtime_tool(
             pass
 
     threading.Thread(target=_read_stdout, daemon=True).start()
-    threading.Thread(target=_read_stderr, daemon=True).start()
+    stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+    stderr_thread.start()
 
     next_id = 1
 
@@ -560,6 +561,7 @@ def call_runtime_tool(
                     err = message.get("error") or {}
                     raise RuntimeToolError(str(err.get("message") or err))
                 return message
+        stderr_thread.join(timeout=1.0)
         tail = "\n".join(_ANSI_RE.sub('', l) for l in stderr_lines[-5:])
         suffix = f"\nRuntime log tail:\n{tail}" if tail else ""
         raise RuntimeToolError(f"Runtime tool call timed out or exited before responding.{suffix}")

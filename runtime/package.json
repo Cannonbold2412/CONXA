@@ -6,12 +6,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node22-win-x64 --output dist/conxa-runtime.exe --public",
-    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node22-mac-x64 --output dist/conxa-runtime-mac --public",
+    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node24-win-x64 --output dist/conxa-runtime.exe --public",
+    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node24-mac-x64 --output dist/conxa-runtime-mac --public",
     "build:all": "npm run build:win && npm run build:mac"
   },
   "pkg": {
-    "targets": ["node22-win-x64", "node22-mac-x64"],
+    "targets": ["node24-win-x64", "node24-mac-x64"],
     "outputPath": "dist/",
     "assets": [
       "node_modules/playwright-core/browsers.json"

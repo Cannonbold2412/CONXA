@@ -33,7 +33,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: runtime/package-lock.json
 
@@ -105,6 +105,13 @@ jobs:
           } | ConvertTo-Json -Depth 5
           $meta | Out-File -Encoding UTF8 dist-app/version.json
           Write-Output "version.json written"
+        shell: pwsh
+
+      - name: Validate bytecode compatibility
+        working-directory: runtime
+        run: |
+          node -e "require('bytenode'); require('./dist-app/server.jsc'); process.exit(0)"
+          Write-Output "Bytecode validation passed"
         shell: pwsh
 
       - name: Zip app layer

@@ -35,8 +35,16 @@ function tryLoad(dir) {
   const entry = path.join(dir, "server.jsc");
   if (!fs.existsSync(entry)) return false;
 
-  require(entry);
-  return true;
+  try {
+    require(entry);
+    return true;
+  } catch (e) {
+    process.stderr.write(
+      `[bootstrap] failed to load ${entry}: ${e.message}\n` +
+      `  If this says "cachedDataRejected", the app layer was compiled for a different Node.js version.\n`
+    );
+    return false;
+  }
 }
 
 const APP_BAK = APP_DIR + ".bak";
