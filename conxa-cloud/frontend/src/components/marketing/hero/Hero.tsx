@@ -14,29 +14,6 @@ export function Hero() {
       <GradientMesh />
       <GridBackground />
 
-      {/* Brand mark */}
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-        className="relative z-10 mb-6 flex items-center gap-3"
-      >
-        <div className="relative h-14 w-14 overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-2 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
-          <Image
-            src="/conxa-icon.png"
-            alt="CONXA"
-            fill
-            priority
-            sizes="56px"
-            className="object-contain"
-          />
-        </div>
-        <div className="flex flex-col">
-          <span className="text-[11px] uppercase tracking-[0.28em] text-[#6b7280]">Conxa</span>
-          <span className="text-sm text-[#9ba3af]">Local MCP runtime for browser workflows</span>
-        </div>
-      </motion.div>
-
       {/* Headline */}
       <motion.h1
         initial={{ opacity: 0, y: 20 }}

@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 
 export function MarketingFooter() {
   return (
@@ -6,19 +7,21 @@ export function MarketingFooter() {
       <div className="mx-auto max-w-6xl">
         <div className="flex flex-col gap-10 sm:flex-row sm:items-start sm:justify-between">
           {/* Brand */}
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2.5">
-              <div
-                className="flex h-7 w-7 items-center justify-center rounded-lg"
-                style={{ background: 'linear-gradient(135deg, #22d3ee, #5eead4)' }}
-              >
-                <span className="text-[11px] font-bold text-[#06080b]">C</span>
-              </div>
-              <span className="text-sm font-semibold text-white">CONXA</span>
+          <div className="flex items-center gap-3">
+            <div className="relative h-14 w-14 overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-2 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+              <Image
+                src="/conxa-icon.png"
+                alt="CONXA"
+                fill
+                priority
+                sizes="56px"
+                className="object-contain"
+              />
             </div>
-            <p className="max-w-xs text-xs leading-relaxed text-[#6b7280]">
-              AI operational runtime. Operate software by talking.
-            </p>
+            <div className="flex flex-col">
+              <span className="text-[11px] uppercase tracking-[0.28em] text-[#6b7280]">Conxa</span>
+              <span className="text-sm text-[#9ba3af]">Local MCP runtime for browser workflows</span>
+            </div>
           </div>
 
           {/* Links */}
