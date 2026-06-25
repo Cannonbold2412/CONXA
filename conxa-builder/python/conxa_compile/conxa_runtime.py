@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -11,6 +12,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
@@ -46,7 +48,7 @@ def _bootstrap_runtime_dir() -> Path | None:
     dependency-free. Returns the highest-versioned dir that holds a packed exe.
     """
     base = os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio")
-    runtime_root = Path(base) / "deps" / "runtime"
+    runtime_root = Path(base) / "deps" / "conxa-runtime"
     if not runtime_root.is_dir():
         return None
     candidates = [d for d in runtime_root.iterdir() if d.is_dir() and _runtime_exe(d) is not None]
@@ -56,22 +58,210 @@ def _bootstrap_runtime_dir() -> Path | None:
     return candidates[-1]
 
 
+def _bootstrap_app_dir() -> Path | None:
+    """Locate the Studio deps-managed app layer (~/.conxa-build-studio/deps/runtime_app/<version>/).
+
+    Mirrors _bootstrap_runtime_dir(). Prefers $CONXA_APP_LOCAL_DIR (set by the deps
+    bootstrap to the active version dir); otherwise returns the highest-named subdir.
+    Returns None when there is no app layer (e.g. a dev checkout).
+    """
+    local = os.environ.get("CONXA_APP_LOCAL_DIR", "").strip()
+    if local:
+        p = Path(local)
+        if p.is_dir():
+            return p
+
+    base = os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio")
+    app_root = Path(base) / "deps" / "conxa-app"
+    if not app_root.is_dir():
+        return None
+    candidates = [d for d in app_root.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda d: d.name)
+    return candidates[-1]
+
+
+def _studio_base() -> Path:
+    """Root of all Build Studio user state (~/.conxa-build-studio by default)."""
+    return Path(os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio"))
+
+
+def _deps_chromium_dir() -> Path:
+    """Managed Playwright browsers directory — mirrors services.bootstrap.chromium_dir()."""
+    return _studio_base() / "deps" / "chromium"
+
+
+def _ensure_chromium_link(link_path: Path, chromium_source: Path) -> bool:
+    """Ensure link_path is a junction (Windows) or symlink (other) pointing to chromium_source.
+
+    Returns True when the link exists and is correct or could be created, False on failure
+    (caller falls back to PLAYWRIGHT_BROWSERS_PATH).  Does NOT remove a real directory
+    in case it already contains a valid Chromium install.
+    """
+    if link_path.is_symlink():
+        try:
+            if Path(os.readlink(str(link_path))).resolve() == chromium_source.resolve():
+                return True
+        except (OSError, ValueError):
+            pass
+        # Wrong target — remove and recreate.
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["cmd", "/c", "rmdir", str(link_path)],
+                    check=False, capture_output=True,
+                )
+            else:
+                link_path.unlink()
+        except OSError:
+            return False
+
+    if link_path.exists():
+        # Real directory already present (older install or manual copy) — leave it.
+        return True
+
+    # Create junction (Windows, no admin required) or symlink (other).
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link_path), str(chromium_source)],
+                check=False, capture_output=True, text=True,
+            )
+            return result.returncode == 0
+        else:
+            os.symlink(str(chromium_source), str(link_path), target_is_directory=True)
+            return True
+    except Exception:
+        return False
+
+
+def stage_runtime_payload(
+    dest: Path,
+    runtime_dir: Path,
+    app_dir: Path | None,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """Copy the runtime binary + app layer into dest/, writing a combined version.json.
+
+    Stages: conxa-runtime.exe (or -mac), keytar.node, version.json, conxa-app/.
+    Used by both installer_builder (customer .exe) and ensure_test_sandbox (Studio test),
+    so both are assembled by identical code and any divergence is a bug.
+    """
+    def _info(msg: str) -> None:
+        if log:
+            log(msg)
+
+    # ── runtime binary ─────────────────────────────────────────────────────────
+    exe = _runtime_exe(runtime_dir)
+    if exe is None:
+        raise RuntimeError(
+            f"No packed runtime executable found in {runtime_dir}. "
+            "Run dependency bootstrap first."
+        )
+    exe_name = exe.name
+    _info(f"Staging {exe_name} from {exe}")
+    shutil.copy2(exe, dest / exe_name)
+    _info(f"{exe_name} staged ({(dest / exe_name).stat().st_size // 1024} KB)")
+
+    # ── keytar ────────────────────────────────────────────────────────────────
+    keytar = runtime_dir / "keytar.node"
+    if not keytar.is_file():
+        raise RuntimeError(
+            f"keytar.node not found in {runtime_dir}. "
+            "Run dependency bootstrap first."
+        )
+    shutil.copy2(keytar, dest / "keytar.node")
+    _info("keytar.node staged")
+
+    # ── version.json (records both layers so sandbox can detect updates) ──────
+    (dest / "version.json").write_text(
+        json.dumps({
+            "runtime_version": runtime_dir.name,
+            "app_version": app_dir.name if app_dir else None,
+        }),
+        encoding="utf-8",
+    )
+    _info("version.json written")
+
+    # ── app layer ─────────────────────────────────────────────────────────────
+    if app_dir and app_dir.is_dir():
+        app_dest = dest / "conxa-app"
+        if app_dest.exists():
+            shutil.rmtree(app_dest)
+        shutil.copytree(str(app_dir), str(app_dest))
+        kb = sum(f.stat().st_size for f in app_dest.rglob("*") if f.is_file()) // 1024
+        _info(f"conxa-app/ staged ({kb} KB, from {app_dir})")
+    else:
+        _info("WARNING: conxa-app not found in deps — app layer will not be pre-installed")
+
+
+def resolve_test_sandbox_dir() -> Path:
+    """Return the path for the Studio test sandbox (~/.conxa-build-studio/sandbox)."""
+    return _studio_base() / "sandbox"
+
+
+def ensure_test_sandbox(
+    runtime_dir: Path,
+    app_dir: Path | None,
+) -> tuple[Path, Path]:
+    """Assemble or refresh the customer-faithful test sandbox.
+
+    Returns ``(conxa_dir, data_dir)`` where:
+      conxa_dir = sandbox/.conxa/   mirrors the customer's ~/.conxa
+      data_dir  = sandbox/data/     mirrors the customer's ~/AppData/Roaming/Conxa
+
+    The sandbox is persistent: payload is re-staged only when runtime_version or
+    app_version changes (i.e. when bootstrap.ensure_all() downloaded a new dep).
+    Skill-packs are NOT staged here — callers do that via sync_skill_pack().
+    """
+    sandbox = resolve_test_sandbox_dir()
+    conxa_dir = sandbox / ".conxa"
+    data_dir = sandbox / "data"
+
+    conxa_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "cache").mkdir(parents=True, exist_ok=True)
+    (data_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+    # ── re-stage runtime payload when version changed (frozen only) ───────────
+    if getattr(sys, "frozen", False):
+        need_stage = True
+        version_file = conxa_dir / "version.json"
+        if version_file.is_file() and _runtime_exe(conxa_dir) is not None:
+            try:
+                meta = json.loads(version_file.read_text(encoding="utf-8"))
+                if (
+                    meta.get("runtime_version") == runtime_dir.name
+                    and meta.get("app_version") == (app_dir.name if app_dir else None)
+                ):
+                    need_stage = False
+            except Exception:
+                pass
+        if need_stage:
+            stage_runtime_payload(conxa_dir, runtime_dir, app_dir)
+
+    # ── chromium: junction/symlink → deps/chromium (no per-test copy) ────────
+    chromium_source = _deps_chromium_dir()
+    _ensure_chromium_link(conxa_dir / "chromium", chromium_source)
+
+    return conxa_dir, data_dir
+
+
 def resolve_runtime_dir() -> Path | None:
     """Find a runnable Conxa runtime directory (packed exe or server.js tree).
 
-    Priority:
-      1. $CONXA_DIR env var (explicit override — always wins)
-      2. Repo-local runtime/ source tree when running from a dev checkout (not frozen).
-         JS changes take effect immediately without a binary rebuild. Use $CONXA_DIR to
-         force a specific binary instead.
-      3. $CONXA_RUNTIME_LOCAL_DIR env var (set by bootstrap when binary is downloaded)
-      4. Studio deps-managed runtime (~/.conxa-build-studio/deps/runtime/<version>/)
+    Two environments, in priority order:
+      1. $CONXA_RUNTIME_LOCAL_DIR — explicit override. Set manually in a dev checkout,
+         or by the deps bootstrap (services.bootstrap) to the active version dir in prod.
+      2. Dev checkout (not frozen): the repo-local runtime/ source tree, so JS edits take
+         effect immediately without a binary rebuild.
+      3. Production: the deps-managed runtime (~/.conxa-build-studio/deps/runtime/<version>/).
 
     Returns None if no valid runtime is found.
     """
-    env_dir = os.environ.get("CONXA_DIR", "").strip()
-    if env_dir:
-        p = Path(env_dir)
+    local_dir = os.environ.get("CONXA_RUNTIME_LOCAL_DIR", "").strip()
+    if local_dir:
+        p = Path(local_dir)
         if _is_runtime_dir(p):
             return p
 
@@ -81,17 +271,7 @@ def resolve_runtime_dir() -> Path | None:
         if local_source is not None:
             return local_source
 
-    local_dir = os.environ.get("CONXA_RUNTIME_LOCAL_DIR", "").strip()
-    if local_dir:
-        p = Path(local_dir)
-        if _is_runtime_dir(p):
-            return p
-
-    deps_runtime = _bootstrap_runtime_dir()
-    if deps_runtime is not None:
-        return deps_runtime
-
-    return None
+    return _bootstrap_runtime_dir()
 
 
 def resolve_conxa_data_dir() -> Path:
@@ -251,18 +431,33 @@ def call_runtime_tool(
     tool_name: str,
     arguments: dict,
     *,
+    conxa_dir: Path | None = None,
     env: dict[str, str] | None = None,
     timeout_s: int = 900,
 ) -> dict:
     """Call a tool on the local MCP stdio runtime and return its JSON-RPC result.
 
-    Launches the packed runtime executable when present (production parity with
-    how Claude Desktop spawns it); otherwise falls back to ``node server.js`` for
-    a repo-local source tree (dev).
+    ``conxa_dir`` is the customer-faithful sandbox directory (CONXA_DIR for the
+    spawned process).  When provided, the exe is resolved from there first (frozen:
+    the sandbox holds the staged copy); otherwise ``runtime_dir`` is used (dev:
+    no exe, falls back to ``node server.js``).
+
+    ``CONXA_APP_DIR`` is intentionally NOT injected: the sandbox provides
+    CONXA_DIR/conxa-app, which the runtime resolves exactly as on a customer machine.
     """
-    exe = _runtime_exe(runtime_dir)
+    # Resolve exe: sandbox copy first (frozen), then runtime_dir source tree (dev).
+    exe: str | None = None
+    if conxa_dir is not None:
+        _exe = _runtime_exe(conxa_dir)
+        if _exe is not None:
+            exe = str(_exe)
+    if exe is None:
+        _exe = _runtime_exe(runtime_dir)
+        if _exe is not None:
+            exe = str(_exe)
+
     if exe is not None:
-        cmd: list[str] = [str(exe)]
+        cmd: list[str] = [exe]
     else:
         node = shutil.which("node")
         if not node:
@@ -273,12 +468,15 @@ def call_runtime_tool(
             )
         cmd = [node, "server.js"]
 
+    effective_conxa_dir = conxa_dir if conxa_dir is not None else runtime_dir
     proc_env = {
         **os.environ,
         **(env or {}),
-        "CONXA_DIR": str(runtime_dir),
+        "CONXA_DIR": str(effective_conxa_dir),
         "CONXA_SKIP_SELF_UPDATE": os.environ.get("CONXA_SKIP_SELF_UPDATE", "1"),
     }
+    # CONXA_APP_DIR is NOT set: the sandbox/customer install provides conxa-app/ under
+    # CONXA_DIR so the runtime resolves it via its own default logic (bootstrap.js:9).
 
     proc = subprocess.Popen(
         cmd,

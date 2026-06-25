@@ -15,7 +15,7 @@
 !define STAGING_DIR    "{{STAGING_DIR}}"
 ; Per-user install: no UAC, correct user profile
 !define INSTALL_DIR    "$PROFILE\.conxa"
-!define RUNTIME_DIR    "${INSTALL_DIR}\runtime"
+!define RUNTIME_DIR    "${INSTALL_DIR}"
 !define CHROMIUM_DIR   "${INSTALL_DIR}\chromium"
 !define SKILL_DIR      "${INSTALL_DIR}\skill-packs\${COMPANY_SLUG}"
 !define UNINSTALL_KEY  "Software\Microsoft\Windows\CurrentVersion\Uninstall\Conxa-${COMPANY_SLUG}"
@@ -43,7 +43,7 @@ Function DetectRuntime
   ; Write a temp PS1 to compare versions. Exit 1 = installed >= bundled (keep it).
   FileOpen $0 "$TEMP\conxa_ver.ps1" w
   FileWrite $0 "try {$\r$\n"
-  FileWrite $0 "  $$j = Get-Content $\"$$env:USERPROFILE\.conxa\runtime\version.json$\" | ConvertFrom-Json$\r$\n"
+  FileWrite $0 "  $$j = Get-Content $\"$$env:USERPROFILE\.conxa\version.json$\" | ConvertFrom-Json$\r$\n"
   FileWrite $0 "  if ([System.Version]$$j.runtime_version -ge [System.Version]'${RUNTIME_VER}') { exit 1 }$\r$\n"
   FileWrite $0 "} catch {}$\r$\n"
   FileWrite $0 "exit 0$\r$\n"
@@ -79,7 +79,7 @@ Section "Runtime" SEC_RUNTIME
   File "${STAGING_DIR}\runtime\version.json"
   ; Pre-extracted app layer — /nonfatal is a no-op if source dir is absent
   SetOutPath "${INSTALL_DIR}\conxa-app"
-  File /nonfatal /r "${STAGING_DIR}\runtime\runtime-app\*.*"
+  File /nonfatal /r "${STAGING_DIR}\runtime\conxa-app\*.*"
   SetOutPath "${RUNTIME_DIR}"
 
   runtime_skip:
@@ -213,8 +213,9 @@ Section "Uninstall"
   mcp_remove_done:
   RMDir /r "${RUNTIME_DIR}"
   RMDir /r "${CHROMIUM_DIR}"
-  RMDir /r "${INSTALL_DIR}\cache"
-  RMDir /r "${INSTALL_DIR}\logs"
+  ; Runtime writes cache and logs to CONXA_DATA_DIR = %APPDATA%\Conxa (Roaming),
+  ; NOT under INSTALL_DIR. Remove the actual writable state directory.
+  RMDir /r "$APPDATA\Conxa"
   RMDir "${INSTALL_DIR}"
   skip_shared_removal:
 

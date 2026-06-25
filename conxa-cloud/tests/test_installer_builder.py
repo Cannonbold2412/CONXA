@@ -40,7 +40,7 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
     def fail_rebuild(*args, **kwargs):
         raise AssertionError("build_installer must not rebuild the plugin")
 
-    studio_runtime_dir = tmp_path / ".conxa-build-studio" / "deps" / "runtime" / "runtime-v-local"
+    studio_runtime_dir = tmp_path / ".conxa-build-studio" / "deps" / "conxa-runtime" / "runtime-v-local"
     studio_runtime_dir.mkdir(parents=True)
 
     def fake_stage_runtime(dest, log=None, *, studio_runtime_dir=None):

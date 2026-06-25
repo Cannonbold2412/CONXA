@@ -1030,8 +1030,10 @@ class Backend:
         """
         from conxa_compile.conxa_runtime import (
             RuntimeToolError,
+            _bootstrap_app_dir,
             call_runtime_tool,
             ensure_chromium_installed,
+            ensure_test_sandbox,
             resolve_runtime_dir,
             sync_skill_pack,
         )
@@ -1079,25 +1081,24 @@ class Backend:
                 f"Built skill pack not found: skill-packs/{company}. Run Build Plugin again.",
             )
 
-        studio_base = Path(os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio"))
-        test_data_dir = studio_base / "test-data"
-        test_data_dir.mkdir(parents=True, exist_ok=True)
-
         try:
+            # ── Assemble (or refresh) the customer-faithful sandbox ───────────
+            # sandbox/.conxa/ mirrors ~/.conxa/ on a real install; sandbox/data/
+            # mirrors ~/AppData/Roaming/Conxa. The sandbox is persistent: the exe
+            # and conxa-app are only re-staged when a new dep version was downloaded.
+            sink({"kind": "workflow_test", "message": "Preparing test sandbox…"})
+            app_dir = _bootstrap_app_dir()
+            conxa_dir, test_data_dir = ensure_test_sandbox(runtime_dir, app_dir)
+
             sink({"kind": "workflow_test", "message": "Staging skill pack for the runtime…"})
-            sync_skill_pack(company, source_dir, runtime_dir, data_dir=test_data_dir)
+            sync_skill_pack(company, source_dir, conxa_dir, data_dir=test_data_dir)
             _stage_runtime_auth(plugin, company, test_data_dir)
 
-            # Frozen builds run the packed runtime exe, which has no node_modules
-            # for an npx-based Playwright install. Point it at the Studio-managed
-            # Chromium (~/.conxa-build-studio/deps/chromium) — its revision matches the packed
-            # runtime's bundled Playwright, so it launches directly. Dev keeps the
-            # per-runtime chromium dir and the npx install path.
-            if getattr(sys, "frozen", False):
-                browsers_dir = _bootstrap_pkg.chromium_dir()
-            else:
-                browsers_dir = runtime_dir / "chromium"
-
+            # Chromium is junctioned/symlinked into conxa_dir by ensure_test_sandbox.
+            # Still call ensure_chromium_installed to download on first use; after that
+            # it's a no-op (fast binary check). Always use the shared deps/chromium so
+            # both frozen and dev point at the same managed revision.
+            browsers_dir = _bootstrap_pkg.chromium_dir()
             ensure_chromium_installed(
                 browsers_dir,
                 runtime_dir,
@@ -1114,10 +1115,8 @@ class Backend:
                     "inputs": inputs,
                     "watch": not bool(payload.get("headless")),
                 },
-                env={
-                    "CONXA_DATA_DIR": str(test_data_dir),
-                    "PLAYWRIGHT_BROWSERS_PATH": str(browsers_dir),
-                },
+                conxa_dir=conxa_dir,
+                env={"CONXA_DATA_DIR": str(test_data_dir)},
             )
         except (RuntimeToolError, RuntimeError) as exc:
             message = str(exc)

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from conxa_core.config import settings
+from conxa_compile.conxa_runtime import _bootstrap_app_dir, stage_runtime_payload
 
 SIGNTOOL_PATH     = os.getenv("CONXA_SIGNTOOL_PATH", "signtool.exe")
 SIGN_CERT_SHA1    = os.getenv("CONXA_SIGN_CERT_SHA1", "")
@@ -295,7 +296,7 @@ _STUDIO_RUNTIME_MISSING = (
 
 
 def _studio_runtime_root() -> Path:
-    return Path.home() / ".conxa-build-studio" / "deps" / "runtime"
+    return Path.home() / ".conxa-build-studio" / "deps" / "conxa-runtime"
 
 
 def _runtime_version_sort_key(path: Path) -> tuple[int, tuple[int, ...], str]:
@@ -332,67 +333,20 @@ def _find_studio_cache_runtime_dir() -> Path:
     return candidate
 
 
-def _stage_studio_cache_runtime_binary(
-    dest: Path,
-    runtime_dir: Path,
-    log: Callable[[str], None] | None = None,
-) -> None:
-    def _info(msg: str) -> None:
-        if log:
-            log(msg)
-
-    runtime_exe = runtime_dir / "conxa-runtime.exe"
-    keytar_node = runtime_dir / "keytar.node"
-    if not runtime_exe.is_file():
-        raise RuntimeError(_STUDIO_RUNTIME_MISSING)
-    if not keytar_node.is_file():
-        raise RuntimeError(
-            f"Local Build Studio runtime is missing keytar.node: {keytar_node}. "
-            "Run dependency bootstrap first."
-        )
-
-    _info(f"Copying local Build Studio conxa-runtime.exe from {runtime_exe}")
-    shutil.copy2(runtime_exe, dest / "conxa-runtime.exe")
-    _info(f"conxa-runtime.exe staged ({(dest / 'conxa-runtime.exe').stat().st_size // 1024} KB)")
-
-    _info(f"Copying local Build Studio keytar.node from {keytar_node}")
-    shutil.copy2(keytar_node, dest / "keytar.node")
-    (dest / "version.json").write_text(
-        json.dumps({"runtime_version": runtime_dir.name}), encoding="utf-8"
-    )
-    _info("version.json written")
-
-    _base = os.environ.get("SKILL_DATA_DIR") or str(Path.home() / ".conxa-build-studio")
-    runtime_app_root = Path(_base) / "deps" / "runtime_app"
-    app_dir: Path | None = None
-    if runtime_app_root.is_dir():
-        _candidates = [p for p in runtime_app_root.iterdir()
-                       if p.is_dir() and not p.name.startswith(".")]
-        if _candidates:
-            app_dir = max(_candidates, key=_runtime_version_sort_key)
-    if app_dir and app_dir.is_dir():
-        shutil.copytree(app_dir, dest / "runtime-app")
-        kb = sum(f.stat().st_size for f in (dest / "runtime-app").rglob("*") if f.is_file()) // 1024
-        _info(f"runtime-app/ staged ({kb} KB, from {app_dir})")
-    else:
-        _info("WARNING: runtime_app not found in deps cache — app layer will not be pre-installed")
-
-
 def _stage_runtime_binary(
     dest: Path,
     log: Callable[[str], None] | None = None,
     *,
     studio_runtime_dir: Path | None = None,
 ) -> None:
-    """Stage conxa-runtime.exe + keytar.node into dest/.
+    """Stage the runtime payload (exe + keytar + app layer) into dest/.
 
-    Always uses the hardcoded Build Studio deps cache.
+    Delegates to the shared ``stage_runtime_payload`` helper so the installer
+    and the Studio test sandbox are assembled by identical code.
     """
-    _stage_studio_cache_runtime_binary(
-        dest,
-        studio_runtime_dir or _find_studio_cache_runtime_dir(),
-        log,
-    )
+    runtime_dir = studio_runtime_dir or _find_studio_cache_runtime_dir()
+    app_dir = _bootstrap_app_dir()
+    stage_runtime_payload(dest, runtime_dir, app_dir, log=log)
 
 
 def _render_nsis_script(
