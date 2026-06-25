@@ -6,8 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node22-win-x64 --output dist/conxa-runtime.exe --public --fallback-to-source",
-    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node22-mac-x64 --output dist/conxa-runtime-mac --public --fallback-to-source",
+    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node22-win-x64 --output dist/conxa-runtime.exe --public",
+    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node22-mac-x64 --output dist/conxa-runtime-mac --public",
     "build:all": "npm run build:win && npm run build:mac"
   },
   "pkg": {
@@ -18,17 +18,7 @@
     ],
     "scripts": [
       "bootstrap.js",
-      "server.js",
-      "sync.js",
-      "run.js",
-      "browser.js",
-      "skill_loader.js",
-      "auth_manager.js",
-      "tracker.js",
-      "install_identity.js",
-      "recovery.js",
-      "resolve_adapter.js",
-      "resolver.js",
+      "_pkg_stubs.js",
       "node_modules/bytenode/lib/index.js",
       "node_modules/playwright-core/lib/cli/program.js",
       "node_modules/playwright-core/lib/utilsBundle.js",

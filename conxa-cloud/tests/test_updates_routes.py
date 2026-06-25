@@ -14,14 +14,18 @@ def test_deps_manifest_public_no_auth():
     r = client.get("/api/v1/updates/deps-manifest")
     assert r.status_code == 200
     body = r.json()
-    assert "nsis" in body
-    assert "runtime" in body
-    nsis = body["nsis"]
+    assert body["manifest_version"] == 2
+    deps = body["deps"]
+    assert "nsis" in deps
+    assert "conxa-runtime" in deps
+    assert "conxa-app" in deps
+    nsis = deps["nsis"]
     assert "version" in nsis
-    assert "url" in nsis
-    runtime = body["runtime"]
-    assert "version" in runtime
-    assert "win_url" in runtime
+    assert "files" in nsis
+    conxa_runtime = deps["conxa-runtime"]
+    assert "version" in conxa_runtime
+    files = conxa_runtime["files"]
+    assert any(f["filename"] == "conxa-runtime.exe" for f in files)
 
 
 def test_runtime_host_manifest_public_no_auth():

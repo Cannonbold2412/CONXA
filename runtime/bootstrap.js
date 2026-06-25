@@ -5,12 +5,8 @@ const os     = require("os");
 const semver = require("semver");
 
 const HOST_VERSION = require("./package.json").host_version || "host-v1.0.0";
-const CONXA_DIR    = process.env.CONXA_DIR || (
-  process.platform === "win32"
-    ? path.join(process.env.LOCALAPPDATA || os.homedir(), "conxa")
-    : path.join(os.homedir(), ".conxa")
-);
-const APP_DIR = path.join(CONXA_DIR, "conxa-app");
+const CONXA_DIR    = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
+const APP_DIR = process.env.CONXA_APP_DIR || path.join(CONXA_DIR, "conxa-app");
 
 // Register .jsc extension so Node can load V8 bytecode files from disk
 require("bytenode");
@@ -20,8 +16,8 @@ require("bytenode");
 global.__hostRequire = (id) => require(id);
 global.__hostPkg     = !!process.pkg;
 
-function loadAppLayer() {
-  const versionFile = path.join(APP_DIR, "version.json");
+function tryLoad(dir) {
+  const versionFile = path.join(dir, "version.json");
   if (!fs.existsSync(versionFile)) return false;
 
   let meta;
@@ -31,21 +27,31 @@ function loadAppLayer() {
   const thisHost = semver.coerce(HOST_VERSION);
   if (minHost && thisHost && semver.lt(thisHost, minHost)) {
     process.stderr.write(
-      `[bootstrap] app layer requires host >=${meta.min_host}, have ${HOST_VERSION} — using bundled fallback\n`
+      `[bootstrap] ${dir}: app layer requires host >=${meta.min_host}, have ${HOST_VERSION} — skipping\n`
     );
     return false;
   }
 
-  const entry = path.join(APP_DIR, "server.jsc");
+  const entry = path.join(dir, "server.jsc");
   if (!fs.existsSync(entry)) return false;
 
   require(entry);
   return true;
 }
 
-if (!loadAppLayer()) {
-  // Fallback: load bundled source from the pkg VFS.
-  // This handles: first boot before any app-layer download, corrupted conxa-app/, host/app mismatch.
-  // All app JS files are listed in pkg.scripts so they are included in the VFS at build time.
-  require("./server");
+const APP_BAK = APP_DIR + ".bak";
+if (!tryLoad(APP_DIR)) {
+  if (tryLoad(APP_BAK)) {
+    process.stderr.write(
+      `[bootstrap] primary app layer unusable — running last-good fallback from ${APP_BAK}\n` +
+      `  The app will re-download the latest version on next startup.\n`
+    );
+  } else {
+    process.stderr.write(
+      `[bootstrap] FATAL: no app layer found at ${APP_DIR} (or ${APP_BAK})\n` +
+      `  Expected: ${path.join(APP_DIR, "server.jsc")}\n` +
+      `  Reinstall or restore the conxa-app package.\n`
+    );
+    process.exit(1);
+  }
 }

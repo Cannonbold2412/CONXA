@@ -332,13 +332,15 @@ async function _checkHostUpdate() {
       req.setTimeout(120_000, () => { req.destroy(); reject(new Error("download timeout")); });
       req.on("error", reject);
     });
-    // SHA-256 verify
-    if (manifest.sha256) {
-      const { createHash } = require("crypto");
-      const actual = createHash("sha256").update(buf).digest("hex");
-      if (actual.toLowerCase() !== manifest.sha256.toLowerCase()) {
-        throw new Error(`SHA-256 mismatch: expected ${manifest.sha256} got ${actual}`);
-      }
+    // SHA-256 verify — skip update and keep current version if server omits the hash
+    if (!manifest.sha256) {
+      log("warn", "runtime_update_skipped", { reason: "manifest missing sha256 — keeping current version" });
+      return;
+    }
+    const { createHash } = require("crypto");
+    const actual = createHash("sha256").update(buf).digest("hex");
+    if (actual.toLowerCase() !== manifest.sha256.toLowerCase()) {
+      throw new Error(`SHA-256 mismatch: expected ${manifest.sha256} got ${actual}`);
     }
     fs.mkdirSync(path.dirname(nextExe), { recursive: true });
     fs.writeFileSync(nextExe, buf);
@@ -375,6 +377,14 @@ async function _checkHostUpdate() {
   } catch (e) {
     log("warn", "runtime_update_download_failed", { reason: e.message });
   }
+}
+
+function _isValidAppDir(dir) {
+  try {
+    if (!fs.existsSync(path.join(dir, "server.jsc"))) return false;
+    JSON.parse(fs.readFileSync(path.join(dir, "version.json"), "utf8"));
+    return true;
+  } catch (_) { return false; }
 }
 
 async function _checkAppUpdate() {
@@ -423,6 +433,14 @@ async function _checkAppUpdate() {
   if (!manifest || !manifest.bundle_url) return;
   if (manifest.app_version === localVersion) return; // already up to date
 
+  // min_host guard: skip if the new app layer needs a host newer than what's running.
+  if (manifest.min_host && _compareVersions(manifest.min_host, RUNTIME_VERSION) > 0) {
+    log("warn", "[app:update] new app layer requires a newer host — skipping until host updates", {
+      min_host: manifest.min_host, host_version: RUNTIME_VERSION,
+    });
+    return;
+  }
+
   log("info", `[app:update] ${localVersion}→${manifest.app_version} downloading`);
 
   const buf = await new Promise((resolve, reject) => {
@@ -435,16 +453,26 @@ async function _checkAppUpdate() {
     req.on("error", reject);
   });
 
-  if (manifest.bundle_sha256) {
-    const { createHash } = require("crypto");
-    const actual = createHash("sha256").update(buf).digest("hex");
-    if (actual.toLowerCase() !== manifest.bundle_sha256.toLowerCase())
-      throw new Error("app bundle SHA-256 mismatch");
+  // Skip update and keep current app layer if server omits the hash
+  if (!manifest.bundle_sha256) {
+    log("warn", "app_update_skipped", { reason: "manifest missing bundle_sha256 — keeping current version" });
+    return;
   }
+  const { createHash } = require("crypto");
+  const actual = createHash("sha256").update(buf).digest("hex");
+  if (actual.toLowerCase() !== manifest.bundle_sha256.toLowerCase())
+    throw new Error("app bundle SHA-256 mismatch");
 
-  const tmpDir  = path.join(os.tmpdir(), `conxa-app-${Date.now()}`);
-  const zipPath = tmpDir + ".zip";
-  fs.mkdirSync(tmpDir, { recursive: true });
+  // Stage on the SAME volume as CONXA_DIR so the final rename is atomic (avoids
+  // EXDEV cross-device errors that occur when os.tmpdir() is on a different volume).
+  const nextDir = appDir + ".next";
+  const bakDir  = appDir + ".bak";
+  const zipPath = appDir + ".zip";
+  // Clean up any leftover staging artefacts from prior interrupted runs.
+  try { fs.rmSync(nextDir, { recursive: true }); } catch (_) {}
+  try { fs.unlinkSync(zipPath); } catch (_) {}
+
+  fs.mkdirSync(nextDir, { recursive: true });
   fs.writeFileSync(zipPath, buf);
 
   await new Promise((resolve, reject) => {
@@ -453,18 +481,33 @@ async function _checkAppUpdate() {
     if (process.platform === "win32") {
       cmd   = "powershell";
       args2 = ["-NonInteractive", "-Command",
-        `Expand-Archive -Path '${zipPath}' -DestinationPath '${tmpDir}' -Force`];
+        `Expand-Archive -Path '${zipPath}' -DestinationPath '${nextDir}' -Force`];
     } else {
       cmd   = "unzip";
-      args2 = ["-o", zipPath, "-d", tmpDir];
+      args2 = ["-o", zipPath, "-d", nextDir];
     }
     const ps = spawn(cmd, args2, { stdio: "ignore" });
     ps.on("close", code => code === 0 ? resolve() : reject(new Error(`unzip exit ${code}`)));
   });
   try { fs.unlinkSync(zipPath); } catch (_) {}
 
-  if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true });
-  fs.renameSync(tmpDir, appDir);
+  // Validate the newly-staged dir before touching the live brain.
+  if (!_isValidAppDir(nextDir)) {
+    try { fs.rmSync(nextDir, { recursive: true }); } catch (_) {}
+    throw new Error("[app:update] staged bundle invalid — server.jsc or version.json missing");
+  }
+
+  // Atomic swap: promote the current good brain to .bak, then install the new one.
+  // The window where appDir is absent spans only two fast renames; .bak covers it.
+  if (_isValidAppDir(appDir)) {
+    // Current brain is good — keep it as last-known-good backup.
+    if (fs.existsSync(bakDir)) fs.rmSync(bakDir, { recursive: true });
+    fs.renameSync(appDir, bakDir);
+  } else if (fs.existsSync(appDir)) {
+    // Current brain is broken/partial — discard it, but KEEP any existing .bak.
+    fs.rmSync(appDir, { recursive: true });
+  }
+  fs.renameSync(nextDir, appDir);
   log("info", `[app:update] ${manifest.app_version} installed — effective on next restart`);
 }
 
@@ -952,7 +995,7 @@ async function _handleTool(name, args) {
       }
 
       const runtimeLog = { consoleErrors: [], pageErrors: [], failedRequests: [] };
-      const _downloadsDir = path.join(os.homedir(), ".conxa", "downloads", _runId);
+      const _downloadsDir = path.join(CONXA_DIR, "downloads", _runId);
       const _downloads = [];
       const _downloadSaves = [];
       const _downloadQueue = [];

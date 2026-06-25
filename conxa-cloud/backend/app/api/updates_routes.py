@@ -101,7 +101,7 @@ def deps_manifest() -> dict:
                     }
                 ],
             },
-            "runtime": {
+            "conxa-runtime": {
                 "version": _HOST_VERSION,
                 "files": [
                     {
@@ -118,7 +118,7 @@ def deps_manifest() -> dict:
                     },
                 ],
             },
-            "runtime_app": {
+            "conxa-app": {
                 "version": _APP_VERSION,
                 "files": [
                     {
