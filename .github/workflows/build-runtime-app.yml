@@ -110,7 +110,23 @@ jobs:
       - name: Validate bytecode compatibility
         working-directory: runtime
         run: |
-          node -e "require('bytenode'); require('./dist-app/server.jsc'); process.exit(0)"
+          node -e @"
+          const vm = require('vm');
+          const fs = require('fs');
+          const files = fs.readdirSync('./dist-app').filter(f => f.endsWith('.jsc'));
+          let ok = true;
+          for (const f of files) {
+            const bytecode = fs.readFileSync('./dist-app/' + f);
+            const script = new vm.Script('', { cachedData: bytecode });
+            if (script.cachedDataRejected) {
+              console.error('INCOMPATIBLE: ' + f);
+              ok = false;
+            } else {
+              console.log('OK: ' + f);
+            }
+          }
+          if (!ok) process.exit(1);
+          "@
           Write-Output "Bytecode validation passed"
         shell: pwsh
 
