@@ -85,7 +85,7 @@ jobs:
           const bytenode = require('bytenode');
           bytenode.compileFile({ filename: 'obfuscated/$base.js', output: 'dist-app/$base.jsc', electron: false });
           "@
-            if (`$LASTEXITCODE -ne 0) { Write-Error "Failed to compile ${base}.js"; exit 1 }
+            if ($LASTEXITCODE -ne 0) { Write-Error "Failed to compile ${base}.js"; exit 1 }
             Write-Output "Compiled: ${base}.jsc"
           }
         shell: pwsh
