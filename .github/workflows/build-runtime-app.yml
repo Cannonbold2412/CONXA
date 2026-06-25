@@ -50,7 +50,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path obfuscated
           $files = @(
             "server.js", "sync.js", "run.js", "browser.js",
-            "skill_loader.js", "auth_manager.js", "tracker.js", "install_identity.js",
+            "skill_loader.js", "tracker.js", "install_identity.js",
             "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js"
           )
           foreach ($f in $files) {
@@ -68,6 +68,10 @@ jobs:
               --debug-protection false
             Write-Output "Obfuscated: $f"
           }
+          # auth_manager.js uses process.dlopen and native module patterns that are
+          # incompatible with --self-defending obfuscation; copy it unobfuscated so
+          # bytenode can compile it cleanly (bytecode still provides IP protection).
+          Copy-Item auth_manager.js obfuscated/auth_manager.js
         shell: pwsh
 
       - name: Compile obfuscated JS to V8 bytecode
