@@ -37,7 +37,7 @@ jobs:
       # .js app layer requires a host that loads server.js (not server.jsc), so this
       # must be bumped to the first host release that ships the updated bootstrap.js.
       # Old hosts skip the new app via this gate and self-update the host first.
-      MIN_HOST:    "host-v1.1.0"
+      MIN_HOST:    "host-v1.1.1"
 
     steps:
       - name: Checkout
