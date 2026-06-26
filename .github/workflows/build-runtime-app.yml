@@ -166,17 +166,12 @@ jobs:
               console.log('OK: ' + f);
             }
           }
-          // The header check above (cachedDataRejected) does NOT catch the failure we hit in
-          // practice: a near-miss V8 build is ACCEPTED at vm.Script time and then segfaults
-          // when V8 actually deserializes/runs the bytecode. So additionally EXECUTE two
-          // self-contained leaf modules' bytecode via require(). resolver.js and recovery.js
-          // have no requires and no top-level side effects, so loading them proves the V8 ABI
-          // for every .jsc compiled in this same step. A mismatch throws or hard-crashes here.
-          const path = require('path');
-          for (const leaf of ['resolver.jsc', 'recovery.jsc']) {
-            require(path.resolve('./dist-app/' + leaf));
-            console.log('EXECUTED: ' + leaf);
-          }
+          // NOTE: we deliberately do NOT execution-test via require() here. The modules are
+          // --self-defending obfuscated, and bytenode compiles each with a dummy source, so a
+          // standalone require() trips the self-defending guard (toString mismatch) and spins
+          // forever under plain node. The real defense against the segfault is compiling with
+          // the exact V8 (NODE_VERSION pinned to the host exe's node24 base); this header check
+          // is the cheap format guard on top of that.
           if (!ok) process.exit(1);
           "@
           if ($LASTEXITCODE -ne 0) { exit 1 }
