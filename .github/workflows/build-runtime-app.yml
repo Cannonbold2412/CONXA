@@ -1,8 +1,14 @@
 name: Build Runtime App Layer
 
 # Builds the lightweight app layer zip (~60 KB) that ships on every code release.
-# Obfuscates JS → compiles to V8 bytecode → zips → uploads to GitHub Release →
+# Obfuscates JS → zips → uploads to GitHub Release →
 # posts the new manifest to the cloud API so the runtime self-updater picks it up.
+#
+# App layer ships as plain obfuscated JS (NOT V8 bytecode).  Bytecode was dropped
+# because @yao-pkg/pkg embeds its own Node build whose V8 differs from official
+# nodejs.org Node — same version *string*, different V8 *build* — causing silent
+# segfaults when the host exe deserializes bytecode compiled with official Node.
+# Obfuscation (self-defending, string-array rc4) still protects the source.
 #
 # Tag format: app-v<semver>  (e.g. app-v1.2.0)
 
@@ -24,18 +30,14 @@ jobs:
 
     env:
       APP_VERSION: ${{ github.ref_name || inputs.tag }}
-      # EXACT Node that @yao-pkg/pkg's node24 base embeds in the host exe. The app
-      # bytecode (.jsc) MUST be compiled with this exact version: V8 bytecode is locked to
-      # the exact V8 build, and bytenode's fixBytecode defeats V8's cachedDataRejected
-      # safety check — so a near-miss (e.g. 24.15.0 vs another 24.x) is accepted and then
-      # HARD-CRASHES (segfault) deserializing at runtime. If pkg bumps its node24 base,
-      # bump this in lockstep — verify with: grep -aoE 'v24\.[0-9]+\.[0-9]+' conxa-runtime.exe
-      NODE_VERSION: "24.15.0"
-      # Must be <= the host_version the SHIPPED host exes actually report (bootstrap.js
-      # reads runtime/package.json host_version, baked at build time). Raising this requires
-      # FIRST re-releasing the host with a tag-stamped host_version (see build-runtime-host.yml)
-      # — otherwise installed runtimes reject the app layer at bootstrap and FATAL-exit.
-      MIN_HOST:    "host-v1.0.8"
+      # Node version for the build environment — used for obfuscation tooling and
+      # npm ci. No longer load-bearing for V8 bytecode compatibility; any 24.x works.
+      NODE_VERSION: "24"
+      # Must be <= the host_version the SHIPPED host exes actually report. The new
+      # .js app layer requires a host that loads server.js (not server.jsc), so this
+      # must be bumped to the first host release that ships the updated bootstrap.js.
+      # Old hosts skip the new app via this gate and self-update the host first.
+      MIN_HOST:    "host-v1.1.0"
 
     steps:
       - name: Checkout
@@ -52,8 +54,8 @@ jobs:
         working-directory: runtime
         run: npm ci
 
-      - name: Install obfuscation and bytecode tools
-        run: npm install -g javascript-obfuscator bytenode
+      - name: Install obfuscation tools
+        run: npm install -g javascript-obfuscator
 
       - name: Obfuscate app JS files
         working-directory: runtime
@@ -80,12 +82,23 @@ jobs:
             Write-Output "Obfuscated: $f"
           }
           # auth_manager.js uses process.dlopen and native module patterns that are
-          # incompatible with --self-defending obfuscation; copy it unobfuscated so
-          # bytenode can compile it cleanly (bytecode still provides IP protection).
-          Copy-Item auth_manager.js obfuscated/auth_manager.js
+          # incompatible with --self-defending obfuscation; obfuscate without it.
+          javascript-obfuscator auth_manager.js `
+            --output obfuscated/auth_manager.js `
+            --compact true `
+            --identifier-names-generator mangled `
+            --string-array true `
+            --string-array-encoding rc4 `
+            --string-array-rotate true `
+            --string-array-shuffle true `
+            --string-array-threshold 0.75 `
+            --dead-code-injection false `
+            --debug-protection false `
+            --self-defending false
+          Write-Output "Obfuscated: auth_manager.js (no self-defending)"
         shell: pwsh
 
-      - name: Compile obfuscated JS to V8 bytecode
+      - name: Stage obfuscated JS to dist-app
         working-directory: runtime
         run: |
           Remove-Item -Recurse -Force dist-app -ErrorAction SilentlyContinue
@@ -96,12 +109,8 @@ jobs:
             "bootstrap", "recovery", "resolve_adapter", "resolver"
           )
           foreach ($base in $files) {
-            node -e @"
-          const bytenode = require('bytenode');
-          bytenode.compileFile({ filename: 'obfuscated/$base.js', output: 'dist-app/$base.jsc', electron: false });
-          "@
-            if ($LASTEXITCODE -ne 0) { Write-Error "Failed to compile ${base}.js"; exit 1 }
-            Write-Output "Compiled: ${base}.jsc"
+            Copy-Item obfuscated/$base.js dist-app/$base.js
+            Write-Output "Staged: ${base}.js"
           }
         shell: pwsh
 
@@ -109,7 +118,7 @@ jobs:
         working-directory: runtime
         run: |
           $hashes = @{}
-          Get-ChildItem dist-app/*.jsc | ForEach-Object {
+          Get-ChildItem dist-app/*.js | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             $hashes[$_.Name] = $hash
             Write-Output "$($_.Name): $hash"
@@ -124,59 +133,77 @@ jobs:
           Write-Output "version.json written"
         shell: pwsh
 
-      - name: Validate bytecode compatibility
+      - name: Validate app layer against host exe (execution gate)
         working-directory: runtime
         run: |
-          node -e @"
-          // Validate each .jsc exactly the way bytenode loads it at runtime, so a
-          // PASS here means 'the runtime can load this bytecode'. Do NOT validate
-          // with an empty source string: V8 keys its code-cache sanity check on the
-          // source LENGTH (stored at bytes 8-12 of the .jsc), so an empty source
-          // mismatches every file and spuriously trips cachedDataRejected for some
-          // of them (this is what flagged auth_manager.jsc as a false positive).
-          // Instead, read the stored length and build a dummy of that exact length,
-          // and apply bytenode's flag-hash normalization (fixBytecode) first — the
-          // same steps bytenode's loader performs. This checks V8 version/format
-          // compatibility; payload integrity is already covered by the SHA-256 step.
-          const bytenode = require('bytenode'); // sets the V8 flags used at compile
-          const vm = require('vm');
-          const fs = require('fs');
-          const dummyBC = new vm.Script('\"ಠ_ಠ\"', { produceCachedData: true }).cachedData;
-          const v = parseFloat(process.version.slice(1, 5));
-          function fixBytecode(buf) {
-            dummyBC.subarray(12, 16).copy(buf, 12);
-            if (v >= 24) dummyBC.subarray(16, 20).copy(buf, 16);
-          }
-          function readSourceLength(buf) {
-            return buf.subarray(8, 12).reduce((s, n, p) => s + n * Math.pow(256, p), 0);
-          }
-          const files = fs.readdirSync('./dist-app').filter(f => f.endsWith('.jsc'));
-          let ok = true;
-          for (const f of files) {
-            const buf = fs.readFileSync('./dist-app/' + f);
-            fixBytecode(buf);
-            const len = readSourceLength(buf);
-            const zwsp = String.fromCharCode(0x200b); // zero-width space, as bytenode uses
-            const dummy = len > 1 ? '\"' + zwsp.repeat(len - 2) + '\"' : '';
-            const script = new vm.Script(dummy, { cachedData: buf });
-            if (script.cachedDataRejected) {
-              console.error('INCOMPATIBLE: ' + f);
-              ok = false;
-            } else {
-              console.log('OK: ' + f);
+          # Download the MIN_HOST exe and run a bare MCP initialize against it with
+          # the freshly-staged dist-app/ as the conxa-app layer.  This is the only
+          # check that would have caught the bytecode-segfault class of bug: it
+          # validates the app layer against the *actual* host binary, not a header
+          # field that can be normalised.  A non-zero exit or missing init response
+          # fails the build before anything is zipped or published.
+          $hostVersion  = "$env:MIN_HOST"
+          $tmpDir       = "$env:TEMP\conxa-gate-$$"
+          $conxaDir     = "$tmpDir\.conxa"
+          $appDest      = "$conxaDir\conxa-app"
+          New-Item -ItemType Directory -Force -Path $appDest | Out-Null
+          New-Item -ItemType Directory -Force -Path "$tmpDir\data\cache" | Out-Null
+
+          Write-Output "Downloading host exe: $hostVersion"
+          $exeUrl    = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/conxa-runtime.exe"
+          $keytarUrl = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/keytar.node"
+          Invoke-WebRequest -Uri $exeUrl    -OutFile "$conxaDir\conxa-runtime.exe" -UseBasicParsing
+          Invoke-WebRequest -Uri $keytarUrl -OutFile "$conxaDir\keytar.node"       -UseBasicParsing
+
+          Write-Output "Staging app layer"
+          Copy-Item dist-app\* $appDest\ -Recurse
+
+          Write-Output "Running MCP initialize gate…"
+          $initMsg = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate","version":"1.0.0"}}}'
+          $initMsg | Out-File -FilePath "$tmpDir\init.txt" -Encoding utf8 -NoNewline
+
+          $proc = Start-Process -FilePath "$conxaDir\conxa-runtime.exe" `
+            -WorkingDirectory $conxaDir `
+            -NoNewWindow -PassThru `
+            -RedirectStandardInput  "$tmpDir\init.txt" `
+            -RedirectStandardOutput "$tmpDir\out.txt" `
+            -RedirectStandardError  "$tmpDir\err.txt" `
+            -Environment @{
+              CONXA_DIR            = $conxaDir
+              CONXA_DATA_DIR       = "$tmpDir\data"
+              CONXA_SKIP_SELF_UPDATE = "1"
             }
+
+          $finished = $proc.WaitForExit(20000)
+          if (-not $finished) {
+            $proc.Kill()
+            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+            Write-Error "EXECUTION GATE: host exe did not exit within 20 s — app layer may be hanging"
+            exit 1
           }
-          // NOTE: we deliberately do NOT execution-test via require() here. The modules are
-          // --self-defending obfuscated, and bytenode compiles each with a dummy source, so a
-          // standalone require() trips the self-defending guard (toString mismatch) and spins
-          // forever under plain node. The real defense against the segfault is compiling with
-          // the exact V8 (NODE_VERSION pinned to the host exe's node24 base); this header check
-          // is the cheap format guard on top of that.
-          if (!ok) process.exit(1);
-          "@
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          Write-Output "Bytecode validation passed"
+
+          $stdout = Get-Content "$tmpDir\out.txt" -Raw -ErrorAction SilentlyContinue
+          $stderr = Get-Content "$tmpDir\err.txt" -Raw -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+
+          if ($proc.ExitCode -ne 0) {
+            Write-Output "=== STDERR ==="
+            Write-Output $stderr
+            Write-Error "EXECUTION GATE FAILED: host exe exited $($proc.ExitCode) — likely segfault or load error"
+            exit 1
+          }
+          if ($stdout -notmatch '"protocolVersion"') {
+            Write-Output "=== STDOUT ==="
+            Write-Output $stdout
+            Write-Output "=== STDERR ==="
+            Write-Output $stderr
+            Write-Error "EXECUTION GATE FAILED: no initialize result in stdout — app layer did not respond"
+            exit 1
+          }
+          Write-Output "Execution gate passed: app layer initializes cleanly under $hostVersion"
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Zip app layer
         working-directory: runtime
@@ -197,7 +224,7 @@ jobs:
           body: |
             ## App Layer ${{ env.APP_VERSION }}
 
-            Lightweight bytecode-compiled app update (~60 KB).
+            Lightweight obfuscated-JS app update (~60 KB).
             Minimum host: ${{ env.MIN_HOST }}
 
             ### SHA-256

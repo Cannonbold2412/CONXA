@@ -278,18 +278,20 @@ Claude Desktop (host)
 conxa-runtime.exe  ← host layer (Node.js + all npm deps + bootstrap.js, ~85 MB, updated quarterly)
         │  loads from disk
         ▼
-~/.conxa/conxa-app/server.jsc  ← app layer (V8 bytecode, ~60 KB zip, updated every release)
+~/.conxa/conxa-app/server.js  ← app layer (obfuscated JS, ~60 KB zip, updated every release)
         │
         ├── @modelcontextprotocol/sdk  (bundled in host, accessed via global.__hostRequire bridge)
-        ├── run.jsc                    (step executor)
-        ├── skill_loader.jsc           (skill registry)
-        ├── sync.jsc                   (skill pack sync)
-        ├── auth_manager.jsc           (token + session management)
-        ├── browser.jsc                (Playwright browser lifecycle)
-        └── tracker.jsc                (telemetry event emission)
+        ├── run.js                    (step executor)
+        ├── skill_loader.js           (skill registry)
+        ├── sync.js                   (skill pack sync)
+        ├── auth_manager.js           (token + session management)
+        ├── browser.js                (Playwright browser lifecycle)
+        └── tracker.js                (telemetry event emission)
 ```
 
-`bootstrap.js` (bundled in host): checks `conxa-app/version.json` for `min_host` compatibility, then loads `conxa-app/server.jsc` from disk. Falls back to the bundled copy if the app layer is absent or incompatible. App-layer files are V8 bytecode (`.jsc`) compiled from obfuscated JS — not human-readable on disk.
+`bootstrap.js` (bundled in host): checks `conxa-app/version.json` for `min_host` compatibility, then loads `conxa-app/server.js` from disk. Falls back to the bundled copy if the app layer is absent or incompatible. App-layer files are obfuscated JS (self-defending, string-array rc4) — not human-readable on disk, but no V8 bytecode dependency on the host's exact Node build.
+
+> **Why not bytecode?** `@yao-pkg/pkg` embeds its own prebuilt Node24 base, whose V8 build differs from official nodejs.org Node 24.x. `bytenode`'s `fixBytecode` overwrites the header bytes that reveal the mismatch, so `cachedDataRejected` never fires — but the deserialization segfaults silently (0xC0000005, no stderr). Obfuscated plain JS eliminates this coupling permanently.
 
 ### 4.2 MCP Tools
 
@@ -312,12 +314,12 @@ Defined in `server.js` `_toolDefinitions()`:
 sequenceDiagram
     participant CD as Claude Desktop
     participant RT as bootstrap.js (host)
-    participant App as conxa-app/server.jsc
+    participant App as conxa-app/server.js
     participant Cloud as Conxa Cloud
 
     CD->>RT: spawn conxa-runtime.exe (MCP stdio)
     RT->>RT: check conxa-app/version.json min_host compatibility
-    RT->>App: require conxa-app/server.jsc (or bundled fallback)
+    RT->>App: require conxa-app/server.js (or bundled fallback)
     App->>App: resolve CONXA_DIR, CONXA_DATA_DIR
     App->>App: load skill index from cache (SKILL_PACKS_DIR)
     App->>CD: MCP connect (StdioServerTransport)
@@ -348,14 +350,14 @@ sequenceDiagram
 ├── keytar.node                 (native Windows credential addon, Node-ABI-specific)
 ├── conxa-app/                  (app layer — hot-synced, no restart needed)
 │   ├── version.json            ({app_version, min_host, updated_at, file_hashes})
-│   ├── server.jsc              (MCP server + tool handlers — V8 bytecode)
-│   ├── sync.jsc
-│   ├── run.jsc
-│   ├── browser.jsc
-│   ├── auth_manager.jsc
-│   ├── tracker.jsc
-│   ├── skill_loader.jsc
-│   └── install_identity.jsc
+│   ├── server.js               (MCP server + tool handlers — obfuscated JS)
+│   ├── sync.js
+│   ├── run.js
+│   ├── browser.js
+│   ├── auth_manager.js
+│   ├── tracker.js
+│   ├── skill_loader.js
+│   └── install_identity.js
 ├── chromium/                   (Playwright browser)
 ├── skill-packs/
 │   └── {company}/
@@ -571,7 +573,7 @@ Telemetry is compact: short event codes (`wf_start`, `wf_ok`, `wf_fail`, `step_o
 The runtime uses a **two-layer update strategy**:
 
 **App layer** (every code release — `_checkAppUpdate()`)  
-Downloads a ~60 KB zip of `.jsc` files from `GET /api/v1/updates/conxa-app-manifest` (1h cache). If `app_version` differs from `conxa-app/version.json`, the zip is downloaded, SHA-256 verified, extracted, and replaces `conxa-app/`. Effective on next cold start (or immediately if the process reloads). No host restart required.
+Downloads a ~60 KB zip of obfuscated `.js` files from `GET /api/v1/updates/conxa-app-manifest` (1h cache). If `app_version` differs from `conxa-app/version.json`, the zip is downloaded, SHA-256 verified, extracted, and replaces `conxa-app/`. Effective on next cold start (or immediately if the process reloads). No host restart required.
 
 **Host layer** (quarterly — `_checkHostUpdate()`)  
 Downloads `conxa-runtime.exe` (~85 MB) in the background via `GET /api/v1/updates/conxa-runtime-manifest` (1h cache). Applied via `update.bat` on the next cold start.
@@ -600,7 +602,7 @@ sequenceDiagram
     alt newer app available
         RT->>Cloud: GET bundle_url (~60 KB zip)
         RT->>RT: SHA-256 verify
-        RT->>FS: extract zip → conxa-app/ (replaces .jsc files)
+        RT->>FS: extract zip → conxa-app/ (replaces .js files)
     end
 
     Note over RT: Host-layer check (background only)
@@ -952,7 +954,7 @@ If the element is expected inside a dialog, recovery first restricts the search 
 
 Two independent update paths; see §5.8 for the full sequence diagram.
 
-**App layer** — checked during every cold-start `startupSync` via `/api/v1/updates/conxa-app-manifest` (1h cache). A ~60 KB zip replaces `conxa-app/*.jsc`. No restart required; effective immediately after extraction.
+**App layer** — checked during every cold-start `startupSync` via `/api/v1/updates/conxa-app-manifest` (1h cache). A ~60 KB zip replaces `conxa-app/*.js`. No restart required; effective immediately after extraction.
 
 **Host layer** — checked in the background after sync via `/api/v1/updates/conxa-runtime-manifest` (1h cache). Staged files applied on next cold start:
 

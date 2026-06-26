@@ -381,7 +381,7 @@ async function _checkHostUpdate() {
 
 function _isValidAppDir(dir) {
   try {
-    if (!fs.existsSync(path.join(dir, "server.jsc"))) return false;
+    if (!fs.existsSync(path.join(dir, "server.js"))) return false;
     JSON.parse(fs.readFileSync(path.join(dir, "version.json"), "utf8"));
     return true;
   } catch (_) { return false; }
@@ -494,7 +494,7 @@ async function _checkAppUpdate() {
   // Validate the newly-staged dir before touching the live brain.
   if (!_isValidAppDir(nextDir)) {
     try { fs.rmSync(nextDir, { recursive: true }); } catch (_) {}
-    throw new Error("[app:update] staged bundle invalid — server.jsc or version.json missing");
+    throw new Error("[app:update] staged bundle invalid — server.js or version.json missing");
   }
 
   // Atomic swap: promote the current good brain to .bak, then install the new one.

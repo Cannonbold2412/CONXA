@@ -8,9 +8,6 @@ const HOST_VERSION = require("./package.json").host_version || "host-v1.0.0";
 const CONXA_DIR    = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 const APP_DIR = process.env.CONXA_APP_DIR || path.join(CONXA_DIR, "conxa-app");
 
-// Register .jsc extension so Node can load V8 bytecode files from disk
-require("bytenode");
-
 // Expose bundled npm modules to disk-loaded app code.
 // App JS files call (global.__hostRequire || require)('playwright') etc.
 global.__hostRequire = (id) => require(id);
@@ -32,7 +29,7 @@ function tryLoad(dir) {
     return false;
   }
 
-  const entry = path.join(dir, "server.jsc");
+  const entry = path.join(dir, "server.js");
   if (!fs.existsSync(entry)) return false;
 
   try {
@@ -40,8 +37,7 @@ function tryLoad(dir) {
     return true;
   } catch (e) {
     process.stderr.write(
-      `[bootstrap] failed to load ${entry}: ${e.message}\n` +
-      `  If this says "cachedDataRejected", the app layer was compiled for a different Node.js version.\n`
+      `[bootstrap] failed to load ${entry}: ${e.message}\n`
     );
     return false;
   }
@@ -57,7 +53,7 @@ if (!tryLoad(APP_DIR)) {
   } else {
     process.stderr.write(
       `[bootstrap] FATAL: no app layer found at ${APP_DIR} (or ${APP_BAK})\n` +
-      `  Expected: ${path.join(APP_DIR, "server.jsc")}\n` +
+      `  Expected: ${path.join(APP_DIR, "server.js")}\n` +
       `  Reinstall or restore the conxa-app package.\n`
     );
     process.exit(1);
