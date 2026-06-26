@@ -1308,6 +1308,9 @@ class Backend:
         import copy
         from conxa_core.storage.json_store import read_skill, write_skill
         from conxa_compile.compiler.patch import revalidate_step
+        from conxa_compile.compiler.selector_filters import selector_passes_filters
+        from conxa_compile.compiler.selector_grammar import rebuild_identity_signals_from_target
+        from conxa_compile.compiler.build import _confidence_from_identity_bundle
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
@@ -1325,6 +1328,32 @@ class Backend:
         if step_index < 0 or step_index >= len(steps):
             raise _CommandError("step_not_found", f"Step {step_index} out of range")
         step = _deep_merge(dict(steps[step_index]), patch)
+
+        # Quality-gate edited selectors before persisting.
+        if "target" in patch and isinstance(patch.get("target"), dict):
+            tgt = step.get("target") if isinstance(step.get("target"), dict) else {}
+            primary = str(tgt.get("primary_selector") or "").strip()
+            if primary and not selector_passes_filters(primary):
+                raise _CommandError("invalid_selector", f"primary_selector failed quality gates: {primary!r}")
+            for fb in (tgt.get("fallback_selectors") or []):
+                fb_s = str(fb).strip()
+                if fb_s and not selector_passes_filters(fb_s):
+                    raise _CommandError("invalid_selector", f"fallback_selector failed quality gates: {fb_s!r}")
+
+            # Rebuild identity_bundle.signals from the edited target selector list so the
+            # runtime hot path reflects exactly what the editor shows. Editor order = priority.
+            new_signals = rebuild_identity_signals_from_target(step)
+            if new_signals:
+                bundle = dict(step.get("identity_bundle") or {})
+                bundle["signals"] = new_signals
+                step["identity_bundle"] = bundle
+                # Re-derive selector_confidence from the rebuilt bundle.
+                try:
+                    step.setdefault("target", {})
+                    step["target"]["selector_confidence"] = _confidence_from_identity_bundle(bundle)
+                except Exception:
+                    pass  # Non-critical — confidence will be recomputed on next compile.
+
         steps[step_index] = step
         block["steps"] = steps
         skills[0] = block

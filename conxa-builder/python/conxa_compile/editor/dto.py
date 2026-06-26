@@ -76,6 +76,11 @@ class StepEditorDTO(BaseModel):
     check_threshold: float | None = None
     check_selector: str | None = None
     check_text: str | None = None
+    # Going-forward selector signals from identity_bundle — drives the runtime hot path.
+    # Each entry: {selector (public display string), engine, durability}.
+    # The editor's selector list is authoritative; this field provides engine/durability metadata
+    # for display badges. Absent on steps with no identity_bundle (e.g. frame markers).
+    identity_engines: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SuggestionItem(BaseModel):

@@ -100,6 +100,11 @@ def _infer_selector_kind(selector: str) -> str:
         return "label"
     if s.startswith("[aria-label="):
         return "aria"
+    if s.startswith("role=") or s.startswith("internal:role="):
+        # Executable Playwright role engine — matches by accessible name, not HTML name attribute.
+        # public:   role=button[name="New"]        → passes through root.locator() in fallback path
+        # internal: internal:role=button[name="Y"] → pre-parsed by resolve_adapter.js into getByRole
+        return "aria"
     if re.match(r"\[role=", s):
         # CSS [role=...][name=...] selectors look semantic but aren't: CSS [name=...] matches the
         # HTML `name` attribute only, not an element's accessible name. A <button>New</button> has

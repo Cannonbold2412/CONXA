@@ -24,6 +24,7 @@ from conxa_compile.editor.action_registry import (
     default_action_value,
     is_supported_action,
 )
+from conxa_compile.compiler.selector_grammar import signals_to_display_list
 from conxa_compile.editor.assets import asset_url
 from conxa_compile.editor.describe import describe_step
 from conxa_compile.editor.dto import FrameDTO, StepEditorDTO, StepFlags, StepScreenshotDTO, SuggestionItem, WorkflowResponse, _FRAME_OFFSETS
@@ -335,6 +336,30 @@ def step_to_dto(
         generic_intent=(final_intent.strip().lower() in gen) or not final_intent.strip(),
     )
 
+    # Surface identity_bundle signals into the editor's selector list so nothing the
+    # runtime uses is hidden. Convert internal: grammar → public display strings, then
+    # merge (deduped) with target.primary_selector + fallback_selectors. The bundle
+    # signals come durability-ordered; we preserve that order and append any target
+    # selectors that are NOT already covered by a signal.
+    raw_target = dict(step.get("target") or {})
+    bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
+    bundle_signals_raw = bundle.get("signals") if isinstance(bundle.get("signals"), list) else []
+    identity_display = signals_to_display_list(bundle_signals_raw)  # [{selector, engine, durability}]
+    identity_sel_set = {e["selector"] for e in identity_display}
+
+    # Merge: signals first (hot-path, ordered by durability), then any target selectors
+    # not already represented (recovery-only / legacy compiled selectors).
+    target_primary = str(raw_target.get("primary_selector") or "").strip()
+    target_fallbacks = [str(s).strip() for s in (raw_target.get("fallback_selectors") or []) if str(s).strip()]
+    recovery_extras = [s for s in [target_primary] + target_fallbacks if s and s not in identity_sel_set]
+
+    merged_selector_strings = [e["selector"] for e in identity_display] + recovery_extras
+    # Rebuild target with the merged list so the renderer's defaultsFromStep picks it up.
+    merged_target = dict(raw_target)
+    if merged_selector_strings:
+        merged_target["primary_selector"] = merged_selector_strings[0]
+        merged_target["fallback_selectors"] = merged_selector_strings[1:]
+
     return StepEditorDTO(
         id=f"{skill_id}:{step_index}",
         step_index=step_index,
@@ -347,9 +372,10 @@ def step_to_dto(
         final_intent=final_intent,
         url=_step_url(step),
         frame=dict(step.get("frame") or {}),
-        target=dict(step.get("target") or {}),
+        target=merged_target,
         selectors=dict(signals.get("selectors") or {}),
         compiled_selectors=_compiled_selectors(step),
+        identity_engines=identity_display,
         anchors_signals=[] if is_url_check else normalize_anchor_list(signals.get("anchors") or []),
         anchors_recovery=[] if is_url_check else normalize_anchor_list(recovery.get("anchors") or []),
         validation={

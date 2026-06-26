@@ -72,7 +72,7 @@ class IdentitySignal(BaseModel):
     durability: float                # 0.0–1.0 from durability_score()
     orthogonality_class: str         # test-contract | semantic-aria | visible-text | spatial-anchor | structural
     unique_at_compile: bool = False  # matched exactly 1 node in recorded DOM
-    source: str = "compiler"         # compiler | llm | input_bound
+    source: str = "compiler"         # compiler | llm | input_bound | user (manually edited in editor)
 
 
 class ElementFingerprint(BaseModel):
