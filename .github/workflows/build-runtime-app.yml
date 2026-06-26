@@ -192,12 +192,16 @@ jobs:
             Write-Error "EXECUTION GATE FAILED: host exe exited $($proc.ExitCode) — likely segfault or load error"
             exit 1
           }
-          if ($stdout -notmatch '"protocolVersion"') {
+          # Check stderr for "mcp_connected" — the structured log line the runtime emits
+          # after the MCP SDK completes connection setup.  This is more reliable than
+          # checking stdout for the initialize JSON response, which can be flushed after
+          # WaitForExit() returns due to Windows file-redirect buffering.
+          if ($stderr -notmatch '"mcp_connected"') {
             Write-Output "=== STDOUT ==="
             Write-Output $stdout
             Write-Output "=== STDERR ==="
             Write-Output $stderr
-            Write-Error "EXECUTION GATE FAILED: no initialize result in stdout — app layer did not respond"
+            Write-Error "EXECUTION GATE FAILED: mcp_connected not found in runtime log — app layer did not fully initialize"
             exit 1
           }
           Write-Output "Execution gate passed: app layer initializes cleanly under $hostVersion"
