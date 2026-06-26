@@ -8,10 +8,13 @@ const HOST_VERSION = require("./package.json").host_version || "host-v1.0.0";
 const CONXA_DIR    = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 const APP_DIR = process.env.CONXA_APP_DIR || path.join(CONXA_DIR, "conxa-app");
 
-// Expose bundled npm modules to disk-loaded app code.
-// App JS files call (global.__hostRequire || require)('playwright') etc.
-global.__hostRequire = (id) => require(id);
-global.__hostPkg     = !!process.pkg;
+// Expose bundled npm modules and host metadata to disk-loaded app code.
+// App JS files use (global.__hostRequire || require)('playwright') etc.
+// __runtimeVersion lets server.js (loaded from disk) read the version baked
+// into the host exe without doing require('./package.json') relative to conxa-app/.
+global.__hostRequire    = (id) => require(id);
+global.__hostPkg        = !!process.pkg;
+global.__runtimeVersion = require("./package.json").version;
 
 function tryLoad(dir) {
   const versionFile = path.join(dir, "version.json");

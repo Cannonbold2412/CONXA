@@ -19,7 +19,7 @@ const SKILL_PACKS_DIR = path.join(CONXA_DIR, "skill-packs");
 const CACHE_DIR       = path.join(CONXA_DATA_DIR, "cache");
 const SESSIONS_DIR    = path.join(CACHE_DIR, "sessions");
 const LOG_FILE        = path.join(CONXA_DATA_DIR, "logs", "runtime.log");
-const RUNTIME_VERSION = require("./package.json").version;
+const RUNTIME_VERSION = global.__runtimeVersion || require("./package.json").version;
 const INSTALL_ID      = loadInstallId(CONXA_DATA_DIR);
 
 // ─── 2. Playwright browser path (MUST precede any playwright require) ─────────
