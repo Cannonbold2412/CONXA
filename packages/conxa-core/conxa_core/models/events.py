@@ -49,10 +49,21 @@ class TargetDom(BaseModel):
 
 
 class Selectors(BaseModel):
-    css: str
-    xpath: str
-    text_based: str
-    aria: str
+    css: str = ""
+    xpath: str = ""
+    text_based: str = ""
+    aria: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_null_selectors(cls, values: Any) -> Any:
+        """Coerce bridge-sent null selector strings to "" so no event is silently
+        dropped when an element has no ARIA or text-based selector."""
+        if isinstance(values, dict):
+            for field in ("css", "xpath", "text_based", "aria"):
+                if values.get(field) is None:
+                    values[field] = ""
+        return values
 
 
 class DomContext(BaseModel):
