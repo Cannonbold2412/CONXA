@@ -1,9 +1,9 @@
 import type { Metadata } from 'next'
 import { Hero } from '@/components/marketing/hero/Hero'
 import { TrustedWorkflows } from '@/components/marketing/sections/TrustedWorkflows'
+import { UseCases } from '@/components/marketing/sections/UseCases'
 import { ValueGrid } from '@/components/marketing/value/ValueGrid'
 import { Pipeline } from '@/components/marketing/sections/Pipeline'
-import { GovSaas } from '@/components/marketing/sections/GovSaas'
 import { RecoveryLayers } from '@/components/marketing/sections/RecoveryLayers'
 import { ObservableRuntime } from '@/components/marketing/sections/ObservableRuntime'
 import { AnalyticsDashboard } from '@/components/marketing/sections/AnalyticsDashboard'
@@ -24,9 +24,9 @@ export default function MarketingPage() {
     <>
       <Hero />
       <TrustedWorkflows />
+      <UseCases />
       <ValueGrid />
       <Pipeline />
-      <GovSaas />
       <RecoveryLayers />
       <ObservableRuntime />
       <AnalyticsDashboard />

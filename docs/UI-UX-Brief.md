@@ -308,7 +308,7 @@ Source: `conxa-cloud/frontend/` (and `research/frontend/` for prototype referenc
 
 **Path:** `app/(marketing)/page.tsx`  
 **Purpose:** Public landing page for Conxa.  
-**Components:** Hero, Pipeline, RecoveryLayers, TrustedWorkflows, ObservableRuntime, AnalyticsDashboard, GovSaas, Reliability, Cta.
+**Components:** Hero, TrustedWorkflows, UseCases, ValueGrid, Pipeline, RecoveryLayers, ObservableRuntime, AnalyticsDashboard, InternalEnterprise, Reliability, Cta.
 
 **Status:** Implemented with 3D Spline scene, Framer Motion animations, marketing sections.
 
