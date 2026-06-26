@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BackendEvent } from "@/lib/ipc";
 
-type DepName = "chromium" | "nsis" | "runtime";
+type DepName = "chromium" | "nsis" | "conxa-runtime";
 type DepState = "pending" | "downloading" | "installing" | "extracting" | "verifying" | "ready" | "error";
 
 interface DepStatus {
@@ -18,13 +18,13 @@ interface DepStatus {
   etaSeconds?: number;
 }
 
-const REQUIRED_DEPS: DepName[] = ["chromium", "nsis", "runtime"];
+const REQUIRED_DEPS: DepName[] = ["chromium", "nsis", "conxa-runtime"];
 
 function initialDeps(): Record<DepName, DepStatus> {
   return {
     chromium: { dep: "chromium", status: "pending" },
     nsis: { dep: "nsis", status: "pending" },
-    runtime: { dep: "runtime", status: "pending" },
+    "conxa-runtime": { dep: "conxa-runtime", status: "pending" },
   };
 }
 

@@ -5,7 +5,7 @@ All other dependencies are managed independently from the app version:
 
 - NSIS (makensis.exe)  -> deps/nsis/{version}/   (versioned, cloud manifest)
 - Chromium             -> playwright-managed       (playwright install chromium)
-- conxa-runtime.exe -> deps/runtime/{version}/  (versioned, cloud manifest)
+- conxa-runtime.exe -> deps/conxa-runtime/{version}/  (versioned, cloud manifest)
 
 On every startup, ``ensure_all()`` fetches the cloud manifest (cached 24 h),
 compares each dep version against ``deps/installed.json``, and downloads only
@@ -467,7 +467,7 @@ def check_status() -> dict[str, Any]:
     ) if chromium_dir_.is_dir() else False
 
     runtime_ready = False
-    runtime_dir = deps / "runtime"
+    runtime_dir = deps / "conxa-runtime"
     if runtime_dir.is_dir():
         for ver_dir in runtime_dir.iterdir():
             if (ver_dir / "conxa-runtime.exe").is_file():
