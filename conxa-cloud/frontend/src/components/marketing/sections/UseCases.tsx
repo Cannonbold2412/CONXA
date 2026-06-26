@@ -32,16 +32,6 @@ const USE_CASES = [
     ],
     accent: '#c084fc',
   },
-  {
-    tag: 'AI Agent Workflows',
-    headline: 'Give AI agents reliable browser execution paths.',
-    items: [
-      'Claude-triggered actions through local MCP skills',
-      'Multi-step browser tasks with recovery telemetry',
-      'Human-reviewed workflows that execute repeatably',
-    ],
-    accent: '#f59e0b',
-  },
 ]
 
 export function UseCases() {
@@ -54,7 +44,7 @@ export function UseCases() {
           sub="From internal tools to customer-facing portals, CONXA executes anywhere a human can navigate a browser."
         />
 
-        <div className="mt-16 grid gap-6 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-16 grid gap-6 md:grid-cols-3">
           {USE_CASES.map((uc, i) => (
             <Reveal key={uc.tag} delay={i * 0.1} direction={i % 2 === 0 ? 'left' : 'right'}>
               <div className="flex h-full flex-col rounded-2xl border border-white/6 bg-[#0f1620] p-6">
