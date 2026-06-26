@@ -24,6 +24,9 @@ jobs:
 
     env:
       HOST_VERSION: ${{ github.ref_name || inputs.tag }}
+      # Exact Node @yao-pkg/pkg embeds for the node24 target. Keep in lockstep with
+      # build-runtime-app.yml's NODE_VERSION so app bytecode matches this exe's V8.
+      NODE_VERSION: "24.15.0"
 
     steps:
       - name: Checkout
@@ -32,7 +35,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
           cache-dependency-path: runtime/package-lock.json
 
@@ -45,6 +48,19 @@ jobs:
       - name: Install runtime dependencies
         working-directory: runtime
         run: npm ci
+
+      - name: Stamp host_version from release tag
+        working-directory: runtime
+        run: |
+          # bootstrap.js reports HOST_VERSION = require('./package.json').host_version, which
+          # is baked into the pkg exe at build time — the $HOST_VERSION env is NOT read at
+          # runtime. Stamp the tag here so the exe truthfully reports its release version and
+          # the app layer's min_host gate is meaningful.
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $pkg.host_version = "$env:HOST_VERSION"
+          $pkg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 package.json
+          Write-Output "host_version stamped: $env:HOST_VERSION"
+        shell: pwsh
 
       - name: Build conxa-runtime.exe
         working-directory: runtime

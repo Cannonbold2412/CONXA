@@ -50,6 +50,15 @@ function formatRuntimeError(msg: string): string {
   return cleaned || 'Test failed'
 }
 
+// The runtime appends a "Runtime log tail:" block (last few stderr lines) to its error.
+// formatRuntimeError() strips it for the one-line summary; this returns it so the test panel
+// can show the underlying cause instead of throwing the only diagnostic away.
+function extractRuntimeDetail(msg: string): string {
+  const stripped = msg.replace(ANSI_RE, '')
+  const idx = stripped.indexOf('Runtime log tail:')
+  return idx !== -1 ? stripped.slice(idx).trim() : ''
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
 }
@@ -164,8 +173,16 @@ function WorkflowLogSection({
         <div className="space-y-2">
           <div className="flex min-w-0 items-start gap-2 text-xs text-red-300">
             <XCircle className="mt-0.5 size-3.5 shrink-0" />
-            <span className="min-w-0 max-h-24 overflow-y-auto break-all">{runError}</span>
+            <span className="min-w-0 max-h-24 overflow-y-auto break-all">{formatRuntimeError(runError)}</span>
           </div>
+          {extractRuntimeDetail(runError) && (
+            <details className="ml-6">
+              <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300">
+                Runtime log
+              </summary>
+              <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded border border-white/8 bg-black/40 p-2 font-mono text-[10px] text-zinc-400">{extractRuntimeDetail(runError)}</pre>
+            </details>
+          )}
           {onRetry && (
             <Button size="sm" variant="outline" onClick={onRetry} className="border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10">
               <PlayCircle className="size-3.5" />
@@ -331,7 +348,9 @@ export function WorkflowTestRow({
       setRunDone(true)
       onComplete()
     } catch (err) {
-      setRunError(err instanceof Error ? formatRuntimeError(err.message) : 'Test failed')
+      // Store the RAW message (incl. the "Runtime log tail:" block); the panel formats the
+      // summary and exposes the tail via extractRuntimeDetail().
+      setRunError(err instanceof Error ? err.message : 'Test failed')
       onComplete()
     } finally {
       setRunning(false)

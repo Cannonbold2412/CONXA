@@ -24,7 +24,18 @@ jobs:
 
     env:
       APP_VERSION: ${{ github.ref_name || inputs.tag }}
-      MIN_HOST:    "host-v1.0.0"
+      # EXACT Node that @yao-pkg/pkg's node24 base embeds in the host exe. The app
+      # bytecode (.jsc) MUST be compiled with this exact version: V8 bytecode is locked to
+      # the exact V8 build, and bytenode's fixBytecode defeats V8's cachedDataRejected
+      # safety check — so a near-miss (e.g. 24.15.0 vs another 24.x) is accepted and then
+      # HARD-CRASHES (segfault) deserializing at runtime. If pkg bumps its node24 base,
+      # bump this in lockstep — verify with: grep -aoE 'v24\.[0-9]+\.[0-9]+' conxa-runtime.exe
+      NODE_VERSION: "24.15.0"
+      # Must be <= the host_version the SHIPPED host exes actually report (bootstrap.js
+      # reads runtime/package.json host_version, baked at build time). Raising this requires
+      # FIRST re-releasing the host with a tag-stamped host_version (see build-runtime-host.yml)
+      # — otherwise installed runtimes reject the app layer at bootstrap and FATAL-exit.
+      MIN_HOST:    "host-v1.0.8"
 
     steps:
       - name: Checkout
@@ -33,7 +44,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
           cache-dependency-path: runtime/package-lock.json
 
@@ -154,6 +165,17 @@ jobs:
             } else {
               console.log('OK: ' + f);
             }
+          }
+          // The header check above (cachedDataRejected) does NOT catch the failure we hit in
+          // practice: a near-miss V8 build is ACCEPTED at vm.Script time and then segfaults
+          // when V8 actually deserializes/runs the bytecode. So additionally EXECUTE two
+          // self-contained leaf modules' bytecode via require(). resolver.js and recovery.js
+          // have no requires and no top-level side effects, so loading them proves the V8 ABI
+          // for every .jsc compiled in this same step. A mismatch throws or hard-crashes here.
+          const path = require('path');
+          for (const leaf of ['resolver.jsc', 'recovery.jsc']) {
+            require(path.resolve('./dist-app/' + leaf));
+            console.log('EXECUTED: ' + leaf);
           }
           if (!ok) process.exit(1);
           "@
