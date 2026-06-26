@@ -5,16 +5,22 @@ Covers:
 - Near-duplicate structural selectors (label:...+button / ~button) collapse to one.
 - Non-unique selectors are dropped when a DOM snapshot marks them as multi-match.
 - is_ephemeral_anchor() classifies cookie/consent/banner phrases correctly.
-- A step whose only anchor is ephemeral emits no relational signal.
+- is_low_quality_anchor() additionally rejects bare HTML tag tokens ("div", "svg:", etc.).
+- A step whose anchors are only bare-tag tokens emits no relational signal.
+- IdentityBundle top signal (role) is the basis for the primary selector display string.
 """
 from __future__ import annotations
 
 import pytest
 
-from conxa_compile.compiler.selector_filters import is_ephemeral_anchor, uniqueness_gate
+from conxa_compile.compiler.selector_filters import (
+    is_ephemeral_anchor,
+    is_low_quality_anchor,
+    uniqueness_gate,
+)
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
 from conxa_compile.compiler.selector_score import durability_score, tag_orthogonality_class
-from conxa_compile.compiler.selector_grammar import display_to_signal
+from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to_display
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +189,142 @@ def test_relational_signal_skips_ephemeral_uses_stable() -> None:
     assert relational, "Expected a relational signal anchored to 'Incidents'"
     assert "Cookie Consent Banner" not in relational[0].selector
     assert "Incidents" in relational[0].selector
+
+
+# ---------------------------------------------------------------------------
+# is_low_quality_anchor — bare HTML tag token rejection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("phrase,expected", [
+    # Bare tag tokens (the actual regression: recorder leaks container tag names)
+    ("div", True),
+    ("Div", True),          # case-insensitive
+    ("div:", True),         # with trailing colon (format used by some recorder versions)
+    ("svg:", True),
+    ("button:", True),
+    ("span", True),
+    ("a", True),
+    ("p", True),
+    ("ul", True),
+    ("li", True),
+    ("img", True),
+    ("input", True),
+    ("label", True),
+    ("nav", True),
+    ("header", True),
+    ("footer", True),
+    # Too short
+    ("", True),
+    ("x", True),
+    # Ephemeral overlays are also low-quality (delegates to is_ephemeral_anchor)
+    ("Cookie Consent Banner", True),
+    ("accept all", True),
+    # Legitimate stable landmarks — must NOT be filtered
+    ("Incidents", False),
+    ("New Incident", False),
+    ("My Workspace", False),
+    ("Projects Search CTRL + K K", False),
+    ("Blueprint Name", False),
+    ("cannonboldoff-hue / SEARCH_ENGINE", False),
+    ("Submit form", False),
+    ("Search repositories", False),
+])
+def test_is_low_quality_anchor(phrase: str, expected: bool) -> None:
+    assert is_low_quality_anchor(phrase) is expected, (
+        f"is_low_quality_anchor({phrase!r}) should be {expected}"
+    )
+
+
+def test_no_relational_signal_for_bare_tag_anchors() -> None:
+    """Anchors that are only bare HTML tag names must not produce a relational signal.
+
+    This is the actual regression: anchor_phrases = ["div", "M My Workspace …", "M My Workspace"]
+    where "div" leaked in as the first anchor and produced
+    internal:role=button[name="New"] >> right-of=internal:text="div".
+    """
+    ev = {
+        "target": {"tag": "button", "role": "button", "inner_text": "New", "aria_label": "New"},
+        "semantic": {"role": "button"},
+        "selectors": {"css": "button.primary", "text_based": "New"},
+        "anchors": [
+            {"element": "div", "relation": "right-of"},
+            {"element": "svg:", "relation": "right-of"},
+        ],
+        "snapshot": {},
+    }
+    signals = generate_deterministic_signals(ev)
+    engines = [s.engine for s in signals]
+    assert "relational" not in engines, (
+        f"Expected no relational signal for bare-tag anchors; got signals: "
+        f"{[(s.engine, s.selector) for s in signals]}"
+    )
+
+
+def test_relational_signal_skips_div_uses_real_anchor() -> None:
+    """When 'div' comes first in anchors but a real text landmark follows, use the real one."""
+    ev = {
+        "target": {"tag": "button", "role": "button", "inner_text": "New", "aria_label": "New"},
+        "semantic": {"role": "button"},
+        "selectors": {"css": "button.primary", "text_based": "New"},
+        "anchors": [
+            {"element": "div", "relation": "right-of"},
+            {"element": "Incidents", "relation": "right-of"},
+        ],
+        "snapshot": {},
+    }
+    signals = generate_deterministic_signals(ev)
+    relational = [s for s in signals if s.engine == "relational"]
+    assert relational, "Expected a relational signal anchored to 'Incidents', not 'div'"
+    assert "div" not in relational[0].selector, (
+        f"Relational anchor must not be 'div'; got: {relational[0].selector}"
+    )
+    assert "Incidents" in relational[0].selector
+
+
+# ---------------------------------------------------------------------------
+# Primary selector promotion: IdentityBundle top signal → display string
+# ---------------------------------------------------------------------------
+
+def test_signal_to_display_role_roundtrip() -> None:
+    """signal_to_display('role', internal:role=...) produces the public role= form."""
+    stored = 'internal:role=button[name="New"]'
+    display = signal_to_display("role", stored)
+    assert display == 'role=button[name="New"]', f"Unexpected display: {display!r}"
+
+
+def test_signal_to_display_text_roundtrip() -> None:
+    stored = 'internal:text="Blueprint"'
+    display = signal_to_display("text_based", stored)
+    assert display == 'text="Blueprint"', f"Unexpected display: {display!r}"
+
+
+def test_signal_to_display_testid_roundtrip() -> None:
+    stored = 'internal:testid=[data-testid="select-git-repo-url-input"]'
+    display = signal_to_display("testid", stored)
+    assert display == '[data-testid="select-git-repo-url-input"]', (
+        f"Unexpected display: {display!r}"
+    )
+
+
+def test_bundle_top_signal_is_role_for_named_button() -> None:
+    """generate_deterministic_signals puts the role signal first for a named button."""
+    ev = {
+        "target": {"tag": "button", "role": "button", "inner_text": "New", "aria_label": "New"},
+        "semantic": {"role": "button"},
+        "selectors": {
+            "css": "label:has-text('Projects Search CTRL + K K') + button",
+            "text_based": "New",
+            "xpath": "/html[1]/body[1]/div[2]/div[1]/header[1]/div[3]/div[1]/button[1]",
+        },
+        "anchors": [],
+        "snapshot": {},
+    }
+    signals = generate_deterministic_signals(ev)
+    assert signals, "Expected at least one signal"
+    assert signals[0].engine == "role", (
+        f"Expected top signal to be 'role'; got {signals[0].engine!r}"
+    )
+    top_display = signal_to_display(signals[0].engine, signals[0].selector)
+    assert top_display == 'role=button[name="New"]', (
+        f"Expected role display string; got {top_display!r}"
+    )

@@ -23,6 +23,7 @@ from conxa_compile.compiler.selector_filters import (
     filter_selectors_dict,
     is_dynamic_id,
     is_ephemeral_anchor,
+    is_low_quality_anchor,
     selector_passes_filters,
     uniqueness_gate,
 )
@@ -35,7 +36,7 @@ from conxa_compile.compiler.selector_score import (
 )
 from conxa_compile.compiler.stable_hash import compute_stable_hash
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
-from conxa_compile.compiler.selector_grammar import display_to_signal
+from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to_display
 from conxa_compile.compiler.v3 import (
     capture_state_snapshot,
     clean_steps,
@@ -291,7 +292,7 @@ def _build_element_fingerprint(ev: dict[str, Any]) -> ElementFingerprint:
         str(a.get("element") or "").strip()
         for a in anchors
         if a.get("element") and str(a.get("element")).strip()
-        and not is_ephemeral_anchor(str(a.get("element") or ""))
+        and not is_low_quality_anchor(str(a.get("element") or ""))
     ][:6]
 
     bbox = visual.get("bbox") or {}
@@ -591,21 +592,32 @@ def _build_target(
     if identity_bundle is not None:
         selector_confidence = _confidence_from_identity_bundle(identity_bundle)
 
-    # Re-rank the merged fallback pool using the same durability model as IdentityBundle
-    # (durability-descending → xpath always last, one selector per orthogonality class).
-    # This fixes the C.1 contradiction where score_selector_row let xpath sit above CSS.
-    _dom_snapshot = (ev.get("snapshot") or {}).get("dom")
-    # Collect orthogonality classes already covered by the IdentityBundle signals so we
-    # don't include redundant structural fallbacks for classes the bundle already owns.
-    _bundle_classes: set[str] = set()
+    # Promote the IdentityBundle's top signal as the authoritative primary selector so
+    # plugin_builder._step_selector writes the same durable selector the editor displays.
+    # The legacy `score_selector_row`-elected primary is demoted into the fallback pool so
+    # it remains available to the recovery cascade but does not pollute execution.json.
+    # Never promote relational or xpath signals as primary — they are recovery-tier only.
     if identity_bundle is not None:
-        for _sig in (getattr(identity_bundle, "signals", None) or []):
-            _oc = str(getattr(_sig, "orthogonality_class", "") or "")
-            if _oc:
-                _bundle_classes.add(_oc)
+        _bundle_signals = getattr(identity_bundle, "signals", None) or []
+        if _bundle_signals:
+            _top = _bundle_signals[0]
+            _top_engine = str(getattr(_top, "engine", "") or "")
+            if _top_engine not in ("relational", "xpath"):
+                _top_display = signal_to_display(_top_engine, str(getattr(_top, "selector", "") or ""))
+                if _top_display:
+                    # Demote the legacy-elected primary into the fallback pool (if distinct).
+                    if primary and primary != _top_display and primary not in fallback_raw:
+                        fallback_raw = [primary] + list(fallback_raw)
+                    primary = _top_display
+
+    # Re-rank the merged fallback pool: durability-descending → xpath always last.
+    # Keep all admissible candidates (no over-aggressive orthogonality collapse against the
+    # bundle — that's already done inside the IdentityBundle itself). Only collapse
+    # near-identical structural strings that differ solely by CSS combinator (+/~).
+    _dom_snapshot = (ev.get("snapshot") or {}).get("dom")
     _seen_fb: set[str] = set()
-    # (durability, engine, selector, orthogonality_class)
-    _dur_fb: list[tuple[float, str, str, str]] = []
+    # (durability, engine, selector)
+    _dur_fb: list[tuple[float, str, str]] = []
     for _s in fallback_raw:
         _s = str(_s).strip()
         if not _s or _s == primary or _s in _seen_fb:
@@ -619,23 +631,20 @@ def _build_target(
                 continue
         _seen_fb.add(_s)
         _dur = durability_score(_engine, _s)
-        _oc = tag_orthogonality_class(_engine)
-        _dur_fb.append((_dur, _engine, _s, _oc))
-    # Sort durability-descending (xpath 0.10 lands last by construction).
+        _dur_fb.append((_dur, _engine, _s))
+    # Sort durability-descending (xpath ≈0.01 lands last by construction).
     _dur_fb.sort(key=lambda r: r[0], reverse=True)
-    # Orthogonality dedup on the tail: keep the highest-durability selector per class,
-    # but only for classes NOT already covered by the IdentityBundle.
-    _seen_tail_classes: dict[str, tuple[float, str]] = {}  # oc → (best_dur, selector)
-    for _dur, _engine, _s, _oc in _dur_fb:
-        if _oc in _bundle_classes:
-            # Class already owned by the bundle; include as extra fallback but don't dedup.
-            if _s not in {v for _, v in _seen_tail_classes.values()}:
-                if _oc + ":extra" not in _seen_tail_classes:
-                    _seen_tail_classes[_oc + ":extra"] = (_dur, _s)
-        elif _oc not in _seen_tail_classes:
-            _seen_tail_classes[_oc] = (_dur, _s)
-    # Re-sort the deduped tail by durability to emit in order.
-    fallback = [_s for _, _s in sorted(_seen_tail_classes.values(), key=lambda r: r[0], reverse=True)]
+    # Collapse near-duplicate CSS structural strings that differ only by combinator (+/~).
+    # E.g. "label:has-text('X') + button" and "label:has-text('X') ~ button" → keep first seen.
+    _seen_combinator_base: set[str] = set()
+    fallback: list[str] = []
+    for _dur, _engine, _s in _dur_fb:
+        if _engine in ("css-structural", "css"):
+            _base = re.sub(r"\s*[+~]\s*", " * ", _s)
+            if _base in _seen_combinator_base:
+                continue
+            _seen_combinator_base.add(_base)
+        fallback.append(_s)
     input_type = semantic.get("input_type")
     target_type = "input" if input_type else str(target.get("tag") or "")
     if target_type == "button" or semantic.get("role") == "button":

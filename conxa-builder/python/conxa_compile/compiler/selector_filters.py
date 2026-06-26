@@ -309,3 +309,30 @@ def is_ephemeral_anchor(phrase: str) -> bool:
     """
     lowered = phrase.strip().lower()
     return any(kw in lowered for kw in _EPHEMERAL_ANCHOR_KEYWORDS)
+
+
+# Bare HTML tag names that leak into anchor_phrases when the recorder captures a container
+# node rather than meaningful visible text. These are worthless as spatial landmarks.
+_STRUCTURAL_TAG_TOKENS = frozenset({
+    "a", "aside", "button", "div", "footer", "form", "g",
+    "header", "img", "input", "label", "li", "main", "nav",
+    "ol", "option", "p", "path", "section", "select", "span",
+    "svg", "table", "td", "textarea", "th", "tr", "ul",
+})
+
+
+def is_low_quality_anchor(phrase: str) -> bool:
+    """Return True if an anchor phrase is unusable as a durable spatial reference.
+
+    Covers:
+    - Ephemeral overlays (cookie/consent/banner — delegates to is_ephemeral_anchor).
+    - Bare HTML tag tokens that the recorder leaks when it captures container nodes
+      instead of meaningful visible text (e.g. "div", "svg:", "button:").
+    - Strings that are too short to be meaningful landmarks (< 2 chars after stripping).
+    """
+    token = phrase.strip().lower().rstrip(":")
+    if not token or len(token) < 2:
+        return True
+    if token in _STRUCTURAL_TAG_TOKENS:
+        return True
+    return is_ephemeral_anchor(phrase)

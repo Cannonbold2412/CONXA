@@ -11,7 +11,7 @@ from typing import Any
 
 from conxa_compile.compiler.selector_filters import (
     dedup_by_orthogonality,
-    is_ephemeral_anchor,
+    is_low_quality_anchor,
     selector_passes_filters,
     uniqueness_gate,
 )
@@ -65,7 +65,7 @@ def generate_deterministic_signals(ev: dict[str, Any]) -> list[IdentitySignal]:
         for a in (ev.get("anchors") or [])
         if a.get("element")
     ]
-    stable_anchors = [p for p in anchor_phrases if p and not is_ephemeral_anchor(p)]
+    stable_anchors = [p for p in anchor_phrases if p and not is_low_quality_anchor(p)]
     if stable_anchors and role and ax_name and role.lower() not in _EXCLUDED_ROLES:
         anchor = stable_anchors[0]
         rel_sel = f'internal:role={role}[name="{ax_name}"] >> right-of=internal:text="{anchor}"'
