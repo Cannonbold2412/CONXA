@@ -329,10 +329,26 @@ def is_low_quality_anchor(phrase: str) -> bool:
     - Bare HTML tag tokens that the recorder leaks when it captures container nodes
       instead of meaningful visible text (e.g. "div", "svg:", "button:").
     - Strings that are too short to be meaningful landmarks (< 2 chars after stripping).
+    - Concatenated container text: more than 6 whitespace-separated tokens OR more than
+      48 characters (catches whole-header nav blobs like
+      "M My Workspace Projects Search CTRL + K K New Upgrade K").
+    - Stray single-letter prefix (icon/avatar initial concatenated with adjacent text):
+      first whitespace token is a single alphanumeric character AND the phrase has ≥3
+      tokens (catches "M My Workspace"; preserves 2-token "A Records").
     """
     token = phrase.strip().lower().rstrip(":")
     if not token or len(token) < 2:
         return True
     if token in _STRUCTURAL_TAG_TOKENS:
         return True
-    return is_ephemeral_anchor(phrase)
+    if is_ephemeral_anchor(phrase):
+        return True
+    # --- concatenated container text ---
+    stripped = phrase.strip()
+    parts = stripped.split()
+    if len(parts) > 6 or len(stripped) > 48:
+        return True
+    # --- stray single-letter prefix (icon/avatar initial) ---
+    if len(parts) >= 3 and len(parts[0]) == 1 and parts[0].isalnum():
+        return True
+    return False

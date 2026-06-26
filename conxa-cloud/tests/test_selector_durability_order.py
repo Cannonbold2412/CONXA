@@ -5,8 +5,10 @@ Covers:
 - Near-duplicate structural selectors (label:...+button / ~button) collapse to one.
 - Non-unique selectors are dropped when a DOM snapshot marks them as multi-match.
 - is_ephemeral_anchor() classifies cookie/consent/banner phrases correctly.
-- is_low_quality_anchor() additionally rejects bare HTML tag tokens ("div", "svg:", etc.).
-- A step whose anchors are only bare-tag tokens emits no relational signal.
+- is_low_quality_anchor() additionally rejects bare HTML tag tokens ("div", "svg:", etc.),
+  concatenated container text (>6 tokens or >48 chars), and stray single-letter prefixes
+  (avatar/icon initials prepended to nearby text, e.g. "M My Workspace").
+- A step whose anchors are only bare-tag or chrome-header tokens emits no relational signal.
 - IdentityBundle top signal (role) is the basis for the primary selector display string.
 """
 from __future__ import annotations
@@ -219,15 +221,26 @@ def test_relational_signal_skips_ephemeral_uses_stable() -> None:
     # Ephemeral overlays are also low-quality (delegates to is_ephemeral_anchor)
     ("Cookie Consent Banner", True),
     ("accept all", True),
+    # Concatenated container text (>6 tokens OR >48 chars) → filtered
+    ("M My Workspace Projects Search CTRL + K K New Upgrade K", True),   # 12 tokens / 54 chars
+    ("M My Workspace New Blueprint Search CTRL + K K New Upgrade K", True),  # 11 tokens / 60 chars
+    # Stray single-letter prefix with ≥3 tokens → filtered
+    ("M My Workspace", True),   # first token "M" single-alpha, 3 tokens
+    ("K New Upgrade", True),    # first token "K" single-alpha, 3 tokens
     # Legitimate stable landmarks — must NOT be filtered
     ("Incidents", False),
     ("New Incident", False),
+    # "My Workspace" is 2 tokens, first token "My" not single-char → pass
     ("My Workspace", False),
+    # 6 tokens exactly (≤6) and 26 chars (≤48) → pass
     ("Projects Search CTRL + K K", False),
     ("Blueprint Name", False),
+    # 5 tokens, 34 chars, first token "cannonboldoff-hue" not single-char → pass
     ("cannonboldoff-hue / SEARCH_ENGINE", False),
     ("Submit form", False),
     ("Search repositories", False),
+    # 2-token phrase starting with single letter (e.g. DNS record type) → pass (< 3 tokens)
+    ("A Records", False),
 ])
 def test_is_low_quality_anchor(phrase: str, expected: bool) -> None:
     assert is_low_quality_anchor(phrase) is expected, (
@@ -279,6 +292,34 @@ def test_relational_signal_skips_div_uses_real_anchor() -> None:
         f"Relational anchor must not be 'div'; got: {relational[0].selector}"
     )
     assert "Incidents" in relational[0].selector
+
+
+def test_no_relational_signal_for_chrome_header_anchors() -> None:
+    """Anchors that are only header-navigation blobs must not produce a relational signal.
+
+    This is the regression that survived after the bare-tag fix: the recorder captures
+    the entire nav as a concatenated string ("M My Workspace Projects Search CTRL + K K
+    New Upgrade K") which has 12 tokens / 54 chars — caught by the >6-token / >48-char
+    rule — and "M My Workspace" which has a stray single-letter prefix "M" with ≥3 tokens.
+    Neither is a useful spatial landmark; emitting them is worse than emitting nothing.
+    """
+    ev = {
+        "target": {"tag": "button", "role": "button", "inner_text": "New", "aria_label": "New"},
+        "semantic": {"role": "button"},
+        "selectors": {"css": "button.primary", "text_based": "New"},
+        "anchors": [
+            {"element": "div", "relation": "right-of"},
+            {"element": "M My Workspace Projects Search CTRL + K K New Upgrade K", "relation": "right-of"},
+            {"element": "M My Workspace", "relation": "right-of"},
+        ],
+        "snapshot": {},
+    }
+    signals = generate_deterministic_signals(ev)
+    engines = [s.engine for s in signals]
+    assert "relational" not in engines, (
+        f"Expected no relational signal for header-chrome anchors; got: "
+        f"{[(s.engine, s.selector) for s in signals]}"
+    )
 
 
 # ---------------------------------------------------------------------------
