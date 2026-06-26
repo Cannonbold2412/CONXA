@@ -276,3 +276,36 @@ def xpath_shadow_guard(engine: str, shadow_path: list[Any] | None) -> bool:
     if not shadow_path:
         return True
     return engine != "xpath"
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral-anchor filter (used by spatial-anchor / relational signal builders)
+# ---------------------------------------------------------------------------
+
+_EPHEMERAL_ANCHOR_KEYWORDS = frozenset({
+    "cookie",
+    "consent",
+    "gdpr",
+    "ccpa",
+    "banner",
+    "popup",
+    "pop-up",
+    "pop up",
+    "newsletter",
+    "subscribe",
+    "notification",
+    "we use cookies",
+    "accept all",
+    "manage preferences",
+})
+
+
+def is_ephemeral_anchor(phrase: str) -> bool:
+    """Return True if an anchor phrase names a transient overlay unsuitable as a durable
+    spatial anchor (cookie/consent banners, popups, newsletter prompts, notification toasts).
+
+    These elements are typically absent, dismissed, or repositioned at replay time, making
+    them the worst-possible reference points for relational selectors.
+    """
+    lowered = phrase.strip().lower()
+    return any(kw in lowered for kw in _EPHEMERAL_ANCHOR_KEYWORDS)

@@ -252,7 +252,6 @@ def signals_to_display_list(signals: list[dict[str, Any]]) -> list[dict[str, Any
 
     Returns list of {selector (display string), engine, durability} dicts,
     durability-ordered (signals already come in durability order from the bundle).
-    Filters out relational signals (they're derived context, not directly editable as text).
     """
     result: list[dict[str, Any]] = []
     seen: set[str] = set()

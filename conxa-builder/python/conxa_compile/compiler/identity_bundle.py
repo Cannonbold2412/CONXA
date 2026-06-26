@@ -11,6 +11,7 @@ from typing import Any
 
 from conxa_compile.compiler.selector_filters import (
     dedup_by_orthogonality,
+    is_ephemeral_anchor,
     selector_passes_filters,
     uniqueness_gate,
 )
@@ -58,14 +59,15 @@ def generate_deterministic_signals(ev: dict[str, Any]) -> list[IdentitySignal]:
     if text_val:
         candidates.append(("text_based", to_playwright_grammar("text", text_val)))
 
-    # 4. relational from first anchor phrase (spatial-anchor)
+    # 4. relational from first *stable* (non-ephemeral) anchor phrase (spatial-anchor)
     anchor_phrases = [
         str(a.get("element") or "").strip()
         for a in (ev.get("anchors") or [])
         if a.get("element")
     ]
-    if anchor_phrases and role and ax_name and role.lower() not in _EXCLUDED_ROLES:
-        anchor = anchor_phrases[0]
+    stable_anchors = [p for p in anchor_phrases if p and not is_ephemeral_anchor(p)]
+    if stable_anchors and role and ax_name and role.lower() not in _EXCLUDED_ROLES:
+        anchor = stable_anchors[0]
         rel_sel = f'internal:role={role}[name="{ax_name}"] >> right-of=internal:text="{anchor}"'
         candidates.append(("relational", rel_sel))
 
