@@ -73,6 +73,22 @@ jobs:
         # the resulting exe (the init-only gate in build-runtime-app.yml will NOT catch it).
         run: npm run build:win
 
+      - name: Install Chromium for execution gate
+        working-directory: runtime
+        run: npx playwright install chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
+
+      - name: Execution gate — real skill replay (selector engine must resolve)
+        # Drives the freshly-built exe through a hermetic navigate+click skill against a
+        # local file:// fixture and asserts it reaches "Done.". This is the check that
+        # would have caught the pkg-bytecode regression (selector engine returning 0
+        # elements). The app layer defaults to the current runtime/ source.
+        working-directory: runtime
+        run: node test/gate_replay.js dist/conxa-runtime.exe
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
+
       - name: Stage keytar.node for release
         working-directory: runtime
         run: |

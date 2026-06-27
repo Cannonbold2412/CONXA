@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Conxa Gate Fixture</title></head>
+<body>
+  <header>
+    <h1>Conxa CI Gate</h1>
+    <!-- Single, unambiguous interactive element. The gate skill clicks this via a
+         Playwright locator (data-testid / role / text). If the packed host exe's
+         selector engine is broken (e.g. pkg bytecode corruption), the locator
+         resolves 0 elements and the click step fails — failing the build. -->
+    <button data-testid="gate-btn" onclick="document.getElementById('out').textContent='clicked'">Click Me</button>
+    <p id="out">idle</p>
+  </header>
+</body>
+</html>
