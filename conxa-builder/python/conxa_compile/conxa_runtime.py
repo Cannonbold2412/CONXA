@@ -445,16 +445,28 @@ def call_runtime_tool(
     ``CONXA_APP_DIR`` is intentionally NOT injected: the sandbox provides
     CONXA_DIR/conxa-app, which the runtime resolves exactly as on a customer machine.
     """
-    # Resolve exe: sandbox copy first (frozen), then runtime_dir source tree (dev).
+    # Resolve exe vs node source.
+    #
+    # In a dev checkout, resolve_runtime_dir() returns the repo runtime/ source tree so
+    # that JS edits take effect immediately. Honour that here: when runtime_dir IS a
+    # source tree, run it via `node server.js` and never fall back to a staged exe in the
+    # sandbox (conxa_dir). The sandbox can hold a stale conxa-runtime.exe left by a prior
+    # frozen run; preferring it would silently shadow the developer's runtime edits.
+    #
+    # In a frozen/customer install, runtime_dir is the deps-managed exe dir (no server.js),
+    # so we resolve the staged exe — sandbox copy first, then runtime_dir.
+    runtime_is_source = (runtime_dir / "server.js").is_file() and (runtime_dir / "package.json").is_file()
+
     exe: str | None = None
-    if conxa_dir is not None:
-        _exe = _runtime_exe(conxa_dir)
-        if _exe is not None:
-            exe = str(_exe)
-    if exe is None:
-        _exe = _runtime_exe(runtime_dir)
-        if _exe is not None:
-            exe = str(_exe)
+    if not runtime_is_source:
+        if conxa_dir is not None:
+            _exe = _runtime_exe(conxa_dir)
+            if _exe is not None:
+                exe = str(_exe)
+        if exe is None:
+            _exe = _runtime_exe(runtime_dir)
+            if _exe is not None:
+                exe = str(_exe)
 
     if exe is not None:
         cmd: list[str] = [exe]

@@ -379,8 +379,12 @@
   // Stable selector: data-testid > aria-label > name > placeholder > text
   // Priority order matches runtime fingerprint scoring weights.
   function buildStableSelector(el) {
-    const testId = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-cy");
-    if (testId) return `[data-testid="${testId}"]`;
+    const testIdAttr =
+      el.hasAttribute("data-testid")  ? "data-testid"  :
+      el.hasAttribute("data-test-id") ? "data-test-id" :
+      el.hasAttribute("data-test")    ? "data-test"    :
+      el.hasAttribute("data-cy")      ? "data-cy"      : null;
+    if (testIdAttr) { const testId = el.getAttribute(testIdAttr); return `[${testIdAttr}="${testId}"]`; }
     const ariaLabel = el.getAttribute("aria-label");
     if (ariaLabel) return `[aria-label="${ariaLabel.replace(/"/g, '\\"')}"]`;
     const name = el.getAttribute("name");
@@ -681,11 +685,11 @@
 
   // DOM diff: lightweight snapshot of interactive element signatures for post-action comparison
   function interactiveSignature() {
-    const sels = 'button,a[href],input:not([type="hidden"]),select,textarea,[role="button"],[role="link"],[data-testid]';
+    const sels = 'button,a[href],input:not([type="hidden"]),select,textarea,[role="button"],[role="link"],[data-testid],[data-test-id]';
     const els = Array.from(document.querySelectorAll(sels)).slice(0, 120);
     return els.map(el => {
       const tag = el.tagName.toLowerCase();
-      const tid = el.getAttribute("data-testid") || "";
+      const tid = el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "";
       const al  = el.getAttribute("aria-label") || "";
       const txt = (el.innerText || el.value || "").trim().slice(0, 60);
       return `${tag}|${tid}|${al}|${txt}`;
@@ -1083,7 +1087,7 @@
     return [
       el.id || "",
       elementClassString(el),
-      el.getAttribute("data-testid") || "",
+      el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "",
       el.getAttribute("data-test") || "",
       el.getAttribute("aria-label") || "",
       el.getAttribute("title") || "",

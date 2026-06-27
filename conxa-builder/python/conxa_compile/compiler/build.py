@@ -267,15 +267,16 @@ def _build_element_fingerprint(ev: dict[str, Any]) -> ElementFingerprint:
     anchors = ev.get("anchors") or []
     visual = ev.get("visual") or {}
 
-    # Extract data-testid from CSS selector — highest-stability attribute
+    # Extract data-testid / data-test-id from CSS selector — highest-stability attribute
     data_testid = ""
+    _TESTID_RE = re.compile(r'data-test(?:-id)?=["\']?([^"\'>\s\]]+)')
     css = str(selectors.get("css") or "")
-    m = re.search(r'data-testid=["\']?([^"\'>\s\]]+)', css)
+    m = _TESTID_RE.search(css)
     if m:
         data_testid = m.group(1)
     if not data_testid:
         aria = str(selectors.get("aria") or "")
-        m2 = re.search(r'data-testid=["\']?([^"\'>\s\]]+)', aria)
+        m2 = _TESTID_RE.search(aria)
         if m2:
             data_testid = m2.group(1)
 
@@ -356,8 +357,9 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
 
     # Extract testid for guid_like_attrs check
     data_testid = ""
+    _TESTID_RE2 = re.compile(r'data-test(?:-id)?=["\']?([^"\'>\s\]]+)')
     for key in ("css", "aria"):
-        m = re.search(r'data-testid=["\']?([^"\'>\s\]]+)', str(selectors.get(key) or ""))
+        m = _TESTID_RE2.search(str(selectors.get(key) or ""))
         if m:
             data_testid = m.group(1)
             break

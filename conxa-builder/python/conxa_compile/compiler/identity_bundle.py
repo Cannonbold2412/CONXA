@@ -39,10 +39,10 @@ def generate_deterministic_signals(ev: dict[str, Any]) -> list[IdentitySignal]:
 
     candidates: list[tuple[str, str]] = []
 
-    # 1. testid (highest durability)
-    data_testid = _extract_testid(selectors)
+    # 1. testid (highest durability) — preserves the exact attribute name (data-testid or data-test-id)
+    testid_attr, data_testid = _extract_testid(selectors)
     if data_testid:
-        candidates.append(("testid", to_playwright_grammar("testid", f'[data-testid="{data_testid}"]')))
+        candidates.append(("testid", to_playwright_grammar("testid", f'[{testid_attr}="{data_testid}"]')))
 
     # 2. role + name (semantic-aria)
     role = str(semantic.get("role") or target.get("role") or "").strip()
@@ -103,10 +103,14 @@ def generate_deterministic_signals(ev: dict[str, Any]) -> list[IdentitySignal]:
     return dedup_by_orthogonality(signals)
 
 
-def _extract_testid(selectors: dict[str, Any]) -> str:
+_TESTID_RE = re.compile(r'(data-test(?:-id)?)=["\']?([^"\'>\s\]]+)')
+
+
+def _extract_testid(selectors: dict[str, Any]) -> tuple[str, str]:
+    """Returns (attr_name, value) for the first testid attr found, or ('', '')."""
     for key in ("css", "aria"):
         s = str(selectors.get(key) or "")
-        m = re.search(r'data-testid=["\']?([^"\'>\s\]]+)', s)
+        m = _TESTID_RE.search(s)
         if m:
-            return m.group(1)
-    return ""
+            return m.group(1), m.group(2)
+    return "", ""

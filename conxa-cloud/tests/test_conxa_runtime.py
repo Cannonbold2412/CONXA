@@ -415,3 +415,36 @@ class TestCallRuntimeToolEnv:
         assert captured_env.get("CONXA_DIR") == str(sandbox_conxa)
         assert "CONXA_APP_DIR" not in captured_env
         assert "PLAYWRIGHT_BROWSERS_PATH" not in captured_env
+
+    def test_dev_source_tree_runs_node_not_stale_sandbox_exe(self, tmp_path: Path) -> None:
+        # In a dev checkout, runtime_dir is the repo source tree (server.js + package.json).
+        # A stale conxa-runtime.exe staged in the sandbox (conxa_dir) must NOT shadow it —
+        # the developer's runtime edits are authoritative, so we run `node server.js`.
+        sandbox_conxa = tmp_path / "sandbox" / ".conxa"
+        sandbox_conxa.mkdir(parents=True)
+        (sandbox_conxa / "conxa-runtime.exe").write_bytes(b"stale exe")
+
+        runtime_dir = tmp_path / "runtime-src"
+        runtime_dir.mkdir()
+        (runtime_dir / "server.js").write_text("// dev source", encoding="utf-8")
+        (runtime_dir / "package.json").write_text("{}", encoding="utf-8")
+
+        captured_cmd: list = []
+
+        def fake_popen(cmd, cwd, env, **kwargs):
+            captured_cmd.extend(cmd)
+            raise OSError("stopped for test")
+
+        import shutil as _shutil
+        import subprocess as _subprocess
+        from conxa_compile.conxa_runtime import call_runtime_tool
+
+        with patch.object(_shutil, "which", lambda _: "node"), \
+             patch.object(_subprocess, "Popen", fake_popen):
+            try:
+                call_runtime_tool(runtime_dir, "test_tool", {}, conxa_dir=sandbox_conxa)
+            except Exception:
+                pass  # expected — fake_popen raises
+
+        assert captured_cmd[:2] == ["node", "server.js"]
+        assert all("conxa-runtime.exe" not in str(part) for part in captured_cmd)
