@@ -103,7 +103,7 @@ def generate_deterministic_signals(ev: dict[str, Any]) -> list[IdentitySignal]:
     return dedup_by_orthogonality(signals)
 
 
-_TESTID_RE = re.compile(r'(data-test(?:-id)?)=["\']?([^"\'>\s\]]+)')
+_TESTID_RE = re.compile(r'(data-test(?:-?id)?)=["\']?([^"\'>\s\]]+)')
 
 
 def _extract_testid(selectors: dict[str, Any]) -> tuple[str, str]:
