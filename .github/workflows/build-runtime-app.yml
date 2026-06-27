@@ -37,7 +37,13 @@ jobs:
       # .js app layer requires a host that loads server.js (not server.jsc), so this
       # must be bumped to the first host release that ships the updated bootstrap.js.
       # Old hosts skip the new app via this gate and self-update the host first.
-      MIN_HOST:    "host-v1.1.1"
+      #
+      # host-v1.1.2 is the first host built with --no-bytecode, which fixes the broken
+      # Playwright selector engine (host-v1.1.1 returns 0 elements for every locator).
+      # The execution gate below downloads MIN_HOST and runs a real replay, so MIN_HOST
+      # MUST point at a host that actually resolves elements — i.e. host-v1.1.2 must be
+      # released (build-runtime-host.yml) BEFORE the next app-v* tag is pushed.
+      MIN_HOST:    "host-v1.1.2"
 
     steps:
       - name: Checkout
