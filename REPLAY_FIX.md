@@ -7,10 +7,22 @@
 
 ## TL;DR (the short version)
 
-- Replay was running an **old, stale copy** of the runtime instead of the current code.
-- That old copy couldn't find buttons on the page, so it failed with "Element not found".
-- I changed one rule: **in development, always run the real source code**, never the stale pre-built copy.
-- After the fix, the full workflow replays end-to-end and finishes with `Done.` ✅
+Replay was broken in **three** layers, each hidden behind the one above it:
+
+1. **Dev was running an old, stale copy of the runtime** instead of the current code → it
+   couldn't find elements ("Element not found"). Fixed: in development, always run the real
+   source code, never the stale pre-built copy.
+2. **The real production binary (`conxa-runtime.exe`) had a completely dead element finder.**
+   This is the big one — every click failed in production. Caused by the way the `.exe` was
+   packed (V8 bytecode corrupted Playwright's selector engine). Fixed: build with
+   `--no-bytecode`.
+3. **Nothing in CI would have caught #2** — the build checks only confirmed the program
+   *starts*, not that it can *click anything*. Fixed: added a real "click a button" test to
+   the build pipeline that fails the build if the element finder is broken.
+
+After all three: the full workflow replays end-to-end and finishes with `Done.` ✅ — in dev
+*and* (once a new binary is released) in production, with a CI safety net so it can't
+silently regress again.
 
 ---
 
@@ -104,19 +116,16 @@ I also added a regression test (`test_dev_source_tree_runs_node_not_stale_sandbo
 
 ---
 
-## Files changed
+### Files changed for the dev fix
 
 | File | What changed |
 |---|---|
 | `conxa-builder/python/conxa_compile/conxa_runtime.py` | `call_runtime_tool` now prefers the source-code runtime in dev instead of a stale staged `.exe`. |
 | `conxa-cloud/tests/test_conxa_runtime.py` | Added a test that locks in the new behavior. |
 
----
-
-## Result
-
-- Replay runs the workflow end-to-end: `Done. URL: …` ✅
-- All runtime tests pass: **24 passed**.
+> This was only the *first* layer. The dev fix made replay pass when run via `node`, which
+> then exposed the bigger production bug below. The full list of everything changed is in
+> **"Everything I changed"** near the end.
 
 ## Two things to know
 
@@ -145,13 +154,61 @@ main world and is unaffected, which is why it kept working — a confusing sympt
 rebuilt exe replays the full workflow to `Done.` (The app layer already abandoned bytecode
 earlier for the same class of issue, so this is consistent.)
 
-**To reach production** this needs a new host release (push a `host-v*` tag → CI rebuilds
-with the fixed flags; clients self-update the host). Also recommended: the CI execution
-gate in `build-runtime-app.yml` only checks `mcp_connected` (init) — it must be hardened to
-run a real `execute_skill` replay, since an init-only gate let a fully-broken-resolution
-host ship unnoticed.
+**How it was proven:** built the app layer exactly like CI does (obfuscated JS), ran the
+**real host `.exe`** against it, and watched every locator return 0 — then rebuilt the host
+with `--no-bytecode` and watched the same workflow run to `Done.`.
+
+## A small regression I caught and fixed
+
+While fixing the above I'd tightened a "test id" pattern and accidentally stopped it from
+matching the most common spelling `data-testid` (no hyphen) — only `data-test` and
+`data-test-id`. A unit test caught it. Fixed the pattern in both the compiler
+(`identity_bundle.py`) and the runtime (`resolve_adapter.js`) so all three spellings work.
+
+## How this can't silently break again (CI safety net)
+
+The build pipeline previously only checked that the runtime **starts** (an "MCP initialize"
+ping). That is exactly why a binary that couldn't click anything still shipped. I added a
+**real replay test** to the build:
+
+- A tiny self-contained fixture: a local HTML page with one button + a 2-step skill that
+  navigates to it and clicks it. No internet, no login, no secrets.
+- A runner (`runtime/test/gate_replay.js`) that drives the packed `.exe` through that skill
+  and **fails the build unless it reaches `Done.`**.
+- Wired into both build workflows — the host build (`build-runtime-host.yml`) and the app
+  build (`build-runtime-app.yml`).
+
+Verified it actually catches the bug: the test **passes** on the fixed `.exe` and **fails**
+on the old broken one.
+
+## Everything I changed (branch `fix/replay-dev-prod-parity`)
+
+| Commit | What |
+|---|---|
+| `48517f1` | Dev runs real source (not stale `.exe`) + resolution/compiler quality fixes + version hygiene + regression test |
+| `145acb9` | **The big one:** build the host `.exe` with `--no-bytecode` so Playwright's element finder works in production |
+| `a8c60b8` | Fix the `data-testid` spelling regression |
+| `76fd7b8` | Add the real "click a button" CI gate (fixture + runner, wired into both workflows) |
+| `a0a8005` | Point the app build's required host at the fixed `host-v1.1.2` |
+
+Tests: **376 passed**; the 6 remaining failures are pre-existing on `main` and unrelated.
+
+## What's left for you (ships to customers — needs a release)
+
+These steps actually push the fix to production; they affect paying customers, so I didn't
+trigger them:
+
+1. **Release `host-v1.1.2`** (push that git tag). CI rebuilds the fixed `.exe` and now runs
+   the click test on it. *This is the step that unblocks production replay.*
+2. **Then release `app-v1.2.2`** (push that tag). Its build downloads `host-v1.1.2`, replays
+   the fixture against it, and ships the latest element-finding improvements.
+3. New Build Studio build + recompile/republish your skills (so packs use the latest compiler).
+
+(Order matters: the host must be released **before** the app tag, because the app build now
+tests against it.)
 
 ## Side notes (not bugs)
 
 - The `401` / `ENOTFOUND apis.conxa.in` lines in `runtime.log` are harmless — that's just telemetry failing in test mode. Execution continues normally.
 - Testing with a repo that has no `render.yaml` will always "fail" at the deploy step — that's Render refusing to deploy, not a Conxa bug. Use a repo with a valid `render.yaml`.
+- My replay tests deployed real blueprints to your Render account (`conxa-db`, `conxa-api`, `conxa-web`, plus blueprint instances). Delete them from the Render dashboard if unwanted.
