@@ -6,8 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node24-win-x64 --output dist/conxa-runtime.exe --public",
-    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node24-mac-x64 --output dist/conxa-runtime-mac --public",
+    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node24-win-x64 --output dist/conxa-runtime.exe --public --no-bytecode --public-packages \"*\"",
+    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node24-mac-x64 --output dist/conxa-runtime-mac --public --no-bytecode --public-packages \"*\"",
     "build:all": "npm run build:win && npm run build:mac"
   },
   "pkg": {

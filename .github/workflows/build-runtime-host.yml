@@ -64,6 +64,13 @@ jobs:
 
       - name: Build conxa-runtime.exe
         working-directory: runtime
+        # build:win passes --no-bytecode --public-packages "*" (see runtime/package.json).
+        # REQUIRED: pkg's V8 bytecode compilation corrupts Playwright's ~300 KB
+        # injectedScriptSource string module, which silently breaks the selector engine —
+        # every locator/getByRole/CSS query returns 0 while page.evaluate still works, so
+        # all skills fail at the first click. Plain source keeps Playwright functional.
+        # Do NOT remove these flags without re-running a real execute_skill replay against
+        # the resulting exe (the init-only gate in build-runtime-app.yml will NOT catch it).
         run: npm run build:win
 
       - name: Stage keytar.node for release

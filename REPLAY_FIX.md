@@ -123,6 +123,34 @@ I also added a regression test (`test_dev_source_tree_runs_node_not_stale_sandbo
 1. **Restart needed:** The Python backend caches the old code while running. After this fix, **stop and restart `npm run dev`** so the new behavior loads.
 2. **Real deployments were created:** The last step of this workflow is literally "Deploy Blueprint", so testing it created real blueprints in your Render account (`conxa-replay-test`, `conxa-replay-exe`). Delete them from the Render dashboard if you don't want them.
 
+## Follow-up: the bigger production bug (host exe Playwright was dead)
+
+After the dev fix, we asked "does this work in production?" It did **not** — for a deeper
+reason. Production customers run the packed **host exe** (`conxa-runtime.exe`), not `node`.
+A production-faithful test (real host exe + freshly built app layer) showed:
+
+- Same page, same Chromium: `node` found 13 buttons via Playwright; the **host exe found 0**
+  (`page.locator(...).count() === 0`), even though `page.evaluate(...)` saw all 13.
+- Meaning: **the packed exe's Playwright selector engine was completely dead** — every
+  click/type step fails to find its element. Production replay never worked through the exe.
+
+**Root cause:** the exe is built with `@yao-pkg/pkg`, which compiles bundled JS to V8
+bytecode. Playwright ships its selector engine as a ~300 KB string inside
+`injectedScriptSource.js`; pkg's bytecode step silently corrupts that giant-string module,
+so the selector engine loads but sees an empty DOM. (`page.evaluate` runs in the page's
+main world and is unaffected, which is why it kept working — a confusing symptom.)
+
+**Fix:** build the host with `--no-bytecode --public-packages "*"` (in
+`runtime/package.json` build scripts) so Playwright ships as plain source. Verified: the
+rebuilt exe replays the full workflow to `Done.` (The app layer already abandoned bytecode
+earlier for the same class of issue, so this is consistent.)
+
+**To reach production** this needs a new host release (push a `host-v*` tag → CI rebuilds
+with the fixed flags; clients self-update the host). Also recommended: the CI execution
+gate in `build-runtime-app.yml` only checks `mcp_connected` (init) — it must be hardened to
+run a real `execute_skill` replay, since an init-only gate let a fully-broken-resolution
+host ship unnoticed.
+
 ## Side notes (not bugs)
 
 - The `401` / `ENOTFOUND apis.conxa.in` lines in `runtime.log` are harmless — that's just telemetry failing in test mode. Execution continues normally.
