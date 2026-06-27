@@ -1,0 +1,11 @@
+{
+  "slug": "gate-skill",
+  "name": "CI Gate Skill",
+  "description": "Hermetic navigate+click against a local fixture page to verify the packed runtime's Playwright selector engine resolves elements.",
+  "version": "0.0.1",
+  "required_runtime": ">=1.0.0",
+  "company": "gate",
+  "target_url": "",
+  "inputs_required": ["fixture_url"],
+  "checksum": {}
+}

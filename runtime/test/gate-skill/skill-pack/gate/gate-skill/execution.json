@@ -1,0 +1,33 @@
+[
+  {
+    "type": "navigate",
+    "url": "{{fixture_url}}"
+  },
+  {
+    "type": "click",
+    "selector": "[data-testid=\"gate-btn\"]",
+    "identity_bundle": {
+      "signals": [
+        { "engine": "css",        "selector": "[data-testid=\"gate-btn\"]",            "durability": 0.97, "orthogonality_class": "test-id",       "unique_at_compile": true, "source": "manual" },
+        { "engine": "role",       "selector": "internal:role=button[name=\"Click Me\"]", "durability": 0.95, "orthogonality_class": "semantic-aria", "unique_at_compile": true, "source": "compiler" },
+        { "engine": "text_based", "selector": "internal:text=\"Click Me\"",             "durability": 0.85, "orthogonality_class": "visible-text",  "unique_at_compile": true, "source": "compiler" }
+      ],
+      "fingerprint": {
+        "role": "button",
+        "tag": "button",
+        "inner_text": "Click Me",
+        "aria_label": "",
+        "name": "",
+        "placeholder": "",
+        "label_text": "",
+        "data_testid": "gate-btn",
+        "input_type": "button",
+        "css_class_tokens": [],
+        "anchor_phrases": [],
+        "position_hint": {}
+      },
+      "stable_hash": "",
+      "frame_chain": []
+    }
+  }
+]

@@ -37,7 +37,13 @@ jobs:
       # .js app layer requires a host that loads server.js (not server.jsc), so this
       # must be bumped to the first host release that ships the updated bootstrap.js.
       # Old hosts skip the new app via this gate and self-update the host first.
-      MIN_HOST:    "host-v1.1.1"
+      #
+      # host-v1.1.2 is the first host built with --no-bytecode, which fixes the broken
+      # Playwright selector engine (host-v1.1.1 returns 0 elements for every locator).
+      # The execution gate below downloads MIN_HOST and runs a real replay, so MIN_HOST
+      # MUST point at a host that actually resolves elements — i.e. host-v1.1.2 must be
+      # released (build-runtime-host.yml) BEFORE the next app-v* tag is pushed.
+      MIN_HOST:    "host-v1.1.2"
 
     steps:
       - name: Checkout
@@ -133,81 +139,38 @@ jobs:
           Write-Output "version.json written"
         shell: pwsh
 
-      - name: Validate app layer against host exe (execution gate)
+      - name: Install Chromium for execution gate
         working-directory: runtime
-        run: |
-          # Download the MIN_HOST exe and run a bare MCP initialize against it with
-          # the freshly-staged dist-app/ as the conxa-app layer.  This is the only
-          # check that would have caught the bytecode-segfault class of bug: it
-          # validates the app layer against the *actual* host binary, not a header
-          # field that can be normalised.  A non-zero exit or missing init response
-          # fails the build before anything is zipped or published.
-          $hostVersion  = "$env:MIN_HOST"
-          $tmpDir       = "$env:TEMP\conxa-gate-$$"
-          $conxaDir     = "$tmpDir\.conxa"
-          $appDest      = "$conxaDir\conxa-app"
-          New-Item -ItemType Directory -Force -Path $appDest | Out-Null
-          New-Item -ItemType Directory -Force -Path "$tmpDir\data\cache" | Out-Null
+        run: npx playwright install chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
 
-          Write-Output "Downloading host exe: $hostVersion"
-          $exeUrl    = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/conxa-runtime.exe"
-          $keytarUrl = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/keytar.node"
-          Invoke-WebRequest -Uri $exeUrl    -OutFile "$conxaDir\conxa-runtime.exe" -UseBasicParsing
-          Invoke-WebRequest -Uri $keytarUrl -OutFile "$conxaDir\keytar.node"       -UseBasicParsing
-
-          Write-Output "Staging app layer"
-          Copy-Item dist-app\* $appDest\ -Recurse
-
-          Write-Output "Running MCP initialize gate…"
-          $initMsg = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate","version":"1.0.0"}}}'
-          $initMsg | Out-File -FilePath "$tmpDir\init.txt" -Encoding utf8 -NoNewline
-
-          $proc = Start-Process -FilePath "$conxaDir\conxa-runtime.exe" `
-            -WorkingDirectory $conxaDir `
-            -NoNewWindow -PassThru `
-            -RedirectStandardInput  "$tmpDir\init.txt" `
-            -RedirectStandardOutput "$tmpDir\out.txt" `
-            -RedirectStandardError  "$tmpDir\err.txt" `
-            -Environment @{
-              CONXA_DIR            = $conxaDir
-              CONXA_DATA_DIR       = "$tmpDir\data"
-              CONXA_SKIP_SELF_UPDATE = "1"
-            }
-
-          $finished = $proc.WaitForExit(20000)
-          if (-not $finished) {
-            $proc.Kill()
-            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-            Write-Error "EXECUTION GATE: host exe did not exit within 20 s — app layer may be hanging"
-            exit 1
-          }
-
-          $stdout = Get-Content "$tmpDir\out.txt" -Raw -ErrorAction SilentlyContinue
-          $stderr = Get-Content "$tmpDir\err.txt" -Raw -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-
-          if ($proc.ExitCode -ne 0) {
-            Write-Output "=== STDERR ==="
-            Write-Output $stderr
-            Write-Error "EXECUTION GATE FAILED: host exe exited $($proc.ExitCode) — likely segfault or load error"
-            exit 1
-          }
-          # Check stderr for "mcp_connected" — the structured log line the runtime emits
-          # after the MCP SDK completes connection setup.  This is more reliable than
-          # checking stdout for the initialize JSON response, which can be flushed after
-          # WaitForExit() returns due to Windows file-redirect buffering.
-          if ($stderr -notmatch '"mcp_connected"') {
-            Write-Output "=== STDOUT ==="
-            Write-Output $stdout
-            Write-Output "=== STDERR ==="
-            Write-Output $stderr
-            Write-Error "EXECUTION GATE FAILED: mcp_connected not found in runtime log — app layer did not fully initialize"
-            exit 1
-          }
-          Write-Output "Execution gate passed: app layer initializes cleanly under $hostVersion"
+      - name: Validate app layer against host exe (execution gate — real replay)
+        # Download the MIN_HOST exe and run a real, hermetic skill replay against it with the
+        # freshly-staged dist-app/ as the conxa-app layer. This validates the app layer
+        # against the *actual* host binary AND exercises the Playwright selector engine
+        # end-to-end (navigate + click on a local fixture). The previous gate only ran MCP
+        # initialize, which would NOT catch a broken selector engine (every locator returns
+        # 0 elements while init still succeeds). A non-"Done." result fails the build before
+        # anything is zipped or published.
+        working-directory: runtime
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
+        run: |
+          $hostVersion = "$env:MIN_HOST"
+          $exe = "$env:TEMP\gate-host.exe"
+          Write-Output "Downloading host exe: $hostVersion"
+          $exeUrl = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/conxa-runtime.exe"
+          Invoke-WebRequest -Uri $exeUrl -OutFile $exe -UseBasicParsing
+          Write-Output "Running replay gate (app layer = dist-app) against $hostVersion…"
+          node test/gate_replay.js $exe dist-app
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "EXECUTION GATE FAILED: app layer replay did not reach 'Done.' under $hostVersion"
+            exit 1
+          }
+          Write-Output "Execution gate passed: app layer replays cleanly under $hostVersion"
 
       - name: Zip app layer
         working-directory: runtime

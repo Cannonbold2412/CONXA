@@ -16,7 +16,7 @@ function signalToLocator(root, signal, interpolate, inputs) {
   if (!raw) return null;
 
   if (engine === "testid") {
-    const m = raw.match(/data-testid=["']?([^"'\]]+)/);
+    const m = raw.match(/data-test(?:-?id)?=["']?([^"'\]]+)/);
     return m ? root.getByTestId(m[1]) : root.locator(raw);
   }
   if (engine === "role" || engine === "aria") {

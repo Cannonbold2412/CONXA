@@ -1,0 +1,5 @@
+{
+  "inputs": [
+    { "name": "fixture_url", "type": "string", "description": "file:// URL of the local fixture page (injected by the gate runner)" }
+  ]
+}

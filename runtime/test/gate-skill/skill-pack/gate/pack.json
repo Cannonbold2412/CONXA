@@ -1,0 +1,10 @@
+{
+  "company": "gate",
+  "company_display": "CI Gate",
+  "skill_pack_version": "0.0.1",
+  "required_runtime": ">=1.0.0",
+  "target_url": "",
+  "protected_url": "",
+  "skills": ["gate-skill"],
+  "tracking": { "enabled": false }
+}
