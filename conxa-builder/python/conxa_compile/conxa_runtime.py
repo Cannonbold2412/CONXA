@@ -319,7 +319,7 @@ def _find_local_runtime_source() -> Path | None:
 
     The packed exe (conxa-runtime.exe) has no package.json. When a local source tree
     is found, it supplies the correct package.json so node_modules resolves Playwright 1.59.0
-    (chromium-1227). Without it, the install command pins the version explicitly via npx playwright@1.59.0.
+    (chromium-1217). Without it, the install command pins the version explicitly via npx playwright@1.59.0.
     """
     # conxa_runtime.py lives at conxa-builder/python/conxa_compile/conxa_runtime.py
     # The repo-local runtime source is three parents up, then "runtime/".
@@ -390,7 +390,7 @@ def ensure_chromium_installed(
         if local_src is not None:
             install_dir = local_src
 
-    # Pin the version when no package.json is available so we always get chromium-1227
+    # Pin the version when no package.json is available so we always get chromium-1217
     if (install_dir / "package.json").is_file():
         pw_cmd = [npx, "playwright", "install", "chromium"]
     else:
