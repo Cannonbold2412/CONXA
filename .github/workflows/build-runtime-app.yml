@@ -140,7 +140,10 @@ jobs:
         shell: pwsh
 
       - name: Exclude browser cache from Windows Defender
-        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}\.pw-browsers"
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}\.pw-browsers"
+          Add-MpPreference -ExclusionPath "$env:TEMP"
+          Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\ms-playwright"
         shell: pwsh
 
       - name: Cache Playwright Chromium
@@ -153,6 +156,7 @@ jobs:
 
       - name: Install Chromium for execution gate
         working-directory: runtime
+        timeout-minutes: 3
         run: npx playwright install chromium
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
