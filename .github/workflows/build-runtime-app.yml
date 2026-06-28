@@ -148,6 +148,8 @@ jobs:
         with:
           path: ${{ github.workspace }}\.pw-browsers
           key: pw-chromium-${{ runner.os }}-${{ hashFiles('runtime/package-lock.json') }}
+          restore-keys: |
+            pw-chromium-${{ runner.os }}-
 
       - name: Install Chromium for execution gate
         working-directory: runtime
@@ -165,6 +167,7 @@ jobs:
         # anything is zipped or published.
         working-directory: runtime
         shell: pwsh
+        timeout-minutes: 5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
