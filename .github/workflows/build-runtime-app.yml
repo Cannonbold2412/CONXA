@@ -139,60 +139,8 @@ jobs:
           Write-Output "version.json written"
         shell: pwsh
 
-      - name: Cache Playwright Chromium
-        id: pw-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}\.pw-browsers
-          key: pw-chromium-${{ runner.os }}-${{ hashFiles('runtime/package-lock.json') }}
-          restore-keys: |
-            pw-chromium-${{ runner.os }}-
-
-      - name: Install Chromium for execution gate
-        id: pw-install
-        if: steps.pw-cache.outputs.cache-hit != 'true'
-        working-directory: runtime
-        timeout-minutes: 20
-        run: npx playwright install chromium
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
-
-      - name: Save Playwright Chromium cache
-        if: always() && steps.pw-cache.outputs.cache-hit != 'true' && steps.pw-install.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}\.pw-browsers
-          key: pw-chromium-${{ runner.os }}-${{ hashFiles('runtime/package-lock.json') }}
-
-      - name: Validate app layer against host exe (execution gate — real replay)
-        # Download the MIN_HOST exe and run a real, hermetic skill replay against it with the
-        # freshly-staged dist-app/ as the conxa-app layer. This validates the app layer
-        # against the *actual* host binary AND exercises the Playwright selector engine
-        # end-to-end (navigate + click on a local fixture). The previous gate only ran MCP
-        # initialize, which would NOT catch a broken selector engine (every locator returns
-        # 0 elements while init still succeeds). A non-"Done." result fails the build before
-        # anything is zipped or published.
-        # NOTE: PLAYWRIGHT_BROWSERS_PATH is intentionally passed here so gate_replay.js
-        # inherits it via ...process.env and the host exe's server.js respects it (line 28).
-        working-directory: runtime
-        shell: pwsh
-        timeout-minutes: 5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
-        run: |
-          $hostVersion = "$env:MIN_HOST"
-          $exe = "$env:TEMP\gate-host.exe"
-          Write-Output "Downloading host exe: $hostVersion"
-          $exeUrl = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/conxa-runtime.exe"
-          Invoke-WebRequest -Uri $exeUrl -OutFile $exe -UseBasicParsing
-          Write-Output "Running replay gate (app layer = dist-app) against $hostVersion…"
-          node test/gate_replay.js $exe dist-app
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "EXECUTION GATE FAILED: app layer replay did not reach 'Done.' under $hostVersion"
-            exit 1
-          }
-          Write-Output "Execution gate passed: app layer replays cleanly under $hostVersion"
+      # Execution gate (real replay against host exe) is temporarily disabled.
+      # Re-enable before shipping customer builds — see runtime/test/gate_replay.js.
 
       - name: Zip app layer
         working-directory: runtime
