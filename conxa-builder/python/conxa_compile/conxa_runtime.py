@@ -59,7 +59,7 @@ def _bootstrap_runtime_dir() -> Path | None:
 
 
 def _bootstrap_app_dir() -> Path | None:
-    """Locate the Studio deps-managed app layer (~/.conxa-build-studio/deps/runtime_app/<version>/).
+    """Locate the Studio deps-managed app layer (~/.conxa-build-studio/deps/conxa-app/<version>/).
 
     Mirrors _bootstrap_runtime_dir(). Prefers $CONXA_APP_LOCAL_DIR (set by the deps
     bootstrap to the active version dir); otherwise returns the highest-named subdir.

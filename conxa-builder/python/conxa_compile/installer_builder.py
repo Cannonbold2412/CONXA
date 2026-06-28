@@ -346,6 +346,11 @@ def _stage_runtime_binary(
     """
     runtime_dir = studio_runtime_dir or _find_studio_cache_runtime_dir()
     app_dir = _bootstrap_app_dir()
+    if app_dir is None:
+        raise RuntimeError(
+            "conxa-app not found in deps (~/.conxa-build-studio/deps/conxa-app/). "
+            "Run dependency bootstrap first."
+        )
     stage_runtime_payload(dest, runtime_dir, app_dir, log=log)
 
 

@@ -502,9 +502,19 @@ def ensure_all(cloud_api: str, on_event: EventSink | None = None) -> dict[str, A
     - If already at the correct version: set env var, emit ready.
     - If missing or outdated: download, verify, atomically install.
     Falls back gracefully when the network is unavailable.
+
+    Always emits status="complete" before returning, even on partial failure,
+    so the frontend banner is never left stuck in the "updating" state.
+    Returns ok=False with an "errors" list if any dep failed.
     """
-    # Chromium is managed by Playwright; always ensure it first
-    ensure_chromium(on_event)
+    errors: list[str] = []
+
+    # Chromium is managed by Playwright; always ensure it first.
+    try:
+        ensure_chromium(on_event)
+    except Exception as exc:
+        _emit(on_event, dep="chromium", status="error", message=str(exc))
+        errors.append(f"chromium: {exc}")
 
     # Fetch manifest (with TTL cache; tolerate network failures)
     try:
@@ -527,7 +537,16 @@ def ensure_all(cloud_api: str, on_event: EventSink | None = None) -> dict[str, A
             _configure_dep_env(dep_name, version_dir)
             _emit(on_event, dep=dep_name, status="ready", version=avail_ver)
         else:
-            apply_dep_update(dep_name, dep_spec, on_event=on_event)
+            try:
+                apply_dep_update(dep_name, dep_spec, on_event=on_event)
+            except Exception as exc:
+                errors.append(f"{dep_name}: {exc}")
 
     _emit(on_event, status="complete")
+    if errors:
+        return {
+            "ok": False,
+            "errors": errors,
+            "manifest_version": manifest.get("manifest_version", manifest.get("version")),
+        }
     return {"ok": True, "manifest_version": manifest.get("manifest_version", manifest.get("version"))}

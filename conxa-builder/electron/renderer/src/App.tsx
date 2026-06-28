@@ -107,6 +107,9 @@ export function App() {
       if (ev.status === 'downloading') {
         const pct = typeof ev.pct === 'number' ? Math.round(ev.pct as number) : null
         setDepUpdateBanner({ phase: 'updating', pct })
+      } else if (ev.status === 'error') {
+        // A dep failed — dismiss rather than leaving the banner stuck.
+        setDepUpdateBanner({ phase: 'idle' })
       }
     })
     cmd('bootstrap', {}).catch(() => {})
