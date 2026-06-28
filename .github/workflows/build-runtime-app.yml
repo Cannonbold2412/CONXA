@@ -139,28 +139,15 @@ jobs:
           Write-Output "version.json written"
         shell: pwsh
 
-      - name: Exclude browser cache from Windows Defender
+      - name: Locate system Chrome for execution gate
+        id: chrome
         run: |
-          Add-MpPreference -ExclusionPath "${{ github.workspace }}\.pw-browsers"
-          Add-MpPreference -ExclusionPath "$env:TEMP"
-          Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\ms-playwright"
+          $p = "$env:PROGRAMFILES\Google\Chrome\Application\chrome.exe"
+          if (-not (Test-Path $p)) { $p = "$env:PROGRAMFILES (x86)\Google\Chrome\Application\chrome.exe" }
+          if (-not (Test-Path $p)) { Write-Error "Chrome not found"; exit 1 }
+          Write-Output "CHROME_PATH=$p" | Out-File -Append $env:GITHUB_ENV
+          Write-Output "Found Chrome: $p"
         shell: pwsh
-
-      - name: Cache Playwright Chromium
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}\.pw-browsers
-          key: pw-chromium-${{ runner.os }}-${{ hashFiles('runtime/package-lock.json') }}
-          restore-keys: |
-            pw-chromium-${{ runner.os }}-
-          save-always: true
-
-      - name: Install Chromium for execution gate
-        working-directory: runtime
-        timeout-minutes: 8
-        run: npx playwright install chromium
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
 
       - name: Validate app layer against host exe (execution gate — real replay)
         # Download the MIN_HOST exe and run a real, hermetic skill replay against it with the
@@ -175,7 +162,7 @@ jobs:
         timeout-minutes: 5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: ${{ env.CHROME_PATH }}
         run: |
           $hostVersion = "$env:MIN_HOST"
           $exe = "$env:TEMP\gate-host.exe"
