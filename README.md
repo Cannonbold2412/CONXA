@@ -183,13 +183,31 @@ With `SKILL_AUTH_REQUIRED=true` the backend **refuses to start** unless `SKILL_D
 
 Project root: `conxa-cloud/frontend`. Requires `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `API_ORIGIN`, and `CONXA_API_PROXY_SECRET` (must match backend `SKILL_API_PROXY_SHARED_SECRET`).
 
-### Build Studio (`.exe`)
+### Build Studio (`.exe`) — tag `studio-v*`
 
 Tagged `studio-v*` push triggers `build-studio.yml`: builds `conxa-core` as a wheel → PyInstaller bundles the Python backend → electron-builder wraps into NSIS installer → uploaded to GitHub Releases.
 
-### Runtime (`.exe`)
+### Runtime host (`.exe`) — tag `host-v*`
 
-Tagged `runtime-v*` push triggers `build-runtime.yml`: `@yao-pkg/pkg` bundles `runtime/` → `dist/runtime-win.exe` → GitHub Release. Installed to `%LOCALAPPDATA%\conxa\runtime\` on the customer's machine. Self-updates by polling `/api/v1/updates/runtime-manifest`.
+Tagged `host-v*` push triggers `build-runtime-host.yml`: `@yao-pkg/pkg` bundles `runtime/server.js` into `conxa-runtime.exe` and compiles `keytar.node` against the exact Node ABI. The `host_version` is baked into `package.json` at build time. Push this tag **rarely** — only when `server.js` itself changes, the Node/pkg version bumps, or `keytar` needs a recompile.
+
+### Runtime app layer (`.zip`) — tag `app-v*`
+
+Tagged `app-v*` push triggers `build-runtime-app.yml`: obfuscates the business-logic JS files (`run.js`, `sync.js`, `tracker.js`, `auth_manager.js`, etc.) and zips them as `conxa-app/`. This zip ships separately from the host exe and is installed to `~/.conxa/conxa-app/` — the exe loads it from disk at runtime, so you can update logic without rebuilding the binary. Push this tag **frequently** — any time you change runtime behaviour that isn't in `server.js`.
+
+### When to push what
+
+| Changed files | What to ship |
+|---|---|
+| `conxa-cloud/backend/` | Push to Render (cloud host) |
+| `conxa-cloud/frontend/` | Push to Vercel (auto-deploys on merge to `main`) |
+| `runtime/server.js` | Tag `host-v*` (rebuilds the pkg binary + keytar) |
+| `runtime/run.js`, `sync.js`, `tracker.js`, `auth_manager.js`, etc. | Tag `app-v*` (rebuilds obfuscated app layer only) |
+| `conxa-builder/` (Electron shell, Python backend, compiler) | Tag `studio-v*` |
+| `packages/conxa-core/` — models, config, db, llm | Push to Render **and** tag `studio-v*` |
+| `packages/conxa-core/` — NSIS template, plugin/installer builder | Tag `studio-v*` only (cloud never builds installers) |
+
+> **Rule of thumb:** code that runs on the *customer's machine* → runtime tags (`host-v*` or `app-v*`). Code the *SaaS vendor* uses in the desktop app → `studio-v*`. Code the *Render API* executes → push to Render. `conxa-core` is shared — check which consumers you actually changed.
 
 ---
 

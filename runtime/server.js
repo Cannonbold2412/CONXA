@@ -80,8 +80,16 @@ if (cliArgs.includes("--install-playwright")) {
 
   // NSIS's ExecWait needs a real exit code; don't let a silent hang block
   // the installer UI forever.
+  const PW_ERROR_FILE = path.join(CONXA_DIR, "playwright-install-error.txt");
+
+  function writeInstallError(msg) {
+    try { fs.writeFileSync(PW_ERROR_FILE, msg + "\n"); } catch (_) {}
+  }
+
   const timeoutHandle = setTimeout(() => {
-    process.stderr.write("playwright install timed out\n");
+    const msg = "playwright install timed out (10-minute limit exceeded)";
+    process.stderr.write(msg + "\n");
+    writeInstallError(msg);
     process.exit(1);
   }, 10 * 60 * 1000);
   timeoutHandle.unref();
@@ -106,12 +114,16 @@ if (cliArgs.includes("--install-playwright")) {
       })
       .catch((e) => {
         clearTimeout(timeoutHandle);
-        process.stderr.write("playwright install failed: " + (e?.message || String(e)) + "\n");
+        const msg = e?.message || String(e);
+        process.stderr.write("playwright install failed: " + msg + "\n");
+        writeInstallError(msg);
         process.exit(1);
       });
   } catch (e) {
     clearTimeout(timeoutHandle);
-    process.stderr.write("playwright install init failed: " + (e?.message || String(e)) + "\n");
+    const msg = e?.message || String(e);
+    process.stderr.write("playwright install init failed: " + msg + "\n");
+    writeInstallError(msg);
     process.exit(1);
   }
   return; // don't fall through into logger / MCP server setup while install is pending

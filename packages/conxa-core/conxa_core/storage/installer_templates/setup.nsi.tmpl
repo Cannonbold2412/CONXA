@@ -94,7 +94,19 @@ Section "Chromium" SEC_CHROMIUM
   ; stale revision from an older runtime, causing chromium.launch() to fail.
   ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& "${RUNTIME_DIR}\conxa-runtime.exe" --install-playwright' $0
   IntCmp $0 0 chromium_done
-  MessageBox MB_OK "Chromium installation failed (code $0). Automation may not work.$\nYou can retry by running:$\n${RUNTIME_DIR}\conxa-runtime.exe --install-playwright"
+
+  ; Read the one-line reason written by conxa-runtime.exe on failure.
+  ClearErrors
+  FileOpen $1 "${INSTALL_DIR}\playwright-install-error.txt" r
+  IfErrors chromium_err_no_detail
+  FileRead $1 $2
+  FileClose $1
+  Delete "${INSTALL_DIR}\playwright-install-error.txt"
+  Goto chromium_err_show
+  chromium_err_no_detail:
+  StrCpy $2 "(no details — run the retry command below to see the full output)"
+  chromium_err_show:
+  MessageBox MB_OK "Chromium installation failed (code $0).$\n$\nReason: $2$\n$\nAutomation may not work.$\nYou can retry by running:$\n${RUNTIME_DIR}\conxa-runtime.exe --install-playwright"
   chromium_done:
 SectionEnd
 
@@ -195,7 +207,7 @@ Section "Uninstall"
   Pop $0
   Delete "${INSTALL_DIR}\conxa_mcp_rm.ps1"
 
-  check_claudecode_rm:
+  ; ── Claude Code removal ──────────────────────────────────────────────────
   ; Remove Conxa entry from Claude Code config if it exists
   IfFileExists "$PROFILE\.claude.json" 0 mcp_remove_done
   FileOpen $0 "${INSTALL_DIR}\conxa_mcp_rm2.ps1" w
