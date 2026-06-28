@@ -16,8 +16,16 @@ function signalToLocator(root, signal, interpolate, inputs) {
   if (!raw) return null;
 
   if (engine === "testid") {
-    const m = raw.match(/data-test(?:-?id)?=["']?([^"'\]]+)/);
-    return m ? root.getByTestId(m[1]) : root.locator(raw);
+    // Honour the page's actual attribute name (data-test-id vs data-testid). Playwright's
+    // getByTestId is hard-wired to data-testid with no hyphen, so a hyphenated attribute would
+    // silently match nothing and drop the signal. The signal text after the internal: prefix is
+    // already a literal [attr="value"] CSS selector — use root.locator() on it directly so the
+    // exact attribute name is preserved.
+    const css = raw.replace(/^internal:testid=/, "").trim();
+    if (css.startsWith("[")) return root.locator(css);
+    // Fallback: reconstruct from the attribute name + value captured in the raw string.
+    const m = raw.match(/(data-test-?id)=["']?([^"'\]]+)/);
+    return m ? root.locator(`[${m[1]}="${m[2]}"]`) : root.locator(raw);
   }
   if (engine === "role" || engine === "aria") {
     const rm = raw.match(/internal:role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?/);
@@ -112,7 +120,7 @@ function _extractDescriptor(el) {
     role,
     name: (ariaLabel || nameAttr || (el.textContent || "").trim()).slice(0, 120),
     text: (el.textContent || "").trim().slice(0, 120),
-    testid: el.getAttribute("data-testid") || "",
+    testid: el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "",
     anchorNeighbors: neighbors,
     _hashPayload: hashPayload,
   };

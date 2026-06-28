@@ -24,10 +24,25 @@ function mockRoot() {
   };
 }
 
-test("signalToLocator maps testid → getByTestId", () => {
+test("signalToLocator maps testid → literal CSS locator (preserves data-testid)", () => {
+  // The testid branch must use root.locator() with the exact attribute selector, NOT getByTestId().
+  // getByTestId is hard-wired to data-testid (no hyphen) and would silently miss data-test-id pages.
   const root = mockRoot();
   signalToLocator(root, { engine: "testid", selector: 'internal:testid=[data-testid="go"]' }, idInterp, {});
-  assert.deepStrictEqual(root.calls[0], { kind: "testid", arg: "go", opts: undefined });
+  assert.deepStrictEqual(root.calls[0], { kind: "locator", arg: '[data-testid="go"]', opts: undefined });
+});
+
+test("signalToLocator maps hyphenated data-test-id → literal CSS locator (regression)", () => {
+  // Pages using data-test-id (with hyphen) were silently dropped before this fix because
+  // getByTestId only matches data-testid. Verify the locator carries the exact attribute name.
+  const root = mockRoot();
+  signalToLocator(root, {
+    engine: "testid",
+    selector: 'internal:testid=[data-test-id="creation-button-blueprint"]',
+  }, idInterp, {});
+  assert.deepStrictEqual(root.calls[0], { kind: "locator", arg: '[data-test-id="creation-button-blueprint"]', opts: undefined });
+  // Must NOT have called getByTestId at all.
+  assert.ok(root.calls.every(c => c.kind !== "testid"), "getByTestId must not be called for hyphenated attributes");
 });
 
 test("signalToLocator maps role+name → getByRole", () => {
@@ -84,9 +99,11 @@ function rootWithCandidates(bySelectorKind) {
   };
 }
 
-test("gatherCandidates + resolve picks the unique testid match", async () => {
+test("gatherCandidates + resolve picks the unique testid match (data-testid)", async () => {
+  // signalToLocator now calls root.locator() not root.getByTestId(), so the mock root must
+  // serve the winner from its `locator` bucket.
   const winner = mockElement({ testid: "go", role: "button", name: "Go", text: "Go" });
-  const root = rootWithCandidates({ testid: [winner] });
+  const root = rootWithCandidates({ locator: [winner] });
   const signals = [
     { engine: "testid", selector: 'internal:testid=[data-testid="go"]', durability: 0.99 },
     { engine: "role", selector: 'internal:role=button[name="Go"]', durability: 0.95 },
@@ -98,6 +115,32 @@ test("gatherCandidates + resolve picks the unique testid match", async () => {
   assert.strictEqual(result.node._hashPayload, undefined, "hash payload stripped");
   assert.strictEqual(result.signalUsed.engine, "testid");
   assert.strictEqual(result.node._loc, winner);
+});
+
+test("gatherCandidates + resolve picks the unique hyphenated testid match (regression)", async () => {
+  // Simulates the create-a-service-from-github step 2 scenario: two sibling link elements, only
+  // one with data-test-id="creation-button-blueprint". Before the fix the testid signal produced
+  // zero candidates (getByTestId mismatch) and the wrong sibling was clicked via score drift.
+  const blueprint = mockElement({ testid: "creation-button-blueprint", role: "link", name: "Blueprint", text: "Blueprint" });
+  const project   = mockElement({ testid: "creation-button-project",   role: "link", name: "Project",   text: "Project"   });
+  // locator() is now called for testid signals; simulate the page returning only the matching element.
+  const root = rootWithCandidates({ locator: [blueprint] });
+  const signals = [
+    { engine: "testid", selector: 'internal:testid=[data-test-id="creation-button-blueprint"]', durability: 0.99 },
+    { engine: "role",   selector: 'internal:role=link[name="Blueprint"]',                        durability: 0.9025 },
+  ];
+  const map = await gatherCandidates([root], signals, idInterp, {});
+  const fp = bundleFingerprint({ fingerprint: {
+    data_testid: "creation-button-blueprint", role: "link",
+    aria_label: "", inner_text: "Blueprint",
+  }});
+  const result = resolve(signals, fp, { queryAll: (sel) => map[sel] || [] }, {});
+  assert.ok(result.node, "should resolve blueprint, not project");
+  assert.strictEqual(result.node._loc, blueprint, "must pick blueprint, not the project sibling");
+  assert.strictEqual(result.signalUsed.engine, "testid", "must resolve via testid signal, not fall through to recovery");
+  // project sibling must not appear among candidates (locator returned only blueprint)
+  const allCandidates = Object.values(map).flat();
+  assert.ok(!allCandidates.some(c => c._loc === project), "project sibling must not appear in candidate map");
 });
 
 test("gatherCandidates computes a stableHash from the payload", async () => {
