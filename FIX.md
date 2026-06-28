@@ -2,6 +2,73 @@
 
 ---
 
+## "Deploy stops at search_repositories" — Element finding fix — 2026-06-29
+
+**Problem:** Running "Conxa deploy SEARCH_ENGINE repo on Render" through Claude kept stopping
+at the step where it searches for the repository ("Search repositories" box). Sometimes it
+limped past that step but then died one or two steps later ("Element not found"). It was
+flaky — occasionally a whole run got lucky and finished.
+
+**What was actually wrong (the real root cause, not just that one step):**
+
+The runtime finds each element on the page using a "scorecard". It looks at the element the
+recorder saw (its test-id, its role, its text) and compares that to what's on the live page.
+If the scorecard is confident enough, it acts. If not, it falls back to slower, flakier
+recovery methods.
+
+For **text boxes** (the repo search field, the blueprint-name field, and similar inputs) the
+scorecard was always coming back as **zero confidence**, so the fast, reliable path was never
+used. The runtime was limping through the *entire* workflow on the flaky backup method —
+which is exactly why it failed at a different step each time, depending on which one happened
+to load too slowly.
+
+Two reasons the scorecard hit zero:
+
+1. **"input" vs "textbox".** The recording stored the element's type as the raw HTML tag
+   `input`, but the live browser reports a text box's role as `textbox`. The scorecard saw
+   `input ≠ textbox` and counted it as a *disagreement* — even though they mean the same
+   thing.
+2. **Missing test-id on the recorded side.** The element's unique `data-testid` was stored in
+   the "how to find it" list but left blank in the scorecard data, so the strongest possible
+   match signal was ignored.
+
+With the only available signal scored as a mismatch, the element — even when it was the one
+and only exact test-id match on the page — got thrown away.
+
+**The fix (in `runtime/resolver.js`):**
+
+1. **Treat tag names and their real roles as the same thing.** `input` now matches `textbox`,
+   `a` matches `link`, `select` matches `combobox`, etc. No more false disagreements.
+2. **Trust a unique "contract" match.** When an element is found by a unique test-id or a DOM
+   id and there's exactly one match on the page, the runtime now trusts it — unless something
+   actively contradicts it (e.g. a *different* test-id). A blank/old scorecard can no longer
+   veto the one obviously-correct element.
+
+**Result (measured against the live Render dashboard):**
+
+- Before: the search-repo step needed flaky recovery on *every* run and failed intermittently.
+- After: **4 out of 4 runs** drove the whole workflow (New → Blueprint → search & connect repo
+  → name it → Deploy Blueprint) with **zero recovery — every element found on the fast path**,
+  ~5.6 s per run. Clicking "Deploy Blueprint" correctly lands on Render's blueprint-sync page,
+  i.e. the deploy is submitted.
+
+**Files changed:** `runtime/resolver.js` (the fix), `runtime/test/test_resolver.js` (3 new
+regression tests). All 43 runtime tests pass. The fix was also dropped straight into the
+installed brain at `~/.conxa/conxa-app/resolver.js` so this machine has it now.
+
+**To ship to all customers:** tag a new `app-v*` release so the cloud rebuilds the obfuscated
+app layer from the fixed `resolver.js`. (The host `.exe` doesn't carry this code, so it does
+not need a rebuild.) The local copy intentionally keeps `app_version` unchanged so the
+self-updater doesn't overwrite the hand-patched file before that release ships.
+
+**Not a Conxa bug — why the deploy itself still shows red on Render:** the SEARCH_ENGINE
+blueprint creates a *free* PostgreSQL database, and the Render account already has one
+(`conxa-db`, ~24 days old, left over from earlier testing). Render allows only one free
+database per workspace, so it refuses the new one and cancels the two web services that depend
+on it. The automation did its job perfectly; this is a Render account-quota issue. A fully
+green deploy needs that old free database (and the stale `conxa-api` / `conxa-web` test
+services) deleted first.
+
 ## Chromium Install Fix — 2026-06-29
 
 **Problem:** When a customer ran the installer, it showed:

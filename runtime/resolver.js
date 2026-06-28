@@ -22,6 +22,52 @@ function norm(v) {
   return str(v).trim().toLowerCase();
 }
 
+// The compiled fingerprint's `role` is frequently the raw HTML tag (e.g. "input",
+// "a", "select") rather than the computed ARIA role, while the live DOM extractor
+// reports the implicit ARIA role ("textbox", "link", "combobox"). A naive string
+// compare therefore reports a FALSE disagreement for every form control — which, when
+// the fingerprint carries no other positive signal (empty data_testid/name/text),
+// collapses the candidate's score to 0 and makes the resolver reject a uniquely
+// testid-matched element. Treat tag names and their implicit roles as compatible.
+const ROLE_ALIASES = {
+  input:    ["textbox", "searchbox", "combobox", "spinbutton", "checkbox", "radio", "button"],
+  textarea: ["textbox"],
+  select:   ["combobox", "listbox"],
+  a:        ["link"],
+  button:   ["button"],
+  img:      ["img"],
+};
+
+function roleAgrees(fpRole, nodeRole) {
+  const f = norm(fpRole);
+  const n = norm(nodeRole);
+  if (!f || !n) return false;
+  if (f === n) return true;
+  if ((ROLE_ALIASES[f] || []).includes(n)) return true;
+  if ((ROLE_ALIASES[n] || []).includes(f)) return true;
+  return false;
+}
+
+// A "contract" signal is a structural identity that is unique by construction on a
+// well-formed page (an explicit test id or a DOM id). A single such match is the
+// strongest identity available — the fingerprint scorer exists to DISAMBIGUATE
+// multiple matches and to guard low-durability text/xpath drift, not to VETO a unique
+// contract match just because the recorded fingerprint is impoverished.
+function isContractSignal(signal) {
+  const engine = norm(signal && signal.engine);
+  return engine === "testid" || engine === "css-id";
+}
+
+// The node positively CONTRADICTS the fingerprint only when a strong recorded field is
+// present AND demonstrably different (not merely absent). Absence of agreement is not
+// contradiction — that is the whole point of trusting a unique contract signal.
+function contradicts(node, fingerprint) {
+  const fp = fingerprint || {};
+  const fpTestid = norm(fp.data_testid);
+  if (fpTestid && node && norm(node.testid) && norm(node.testid) !== fpTestid) return true;
+  return false;
+}
+
 // Weighted agreement between a candidate node and the recorded fingerprint.
 // Returns a score in [0, 1]. Higher = stronger match.
 function scoreCandidate(node, fingerprint) {
@@ -36,7 +82,7 @@ function scoreCandidate(node, fingerprint) {
   if (fpTestid) add(0.30, norm(node.testid) === fpTestid);
 
   const fpRole = norm(fp.role);
-  if (fpRole) add(0.20, norm(node.role) === fpRole);
+  if (fpRole) add(0.20, roleAgrees(fp.role, node.role));
 
   // aria_label and name are the element's own accessible-name attributes.
   // label_text is the nearest <label>'s text — for nav buttons this is surrounding
@@ -99,6 +145,15 @@ function resolve(signals, fingerprint, root, opts) {
       const s = scoreCandidate(candidates[0], fingerprint);
       if (s >= confidenceThreshold) {
         return { node: candidates[0], score: s, margin: 1, signalUsed: signal };
+      }
+      // A unique contract signal (testid / DOM id) is ground-truth identity. Accept it
+      // even when the impoverished fingerprint yields no positive agreement, as long as
+      // the candidate does not actively contradict the recorded element. This is what
+      // keeps the zero-token primary path alive for form controls whose compiled
+      // fingerprint records the tag ("input") instead of the ARIA role and omits the
+      // test id — without it, every such step silently degrades onto flaky recovery.
+      if (isContractSignal(signal) && !contradicts(candidates[0], fingerprint)) {
+        return { node: candidates[0], score: s, margin: 1, signalUsed: signal, trustedContract: true };
       }
       continue;
     }

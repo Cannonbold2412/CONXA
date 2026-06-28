@@ -97,3 +97,39 @@ test("invalid root returns miss", () => {
   const r = resolve([TESTID_SIG], {}, null, {});
   assert.strictEqual(r.miss, true);
 });
+
+// Regression: form control whose compiled fingerprint records the TAG ("input") as the
+// role and omits data_testid. The implicit ARIA role is "textbox" and the only positive
+// signal is a unique testid. Pre-fix this scored 0 and resolved to {miss}, silently
+// degrading every input step onto flaky string-selector recovery.
+test("unique testid input resolves despite tag-role and empty fingerprint testid", () => {
+  const INPUT_SIG = { engine: "testid", selector: "internal:testid=[data-testid=\"repo-input\"]", durability: 0.99, orthogonality_class: "test-contract" };
+  const node = { role: "textbox", name: "", text: "", testid: "repo-input", anchorNeighbors: [] };
+  const root = mockRoot({ [INPUT_SIG.selector]: [node] });
+  const fp = { role: "input", data_testid: "", aria_label: "", name: "", inner_text: "" };
+  const r = resolve([INPUT_SIG], fp, root, {});
+  assert.strictEqual(r.node, node);
+  assert.strictEqual(r.signalUsed.engine, "testid");
+});
+
+// A unique contract signal must still be REJECTED when the node positively contradicts
+// the recorded fingerprint (different non-empty testid) — absence of agreement is trusted,
+// active contradiction is not.
+test("unique testid match is rejected when node testid contradicts fingerprint", () => {
+  const SIG = { engine: "testid", selector: "internal:testid=[data-testid=\"a\"]", durability: 0.99 };
+  const node = { role: "textbox", testid: "different-id" };
+  const root = mockRoot({ [SIG.selector]: [node] });
+  const fp = { role: "input", data_testid: "expected-id" };
+  const r = resolve([SIG], fp, root, {});
+  assert.strictEqual(r.miss, true);
+});
+
+// css-id is also a contract signal: #name with tag-role "input" and a label-derived name.
+test("css-id input resolves via role-alias agreement", () => {
+  const SIG = { engine: "css-id", selector: "#name", durability: 0.45, orthogonality_class: "structural" };
+  const node = { role: "textbox", name: "name", text: "", testid: "" };
+  const root = mockRoot({ [SIG.selector]: [node] });
+  const fp = { role: "input", name: "name", data_testid: "" };
+  const r = resolve([SIG], fp, root, {});
+  assert.strictEqual(r.node, node);
+});
