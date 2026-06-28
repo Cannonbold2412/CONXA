@@ -95,9 +95,10 @@ if (cliArgs.includes("--install-playwright")) {
   timeoutHandle.unref();
 
   try {
-    // playwright-core 1.59.x exports ./lib/cli/program which is the fully-decorated
-    // Commander program — no manual decoration step needed.
-    const { program } = require("playwright-core/lib/cli/program");
+    // playwright-core lives in the pkg snapshot, not on disk — use __hostRequire so
+    // this works when server.js is loaded from the conxa-app/ directory on disk.
+    const _req = global.__hostRequire || require;
+    const { program } = _req("playwright-core/lib/cli/program");
 
     // --with-deps is Linux-only (apt); this pipeline only ships Windows/.exe.
     program.parseAsync(["node", "cli", "install", "chromium"])

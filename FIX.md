@@ -1,3 +1,57 @@
+# Fix Log
+
+---
+
+## Chromium Install Fix — 2026-06-29
+
+**Problem:** When a customer ran the installer, it showed:
+> "Chromium installation failed (code 1). Automation may not work."
+
+No explanation. Customers couldn't tell if it was their internet, antivirus, a network timeout, or something else.
+
+**Two things were fixed:**
+
+### 1. The installer now tells you *why* it failed
+
+Previously, when Chromium download failed, the error message was swallowed and the installer just showed the exit code (1). Now:
+
+- When the download fails, the runtime saves the real error message to a small file before exiting.
+- The installer reads that file and shows the actual reason in the dialog — e.g. "net::ERR_CONNECTION_TIMED_OUT" or "playwright install timed out (10-minute limit exceeded)".
+- If the error file isn't there for some reason, you still get a fallback message with the retry command.
+
+**Files changed:** `runtime/server.js` (writes the error file), `packages/conxa-core/.../setup.nsi.tmpl` (reads it and shows it).
+
+### 2. The Chromium download itself was completely broken in the installed .exe
+
+This was the bigger bug. After fixing the error message, we could finally see what was actually going wrong:
+
+```
+playwright install init failed: Cannot find module 'playwright-core/lib/cli/program'
+```
+
+**Why:** The installer runs `conxa-runtime.exe --install-playwright`. The `.exe` is a packed binary — it carries a copy of `playwright-core` inside its own built-in storage (the "snapshot"). But the actual JavaScript that handles `--install-playwright` loads from disk (`conxa-app/server.js`). When disk-loaded code does a plain `require("playwright-core/...")`, it looks in the wrong place — on disk — where playwright-core doesn't exist. It was always failing immediately with "module not found."
+
+**Fix:** Changed the `require` call to use `global.__hostRequire`, which is a bridge that the packed exe sets up specifically so disk-loaded code can reach modules inside the snapshot. This is the same pattern already used for `semver` — it just wasn't applied to the playwright require.
+
+After the fix: Chromium downloads completely (~180 MB Chrome for Testing + FFmpeg + headless shell), the revision marker is written, and the browser launches correctly.
+
+**File changed:** `runtime/server.js` — one line change at the `--install-playwright` handler.
+
+**To ship this fix:** Tag `app-v*` (rebuilds the obfuscated app layer from the fixed `server.js`). The host `.exe` itself doesn't need a rebuild.
+
+---
+
+## README Deployment Guide — 2026-06-29
+
+Added a "When to push what" reference table to `README.md` so it's easy to know which GitHub tag to push for any given file change:
+
+- `studio-v*` → Build Studio installer + anything in `conxa-core` used by the compiler/installer
+- `host-v*` → The `conxa-runtime.exe` pkg binary (push rarely — only for `server.js` or Node/pkg version changes)
+- `app-v*` → The obfuscated JS app layer (`run.js`, `sync.js`, `tracker.js`, etc.) — push for any runtime logic changes
+- Cloud backend changes → push to Render; frontend → auto-deploys to Vercel on merge
+
+---
+
 # Replay / Test Fix — Plain-English Writeup
 
 **Date:** 2026-06-27
