@@ -139,6 +139,10 @@ jobs:
           Write-Output "version.json written"
         shell: pwsh
 
+      - name: Exclude browser cache from Windows Defender
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}\.pw-browsers"
+        shell: pwsh
+
       - name: Cache Playwright Chromium
         uses: actions/cache@v4
         with:
