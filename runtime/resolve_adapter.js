@@ -6,6 +6,19 @@
 
 const crypto = require("crypto");
 
+// Build a getByRole locator from an `internal:role=<role>[name="<name>"]` grammar string.
+// The name is QUOTED in the grammar, which in Playwright's own parser means an EXACT match
+// (e.g. `internal:role=link[name="Blueprint"]` resolves only "Blueprint", never "Blueprints").
+// getByRole defaults to substring matching, so we pass exact:true to honour the grammar — this
+// keeps the re-parsed locator semantically identical to the native string and is the single
+// role+name code path shared by primary resolution AND a11y recovery. Returns null if not a
+// role grammar string (caller falls back to a raw locator).
+function roleLocator(root, raw) {
+  const rm = String(raw).match(/internal:role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?/);
+  if (!rm) return null;
+  return rm[2] ? root.getByRole(rm[1], { name: rm[2], exact: true }) : root.getByRole(rm[1]);
+}
+
 // ── Signal → Playwright locator ────────────────────────────────────────────
 // Map a compiled IdentitySignal to a Playwright locator builder. We key off signal.engine and
 // parse role/name/testid/text out of the Playwright `internal:` grammar, rather than relying on
@@ -28,9 +41,7 @@ function signalToLocator(root, signal, interpolate, inputs) {
     return m ? root.locator(`[${m[1]}="${m[2]}"]`) : root.locator(raw);
   }
   if (engine === "role" || engine === "aria") {
-    const rm = raw.match(/internal:role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?/);
-    if (rm) return rm[2] ? root.getByRole(rm[1], { name: rm[2] }) : root.getByRole(rm[1]);
-    return root.locator(raw);
+    return roleLocator(root, raw) || root.locator(raw);
   }
   if (engine === "text" || engine === "text_based") {
     let tm = raw.match(/internal:text="([^"]*)"/);
@@ -39,11 +50,13 @@ function signalToLocator(root, signal, interpolate, inputs) {
     return root.locator(raw);
   }
   if (engine === "relational") {
-    // No public Playwright `right-of` engine — fall back to the base role+name locator.
+    // Playwright has no `right-of=`/`left-of=`/… chain engine (the recorded `>> right-of=…`
+    // serialization is not a parseable selector — only the CSS `:right-of()` pseudo exists,
+    // and it cannot take a role-based base). Resolve the durable base role+name instead; the
+    // resolver's fingerprint scoring + uniqueness gate disambiguates among siblings, which is
+    // what the spatial anchor was meant to do anyway.
     const base = raw.split(">>")[0].trim();
-    const rm = base.match(/internal:role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?/);
-    if (rm) return rm[2] ? root.getByRole(rm[1], { name: rm[2] }) : root.getByRole(rm[1]);
-    return root.locator(base);
+    return roleLocator(root, base) || root.locator(base);
   }
   if (engine === "xpath") {
     return root.locator(raw.startsWith("xpath=") ? raw : ("xpath=" + raw));

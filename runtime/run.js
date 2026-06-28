@@ -211,23 +211,6 @@ async function resolveStep(page, step, inputs) {
   throw Object.assign(new Error("Element not found (resolve miss)"), { resolveMiss: true });
 }
 
-// Poll-retry wrapper around resolveStep: keeps re-attempting on a genuine miss until
-// deadlineMs elapses, then re-throws.  This gives SPAs time to hydrate before we give
-// up — restoring, for the PRIMARY path, the auto-wait that string selectors already
-// receive via waitFor({state:"visible"}) in withLocator.  Ambiguous / recompileRequired
-// errors surface immediately (retrying cannot resolve them).
-async function resolveStepWithWait(page, step, inputs, deadlineMs = ACTION_TIMEOUT_MS) {
-  const end = Date.now() + deadlineMs;
-  for (;;) {
-    try {
-      return await resolveStep(page, step, inputs);
-    } catch (err) {
-      if (!err || !err.resolveMiss || Date.now() >= end) throw err;
-      await page.waitForTimeout(120);
-    }
-  }
-}
-
 const GATE_ENABLED = process.env.CONXA_GATE !== "0";
 const GATE_BUDGET_MS = envNumber("CONXA_GATE_BUDGET_MS", 600);
 
@@ -271,18 +254,33 @@ async function gateLocator(loc, step) {
 }
 
 async function withLocator(page, step, inputs, selector, timeout, fn) {
-  // PRIMARY → resolve the step's target via identity_bundle.signals, unless an explicit recovery
-  // selector was injected (string mode). Any other selector value is explicit string mode.
-  let candidates;
-  if (selector === PRIMARY) {
-    if (step._explicit_selector) {
-      candidates = locatorCandidates(page, step, inputs, step._explicit_selector);
-    } else {
-      candidates = [await resolveStepWithWait(page, step, inputs, timeout || ACTION_TIMEOUT_MS)];
+  // PRIMARY identity-bundle path: late-bind resolve → gate → act, RE-TRIED within the action
+  // budget. A transient state (target still hydrating, a menu still opening/animating) re-resolves
+  // a fresh locator on each attempt instead of dumping straight into recovery — restoring, for the
+  // scored multi-signal path, the auto-wait that string selectors get via waitFor. (Fixes the
+  // Tier-1 timing race where step N+1 fired before step N's menu had finished opening.)
+  if (selector === PRIMARY && !step._explicit_selector) {
+    const deadline = Date.now() + (timeout || ACTION_TIMEOUT_MS);
+    let lastErr = null;
+    for (;;) {
+      try {
+        const locator = await resolveStep(page, step, inputs);   // one attempt; loop owns the wait
+        await gateLocator(locator.first(), step);
+        return await fn(locator);
+      } catch (err) {
+        lastErr = err;
+        // Ambiguity / recompile-required cannot be fixed by waiting — surface immediately.
+        if (err && (err.ambiguous || err.recompileRequired)) throw err;
+        if (Date.now() >= deadline) throw err;
+        await page.waitForTimeout(120);
+      }
     }
-  } else {
-    candidates = locatorCandidates(page, step, inputs, selector);
   }
+
+  // Explicit recovery selector (PRIMARY + _explicit_selector) or plain string mode.
+  const candidates = selector === PRIMARY
+    ? locatorCandidates(page, step, inputs, step._explicit_selector)
+    : locatorCandidates(page, step, inputs, selector);
   if (!candidates.length) throw new Error("Missing selector");
 
   let lastErr = null;
@@ -748,29 +746,48 @@ async function recoverWithSelector(page, step, inputs, selector, onSuccess) {
   }
 }
 
+// Derive an element's accessible name from its recorded fingerprint for a11y recovery.
+// Precedence must mirror the compiler's canonical derivation (identity_bundle.py:
+// aria_label || name || inner_text) and resolver.js's fpName. `label_text` is the nearest
+// <label>/sibling context — for content elements (links, buttons) it is NOT the element's
+// accessible name and can point at a neighbour (e.g. the blueprint link's label_text was
+// mis-captured as "Project"), which would make `role=link[name="Project"]` recover the
+// WRONG element. It stays only as a last resort for form controls whose accessible name
+// legitimately comes from their label and whose inner_text is empty.
+function a11yRecoveryName(fingerprint) {
+  const fp = asObject(fingerprint);
+  return String(fp.aria_label || fp.name || fp.inner_text || fp.label_text || "").trim();
+}
+
 async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker) {
-  const fingerprint = asObject(asObject(step.identity_bundle).fingerprint);
+  const bundle = asObject(step.identity_bundle);
+  const fingerprint = asObject(bundle.fingerprint);
   const role = String(fingerprint.role || "").trim();
-  const name = String(fingerprint.aria_label || fingerprint.name || fingerprint.label_text || fingerprint.inner_text || "").trim();
+  const name = a11yRecoveryName(fingerprint);
+  if (!name) return false;
 
-  const attempts = [];
-  if (role && name) {
-    attempts.push({ selector: `role=${role}[name="${name.replace(/"/g, '\\"')}"]`, method: "a11y:role" });
-  }
-  if (name) {
-    attempts.push({ selector: textSelector(name.slice(0, 80)), method: "a11y:text" });
-  }
+  // Re-probe by accessible name, but resolve THROUGH the pure matcher (fingerprint scoring +
+  // strict uniqueness gate), never a raw `.first()` click. This is the architectural fix: a11y
+  // recovery can no longer pick a wrong-but-name-matching node — a candidate must out-score the
+  // recorded fingerprint and clear the uniqueness margin, exactly like primary resolution. We do
+  // this by handing the matcher a synthetic bundle of the accessible-name signals while keeping
+  // the recorded fingerprint + frame_chain so scoring and boundary context are unchanged.
+  const signals = [];
+  if (role) signals.push({ engine: "role", selector: `internal:role=${role}[name="${name}"]`, durability: 0.9 });
+  signals.push({ engine: "text_based", selector: `internal:text="${name.slice(0, 80)}"`, durability: 0.8 });
 
-  for (const { selector, method } of attempts) {
-    if (!selector) continue;
-    const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
-      appendRecoveryEvent({ event: "tier2_a11y", slug, step_index: stepIndex, recovery_method: method });
-      tracker.emit("tier_ok", { si: stepIndex, tier: "tier2_a11y", sel: method });
-    });
-    if (recovered) return true;
-  }
+  const method = role ? "a11y:role" : "a11y:text";
+  const a11yStep = { ...step, identity_bundle: { ...bundle, signals } };
+  delete a11yStep._explicit_selector;  // force the PRIMARY (matcher) path, not string mode
 
-  return false;
+  try {
+    await executeStep(page, a11yStep, inputs);
+    appendRecoveryEvent({ event: "tier2_a11y", slug, step_index: stepIndex, recovery_method: method });
+    tracker.emit("tier_ok", { si: stepIndex, tier: "tier2_a11y", sel: method });
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 async function recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, skipSelector, tracker) {
@@ -995,4 +1012,5 @@ module.exports = {
   isAuthFailure,
   verifyStep,
   gateLocator,
+  a11yRecoveryName,
 };

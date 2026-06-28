@@ -45,12 +45,15 @@ test("signalToLocator maps hyphenated data-test-id → literal CSS locator (regr
   assert.ok(root.calls.every(c => c.kind !== "testid"), "getByTestId must not be called for hyphenated attributes");
 });
 
-test("signalToLocator maps role+name → getByRole", () => {
+test("signalToLocator maps role+name → getByRole with exact:true (honours quoted grammar name)", () => {
+  // A quoted name in the grammar (`[name="..."]`) is an EXACT match in Playwright's own parser,
+  // so the re-parsed locator must pass exact:true — otherwise `link[name="Blueprint"]` would also
+  // match "Blueprints" (substring), diverging from the native string's meaning.
   const root = mockRoot();
   signalToLocator(root, { engine: "role", selector: 'internal:role=button[name="Submit order"]' }, idInterp, {});
   assert.strictEqual(root.calls[0].kind, "role");
   assert.strictEqual(root.calls[0].arg, "button");
-  assert.deepStrictEqual(root.calls[0].opts, { name: "Submit order" });
+  assert.deepStrictEqual(root.calls[0].opts, { name: "Submit order", exact: true });
 });
 
 test("signalToLocator maps text → getByText exact", () => {
@@ -61,14 +64,17 @@ test("signalToLocator maps text → getByText exact", () => {
   assert.deepStrictEqual(root.calls[0].opts, { exact: true });
 });
 
-test("signalToLocator relational falls back to base role+name", () => {
+test("signalToLocator relational falls back to base role+name (exact)", () => {
+  // Playwright has no `right-of=` chain engine, so the spatial part is dropped and the durable
+  // base role+name is resolved (exact, like any role signal); the resolver's uniqueness gate
+  // does the sibling disambiguation the spatial anchor was meant to provide.
   const root = mockRoot();
   signalToLocator(root, {
     engine: "relational",
     selector: 'internal:role=button[name="X"] >> right-of=internal:text="Y"',
   }, idInterp, {});
   assert.strictEqual(root.calls[0].kind, "role");
-  assert.deepStrictEqual(root.calls[0].opts, { name: "X" });
+  assert.deepStrictEqual(root.calls[0].opts, { name: "X", exact: true });
 });
 
 test("signalToLocator xpath gets xpath= prefix", () => {
@@ -141,6 +147,22 @@ test("gatherCandidates + resolve picks the unique hyphenated testid match (regre
   // project sibling must not appear among candidates (locator returned only blueprint)
   const allCandidates = Object.values(map).flat();
   assert.ok(!allCandidates.some(c => c._loc === project), "project sibling must not appear in candidate map");
+});
+
+test("a11y recovery shape: same-name candidates are disambiguated by fingerprint, not .first()", async () => {
+  // Fix #1 guarantee: a11y recovery resolves through the pure matcher, so even when two elements
+  // share the recovery name ("Blueprint"), the one matching the recorded fingerprint (testid) wins
+  // the uniqueness gate — the decoy is never blindly clicked. This is the resolver-level invariant
+  // behind recoverWithA11y's synthetic role/text bundle.
+  const real  = mockElement({ testid: "creation-button-blueprint", role: "link", name: "Blueprint", text: "Blueprint" });
+  const decoy = mockElement({ testid: "",                          role: "link", name: "Blueprint", text: "Blueprint" });
+  const root = rootWithCandidates({ role: [real, decoy] });
+  const signals = [{ engine: "role", selector: 'internal:role=link[name="Blueprint"]', durability: 0.9 }];
+  const map = await gatherCandidates([root], signals, idInterp, {});
+  const fp = bundleFingerprint({ fingerprint: { data_testid: "creation-button-blueprint", role: "link", inner_text: "Blueprint" } });
+  const result = resolve(signals, fp, { queryAll: (sel) => map[sel] || [] }, {});
+  assert.ok(result.node, "should resolve a winner");
+  assert.strictEqual(result.node._loc, real, "must pick the fingerprint-matching element, not the decoy");
 });
 
 test("gatherCandidates computes a stableHash from the payload", async () => {
