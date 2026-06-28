@@ -153,10 +153,11 @@ jobs:
           key: pw-chromium-${{ runner.os }}-${{ hashFiles('runtime/package-lock.json') }}
           restore-keys: |
             pw-chromium-${{ runner.os }}-
+          save-always: true
 
       - name: Install Chromium for execution gate
         working-directory: runtime
-        timeout-minutes: 3
+        timeout-minutes: 8
         run: npx playwright install chromium
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
