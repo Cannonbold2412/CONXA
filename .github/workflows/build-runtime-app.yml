@@ -139,6 +139,12 @@ jobs:
           Write-Output "version.json written"
         shell: pwsh
 
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\.pw-browsers
+          key: pw-chromium-${{ runner.os }}-${{ hashFiles('runtime/package-lock.json') }}
+
       - name: Install Chromium for execution gate
         working-directory: runtime
         run: npx playwright install chromium
