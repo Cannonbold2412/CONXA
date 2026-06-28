@@ -302,7 +302,7 @@ Workflow recording and local plugin creation remain unlimited.
 
 ```mermaid
 flowchart TD
-    A[Customer receives Company-Claude-Setup.exe] --> B[Run installer - no UAC]
+    A[Customer receives Company-Agent-Setup.exe] --> B[Run installer - no UAC]
     B --> C[NSIS installs runtime.exe to $PROFILE\.conxa\runtime\]
     C --> D[NSIS runs runtime.exe --install-playwright with CONXA_DIR=$PROFILE\.conxa]
     D --> E[NSIS installs skill-packs to $PROFILE\.conxa\skill-packs\company\]

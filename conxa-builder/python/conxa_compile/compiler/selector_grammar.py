@@ -40,10 +40,10 @@ def _to_internal_text(text: str) -> str:
 
 
 def _to_internal_testid(value: str) -> str:
-    """Convert a [data-testid="..."] or raw testid value to internal:testid= grammar."""
-    m = re.match(r'^\[data-testid=["\']?([^"\'>\s\]]+)["\']?\]$', value)
-    testid_val = m.group(1) if m else value
-    return f'internal:testid=[data-testid="{testid_val}"]'
+    """Convert a [data-test(id)="..."] or raw testid value to internal:testid= grammar."""
+    m = re.match(r'^\[(data-test(?:-?id)?)=["\']?([^"\'>\s\]]+)["\']?\]$', value)
+    attr_name, testid_val = (m.group(1), m.group(2)) if m else ("data-testid", value)
+    return f'internal:testid=[{attr_name}="{testid_val}"]'
 
 # Engines that use internal: grammar in storage but need public grammar in the editor.
 _INTERNAL_GRAMMAR_ENGINES = frozenset({"testid", "role", "aria", "text", "text_based", "relational"})
@@ -51,7 +51,7 @@ _INTERNAL_GRAMMAR_ENGINES = frozenset({"testid", "role", "aria", "text", "text_b
 # Regex patterns for engine inference from display strings.
 _ROLE_RE = re.compile(r"^role=([a-zA-Z]+)(?:\[name=\"([^\"]*)\"\])?$")
 _TEXT_RE = re.compile(r'^text=["\']?(.*?)["\']?$', re.DOTALL)
-_TESTID_RE = re.compile(r'\[data-testid=["\']?([^"\'>\s\]]+)["\']?\]')
+_TESTID_RE = re.compile(r'\[(data-test(?:-?id)?)=["\']?([^"\'>\s\]]+)["\']?\]')
 _INTERNAL_ROLE_RE = re.compile(r"^internal:role=([a-zA-Z]+)(?:\[name=\"([^\"]*)\"\])?")
 _INTERNAL_TEXT_RE = re.compile(r'^internal:text="(.*)"$', re.DOTALL)
 
@@ -62,7 +62,7 @@ def signal_to_display(engine: str, selector: str) -> str:
     Rules:
       internal:role=X[name="Y"]  →  role=X[name="Y"]
       internal:text="Y"          →  text="Y"
-      internal:testid=...        →  [data-testid="..."]
+      internal:testid=...        →  [data-test(id)="..."]
       relational: convert inner internal:role=/internal:text= fragments to public, keep >> structure
       css / xpath / css-id / css-structural: verbatim
     """
@@ -88,14 +88,14 @@ def signal_to_display(engine: str, selector: str) -> str:
         return s
 
     if eng == "testid":
-        # Prefer the [data-testid="..."] CSS form as it's human-readable.
-        m_i = re.match(r'^internal:testid=\[data-testid=["\']?([^"\'>\s\]]+)["\']?\]$', s)
+        # Prefer the [data-test(id)="..."] CSS form as it's human-readable.
+        m_i = re.match(r'^internal:testid=\[(data-test(?:-?id)?)=["\']?([^"\'>\s\]]+)["\']?\]$', s)
         if m_i:
-            return f'[data-testid="{m_i.group(1)}"]'
+            return f'[{m_i.group(1)}="{m_i.group(2)}"]'
         # Already CSS form.
         m_c = _TESTID_RE.search(s)
         if m_c:
-            return f'[data-testid="{m_c.group(1)}"]'
+            return f'[{m_c.group(1)}="{m_c.group(2)}"]'
         return s
 
     if eng == "relational":
@@ -128,7 +128,7 @@ def display_to_signal(display: str) -> tuple[str, str]:
     Engine inference rules (first match wins):
       starts with role=           → engine=role,      stored=internal:role=X[name="Y"]
       starts with text=           → engine=text_based, stored=internal:text="Y"
-      contains [data-testid=      → engine=testid,    stored=internal:testid=[data-testid="..."]
+      contains [data-test(id)=     → engine=testid,    stored=internal:testid=[data-test(id)="..."]
       starts with // or (//       → engine=xpath,     stored verbatim
       contains >> right-of=       → engine=relational, stored (convert public → internal inside)
       #id-only CSS                → engine=css-id,   stored verbatim

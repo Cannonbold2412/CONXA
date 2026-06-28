@@ -220,7 +220,7 @@ def build_installer(
 
         # ── 5. Compile installer ──────────────────────────────────────────────
         safe_name = company_name.replace(" ", "")
-        installer_name = f"{safe_name}-Claude-Setup.exe"
+        installer_name = f"{safe_name}-Agent-Setup.exe"
         installer_path = tmp / installer_name
 
         _log(f"Running makensis → {installer_name}…")

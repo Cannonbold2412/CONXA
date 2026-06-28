@@ -234,8 +234,8 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
         seen["build_plugin_id"] = plugin_id
         seen["build"] = kwargs
         return {
-            "installer_path": str(tmp_path / "Render-Claude-Setup.exe"),
-            "filename": "Render-Claude-Setup.exe",
+            "installer_path": str(tmp_path / "Render-Agent-Setup.exe"),
+            "filename": "Render-Agent-Setup.exe",
             "company": kwargs["company_slug"],
             "plugin_id": plugin_id,
             "version": kwargs["version"],

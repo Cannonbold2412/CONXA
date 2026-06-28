@@ -72,6 +72,6 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
     )
 
     assert result["version"] == "v9.9.9"
-    assert (tmp_path / "installers" / "Render-Claude-Setup.exe").is_file()
+    assert (tmp_path / "installers" / "Render-Agent-Setup.exe").is_file()
     assert any("Using existing skill pack" in message for message in logs)
     assert not any("Building skill pack" in message for message in logs)

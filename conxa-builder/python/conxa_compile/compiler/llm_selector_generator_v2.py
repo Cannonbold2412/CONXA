@@ -155,7 +155,7 @@ def _normalize_selector(selector: str) -> str:
     s = selector.strip()
     # Normalize aria-label="X" and aria-label='X' to the same form
     s = re.sub(r"aria-label=['\"]", 'aria-label="', s)
-    s = re.sub(r"data-testid=['\"]", 'data-testid="', s)
+    s = re.sub(r"data-test(?:-?id)=['\"]", lambda m: m.group(0).split("=")[0] + '="', s)
     return s
 
 
@@ -310,9 +310,9 @@ def to_playwright_grammar(engine: str, value: str, name: str = "") -> str:
     """
     eng = engine.lower()
     if eng == "testid":
-        m = re.match(r'\[data-testid=["\']?([^"\'>\s\]]+)["\']?\]', value)
-        testid_val = m.group(1) if m else value
-        return f'internal:testid=[data-testid="{testid_val}"]'
+        m = re.match(r'\[(data-test(?:-?id)?)=["\']?([^"\'>\s\]]+)["\']?\]', value)
+        attr_name, testid_val = (m.group(1), m.group(2)) if m else ("data-testid", value)
+        return f'internal:testid=[{attr_name}="{testid_val}"]'
     if eng in ("role", "aria"):
         # Normalise: strip existing internal:role= prefix if already there
         role_val = re.sub(r'^internal:role=', '', value).strip()
