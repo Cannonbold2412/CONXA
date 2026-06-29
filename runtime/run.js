@@ -415,6 +415,28 @@ function enrichStepsWithRecovery(steps, recovery) {
   });
 }
 
+// Agent-recovery overrides (Tier 3/4 closing edge)
+//
+// When the in-process cascade (T1/T2) is exhausted the runtime hands a structured recovery
+// request to the MCP agent, which identifies the correct element and resumes with a corrected
+// selector for the failing step. `step_overrides` is a map keyed by the 0-based step index
+// (the same value passed as `resume_from`) → { selector }. We inject the chosen selector via
+// the existing `_explicit_selector` channel so it flows through the normal string-mode path in
+// withLocator — frame_chain, gating, and pacing are all preserved. This is the closing edge of
+// the four-tier cascade: without it, T3/T4 can describe the fix but never apply it.
+function applyStepOverrides(steps, overrides) {
+  if (!Array.isArray(steps) || !overrides || typeof overrides !== "object") return steps;
+  const out = steps.slice();
+  for (const [rawKey, rawVal] of Object.entries(overrides)) {
+    const idx = Number(rawKey);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= out.length) continue;
+    const selector = rawVal && typeof rawVal === "object" ? rawVal.selector : rawVal;
+    if (typeof selector !== "string" || !selector.trim()) continue;
+    out[idx] = { ...out[idx], _explicit_selector: selector.trim(), _agent_override: true };
+  }
+  return out;
+}
+
 // Step executor
 
 async function runLocatorStep(page, step, inputs, action, paceType, selector = PRIMARY) {
@@ -1004,6 +1026,7 @@ module.exports = {
   interpolate,
   tryLocator,
   enrichStepsWithRecovery,
+  applyStepOverrides,
   executeStep,
   runPlan,
   checkRetryBudget,
