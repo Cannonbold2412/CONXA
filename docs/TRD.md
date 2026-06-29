@@ -797,12 +797,11 @@ For each step in `execution.json`:
 3. waitForUrlState() — pre-step URL gate (if step.url defined)
 4. executeStep() — primary action
    ├── interpolate input variables ({{variable}} substitution)
-   ├── resolveElement() — find DOM element
-   │   ├── Tier 1: compiled_selectors[] (try in order)
-   │   ├── Tier 2: a11y tree (role + name lookup)
-   │   ├── Tier 3: LLM semantic recovery (Claude via MCP)
-   │   ├── Tier 4: Vision recovery (screenshot → Claude)
-   │   └── Tier 5: Escalation (human review)
+   ├── resolveStep() — IdentityBundle resolution over the live DOM
+   │   ├── Tier 1: deterministic exception ladder over all bundle signals (in-process, zero-token)
+   │   ├── Tier 2: a11y re-probe / re-hover / fallback / dialog-scope / fuzzy (in-process, zero-token)
+   │   ├── Tier 3: LLM semantic recovery — intent + DOM inventory → Claude (agent-mediated; ceiling ≥ 3)
+   │   └── Tier 4: Vision recovery — screenshot → Claude (agent-mediated; ceiling ≥ 3)
    └── withLocator() — perform the action
 5. verifyAssertions() — check Assertion[]
    ├── required assertions → halt on failure
@@ -830,19 +829,30 @@ After navigation steps: waits for `domcontentloaded` + 600ms observer pause.
 
 ## 10. Recovery Architecture
 
-### 10.1 Five-Tier Recovery Cascade
+### 10.1 Four-Tier Recovery Cascade + Ceiling
 
-When `resolveElement()` fails to find the target:
+When step resolution fails to find the target:
 
-| Tier | Mechanism | LLM Cost | Trigger |
-|---|---|---|---|
-| **T1** | Compiled selectors (CSS/XPath, ranked) | Zero | Always first |
-| **T2** | Accessibility tree (role + name lookup) | Zero | T1 all fail |
-| **T3** | LLM semantic recovery (current DOM → Claude) | Yes (text) | T2 fails |
-| **T4** | Vision recovery (screenshot → Claude) | Yes (vision) | T3 fails |
-| **T5** | Escalation (human review queue) | Zero | T4 fails / budget exceeded |
+| Tier | Mechanism | LLM Cost | Trigger | Where |
+|---|---|---|---|---|
+| **T1** | Deterministic exception ladder (re-resolve / scroll / dismiss-overlay / wait-stable/enabled) over all bundle signals | Zero | Always first | `run.js` (in-process) |
+| **T2** | a11y re-probe (role+name through the matcher), re-hover, fallback selectors, dialog-scope, fuzzy text | Zero | T1 fails | `run.js` (in-process) |
+| **T3** | LLM **semantic** recovery — failed-step intent + live DOM inventory → Claude | Yes (text) | T2 fails | Agent-mediated handoff |
+| **T4** | **Vision** recovery — failure screenshot + reference image → Claude | Yes (vision) | T3 insufficient | Agent-mediated handoff |
+
+**Tiers 1–2 are in-process and zero-token** (`run.js:recoverStep`). **Tiers 3–4 are agent-mediated:** when the in-process cascade is exhausted the runtime returns a *structured recovery request* to the MCP client (Claude) — a Tier 3 semantic block (step intent + interactive-element inventory) and a Tier 4 vision block (screenshots) — and the agent resumes by calling `execute_skill` again with a corrected selector. This is the **closing edge** of the cascade.
+
+**Recovery ceiling (`CONXA_MAX_RECOVERY_TIER`, 1–4, default 4).** The zero-token cascade always runs; the env var caps whether the agent-mediated handoff (T3/T4) is offered:
+- **Claude / MCP execution → ceiling 4** (default): full cascade; on T2 exhaustion the runtime emits the structured recovery request.
+- **Build Studio sandbox → ceiling 2** (`conxa_runtime.py` sets `CONXA_MAX_RECOVERY_TIER=2`): no agent handoff. A step surviving T1/T2 fails deterministically so the compiled pack is judged on its own merits — there is no agent in a headless Studio run to act on a recovery request.
+
+**Closing edge — `step_overrides`.** `execute_skill` accepts `step_overrides: { "<0-based step index>": { "selector": "<Playwright selector>" } }` (keyed by the same index as `resume_from`). On resume the chosen selector is injected via the step's `_explicit_selector` channel (`run.js:applyStepOverrides`), flowing through normal string-mode resolution — frame_chain, gating, and pacing preserved. Overrides are honoured only when the ceiling ≥ 3, so a stray override can never silently rewrite a pack under deterministic Studio test. Without this edge T3/T4 could *describe* a fix but never *apply* one.
+
+**Cross-call page parking (the state-preservation half of the closing edge).** Agent recovery is inherently cross-call (runtime fails → Claude reasons → runtime resumes). If the failed page were torn down, the resume would begin on a blank page and `resume_from` would skip the navigation that established state — so the agent's *correct* selector would act on the wrong page and fail again. On a parkable failure (single run, ceiling ≥ 3, a selector/verify failure that is not auth/cancel), the runtime **parks the live page+context+browser** keyed by skill+company instead of closing it (`server.js:_parkedRecovery`), with a TTL (`CONXA_RECOVERY_PARK_TTL_MS`, default 180s) that closes it if the agent never resumes. When the matching resume-with-override arrives, the runtime adopts the parked page and applies the override to the exact DOM the recovery request described. An unrelated/new run discards any stale park first. Headless browsers are reclaimed by `browser.js`'s per-company idle cache; a visible (`watch`) browser is closed on discard. Events: `recovery_park_created` / `recovery_park_resumed` / `recovery_park_discarded`.
 
 Retry budget: `RETRY_BUDGET_MAX = 3` per (skill, step_index). On exhaustion → `retry_budget_exhausted` event logged, escalate.
+
+Recovery observability: `mcp_connected`, `execute_start`, and `get_runtime_status` all report `max_recovery_tier`; the recovery log records `recovery_ceiling_reached`, `agent_recovery_requested`, and `agent_override_applied` events.
 
 ### 10.2 Selector Scoring
 

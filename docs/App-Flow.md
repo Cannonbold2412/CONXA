@@ -391,27 +391,23 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A[executeStep for step N] --> B[resolveElement]
-    B --> C{Tier 1: compiled_selectors}
-    C -->|Found| D[withLocator: perform action]
-    C -->|Not found| E{Tier 2: a11y tree role+name}
-    E -->|Found| D
-    E -->|Not found| F{Retry budget remaining?}
-    F -->|No| G[Tier 5: Escalation]
-    F -->|Yes| H{Tier 3: LLM semantic recovery}
-    H --> I[Current DOM → Claude: find element by description]
-    I -->|Found| D
-    I -->|Not found| J{Tier 4: Vision recovery}
-    J --> K[Screenshot → Claude: locate element visually]
-    K -->|Found| D
-    K -->|Not found| G
+    A[executeStep for step N] --> B[resolveStep: IdentityBundle over live DOM]
+    B --> C{Tier 1: deterministic ladder over all signals}
+    C -->|Resolved| D[withLocator: perform action]
+    C -->|Fail| E{Tier 2: a11y / re-hover / fallback / dialog / fuzzy}
+    E -->|Resolved| D
+    E -->|Fail| F{Recovery ceiling ≥ 3?}
+    F -->|No — Build Studio| N[Deterministic failure: report, no agent handoff]
+    F -->|Yes — Claude/MCP| G[Park live page + return Tier 3/4 recovery request]
+    G --> H[Tier 3 semantic: step intent + DOM inventory → Claude]
+    G --> I[Tier 4 vision: screenshots → Claude]
+    H --> J[Claude resumes: execute_skill resume_from + step_overrides]
+    I --> J
+    J --> K[Adopt parked page; apply override via _explicit_selector]
+    K --> D
     D --> L[verifyAssertions]
-    L -->|All pass| M[writeCheckpoint]
-    L -->|Required fails| N[Halt execution: report failure]
-    L -->|Advisory fails| O[Log warning, continue]
-    M --> P[tracker.emit step_ok + tier used]
-    G --> Q[Report to Claude: action required]
-    Q --> R[User intervenes or cancels]
+    L -->|All pass| M[tracker.emit tier_ok + continue]
+    L -->|Required fails| F
 ```
 
 ---
