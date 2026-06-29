@@ -22,6 +22,48 @@ const LOG_FILE        = path.join(CONXA_DATA_DIR, "logs", "runtime.log");
 const RUNTIME_VERSION = global.__runtimeVersion || require("./package.json").version;
 const INSTALL_ID      = loadInstallId(CONXA_DATA_DIR);
 
+// ─── Recovery tier ceiling ────────────────────────────────────────────────────
+// The zero-token cascade (Tier 1 deterministic ladder + Tier 2 a11y/fallback) always
+// runs inside run.js. Tiers 3 (LLM semantic) and 4 (vision) are agent-mediated: when the
+// in-process cascade is exhausted the runtime hands a structured recovery request back to
+// the MCP client (Claude), which reasons over the live DOM / screenshot and resumes with a
+// corrected selector via `step_overrides`. That handoff only makes sense when an agent is
+// actually in the loop.
+//   • Claude / MCP execution  → ceiling 4 (default): all four tiers enabled.
+//   • Build Studio sandbox test → ceiling 2 (CONXA_MAX_RECOVERY_TIER=2): deterministic,
+//     no agent handoff — a step that survives T1/T2 fails honestly so the compiled pack is
+//     tested on its own merits.
+const { clampRecoveryTier } = require("./recovery");
+const MAX_RECOVERY_TIER = clampRecoveryTier(process.env.CONXA_MAX_RECOVERY_TIER, 4);
+// Agent-mediated recovery (T3 semantic + T4 vision) is available only above the T2 ceiling.
+const AGENT_RECOVERY_ENABLED = MAX_RECOVERY_TIER >= 3;
+
+// ─── Parked recovery page (Tier 3/4 cross-call self-healing) ──────────────────
+// Agent-mediated recovery is inherently cross-call: the runtime fails a step → returns a
+// recovery request to Claude → Claude resumes with a corrected selector. If the failed page
+// were torn down, the resume would begin on a blank page and `resume_from` would skip the
+// navigation that established state — so the agent's *correct* selector would act on the WRONG
+// (blank) page and fail again. We instead PARK the live failed page (browser+context+page) and
+// resume the override on it, so recovery operates on the exact DOM the agent reasoned about. A
+// TTL closes the park if the agent never resumes, so a browser is never leaked.
+const PARK_TTL_MS = Number(process.env.CONXA_RECOVERY_PARK_TTL_MS) || 180000;
+let _parkedRecovery = null;
+
+async function _discardPark(reason) {
+  const park = _parkedRecovery;
+  _parkedRecovery = null;
+  if (!park) return;
+  clearTimeout(park.timer);
+  log("info", "recovery_park_discarded", { slug: park.slug, reason });
+  try { await park.page.close(); } catch (_) {}
+  // Headless browsers are owned by browser.js's per-company cache (idle-closed there). A watch
+  // (visible) browser is not cached, so close it here.
+  if (park.watch) {
+    try { await park.context.close(); } catch (_) {}
+    try { await park.browser.close(); } catch (_) {}
+  }
+}
+
 // ─── 2. Playwright browser path (MUST precede any playwright require) ─────────
 // Respect a caller-supplied PLAYWRIGHT_BROWSERS_PATH (e.g. dev mode where CONXA_DIR
 // points to a data dir that has no chromium/ subfolder).
@@ -164,6 +206,7 @@ let sync;
 let authManager;
 let runPlan;
 let enrichStepsWithRecovery;
+let applyStepOverrides;
 let appendRecoveryEvent;
 let clearRetryBudget;
 let checkRetryBudget;
@@ -182,7 +225,7 @@ try {
   skillLoader  = require("./skill_loader");
   sync         = require("./sync");
   authManager  = require("./auth_manager");
-  ({ runPlan, enrichStepsWithRecovery, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure } = require("./run"));
+  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure } = require("./run"));
   ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
 } catch (e) {
@@ -544,7 +587,8 @@ if (fs.existsSync(RUNTIME_UPDATE_PENDING)) {
 // ─── 10. Connect MCP immediately ─────────────────────────────────────────────
 const transport = new StdioServerTransport();
 server.connect(transport);
-log("info", "mcp_connected", { version: RUNTIME_VERSION, conxa_dir: CONXA_DIR });
+log("info", "mcp_connected", { version: RUNTIME_VERSION, conxa_dir: CONXA_DIR,
+  max_recovery_tier: MAX_RECOVERY_TIER, agent_recovery: AGENT_RECOVERY_ENABLED });
 
 // ─── 11. Async post-connect tasks ────────────────────────────────────────────
 // execute_skill awaits this promise before running so it always sees fresh data.
@@ -632,7 +676,11 @@ function _toolDefinitions() {
           skill:       { type: "string",  description: "Skill slug from list_skills" },
           company:     { type: "string",  description: "Company slug (required if skill slug is not unique)" },
           inputs:      { type: "object",  description: "Input values. Call get_skill_inputs first to see the schema." },
-          resume_from: { type: "integer", description: "Step index to resume from after fixing a failure." },
+          resume_from: { type: "integer", description: "0-based step index to resume from after a failure (the value reported in the failure response)." },
+          step_overrides: {
+            type: "object",
+            description: "Tier 3/4 self-healing: map of \"<step index>\" → { \"selector\": \"<Playwright selector>\" }. When a step fails, the runtime returns the failed step's intent, a live DOM inventory, and a screenshot; identify the correct element and pass its selector here keyed by the same index as resume_from. Prefer [data-testid=\"…\"], then #id, then internal:role=<role>[name=\"…\"], then text=\"…\". Example: { \"7\": { \"selector\": \"[data-testid='submit-btn']\" } }.",
+          },
           watch:       { type: "boolean", description: "true = open a visible browser so the user can watch; false = run headlessly in the background." },
         },
         required: ["skill"],
@@ -652,6 +700,8 @@ function _toolDefinitions() {
                 skill:   { type: "string" },
                 company: { type: "string" },
                 inputs:  { type: "object" },
+                resume_from:    { type: "integer", description: "0-based step index to resume from after a failure." },
+                step_overrides: { type: "object", description: "Tier 3/4 self-healing selector overrides, keyed by step index (see execute_skill)." },
               },
               required: ["skill"],
             },
@@ -729,10 +779,60 @@ function _trackingStatus(pack) {
 }
 
 
-// ─── Build L4/L5 failure response ─────────────────────────────────────────────
+// Compact, recovery-relevant description of the step the cascade could not resolve.
+// Drives Tier 3 (semantic) matching: the agent matches THIS intent against the live DOM.
+function _stepRecoveryContext(err) {
+  const step = err && err.failedStep ? err.failedStep : null;
+  if (!step) return null;
+  const fp = (step.identity_bundle && step.identity_bundle.fingerprint) || {};
+  const ctx = {
+    action: step.type || "",
+    intent: step._intent || step.label || "",
+    target: {
+      role:       fp.role || undefined,
+      name:       fp.aria_label || fp.name || undefined,
+      text:       fp.inner_text || undefined,
+      data_testid: fp.data_testid || undefined,
+    },
+  };
+  if (step.value && typeof step.value === "string" && step.value.length < 80) ctx.value = step.value;
+  // Strip empty target fields so the agent sees only positive identity signals.
+  ctx.target = Object.fromEntries(Object.entries(ctx.target).filter(([, v]) => v));
+  if (!Object.keys(ctx.target).length) delete ctx.target;
+  return ctx;
+}
+
+// ─── Build failure response ───────────────────────────────────────────────────
+// Two shapes, decided by the recovery-tier ceiling (CONXA_MAX_RECOVERY_TIER):
+//   • ceiling ≥ 3 (Claude/MCP): a structured Tier 3 (semantic) + Tier 4 (vision) recovery
+//     request with an explicit `step_overrides` protocol so the agent can apply a fix and
+//     resume — the closing edge of the four-tier cascade.
+//   • ceiling 2 (Build Studio): a concise, deterministic failure. No agent handoff, no
+//     screenshots — the compiled pack is judged on its T1/T2 merits alone.
 async function _buildFailureResponse(page, err, resolvedEntry) {
   const url      = page.url();
   const failedAt = typeof err.failedAt === "number" ? err.failedAt : null;
+  const stepNo   = failedAt !== null ? failedAt + 1 : "?";
+
+  // Session expiry is surfaced in BOTH modes — it is an auth condition, not a selector miss.
+  if (err.session_expired) {
+    const reauth = AGENT_RECOVERY_ENABLED
+      ? `\nAsk the user to re-authenticate, then call execute_skill with resume_from: ${failedAt ?? 0}.`
+      : "";
+    return { content: [{ type: "text", text:
+      `Execution failed at step ${stepNo}: session expired — redirected to ${err.login_url || url}.${reauth}` }] };
+  }
+
+  // Build Studio (T1/T2 ceiling): deterministic terminal failure, no agent recovery payload.
+  if (!AGENT_RECOVERY_ENABLED) {
+    appendRecoveryEvent({ event: "recovery_ceiling_reached", tier: MAX_RECOVERY_TIER,
+      slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
+    const intent = _stepRecoveryContext(err);
+    const detail = intent ? `\nStep intent: ${JSON.stringify(intent)}` : "";
+    return { content: [{ type: "text", text:
+      `Execution failed at step ${stepNo}: ${err.message}\nPage URL: ${url}\n` +
+      `Recovery ceiling Tier ${MAX_RECOVERY_TIER} (deterministic cascade only — no agent recovery).${detail}` }] };
+  }
 
   // P7: capture as JPEG (lossless PNG is 3-8× larger; Claude token cost is dimension-based either way)
   const failShot = await page.screenshot({ type: "jpeg", quality: 80 }).catch(() => null);
@@ -782,28 +882,43 @@ async function _buildFailureResponse(page, err, resolvedEntry) {
     });
   } catch (_) {}
 
-  const sessionExpiredHint = err.session_expired
-    ? `\nSession expired — the workflow was redirected to: ${err.login_url || url}\nAsk the user to re-authenticate, then call execute_skill with resume_from: ${failedAt ?? 0}.`
-    : "";
-  const resumeHint = !err.session_expired && failedAt !== null
-    ? `\nFix the selector, then call execute_skill with resume_from: ${failedAt}.`
-    : "";
+  appendRecoveryEvent({ event: "agent_recovery_requested", tier: MAX_RECOVERY_TIER,
+    slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
+
+  const intent = _stepRecoveryContext(err);
+  const resumeKey = failedAt !== null ? String(failedAt) : "0";
+
+  // Header + the exact closing-edge protocol so the agent can apply its finding and resume.
+  const header =
+    `Execution failed at step ${stepNo} (Tier 1–2 cascade exhausted): ${err.message}\n` +
+    `Page URL: ${url}\n\n` +
+    `Self-healing recovery (Tier 3 semantic + Tier 4 vision). Identify the element the failed ` +
+    `step was meant to act on, then resume by calling execute_skill again with:\n` +
+    `  resume_from: ${failedAt ?? 0}\n` +
+    `  step_overrides: { "${resumeKey}": { "selector": "<your selector>" } }\n` +
+    `Selector preference: [data-testid="…"] > #id > internal:role=<role>[name="…"] > text="…". ` +
+    `Use the screenshot when the DOM inventory below is ambiguous. Do not guess — if no element ` +
+    `matches the intent, tell the user the page has changed and ask how to proceed.`;
+
+  // Tier 3 — semantic: the recorded intent + a live inventory of interactive elements.
+  const t3 = ["── Tier 3 (semantic) ──"];
+  if (intent) t3.push(`Failed step intent: ${JSON.stringify(intent)}`);
+  if (viewport) t3.push(`viewport: ${JSON.stringify(viewport)}, scrollY: ${scrollY}`);
+  if (pageStructure && pageStructure.length > 0) {
+    t3.push(`Interactive elements now on the page (${pageStructure.length}):\n${JSON.stringify(pageStructure)}`);
+  } else {
+    t3.push("No interactive elements were enumerable — rely on the Tier 4 screenshot.");
+  }
 
   const content = [
-    { type: "text", text: `Execution failed at step ${failedAt !== null ? failedAt + 1 : "?"}: ${err.message}\nPage URL: ${url}${sessionExpiredHint}${resumeHint}` },
-    { type: "text", text: "\nLayer 4 — vision recovery" },
+    { type: "text", text: header },
+    { type: "text", text: t3.join("\n") },
+    { type: "text", text: "── Tier 4 (vision) ──" },
   ];
 
-  if (err.preShot)    content.push({ type: "text", text: "Pre-step screenshot:" }, { type: "image", data: err.preShot.toString("base64"), mimeType: "image/png" });
-  if (visualRefData)  content.push({ type: "text", text: `Reference image for step ${failedAt + 1}:` }, { type: "image", data: visualRefData, mimeType: visualRefMime });
-  // P7: mimeType updated to match JPEG capture above
+  if (err.preShot)    content.push({ type: "text", text: "Pre-step screenshot (before the action):" }, { type: "image", data: err.preShot.toString("base64"), mimeType: "image/png" });
+  if (visualRefData)  content.push({ type: "text", text: `Reference image of the target from recording (step ${stepNo}):` }, { type: "image", data: visualRefData, mimeType: visualRefMime });
   if (failShot)       content.push({ type: "text", text: "Current page at failure:" }, { type: "image", data: failShot.toString("base64"), mimeType: "image/jpeg" });
-
-  // P4: compact JSON (no null,2 indentation)
-  const l5 = ["\nLayer 5 — intent recovery"];
-  if (viewport)    l5.push(`viewport: ${JSON.stringify(viewport)}, scrollY: ${scrollY}`);
-  if (pageStructure && pageStructure.length > 0) l5.push(`Interactive elements (${pageStructure.length}):\n${JSON.stringify(pageStructure)}`);
-  content.push({ type: "text", text: l5.join("\n") });
 
   return { content };
 }
@@ -889,6 +1004,8 @@ async function _handleTool(name, args) {
       platform: process.platform,
       install_id: INSTALL_ID,
       conxa_dir: CONXA_DIR,
+      max_recovery_tier: MAX_RECOVERY_TIER,
+      agent_recovery_enabled: AGENT_RECOVERY_ENABLED,
       skill_packs: Object.values(packsMap),
       update_pending: updatePending,
     }, null, 2));
@@ -899,7 +1016,7 @@ async function _handleTool(name, args) {
     const watch = args.watch !== false;
     const runs = name === "execute_sequence"
       ? (Array.isArray(args.skills) ? args.skills : [])
-      : [{ skill: args.skill, company: args.company, inputs: args.inputs, resume_from: args.resume_from }];
+      : [{ skill: args.skill, company: args.company, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides }];
 
     if (runs.length === 0) return err("No skills provided.");
 
@@ -940,7 +1057,16 @@ async function _handleTool(name, args) {
       const rawExec  = fs.existsSync(execPath) ? JSON.parse(fs.readFileSync(execPath, "utf8")) : null;
       const rawRec   = fs.existsSync(recPath)  ? JSON.parse(fs.readFileSync(recPath,  "utf8")) : null;
       const rawSteps = Array.isArray(rawExec) ? rawExec : (rawExec?.steps || rawExec?.execution_plan || []);
-      const steps    = enrichStepsWithRecovery(rawSteps, rawRec);
+      const enriched = enrichStepsWithRecovery(rawSteps, rawRec);
+      // Apply agent-recovery selector overrides (Tier 3/4 closing edge). Only honoured when
+      // agent recovery is enabled (ceiling ≥ 3) — in a deterministic Studio test (ceiling 2)
+      // a stray override must not silently rewrite the pack under test.
+      const steps = AGENT_RECOVERY_ENABLED ? applyStepOverrides(enriched, run.step_overrides) : enriched;
+      const overrideCount = AGENT_RECOVERY_ENABLED && run.step_overrides && typeof run.step_overrides === "object"
+        ? Object.keys(run.step_overrides).length : 0;
+      if (overrideCount) {
+        appendRecoveryEvent({ event: "agent_override_applied", slug: entry.slug, count: overrideCount });
+      }
 
       resolved.push({
         entry,
@@ -976,6 +1102,7 @@ async function _handleTool(name, args) {
       company: primary.entry.company,
       total_steps: resolved.reduce((n, r) => n + r.steps.length, 0),
       watch,
+      max_recovery_tier: MAX_RECOVERY_TIER,
       tracking: _trackingStatus(primary.entry.pack),
     });
 
@@ -992,19 +1119,42 @@ async function _handleTool(name, args) {
     const _wfStartAt  = Date.now();
     let   _totalRecovered = 0;
 
-    // Signal LLM/vision recovery retry (L4/L5) when resuming mid-plan
+    // Signal agent-mediated recovery retry (Tier 3/4) when resuming mid-plan.
     if (primary.resumeFrom > 0) {
-      _runTracker.emit("rec_start", { si: primary.resumeFrom, l: 5, sc: "llm_intent" });
+      const hasOverride = AGENT_RECOVERY_ENABLED && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
+      _runTracker.emit("rec_start", { si: primary.resumeFrom, l: hasOverride ? 3 : 5, sc: hasOverride ? "agent_override" : "llm_intent" });
     }
     _runTracker.emit("wf_start", {});
+
+    // Adopt a parked failed page when the agent is resuming THIS skill with an override, so the
+    // corrected selector acts on the exact DOM state the recovery request was built from.
+    const _resumeOverride = AGENT_RECOVERY_ENABLED && resolved.length === 1 && primary.resumeFrom > 0
+      && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
+    let _park = null;
+    if (_resumeOverride && _parkedRecovery
+        && _parkedRecovery.slug === primary.entry.slug
+        && _parkedRecovery.company === primary.entry.company) {
+      try { _parkedRecovery.page.url(); _park = _parkedRecovery; } catch (_) { _park = null; }
+      if (_park) { clearTimeout(_park.timer); _parkedRecovery = null; }
+    }
+    // Any park we did not adopt is stale (different skill, dead page, or a non-resume run) —
+    // discard it so it can neither leak a browser nor interfere with this run.
+    if (_parkedRecovery) await _discardPark(_resumeOverride ? "replaced" : "superseded");
 
     let page = null;
     let _browser, _context, _protectedUrl;
     try {
-      ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = await getCachedBrowser(primary.entry.company, authManager, { headless: !watch }));
-      page = await _context.newPage();
-      if (_protectedUrl) {
-        await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+      if (_park) {
+        ({ browser: _browser, context: _context } = _park);
+        page = _park.page;
+        log("info", "recovery_park_resumed", { skill: primary.entry.slug, step_index: primary.resumeFrom });
+        appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
+      } else {
+        ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = await getCachedBrowser(primary.entry.company, authManager, { headless: !watch }));
+        page = await _context.newPage();
+        if (_protectedUrl) {
+          await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        }
       }
 
       const runtimeLog = { consoleErrors: [], pageErrors: [], failedRequests: [] };
@@ -1147,10 +1297,26 @@ async function _handleTool(name, args) {
       await _tracker.flush();
       _tracker.destroy();
       const failResp = page ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry) : err(runErr.message);
-      if (page) await page.close().catch(() => {});
-      if (watch) {
-        await _context?.close().catch(() => {});
-        await _browser?.close().catch(() => {});
+
+      // Park the live failed page for an agent-mediated (Tier 3/4) resume instead of tearing it
+      // down — so the corrected selector lands on the same DOM the recovery request describes.
+      // Only for single-run selector/verify failures with agent recovery enabled; auth/cancel
+      // and Studio-ceiling failures are terminal and clean up normally.
+      const parkable = page && AGENT_RECOVERY_ENABLED && resolved.length === 1
+        && typeof runErr.failedAt === "number" && !runErr.session_expired && !runErr.cancelled;
+      if (parkable) {
+        const timer = setTimeout(() => { _discardPark("ttl"); }, PARK_TTL_MS);
+        if (timer.unref) timer.unref();
+        _parkedRecovery = { slug: primary.entry.slug, company: primary.entry.company,
+          page, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer };
+        appendRecoveryEvent({ event: "recovery_park_created", slug: primary.entry.slug, step_index: runErr.failedAt, ttl_ms: PARK_TTL_MS });
+        log("info", "recovery_park_created", { skill: primary.entry.slug, step_index: runErr.failedAt });
+      } else {
+        if (page) await page.close().catch(() => {});
+        if (watch) {
+          await _context?.close().catch(() => {});
+          await _browser?.close().catch(() => {});
+        }
       }
       return failResp;
 
