@@ -32,6 +32,7 @@ The `docs/` folder is the authoritative source of truth for this codebase. Befor
 | [`docs/Implementation-Plan.md`](docs/Implementation-Plan.md) | Starting on a new engineering task. Contains the prioritised 4-phase roadmap with specific files to change and risk assessments per item. |
 | [`docs/PRD.md`](docs/PRD.md) | Understanding product goals, personas, positioning, or long-term strategy. **Do not edit for individual features** — see doc maintenance rules below. |
 | [`docs/cost_model.md`](docs/cost_model.md) | Making decisions that affect LLM usage at compile or execution time. |
+| [`docs/agentic-discovery-strategy.md`](docs/agentic-discovery-strategy.md) | Understanding how multi-agent skill discovery and the durability flywheel are gated and governed. |
 
 ---
 
@@ -72,8 +73,15 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
       recorder/             Playwright capture + injected bridge.js
       pipeline/             Normalize / dedupe / enrich recorded events
       compiler/             Events → SkillPackage (selectors, assertions, recovery, fingerprint)
+        identity_bundle.py  IdentityBundle/IdentitySignal with durability scoring + orthogonality classes
+        selector_grammar.py Deterministic Playwright grammar generator (internal:role/testid/text + relational)
+        stable_hash.py      Dynamic-class-stripped SHA-256 hash for stable fingerprinting
+        selector_filters.py Anchor quality gates: is_low_quality_anchor, ephemeral anchor filtering
+        selector_score.py   Confidence scoring from IdentityBundle signal quality
+        build.py            _build_intent_graph (was _llm_compile_selectors); IdentityBundle runs before _build_target
       editor/               Workflow editor service + DTOs + patch gate
-      llm/                  Task clients (intent, semantic, recovery, vision, anchor) + openapi_client
+      llm/                  Task clients (intent, relational vision anchor, recovery, workflow intent graph)
+                            Note: LLM selector-writing passes removed — deterministic floor is sole generator
       anchors/, confidence/, policy/
       plugin_builder.py, installer_builder.py, conxa_runtime.py
   pyinstaller.spec          Bundles conxa_core + conxa_compile into dist/backend/
@@ -94,17 +102,31 @@ conxa-cloud/                Thin cloud SaaS — proxy / auth / billing / dashboa
   tests/                    pytest suite (core + compile + cloud)
   pytest.ini                pythonpath = backend ../conxa-builder/python ../packages/conxa-core
 
-runtime/                    Node.js MCP server — ships to ~/.conxa/runtime/ on customer machine
-  server.js                 MCP stdio server (@modelcontextprotocol/sdk)
-  run.js                    Step executor + fingerprint-scored 5-tier recovery
+runtime/                    Node.js MCP server — ships to ~/.conxa/ on customer machine
+  bootstrap.js              Entry point loaded by host exe; enforces min_host compat; loads disk-resident app layer
+  _pkg_stubs.js             Static dependency stubs bundled into host exe (makes node_modules available to app layer)
+  server.js                 MCP stdio server (@modelcontextprotocol/sdk) — lives in conxa-app layer on disk
+  run.js                    Step executor + GATE/VERIFY logic; delegates element resolution to resolve_adapter.js
+  resolver.js               Pure, browser-independent element resolver — durability-walk + uniqueness/margin gate
+  resolve_adapter.js        Browser-side adapter: pre-gathers candidate descriptors from live Playwright page for resolver.js
+  recovery.js               L1 exception ladder + L2 re-hover / a11y cascade (Tier 1–2, zero LLM tokens)
+  install_identity.js       Writes version.json and integrity metadata for the app layer on first install
   skill_loader.js           Skill pack loading + input validation
   browser.js                Playwright browser lifecycle
   auth_manager.js           Per-company token via keytar; AES-256-GCM session encryption
   sync.js                   Skill pack delta sync with SHA-256 atomic writes
   tracker.js                Telemetry batching → POST /tracking/{co}/events
-  package.json              @yao-pkg/pkg bundles for win/mac
+  package.json              @yao-pkg/pkg bundles for win/mac; version = host exe version
+  test/                     Unit + integration tests: test_resolver.js, test_resolve_adapter.js,
+                            test_recovery.js, gate_replay.js (execution gate CI fixture)
 
 data/                       Runtime state: sessions/, plugins/, skills/, saas/, cache/, chromium/
+
+.github/workflows/
+  build-runtime-host.yml    CI: builds host exe (--no-bytecode), tags host-vX.Y.Z releases
+  build-runtime-app.yml     CI: obfuscates disk-resident app layer, tags app-vX.Y.Z releases;
+                            runs gate_replay.js (real skill replay) as execution gate before publish
+  build-studio.yml          CI: Electron + Python bundle
 
 docs/
   TRD.md                    Authoritative technical deep-dive
@@ -114,6 +136,7 @@ docs/
   UI-UX-Brief.md            Every screen in Build Studio and Cloud Dashboard; UX issues
   Implementation-Plan.md    Prioritised engineering roadmap across 4 phases
   cost_model.md             Unit economics — LLM cost per compile, hosting, revenue model
+  agentic-discovery-strategy.md  Durability flywheel governance — gated behind admin approval
 ```
 
 ---
@@ -200,9 +223,11 @@ The full technical reference — pipeline stages, runtime filesystem layout, all
 
 Quick orientation:
 
-- **Build Studio** (`conxa-builder/python/conxa_compile/`): `bridge.js` → `session.py` → `pipeline/run.py` → `compiler/build.py` → `plugin_builder.py`. All local. Cloud is not involved.
+- **Build Studio** (`conxa-builder/python/conxa_compile/`): `bridge.js` → `session.py` → `pipeline/run.py` → `compiler/build.py` → `plugin_builder.py`. All local. Cloud is not involved. Compiler now uses `IdentityBundle` as sole identity source — LLM no longer writes selector strings (only intent, vision anchors, recovery, and intent graph remain LLM-driven).
 - **Cloud** (`conxa-cloud/`): coordination only — LLM proxy, skill pack hosting, telemetry ingest, billing. Does not record, compile, or execute.
-- **Runtime** (`runtime/`): Node MCP server on the customer's machine. Syncs packs from Cloud, executes skills step-by-step with 5-tier self-healing recovery, streams telemetry back.
+- **Runtime** (`runtime/`): two-layer architecture on the customer's machine.
+  - **Host exe** (`@yao-pkg/pkg`, built `--no-bytecode`): bundles `bootstrap.js` + `_pkg_stubs.js` only. Provides `__hostRequire` so disk-loaded app code can use Playwright etc. Built with `build-runtime-host.yml`, tagged `host-vX.Y.Z`.
+  - **App layer** (`conxa-app/`, disk-resident at `~/.conxa/conxa-app/`): contains `server.js`, `run.js`, `resolver.js`, `resolve_adapter.js`, `recovery.js` and the rest. Obfuscated JS, independently updatable without reinstalling the host exe. `bootstrap.js` enforces `min_host` semver before loading. Built with `build-runtime-app.yml`, tagged `app-vX.Y.Z`. Atomic `.bak` rollback on failed update. Studio sandbox (`sandbox/.conxa/`) mirrors this layout for local workflow tests.
 
 MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `list_skills`, `get_skill_inputs`, `get_execution_status`, `cancel_execution`, `refresh_skills`, `get_runtime_status`.
 
@@ -213,9 +238,11 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Concern | Code path |
 |---|---|
 | Recorder event types | `conxa_compile/recorder/bridge.js` → `pipeline/` → `compiler/build.py` → `runtime/run.js` |
-| Selector compilation / scoring | `conxa_compile/compiler/llm_selector_generator_v2.py`, `selector_score.py`, `selector_filters.py` |
-| Runtime element resolution | `runtime/run.js` — `resolveElement`, `withLocator`, `rootCandidates` |
-| Assertions / outcome validation | `conxa_compile/compiler/validation_planner.py`; runtime `verifyAssertions()` |
+| IdentityBundle / signal compilation | `conxa_compile/compiler/identity_bundle.py`, `selector_grammar.py`, `stable_hash.py` |
+| Selector scoring / anchor quality | `conxa_compile/compiler/selector_score.py`, `selector_filters.py` (anchor quality gates) |
+| Runtime element resolution | `runtime/resolver.js` (pure, unit-testable) + `runtime/resolve_adapter.js` (Playwright adapter) |
+| Runtime recovery cascade | `runtime/recovery.js` — L1 exception ladder + L2 re-hover/a11y (Tier 1–2, zero tokens) |
+| Assertions / outcome validation | `conxa_compile/compiler/validation_planner.py`; runtime `verifyAssertions()` in `run.js` |
 | Plugin packaging | `conxa_compile/plugin_builder.py` (data-only output, auth excluded) |
 | LLM calls (compile side) | task clients in `conxa_compile/llm/` → `conxa_core.llm.get_router()` → cloud proxy |
 | LLM provider pool (cloud) | `conxa-cloud/backend/app/llm/router.py` behind `POST /api/v1/llm/proxy/{text,vision}` |
@@ -226,6 +253,10 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Auth (Cloud API) | `conxa-cloud/backend/app/api/security.py` — Clerk JWT via PyJWT + JWKS |
 | Telemetry | `runtime/tracker.js` → `conxa-cloud/backend/app/api/tracking_routes.py` |
 | Skill pack sync | `runtime/sync.js` ↔ `app/api/skillpack_update_routes.py` |
+| Runtime two-layer bootstrap | `runtime/bootstrap.js` — min_host check, app-layer load, `.bak` fallback |
+| Host / app update manifests | `conxa-cloud/backend/app/api/updates_routes.py` (manifest_version 2; deps: `conxa-runtime`, `conxa-app`) |
+| Studio sandbox for workflow tests | `conxa-builder/python/conxa_compile/conxa_runtime.py` — stages host exe + app layer under `sandbox/.conxa/` |
+| CI execution gate | `runtime/test/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay run in `build-runtime-app.yml` |
 | Frontend screens | `conxa-cloud/frontend/src/` — Dashboard, Plugins, Billing, Team, Settings |
 
 ---
@@ -236,7 +267,11 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 
 **Cloud frontend** runs on Vercel. Project root: `conxa-cloud/frontend`. Build: `npm run build`. The Next.js route handler `/api/v1/*` proxies to `API_ORIGIN`. Requires `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`.
 
-**Runtime** ships as a bundled `.exe` embedded in the NSIS installer. `@yao-pkg/pkg` bundles `runtime/` into `dist/runtime-win.exe`. Installed to `%LOCALAPPDATA%\conxa\runtime\` on Windows. Self-updates by polling `/api/v1/updates/runtime-manifest`.
+**Runtime** ships as two artifacts embedded in the NSIS installer:
+- **Host exe** (`dist/runtime-win.exe`): built with `--no-bytecode` so the Playwright selector engine works. Contains only `bootstrap.js` + `_pkg_stubs.js`. Tagged `host-vX.Y.Z`. Installed to `~/.conxa/` on Windows.
+- **App layer** (`conxa-app/`): obfuscated JS bundle (`server.js`, `run.js`, `resolver.js`, etc.). Tagged `app-vX.Y.Z`. Staged beside the host exe at `~/.conxa/conxa-app/`. Independently updatable via cloud; `bootstrap.js` enforces `min_host` semver before loading it, and rolls back to `.bak` on failure.
+
+Self-updates poll `/api/v1/updates/runtime-manifest` (manifest_version 2; deps keyed `conxa-runtime` + `conxa-app`). SHA-256 integrity required for both artifacts.
 
 ---
 
@@ -245,11 +280,15 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 These are non-negotiable. Do not work around them.
 
 - **Auth files never enter build output.** `auth/auth.json`, Playwright storageState, and credentials are local runtime state only. `plugin_builder.py` enforces this — the check must remain.
-- **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. Do not introduce silent LLM fallbacks into compiled-selector or a11y resolution paths.
+- **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. Do not introduce silent LLM fallbacks into compiled-selector or a11y resolution paths. `recovery.js` implements L1/L2; `run.js` escalates to Tier 3+ only after both are exhausted.
 - **Iframe chain is preserved verbatim** from recording through compile and execution. Bounding boxes are page-level (offsets accumulated up the parent chain in `session.py`).
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** These are navigation markers, not interactable elements. They are never retried.
 - **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. Do not route anything else there.
 - **The cloud does not compile or execute.** Recording, compilation, plugin building, and skill execution are local-only. Keep them that way.
+- **Host exe built `--no-bytecode`.** V8 bytecode (.jsc) masks the Node version and causes the Playwright selector engine to segfault in pkg-bundled binaries. Never re-enable bytecode for the host exe.
+- **Resolver never blindly picks `candidate[0]`.** `resolver.js` requires the winning candidate's margin over the runner-up to clear `uniqueMargin` (default 0.15); otherwise it falls through to the next signal. Do not add shortcut paths that skip this gate.
+- **LLM does not write selector strings.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators. LLM is retained only for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph.
+- **App-layer min_host is enforced at load time.** `bootstrap.js` reads `version.json` from `conxa-app/` and refuses to load if `min_host` > current host semver. Do not bypass this check when bumping the app layer.
 
 ---
 

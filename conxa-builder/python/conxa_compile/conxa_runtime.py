@@ -486,6 +486,13 @@ def call_runtime_tool(
         **(env or {}),
         "CONXA_DIR": str(effective_conxa_dir),
         "CONXA_SKIP_SELF_UPDATE": os.environ.get("CONXA_SKIP_SELF_UPDATE", "1"),
+        # Build Studio tests the compiled pack on its deterministic merits: only the
+        # zero-token Tier 1 (exception ladder) + Tier 2 (a11y / fallback) cascade. Tiers 3
+        # (LLM semantic) and 4 (vision) are agent-mediated and only fire under live Claude/MCP
+        # execution — there is no agent in a headless Studio run to act on a recovery request.
+        # An explicit caller-supplied value (via env=) still wins.
+        "CONXA_MAX_RECOVERY_TIER": (env or {}).get("CONXA_MAX_RECOVERY_TIER")
+            or os.environ.get("CONXA_MAX_RECOVERY_TIER", "2"),
     }
     # CONXA_APP_DIR is NOT set: the sandbox/customer install provides conxa-app/ under
     # CONXA_DIR so the runtime resolves it via its own default logic (bootstrap.js:9).

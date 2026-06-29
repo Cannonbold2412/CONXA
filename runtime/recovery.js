@@ -66,4 +66,18 @@ function buildRepairEvent(step, stepIndex, opts = {}) {
   };
 }
 
-module.exports = { CLASS, classifyException, remedyFor, buildRepairEvent };
+// Recovery-tier ceiling. The zero-token cascade (T1 ladder + T2 a11y/fallback) always runs
+// in-process; T3 (LLM semantic) and T4 (vision) are agent-mediated and gated by this ceiling.
+// CONXA_MAX_RECOVERY_TIER lets the Build Studio sandbox cap recovery at T2 for deterministic
+// pack testing while live Claude/MCP execution gets the full T4 cascade.
+const MAX_TIER = 4;
+
+function clampRecoveryTier(raw, fallback = MAX_TIER) {
+  // Treat unset / blank as "use the default" (Number("") is 0, which would otherwise clamp to 1).
+  if (raw == null || (typeof raw === "string" && raw.trim() === "")) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(MAX_TIER, Math.max(1, Math.trunc(n)));
+}
+
+module.exports = { CLASS, classifyException, remedyFor, buildRepairEvent, clampRecoveryTier, MAX_TIER };

@@ -2,6 +2,72 @@
 
 ---
 
+## Self-healing recovery made enterprise-ready: Tier 3/4 now actually work — 2026-06-30
+
+**The problem.** Conxa's recovery system was documented as having four "tiers" of getting
+unstuck when a button or field moves on a webpage, but only the first two actually did
+anything. Tiers 1 and 2 are the smart, free, automatic fixes (re-find the element, wait for
+it, scroll to it, look it up by its accessibility label). Tiers 3 and 4 — where Claude itself
+looks at the page text and a screenshot to find the right element — were half-built: when a
+step failed, the runtime would send Claude a screenshot and say *"fix the selector and try
+again,"* but **there was no way for Claude to actually hand back the fix.** So Claude could see
+the problem but couldn't apply the solution. The healing loop had a missing last step.
+
+**What we fixed:**
+
+- **Added the missing "hand the fix back" step.** When a step fails and Claude figures out the
+  right element, it can now pass that answer back (`step_overrides`) and the workflow resumes
+  using Claude's correction — instead of just re-running the same broken instructions. This is
+  the change that finally makes Tier 3 and Tier 4 real.
+- **A clear on/off switch for where the smart recovery runs.** During internal Build Studio
+  testing, only the free automatic Tiers 1–2 run, so a recorded workflow is judged honestly on
+  its own quality (if it can't recover on its own, the test fails — as it should). During real
+  use through Claude, all four tiers turn on automatically, including Claude's visual recovery.
+  Controlled by a single setting (`CONXA_MAX_RECOVERY_TIER`).
+- **A much clearer help message when a step fails.** Instead of a vague dump, the runtime now
+  sends Claude a tidy package: what the step was trying to do, a list of the clickable things
+  currently on the page (for "by description" recovery), and screenshots (for "by sight"
+  recovery), plus exact instructions on how to send the fix back.
+- **Better logging.** The runtime now records which recovery ceiling is active and every time a
+  recovery is requested or a Claude-supplied fix is applied, so issues are traceable.
+- **Caught and fixed a load-time crash** during end-to-end testing (a missing variable
+  declaration that would have stopped the runtime from starting) before it could ship.
+
+- **Fixed the bug that would have made Claude's fixes useless in practice.** Self-healing
+  happens across a round-trip: the workflow fails, Claude looks at the page and decides on a
+  fix, then asks to continue. The old code threw away the browser page the moment a step
+  failed — so when Claude said "click *this* button," the workflow had already snapped back to a
+  blank page and Claude's correct answer landed on nothing, failing again. Now the runtime
+  **keeps the failed page open and waiting** (for a few minutes) so Claude's correction is
+  applied to the exact same screen Claude was looking at. The page is automatically cleaned up
+  if Claude never comes back, so no browser is left hanging around.
+
+**How we proved it:** new automated tests, plus a real-browser end-to-end test showing a
+deliberately-broken step fail cleanly through Tiers 1–2 and then heal when Claude's correction
+is supplied. Most importantly, a **full-loop test through the real installed runtime** — fail →
+recovery request → Claude picks the right element → resume → **"Done."** — which initially
+exposed the "blank page" bug above and now passes start to finish. The packed-runtime replay and
+tier-ceiling tests also pass.
+
+---
+
+## CLAUDE.md updated to reflect major codebase changes — 2026-06-30
+
+Updated the project guide (CLAUDE.md) to match all the big changes that happened over the last several weeks. The old guide was missing a lot of important new files and incorrectly described how the runtime works.
+
+**What changed in the guide:**
+
+- **Runtime is now two pieces, not one.** There's a small "host" program (the .exe) and a separate "app layer" (the actual skill-running code on disk). The host just boots things up and provides shared tools. The app layer lives at `~/.conxa/conxa-app/` and can be updated by the cloud without reinstalling the whole app. This is a big deal — customers get fixes without needing to reinstall.
+- **New runtime files documented.** `resolver.js`, `resolve_adapter.js`, `recovery.js`, `bootstrap.js` — these all existed but weren't in the guide. Each has a clear job: resolver finds elements, resolve_adapter connects it to the browser, recovery handles when things go wrong, bootstrap starts the whole thing and checks compatibility.
+- **The selector/element-finding system was rewritten.** The compiler no longer uses AI to write CSS/XPath selectors (it had a ~30% error rate). Instead it uses a new system called IdentityBundle that generates reliable, deterministic selectors. The guide now points to the right files for this.
+- **CI/CD workflows added.** Two separate GitHub Actions pipelines now exist — one builds the host exe, one builds the app layer. The app layer pipeline runs a real skill replay test before publishing (the "execution gate"). This wasn't documented at all before.
+- **New docs file added** (`agentic-discovery-strategy.md`) — covers how the system learns and improves over time, with admin approval gates.
+- **Key rules updated.** Added new non-negotiable rules: host exe must never use V8 bytecode (it breaks Playwright), the resolver must never blindly pick the first match, AI must not write selector strings, and the app layer's version compatibility check must never be bypassed.
+- **Install location corrected.** The runtime installs to `~/.conxa/` not `%LOCALAPPDATA%\conxa\runtime\` — the guide was wrong.
+- **"Where to look" table expanded** with all the new files and concerns.
+
+---
+
 ## "Deploy stops at search_repositories" — Element finding fix — 2026-06-29
 
 **Problem:** Running "Conxa deploy SEARCH_ENGINE repo on Render" through Claude kept stopping
