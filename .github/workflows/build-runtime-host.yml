@@ -49,16 +49,20 @@ jobs:
         working-directory: runtime
         run: npm ci
 
-      - name: Stamp host_version from release tag
+      - name: Stamp version and host_version from release tag
         working-directory: runtime
         run: |
-          # bootstrap.js reports HOST_VERSION = require('./package.json').host_version, which
-          # is baked into the pkg exe at build time — the $HOST_VERSION env is NOT read at
-          # runtime. Stamp the tag here so the exe truthfully reports its release version and
-          # the app layer's min_host gate is meaningful.
+          # bootstrap.js bakes both fields from package.json into the pkg exe at build time —
+          # env vars are NOT readable at runtime from inside the pkg binary.
+          #   host_version → HOST_VERSION constant used for app layer min_host semver gate
+          #   version      → global.__runtimeVersion exposed to the disk-resident app layer
+          # Both are derived from the git tag so no manual edits to package.json are needed.
+          $semver = "$env:HOST_VERSION" -replace '^host-v', ''
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $pkg.version      = $semver
           $pkg.host_version = "$env:HOST_VERSION"
           $pkg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 package.json
+          Write-Output "version stamped:      $semver"
           Write-Output "host_version stamped: $env:HOST_VERSION"
         shell: pwsh
 

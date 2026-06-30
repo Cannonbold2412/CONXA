@@ -900,7 +900,12 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
   return ok ? remedy : false;
 }
 
-async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null) {
+async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null) {
+  // Each Tier 1/2 stage is individually time-bounded, but the cascade as a whole can run for tens
+  // of seconds. If the MCP client cancels mid-recovery (e.g. its request timed out), bail at the
+  // next stage boundary instead of grinding through every remaining stage on a doomed run.
+  const bail = () => { if (cancelCheck && cancelCheck()) throw Object.assign(new Error("Execution cancelled"), { cancelled: true }); };
+
   // Layer 1 — deterministic exception ladder (targeted single remedy).
   // (Alternate-signal recovery is inherent: resolveStep already walks all bundle signals in
   // durability order, so there is no separate legacy compiled-selector tier.)
@@ -910,8 +915,10 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
     return { tier: "L1", method: l1 };
   }
 
+  bail();
   if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker)) return { tier: "L2", method: "a11y" };
 
+  bail();
   await page.waitForTimeout(250);
   if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "transient_recovered", slug, step_index: stepIndex });
@@ -919,14 +926,18 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
 
   // Layer 2 — re-hover-then-retry (menu reveals), then the existing fallback mechanisms.
   if (asArray(asObject(step.handler_hints).hover_chain).length) {
+    bail();
     await walkHoverChain(page, step, inputs);
     if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
       appendRecoveryEvent({ event: "layer2_rehover", slug, step_index: stepIndex });
     })) return { tier: "L2", method: "rehover" };
   }
 
+  bail();
   if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return { tier: "L2", method: "fallback" };
+  bail();
   if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return { tier: "L2", method: "dialog" };
+  bail();
   return (await recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker)) ? { tier: "L2", method: "fuzzy" } : false;
 }
 
@@ -983,7 +994,7 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       primaryErr = err;
     }
 
-    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr);
+    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck);
     if (!recovered) {
       t.emit("step_fail", { si: i, fc: mapErrorToCode(primaryErr) });
       throw stepFailure(step, i, primaryErr, preShot);

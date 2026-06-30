@@ -38,6 +38,19 @@ const MAX_RECOVERY_TIER = clampRecoveryTier(process.env.CONXA_MAX_RECOVERY_TIER,
 // Agent-mediated recovery (T3 semantic + T4 vision) is available only above the T2 ceiling.
 const AGENT_RECOVERY_ENABLED = MAX_RECOVERY_TIER >= 3;
 
+// ─── Execution wall-clock budget ──────────────────────────────────────────────
+// The MCP client (Claude Desktop) abandons a tools/call after its own request timeout (~240s
+// observed: it sends notifications/cancelled at exactly +4 min) and then shows the user
+// "No result received". Honouring that cancel (above) stops a zombie run, but the SDK drops the
+// response to an already-cancelled request, so the user still sees a 4-minute hang whenever a
+// single execution out-runs the client budget — e.g. a step whose target never renders (bad
+// input / empty search) burns minutes accumulating bounded recovery stages before failing.
+// The cure is to never let an execution reach the client's deadline: we cap total wall-clock a
+// safe margin below it, abort through the same cancelCheck path, and return an actionable failure
+// the client still receives. Default 210s leaves ~30s for teardown + response transport under the
+// 240s client timeout. Build Studio's fast successful runs never approach this.
+const EXECUTION_DEADLINE_MS = Number(process.env.CONXA_EXECUTION_DEADLINE_MS) || 210000;
+
 // ─── Parked recovery page (Tier 3/4 cross-call self-healing) ──────────────────
 // Agent-mediated recovery is inherently cross-call: the runtime fails a step → returns a
 // recovery request to Claude → Claude resumes with a corrected selector. If the failed page
@@ -261,11 +274,11 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: _toolDefinitions() }));
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params;
   log("info", "tool_call", { tool: name });
   try {
-    return await _handleTool(name, args || {});
+    return await _handleTool(name, args || {}, extra);
   } catch (e) {
     log("error", "tool_error", { tool: name, error: e.message });
     return { content: [{ type: "text", text: `Internal error: ${e.message}` }] };
@@ -924,7 +937,7 @@ async function _buildFailureResponse(page, err, resolvedEntry) {
 }
 
 // ─── Tool handler ─────────────────────────────────────────────────────────────
-async function _handleTool(name, args) {
+async function _handleTool(name, args, extra) {
   const text = (t) => ({ content: [{ type: "text", text: t }] });
   const err  = (t) => text(t);
 
@@ -1089,8 +1102,47 @@ async function _handleTool(name, args) {
       total:           resolved.reduce((n, r) => n + r.steps.length, 0),
       startedAt:       new Date().toISOString(),
       cancelRequested: false,
+      deadlineAt:      Date.now() + EXECUTION_DEADLINE_MS,
+      deadlineExceeded: false,
       sentVisualRefs:  new Set(), // P5: tracks which (slug:stepIndex) visual refs were sent this execution
     };
+
+    // Wall-clock watchdog: trips the same cancel path as a client abort once the execution budget
+    // is spent, so the run stops and returns *before* the client's request timeout fires (turning a
+    // silent 4-minute hang into a fast, actionable failure). Checked at every step / recovery-stage
+    // boundary; all Playwright ops are individually bounded, so it is observed within seconds of
+    // expiring. Distinguished from a client cancel by the deadlineExceeded flag (see catch block).
+    const _execCancelled = () => {
+      if (!activeExecution) return false;
+      if (activeExecution.cancelRequested) return true;
+      if (Date.now() >= activeExecution.deadlineAt) {
+        if (!activeExecution.deadlineExceeded) {
+          activeExecution.deadlineExceeded = true;
+          log("warn", "execution_deadline_exceeded",
+            { skill: primary.entry.slug, step: activeExecution.step, deadline_ms: EXECUTION_DEADLINE_MS });
+          appendRecoveryEvent({ event: "execution_deadline_exceeded", slug: primary.entry.slug, step: activeExecution.step });
+        }
+        return true;
+      }
+      return false;
+    };
+
+    // Honour MCP protocol cancellation. The SDK aborts `extra.signal` when the client sends
+    // notifications/cancelled — which a client also does when its own request times out. Without
+    // this, the runtime kept executing after the client gave up, parked a browser the client can
+    // never resume, and produced a response the SDK silently drops. `runPlan`'s cancelCheck reads
+    // activeExecution.cancelRequested, so flipping it here makes both the step loop and the recovery
+    // cascade yield promptly and tear down cleanly. (cancel_execution sets the same flag.)
+    const _abortSignal = extra && extra.signal;
+    const _onAbort = () => {
+      if (activeExecution) activeExecution.cancelRequested = true;
+      log("info", "execution_cancelled_by_client", { skill: primary.entry.slug });
+      appendRecoveryEvent({ event: "execution_cancelled_by_client", slug: primary.entry.slug });
+    };
+    if (_abortSignal) {
+      if (_abortSignal.aborted) _onAbort();
+      else _abortSignal.addEventListener("abort", _onAbort, { once: true });
+    }
 
     // Per-company observer pace (ms of minimum viewing time per page transition)
     const _observerMs = primary.entry.pack?.pacing?.observer_ms ?? 600;
@@ -1201,7 +1253,7 @@ async function _handleTool(name, args) {
           try {
             const result = await runPlan(page, steps, inputs, startAt, entry.slug, {
               onStep:        (i) => { if (activeExecution) activeExecution.step = i; },
-              cancelCheck:   () => activeExecution?.cancelRequested,
+              cancelCheck:   _execCancelled,
               tracker:       _runTracker,
               observerMs:    _observerMs,
               downloadQueue: _downloadQueue,
@@ -1296,6 +1348,38 @@ async function _handleTool(name, args) {
       });
       await _tracker.flush();
       _tracker.destroy();
+
+      // Aborted runs (runPlan threw { cancelled }) come from two sources, both of which tear down
+      // immediately and never park (a parked page is only useful for an agent that is still waiting):
+      //   1. Deadline watchdog — we stopped *before* the client's request timeout, so the caller is
+      //      still listening. Return an actionable failure naming the stalled step so the agent can
+      //      verify inputs or resume with step_overrides, instead of the user seeing a silent hang.
+      //   2. Client cancel (cancel_execution, or the client timed out first and sent
+      //      notifications/cancelled) — the caller is gone, the SDK drops any response; just clean up.
+      if (runErr.cancelled) {
+        const wasDeadline = activeExecution && activeExecution.deadlineExceeded;
+        const stalledStep = activeExecution ? activeExecution.step : null;
+        if (page) await page.close().catch(() => {});
+        if (watch) {
+          await _context?.close().catch(() => {});
+          await _browser?.close().catch(() => {});
+        }
+        if (wasDeadline) {
+          const secs = Math.round(EXECUTION_DEADLINE_MS / 1000);
+          const stepLabel = stalledStep !== null ? ` at step ${stalledStep + 1}` : "";
+          const resumeHint = AGENT_RECOVERY_ENABLED && stalledStep !== null
+            ? ` If a element moved, inspect the page and call execute_skill again with resume_from: ${stalledStep} and step_overrides.`
+            : "";
+          return err(
+            `Execution stopped after exceeding the ${secs}s time budget${stepLabel}. ` +
+            `The page never reached the expected state in time — most often the inputs don't match ` +
+            `what the site returned (e.g. a repository/search term with no results), so the next ` +
+            `element never appeared. Verify the inputs and retry.${resumeHint}`
+          );
+        }
+        return err("Execution cancelled.");
+      }
+
       const failResp = page ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry) : err(runErr.message);
 
       // Park the live failed page for an agent-mediated (Tier 3/4) resume instead of tearing it
@@ -1321,6 +1405,7 @@ async function _handleTool(name, args) {
       return failResp;
 
     } finally {
+      if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
       activeExecution = null;
     }
   }
