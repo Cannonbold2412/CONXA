@@ -1,7 +1,7 @@
 {
   "name": "conxa-runtime",
-  "version": "1.1.0",
-  "host_version": "host-v1.1.1",
+  "version": "0.0.0-dev",
+  "host_version": "host-v0.0.0-dev",
   "description": "Conxa local AI runtime — MCP server for company workflow skills",
   "main": "server.js",
   "scripts": {

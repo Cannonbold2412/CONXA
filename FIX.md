@@ -2,6 +2,85 @@
 
 ---
 
+## Fixed: skill execution "got stuck" forever in Claude Desktop (but worked in Build Studio) — 2026-06-30
+
+**What you saw.** Running the Render "create a service from GitHub" skill through Claude
+Desktop just hung. After about 4 minutes you got *"No result received from the Claude Desktop
+app."* The exact same skill ran fine inside Build Studio. Very confusing.
+
+**What was really happening.** I read the logs from both Claude Desktop and the Conxa runtime
+and lined up the timestamps. The skill started, got through the first couple of steps, but then
+one step took **4½ minutes** on its own. The web page never settled into the state the skill
+expected, so the runtime kept patiently retrying. Meanwhile Claude Desktop only waits **4
+minutes** for an answer — so it gave up and sent a "cancel" message. **The Conxa runtime
+ignored that cancel.** It kept grinding for another 1½ minutes, then opened (and left open) a
+browser waiting for help that could never come, and finally produced an answer that Claude
+Desktop had already stopped listening for. From your side: a permanent hang.
+
+Build Studio never hit this because it runs the page in the freshly-recorded state where every
+step is found instantly — it never gets near the 4-minute limit.
+
+**Two extra things that made it worse:**
+- The test input was `SEARCH_ENGINE`, which isn't a real GitHub repository. Render's repo
+  search found nothing, so the page never showed the next field — that's what made one step burn
+  4½ minutes. **Retest with a real repo** (one that has a `render.yaml`).
+- This PC's runtime auto-update is broken — it keeps downloading empty update files (a server is
+  handing back 0-byte files), so the runtime is stuck on an old host and can't fix itself. That's
+  a separate, cloud-side problem worth chasing, but it isn't what caused the hang.
+
+**The fix (in the runtime/execution engine).** Two layers, because the first alone wasn't enough:
+
+*Layer A — a hard time budget (the real cure).* The runtime now gives every run a wall-clock
+budget (default 3.5 minutes) that is deliberately **shorter than Claude Desktop's 4-minute
+patience**. If a run ever reaches that budget, it stops itself and returns a clear, useful message
+— e.g. *"Execution stopped after exceeding the 210s time budget at step 3. The page never reached
+the expected state — most often the inputs don't match what the site returned (e.g. a search with
+no results)…"* — **while Claude Desktop is still listening.** So instead of a silent 4-minute hang
+followed by "No result received," you now get a fast, plain-English explanation you can act on.
+This works no matter *why* a step is slow.
+
+*Layer B — honour the cancel signal.* The runtime also listens for Claude Desktop's cancel (sent
+when it gives up, or when you cancel). The moment it arrives, execution stops within a second,
+closes the browser cleanly, checks for the cancel between every recovery attempt, and skips the
+wasteful screenshot/"park a browser for later" work that nobody is waiting for anymore.
+
+**Why two layers?** The cancel-handling (Layer B) stops the runtime from leaving a zombie browser
+behind — important, but invisible to you, because once Claude Desktop has given up it ignores
+whatever the runtime says next. The time budget (Layer A) is what you actually *see*: it guarantees
+the runtime answers **before** Claude Desktop loses patience, so the 4-minute "stuck forever" screen
+can't happen again.
+
+**Proof it works (both layers, against the real installed runtime on this PC).**
+- *Time budget:* gave a run an 8-second budget and sent **no** cancel. The run that used to grind
+  for ~5 minutes stopped itself at ~9 seconds and returned the "exceeded the time budget at step 3"
+  message — no zombie browser. Scaled up, that's ~3.5 min vs Claude Desktop's 4 min: it always
+  answers first.
+- *Cancel handling:* started the skill, waited 8 seconds, sent the exact cancel message Claude
+  Desktop sends on timeout — the runtime logged it instantly, stopped in half a second, parked
+  nothing. (Pre-fix: kept running ~90s and parked a zombie.)
+- Automated tests: cancellation-at-boundary, cancellation-mid-recovery, and wall-clock-deadline all
+  pass, and every existing runtime suite still passes (recovery, resolver, agent-recovery,
+  resolve-adapter — 30+ tests, zero failures).
+
+**Will the fix stick?** Yes. The patched code is staged on this PC (old version safely backed up).
+I checked whether the broken auto-update could overwrite it: it can't. The host-exe update file on
+the server is empty (0 bytes), so the host stays on its current version; and the newer app bundle
+refuses to install on an older host. That combination means the patched layer survives Claude
+Desktop restarts. (Both are still cloud-side bugs worth fixing — the empty release files — but they
+no longer threaten this fix.)
+
+**What's left for you.** Two things, because I can't drive Claude Desktop's chat myself:
+1. **Fully quit and reopen Claude Desktop** (quit from the tray — not just close the window).
+   Claude Desktop loads the runtime from `C:\Users\Lenovo\.conxa\conxa-app`, and it only re-reads
+   those files when it restarts. Your last restart happened a few minutes *before* the time-budget
+   fix was staged, so it's still running the older code — one more restart picks up the latest.
+2. **Run the skill with a real GitHub repo** that contains a `render.yaml` — not `SEARCH_ENGINE`.
+   With a real repo every step finds what it needs and the workflow finishes fast, the way it does
+   in Build Studio. If you *do* use a bad input again, you'll now get a clear "time budget" message
+   in ~3.5 minutes instead of a 4-minute hang — but a real repo is what makes it actually succeed.
+
+---
+
 ## Self-healing recovery made enterprise-ready: Tier 3/4 now actually work — 2026-06-30
 
 **The problem.** Conxa's recovery system was documented as having four "tiers" of getting
@@ -393,6 +472,18 @@ trigger them:
 
 (Order matters: the host must be released **before** the app tag, because the app build now
 tests against it.)
+
+---
+
+## Fixed: runtime version numbers were hardcoded in package.json instead of being set automatically — 2026-06-30
+
+**What you saw.** `runtime/package.json` had `"version": "1.1.5"` and `"host_version": "host-v1.1.5"` written by hand. Every time a new release was cut, someone had to remember to bump both fields manually before pushing the tag.
+
+**What was really happening.** The CI build for the host exe already stamped `host_version` from the git tag at build time — so that field was fine in practice. But `version` (the npm version, exposed to the rest of the runtime as `__runtimeVersion`) was never touched by CI. It only changed if a developer remembered to edit the file before tagging.
+
+**The fix.** The "stamp" CI step in `build-runtime-host.yml` now also updates `version` by stripping the `host-v` prefix from the release tag. Tag `host-v1.2.0` → both `version: "1.2.0"` and `host_version: "host-v1.2.0"` are baked into the exe automatically. The values in `package.json` are just dev-time placeholders now — you never need to edit them for a release.
+
+---
 
 ## Side notes (not bugs)
 
