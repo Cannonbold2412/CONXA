@@ -798,16 +798,29 @@ function _stepRecoveryContext(err) {
   const step = err && err.failedStep ? err.failedStep : null;
   if (!step) return null;
   const fp = (step.identity_bundle && step.identity_bundle.fingerprint) || {};
+
+  // Anchors from recovery.json are human-readable descriptions written at compile time and
+  // stable across UI drift — unlike compiled fingerprint fields (inner_text, data_testid) which
+  // may be stale. Prefer the highest-priority anchor as the element label; fall back to the
+  // fingerprint when anchors are absent.
+  const anchors = Array.isArray(step.anchors)
+    ? step.anchors
+        .filter(a => a && typeof a.text === "string" && a.text.trim())
+        .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+        .map(a => a.text.trim())
+    : [];
+
   const ctx = {
     action: step.type || "",
     intent: step._intent || step.label || "",
     target: {
-      role:       fp.role || undefined,
-      name:       fp.aria_label || fp.name || undefined,
-      text:       fp.inner_text || undefined,
+      role:        fp.role || undefined,
+      name:        fp.aria_label || fp.name || undefined,
+      text:        anchors[0] || fp.inner_text || undefined,
       data_testid: fp.data_testid || undefined,
     },
   };
+  if (anchors.length) ctx.anchors = anchors;
   if (step.value && typeof step.value === "string" && step.value.length < 80) ctx.value = step.value;
   // Strip empty target fields so the agent sees only positive identity signals.
   ctx.target = Object.fromEntries(Object.entries(ctx.target).filter(([, v]) => v));
@@ -870,30 +883,41 @@ async function _buildFailureResponse(page, err, resolvedEntry) {
     }
   }
 
-  // P2: cap at 50 elements (was 250) — dominant text payload; nearby elements suffice for recovery
-  let pageStructure = null, viewport = null, scrollY = null;
-  try {
-    viewport = page.viewportSize();
-    scrollY  = await page.evaluate(() => window.scrollY).catch(() => null);
-    pageStructure = await page.evaluate(() => {
-      const seen = new Set();
-      return Array.from(document.querySelectorAll(
-        'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]'
-      )).map(el => {
-        const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
-        const tag  = el.tagName.toLowerCase();
-        const type = el.getAttribute("type")        || "";
-        const role = el.getAttribute("role")        || "";
-        const id   = el.id                          || undefined;
-        const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
-        const key  = `${tag}|${type}|${text}`;
-        if (!text && !type && !id && !dt) return null;
-        if (seen.has(key)) return null;
-        seen.add(key);
-        return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
-      }).filter(Boolean).slice(0, 50);
-    });
-  } catch (_) {}
+  // P2: cap at 50 elements (was 250) — dominant text payload; nearby elements suffice for recovery.
+  // Prefer the snapshot taken at the exact moment of failure (before the T1/T2 cascade ran and
+  // potentially closed transient UI like dropdown menus). Fall back to a live query only when no
+  // early snapshot exists (e.g. the step was non-interactive or the evaluate threw).
+  let viewport = null;
+  try { viewport = page.viewportSize(); } catch (_) {}
+  let scrollY = null;
+  try { scrollY = await page.evaluate(() => window.scrollY); } catch (_) {}
+
+  let pageStructure = (Array.isArray(err.earlyDomSnapshot) && err.earlyDomSnapshot.length)
+    ? err.earlyDomSnapshot
+    : null;
+
+  if (!pageStructure) {
+    try {
+      pageStructure = await page.evaluate(() => {
+        const seen = new Set();
+        return Array.from(document.querySelectorAll(
+          'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]'
+        )).map(el => {
+          const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
+          const tag  = el.tagName.toLowerCase();
+          const type = el.getAttribute("type")        || "";
+          const role = el.getAttribute("role")        || "";
+          const id   = el.id                          || undefined;
+          const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
+          const key  = `${tag}|${type}|${text}`;
+          if (!text && !type && !id && !dt) return null;
+          if (seen.has(key)) return null;
+          seen.add(key);
+          return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
+        }).filter(Boolean).slice(0, 50);
+      });
+    } catch (_) {}
+  }
 
   appendRecoveryEvent({ event: "agent_recovery_requested", tier: MAX_RECOVERY_TIER,
     slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
@@ -929,7 +953,7 @@ async function _buildFailureResponse(page, err, resolvedEntry) {
     { type: "text", text: "── Tier 4 (vision) ──" },
   ];
 
-  if (err.preShot)    content.push({ type: "text", text: "Pre-step screenshot (before the action):" }, { type: "image", data: err.preShot.toString("base64"), mimeType: "image/png" });
+  if (err.preShot)    content.push({ type: "text", text: "Pre-step screenshot (before the action):" }, { type: "image", data: err.preShot.toString("base64"), mimeType: "image/jpeg" });
   if (visualRefData)  content.push({ type: "text", text: `Reference image of the target from recording (step ${stepNo}):` }, { type: "image", data: visualRefData, mimeType: visualRefMime });
   if (failShot)       content.push({ type: "text", text: "Current page at failure:" }, { type: "image", data: failShot.toString("base64"), mimeType: "image/jpeg" });
 

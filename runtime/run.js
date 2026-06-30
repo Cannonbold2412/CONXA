@@ -17,6 +17,7 @@ function envNumber(name, fallback) {
 }
 
 const HUMAN_PACING_ENABLED = process.env.CONXA_HUMAN_PACING !== "0";
+const CAPTURE_PRESTEP      = process.env.CONXA_CAPTURE_PRESTEP !== "0";
 const ACTION_TIMEOUT_MS = envNumber("CONXA_ACTION_TIMEOUT_MS", 2500);
 const SECONDARY_ACTION_TIMEOUT_MS = envNumber("CONXA_SECONDARY_ACTION_TIMEOUT_MS", 2500);
 const RECOVERY_LOCATOR_TIMEOUT_MS = envNumber("CONXA_RECOVERY_LOCATOR_TIMEOUT_MS", 3000);
@@ -942,8 +943,35 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
 }
 
 async function maybeCapturePreStep(page, step) {
-  if (!INTERACTIVE_STEP_TYPES.has(step.type) || process.env.CONXA_CAPTURE_PRESTEP !== "1") return null;
-  return page.screenshot({ type: "png", timeout: 1000 }).catch(() => null);
+  if (!INTERACTIVE_STEP_TYPES.has(step.type) || !CAPTURE_PRESTEP) return null;
+  return page.screenshot({ type: "jpeg", quality: 70, timeout: 1000 }).catch(() => null);
+}
+
+// Capture the interactive-element inventory at the exact moment of step failure, before the
+// T1/T2 recovery cascade runs (~12 s). Transient elements like open dropdown menus auto-close
+// during the cascade, leaving _buildFailureResponse with an empty DOM scan. Storing the snapshot
+// on the error object lets _buildFailureResponse prefer it over a stale post-cascade query.
+async function captureEarlyDomSnapshot(page) {
+  try {
+    return await page.evaluate(() => {
+      const seen = new Set();
+      return Array.from(document.querySelectorAll(
+        'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]'
+      )).map(el => {
+        const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
+        const tag  = el.tagName.toLowerCase();
+        const type = el.getAttribute("type")        || "";
+        const role = el.getAttribute("role")        || "";
+        const id   = el.id                          || undefined;
+        const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
+        const key  = `${tag}|${type}|${text}`;
+        if (!text && !type && !id && !dt) return null;
+        if (seen.has(key)) return null;
+        seen.add(key);
+        return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
+      }).filter(Boolean).slice(0, 50);
+    });
+  } catch (_) { return null; }
 }
 
 function stepFailure(step, stepIndex, cause, preShot) {
@@ -992,6 +1020,7 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       continue;
     } catch (err) {
       primaryErr = err;
+      primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page);
     }
 
     const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck);

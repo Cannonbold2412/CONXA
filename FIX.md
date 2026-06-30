@@ -2,6 +2,28 @@
 
 ---
 
+## Fixed: T3/T4 self-healing recovery now actually works — 2026-06-30
+
+**What was broken.** When a step failed and the runtime handed control to Claude for self-healing (Tier 3 + Tier 4), Claude couldn't fix it. Three problems stacked up to make recovery useless:
+
+1. The list of elements on the page sent to Claude was always empty for dropdown/menu steps. The runtime spent ~12 seconds trying its own fixes first, and by the time it took a snapshot of the page to send Claude, the dropdown had already auto-closed. Claude got "No interactive elements" and gave up.
+
+2. The screenshot sent to Claude showed the page *after* the dropdown closed (useless), not *before* the step was attempted (when the dropdown was open and the element was visible). This was because the "before" screenshot was turned off by default.
+
+3. The description of what element Claude was looking for came from compiled selector data that can become stale over time, instead of the human-readable labels ("blueprint", "connect button") stored separately in the skill pack — labels that don't change when the UI changes.
+
+**What was fixed.** Three targeted changes to the runtime, touching only `run.js` and `server.js`:
+
+- **Snapshot at the right moment.** The page's element list is now captured immediately when a step fails, before any retry attempts run. So if a dropdown was open, it's captured open. This snapshot is stored on the failure and sent to Claude — no more empty lists for menu steps.
+
+- **Pre-step screenshot turned on by default.** The runtime now always takes a screenshot *before* attempting each interactive step. If the step fails, Claude gets a picture of the page in the correct state (dropdown visible, form filled, etc.). Anyone who wants to disable this can set `CONXA_CAPTURE_PRESTEP=0`. Screenshots are now JPEG at 70% quality instead of PNG — smaller, cheaper, equally useful.
+
+- **Better element description for Claude.** The human-written anchor labels from the skill pack (e.g. "blueprint") are now included in the message to Claude, and used as the primary label for the element instead of the compiled selector text. These labels are stable even when the UI changes.
+
+**Files changed:** `runtime/run.js`, `runtime/server.js` only. The recovery engine, resolver, and all other files are unchanged.
+
+---
+
 ## Payment gateway switched from Razorpay to Cashfree — 2026-06-30
 
 **What changed.** All billing code was migrated from Razorpay to Cashfree. Customers who want to upgrade to Starter (₹29,999/month) or Pro (₹79,999/month) are now redirected to Cashfree's mandate authorization page instead of seeing a Razorpay popup.
