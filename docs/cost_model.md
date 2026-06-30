@@ -1,6 +1,6 @@
 # Conxa Cost & Revenue Model
 
-**Last Updated:** June 7, 2026
+**Last Updated:** June 30, 2026
 **Status:** Living document — iterate as assumptions change
 
 ---
@@ -52,11 +52,11 @@ Every time a company records workflows and compiles them into a new plugin versi
 |------|-------------|------|------------|
 | **Intent detection** (`generate_intent_with_llm`) | ~200 input + ~50 output tokens | Every step — but **cached** by element hash | 1 (0 on cache hit) |
 | **Vision anchor generation** (`generate_anchors_for_step_or_raise`) | ~15K input + ~500 output tokens (screenshot JPEG as base64 + prompt) | Every step — but **cached** by screenshot hash | 1 (0 on cache hit) |
-| **Selector self-consistency** (`generate_selector_candidates`, `num_samples=5`) | ~15K input + ~2.5K output tokens total (5 samples) | Only if heuristic selector confidence < 1.0 | 5 (0 on perfect heuristic) |
 
-**Best case (heuristic hits — clean `data-testid` or `aria-label`):** 2 calls/step  
-**Typical case (LLM selectors needed):** 7 calls/step  
+**All steps, all DOM conditions:** 2 LLM calls/step (intent + vision anchor)  
 **Recompilation (same DOM, cached):** 0–2 calls/step — caching absorbs most of the cost
+
+Selector strings are generated deterministically by `IdentityBundle` + `selector_grammar.py`. No LLM calls are made for selector generation regardless of DOM quality or `data-testid` coverage.
 
 #### Corrected Cost Per Workflow Compilation
 
@@ -103,35 +103,36 @@ Claude Opus is a quality upgrade path, not the default Enterprise cost model. It
 Token costs at Groq (text) + Google AI Studio (vision):
 - Intent: ~200 tokens → **~$0.00001** (negligible)
 - Vision anchor: ~15K tokens at $0.075/1M → **~$0.001/step**
-- Selectors × 5: ~3K input + 500 output each → **~$0.001/step**
-- **Total/step: ~$0.002 | Per compilation (15 steps): ~$0.03**
+- Selectors: **$0** (deterministic — no LLM)
+- **Total/step: ~$0.001 | Per compilation (15 steps): ~$0.015**
 
 **Starter / Pro paid plans (GPT-5.4-mini + Together AI Gemma 4 31B):**
 
 - Intent (Gemma 4 31B, 200 input + 50 output): **~$0.00013/step**
 - Vision anchor (GPT-5.4-mini, 15K input + 500 output): **~$0.0135/step**
-- Selectors × 5 (GPT-5.4-mini, 15K input + 2.5K output): **~$0.0225/step**
-- **Total/step: ~$0.036 | Fresh 15-step workflow: ~$0.54**
-- **Cached recompilation (3 changed steps): ~$0.11**
-- **Blended monthly average (20% fresh, 80% cached): ~$0.195/compilation**
+- Selectors: **$0** (deterministic — no LLM)
+- **Total/step: ~$0.014 | Fresh 15-step workflow: ~$0.21**
+- **Cached recompilation (3 changed steps): ~$0.042**
+- **Blended monthly average (20% fresh, 80% cached): ~$0.075/compilation**
 
 **Enterprise paid plans (GPT-5.4 + Claude Sonnet 4.6 Vision):**
 
-- Intent + selector work on GPT-5.4: **~$0.076/step**
-- Vision anchor on Claude Sonnet 4.6 Vision: **~$0.0525/step**
-- **Total/step: ~$0.129 | Fresh 15-step workflow: ~$1.93**
-- **Cached recompilation (3 changed steps): ~$0.39**
-- **Blended monthly average (20% fresh, 80% cached): ~$0.695/compilation**
+- Intent (GPT-5.4, 200 input + 50 output): **~$0.001/step**
+- Vision anchor (Claude Sonnet 4.6 Vision, 15K input + 500 output): **~$0.053/step**
+- Selectors: **$0** (deterministic — no LLM)
+- **Total/step: ~$0.054 | Fresh 15-step workflow: ~$0.81**
+- **Cached recompilation (3 changed steps): ~$0.162**
+- **Blended monthly average (20% fresh, 80% cached): ~$0.292/compilation**
 
 | Scenario | Free cost | Starter / Pro cost | Enterprise cost |
 |----------|------------|--------------------|-----------------|
-| Short workflow (5 steps) | ~$0.01 | ~$0.18 | ~$0.64 |
-| Medium workflow (15 steps) | ~$0.03 | **~$0.54** | **~$1.93** |
-| Long workflow (30 steps) | ~$0.06 | ~$1.08 | ~$3.86 |
-| Recompilation (cached, 3 changed steps) | ~$0.003 | **~$0.11** | **~$0.39** |
-| **Blended (80% recompiles, 15 steps avg)** | **~$0.008** | **~$0.195** | **~$0.695** |
+| Short workflow (5 steps) | ~$0.005 | ~$0.070 | ~$0.27 |
+| Medium workflow (15 steps) | ~$0.015 | **~$0.21** | **~$0.81** |
+| Long workflow (30 steps) | ~$0.030 | ~$0.42 | ~$1.62 |
+| Recompilation (cached, 3 changed steps) | ~$0.003 | **~$0.042** | **~$0.162** |
+| **Blended (80% recompiles, 15 steps avg)** | **~$0.005** | **~$0.075** | **~$0.292** |
 
-**Key insight on continuous iteration:** Both intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps — the rest are cache hits. This makes daily iteration cheap regardless of provider.
+**Key insight on continuous iteration:** Both intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps — the rest are cache hits. This makes daily iteration cheap regardless of provider. Selector strings are generated deterministically at zero token cost in all cases.
 
 **Human Edit pool:** Human Edit can trigger extra LLM calls after the initial compile: step repair, selector or anchor regeneration, validation, and recovery artifact updates. Each plan gets a monthly Human Edit token pool that applies to both text and vision repair calls:
 
@@ -228,16 +229,16 @@ When a company ships a plugin update, customers pull the new version. The `/skil
 
 ### Total Monthly Operating Cost
 
-Assumes blended compilation cost before Human Edit reserve: **~$0.195** for Starter/Pro traffic and **~$0.695 (~$0.70)** for Enterprise-grade traffic. Plugin packaging itself is treated as materially free.
+Assumes blended compilation cost before Human Edit reserve: **~$0.075** for Starter/Pro traffic and **~$0.292** for Enterprise-grade traffic. Plugin packaging itself is treated as materially free.
 
 | Scale | Companies | Workflow Compilations/Month | Compilation | Dashboard | Telemetry | Updates | **Total/Month** |
 |-------|-----------|--------------|-------------|-----------|-----------|---------|-----------------|
-| MVP | 10 | 20 Starter/Pro | ~$4 | $35 | $5 | $2 | **~$46** |
-| Growth | 100 | 200 Starter/Pro | ~$39 | $80 | $50 | $20 | **~$189** |
-| Scale | 500 | 1,000 Starter/Pro | ~$195 | $230 | $500 | $100 | **~$1,025** |
-| Enterprise | 2,000 | 5,000 Enterprise-grade | ~$3,475 | $700 | $3,000 | $400 | **~$7,575** |
+| MVP | 10 | 20 Starter/Pro | ~$1.50 | $35 | $5 | $2 | **~$44** |
+| Growth | 100 | 200 Starter/Pro | ~$15 | $80 | $50 | $20 | **~$165** |
+| Scale | 500 | 1,000 Starter/Pro | ~$75 | $230 | $500 | $100 | **~$905** |
+| Enterprise | 2,000 | 5,000 Enterprise-grade | ~$1,460 | $700 | $3,000 | $400 | **~$5,560** |
 
-**Cost lever:** Increasing heuristic hit rate (better `data-testid` coverage guidance to companies) reduces compilation cost by up to 70% (7 calls/step → 2 calls/step on clean DOM).
+**Cost note:** Selector generation is deterministic and costs zero tokens. Compilation LLM cost is driven solely by intent + vision anchor calls. Vision anchor cache hit rate (same screenshot hash on recompile) is the primary cost lever — high-cache-hit recompilations cost ~80% less than fresh compilations.
 
 ---
 
@@ -336,14 +337,14 @@ Using recalculated LLM costs from current provider pricing. The customer sees su
 | Compile credits / month | 50 | 300 | 1,000 | Contracted |
 | Human Edit pool | 1M text + vision tokens | 10M text + vision tokens | 50M text + vision tokens | Contracted |
 | Internal build-month envelope | ~50 fresh compiles | ~300 fresh compiles | ~1,000 fresh compiles | Contracted |
-| Compile + Human Edit planning cost | **~$5–$15** | **~$68–$82** | **~$207–$247** | Contracted |
+| Compile + Human Edit planning cost | **~$2–$8** | **~$28–$45** | **~$88–$120** | Contracted |
 | Infra, telemetry, installer, payment-fee reserve | **~$10–$20** | **~$30–$50** | **~$80–$130** | Contracted |
-| **Total cost/company in build-heavy month** | **~$15–$35 CAC** | **~$98–$132** | **~$287–$377** | Contracted |
+| **Total cost/company in build-heavy month** | **~$12–$28 CAC** | **~$58–$95** | **~$168–$250** | Contracted |
 | **Revenue** | $0 | **$299** | **$799** | Custom |
-| **Build-heavy gross margin** | — | **~56–67%** | **~53–64%** | Contract-dependent |
+| **Build-heavy gross margin** | — | **~68–81%** | **~69–79%** | Contract-dependent |
 | **Maintenance-month gross margin** | — | **~90%+** | **~90%+** | Contract-dependent |
 
-**Blended paid-plan compilation cost** = (20% fresh x $0.54) + (80% cached x $0.11) = ~$0.195/compilation before Human Edit reserve.
+**Blended paid-plan compilation cost** = (20% fresh x $0.21) + (80% cached x $0.042) = ~$0.075/compilation before Human Edit reserve.
 
 **Pricing implication:** The four visible meters keep expectations clear while protecting Conxa from unbounded compile and repair loops. Starter can offer 300 fresh compile credits and 10M Human Edit tokens at $299 only if deterministic local editing, workflow recording, and plugin package builds remain unlimited but quota-gated LLM work is enforced. Pro becomes the highest self-serve tier; anything beyond Pro should move to Enterprise with explicit usage overrides.
 
@@ -359,9 +360,9 @@ Mix: 7 Starter, 3 Pro
 | | Value |
 |-|-------|
 | **Monthly Revenue** | (7 x $299) + (3 x $799) = **$4,490** |
-| Build-heavy COGS | **~$1,800** |
-| **Gross Margin** | **~60%** |
-| **Monthly Profit** | **~+$2,690** |
+| Build-heavy COGS | **~$1,090** |
+| **Gross Margin** | **~76%** |
+| **Monthly Profit** | **~+$3,400** |
 
 **Break-even:** 1-2 paying companies covers baseline cloud infrastructure. Free tier costs should be treated as acquisition spend and protected with one-free-workspace limits.
 
@@ -373,9 +374,9 @@ Mix: 70 Starter, 30 Pro
 | | Value |
 |-|-------|
 | **Monthly Revenue** | (70 x $299) + (30 x $799) = **$44,900** |
-| Build-heavy COGS | **~$18,010** |
-| **Gross Margin** | **~60%** |
-| **Monthly Profit** | **~+$26,890** |
+| Build-heavy COGS | **~$10,850** |
+| **Gross Margin** | **~76%** |
+| **Monthly Profit** | **~+$34,050** |
 
 ---
 
@@ -385,9 +386,9 @@ Mix: 300 Starter, 200 Pro
 | | Value |
 |-|-------|
 | **Monthly Revenue** | (300 x $299) + (200 x $799) = **$249,500** |
-| Build-heavy COGS | **~$100,900** |
-| **Gross Margin** | **~60%** |
-| **Monthly Profit** | **~+$148,600** |
+| Build-heavy COGS | **~$60,500** |
+| **Gross Margin** | **~76%** |
+| **Monthly Profit** | **~+$189,000** |
 
 ---
 
@@ -397,9 +398,9 @@ Mix: 1,000 Starter, 800 Pro, 200 Enterprise at $10K average contract value
 | | Value |
 |-|-------|
 | **Monthly Revenue** | **~$2.94M** |
-| Build-heavy COGS | **~$1.08M** |
-| **Gross Margin** | **~63%** |
-| **Monthly Profit** | **~+$1.86M** (~$22.3M/year) |
+| Build-heavy COGS | **~$720K** |
+| **Gross Margin** | **~75%** |
+| **Monthly Profit** | **~+$2.22M** (~$26.6M/year) |
 
 Enterprise contracts should be priced from the customer's requested seats, installer slots, compile credits, Human Edit pool, active installs, telemetry retention, support SLA, and model-quality pool. Do not sell "unlimited" Enterprise unless the contract has a negotiated usage envelope behind it.
 
@@ -409,11 +410,11 @@ Enterprise contracts should be priced from the customer's requested seats, insta
 
 | Milestone | Companies | Monthly Revenue | Monthly Cost | Profit | Key Actions |
 |-----------|-----------|-----------------|--------------|--------|-------------|
-| **MVP live** | 10 | ~$4.5K | ~$1.8K | +$2.7K | Ship subscription billing; enforce compile credits, Human Edit pool, and installer slots |
-| **Beta** | 50 | ~$22.5K | ~$9.0K | +$13.5K | Dashboard usage meters for seats, installer slots, compile credits, and Human Edit pool |
-| **Growth** | 100 | ~$44.9K | ~$18.0K | +$26.9K | Priority build queue, internal COGS alerts, fair-use throttles |
-| **Scale** | 500 | ~$249.5K | ~$100.9K | +$148.6K | Negotiate provider discounts; add Enterprise sales motion |
-| **Enterprise** | 2,000 | ~$2.94M | ~$1.08M | +$1.86M | SLA support, custom retention, reserved provider capacity |
+| **MVP live** | 10 | ~$4.5K | ~$1.1K | +$3.4K | Ship subscription billing; enforce compile credits, Human Edit pool, and installer slots |
+| **Beta** | 50 | ~$22.5K | ~$5.4K | +$17.1K | Dashboard usage meters for seats, installer slots, compile credits, and Human Edit pool |
+| **Growth** | 100 | ~$44.9K | ~$10.9K | +$34.0K | Priority build queue, internal COGS alerts, fair-use throttles |
+| **Scale** | 500 | ~$249.5K | ~$60.5K | +$189.0K | Negotiate provider discounts; add Enterprise sales motion |
+| **Enterprise** | 2,000 | ~$2.94M | ~$720K | +$2.22M | SLA support, custom retention, reserved provider capacity |
 
 ---
 
@@ -459,8 +460,8 @@ Most companies spend the first month building and polishing the plugin, then mov
 **3. Four visible meters**
 Seats, installer slots, compile credits, and Human Edit pool are the cleanest customer-visible controls. Workflow recording and plugin creation stay unlimited, while expensive cloud-hosted installer distribution and LLM-heavy extraction/repair loops are bounded.
 
-**4. Heuristic hit rate**
-If a company's recorded app has clean `data-testid` or `aria-label` DOM, selector confidence = 1.0 and the 5 selector LLM calls skip (2 calls/step instead of 7). Cost drops ~60% per step. Not in Conxa's control, but adding a "DOM quality score" to the build report could nudge companies toward cleaner apps.
+**4. Vision anchor cache hit rate**
+Vision anchor calls dominate compilation cost. Cache hits (same screenshot hash) cost zero tokens. Apps that recompile with minimal visual DOM change will have high anchor cache hit rates, making recompiles near-free. The cache key is the screenshot hash — stable page designs recompile at ~80% lower cost. Adding a "cache hit %" column to the build report gives companies visibility into their recompile efficiency.
 
 **5. Provider volume discounts at scale**
 At $10K+/month provider spend (~500 companies), negotiate committed-use pricing for GPT-5.4-mini, GPT-5.4, Gemma 4 31B, and Claude Vision. Target 20–30% reduction = saves meaningful cost at Scale stage.
@@ -583,6 +584,7 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-06-30 | Kiran | v15: Removed LLM selector generation from cost model — `IdentityBundle` + `selector_grammar.py` are now the sole selector generators (deterministic, zero tokens). Per-step LLM calls drop from 2–7 to a fixed 2 (intent + vision anchor). All cost tables, tier margins, scenario COGS, and cost levers updated accordingly. Build-heavy gross margin improves from ~56–67% to ~68–81% for Starter. |
 | 2026-06-10 | Kiran | v14: Replaced visible workflow/plugin caps with four customer meters: seats, installer slots, monthly compile credits, and monthly Human Edit pool |
 | 2026-06-07 | Kiran | v13: Added monthly Human Edit text + vision token reserves: Trial 1M, Starter 10M, Pro 50M, Enterprise custom |
 | 2026-06-07 | Kiran | v12: Adjusted team seats to 1 / 3 / 10 across Trial, Starter, and Pro |

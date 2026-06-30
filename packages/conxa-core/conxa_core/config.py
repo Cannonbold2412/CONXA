@@ -276,12 +276,13 @@ class Settings(BaseSettings):
     llm_router_request_timeout_ms: int = 30000
     llm_router_prefer_fast_for_text: bool = True
 
-    # Razorpay payment gateway. These intentionally do not use the SKILL_ prefix.
-    razorpay_key_id: str = Field(default="", validation_alias="RAZORPAY_KEY_ID")
-    razorpay_key_secret: str = Field(default="", validation_alias="RAZORPAY_KEY_SECRET")
-    razorpay_webhook_secret: str = Field(default="", validation_alias="RAZORPAY_WEBHOOK_SECRET")
-    razorpay_starter_plan_id: str = Field(default="", validation_alias="RAZORPAY_STARTER_PLAN_ID")
-    razorpay_pro_plan_id: str = Field(default="", validation_alias="RAZORPAY_PRO_PLAN_ID")
+    # Cashfree payment gateway. These intentionally do not use the SKILL_ prefix.
+    cashfree_app_id: str = Field(default="", validation_alias="CASHFREE_APP_ID")
+    cashfree_secret_key: str = Field(default="", validation_alias="CASHFREE_SECRET_KEY")
+    cashfree_webhook_secret: str = Field(default="", validation_alias="CASHFREE_WEBHOOK_SECRET")
+    cashfree_starter_plan_id: str = Field(default="", validation_alias="CASHFREE_STARTER_PLAN_ID")
+    cashfree_pro_plan_id: str = Field(default="", validation_alias="CASHFREE_PRO_PLAN_ID")
+    cashfree_env: str = Field(default="TEST", validation_alias="CASHFREE_ENV")  # TEST | PROD
 
     @field_validator("package_bundle_root", mode="before")
     @classmethod

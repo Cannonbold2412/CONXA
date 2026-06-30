@@ -20,7 +20,7 @@ from app.api.llm_proxy_routes import router as llm_proxy_router
 from app.api.plugin_routes import router as plugin_router
 from app.api.product_routes import router as product_router
 from app.api.publish_routes import installers_router, router as publish_router
-from app.api.razorpay_routes import router as razorpay_router
+from app.api.cashfree_routes import router as cashfree_router
 from app.api.run_routes import router as run_router
 from app.api.security import ProductionRequestMiddleware
 from app.api.skillpack_update_routes import router as skillpack_update_router
@@ -35,7 +35,7 @@ def _validate_production_config() -> None:
     """Fail fast in production rather than booting a half-configured service.
 
     When ``SKILL_AUTH_REQUIRED`` is true we are running as the public cloud and
-    must have a real database, Clerk auth, explicit CORS origins, and Razorpay
+    must have a real database, Clerk auth, explicit CORS origins, and Cashfree
     billing configured. (Provider keys are enforced separately by the Settings
     validator.) The filesystem DB fallback must never silently activate here.
     """
@@ -50,10 +50,10 @@ def _validate_production_config() -> None:
         missing.append("SKILL_CLERK_JWKS_URL")
     if not settings.cors_origins:
         missing.append("SKILL_CORS_ORIGINS")
-    if not (settings.razorpay_key_id and settings.razorpay_key_secret and settings.razorpay_webhook_secret):
-        missing.append("RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET")
-    if not (settings.razorpay_starter_plan_id and settings.razorpay_pro_plan_id):
-        missing.append("RAZORPAY_STARTER_PLAN_ID / RAZORPAY_PRO_PLAN_ID")
+    if not (settings.cashfree_app_id and settings.cashfree_secret_key and settings.cashfree_webhook_secret):
+        missing.append("CASHFREE_APP_ID / CASHFREE_SECRET_KEY / CASHFREE_WEBHOOK_SECRET")
+    if not (settings.cashfree_starter_plan_id and settings.cashfree_pro_plan_id):
+        missing.append("CASHFREE_STARTER_PLAN_ID / CASHFREE_PRO_PLAN_ID")
     if not settings.api_base_url:
         missing.append("SKILL_API_BASE_URL (set to prevent X-Forwarded-Host injection into pack.json)")
     if missing:
@@ -90,7 +90,7 @@ app.include_router(llm_proxy_router, prefix="/api/v1")
 app.include_router(publish_router, prefix="/api/v1")
 app.include_router(installers_router, prefix="/api/v1")
 app.include_router(run_router, prefix="/api/v1")
-app.include_router(razorpay_router, prefix="/api/v1")
+app.include_router(cashfree_router, prefix="/api/v1")
 app.include_router(skillpack_update_router, prefix="/api/v1")
 app.include_router(skillpack_telemetry_router, prefix="/api/v1")
 app.include_router(tracking_router, prefix="/api/v1")

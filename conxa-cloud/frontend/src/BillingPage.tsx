@@ -17,11 +17,11 @@ import {
   Wand2,
 } from 'lucide-react'
 import {
-  createRazorpaySubscription,
+  createCashfreeSubscription,
   listPlans,
-  verifyRazorpaySubscription,
+  verifyCashfreeSubscription,
   type Plan,
-} from '@/api/razorpayApi'
+} from '@/api/cashfreeApi'
 import {
   fetchEntitlements,
   fetchSubscription,
@@ -41,47 +41,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
-declare global {
-  interface Window {
-    Razorpay?: new (options: RazorpayOptions) => RazorpayCheckout
-  }
-}
-
-type RazorpayCheckout = {
-  open: () => void
-  on?: (event: 'payment.failed', handler: (response: RazorpayPaymentFailedResponse) => void) => void
-}
-
-type RazorpayOptions = {
-  key: string
-  subscription_id: string
-  name: string
-  description: string
-  handler: (response: {
-    razorpay_payment_id: string
-    razorpay_subscription_id: string
-    razorpay_signature: string
-  }) => void | Promise<void>
-  modal?: {
-    ondismiss?: () => void
-  }
-  theme?: {
-    color: string
-  }
-}
-
-type RazorpayPaymentFailedResponse = {
-  error?: {
-    code?: string
-    description?: string
-    reason?: string
-    source?: string
-    step?: string
-  }
-}
-
-type CheckoutStatus = 'missing_key' | 'loading' | 'ready' | 'failed'
-
 type UsageMeterConfig = {
   key: EntitlementMeterKey
   label: string
@@ -89,8 +48,6 @@ type UsageMeterConfig = {
   icon: ComponentType<{ className?: string }>
 }
 
-const RAZORPAY_CHECKOUT_SRC = 'https://checkout.razorpay.com/v1/checkout.js'
-const RAZORPAY_KEY_ID = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID ?? ''
 const SALES_EMAIL = 'noreplay@conxa.in'
 const SALES_PHONE_DISPLAY = process.env.NEXT_PUBLIC_SALES_PHONE_DISPLAY ?? '+91 9970257247'
 const SALES_PHONE_TEL =
@@ -205,26 +162,8 @@ function meterTone(meter?: EntitlementMeter) {
   return 'healthy'
 }
 
-function checkoutLabel(status: CheckoutStatus) {
-  if (status === 'ready') return 'Checkout ready'
-  if (status === 'failed') return 'Checkout unavailable'
-  if (status === 'missing_key') return 'Checkout key missing'
-  return 'Checkout loading'
-}
-
-function razorpayFailureMessage(response: RazorpayPaymentFailedResponse) {
-  const error = response.error
-  return (
-    error?.description?.trim() ||
-    error?.reason?.trim() ||
-    error?.code?.trim() ||
-    'Payment could not be completed'
-  )
-}
-
 export function BillingPage() {
   const queryClient = useQueryClient()
-  const [checkoutStatus, setCheckoutStatus] = useState<CheckoutStatus>('loading')
   const [processingTier, setProcessingTier] = useState<string | null>(null)
   const [currentPlanOverride, setCurrentPlanOverride] = useState<string | null>(null)
 
@@ -241,40 +180,28 @@ export function BillingPage() {
     queryFn: fetchEntitlements,
   })
 
+  // After Cashfree redirects back from mandate authorization, verify the pending subscription.
   useEffect(() => {
-    if (window.Razorpay) {
-      setCheckoutStatus('ready')
-      return
-    }
+    const pendingSubId = sessionStorage.getItem('cashfree_pending_sub')
+    if (!pendingSubId) return
+    sessionStorage.removeItem('cashfree_pending_sub')
 
-    const existingScript = document.querySelector<HTMLScriptElement>(
-      `script[src="${RAZORPAY_CHECKOUT_SRC}"]`,
-    )
-
-    const handleLoad = () => setCheckoutStatus('ready')
-    const handleError = () => setCheckoutStatus('failed')
-
-    if (existingScript) {
-      existingScript.addEventListener('load', handleLoad)
-      existingScript.addEventListener('error', handleError)
-      return () => {
-        existingScript.removeEventListener('load', handleLoad)
-        existingScript.removeEventListener('error', handleError)
-      }
-    }
-
-    const script = document.createElement('script')
-    script.src = RAZORPAY_CHECKOUT_SRC
-    script.async = true
-    script.addEventListener('load', handleLoad)
-    script.addEventListener('error', handleError)
-    document.body.appendChild(script)
-
-    return () => {
-      script.removeEventListener('load', handleLoad)
-      script.removeEventListener('error', handleError)
-    }
-  }, [])
+    void verifyCashfreeSubscription(pendingSubId)
+      .then(async () => {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['subscription'] }),
+          queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+        ])
+        toast.success('Subscription activated')
+      })
+      .catch((err: unknown) => {
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : 'Subscription verification failed. Please refresh to check your plan.',
+        )
+      })
+  }, [queryClient])
 
   const plans = useMemo(() => {
     const remotePlans = plansQuery.data?.plans ?? []
@@ -292,7 +219,6 @@ export function BillingPage() {
     currentPlanOverride ?? subscription?.plan ?? entitlements?.plan ?? 'free',
   )
   const hasError = plansQuery.isError || subscriptionQuery.isError || entitlementsQuery.isError
-  const canCheckout = checkoutStatus === 'ready'
 
   async function refreshBilling() {
     await Promise.all([
@@ -311,70 +237,17 @@ export function BillingPage() {
       return
     }
 
-    if (!canCheckout) {
-      toast.error('Razorpay checkout is not ready yet.')
-      return
-    }
-
     setProcessingTier(normalizedTier)
     try {
-      const order = await createRazorpaySubscription(normalizedTier)
-      const Razorpay = window.Razorpay
-      if (!Razorpay) {
-        setCheckoutStatus('failed')
+      const order = await createCashfreeSubscription(normalizedTier)
+      if (!order.auth_link) {
         setProcessingTier(null)
-        toast.error('Razorpay checkout is not available.')
+        toast.error('Cashfree checkout link not received. Please try again.')
         return
       }
-
-      const checkoutKey = order.key_id?.trim() || RAZORPAY_KEY_ID
-      if (!checkoutKey) {
-        setCheckoutStatus('missing_key')
-        setProcessingTier(null)
-        toast.error('Razorpay checkout key is not configured.')
-        return
-      }
-
-      const checkout = new Razorpay({
-        key: checkoutKey,
-        subscription_id: order.subscription_id,
-        name: 'Conxa',
-        description: `Conxa ${displayPlanName(normalizedTier)} plan`,
-        handler: async (response) => {
-          try {
-            await verifyRazorpaySubscription(
-              response.razorpay_payment_id,
-              response.razorpay_subscription_id,
-              response.razorpay_signature,
-            )
-            setCurrentPlanOverride(normalizedTier)
-            await Promise.all([
-              queryClient.invalidateQueries({ queryKey: ['subscription'] }),
-              queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
-            ])
-            toast.success('Subscription activated')
-          } catch (error) {
-            toast.error(error instanceof Error ? error.message : 'Payment verification failed')
-          } finally {
-            setProcessingTier(null)
-          }
-        },
-        modal: {
-          ondismiss: () => {
-            setProcessingTier(null)
-            toast.info('Checkout closed')
-          },
-        },
-        theme: {
-          color: '#2563eb',
-        },
-      })
-      checkout.on?.('payment.failed', (response) => {
-        setProcessingTier(null)
-        toast.error(razorpayFailureMessage(response))
-      })
-
-      checkout.open()
+      // Store subscription_id in sessionStorage so we can verify after Cashfree redirects back.
+      sessionStorage.setItem('cashfree_pending_sub', order.subscription_id)
+      window.location.href = order.auth_link
     } catch (error) {
       setProcessingTier(null)
       toast.error(error instanceof Error ? error.message : 'Subscription could not be started')
@@ -460,7 +333,6 @@ export function BillingPage() {
                   key={plan.tier}
                   plan={plan}
                   currentPlan={currentPlan}
-                  checkoutStatus={checkoutStatus}
                   processingTier={processingTier}
                   onSubscribe={subscribe}
                 />
@@ -574,13 +446,11 @@ function UsageMeterCard({
 function PlanCard({
   plan,
   currentPlan,
-  checkoutStatus,
   processingTier,
   onSubscribe,
 }: {
   plan: Plan
   currentPlan: string
-  checkoutStatus: CheckoutStatus
   processingTier: string | null
   onSubscribe: (tier: string) => void
 }) {
@@ -591,19 +461,16 @@ function PlanCard({
   const isEnterprise = tier === 'enterprise'
   const isPaidCheckoutPlan = tier === 'starter' || tier === 'pro'
   const isProcessing = processingTier === tier
-  const checkoutBlocked = isPaidCheckoutPlan && checkoutStatus !== 'ready'
   const disabled =
     isCurrent ||
     tier === 'free' ||
     (!isPaidCheckoutPlan && !isEnterprise) ||
-    checkoutBlocked ||
     Boolean(processingTier)
 
   let buttonLabel = isCurrent ? 'Current plan' : `Choose ${displayPlanName(tier)}`
   if (tier === 'free' && !isCurrent) buttonLabel = 'Free plan'
   if (isEnterprise) buttonLabel = 'Contact us'
-  if (checkoutBlocked) buttonLabel = checkoutLabel(checkoutStatus)
-  if (isProcessing) buttonLabel = 'Opening checkout'
+  if (isProcessing) buttonLabel = 'Redirecting to Cashfree...'
 
   return (
     <>
@@ -686,11 +553,6 @@ function PlanCard({
                 {buttonLabel}
               </Button>
             )}
-            {checkoutBlocked ? (
-              <p className="mt-2 text-xs text-amber-300">
-                Configure Razorpay checkout before paid plan activation.
-              </p>
-            ) : null}
           </div>
         </CardContent>
       </Card>

@@ -2,6 +2,68 @@
 
 ---
 
+## Payment gateway switched from Razorpay to Cashfree — 2026-06-30
+
+**What changed.** All billing code was migrated from Razorpay to Cashfree. Customers who want to upgrade to Starter (₹29,999/month) or Pro (₹79,999/month) are now redirected to Cashfree's mandate authorization page instead of seeing a Razorpay popup.
+
+**Why it changed.** The team decided to switch payment providers to Cashfree.
+
+**Files that changed:**
+- `conxa-cloud/backend/app/api/cashfree_routes.py` — new file that handles plans, subscription creation, payment verification, and webhook events from Cashfree. Replaces `razorpay_routes.py`.
+- `conxa-cloud/backend/app/main.py` — updated to import and register the Cashfree router, and updated the production startup check to require Cashfree credentials instead of Razorpay credentials.
+- `packages/conxa-core/conxa_core/config.py` — the five Razorpay env vars (`RAZORPAY_KEY_ID` etc.) were swapped for six Cashfree env vars (`CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`, `CASHFREE_STARTER_PLAN_ID`, `CASHFREE_PRO_PLAN_ID`, `CASHFREE_ENV`).
+- `conxa-cloud/backend/requirements.txt` — removed `razorpay` package, added `httpx` (used for Cashfree REST API calls).
+- `conxa-cloud/frontend/src/api/cashfreeApi.ts` — new frontend API client with updated response types (`auth_link` instead of `key_id`, `subscription_id` stays the same).
+- `conxa-cloud/frontend/src/BillingPage.tsx` — removed Razorpay script-loading and popup code. The new flow redirects the user to Cashfree's `authLink` page for mandate registration, then verifies on return using sessionStorage to remember the pending subscription ID.
+- `.env.example` — updated with Cashfree credential placeholders.
+
+**How the new checkout works:**
+1. User clicks "Choose Starter" → frontend calls `/subscriptions/create`.
+2. Backend creates a Cashfree subscription and returns an `authLink` (a Cashfree-hosted page).
+3. Frontend saves the `subscription_id` in `sessionStorage` and redirects to the `authLink`.
+4. User completes mandate registration on Cashfree.
+5. Cashfree redirects back to `/billing`. On page load, the pending `subscription_id` is read from `sessionStorage` and sent to `/subscriptions/verify`.
+6. Backend calls Cashfree API to confirm status, then updates the workspace billing record.
+7. Webhooks from Cashfree also update billing for recurring charges and cancellations.
+
+**What you need to do manually before this goes live:** see the setup steps in `docs/Implementation-Plan.md` or the plan at `.claude/plans/you-see-now-we-composed-pelican.md`.
+
+---
+
+## Skill pack modified to force Tier 3 + Tier 4 recovery escalation — 2026-06-30
+
+**What changed.** The "create-a-service-from-github" skill pack on this machine was intentionally broken at **step 2** (the click on the Blueprint menu option) so that every automatic recovery attempt the runtime tries before asking Claude for help will fail, forcing it to hand the problem to Claude with a full screenshot and DOM inventory.
+
+**What was broken and why.** Normally, when a step fails, the runtime works through a four-tier rescue ladder before involving Claude:
+- *Tier 1:* tries the compiled selectors (the ones recorded at build time)
+- *Tier 2:* tries a11y-based lookup, re-hover tricks, loose text search, and fallback selectors
+- *Tier 3:* hands Claude a list of every interactive element on the page ("semantic recovery")
+- *Tier 4:* hands Claude a live screenshot ("vision recovery")
+
+To test Tier 3 and 4, every path the runtime can try on its own must fail. So the step 2 entry in `execution.json` and `recovery.json` was given fake, non-existent selector strings and fake anchor words — things that will never match a real element on the Render dashboard. The runtime will burn through every Tier 1 and Tier 2 attempt, find nothing, and then produce the structured Tier 3/4 recovery response that tells Claude to look at the page and figure out the right element.
+
+**What was not changed.** Only the step 2 data inside the skill pack files was changed. The recovery engine itself (`runtime/recovery.js`, `runtime/run.js`) was not touched. All other steps in the skill pack are unchanged. The manifest checksums were updated to match so the runtime's integrity check still passes.
+
+**To restore the skill pack to working order.** Re-run the skill compile from Build Studio (or restore the original `execution.json` and `recovery.json` from git) and update the checksums in `manifest.json`.
+
+---
+
+## Updated: cost model no longer includes LLM selector generation — 2026-06-30
+
+**What changed.** The `docs/cost_model.md` was updated to reflect that Conxa no longer uses LLM to write CSS/Playwright selector strings. That work is now done deterministically by `IdentityBundle` and `selector_grammar.py`, which always produce selectors from recorded DOM signals — no matter what the page looks like.
+
+**Why it matters for cost.** Previously, every step that didn't have a perfect `data-testid` or `aria-label` triggered 5 extra LLM calls just to generate and cross-check selectors. That was the biggest variable in compilation cost. With the deterministic approach, every step now fires exactly 2 LLM calls: one for intent, one for the visual anchor screenshot. Always. The cost model now reflects this.
+
+**Numbers that changed:**
+- Per-step cost: was $0.014–$0.036 (2–7 LLM calls), now a flat $0.001–$0.014 (2 calls, provider-dependent)
+- Fresh 15-step workflow: Starter/Pro dropped from ~$0.54 → ~$0.21; Enterprise from ~$1.93 → ~$0.81
+- Blended compilation cost: Starter/Pro from ~$0.195 → ~$0.075; Enterprise from ~$0.695 → ~$0.292
+- Build-heavy gross margin: Starter improved from ~56–67% → ~68–81%
+
+**What didn't change.** The LLM still handles intent detection, visual anchors (screenshot-based), recovery at Tier 3+, and the workflow intent graph. Those costs are unchanged. Caching still applies the same way — same element hash, same screenshot hash = zero tokens.
+
+---
+
 ## Fixed: skill execution "got stuck" forever in Claude Desktop (but worked in Build Studio) — 2026-06-30
 
 **What you saw.** Running the Render "create a service from GitHub" skill through Claude
