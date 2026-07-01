@@ -551,7 +551,7 @@ function _stepRecoveryContext(err) {
 //     resume — the closing edge of the four-tier cascade.
 //   • ceiling 2 (Build Studio): a concise, deterministic failure. No agent handoff, no
 //     screenshots — the compiled pack is judged on its T1/T2 merits alone.
-async function _buildFailureResponse(page, err, resolvedEntry) {
+async function _buildFailureResponse(page, err, resolvedEntry, runTracker) {
   const url      = page.url();
   const failedAt = typeof err.failedAt === "number" ? err.failedAt : null;
   const stepNo   = failedAt !== null ? failedAt + 1 : "?";
@@ -637,6 +637,7 @@ async function _buildFailureResponse(page, err, resolvedEntry) {
 
   appendRecoveryEvent({ event: "agent_recovery_requested", tier: MAX_RECOVERY_TIER,
     slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
+  if (runTracker) runTracker.emit("tier_escalated", { si: failedAt, l: MAX_RECOVERY_TIER });
 
   const intent = _stepRecoveryContext(err);
   const resumeKey = failedAt !== null ? String(failedAt) : "0";
@@ -785,6 +786,7 @@ async function _handleTool(name, args, extra) {
 
     // Resolve all skills (fail fast)
     const resolved = [];
+    let _overrideAppliedCount = 0;
     for (const run of runs) {
       const entry = _resolveSkill(String(run.skill || ""), run.company ? String(run.company) : null);
       if (!entry) return err(`Skill not found: ${run.skill}. Call list_skills.`);
@@ -819,6 +821,7 @@ async function _handleTool(name, args, extra) {
         ? Object.keys(run.step_overrides).length : 0;
       if (overrideCount) {
         appendRecoveryEvent({ event: "agent_override_applied", slug: entry.slug, count: overrideCount });
+        _overrideAppliedCount += overrideCount;
       }
 
       // `resume_from: 0` is a legitimate resume (the failed step was the very first one) and must
@@ -915,6 +918,7 @@ async function _handleTool(name, args, extra) {
     const _runTracker = _tracker.forRun(_runId, { uid: INSTALL_ID, wid: "" });
     const _wfStartAt  = Date.now();
     let   _totalRecovered = 0;
+    if (_overrideAppliedCount) _runTracker.emit("override_applied", { n: _overrideAppliedCount });
 
     // Signal agent-mediated recovery retry (Tier 3/4) when resuming mid-plan.
     if (primary.isResume) {
@@ -946,6 +950,7 @@ async function _handleTool(name, args, extra) {
         page = _park.page;
         log("info", "recovery_park_resumed", { skill: primary.entry.slug, step_index: primary.resumeFrom });
         appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
+        _runTracker.emit("park_resumed", { si: primary.resumeFrom });
       } else {
         ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = await getCachedBrowser(primary.entry.company, authManager, { headless: !watch }));
         page = await _context.newPage();
@@ -1071,8 +1076,7 @@ async function _handleTool(name, args, extra) {
         tot: resolved.reduce((n, r) => n + r.steps.length, 0),
         rec: _totalRecovered,
       });
-      await _tracker.flush();
-      _tracker.destroy();
+      // Flush happens once, in `finally`, for every exit path — see there.
 
       log("info", "execute_success", { skill: primary.entry.slug, url });
 
@@ -1091,8 +1095,11 @@ async function _handleTool(name, args, extra) {
         fsi: runErr.failedAt ?? null,
         fc:  mapErrorToCode(runErr),
       });
-      await _tracker.flush();
-      _tracker.destroy();
+      // Do NOT flush/destroy the tracker here — the Tier 3/4 recovery-request and
+      // park-created events (below, and inside _buildFailureResponse) haven't been emitted
+      // yet. Tearing the tracker down this early silently drops that telemetry. The tracker
+      // is flushed once, in `finally`, after every code path in this catch block has had a
+      // chance to emit.
 
       // Aborted runs (runPlan threw { cancelled }) come from two sources, both of which tear down
       // immediately and never park (a parked page is only useful for an agent that is still waiting):
@@ -1125,7 +1132,7 @@ async function _handleTool(name, args, extra) {
         return err("Execution cancelled.");
       }
 
-      const failResp = page ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry) : err(runErr.message);
+      const failResp = page ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry, _runTracker) : err(runErr.message);
 
       // Park the live failed page for an agent-mediated (Tier 3/4) resume instead of tearing it
       // down — so the corrected selector lands on the same DOM the recovery request describes.
@@ -1140,6 +1147,7 @@ async function _handleTool(name, args, extra) {
           page, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer };
         appendRecoveryEvent({ event: "recovery_park_created", slug: primary.entry.slug, step_index: runErr.failedAt, ttl_ms: PARK_TTL_MS });
         log("info", "recovery_park_created", { skill: primary.entry.slug, step_index: runErr.failedAt });
+        _runTracker.emit("park_created", { si: runErr.failedAt });
       } else {
         if (page) await page.close().catch(() => {});
         if (watch) {
@@ -1152,6 +1160,12 @@ async function _handleTool(name, args, extra) {
     } finally {
       if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
       activeExecution = null;
+      // Single flush point for every exit path (success, deadline, cancel, and the
+      // Tier 3/4 recovery-request/park-created path) — guarantees every event emitted
+      // above (wf_ok, wf_fail, tier_escalated, park_created, park_resumed, override_applied)
+      // is actually sent before the tracker's timer is torn down.
+      await _tracker.flush();
+      _tracker.destroy();
     }
   }
 

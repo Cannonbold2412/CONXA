@@ -1,6 +1,6 @@
 # Conxa Cost & Revenue Model
 
-**Last Updated:** June 30, 2026
+**Last Updated:** July 2, 2026
 **Status:** Living document — iterate as assumptions change
 
 ---
@@ -224,6 +224,70 @@ When a company ships a plugin update, customers pull the new version. The `/skil
 | Storage per plugin version | ~$0.01/GB | Compiled plugin packages are small (~5–50MB) |
 | CDN bandwidth per update rollout | ~$0.01/GB | 100 customers × 10MB = 1GB = $0.01 |
 | **Total per update** | **~$0.02–0.10** | Negligible |
+
+---
+
+### 6. Execution-Time Recovery Tiers (Customer-Side, Not Billed to Conxa)
+
+Recovery cost during execution is paid by the **customer's own Claude Desktop subscription or API key**, never by Conxa (see "What Conxa Actually Does" above). It's documented here anyway because it drives the cost/latency the *customer* experiences per step, and because compile-time decisions (selector quality, `recovery.json` fallback richness) directly change how often a run reaches the expensive tiers.
+
+The runtime resolves each step through up to four tiers (`docs/TRD.md` § "Recovery Cascade"): **Tier 1** (in-process exception ladder), **Tier 2** (in-process a11y/fallback re-derivation using `recovery.json`'s `selector_context`), and **Tier 3/4** (agent-mediated — the runtime bundles a semantic block and a vision block into one structured request back to the MCP client, which is Claude itself). Tiers 1–2 are zero-token by design; Tiers 3/4 are not a separate escalation from each other — they arrive as one combined recovery payload, so they're priced and timed together below.
+
+| Outcome | LLM tokens | Who pays | Added wall time vs. a normal step | Basis |
+|---|---|---|---|---|
+| **No recovery needed** (primary selector hits) | 0 | — | none — baseline step time (~6–8s, mostly page interaction/wait) | Observed baseline from `transient_recovered`/normal steps in a live run |
+| **Tier 1** (exception ladder) | 0 | — | ~none — absorbed into the same step timeout | `recovery.js` L1, in-process |
+| **Tier 2** (a11y/fallback re-derivation) | 0 | — | ~none — comparable to baseline (~6.4s observed) | `recovery.js` L2, reads `recovery.json`'s `selector_context`, in-process |
+| **Tier 3/4** (agent-mediated — semantic + vision, one combined request) | ~2,500–3,500 tokens/occurrence (screenshot ≈1,300–1,400 tokens by Claude's image formula, DOM/interactive-element inventory ≈800–2,000 tokens, Claude's `step_overrides` fix response ≈150–300 tokens; tool schemas are a one-time per-conversation cost, mostly cache-read after the first call) | **Customer's own Claude subscription/API — never Conxa** | **+10–15s** per occurrence (observed: T1/T2 exhaustion ~10–17s before escalating, then ~5–8s of agent reasoning latency to produce the fix) | Real measured run: two deliberately-broken steps in an 8-step workflow, recovered via Tier 3/4, `~20–22s` total step time vs. ~7s baseline |
+
+**Caveats on the token figures:** these are estimates, not exact counts. Measuring the *real* number requires either an Anthropic API key (to run `messages.count_tokens` against the reconstructed recovery payload) or Console usage access — neither was available when this was measured, and the recovery screenshot/DOM payload isn't persisted to disk, so it can't be re-measured after the fact. The wall-clock timings, by contrast, are exact — pulled directly from `~/.conxa/logs/recovery.log` timestamps (`terminal_failure` → `agent_recovery_requested` → `agent_override_applied` → `recovery_park_resumed`).
+
+#### Tier 3 vs. Tier 4 Cost Breakdown
+
+The runtime bundles Tier 3 (semantic) and Tier 4 (vision) into one combined recovery request today — there's no code path that fires one without the other. The table below splits out what each *signal* contributes to that combined payload, so the ~2,500–3,500 combined figure above isn't a black box:
+
+| Signal alone | What's in it | ~Tokens/occurrence |
+|---|---|---|
+| **Tier 3 only** (semantic) | DOM/interactive-element inventory (~800–2,000) + Claude's `step_overrides` fix response (~150–300) | **~1,400–1,850** (typical ~1,625) |
+| **Tier 4 only** (vision) | Screenshot, Claude's image-token formula (~1,300–1,400) + fix response (~150–300) | **~1,450–1,700** (typical ~1,575) |
+| **Tier 3 + 4 combined** (what actually happens today) | DOM inventory + screenshot + **one** shared fix response (not two — the combined request gets one fix, not one per signal) | **~2,500–3,500** (typical ~3,000) |
+
+#### Worked Examples — Full Workflow Run
+
+Using the ~3,000-token typical combined Tier 3/4 cost and the actual 8-step workflow this cascade was tested against. **Baseline** (~1,200 tokens) is the one-time cost of a clean `execute_skill` round trip: the MCP tool schemas (mostly a cache-read after the first call in a conversation), the tool call itself, and a short "Done." result — no recovery payload at all. Each recovery occurrence is additive on top of that:
+
+| Scenario | Tier 3/4 occurrences | Token math | **Total tokens** |
+|---|---|---|---|
+| Perfectly run workflow (no recovery) | 0 | ~1,200 baseline | **~1,200** |
+| 1 LLM recovery | 1 | 1,200 + (1 × 3,000) | **~4,200** |
+| 2 LLM recoveries | 2 | 1,200 + (2 × 3,000) | **~7,200** |
+| 3 LLM recoveries | 3 | 1,200 + (3 × 3,000) | **~10,200** |
+
+These are per-workflow-run figures, not per-step — most steps in a healthy workflow resolve via Tier 1/2 (zero tokens) and never show up in this table at all. The number that matters for a given workflow is simply how many of its steps are weak enough to fall through to Tier 3/4 on a given run; each one adds roughly one more ~3,000-token increment above.
+
+**Why this matters for compile-time decisions:** every step that reaches Tier 3/4 costs the *customer* real tokens and ~15 extra seconds, on top of Conxa's own compile-time incentive to keep selectors strong. A workflow with weak `IdentityBundle` signals and a thin `recovery.json` (missing `selector_context.alternatives`, sparse `anchors`) will lean on Tier 3/4 more often in production — worse customer experience, even though it costs Conxa nothing directly. Selector/anchor quality at compile time is the only lever that controls this.
+
+#### What This Costs the End Customer Running a Plugin Locally
+
+The end customer (the person running the installed `.exe` via Claude Desktop) is not billed by Conxa at all for execution — it draws entirely against **their own Claude Pro/Max subscription usage allowance** (or their own API key, if that's how their Claude Desktop is configured). There is no incremental dollar cost as long as they're inside their plan's existing session limit — the only "cost" is how many of their allotted messages a workflow run consumes.
+
+Anthropic doesn't publish exact message counts (they vary by message/attachment length, conversation length, and model — see the Claude Help Center's ["How do usage and length limits work?"](https://support.claude.com/en/articles/11647753-how-do-usage-and-length-limits-work)), but commonly-cited approximate 5-hour session allowances are:
+
+| Plan | Price | ~Messages / 5-hour session |
+|---|---|---|
+| Pro | $20/mo | ~45 |
+| Max 5x | $100/mo | ~225 |
+| Max 20x | $200/mo | ~900 |
+
+A Conxa `execute_skill` call maps roughly to **1 message-equivalent per attempt**: a clean run (no recovery) is 1 message; each Tier 3/4 occurrence needs one more (the runtime's recovery request + the agent's follow-up `execute_skill` call with `step_overrides`) — Tier 1/2 recoveries are free, in-process, and don't add a message. So:
+
+| Plan | ~Clean runs / 5hr (0 recoveries) | ~Runs / 5hr (avg. 1 recovery/run) | ~Runs / 5hr (avg. 2 recoveries/run) |
+|---|---|---|---|
+| Pro | ~45 | ~22 | ~15 |
+| Max 5x | ~225 | ~112 | ~75 |
+| Max 20x | ~900 | ~450 | ~300 |
+
+**Bottom line for customer-facing messaging:** running Conxa-built workflows costs a Pro/Max subscriber $0 extra — it just draws down their existing 5-hour message allowance, same as any other Claude Desktop conversation. The number of runs they can fit in a session depends almost entirely on how often the workflow needs Tier 3/4 recovery, which is why compile-time selector/anchor quality (above) is the thing that actually protects their usage budget, not anything Conxa charges for.
 
 ---
 
@@ -584,6 +648,7 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-07-02 | Kiran | v16: Added "Execution-Time Recovery Tiers" section documenting per-tier token/time cost during customer-side execution (Tier 1/2 zero-token, Tier 3/4 ~2,500–3,500 tokens + 10–15s added per occurrence), based on a live manual test of the recovery cascade. Added a Tier 3-only vs Tier 4-only cost breakdown (~1,625 / ~1,575 tokens respectively vs. ~3,000 combined — they always fire bundled today) and worked full-workflow examples at 0/1/2/3 recovery occurrences (~1,200 / ~4,200 / ~7,200 / ~10,200 tokens). Also added "What This Costs the End Customer Running a Plugin Locally" — translates that into Claude Pro/Max 5-hour session message allowances (~45/225/900 msgs) and approximate workflow-runs-per-session at 0/1/2 avg. recoveries. All of this is customer-paid, not a Conxa cost — included for compile-time decision guidance and customer-facing messaging. |
 | 2026-06-30 | Kiran | v15: Removed LLM selector generation from cost model — `IdentityBundle` + `selector_grammar.py` are now the sole selector generators (deterministic, zero tokens). Per-step LLM calls drop from 2–7 to a fixed 2 (intent + vision anchor). All cost tables, tier margins, scenario COGS, and cost levers updated accordingly. Build-heavy gross margin improves from ~56–67% to ~68–81% for Starter. |
 | 2026-06-10 | Kiran | v14: Replaced visible workflow/plugin caps with four customer meters: seats, installer slots, monthly compile credits, and monthly Human Edit pool |
 | 2026-06-07 | Kiran | v13: Added monthly Human Edit text + vision token reserves: Trial 1M, Starter 10M, Pro 50M, Enterprise custom |

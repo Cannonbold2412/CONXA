@@ -310,6 +310,11 @@ def _record_time_ms(record: dict[str, Any]) -> int:
 
 def _event_recovery_type(evt: dict[str, Any]) -> str:
     code = str(evt.get("e") or "").lower()
+    # Agent-mediated (Tier 3 semantic + Tier 4 vision) escalation. The runtime bundles both
+    # signals into a single recovery request — there's no code path today that fires one
+    # without the other — so this is classified as "Vision", the more complete signal.
+    if code == "tier_escalated":
+        return "Vision"
     key = str(evt.get("rt") or evt.get("sc") or evt.get("tier") or evt.get("sel") or "").lower()
     if code not in {"rec_ok", "tier_ok"}:
         return ""
@@ -327,6 +332,9 @@ def _event_recovery_type(evt: dict[str, Any]) -> str:
 
 
 def _event_recovery_tier(evt: dict[str, Any], recovery_type: str) -> str:
+    code = str(evt.get("e") or "").lower()
+    if code == "tier_escalated":
+        return "Tier 4" if int(_number(evt.get("l"))) >= 4 else "Tier 3"
     key = str(evt.get("rt") or evt.get("sc") or evt.get("tier") or evt.get("sel") or "").lower()
     if key in {"selector", "selector_retry", "candidate_fallback", "dialog_scope", "tier1_compiled"}:
         return "Tier 1"
