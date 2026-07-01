@@ -4,18 +4,39 @@
 ; Placeholders replaced at build time:
 ;   {{COMPANY_SLUG}}    e.g. acme
 ;   {{COMPANY_NAME}}    e.g. Acme Corp
-;   {{VERSION}}         skill pack version
-;   {{RUNTIME_VERSION}} runtime exe version
+;   {{VERSION}}         skill pack version (also used as each skill's initial version dir)
+;   {{RUNTIME_VERSION}} runtime exe version (conxa-runtime/<version>/ dir name)
+;   {{APP_VERSION}}     app layer version (conxa-app/<version>/ dir name)
 ;   {{STAGING_DIR}}     temp dir containing staged files
+;
+; On-disk layout (see runtime/version_manager.js for the authoritative scheme):
+;   ${INSTALL_DIR}\conxa-runtime\<version>\conxa-runtime.exe + keytar.node
+;   ${INSTALL_DIR}\conxa-runtime\current            <- directory junction to the above
+;   ${INSTALL_DIR}\conxa-app\<version>\server.js ...
+;   ${INSTALL_DIR}\conxa-app\current                 <- directory junction
+;   ${INSTALL_DIR}\skill-packs\<company>\pack.json    (flat, company-level metadata)
+;   ${INSTALL_DIR}\skill-packs\<company>\<skill>\<version>\...
+;   ${INSTALL_DIR}\skill-packs\<company>\<skill>\current  <- directory junction, one per skill
+; Junctions are created via PowerShell `New-Item -ItemType Junction` — this does NOT
+; require admin rights or Developer Mode (unlike true NTFS symlinks), matching the
+; same mechanism the runtime's self-updater uses post-install.
 
 !define COMPANY_SLUG   "{{COMPANY_SLUG}}"
 !define COMPANY_NAME   "{{COMPANY_NAME}}"
 !define VERSION        "{{VERSION}}"
 !define RUNTIME_VER    "{{RUNTIME_VERSION}}"
+!define APP_VER        "{{APP_VERSION}}"
+; v-prefixed directory name for each skill's initial version dir — must match
+; version_manager.js's VERSION_DIR_RE (/^v\d+\.\d+\.\d+/) or the runtime's own
+; sync-driven updates (which do normalize this way) would silently stop recognizing
+; the installer's own initial version once updates start arriving.
+!define SKILL_VER_DIR  "{{SKILL_VERSION_DIR}}"
 !define STAGING_DIR    "{{STAGING_DIR}}"
 ; Per-user install: no UAC, correct user profile
 !define INSTALL_DIR    "$PROFILE\.conxa"
 !define RUNTIME_DIR    "${INSTALL_DIR}"
+!define RUNTIME_ROOT   "${INSTALL_DIR}\conxa-runtime"
+!define APP_ROOT       "${INSTALL_DIR}\conxa-app"
 !define CHROMIUM_DIR   "${INSTALL_DIR}\chromium"
 !define SKILL_DIR      "${INSTALL_DIR}\skill-packs\${COMPANY_SLUG}"
 !define UNINSTALL_KEY  "Software\Microsoft\Windows\CurrentVersion\Uninstall\Conxa-${COMPANY_SLUG}"
@@ -33,18 +54,41 @@ Unicode True
 ; ── Variables ─────────────────────────────────────────────────────────────────
 Var RuntimePresent
 
+; ── Junction helper ────────────────────────────────────────────────────────────
+; Creates (or replaces) a directory junction at LinkPath pointing at TargetPath. Used
+; for every `current` pointer — conxa-runtime, conxa-app, and each skill. Junctions
+; don't need admin rights, unlike true NTFS symlinks. Fixed temp filename is safe
+; because NSIS sections run strictly sequentially — each invocation fully writes,
+; executes, and deletes the script before the next one starts.
+!macro MakeJunction LinkPath TargetPath
+  FileOpen $9 "$TEMP\conxa_junction.ps1" w
+  FileWrite $9 "$$link = $\"${LinkPath}$\"$\r$\n"
+  FileWrite $9 "$$target = $\"${TargetPath}$\"$\r$\n"
+  FileWrite $9 "if (Test-Path $$link) { (Get-Item $$link).Delete() }$\r$\n"
+  FileWrite $9 "New-Item -ItemType Junction -Path $$link -Target $$target -Force | Out-Null$\r$\n"
+  FileClose $9
+  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"$TEMP\conxa_junction.ps1$\""
+  Pop $0
+  Delete "$TEMP\conxa_junction.ps1"
+!macroend
+
 ; ── Detect compatible runtime ─────────────────────────────────────────────────
 ; Sets $RuntimePresent = "1" when the already-installed runtime version is >= the
-; bundled version (so we must not downgrade it). Uses PowerShell to parse version.json.
+; bundled version (so we must not downgrade it). Reads conxa-runtime\current\version.json
+; through the junction (transparent to Get-Content) rather than a fixed flat path.
 Function DetectRuntime
   StrCpy $RuntimePresent "0"
-  IfFileExists "${RUNTIME_DIR}\version.json" 0 detect_done
+  IfFileExists "${RUNTIME_ROOT}\current\version.json" 0 detect_done
 
   ; Write a temp PS1 to compare versions. Exit 1 = installed >= bundled (keep it).
+  ; Both sides are stripped of any non-numeric prefix ("host-v1.0.0" -> "1.0.0") since
+  ; [System.Version] cannot parse a prefixed string directly.
   FileOpen $0 "$TEMP\conxa_ver.ps1" w
   FileWrite $0 "try {$\r$\n"
-  FileWrite $0 "  $$j = Get-Content $\"$$env:USERPROFILE\.conxa\version.json$\" | ConvertFrom-Json$\r$\n"
-  FileWrite $0 "  if ([System.Version]$$j.runtime_version -ge [System.Version]'${RUNTIME_VER}') { exit 1 }$\r$\n"
+  FileWrite $0 "  $$j = Get-Content $\"$$env:USERPROFILE\.conxa\conxa-runtime\current\version.json$\" | ConvertFrom-Json$\r$\n"
+  FileWrite $0 "  $$installed = ($$j.host_version -replace '^\D*', '')$\r$\n"
+  FileWrite $0 "  $$bundled   = ('${RUNTIME_VER}' -replace '^\D*', '')$\r$\n"
+  FileWrite $0 "  if ([System.Version]$$installed -ge [System.Version]$$bundled) { exit 1 }$\r$\n"
   FileWrite $0 "} catch {}$\r$\n"
   FileWrite $0 "exit 0$\r$\n"
   FileClose $0
@@ -69,19 +113,27 @@ Section "Runtime" SEC_RUNTIME
   ; Skip overwriting if the on-disk runtime is already newer or the same version.
   ; Self-update can advance the binary past whatever this installer bundles, so
   ; "last installer wins" would silently downgrade the runtime and break skills.
+  ; Even when skipped, the currently-running exe is never touched either way — it
+  ; lives in its own versioned directory, untouched by anything below.
   StrCmp $RuntimePresent "1" runtime_skip
 
   nsExec::ExecToLog 'taskkill /F /IM conxa-runtime.exe'
   Pop $0  ; discard — taskkill fails when runtime isn't running, that's fine
-  SetOutPath "${RUNTIME_DIR}"
+
+  SetOutPath "${RUNTIME_ROOT}\${RUNTIME_VER}"
   File "${STAGING_DIR}\runtime\conxa-runtime.exe"
   File "${STAGING_DIR}\runtime\keytar.node"
   File "${STAGING_DIR}\runtime\version.json"
-  ; Pre-extracted app layer — /nonfatal is a no-op if source dir is absent
-  SetOutPath "${INSTALL_DIR}\conxa-app"
-  File /nonfatal /r "${STAGING_DIR}\runtime\conxa-app\*.*"
-  SetOutPath "${RUNTIME_DIR}"
+  !insertmacro MakeJunction "${RUNTIME_ROOT}\current" "${RUNTIME_ROOT}\${RUNTIME_VER}"
 
+  ; Pre-extracted app layer — /nonfatal is a no-op if source dir is absent
+  SetOutPath "${APP_ROOT}\${APP_VER}"
+  File /nonfatal /r "${STAGING_DIR}\runtime\conxa-app\*.*"
+  IfFileExists "${APP_ROOT}\${APP_VER}\server.js" 0 app_stage_done
+  !insertmacro MakeJunction "${APP_ROOT}\current" "${APP_ROOT}\${APP_VER}"
+  app_stage_done:
+
+  SetOutPath "${RUNTIME_DIR}"
   runtime_skip:
 SectionEnd
 
@@ -89,10 +141,11 @@ SectionEnd
 Section "Chromium" SEC_CHROMIUM
   ; Always run --install-playwright so Chromium revision matches conxa-runtime.exe.
   ; The command is idempotent and revision-aware: no-op if the correct revision is
-  ; already on disk; downloads only the missing revision otherwise.
+  ; already on disk; downloads only the missing revision otherwise. Runs through the
+  ; `current` junction so it always exercises whatever version is actually active.
   ; Skipping when a chromium/ dir exists was the root bug: the dir may contain a
   ; stale revision from an older runtime, causing chromium.launch() to fail.
-  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& "${RUNTIME_DIR}\conxa-runtime.exe" --install-playwright' $0
+  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& "${RUNTIME_ROOT}\current\conxa-runtime.exe" --install-playwright' $0
   IntCmp $0 0 chromium_done
 
   ; Read the one-line reason written by conxa-runtime.exe on failure.
@@ -106,15 +159,35 @@ Section "Chromium" SEC_CHROMIUM
   chromium_err_no_detail:
   StrCpy $2 "(no details — run the retry command below to see the full output)"
   chromium_err_show:
-  MessageBox MB_OK "Chromium installation failed (code $0).$\n$\nReason: $2$\n$\nAutomation may not work.$\nYou can retry by running:$\n${RUNTIME_DIR}\conxa-runtime.exe --install-playwright"
+  MessageBox MB_OK "Chromium installation failed (code $0).$\n$\nReason: $2$\n$\nAutomation may not work.$\nYou can retry by running:$\n${RUNTIME_ROOT}\current\conxa-runtime.exe --install-playwright"
   chromium_done:
 SectionEnd
 
 ; ── Skill packs section ───────────────────────────────────────────────────────
 Section "SkillPacks" SEC_SKILLS
+  ; installer_builder.py stages each skill pre-nested under its own version directory
+  ; (skill-packs/<company>/<skill>/<version>/…, pack.json flat at the company root),
+  ; so this recursive copy already lands files exactly where the versioned layout
+  ; expects — no per-file restructuring needed here.
   SetOutPath "${SKILL_DIR}"
-  ; Copy company skill pack — preserves other companies' directories
   File /r "${STAGING_DIR}\skill-packs\${COMPANY_SLUG}\*.*"
+
+  ; One `current` junction per skill, read dynamically from pack.json — a company can
+  ; have any number of skills and this must not require per-skill NSIS code.
+  FileOpen $0 "$TEMP\conxa_skill_junctions.ps1" w
+  FileWrite $0 "$$pack = Get-Content $\"${SKILL_DIR}\pack.json$\" | ConvertFrom-Json$\r$\n"
+  FileWrite $0 "foreach ($$slug in $$pack.skills) {$\r$\n"
+  FileWrite $0 "  $$versionDir = Join-Path $\"${SKILL_DIR}$\" (Join-Path $$slug '${SKILL_VER_DIR}')$\r$\n"
+  FileWrite $0 "  if (-not (Test-Path $$versionDir)) { continue }$\r$\n"
+  FileWrite $0 "  $$link = Join-Path $\"${SKILL_DIR}$\" (Join-Path $$slug 'current')$\r$\n"
+  FileWrite $0 "  if (Test-Path $$link) { (Get-Item $$link).Delete() }$\r$\n"
+  FileWrite $0 "  New-Item -ItemType Junction -Path $$link -Target $$versionDir -Force | Out-Null$\r$\n"
+  FileWrite $0 "}$\r$\n"
+  FileClose $0
+  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"$TEMP\conxa_skill_junctions.ps1$\""
+  Pop $0
+  Delete "$TEMP\conxa_skill_junctions.ps1"
+
   ; Force conxa-runtime.exe to rescan the newly installed pack instead of using stale cache.
   Delete "${INSTALL_DIR}\cache\manifests.json"
 SectionEnd
@@ -124,6 +197,9 @@ SectionEnd
 ;   1. claude_desktop_config.json — auto-detects Store app path (Packages\Claude_*) or falls back to %APPDATA%\Claude
 ;   2. %USERPROFILE%\.claude.json (Claude Code) — only if the file already exists
 ; Uses PowerShell for a non-destructive JSON merge (preserves existing MCP servers).
+; command points through conxa-runtime\current — this stable path is registered ONCE,
+; at install time, and never rewritten; every future self-update simply flips the
+; junction, so Claude Desktop's config never needs to change again.
 ; RequestExecutionLevel=user ensures $APPDATA/$LOCALAPPDATA/$PROFILE always resolve
 ; to this user's profile — no admin wrong-profile bug.
 Section "MCPRegistration" SEC_MCP
@@ -144,7 +220,7 @@ Section "MCPRegistration" SEC_MCP
   FileWrite $0 "$$dir = Split-Path $$p; if (-not (Test-Path $$dir)) { New-Item -ItemType Directory -Force $$dir | Out-Null }$\r$\n"
   FileWrite $0 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { $$c = [PSCustomObject]@{} }$\r$\n"
   FileWrite $0 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $0 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_DIR}\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
+  FileWrite $0 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
   FileWrite $0 "$$c.mcpServers | Add-Member conxa $$entry -Force$\r$\n"
   FileWrite $0 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
   FileClose $0
@@ -163,7 +239,7 @@ Section "MCPRegistration" SEC_MCP
   FileWrite $1 "if (-not (Test-Path $$p)) { exit 0 }$\r$\n"
   FileWrite $1 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { exit 0 }$\r$\n"
   FileWrite $1 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $1 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_DIR}\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
+  FileWrite $1 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
   FileWrite $1 "$$c.mcpServers | Add-Member conxa $$entry -Force$\r$\n"
   FileWrite $1 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
   FileClose $1
@@ -182,7 +258,7 @@ Section "MCPRegistration" SEC_MCP
   Goto mcp_done
 
   mcp_err:
-  MessageBox MB_OK "Setup complete — skill files installed.$\n$\nCould not auto-configure Claude Desktop (code $0).$\n$\nTo finish manually, add this to claude_desktop_config.json:$\n  Store app: %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\$\n  Standard:  %APPDATA%\Claude\$\n$\n  mcpServers > conxa:$\n    command: ${RUNTIME_DIR}\conxa-runtime.exe$\n    env.CONXA_DIR: ${INSTALL_DIR}$\n$\nThen restart Claude Desktop."
+  MessageBox MB_OK "Setup complete — skill files installed.$\n$\nCould not auto-configure Claude Desktop (code $0).$\n$\nTo finish manually, add this to claude_desktop_config.json:$\n  Store app: %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\$\n  Standard:  %APPDATA%\Claude\$\n$\n  mcpServers > conxa:$\n    command: ${RUNTIME_ROOT}\current\conxa-runtime.exe$\n    env.CONXA_DIR: ${INSTALL_DIR}$\n$\nThen restart Claude Desktop."
   mcp_done:
 SectionEnd
 
@@ -223,7 +299,14 @@ Section "Uninstall"
   Delete "${INSTALL_DIR}\conxa_mcp_rm2.ps1"
 
   mcp_remove_done:
-  RMDir /r "${RUNTIME_DIR}"
+  ; RMDir /r on a tree containing directory junctions removes each junction as a
+  ; single reparse-point entry without recursing into its target — standard Win32
+  ; behaviour — and since every `current` junction here points at a version directory
+  ; that is itself a normal subdirectory of the SAME tree being removed, that real
+  ; directory is deleted through its own path regardless. No content survives, and no
+  ; junction ever points outside the tree being removed, so this is safe as-is.
+  RMDir /r "${RUNTIME_ROOT}"
+  RMDir /r "${APP_ROOT}"
   RMDir /r "${CHROMIUM_DIR}"
   ; Runtime writes cache and logs to CONXA_DATA_DIR = %APPDATA%\Conxa (Roaming),
   ; NOT under INSTALL_DIR. Remove the actual writable state directory.

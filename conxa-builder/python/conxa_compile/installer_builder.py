@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -188,14 +189,44 @@ def build_installer(
         runtime_dir = tmp / "runtime"
         runtime_dir.mkdir()
         _stage_runtime_binary(runtime_dir, _log, studio_runtime_dir=studio_runtime_dir)
+        app_dir = _bootstrap_app_dir()
+        app_version = app_dir.name if app_dir else None
         _log("Runtime staged")
 
-        # ── 3. Stage skill pack ───────────────────────────────────────────────
+        # ── 3. Stage skill pack ────────────────────────────────────────────────
+        # Each skill is nested under its own version directory (matching the versioned
+        # skill-packs/<company>/<skill>/<version>/ layout the runtime maintains after
+        # cloud sync — see runtime/version_manager.js) so the installer's initial install
+        # already speaks the same on-disk convention updates will later write into.
+        # pack.json itself stays flat at the company root (company-level metadata).
+        #
+        # version_manager.js only recognizes version directories matching /^v\d+\.\d+\.\d+/
+        # (see VERSION_DIR_RE) — sync.js already normalizes bare version strings this way
+        # for subsequent updates, so the initial install must match or its version dir
+        # would be silently invisible to listVersions()/retention once updates start.
+        skill_version_dir_name = installer_version if installer_version.startswith("v") else f"v{installer_version}"
+
         staged_packs = tmp / "skill-packs" / company_slug
         _log(f"Staging skill pack from {skill_pack_dir}…")
-        shutil.copytree(skill_pack_dir, staged_packs)
-        staged_files = list(staged_packs.rglob("*"))
-        _log(f"Skill packs staged ({len(staged_files)} file(s))")
+        staged_packs.mkdir(parents=True)
+        pack_json_src = skill_pack_dir / "pack.json"
+        shutil.copy2(pack_json_src, staged_packs / "pack.json")
+        staged_files = 1
+        for slug in skills:
+            skill_src = skill_pack_dir / slug
+            if not skill_src.is_dir():
+                continue
+            skill_version_dir = staged_packs / slug / skill_version_dir_name
+            shutil.copytree(skill_src, skill_version_dir)
+            (skill_version_dir / "version.json").write_text(
+                json.dumps({
+                    "skill_version": skill_version_dir_name,
+                    "released_at": datetime.now(timezone.utc).isoformat(),
+                }),
+                encoding="utf-8",
+            )
+            staged_files += len(list(skill_version_dir.rglob("*")))
+        _log(f"Skill packs staged ({staged_files} file(s), {len(skills)} skill(s) at {skill_version_dir_name})")
 
         # ── 3b. Stage logo icon ───────────────────────────────────────────────
         staged_icon: Path | None = None
@@ -214,6 +245,8 @@ def build_installer(
             company_name,
             installer_version,
             runtime_version=runtime_version,
+            app_version=app_version,
+            skill_version_dir_name=skill_version_dir_name,
             icon_path=staged_icon,
         )
         _log(f"NSIS script written to {nsi_path}")
@@ -360,6 +393,8 @@ def _render_nsis_script(
     company_name: str,
     version: str,
     runtime_version: str | None = None,
+    app_version: str | None = None,
+    skill_version_dir_name: str | None = None,
     icon_path: Path | None = None,
 ) -> Path:
     import conxa_core.storage as _storage
@@ -375,6 +410,8 @@ def _render_nsis_script(
         .replace("{{COMPANY_NAME}}", company_name)
         .replace("{{VERSION}}", version)
         .replace("{{RUNTIME_VERSION}}", runtime_version or "runtime-v0.0.0")
+        .replace("{{APP_VERSION}}", app_version or "app-v0.0.0")
+        .replace("{{SKILL_VERSION_DIR}}", skill_version_dir_name or (version if version.startswith("v") else f"v{version}"))
         .replace("{{STAGING_DIR}}", str(tmp))
         .replace("{{ICON_DIRECTIVE}}", icon_directive)
     )
