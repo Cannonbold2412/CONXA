@@ -2,6 +2,35 @@
 
 ---
 
+## Fixed Cashfree subscription upgrades — 2026-07-02
+
+**What was broken.** Clicking "Upgrade" on the Billing page failed with
+`cashfree_subscription_create_failed: {"message":"Not Found"}`. The Cashfree integration added on
+2026-06-30 was calling web addresses that don't exist on Cashfree's servers — it looked plausible
+but the paths, the domain names, and the names of the fields Cashfree expects were all wrong. This
+also meant that even if a subscription had been created, verifying payment afterward and Cashfree's
+automatic "payment received" / "subscription cancelled" notifications would have failed too, since
+those relied on the same wrong assumptions.
+
+**What we fixed.** Checked Cashfree's real documentation and corrected every part of the flow to
+match: the web addresses used to create a pricing plan and a subscription, the names of the pieces
+of information sent and received, which ID to use when checking on a subscription later, and how to
+verify that a payment notification really came from Cashfree (the old check would never have matched
+a real Cashfree notification, so automatic billing updates were silently broken).
+
+**Files touched.**
+- `conxa-cloud/backend/app/api/cashfree_routes.py` — corrected API domains, endpoint paths, request/
+  response field names, switched to using Cashfree's own subscription reference ID for status checks
+  and webhook lookups (since Cashfree doesn't echo back the custom tags the old code relied on), and
+  rewrote the payment-notification signature check to match Cashfree's actual method.
+
+**What to know.** This couldn't be tested against Cashfree's real sandbox from here (no test API
+keys available in this environment) — the fix was verified by carefully cross-checking every request
+and response against Cashfree's published documentation. Recommend a real test-mode upgrade attempt
+once `CASHFREE_APP_ID`/`CASHFREE_SECRET_KEY` sandbox credentials are available, to confirm end to end.
+
+---
+
 ## Finished Phase 1 (Architecture Consolidation) — 2026-07-01
 
 **What this is.** Phase 1 was the "clean up the foundations" phase of the roadmap. A stage

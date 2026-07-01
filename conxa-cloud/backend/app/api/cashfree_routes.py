@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import time
@@ -22,14 +23,10 @@ from app.services.saas import Principal, ensure_principal, principal_from_reques
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
-CASHFREE_TOTAL_CYCLES = 1200
-
-# Cashfree Subscription Management API v1
-# Note: subscription-management v1 uses test.cashfree.com / www.cashfree.com,
-# NOT sandbox.cashfree.com / api.cashfree.com (those are for the newer payments API)
+# Cashfree Subscriptions v1 API (subscription-plans / subscriptions/nonSeamless)
 _CF_BASE = {
-    "PROD": "https://www.cashfree.com",
-    "TEST": "https://test.cashfree.com",
+    "PROD": "https://api.cashfree.com",
+    "TEST": "https://sandbox.cashfree.com",
 }
 
 
@@ -198,17 +195,14 @@ def _ensure_plan(tier: str) -> str:
     info = TIER_INFO[tier]
     plan_id = f"conxa_{tier}_monthly"
     try:
-        resp = _cf_request("POST", "/api/v1/subscription-management/plans", json={
-            "appId": settings.cashfree_app_id,
-            "secretKey": settings.cashfree_secret_key,
+        resp = _cf_request("POST", "/api/v2/subscription-plans", json={
             "planId": plan_id,
             "planName": f"Conxa {info['name']} Plan",
             "type": "PERIODIC",
-            "amount": info["amount"],
-            "currency": info["currency"],
+            "recurringAmount": info["amount"],
+            "maxAmount": info["amount"],
             "intervals": 1,
             "intervalType": "MONTH",
-            "maxCycles": CASHFREE_TOTAL_CYCLES,
         })
         body = resp.json() if resp.content else {}
         if resp.status_code not in (200, 201) and body.get("status") != "OK":
@@ -276,36 +270,41 @@ async def create_subscription(
         customer_email = body.get("customer_email") or "user@conxa.in"
         customer_phone = body.get("customer_phone") or "9999999999"
         return_url = f"{settings.app_url}/billing"
-        resp = _cf_request("POST", "/api/v1/subscription-management/subscriptions", json={
-            "appId": settings.cashfree_app_id,
-            "secretKey": settings.cashfree_secret_key,
+        resp = _cf_request("POST", "/api/v2/subscriptions/nonSeamless/subscription", json={
             "subscriptionId": sub_id,
             "planId": plan_id,
+            "authAmount": info["amount"],
             "customerEmail": customer_email,
             "customerPhone": customer_phone,
             "customerName": principal.workspace_id,
             "returnUrl": return_url,
             "expiresOn": "2099-12-31 00:00:00",
             "notificationChannels": ["EMAIL"],
-            "tags": {
-                "workspace_id": principal.workspace_id,
-                "tier": tier,
-            },
         })
         if resp.status_code not in (200, 201):
             raise HTTPException(
                 status_code=500,
                 detail=f"cashfree_subscription_create_failed: {resp.text}",
             )
-        subscription = resp.json()
-        if subscription.get("status") not in ("OK", None) and resp.status_code not in (200, 201):
+        body_json = resp.json() if resp.content else {}
+        if str(body_json.get("status", "OK")).upper() not in ("OK", "SUCCESS"):
             raise HTTPException(
                 status_code=500,
-                detail=f"cashfree_error: {subscription.get('message', resp.text)}",
+                detail=f"cashfree_error: {body_json.get('message', resp.text)}",
             )
+        data = body_json.get("data") or {}
+        sub_reference_id = str(data.get("subReferenceId") or "")
+        if not sub_reference_id:
+            raise HTTPException(status_code=500, detail=f"cashfree_no_reference_id: {resp.text}")
+        # Webhooks only carry Cashfree's subReferenceId (cf_planId is not a documented
+        # webhook field), so remember workspace/tier here for lookup on webhook delivery.
+        db_set("cashfree_sub_workspace", sub_reference_id, {
+            "workspace_id": principal.workspace_id,
+            "tier": tier,
+        })
         return {
-            "subscription_id": subscription.get("subscriptionId") or sub_id,
-            "auth_link": subscription.get("authLink", ""),
+            "subscription_id": sub_reference_id,
+            "auth_link": data.get("authLink", ""),
             "plan_id": plan_id,
             "amount": info["amount"],
             "currency": info["currency"],
@@ -338,17 +337,18 @@ async def verify_subscription(
     try:
         resp = _cf_request(
             "GET",
-            f"/api/v1/subscription-management/subscriptions/{subscription_id}",
+            f"/api/v2/subscriptions/{subscription_id}",
         )
         if resp.status_code != 200:
             raise HTTPException(status_code=400, detail=f"subscription_fetch_failed: {resp.text}")
-        subscription = resp.json()
-        status = str(subscription.get("status", "")).upper()
+        body_json = resp.json() if resp.content else {}
+        subscription = body_json.get("subscription") or body_json
+        status = str(
+            subscription.get("status") or subscription.get("subStatus")
+            or subscription.get("subscriptionStatus") or ""
+        ).upper()
         plan_id = str(subscription.get("planId") or "")
         tier = _tier_for_plan_id(plan_id)
-        if not tier:
-            tier_tag = subscription.get("tags", {}).get("tier", "")
-            tier = _normalize_tier(tier_tag) if tier_tag else None
         if not tier or tier == "free":
             raise HTTPException(status_code=400, detail="unknown_plan")
         upsert_billing(principal.workspace_id, {
@@ -370,51 +370,55 @@ async def verify_subscription(
         raise HTTPException(status_code=500, detail=f"verify_error: {_exception_detail(exc)}") from exc
 
 
+def _cf_webhook_signature(payload: dict[str, Any], secret: str) -> str:
+    """Cashfree subscriptions v1 webhook signature: sort cf_-prefixed fields
+    alphabetically, concatenate key+value with no delimiter, HMAC-SHA256 with
+    the webhook secret, base64-encode."""
+    cf_fields = {k: v for k, v in payload.items() if k.startswith("cf_")}
+    message = "".join(f"{k}{payload[k]}" for k in sorted(cf_fields))
+    digest = hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()
+    return base64.b64encode(digest).decode()
+
+
 @router.post("/webhooks/cashfree")
 async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
     """Handle Cashfree webhook events for subscriptions."""
     body = await request.body()
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid_json") from None
 
     if settings.cashfree_webhook_secret:
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="invalid_json") from None
-        # Cashfree v1 subscription webhook: SHA256(subscriptionId + secretKey), base64-encoded
-        sub_id_for_sig = str(payload.get("subscriptionId", ""))
-        expected = base64.b64encode(
-            hashlib.sha256(
-                f"{sub_id_for_sig}{settings.cashfree_webhook_secret}".encode()
-            ).digest()
-        ).decode()
+        expected = _cf_webhook_signature(payload, settings.cashfree_webhook_secret)
         received_sig = payload.get("signature", "")
-        if received_sig and not hashlib.compare_digest(expected, received_sig):
+        if received_sig and not hmac.compare_digest(expected, received_sig):
             raise HTTPException(status_code=400, detail="invalid_signature")
-        event = payload
-    else:
-        try:
-            event = json.loads(body)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="invalid_json") from None
 
-    event_type = event.get("event", "")
-    subscription_id = event.get("subscriptionId", "")
-    plan_id = event.get("planId", "")
-    tags = event.get("tags") or {}
-    workspace_id = tags.get("workspace_id", "")
+    event_type = payload.get("cf_event", "")
+    sub_reference_id = str(payload.get("cf_subReferenceId") or "")
+    subscription_id = str(payload.get("cf_subscriptionId") or "")
+    plan_id = str(payload.get("cf_planId") or "")
+    status = str(
+        payload.get("cf_status") or payload.get("cf_subscriptionStatus") or ""
+    ).upper()
+    mapping = db_get("cashfree_sub_workspace", sub_reference_id) or {}
+    workspace_id = mapping.get("workspace_id", "")
 
-    if event_type in ("SUBSCRIPTION_ACTIVATED", "SUBSCRIPTION_CHARGED", "SUBSCRIPTION_NEW"):
-        if workspace_id and subscription_id:
+    if event_type in ("SUBSCRIPTION_STATUS_CHANGE", "SUBSCRIPTION_NEW_PAYMENT"):
+        if workspace_id and sub_reference_id and (
+            event_type == "SUBSCRIPTION_NEW_PAYMENT" or status == "ACTIVE"
+        ):
             try:
-                tier = _tier_for_plan_id(plan_id) or _normalize_tier(tags.get("tier", ""))
+                tier = _tier_for_plan_id(plan_id) or _normalize_tier(mapping.get("tier", ""))
                 if tier and tier != "free":
                     upsert_billing(
                         workspace_id,
                         {
                             "plan": tier,
                             "status": "active",
-                            "subscription_id": subscription_id,
-                            "current_period_end": _parse_next_charge(event),
+                            "subscription_id": sub_reference_id,
+                            "current_period_end": _parse_next_charge(payload),
                         },
                     )
             except Exception:
@@ -423,7 +427,9 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
                     event_type,
                     workspace_id,
                 )
-    elif event_type in ("SUBSCRIPTION_CANCELLED", "SUBSCRIPTION_CANCELLED_BY_MERCHANT", "SUBSCRIPTION_EXPIRED"):
+    elif event_type == "SUBSCRIPTION_PAYMENT_CANCELLED" or (
+        event_type == "SUBSCRIPTION_STATUS_CHANGE" and status in ("CANCELLED", "EXPIRED", "ONHOLD")
+    ):
         if workspace_id:
             try:
                 upsert_billing(
@@ -440,5 +446,12 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
                     event_type,
                     workspace_id,
                 )
+    else:
+        logger.info(
+            "cashfree_webhook_ignored event=%s subscription_id=%s status=%s",
+            event_type,
+            subscription_id,
+            status,
+        )
 
     return {"received": True}
