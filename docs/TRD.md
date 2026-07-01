@@ -1225,13 +1225,13 @@ MCP registration is done by the NSIS installer itself: a generated PowerShell sc
 |---|---|---|---|
 | Delta sync ships all files | `skillpack_update_routes.py` | Medium | Code comment: "simplified implementation" |
 | Sync token is a shared installer secret | `sync_tokens` KV + pack.json | Low | Read-only, single-company scope; per-machine session encryption key mitigates session-file risk |
-| Rate limit cache in-memory | `_rate_cache` dict | Medium | Not shared across instances |
-| Stripe fields in config | `config.py:stripe_*` | Low | Orphaned; Razorpay is the wired gateway |
+| ~~Rate limit cache in-memory~~ **RESOLVED** | `rate_limits` KV namespace | — | Persisted in `conxa_core.db`; survives restarts, shared across instances (in-memory fallback in local dev) |
+| ~~Stripe fields in config~~ **RESOLVED** | removed | — | Stripe fully removed (config, endpoints, dep, frontend flag); Razorpay/Cashfree is the wired gateway |
 | No device/runtime registration | Cloud | High | No visibility into how many runtimes are active |
-| No enterprise RBAC enforcement | `app/services/rbac.py` | High | Scaffolded but not wired to routes |
+| ~~No enterprise RBAC enforcement~~ **PARTIAL** | `app/services/rbac.py` | Medium | `require_admin` enforced on publish, plugin create/delete, bundle release; fine-grained per-skill/analyst roles still Phase 3 |
 | Runtime auth per-company only | `auth_manager.js` | Medium | No per-user identity at runtime |
 | Installer download fully public | `publish_routes.py:get_installer` | Medium | Slug guessing gives access to installer |
-| `research/frontend/` is a dead prototype | `research/` dir | Low | Not deployed; delete or document |
+| ~~`research/frontend/` is a dead prototype~~ **N/A** | — | — | Directory does not exist in the repo |
 | Aptfile has Playwright deps | `conxa-cloud/backend/Aptfile` | Low | Cloud doesn't use Playwright; leftover from old arch |
 | `worker.py` scaffold | `app/worker.py` | Low | Queue scaffold, not implemented |
 | No CDN/multi-region blob storage | `blob_read_write_token` config | Low | Config field still unwired, but durability gap is closed: installer versions and skill-pack files now persist to Postgres (`installer_versions__{slug}`, `skillpack_files__{slug}` KV namespaces), surviving Render disk wipes. Base64-in-Postgres doesn't scale indefinitely — revisit if installers approach `build_artifact_upload_max_bytes` (250 MB) regularly or DB storage cost/limits become an issue. |

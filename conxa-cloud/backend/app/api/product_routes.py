@@ -9,9 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
+from app.services.rbac import require_admin
 from app.services.saas import (
     Principal,
-    add_audit_event,
     audit_events_for,
     billing_for,
     dashboard_for,
@@ -19,7 +19,6 @@ from app.services.saas import (
     principal_from_request,
     release_for,
     update_release,
-    upsert_billing,
     usage_for,
 )
 from conxa_core.storage.skill_packages import bundle_root_dir
@@ -78,96 +77,13 @@ def get_subscription(principal: Principal = Depends(current_principal)) -> dict[
     return {"subscription": billing_for(principal)}
 
 
-def _stripe_client() -> Any:
-    if not settings.stripe_secret_key:
-        raise HTTPException(status_code=503, detail="stripe_not_configured")
-    try:
-        import stripe
-    except Exception as exc:  # pragma: no cover - optional deployment dependency
-        raise HTTPException(status_code=500, detail="stripe_dependency_missing") from exc
-    stripe.api_key = settings.stripe_secret_key
-    return stripe
-
-
-@router.post("/billing/checkout")
-def post_checkout(principal: Principal = Depends(current_principal)) -> dict[str, Any]:
-    if not settings.stripe_price_id:
-        raise HTTPException(status_code=503, detail="stripe_price_not_configured")
-    stripe = _stripe_client()
-    try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price": settings.stripe_price_id, "quantity": 1}],
-            success_url=f"{settings.app_url.rstrip('/')}/billing?checkout=success",
-            cancel_url=f"{settings.app_url.rstrip('/')}/billing?checkout=cancelled",
-            client_reference_id=principal.workspace_id,
-            metadata={"workspace_id": principal.workspace_id},
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"stripe_checkout_failed: {exc!s}") from exc
-    add_audit_event(principal, "billing_checkout_created", resource_type="billing")
-    return {"url": session.url}
-
-
-@router.post("/billing/portal")
-def post_portal(principal: Principal = Depends(current_principal)) -> dict[str, Any]:
-    billing = billing_for(principal)
-    customer_id = billing.get("customer_id")
-    if not customer_id:
-        raise HTTPException(status_code=400, detail="stripe_customer_missing")
-    stripe = _stripe_client()
-    try:
-        session = stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=f"{settings.app_url.rstrip('/')}/billing",
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"stripe_portal_failed: {exc!s}") from exc
-    add_audit_event(principal, "billing_portal_created", resource_type="billing")
-    return {"url": session.url}
-
-
-@router.post("/webhooks/stripe")
-async def post_stripe_webhook(request: Request) -> dict[str, Any]:
-    payload = await request.body()
-    event: dict[str, Any]
-    if settings.stripe_webhook_secret:
-        stripe = _stripe_client()
-        signature = request.headers.get("stripe-signature", "")
-        try:
-            event_obj = stripe.Webhook.construct_event(payload, signature, settings.stripe_webhook_secret)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="invalid_stripe_webhook") from exc
-        event = dict(event_obj)
-    else:
-        try:
-            event = await request.json()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="invalid_json_webhook") from exc
-
-    event_type = str(event.get("type") or "")
-    obj = ((event.get("data") or {}).get("object") or {}) if isinstance(event.get("data"), dict) else {}
-    metadata = obj.get("metadata") if isinstance(obj, dict) else {}
-    workspace_id = metadata.get("workspace_id") if isinstance(metadata, dict) else None
-    if workspace_id and event_type in {"checkout.session.completed", "customer.subscription.updated"}:
-        upsert_billing(
-            str(workspace_id),
-            {
-                "plan": "pro",
-                "status": "active",
-                "customer_id": obj.get("customer") if isinstance(obj, dict) else None,
-                "subscription_id": obj.get("subscription") if isinstance(obj, dict) else None,
-            },
-        )
-    return {"received": True}
-
-
 @router.patch("/packages/bundles/{bundle_slug}/release")
 def patch_bundle_release(
     bundle_slug: str,
     body: ReleasePatchBody,
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
+    require_admin(principal)
     _require_bundle(bundle_slug)
     patch = body.model_dump(exclude_none=True)
     if patch.get("state") == "published":

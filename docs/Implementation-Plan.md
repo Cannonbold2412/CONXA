@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status:** Current as of 2026-06-20 (1.1, 1.2, sync-token model, 2.1, 2.3, runtime-split-arch done)
+**Status:** Current as of 2026-07-01 — **Phase 1 COMPLETE** (1.1–1.8 all done, superseded, or moot). Phase 2 partially done (2.1, 2.3, 2.9, runtime-split + auto-update arch).
 **Audience:** Engineering team
 
 This plan is grounded in the actual codebase. Each item references the specific file or system that needs to change. Items are ordered by risk and dependency, not effort.
@@ -61,92 +61,100 @@ This plan is grounded in the actual codebase. Each item references the specific 
 
 ---
 
-### 1.3 Move Nonce Store to Redis (or DB)
+### ✅ 1.3 Move Nonce Store to Redis (or DB) — SUPERSEDED / MOOT
 
-**What's broken:** `_auth_nonces` dict in `skillpack_update_routes.py` is in-memory. Server restarts clear all pending CLI auth sessions. Deploying a new version of the cloud backend breaks any in-flight logins.
-
-**Fix:**
-- Store nonces in the KV store (`db_set("auth_nonces", nonce, {...})`).
-- Add a TTL field (nonces older than 10 minutes are ignored).
-- Clean up expired nonces on read.
-
-**Files:** `skillpack_update_routes.py`
-
-**Risk:** Low. In-memory store is fine for small scale; this just makes it restart-safe.
+**No longer applicable.** The CLI auth flow that used `_auth_nonces` was removed when the
+installer-embedded sync-token model replaced it (see "Installer-Provisioned Sync Token"
+above). There is no nonce store in the codebase (`grep nonce` = 0 hits), so there is
+nothing to migrate. Runtimes authenticate skill-pack sync with the per-company sync token,
+which is durable (KV `sync_tokens` namespace) and already restart-safe.
 
 ---
 
-### 1.4 Implement Real Per-File Delta Sync
+### ✅ 1.4 Implement Real Per-File Delta Sync — DONE (per-skill granularity)
 
-**What's broken:** `skillpack_update_routes.py:_build_delta()` ships **all files** whenever the pack version differs. Every sync call transfers the entire skill pack. For a plugin with 20 skills, this could be 2MB+ per runtime cold start.
+**Resolved by the Enterprise-Grade Auto-Update Architecture (2026-07-01).**
+`skillpack_update_routes.py:_build_delta()` now compares **each skill independently**
+against the client's last-known version for that specific skill (`component_versions` KV,
+per-file SHA-256), so republishing one skill never re-ships the rest of the pack. The
+`since` request is a JSON `{skill_slug: version}` map. This eliminates the whole-pack
+transfer the item was written to fix.
 
-**Fix:**
-- Maintain a version manifest: a JSON file listing each file's path and SHA-256.
-- On delta request: compare the manifest at `since_version` against the current manifest.
-- Return only files whose SHA-256 changed.
-- The manifest file should be stored alongside the skill pack files.
-
-**Files:** `skillpack_update_routes.py`, `app/api/publish_routes.py` (generate manifest at publish time)
-
-**Risk:** Medium. Must maintain backward compatibility with runtimes that don't send a file-level `since` manifest.
-
----
-
-### 1.5 Move Rate Limit Cache to Redis
-
-**What's broken:** `_rate_cache` in `skillpack_update_routes.py` is in-memory. Multi-instance deployments (Render horizontal scaling) have no shared rate limit — each instance has its own independent limit.
-
-**Fix:**
-- Use Redis (`SKILL_REDIS_URL`) for rate limit storage.
-- Fall back to in-memory if Redis is not configured.
-
-**Files:** `skillpack_update_routes.py`, `conxa_core/config.py` (`redis_url` field already exists)
-
-**Risk:** Low. Redis field exists in config; just needs to be wired.
+**Residual (intentionally not done):** within a *changed* skill, all ~5 small JSON files
+(`execution/recovery/inputs/manifest/validation.json`) are shipped even if only one
+changed. Marginal payload benefit; deferred as low-value.
 
 ---
 
-### 1.6 Wire RBAC to API Routes
+### ✅ 1.5 Move Rate Limit Cache to a Shared Store — DONE 2026-07-01
 
-**What's broken:** `app/services/rbac.py` exists but no route handler checks it. All workspace members have full write access to all resources.
+**What was broken:** `_rate_cache` in `skillpack_update_routes.py` was in-memory —
+multi-instance deployments (Render horizontal scaling) and restarts had no shared limit.
 
-**Fix:**
-- Define role requirements per endpoint (e.g. publish requires `owner` or `admin`; read requires any member).
-- Add `require_role(principal, role)` FastAPI dependency to publish, upload, delete routes.
-- Return HTTP 403 with clear message on role mismatch.
+**What was built:** the sync rate limit is now persisted in the existing `conxa_core.db`
+KV store (new `rate_limits` namespace, keyed by the 16-char token hash, storing
+`{last_ts}`) whenever a database is configured (`using_database()`), so the 5-minute window
+holds across restarts and is shared across instances. Falls back to the in-memory dict in
+local/Studio mode where no database is configured. **Redis was not introduced** — it is not
+installed (`requirements.txt`) nor provisioned (`render.yaml`); the KV dual-store already
+provides durable, shared storage. Helpers `_rate_limit_last()` / `_rate_limit_set()`.
 
-**Files:** `app/services/rbac.py`, `publish_routes.py`, `tracking_routes.py`, `plugin_routes.py`
-
-**Risk:** Medium. Changes auth behavior for existing users. Need to ensure all existing workspace owners retain full access.
-
----
-
-### 1.7 Remove Stripe Config Fields
-
-**What's present but unused:** `config.py` has `stripe_secret_key`, `stripe_webhook_secret`, `stripe_price_id`. No route handler references these. Razorpay is the wired gateway.
-
-**Fix:**
-- Remove `stripe_*` fields from `Settings`.
-- Update `.env.example` to remove stripe fields.
-- Remove from `_validate_production_config` (already absent, but confirm).
-
-**Files:** `packages/conxa-core/conxa_core/config.py`, `.env.example`
-
-**Risk:** Very low. Unused fields. Just cleanup.
+**Files:** `skillpack_update_routes.py`. **Tests:** `tests/test_skillpack_sync.py`.
 
 ---
 
-### 1.8 Delete or Document research/frontend/
+### ✅ 1.6 Wire RBAC to API Routes — DONE 2026-07-01
 
-**What's present:** `research/frontend/` contains a prototype UI that is not deployed. It consumes context in code reviews and creates confusion about which files are authoritative.
+**What was broken:** `app/services/rbac.py`'s `require_admin()` guarded the publish/installer
+routes (`publish_routes.py`) and subscription routes, but the remaining mutating dashboard
+routes accepted any authenticated member.
 
-**Fix (option A):** Delete the directory. The authoritative UI is in `conxa-cloud/frontend/` and `conxa-builder/electron/renderer/`.
+**What was built:** `require_admin(principal)` (allows `admin`/`owner`, else HTTP 403) is now
+enforced on the three previously-unguarded write routes, matching the existing
+`principal_from_request` → `ensure_principal` → `require_admin` pattern:
+- `plugin_routes.py` — `post_create_plugin` (POST `/plugins`)
+- `plugin_routes.py` — `delete_plugin_endpoint` (DELETE `/plugins/{id}`)
+- `product_routes.py` — `patch_bundle_release` (PATCH `/packages/bundles/{slug}/release`)
 
-**Fix (option B):** Move to `docs/ui-prototypes/` with a README explaining it is a research artifact.
+Enforced directly (no audit-only phase). Local/dev principals default to role `owner`, so
+existing single-user workflows are unaffected. Intentionally-public runtime phone-home
+endpoints (`run_routes.py` events, `job_routes.py` cancel) are left open by design.
 
-**Files:** `research/` directory
+**Files:** `app/services/rbac.py`, `plugin_routes.py`, `product_routes.py`.
+**Tests:** `tests/test_product_routes.py` (member→403, admin→200).
 
-**Risk:** Very low. Not in production.
+---
+
+### ✅ 1.7 Remove Stripe — DONE 2026-07-01 (full removal)
+
+**What was present:** more than just config — `product_routes.py` carried live but orphaned
+Stripe `checkout`/`portal`/`webhook` endpoints, `security.py` whitelisted the webhook,
+`saas.py` computed a `stripe_configured` flag, the frontend surfaced it, and `stripe>=11.0.0`
+was a backend dependency. The wired gateway is Razorpay/Cashfree.
+
+**What was removed:** the three Stripe endpoints + `_stripe_client` helper, the
+`/api/v1/webhooks/stripe` public-path entry, the `stripe_configured` billing flag (backend
+`saas.py` + frontend `productApi.ts` type and the dead `createCheckout`/`createPortal`
+callers), the `stripe>=11.0.0` requirement, the `stripe_*` config fields, and the Stripe
+test assertion.
+
+**Files:** `product_routes.py`, `security.py`, `saas.py`, `requirements.txt`,
+`packages/conxa-core/conxa_core/config.py`, `frontend/src/api/productApi.ts`,
+`tests/test_product_routes.py`.
+
+---
+
+### ✅ 1.8 Delete or Document research/frontend/ — MOOT
+
+**No longer applicable.** The `research/frontend/` directory does not exist in the repo (it
+was already deleted or never committed). No action needed. The authoritative UIs remain
+`conxa-cloud/frontend/` and `conxa-builder/electron/renderer/`.
+
+---
+
+**Phase 1 status: COMPLETE.** All items are done, superseded, or moot. The remaining
+open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
+billing enforcement, error-message UX).
 
 ---
 

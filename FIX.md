@@ -2,6 +2,46 @@
 
 ---
 
+## Finished Phase 1 (Architecture Consolidation) — 2026-07-01
+
+**What this is.** Phase 1 was the "clean up the foundations" phase of the roadmap. A stage
+report flagged five things left to do. When we actually looked at the code, two of them were
+already handled by earlier work, and the other three were real. This change finishes all of
+them and updates the paperwork so it matches reality.
+
+**What we found (and corrected in the docs).**
+- The "move the nonce store to a database" task no longer applies — the old login flow that
+  used it was removed a while ago, so there is simply nothing there to move.
+- The "send only changed files instead of the whole pack" task was already mostly done —
+  each skill now updates on its own, so republishing one skill no longer re-sends the others.
+  We marked it complete (the tiny leftover — a changed skill still sends its own handful of
+  small files — isn't worth the extra complexity).
+- The "delete the old research/frontend prototype" task no longer applies — that folder isn't
+  in the project anymore.
+
+**What we actually changed in the code.**
+- **Removed Stripe entirely.** Stripe was a leftover payment option that nobody uses (the
+  live payment provider is Razorpay/Cashfree). We deleted its leftover checkout/portal/webhook
+  code, its settings, its software dependency, and the unused bits in the dashboard. Less dead
+  code, fewer things to explain.
+- **Made the sync speed-limit survive restarts.** The runtime is only allowed to check for
+  skill updates once every five minutes. That limit used to live in memory, so restarting the
+  server (or running more than one copy of it) reset it. It now lives in the shared database,
+  so the limit holds properly. (We deliberately did not add Redis for this — the existing
+  database already does the job.)
+- **Turned on permission checks for sensitive actions.** Creating a plugin, deleting a plugin,
+  and publishing a release now require an admin/owner. Before, any team member could do these.
+  Regular members now get a clear "not allowed" response.
+
+**How we checked it.** Ran the backend test suite (only a pre-existing, unrelated test fails —
+it references the old Razorpay config), added new tests proving non-admins are blocked and the
+speed-limit survives a restart, and confirmed the dashboard still type-checks and builds.
+
+**Result.** Phase 1 is complete. The remaining pre-launch work (Windows installer signing,
+billing limits, friendlier error messages) all lives in Phase 2.
+
+---
+
 ## New feature: enterprise-grade auto-update system for the runtime — 2026-07-01
 
 **What this is.** A full rebuild of how the Conxa runtime (the program that runs on a customer's machine and executes their workflows) updates itself, the app logic inside it, and each company's skill packs. Previously, updates worked but had rough edges: only one backup was kept (so you could only roll back one step), update information came from the cloud with no way to prove it hadn't been tampered with, and updating one skill for one customer meant re-checking the whole company's skill pack as a unit. This rewrite fixes all three, plus adds real staged rollouts (ship a new version to 5% of installs before going to everyone) and automatic recovery if something goes wrong.

@@ -424,7 +424,6 @@ def billing_for(principal: Principal) -> dict[str, Any]:
         billing = dict(state.get("billing", {}).get(principal.workspace_id) or {})
     billing.setdefault("plan", "development" if principal.auth_provider == "local" else "free")
     billing.setdefault("status", "inactive")
-    billing["stripe_configured"] = bool(settings.stripe_secret_key and settings.stripe_price_id)
     return billing
 
 

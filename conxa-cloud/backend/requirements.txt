@@ -10,7 +10,6 @@ uvicorn[standard]>=0.32.0
 
 # Auth / billing
 PyJWT[crypto]>=2.8.0
-stripe>=11.0.0
 httpx>=0.27.0
 
 # Ed25519 signing for the unified runtime update manifest (manifest_signer.py).

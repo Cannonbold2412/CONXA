@@ -21,9 +21,13 @@ router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
 
 _STALE_RUNTIME_DAYS = 30
 
-# Rate limiter: {token_prefix: last_request_ts}
+# Rate limiter: last sync timestamp per token hash. Persisted in the KV store
+# (namespace `rate_limits`) so the limit survives process restarts and is shared
+# across multiple app instances (Render horizontal scaling). Falls back to an
+# in-memory dict in local dev where no database is configured.
 _rate_cache: dict[str, float] = {}
 _RATE_LIMIT_SECONDS = 300  # 5 minutes between sync requests per token
+_RATE_LIMIT_NS = "rate_limits"
 
 
 def _extract_token(request: Request) -> str | None:
@@ -38,16 +42,36 @@ def _rate_limit_key(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
+def _rate_limit_last(key: str) -> float:
+    if using_database():
+        rec = db_get(_RATE_LIMIT_NS, key)
+        if isinstance(rec, dict):
+            try:
+                return float(rec.get("last_ts", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+    return _rate_cache.get(key, 0.0)
+
+
+def _rate_limit_set(key: str, ts: float) -> None:
+    if using_database():
+        db_set(_RATE_LIMIT_NS, key, {"last_ts": ts})
+    else:
+        _rate_cache[key] = ts
+
+
 def _check_rate_limit(token: str) -> None:
     key = _rate_limit_key(token)
-    last = _rate_cache.get(key, 0.0)
-    if time.time() - last < _RATE_LIMIT_SECONDS:
+    now = time.time()
+    last = _rate_limit_last(key)
+    if now - last < _RATE_LIMIT_SECONDS:
         raise HTTPException(
             status_code=429,
             detail="Too many sync requests. Wait 5 minutes between syncs.",
-            headers={"Retry-After": str(int(_RATE_LIMIT_SECONDS - (time.time() - last)))},
+            headers={"Retry-After": str(int(_RATE_LIMIT_SECONDS - (now - last)))},
         )
-    _rate_cache[key] = time.time()
+    _rate_limit_set(key, now)
 
 
 def _verify_sync_token(company: str, token: str | None) -> None:

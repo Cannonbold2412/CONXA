@@ -124,9 +124,6 @@ class Settings(BaseSettings):
     worker_dead_letter_queue_name: str = "ai-native-jobs-dlq"
 
     # Billing and app redirects.
-    stripe_secret_key: str = ""
-    stripe_webhook_secret: str = ""
-    stripe_price_id: str = ""
     app_url: str = "http://localhost:5173"
     api_base_url: str = ""  # Set in production to prevent X-Forwarded-Host injection
 

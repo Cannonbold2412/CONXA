@@ -165,7 +165,6 @@ class ProductRoutesTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         payload = res.json()["subscription"]
         self.assertEqual(payload["plan"], "development")
-        self.assertFalse(payload["stripe_configured"])
 
     def test_production_config_requires_razorpay_plan_ids(self) -> None:
         from app.main import _validate_production_config
@@ -206,6 +205,55 @@ class ProductRoutesTests(unittest.TestCase):
         audit = client.get("/api/v1/audit-events")
         self.assertEqual(audit.status_code, 200)
         self.assertEqual(audit.json()["audit_events"][0]["resource_id"], "render")
+
+    def _member_headers(self, role: str) -> dict[str, str]:
+        return {
+            "x-conxa-proxy-secret": "proxy-secret",
+            "x-conxa-user-id": "user_rbac",
+            "x-conxa-org-id": "org_rbac",
+            "x-conxa-org-role": role,
+        }
+
+    def test_write_routes_reject_non_admin_member(self) -> None:
+        client = self._client()
+        with patch("conxa_core.config.settings.api_proxy_shared_secret", "proxy-secret"):
+            headers = self._member_headers("member")
+            # Bundle release
+            res = client.patch(
+                "/api/v1/packages/bundles/render/release",
+                json={"state": "published"},
+                headers=headers,
+            )
+            self.assertEqual(res.status_code, 403)
+            # Plugin create
+            res = client.post(
+                "/api/v1/plugins",
+                json={"name": "X", "target_url": "https://example.com"},
+                headers=headers,
+            )
+            self.assertEqual(res.status_code, 403)
+            # Plugin delete
+            res = client.delete("/api/v1/plugins/does-not-matter", headers=headers)
+            self.assertEqual(res.status_code, 403)
+
+    def test_bundle_release_allows_admin(self) -> None:
+        bundle_root = self.tmp / "bundle" / "render"
+        bundle_root.mkdir(parents=True)
+
+        def fake_bundle_root_dir(bundle_slug: str) -> Path | None:
+            return bundle_root if bundle_slug == "render" else None
+
+        client = self._client()
+        with (
+            patch("conxa_core.config.settings.api_proxy_shared_secret", "proxy-secret"),
+            patch("app.api.product_routes.bundle_root_dir", side_effect=fake_bundle_root_dir),
+        ):
+            res = client.patch(
+                "/api/v1/packages/bundles/render/release",
+                json={"state": "published", "version": "1.0.0"},
+                headers=self._member_headers("admin"),
+            )
+        self.assertEqual(res.status_code, 200)
 
 
 if __name__ == "__main__":

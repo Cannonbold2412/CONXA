@@ -17,7 +17,6 @@ PUBLIC_PATHS = {
     "/health",
     "/healthz",
     "/api/v1/health",
-    "/api/v1/webhooks/stripe",
     # Runtime phonehome — installed runtimes have no Clerk session, only sync tokens.
     # This stores best-effort device registration; spoofing just inflates counts.
     "/api/v1/telemetry/runtime-start",

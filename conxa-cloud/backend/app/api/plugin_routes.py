@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from conxa_core.config import settings
 from conxa_core.db import db_get
 from conxa_core.models.plugin import Plugin, PluginBuild, PluginInstaller, PluginWorkflow
+from app.services.rbac import require_admin
 from app.services.saas import add_audit_event, principal_from_request, ensure_principal, visible_workspace_ids_for
 from conxa_core.storage.plugin_store import (
     create_plugin,
@@ -157,6 +158,7 @@ def _plugin_or_404(plugin_id: str, principal) -> Plugin:
 def post_create_plugin(body: CreatePluginBody, request: Request) -> dict[str, Any]:
     principal = principal_from_request(request)
     ensure_principal(principal)
+    require_admin(principal)
     plugin = create_plugin(
         name=body.name,
         target_url=body.target_url,
@@ -192,6 +194,8 @@ def get_plugin_detail(plugin_id: str, request: Request) -> dict[str, Any]:
 @router.delete("/{plugin_id}")
 def delete_plugin_endpoint(plugin_id: str, request: Request) -> dict[str, Any]:
     principal = principal_from_request(request)
+    ensure_principal(principal)
+    require_admin(principal)
     plugin = _plugin_or_404(plugin_id, principal)
     # Remove built output if present.
     if plugin.build and plugin.build.output_path:

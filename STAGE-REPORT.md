@@ -75,7 +75,7 @@ The entire end-to-end workflow works:
 
 | Gap | What it means for users | Location |
 |---|---|---|
-| **RBAC not enforced** | Every workspace member can publish, delete, modify — no role check at the API | `app/services/rbac.py` is scaffolded; no route enforces it |
+| ~~**RBAC not enforced**~~ **RESOLVED (2026-07-01)** | `require_admin` now guards publish, plugin create/delete, and bundle release (403 for non-admin/owner) | `app/services/rbac.py` enforced in `publish_routes.py`, `plugin_routes.py`, `product_routes.py` |
 | **No Windows code signing** | Windows SmartScreen shows "Unknown Publisher" warning and may block install for non-technical users | `installer_builder.py` — no `signtool.exe` step |
 | **Billing quotas not enforced** | Plans exist (Free/Starter/Pro/Enterprise) but no limit on workflows, token usage, or installs | `app/services/saas.py`, `razorpay_routes.py` |
 | **macOS runtime not distributable** | Build scripts reference macOS targets but no macOS installer builder exists | `installer_builder.py` — Windows only |
@@ -84,18 +84,18 @@ The entire end-to-end workflow works:
 
 | Gap | What it means for users | Location |
 |---|---|---|
-| **Delta sync sends all files** | Every skill-pack sync transfers the entire pack, not just changed files. 2 MB+ per cold start on large plugins | `skillpack_update_routes.py` — comment says "simplified implementation" |
-| **Rate limit is in-memory** | If Render scales to 2 instances, each has its own rate limit — no shared enforcement | `_rate_cache` dict in `skillpack_update_routes.py` |
+| ~~**Delta sync sends all files**~~ **RESOLVED (2026-07-01)** | Per-skill diffing: republishing one skill no longer re-ships the whole pack (residual: a changed skill sends its ~5 small JSON files) | `_build_delta()` in `skillpack_update_routes.py` uses `component_versions` KV |
+| ~~**Rate limit is in-memory**~~ **RESOLVED (2026-07-01)** | Limit persisted in the KV store — survives restarts, shared across instances | `rate_limits` namespace via `conxa_core.db` in `skillpack_update_routes.py` |
 | **Error messages are raw codes** | Users in Build Studio see strings like `cloud_unreachable`, `auth_file_in_build_input` instead of plain-English explanations | No `errorMessages.ts` map yet |
 | **No pre-execution drift detection** | `structural_fingerprint` is compiled but never checked before execution starts | `runtime/run.js` — post-hoc repair events work; pre-exec gate open |
 | **Selector cache GC not scheduled** | Cache grows without bound; GC function exists but no cron or startup task runs it | `snapshots_gc.py` — unscheduled |
-| **Nonce store in-memory** | Server restart clears all pending CLI auth sessions | `skillpack_update_routes.py:_auth_nonces` dict |
+| ~~**Nonce store in-memory**~~ **MOOT** | CLI auth flow was removed (sync-token model); no nonce store exists | n/a |
 
 ### Low-Severity Gaps — Tech Debt
 
 | Gap | Notes |
 |---|---|
-| Stripe fields in config (`stripe_*`) | Orphaned; Razorpay is the wired gateway. Cleanup only. |
+| ~~Stripe fields in config (`stripe_*`)~~ **REMOVED (2026-07-01)** | Fully removed — config, endpoints, dep, frontend flag. Razorpay/Cashfree is the wired gateway. |
 | `research/frontend/` dead prototype | Not deployed; confuses code readers. Delete or document. |
 | `worker.py` is a scaffold | Queue not implemented. |
 | `Aptfile` has Playwright deps | Cloud doesn't use Playwright; leftover from old architecture. |
@@ -107,16 +107,16 @@ The entire end-to-end workflow works:
 ## Phase-by-Phase Progress
 
 ```
-Phase 1 — Architecture Consolidation (4–6 weeks estimated)
+Phase 1 — Architecture Consolidation — ✅ COMPLETE (updated 2026-07-01)
   ✅ 1.1  Auth token refresh (was a stub)
   ✅ 1.2  Runtime token acquisition flow → superseded by sync-token model
   ✅      Installer-provisioned sync-token model (eliminates Clerk JWT in runtime)
-  ⬜ 1.3  Move nonce store to Redis/DB (restart clears auth sessions)
-  ⬜ 1.4  Real per-file delta sync (currently full-pack every time)
-  ⬜ 1.5  Move rate limit cache to Redis (multi-instance blind spots)
-  ⬜ 1.6  Wire RBAC to API routes (scaffolded, unenforced)
-  ⬜ 1.7  Remove orphaned Stripe config fields
-  ⬜ 1.8  Delete or document research/frontend/ prototype
+  ✅ 1.3  Nonce store → MOOT: CLI-auth flow removed, no nonce store exists
+  ✅ 1.4  Delta sync → per-skill diffing shipped (whole-pack transfer eliminated)
+  ✅ 1.5  Rate limit → persisted in conxa_core.db KV store (restart/multi-instance safe)
+  ✅ 1.6  RBAC wired to plugin create/delete + bundle release (enforced, 403)
+  ✅ 1.7  Stripe fully removed (endpoints, config, dep, frontend flag)
+  ✅ 1.8  research/frontend/ → MOOT: directory does not exist
 
 Phase 2 — Production Readiness (6–10 weeks estimated)
   ✅ 2.1  Device & runtime registration (cloud has visibility)
@@ -147,7 +147,7 @@ Phase 4 — AI Agent Platform (12–24 weeks, parallel with Phase 3)
 ```
 
 **Phase completion summary:**
-- Phase 1: ~37% complete (3 of 8 items done)
+- Phase 1: ✅ **100% complete** (all 8 items done, superseded, or moot as of 2026-07-01)
 - Phase 2: ~50% complete (4 of 9 items done)
 - Phase 3: 0% (not started)
 - Phase 4: 0% (not started)
@@ -172,14 +172,15 @@ All commits since 2026-06-20 have been in the `ci:` and `fix:` namespaces — ha
 ## What Needs to Happen to Reach Each Next Stage
 
 ### To reach **Open Beta** (hand it to anyone who signs up)
-1. Wire RBAC to all write routes (publish, delete, plugin create/delete)
+1. ✅ Wire RBAC to all write routes (publish, delete, plugin create/delete, release) — DONE
 2. Obtain and wire Windows code signing certificate
 3. Enforce billing plan limits at publish and compile time
-4. Implement real per-file delta sync (network cost at scale)
-5. Move rate limit to Redis (multi-instance correctness)
+4. ✅ Real per-skill delta sync (whole-pack transfer eliminated) — DONE
+5. ✅ Shared/persistent rate limit (KV store, restart + multi-instance safe) — DONE
 6. Replace raw error codes with user-friendly messages in Build Studio UI
 
-**Estimated: 4–6 weeks of focused engineering on Phase 1 + Phase 2 remaining items**
+**Remaining for Open Beta: Windows code signing, billing enforcement, error-message UX
+(all Phase 2). Phase 1 is complete.**
 
 ### To reach **General Availability (GA)**
 Everything above, plus:
@@ -234,8 +235,8 @@ If you put Conxa in front of a hand-picked technical user or a friendly SaaS par
 | Auth (Build Studio) | **Working** | Clerk PKCE → OS keyring |
 | Auth (Runtime) | **Working** | Sync token in installer; no customer login |
 | Skill sync | **Working** | Full-pack (delta TBD) |
-| Billing gateway | **Wired, not enforced** | Razorpay; plan limits not checked |
-| RBAC | **Scaffolded, not enforced** | All members have full write |
+| Billing gateway | **Wired, not enforced** | Razorpay/Cashfree; plan limits not checked |
+| RBAC | **Enforced on write routes** | `require_admin` on publish, plugin create/delete, bundle release |
 | Code signing | **Missing** | SmartScreen warning |
 | macOS support | **Missing** | Windows only |
 | Error UX | **Raw codes** | No user-friendly message map |

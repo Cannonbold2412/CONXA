@@ -96,7 +96,6 @@ export type SubscriptionResponse = {
     customer_id?: string | null
     subscription_id?: string | null
     current_period_end?: number | null
-    stripe_configured: boolean
   }
 }
 
@@ -154,14 +153,6 @@ export function fetchEntitlements(): Promise<EntitlementsResponse> {
 
 export function fetchSubscription(): Promise<SubscriptionResponse> {
   return apiFetch('/billing/subscription').then((r) => json<SubscriptionResponse>(r))
-}
-
-export function createCheckout(): Promise<{ url: string }> {
-  return apiFetch('/billing/checkout', { method: 'POST' }).then((r) => json<{ url: string }>(r))
-}
-
-export function createPortal(): Promise<{ url: string }> {
-  return apiFetch('/billing/portal', { method: 'POST' }).then((r) => json<{ url: string }>(r))
 }
 
 export function fetchJobs(): Promise<{ jobs: JobRecord[] }> {

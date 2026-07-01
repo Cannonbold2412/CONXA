@@ -1005,6 +1005,7 @@ erDiagram
 | `selector_cache` | `{dom_hash}:{bbox}:{model}` | Selector candidates | Compiler |
 | `runtime_registrations` | `{company}:{platform}` | `{company, platform, runtime_version, workspace_id, last_seen, first_seen}` | 2.1 device registration |
 | `audit_log` | `{workspace_id}` | `[{id, user_id, action, resource_type, resource_id, metadata, created_at, ip}, ...]` | 2.3 audit trail |
+| `rate_limits` | `{sha256(token)[:16]}` | `{last_ts}` | Skill-pack sync rate limiter — persisted so the 5-min window survives restarts and is shared across instances (1.5). In-memory dict fallback when no database is configured |
 | `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |
 | `manifest` | `current` (composed+signed `UnifiedManifest`), `skill_pack_index` (list of `{company}:{skill}` identifiers), `minimum_versions`, `compatibility` | 5.8 unified manifest — `skill_pack_index` exists because the filesystem-fallback KV store hashes keys, so `component_versions` entries for skills can't be discovered by scanning keys directly |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |
@@ -1112,7 +1113,7 @@ The platform has a basic workspace model:
 ### Current Gaps
 
 - **No team-level publishing** — only the initial slug owner can publish updates.
-- **No member roles enforced at API** — `rbac.py` is scaffolded but not wired to any route handler.
+- **Member roles enforced on write routes** — `rbac.py`'s `require_admin` guards publish, plugin create/delete, and bundle release (403 for non-admin/owner). Not yet fine-grained (per-skill / read-only analyst roles are Phase 3).
 - **No cross-workspace sharing** — a company cannot share a plugin with another workspace.
 - **Runtime auth is per-company** — there is no per-user runtime token. The same skill pack serves all users on the same machine.
 
