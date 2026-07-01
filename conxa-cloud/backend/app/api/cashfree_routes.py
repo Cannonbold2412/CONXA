@@ -287,11 +287,6 @@ async def create_subscription(
                 detail=f"cashfree_subscription_create_failed: {resp.text}",
             )
         body_json = resp.json() if resp.content else {}
-        if str(body_json.get("status", "OK")).upper() not in ("OK", "SUCCESS"):
-            raise HTTPException(
-                status_code=500,
-                detail=f"cashfree_error: {body_json.get('message', resp.text)}",
-            )
         data = body_json.get("data") or {}
         sub_reference_id = str(data.get("subReferenceId") or "")
         if not sub_reference_id:
