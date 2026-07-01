@@ -2,6 +2,37 @@
 
 ---
 
+## Added a strategy write-up for TwelveLabs video understanding — 2026-07-02
+
+**What's new.** A new document, `docs/twelvelabs-video-understanding-strategy.md`, explaining where
+TwelveLabs (a company that makes AI which "watches" and understands videos) could help Conxa.
+
+**The main idea.** Every time someone records a workflow in Build Studio, Conxa quietly saves a full
+screen recording of it (`recording.webm`) — but right now it only cuts that video into a few still
+pictures and throws the rest away. TwelveLabs' models can actually watch that whole recording and
+understand it, so the doc lays out how we could use the video we're already throwing away to make
+skills better.
+
+**What the doc covers.** Plain-language explanations of TwelveLabs' two models (one for searching
+video, one for describing it in words), and four concrete places they'd help — all on the vendor's
+own recording, at build time: writing better step descriptions and catching hidden "wait for loading"
+pauses, searching for skills by what the video shows, auto-detecting success messages to build checks,
+and sharpening recovery when a button moves. It now stays strictly vendor-side — the earlier "detect
+when a website changed" idea, which would have meant capturing the end customer's screen, was removed.
+
+**Costs, spelled out.** The doc uses TwelveLabs' real published prices to show it works out to roughly
+**7 to 26 cents per workflow build** (paid once when a skill is built, not every time it runs), with
+search and recovery costs being fractions of a cent. It also notes the privacy angle is manageable
+because TwelveLabs can run inside the vendor's own cloud or on their own servers (SOC 2 Type II,
+on-premise, or AWS Bedrock), so the recording never leaves the vendor's control.
+
+**How to buy.** Added a short "what to actually budget" breakdown: you start for **$0** on the free
+tier (enough for ~300–600 test recordings), then pay only per use as you grow (roughly $7–26/month at
+100 builds, scaling up from there). The pricey "Enterprise" package has no public price and isn't
+needed to begin — the same capability is available pay-as-you-go, and the privacy/on-premise needs can
+be met through AWS Bedrock without an enterprise contract. Nothing in the code was changed; this is a
+planning document.
+
 ## Fixed Cashfree subscription upgrades — 2026-07-02
 
 **What was broken.** Clicking "Upgrade" on the Billing page failed with
