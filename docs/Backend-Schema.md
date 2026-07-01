@@ -700,47 +700,74 @@ Response:
 }
 ```
 
-### 5.8 Runtime Manifest Endpoints
+### 5.8 Unified Signed Runtime Manifest
 
-**GET /api/v1/updates/conxa-runtime-manifest** — host binary self-update (quarterly, ~85 MB)
+**GET /api/v1/manifest.json** — the single source of truth for `runtime/manifest_manager.js`'s self-updater. Replaces the three previous manifest endpoints (still served as deprecated shims — see below). Served straight from `manifest` KV; signed once at publish time, not on the read path.
 
-Response:
+Response (`packages/conxa-core/conxa_core/models/manifest.py:UnifiedManifest`):
 ```json
 {
-  "host_version": "host-v1.1.0",
-  "url": "https://github.com/Cannonbold2412/CONXA/releases/download/host-v1.1.0/conxa-runtime.exe",
-  "sha256": "abc123...",
-  "keytar_url": "https://github.com/Cannonbold2412/CONXA/releases/download/host-v1.1.0/keytar.node",
-  "keytar_sha256": "def456...",
-  "playwright_version": "1.61.0",
-  "chromium_revision": "1228"
+  "manifest_version": 3,
+  "generated_at": "2026-07-01T00:00:00Z",
+  "mcp_protocol_version": "2024-11-05",
+  "minimum_versions": {"conxa_runtime": "host-v1.0.0", "conxa_app": "app-v1.0.0"},
+  "compatibility": {},
+  "conxa_runtime": {
+    "version": "host-v1.1.0",
+    "released_at": "2026-07-01T00:00:00Z",
+    "required": false,
+    "files": [
+      {"filename": "conxa-runtime.exe", "url": "https://github.com/.../conxa-runtime.exe", "sha256": "abc123..."},
+      {"filename": "keytar.node", "url": "https://github.com/.../keytar.node", "sha256": "def456..."}
+    ],
+    "rollout": {"percentage": 100, "halted": false}
+  },
+  "conxa_app": {
+    "version": "app-v1.5.0",
+    "min_host": "host-v1.0.0",
+    "files": [{"filename": "conxa-app-app-v1.5.0.zip", "url": "https://github.com/.../conxa-app-app-v1.5.0.zip", "sha256": "abc123..."}],
+    "rollout": {"percentage": 100, "halted": false}
+  },
+  "skill_packs": {
+    "acme": {
+      "invoice-automation": {"version": "v1.2.0", "min_runtime": "app-v1.0.0", "files": []}
+    }
+  },
+  "signature": "base64-encoded-ed25519-signature"
 }
 ```
 
-**GET /api/v1/updates/conxa-app-manifest** — app layer update (every release, ~60 KB zip)
+`signature` is computed over the canonical JSON (sorted keys, no whitespace, `signature` field excluded) of every other field, using an Ed25519 private key held only as the `CONXA_MANIFEST_SIGNING_KEY` env var — never in CI. The runtime verifies it against a public key baked into the host exe at build time; a failed verification is treated exactly like a network failure (fall back to the last verified cache, or skip entirely on first run). `skill_packs[].files` is deliberately empty — skill content is delivered through the existing per-company delta-sync (§5.9) which is Bearer-token-gated per company, not broadcast in a public manifest.
 
-Response:
-```json
-{
-  "app_version": "app-v1.5.0",
-  "min_host": "host-v1.0.0",
-  "bundle_url": "https://github.com/Cannonbold2412/CONXA/releases/download/app-v1.5.0/conxa-app-v1.5.0.zip",
-  "bundle_sha256": "abc123..."
-}
-```
+**POST /api/v1/admin/component-versions/{component}** — CI (after host/app build) and `publish_routes.py` (after skill publish) write a component's version record here; the manifest is recomposed and re-signed immediately after. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. Requires `Authorization: Bearer <CONXA_ADMIN_TOKEN>`.
 
-**POST /api/v1/updates/conxa-runtime-manifest** — CI updates host manifest vars in memory  
-**POST /api/v1/updates/conxa-app-manifest** — CI updates app manifest vars in memory  
-Both require `Authorization: Bearer <CONXA_ADMIN_TOKEN>`.
+**Deprecated shims** (kept for runtimes that haven't picked up the manifest-driven self-updater): `GET /api/v1/updates/conxa-runtime-manifest` and `GET /api/v1/updates/conxa-app-manifest` now derive their response from the same `component_versions` KV data instead of process-local globals.
+
+**KV namespaces:** `component_versions` (keys: `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}`) and `manifest` (keys: `current` — the composed+signed manifest; `skill_pack_index` — a list of `{company}:{skill}` identifiers, maintained because the filesystem-fallback KV store hashes keys and can't recover the original string, so skill entries can't be discovered by scanning `component_versions` directly; `minimum_versions`, `compatibility` — operator-set floors/gates).
 
 ### 5.9 Skill-Pack Delta Sync
 
-**GET /api/v1/skill-packs/{company}/delta?since={version}**
+**GET /api/v1/skill-packs/{company}/delta?since={json-map}**
+
+`since` is a JSON-encoded map of `{skill_slug: last_known_version}` (URL-encoded), letting each skill be compared and shipped independently instead of one shared pack-wide version — republishing one skill never triggers a redownload of the others (see `_skill_version()`/`_build_delta()` in `skillpack_update_routes.py`).
 
 Authentication: `Authorization: Bearer <sync_token>` where `sync_token` is the per-company token minted at publish time (`publish_routes._sync_token()`) and stored in the `sync_tokens` KV namespace. The token is embedded in `pack.json` at publish and ships inside the installer — the runtime reads it directly with zero user interaction.
 
 - Production (`SKILL_AUTH_REQUIRED=true`): 401 if token is missing or does not match stored token.
 - Local dev (`SKILL_AUTH_REQUIRED=false`): validation skipped.
+
+Response:
+```json
+{
+  "skills": [
+    {"name": "invoice-automation", "version": "v1.2.0", "action": "update",
+     "files": [{"path": "execution.json", "sha256": "abc123...", "content_base64": "..."}]},
+    {"name": "approval-workflow", "action": "no_change"}
+  ]
+}
+```
+
+Each skill's version is read from `component_versions` KV (`skill_packs:{company}:{skill}`, written at publish time), falling back to the shared `pack.json.skill_pack_version` for packs published before independent per-skill versioning existed.
 
 The sync_token is also returned in the publish response so the Build Studio can write it into the local pack.json before staging the installer:
 
@@ -978,6 +1005,8 @@ erDiagram
 | `selector_cache` | `{dom_hash}:{bbox}:{model}` | Selector candidates | Compiler |
 | `runtime_registrations` | `{company}:{platform}` | `{company, platform, runtime_version, workspace_id, last_seen, first_seen}` | 2.1 device registration |
 | `audit_log` | `{workspace_id}` | `[{id, user_id, action, resource_type, resource_id, metadata, created_at, ip}, ...]` | 2.3 audit trail |
+| `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |
+| `manifest` | `current` (composed+signed `UnifiedManifest`), `skill_pack_index` (list of `{company}:{skill}` identifiers), `minimum_versions`, `compatibility` | 5.8 unified manifest — `skill_pack_index` exists because the filesystem-fallback KV store hashes keys, so `component_versions` entries for skills can't be discovered by scanning keys directly |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |
 
 ---
@@ -1033,21 +1062,27 @@ data/  (SKILL_DATA_DIR on Render, or cloud blob storage)
 
 ### End-User Machine (Runtime)
 
+Every updateable component (host, app, each skill) is a versioned directory with a
+`current` directory junction — see TRD.md §4.4 for the full rationale and
+`runtime/version_manager.js` for the implementation. App-layer files ship as obfuscated
+plain JS, not V8 bytecode (`.jsc` was abandoned — `@yao-pkg/pkg`'s embedded Node build has
+a different V8 than official nodejs.org Node, causing silent deserialization segfaults).
+
 ```
 ~/.conxa/  (CONXA_DIR)
-├── conxa-runtime.exe             ← host layer (Node.js + npm deps + bootstrap, ~85 MB)
-├── conxa-runtime.exe.next        ← staged host update (applied via update.bat on next cold start)
-├── keytar.node                   ← native Windows credential addon
-├── conxa-app/                    ← app layer (hot-synced, no restart)
-│   ├── version.json
-│   └── *.jsc                     ← V8 bytecode (server, sync, run, browser, etc.)
-├── chromium/                     ← Playwright browser
+├── conxa-runtime/
+│   ├── v1.0.0/, v1.1.0/           ← conxa-runtime.exe + keytar.node + version.json each
+│   └── current                    ← directory junction to the active version
+├── conxa-app/
+│   ├── v1.0.0/, v1.1.0/           ← server.js, sync.js, run.js, ... (obfuscated .js) + version.json each
+│   └── current                    ← directory junction to the active version
+├── manifest.json                  ← cached last Ed25519-verified signed manifest
+├── chromium/                      ← Playwright browser (unversioned, external)
 ├── skill-packs/{company}/
-│   ├── pack.json                 ← sync_endpoint + tracking config embedded + last_synced
+│   ├── pack.json                  ← sync_endpoint + sync_token + tracking config (no shared version)
 │   └── {skill_slug}/
-│       ├── execution.json
-│       ├── recovery.json
-│       └── inputs.json
+│       ├── v1.0.0/, v1.1.0/       ← execution.json, recovery.json, inputs.json, manifest.json, version.json each
+│       └── current                 ← directory junction, independent per skill
 └── logs/
     ├── runtime.log
     └── recovery.log
@@ -1058,9 +1093,7 @@ data/  (SKILL_DATA_DIR on Render, or cloud blob storage)
     │   ├── {co}_state.json             ← AES-256-GCM encrypted storageState
     │   ├── {co}_raw_state.json         ← plaintext fallback (no Conxa token)
     │   └── {co}_auth_meta.json
-    ├── conxa-runtime-update-cache.json ← host manifest cache (1h TTL)
-    ├── conxa-runtime-update-pending.json
-    └── conxa-app-update-cache.json     ← app manifest cache (1h TTL)
+    └── manifests.json                  ← skill index fast-load cache
 ```
 
 ---

@@ -204,19 +204,19 @@ All under `/api/v1/` except health endpoints:
 | `POST /api/v1/plugins/publish` | Skill pack publish | Clerk JWT |
 | `POST /api/v1/plugins/{slug}/installer/upload` | Upload .exe | Clerk JWT |
 | `GET /api/v1/installers/{slug}` | Public installer download | Public |
-| `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync | Rate-limited; token optional |
+| `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync — per-skill delta (see below) | Rate-limited; token optional |
 | `POST /api/tracking/{co}/events` | Telemetry ingest | Package tracking token |
 | `GET /api/v1/tracking/companies` | Company list | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs` | Run summaries | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline | Clerk JWT |
 | `GET /api/v1/tracking/{co}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) | Clerk JWT |
-| `GET /api/v1/updates/deps-manifest` | Bootstrap manifest | Public |
-| `GET /api/v1/updates/conxa-runtime-manifest` | Host binary self-update manifest (quarterly, ~85 MB) | Public |
-| `GET /api/v1/updates/conxa-app-manifest` | App layer update manifest (every release, ~60 KB zip) | Public |
-| `POST /api/v1/updates/conxa-runtime-manifest` | CI: update in-memory host manifest vars | Bearer: `CONXA_ADMIN_TOKEN` |
-| `POST /api/v1/updates/conxa-app-manifest` | CI: update in-memory app manifest vars | Bearer: `CONXA_ADMIN_TOKEN` |
+| `GET /api/v1/updates/deps-manifest` | Bootstrap manifest (Build Studio deps only) | Public |
+| `GET /api/v1/manifest.json` | **Unified, Ed25519-signed** runtime update manifest — conxa_runtime, conxa_app, and per-skill versions, compatibility matrix, minimum versions, rollout percentages. Source of truth for `runtime/manifest_manager.js`. Served straight from `manifest` KV (signed once at publish time, not on the read path). | Public |
+| `POST /api/v1/admin/component-versions/{component}` | CI (after host/app build) and `publish_routes.py` (after skill publish) write a component's version record here; recomposes + re-signs the full manifest immediately. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. | Bearer: `CONXA_ADMIN_TOKEN` |
+| `GET /api/v1/updates/conxa-runtime-manifest` | **Deprecated** — thin shim reading the same `component_versions` KV data, kept only for runtimes that haven't picked up the manifest-driven self-updater. | Public |
+| `GET /api/v1/updates/conxa-app-manifest` | **Deprecated** — same shim pattern as above. | Public |
 | `GET /api/v1/updates/studio-manifest` | Studio download info | Public |
-| `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — authenticated by installer-embedded sync_token | Bearer: `pack.json.sync_token`; 401 if invalid |
+| `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — `since` is a JSON map of `{skill_slug: last_known_version}`; response is `{skills: [{name, action: "update"|"no_change", version?, files?}]}`. Each skill is compared and shipped independently — republishing one skill never triggers a re-download of the others. Authenticated by installer-embedded sync_token. | Bearer: `pack.json.sync_token`; 401 if invalid |
 | `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
 | `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, plugin create/delete) | Clerk JWT |
@@ -289,7 +289,7 @@ conxa-runtime.exe  ← host layer (Node.js + all npm deps + bootstrap.js, ~85 MB
         └── tracker.js                (telemetry event emission)
 ```
 
-`bootstrap.js` (bundled in host): checks `conxa-app/version.json` for `min_host` compatibility, then loads `conxa-app/server.js` from disk. Falls back to the bundled copy if the app layer is absent or incompatible. App-layer files are obfuscated JS (self-defending, string-array rc4) — not human-readable on disk, but no V8 bytecode dependency on the host's exact Node build.
+`bootstrap.js` (bundled in host): resolves `conxa-app/current` (a directory junction — see §4.4) via `version_manager.resolveCurrent()`, checks that version's `version.json` for `min_host` compatibility, then loads its `server.js`. On failure, calls `version_manager.rollback()` to flip `current` back to the previously-retained version and retries — no re-download needed, since old versions are never deleted until pruned by retention. App-layer files are obfuscated JS (self-defending, string-array rc4) — not human-readable on disk, but no V8 bytecode dependency on the host's exact Node build.
 
 > **Why not bytecode?** `@yao-pkg/pkg` embeds its own prebuilt Node24 base, whose V8 build differs from official nodejs.org Node 24.x. `bytenode`'s `fixBytecode` overwrites the header bytes that reveal the mismatch, so `cachedDataRejected` never fires — but the deserialization segfaults silently (0xC0000005, no stderr). Obfuscated plain JS eliminates this coupling permanently.
 
@@ -317,55 +317,60 @@ sequenceDiagram
     participant App as conxa-app/server.js
     participant Cloud as Conxa Cloud
 
-    CD->>RT: spawn conxa-runtime.exe (MCP stdio)
-    RT->>RT: check conxa-app/version.json min_host compatibility
-    RT->>App: require conxa-app/server.js (or bundled fallback)
+    CD->>RT: spawn conxa-runtime\current\conxa-runtime.exe (MCP stdio)
+    RT->>RT: version_manager.resolveCurrent(conxa-app) → check min_host compatibility
+    RT->>App: require conxa-app/current/server.js (or rollback to previous version)
     App->>App: resolve CONXA_DIR, CONXA_DATA_DIR
     App->>App: load skill index from cache (SKILL_PACKS_DIR)
     App->>CD: MCP connect (StdioServerTransport)
     par Startup sync (parallel)
-        App->>Cloud: GET /api/v1/updates/conxa-app-manifest (cached 1h)
-        Cloud-->>App: {app_version, bundle_url, bundle_sha256}
-        App->>App: if newer → download zip, verify SHA-256, extract to conxa-app/
+        App->>Cloud: GET /api/v1/manifest.json (cached 1h; Ed25519-verified against baked-in public key)
+        Cloud-->>App: {conxa_runtime, conxa_app, skill_packs, signature}
+        App->>App: manifest_manager.checkForUpdates() — decide per component (version, rollout %, min_versions)
+        App->>App: if conxa_app newer → download zip, verify SHA-256, extract to conxa-app/<version>/, activate()
+        App->>App: if conxa_runtime newer → download files, --selfcheck the new exe, activate() (never touches the running process's own file)
         and
-        App->>Cloud: GET /skill-packs/{co}/delta?since={ver} (skipped if synced <5min ago)
-        Cloud-->>App: {files: [...]}
-        App->>App: parallel file downloads → atomic writes
+        App->>Cloud: GET /skill-packs/{co}/delta?since={per-skill version map} (skipped if synced <5min ago)
+        Cloud-->>App: {skills: [{name, action, version?, files?}]}
+        App->>App: per changed skill → parallel file downloads → write to <skill>/<version>/ → activate()
     end
     App->>App: syncState.complete = true; reload skill index
     App->>CD: sendToolListChanged()
     App->>Cloud: POST /api/v1/telemetry/runtime-start (fire-and-forget)
-    App->>Cloud: GET /api/v1/updates/conxa-runtime-manifest (background, cached 1h)
-    Note over App: if host update available → download conxa-runtime.exe.next in background
 ```
 
-**Execution gate:** `execute_skill` awaits `startupSync` before running. Both skill-pack sync and app-layer update must complete (or fail gracefully) before any workflow executes. On a normal connection this resolves in under 1 second. Sync failures fall through to cached data — the user is never permanently blocked.
+**Execution gate:** `execute_skill` awaits `startupSync` before running. Both skill-pack sync and the unified manifest check must complete (or fail gracefully) before any workflow executes. On a normal connection this resolves in under 1 second. Failures fall through to cached data — the user is never permanently blocked. Manifest signature failures are treated identically to network failures: the last previously-verified cached manifest is used, or the check is skipped entirely on first run.
 
 ### 4.4 Skill Pack Directory Layout (Runtime)
 
+Every updateable component — the host exe, the app layer, and each individual skill —
+is a **versioned directory** with a `current` directory junction pointing at the active
+version (see `runtime/version_manager.js`). Old versions are retained (default: current +
+2 previous) so rollback never needs a re-download; junctions are used (not JSON pointer
+files) because Claude Desktop's MCP config stores a literal filesystem path to the host
+exe, which only the OS itself can resolve transparently — a junction is the one mechanism
+that works without requiring admin rights or Developer Mode.
+
 ```
 ~/.conxa/                       (CONXA_DIR)
-├── conxa-runtime.exe           (host layer — Node.js + npm deps + bootstrap, ~85 MB)
-├── conxa-runtime.exe.next      (staged host download, applied via update.bat on next cold start)
-├── keytar.node                 (native Windows credential addon, Node-ABI-specific)
-├── conxa-app/                  (app layer — hot-synced, no restart needed)
-│   ├── version.json            ({app_version, min_host, updated_at, file_hashes})
-│   ├── server.js               (MCP server + tool handlers — obfuscated JS)
-│   ├── sync.js
-│   ├── run.js
-│   ├── browser.js
-│   ├── auth_manager.js
-│   ├── tracker.js
-│   ├── skill_loader.js
-│   └── install_identity.js
-├── chromium/                   (Playwright browser)
+├── conxa-runtime/
+│   ├── v1.0.0/, v1.1.0/         (each: conxa-runtime.exe, keytar.node, version.json)
+│   └── current                 (directory junction → the active version)
+├── conxa-app/                  (app layer — hot-synced, effective on next cold start)
+│   ├── v1.0.0/, v1.1.0/         (each: server.js, sync.js, run.js, browser.js,
+│   │                             auth_manager.js, tracker.js, skill_loader.js,
+│   │                             install_identity.js, version_manager.js,
+│   │                             manifest_manager.js, version.json)
+│   └── current                 (directory junction → the active version)
+├── manifest.json                (locally cached copy of the last Ed25519-verified signed manifest)
+├── chromium/                   (Playwright browser — unversioned, external)
 ├── skill-packs/
 │   └── {company}/
-│       ├── pack.json           (manifest: sync_endpoint, tracking, version, last_synced)
+│       ├── pack.json           (company metadata: sync_endpoint, sync_token — no shared version)
 │       └── {skill_slug}/
-│           ├── execution.json  (SkillPackage steps + selectors)
-│           ├── recovery.json   (recovery blocks + anchors)
-│           └── inputs.json     (input schema)
+│           ├── v1.0.0/, v1.1.0/  (each: execution.json, recovery.json, inputs.json,
+│           │                      manifest.json, validation.json, version.json)
+│           └── current           (directory junction, independent per skill)
 └── logs/
     ├── runtime.log             (JSONL, rotated at 10MB)
     └── recovery.log            (recovery event log, rotated at 10MB)
@@ -376,9 +381,7 @@ sequenceDiagram
 │   │   ├── {co}_state.json             (AES-256-GCM encrypted storageState)
 │   │   ├── {co}_raw_state.json         (plaintext fallback)
 │   │   └── {co}_auth_meta.json
-│   ├── conxa-runtime-update-cache.json (host manifest cache, 1h TTL)
-│   ├── conxa-runtime-update-pending.json
-│   └── conxa-app-update-cache.json     (app manifest cache, 1h TTL)
+│   └── manifests.json                  (skill index fast-load cache)
 └── data/
     ├── executions/{id}/
     │   ├── state.json
@@ -570,59 +573,54 @@ Telemetry is compact: short event codes (`wf_start`, `wf_ok`, `wf_fail`, `step_o
 
 ### 5.8 Runtime Self-Update Flow
 
-The runtime uses a **two-layer update strategy**:
+The runtime is driven by **one Ed25519-signed manifest** (`GET /api/v1/manifest.json`) instead of separate unsigned per-layer endpoints. `runtime/manifest_manager.js` fetches it, verifies the signature against a public key baked into the host exe at build time (same stamping mechanism as `HOST_VERSION`), and decides — independently for `conxa_runtime` and `conxa_app` — whether to update, using semver comparison, the `minimum_versions` floor (forces an update regardless of rollout), and a deterministic rollout bucket (`sha256(install_id + component_name) mod 100 < rollout.percentage`, stable across polls so a staged rollout doesn't reshuffle who's "in" every check). A manifest that fails signature verification is discarded outright — treated exactly like a network failure, never partially trusted.
 
-**App layer** (every code release — `_checkAppUpdate()`)  
-Downloads a ~60 KB zip of obfuscated `.js` files from `GET /api/v1/updates/conxa-app-manifest` (1h cache). If `app_version` differs from `conxa-app/version.json`, the zip is downloaded, SHA-256 verified, extracted, and replaces `conxa-app/`. Effective on next cold start (or immediately if the process reloads). No host restart required.
+Every component is a **versioned directory** managed by `runtime/version_manager.js` (see §4.4): `activate()` validates the new version, flips the `current` junction, and prunes old versions beyond retention (default: current + 2 previous) while protecting whichever version was live immediately before the activation, so a same-run rollback never needs a re-download. `rollback()` simply flips `current` back — no download.
 
-**Host layer** (quarterly — `_checkHostUpdate()`)  
-Downloads `conxa-runtime.exe` (~85 MB) in the background via `GET /api/v1/updates/conxa-runtime-manifest` (1h cache). Applied via `update.bat` on the next cold start.
+**App layer** — downloads a zip, extracts to `conxa-app/<version>/`, validates `server.js` is present, `activate()`s. Since `server.js` is already `require()`'d into the running process's module cache, this only takes effect on the *next* cold start — flipping the junction has zero effect on the currently executing code.
+
+**Host layer** — downloads `conxa-runtime.exe` + `keytar.node` into their own `conxa-runtime/<version>/` directory (never touching whatever file the *currently running* process loaded from — a structural improvement over the old flat-file layout, which needed a `update.bat`/`--selfcheck`/rename-over-running-exe dance specifically because the new and old files used to share one path). Before activating, the new exe is spawned once with `--selfcheck` (own environment, own `CONXA_DIR`) — if it doesn't exit 0, activation is aborted and `current` is left untouched, regardless of whether the SHA-256 checksum matched (a checksum only proves the download wasn't corrupted, not that the binary actually boots).
 
 ```mermaid
 sequenceDiagram
-    participant RT as Runtime
+    participant RT as Runtime (manifest_manager.js)
     participant Cloud as Conxa Cloud
-    participant FS as Filesystem
+    participant FS as Filesystem (version_manager.js)
 
-    RT->>FS: check conxa-runtime-update-pending.json
-    alt pending host update exists and conxa-runtime.exe.next present
-        RT->>RT: write update.bat to tmp dir
-        RT->>RT: spawn cmd.exe /C update.bat (detached)
-        Note over RT: bat (runs after 3s delay):<br/>1. move conxa-runtime.exe.next → conxa-runtime.exe<br/>2. if keytar.node.next: move → keytar.node<br/>3. conxa-runtime.exe --install-playwright<br/>4. delete bat
-    end
-
-    Note over RT: App-layer update (fast path, during startupSync)
-    RT->>FS: check conxa-app-update-cache.json (1h TTL)
+    RT->>FS: check ~/.conxa/manifest.json cache (1h TTL)
     alt cache miss or expired
-        RT->>Cloud: GET /api/v1/updates/conxa-app-manifest
-        Cloud-->>RT: {app_version, min_host, bundle_url, bundle_sha256}
-        RT->>FS: write conxa-app-update-cache.json
-    end
-    RT->>RT: compare app_version vs conxa-app/version.json
-    alt newer app available
-        RT->>Cloud: GET bundle_url (~60 KB zip)
-        RT->>RT: SHA-256 verify
-        RT->>FS: extract zip → conxa-app/ (replaces .js files)
+        RT->>Cloud: GET /api/v1/manifest.json
+        Cloud-->>RT: {conxa_runtime, conxa_app, skill_packs, minimum_versions, signature}
+        RT->>RT: verify Ed25519 signature against baked-in public key
+        alt signature invalid
+            RT->>FS: discard — fall back to last verified cache (or skip entirely)
+        else signature valid
+            RT->>FS: write manifest.json cache
+        end
     end
 
-    Note over RT: Host-layer check (background only)
-    RT->>FS: check conxa-runtime-update-cache.json (1h TTL)
-    alt cache miss or expired
-        RT->>Cloud: GET /api/v1/updates/conxa-runtime-manifest
-        Cloud-->>RT: {host_version, url, sha256, keytar_url, keytar_sha256}
-        RT->>FS: write conxa-runtime-update-cache.json
+    RT->>FS: version_manager.currentVersion(conxa-runtime), currentVersion(conxa-app)
+    RT->>RT: decideUpdate() per component — semver, minimum_versions floor, rollout bucket
+
+    opt conxa_runtime update decided
+        RT->>Cloud: download conxa-runtime.exe + keytar.node (retry w/ backoff, SHA-256 verify each)
+        RT->>RT: spawn new exe --selfcheck (own CONXA_DIR)
+        alt selfcheck fails
+            RT->>RT: abort — current untouched, old host keeps running
+        else selfcheck passes
+            RT->>FS: version_manager.activate() — flip conxa-runtime/current junction, prune
+        end
     end
-    RT->>RT: compare host_version vs HOST_VERSION constant
-    alt newer host available
-        RT->>Cloud: GET manifest.url (~85 MB, background)
-        RT->>RT: SHA-256 verify
-        RT->>FS: write conxa-runtime.exe.next
-        RT->>FS: write conxa-runtime-update-pending.json {version, ready, has_keytar}
-        Note over RT: Applied on NEXT cold start
+
+    opt conxa_app update decided and no active execution
+        RT->>Cloud: download app zip (retry w/ backoff, SHA-256 verify)
+        RT->>FS: extract to conxa-app/<version>/, validate server.js present
+        RT->>FS: version_manager.activate() — flip conxa-app/current junction, prune
+        Note over RT: effective on next cold start — this process already has server.js in its module cache
     end
 ```
 
-**`--install-playwright` behaviour:** Uses `playwright-core/cli` bundled inside `conxa-runtime.exe` (no system npm/npx dependency). Idempotent — exits immediately if the correct Chromium revision is already on disk.
+**`--install-playwright` behaviour:** Uses `playwright-core/cli` bundled inside `conxa-runtime.exe` (no system npm/npx dependency). Idempotent — exits immediately if the correct Chromium revision is already on disk. Runs through `conxa-runtime/current/conxa-runtime.exe` so it always exercises whatever version is actually active.
 
 ### 5.9 Data Ownership Summary
 
@@ -962,19 +960,19 @@ If the element is expected inside a dialog, recovery first restricts the search 
 
 ### 11.3 Runtime Self-Update
 
-Two independent update paths; see §5.8 for the full sequence diagram.
+One signed manifest, two components decided independently; see §5.8 for the full sequence diagram.
 
-**App layer** — checked during every cold-start `startupSync` via `/api/v1/updates/conxa-app-manifest` (1h cache). A ~60 KB zip replaces `conxa-app/*.js`. No restart required; effective immediately after extraction.
+**App layer** — checked during every cold-start `startupSync` via `GET /api/v1/manifest.json` (1h cache, Ed25519-verified). A zip is downloaded, extracted to `conxa-app/<version>/`, and `version_manager.activate()` flips the `current` junction. Effective on the *next* cold start — this process already has `server.js` in its module cache, so the swap doesn't affect anything mid-flight.
 
-**Host layer** — checked in the background after sync via `/api/v1/updates/conxa-runtime-manifest` (1h cache). Staged files applied on next cold start:
+**Host layer** — decided from the same manifest fetch (no separate endpoint or cache). Downloads `conxa-runtime.exe` + `keytar.node` into their own `conxa-runtime/<version>/` directory:
 
-| File | Staged as | Applied by |
+| File | Staged into | Activated by |
 |---|---|---|
-| `conxa-runtime.exe` | `conxa-runtime.exe.next` | bat: `move /Y` |
-| `keytar.node` | `keytar.node.next` | bat: `move /Y` (if present) |
-| Chromium | N/A (downloaded by Playwright) | bat: `conxa-runtime.exe --install-playwright` |
+| `conxa-runtime.exe` | `conxa-runtime/<version>/conxa-runtime.exe` | `--selfcheck` must exit 0, then `version_manager.activate()` flips `conxa-runtime/current` |
+| `keytar.node` | `conxa-runtime/<version>/keytar.node` | same activation, no separate step |
+| Chromium | N/A (downloaded by Playwright) | `--install-playwright` run through `conxa-runtime/current/conxa-runtime.exe` |
 
-The bat runs detached after a 3-second delay. `--install-playwright` is idempotent. If the keytar download fails, the old file stays; the host update still applies but token storage may break if the Node ABI changed.
+Because the new version lands in its own directory rather than overwriting the currently-running exe's file, activation can happen immediately rather than being deferred to "the next safe restart" — there is nothing to defer. If `--selfcheck` fails, activation is aborted regardless of a matching SHA-256 (a checksum only proves the download wasn't corrupted, not that it boots), and `current` is left pointing at the previous, still-good version.
 
 ---
 

@@ -255,6 +255,25 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 ---
 
+### ✅ Enterprise-Grade Auto-Update Architecture — DONE 2026-07-01
+
+**What was built:** Replaced the two-layer split's `.bak`/`.next` single-backup update mechanism and two unsigned manifest endpoints with a versioned-directory + single-signed-manifest architecture. See TRD.md §4.1, §4.3, §4.4, §5.8, §11.3 for the authoritative reference; `docs/Runtime-Update-Architecture.md` (the original design proposal for the split above) is now marked superseded where it diverges.
+
+**Changes:**
+- **Versioned directories.** Every component — `conxa-runtime`, `conxa-app`, and each individual skill — is now `<component>/<version>/` with a `current` directory junction, retaining the last 3 versions (`runtime/version_manager.js`, new). Rollback is instant and needs no re-download; junctions were chosen over JSON pointer files specifically because Claude Desktop's MCP config stores a literal path to the host exe, which only the OS can resolve transparently.
+- **One Ed25519-signed manifest.** `GET /api/v1/manifest.json` (new) replaces the two `conxa-runtime-manifest`/`conxa-app-manifest` endpoints as the runtime's source of truth (old endpoints kept as deprecated shims reading the same data). Signed server-side with a private key that never touches CI; the runtime verifies against a public key baked into the host exe and discards anything that fails verification, same as a network failure. `runtime/manifest_manager.js` (new) is the client.
+- **Real staged rollouts.** Each component version carries a `rollout.percentage`; the runtime deterministically buckets itself (hash of install_id, salted per component) so a canary rollout is stable across polls, not re-randomized every check.
+- **Independent per-skill versioning.** `skillpack_update_routes.py`'s delta endpoint now compares each skill's own version (from a new `component_versions` KV namespace) instead of one shared per-company version — republishing one skill never triggers a re-download of the others. `runtime/sync.js` rewritten to match.
+- **Selfcheck before activation.** A newly downloaded host exe is spawned once with `--selfcheck` before `current` is ever pointed at it — a matching SHA-256 only proves the download wasn't corrupted, not that the binary boots.
+- **Cloud persistence.** Manifest/component-version state moved from process-local Python globals (lost on every Render restart or across worker processes) to the existing `conxa_core.db` KV dual-store, in new `component_versions` and `manifest` namespaces.
+- **Installer** now lays out the versioned structure from the start (`installer_builder.py` nests each skill under its own `v`-prefixed version directory; `setup.nsi.tmpl` creates the `current` junctions and registers the MCP command through `conxa-runtime\current\`), so the initial install already matches the layout every later update writes into. No customer migration needed — pre-production, greenfield.
+
+**Result:** Instant no-network rollback (vs. one-step-only before); tamper-proof update manifest (vs. unsigned); staged rollout capability (vs. all-or-nothing); per-skill update granularity (vs. whole-company re-sync).
+
+**Files:** `runtime/version_manager.js` (new), `runtime/manifest_manager.js` (new), `runtime/bootstrap.js`, `runtime/server.js`, `runtime/sync.js`, `runtime/skill_loader.js`, `runtime/test/test_version_manager.js` (new), `runtime/test/test_manifest_manager.js` (new), `runtime/test/gate_replay.js`, `packages/conxa-core/conxa_core/models/manifest.py` (new), `conxa-cloud/backend/app/api/manifest_signer.py` (new), `conxa-cloud/backend/app/api/updates_routes.py`, `skillpack_update_routes.py`, `publish_routes.py`, `conxa-cloud/tests/test_manifest_signing.py` (new), `conxa-builder/python/conxa_compile/installer_builder.py`, `packages/conxa-core/conxa_core/storage/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-host.yml`, `build-runtime-app.yml`
+
+---
+
 ### 2.4 macOS Runtime Support
 
 **What's present:** The build scripts reference macOS targets (`build:mac` in `runtime/package.json`). `CONXA_DIR` resolves to `~/.conxa` on non-Windows. The runtime code is platform-aware.

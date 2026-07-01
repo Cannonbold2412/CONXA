@@ -303,24 +303,27 @@ Workflow recording and local plugin creation remain unlimited.
 ```mermaid
 flowchart TD
     A[Customer receives Company-Agent-Setup.exe] --> B[Run installer - no UAC]
-    B --> C[NSIS installs runtime.exe to $PROFILE\.conxa\runtime\]
-    C --> D[NSIS runs runtime.exe --install-playwright with CONXA_DIR=$PROFILE\.conxa]
-    D --> E[NSIS installs skill-packs to $PROFILE\.conxa\skill-packs\company\]
-    E --> F[NSIS generates a PowerShell script that merges a conxa entry into claude_desktop_config.json]
-    F --> G[Same entry merged into ~/.claude.json for Claude Code, if it already exists]
-    G --> H[Customer restarts Claude Desktop]
-    H --> I[Claude Desktop starts runtime.exe via MCP stdio with CONXA_DIR env var]
-    I --> J[Runtime finds Chromium + skill packs via CONXA_DIR]
-    J --> K[list_skills tool available in Claude]
+    B --> C["NSIS installs conxa-runtime.exe + keytar.node into conxa-runtime\<version>\, creates conxa-runtime\current junction"]
+    C --> D[NSIS installs app layer into conxa-app\<version>\, creates conxa-app\current junction]
+    D --> E[NSIS runs conxa-runtime\current\conxa-runtime.exe --install-playwright with CONXA_DIR=$PROFILE\.conxa]
+    E --> F["NSIS installs skill-packs to $PROFILE\.conxa\skill-packs\company\{skill}\<version>\, creates a current junction per skill"]
+    F --> G[NSIS generates a PowerShell script that merges a conxa entry into claude_desktop_config.json]
+    G --> H[Same entry merged into ~/.claude.json for Claude Code, if it already exists]
+    H --> I[Customer restarts Claude Desktop]
+    I --> J[Claude Desktop starts conxa-runtime\current\conxa-runtime.exe via MCP stdio with CONXA_DIR env var]
+    J --> K[Runtime finds Chromium + skill packs via CONXA_DIR]
+    K --> L[list_skills tool available in Claude]
 ```
 
 **Install scope:** Per-user (`RequestExecutionLevel user`), installs to `$PROFILE\.conxa` (i.e. `%USERPROFILE%\.conxa`). No admin elevation required. Correctly resolves to the logged-in user's profile (avoids the elevated-admin-wrong-profile bug).
 
-**MCP registration:** The installer writes directly into `claude_desktop_config.json` via a generated PowerShell script that does a non-destructive JSON merge (preserves any existing `mcpServers` entries). The script auto-detects the Microsoft Store/MSIX install path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise. If `~/.claude.json` (Claude Code) already exists, the same entry is merged there too; it is never created if absent.
+**Versioned layout:** Every component the installer lays down (host exe, app layer, each skill) is its own versioned directory with a `current` directory junction pointing at it — see TRD.md §4.4. Junctions are used (rather than a plain flat copy) because this is the exact same on-disk convention the runtime's self-updater writes into later; the installer's initial install and every subsequent update speak the same layout from day one. Directory junctions don't require admin rights or Developer Mode, unlike true NTFS symlinks.
+
+**MCP registration:** The installer writes directly into `claude_desktop_config.json` via a generated PowerShell script that does a non-destructive JSON merge (preserves any existing `mcpServers` entries). The registered `command` points at `conxa-runtime\current\conxa-runtime.exe` — a stable path that is written **once**, at install time, and never rewritten; every future self-update simply flips the `current` junction to a new version directory, so Claude Desktop's config never needs to change again. The script auto-detects the Microsoft Store/MSIX install path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise. If `~/.claude.json` (Claude Code) already exists, the same entry is merged there too; it is never created if absent.
 
 **CONXA_DIR wiring:** The MCP entry written into `claude_desktop_config.json` (and `~/.claude.json`) sets `env.CONXA_DIR = $PROFILE\.conxa` — the same `INSTALL_DIR` used during install. `server.js` derives `PLAYWRIGHT_BROWSERS_PATH` and `SKILL_PACKS_DIR` from `CONXA_DIR`, so the runtime always finds the `.exe`-installed Chromium and skill packs.
 
-**Uninstall asymmetry:** The `.exe` uninstaller removes `$PROFILE\.conxa` (when no other companies' skill packs remain) and the HKCU uninstall registry key, and also removes the `conxa` entry from `claude_desktop_config.json` and `~/.claude.json` via the same PowerShell-merge approach — no manual cleanup needed in Claude Desktop's UI.
+**Uninstall asymmetry:** The `.exe` uninstaller removes `$PROFILE\.conxa` (when no other companies' skill packs remain) and the HKCU uninstall registry key, and also removes the `conxa` entry from `claude_desktop_config.json` and `~/.claude.json` via the same PowerShell-merge approach — no manual cleanup needed in Claude Desktop's UI. `RMDir /r` on a tree containing directory junctions removes each junction as a single reparse-point entry without recursing into its target (standard Win32 behaviour); since every `current` junction points at a version directory that is itself a normal subdirectory of the same tree being removed, nothing survives and nothing is ever deleted through an unintended path.
 
 ---
 
@@ -328,23 +331,22 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[runtime-win.exe starts] --> B[Resolve CONXA_DIR + CONXA_DATA_DIR]
-    B --> C[Load skill index from skill-packs/ cache]
-    C --> D[Check runtime-update-pending.json]
-    D -->|Pending update| E[Apply update via update.bat]
-    D -->|No pending| F[Connect MCP to Claude Desktop]
-    F --> G[Async: POST /telemetry/runtime-start fire-and-forget]
-    F --> H[Async: check runtime-manifest — 24h cached]
-    F --> I[Async: syncSkillPacks — 15s timeout]
-    I --> J[For each company in skill-packs/:]
-    J --> K[getToken from OS keychain]
-    K -->|No token| L[Skip — log warning]
-    K -->|Has token| M["GET /skill-packs/{co}/delta?since=version"]
-    M -->|Empty delta| N[Up to date]
-    M -->|Files delta| O[Backup skills → atomic write + SHA-256 verify]
-    O --> P[Update pack.json version]
-    P --> Q[Reload skill index]
-    Q --> R[Sync complete]
+    A[conxa-runtime.exe starts via conxa-runtime/current junction] --> B[Resolve CONXA_DIR + CONXA_DATA_DIR]
+    B --> C[bootstrap.js: version_manager.resolveCurrent for conxa-app, load server.js]
+    C --> D[Load skill index from skill-packs/ cache]
+    D --> E[Connect MCP to Claude Desktop]
+    E --> F[Async: POST /telemetry/runtime-start fire-and-forget]
+    E --> G[Async: manifest_manager.checkForUpdates — GET manifest.json, 1h cached, signature-verified]
+    E --> H[Async: syncSkillPacks — per-skill delta, 4s timeout]
+    H --> I[For each company in skill-packs/:]
+    I --> J[getToken from OS keychain]
+    J -->|No token| K[Skip — log warning]
+    J -->|Has token| L["GET /skill-packs/{co}/delta?since={per-skill version map}"]
+    L -->|All skills no_change| M[Up to date]
+    L -->|Some skills changed| N[Per changed skill: write to <skill>/<version>/, activate — others untouched]
+    N --> O[Update pack.json last_synced]
+    O --> P[Reload skill index]
+    P --> Q[Sync complete]
 ```
 
 **First-time token:** The `auth.json` (Playwright storageState) is staged into `cache/sessions/` by the installer. On first sync, if no keytar token exists for the company, the runtime cannot sync. Token acquisition for the runtime is the **current gap** — the `getAuthChallengeUrl()` function generates a challenge URL but there is no in-app flow to complete this yet.
@@ -436,21 +438,23 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[Runtime cold start or refresh_skills tool call] --> B[Iterate skill-packs/ directories]
-    B --> C[Read pack.json — get sync_endpoint + current version]
+    B --> C[Read pack.json — get sync_endpoint; read each skill's OWN version from its current/version.json]
     C --> D[Get company token from keytar]
-    D --> E["GET {sync_endpoint}?since={version}"]
-    E --> F{Delta response}
-    F -->|files empty| G[Up to date — skip]
-    F -->|files non-empty| H[Backup all affected skill dirs]
-    H --> I[For each file in delta:]
-    I --> J[Decode base64 content]
-    J --> K[atomicWrite: write .tmp, SHA-256 verify, rename]
-    K --> L{All files OK?}
-    L -->|Yes| M[Update pack.json version + last_synced]
-    L -->|No| N[Restore all backups from .bak dirs]
-    M --> O[Delete .bak dirs]
+    D --> E["GET {sync_endpoint}?since={JSON map of skill:version}"]
+    E --> F{Per-skill delta response}
+    F -->|all skills no_change| G[Up to date — skip]
+    F -->|some skills action=update| H[Download all changed skills' files in parallel first]
+    H --> I[For each changed skill:]
+    I --> J[Write files to skill-packs/co/skill/<version>/, SHA-256 verify each]
+    J --> K[version_manager.activate — flip that skill's current junction, prune old versions]
+    K --> L{Activation OK?}
+    L -->|Yes| M[Add to activated list]
+    L -->|No| N[Discard the partial version dir — that skill's current is untouched]
+    M --> O[Update pack.json last_synced]
     O --> P[Reload skill index]
 ```
+
+Each skill is compared and activated **independently** — republishing one skill never redownloads or re-touches the others (see TRD.md §5.9).
 
 ---
 
@@ -458,23 +462,25 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Runtime cold start] --> B[Check runtime-update-pending.json]
-    B -->|ready=true AND runtime.exe.next exists| C[Write update.bat to %TMP%]
-    C --> D[Spawn cmd.exe /C update.bat - detached]
-    D --> E[Continue serving normally]
-    E --> F[bat: wait 3s → move exe.next to runtime.exe → delete bat]
+    A[Runtime cold start] --> B[Fetch GET /api/v1/manifest.json - 1h cache]
+    B --> C[Verify Ed25519 signature against baked-in public key]
+    C -->|Invalid| D[Discard — fall back to last verified cache, or skip check]
+    C -->|Valid| E[decideUpdate per component: semver + minimum_versions floor + rollout bucket]
 
-    B -->|No pending| G[Check runtime-update-cache.json - 24h TTL]
-    G -->|Cache valid| H[Use cached manifest]
-    G -->|Cache expired| I[GET /api/v1/updates/runtime-manifest]
-    I --> J[Save to cache + compare version]
-    J -->|Current version OK| K[No update needed]
-    J -->|Newer available| L[Download runtime-win.exe in background]
-    L --> M[SHA-256 verify]
-    M --> N[Write runtime.exe.next]
-    N --> O[Write runtime-update-pending.json: ready=true]
-    O --> P[Update applied on NEXT cold start]
+    E -->|conxa_runtime update decided| F[Download exe + keytar.node into conxa-runtime/<version>/]
+    F --> G[SHA-256 verify each file]
+    G --> H[Spawn new exe --selfcheck with its own CONXA_DIR]
+    H -->|Fails| I[Abort — current untouched, old host keeps running]
+    H -->|Passes| J[version_manager.activate — flip conxa-runtime/current, prune old versions]
+    J --> K[Takes effect on the NEXT process spawn — this process's own file was never touched]
+
+    E -->|conxa_app update decided, no active execution| L[Download zip, extract to conxa-app/<version>/]
+    L --> M[Validate server.js present]
+    M --> N[version_manager.activate — flip conxa-app/current, prune old versions]
+    N --> O[Takes effect on next cold start — this process already has server.js in its module cache]
 ```
+
+Because each new version lands in its own directory rather than overwriting whatever file the *currently running* process loaded from, activation never needs to wait for a "safe restart" — there's nothing running that could be disrupted by it.
 
 ---
 

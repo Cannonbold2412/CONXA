@@ -1,5 +1,35 @@
 # Runtime Update Architecture
 
+> **Superseded — 2026-07-01.** This document was the original design proposal for
+> splitting the monolithic runtime binary into a host/app two-layer architecture. That
+> split was built, but the enterprise-grade auto-update system that came after it
+> diverges from this doc in several concrete ways and **TRD.md §4.1, §4.3, §4.4, §5.8,
+> §11.3 are now the authoritative reference**, not this file:
+>
+> - **Versioned directories, not `.bak`/`.next`.** Every component (host, app, each
+>   skill) lives at `<component>/<version>/` with a `current` directory junction,
+>   retaining the last 3 versions for instant no-download rollback — not a single
+>   `.bak` backup. See `runtime/version_manager.js`.
+> - **One Ed25519-signed manifest, not two unsigned ones.** `GET /api/v1/manifest.json`
+>   replaces the separate `runtime-host-manifest`/`runtime-app-manifest` endpoints this
+>   doc proposes, and the runtime verifies a signature before trusting any field in it.
+>   See `runtime/manifest_manager.js`.
+> - **No V8 bytecode.** This doc's obfuscation section proposes `.jsc` (bytenode)
+>   compilation. That was tried and abandoned: `@yao-pkg/pkg`'s embedded Node build has a
+>   different V8 than official nodejs.org Node, so bytecode compiled against one
+>   silently segfaults on deserialization under the other. The app layer ships as
+>   obfuscated plain `.js` instead — see the `CLAUDE.md` "Host exe built `--no-bytecode`"
+>   invariant.
+> - **Real percentage-based staged rollout**, not just a version bump. See the
+>   `rollout: {percentage, halted}` field in the manifest schema and
+>   `manifest_manager.js`'s deterministic `rolloutBucket()`.
+> - **Skill packs are independently versioned per skill**, not per company. See TRD.md
+>   §5.9 and `skillpack_update_routes.py`'s `_skill_version()`.
+>
+> The skill-pack sync performance analysis below (parallel company/file downloads,
+> recency check, shorter retry delays) is still accurate and was carried forward as-is.
+> The module-resolution / host-require-bridge section is also still accurate.
+
 ## Problem Statement
 
 The current `runtime-win.exe` is ~89 MB, built as a monolithic pkg bundle. Every code release — even a one-line fix in `server.js` — forces the self-updater to download the full 89 MB binary. On a 10 Mbps connection that is 70+ seconds; on a 1 Mbps connection it is 12 minutes. The update experience must complete in under 15 seconds.
