@@ -2,6 +2,64 @@
 
 ---
 
+## New feature: enterprise-grade auto-update system for the runtime — 2026-07-01
+
+**What this is.** A full rebuild of how the Conxa runtime (the program that runs on a customer's machine and executes their workflows) updates itself, the app logic inside it, and each company's skill packs. Previously, updates worked but had rough edges: only one backup was kept (so you could only roll back one step), update information came from the cloud with no way to prove it hadn't been tampered with, and updating one skill for one customer meant re-checking the whole company's skill pack as a unit. This rewrite fixes all three, plus adds real staged rollouts (ship a new version to 5% of installs before going to everyone) and automatic recovery if something goes wrong.
+
+**The new folder layout.** Instead of one folder holding "the current version" of the runtime, the app, and each skill pack, everything now keeps every recent version on disk side by side, with a special marker (`current`) pointing at whichever one is active:
+
+```
+.conxa/
+  conxa-runtime/v1.0.0/, v1.1.0/, current -> v1.1.0
+  conxa-app/v1.0.0/, v1.1.0/, current -> v1.1.0
+  skill-packs/<company>/<skill>/v1.0.0/, v1.1.0/, current -> v1.1.0
+  manifest.json
+```
+
+Rolling back is now instant and never needs the internet — the old version is already sitting right there on disk; the runtime just points `current` back at it. Old versions are cleaned up automatically once there are more than 3 kept for any one thing.
+
+**One signed update file instead of several unsigned ones.** The cloud used to hand out update information through three separate, unsigned web addresses. Now there's a single `manifest.json` that lists every component's version, and it's cryptographically signed — the runtime checks that signature before trusting anything in it, the same way a checked ID proves who issued it. If someone tampered with it in transit, the runtime just ignores it and keeps running on the last version it already verified.
+
+**Staged rollouts.** A new version can now be released to only a percentage of installs at first (say 10%), so if something's wrong with it, only a small slice of customers see it before it's caught — not everyone at once. Each install machine is assigned to a percentage "bucket" that never changes, so this is predictable and testable, not random every time.
+
+**Skills update independently now.** If a company has five skills and only one of them was updated, only that one skill gets re-downloaded — the other four are left completely alone. Before this change, updating any one skill meant re-checking the whole company's pack as a single unit.
+
+**Safety checks before anything goes live.** A freshly downloaded runtime program is now test-launched once, quietly, before it's allowed to become the active version — if it fails to start, it's thrown away and the old one keeps running, even if its checksum matched perfectly (a checksum only proves the file wasn't corrupted in transit, not that the file actually works). Downloads that fail partway through now retry automatically with increasing delays instead of giving up.
+
+**Files changed (large change set across four systems):**
+- `runtime/version_manager.js` (new) — the core logic for switching between versions and cleaning up old ones.
+- `runtime/manifest_manager.js` (new) — fetches and verifies the signed update file, decides what needs updating, and downloads it.
+- `runtime/bootstrap.js`, `runtime/server.js`, `runtime/sync.js`, `runtime/skill_loader.js` — updated to use the new versioned folder layout and the new update system.
+- `runtime/test/test_version_manager.js`, `runtime/test/test_manifest_manager.js` (new) — automated tests for the above.
+- `packages/conxa-core/conxa_core/models/manifest.py` (new) — the shape of the signed update file.
+- `conxa-cloud/backend/app/api/manifest_signer.py` (new) — signs and checks the update file.
+- `conxa-cloud/backend/app/api/updates_routes.py`, `skillpack_update_routes.py`, `publish_routes.py` — updated to build and serve the new signed update file, and to track each skill's version separately instead of one shared version per company.
+- `conxa-cloud/tests/test_manifest_signing.py` (new), plus updates to `test_llm_proxy_and_publish.py` and `test_installer_builder.py` for the new behavior.
+- `.github/workflows/build-runtime-host.yml`, `build-runtime-app.yml` — updated so the build pipeline publishes into the new signed update system instead of the old unsigned one.
+- `packages/conxa-core/conxa_core/storage/installer_templates/setup.nsi.tmpl`, `conxa-builder/python/conxa_compile/installer_builder.py` — the Windows installer now lays out the new versioned folders from the start, instead of the old flat layout.
+
+**Note:** this is a from-scratch redesign, not a patch — there are no existing customer installs yet, so no migration step was needed. Everything was tested locally: the packaged runtime was rebuilt and run through the full automated test replay multiple times, the update-signing and skill-versioning logic was tested end-to-end against a local test server, and the whole cloud test suite was run before and after to confirm nothing else broke.
+
+---
+
+## Fixed: resuming from the very first step silently skipped self-healing recovery — 2026-07-01
+
+**What was broken.** When Claude fixes a broken step and resumes a skill with `resume_from` + `step_overrides` (the Tier 3/4 "closing edge"), the runtime treats `resume_from: 0` exactly the same as "no resume was requested at all" — both come out to the number 0, and the code only checked `resumeFrom > 0` to decide "is this actually a resume." That check is false for 0, so:
+
+- The retry budget (which stops infinite retry loops) was never checked.
+- The run wasn't tagged as a recovery in telemetry.
+- Most importantly: the parked browser tab — the exact page the failure screenshot was taken from — was thrown away, and a brand-new page was loaded from scratch instead of reusing the one Claude actually looked at.
+
+Since the very first step of a skill failing is one of the most common recovery scenarios (nothing has to go wrong deep into a flow — it can go wrong immediately), this bug quietly weakened self-healing exactly when it mattered most.
+
+**What was fixed.** `runtime/server.js` now tracks whether `resume_from` was explicitly provided as a separate flag, instead of inferring it from whether the number is greater than zero. `resume_from: 0` is now correctly recognized as "yes, resume, and adopt the parked page," the same as any other step index.
+
+**Files changed:** `runtime/server.js` only.
+
+**Note:** the fix is only applied to the repo source. The installed runtime at `~/.conxa/conxa-app/` is a separately built (obfuscated) copy and was not touched — it needs a proper rebuild via `build-runtime-app.yml` to pick this up, or a manual dev-mode swap for local testing.
+
+---
+
 ## Fixed: T3/T4 self-healing recovery now actually works — 2026-06-30
 
 **What was broken.** When a step failed and the runtime handed control to Claude for self-healing (Tier 3 + Tier 4), Claude couldn't fix it. Three problems stacked up to make recovery useless:
