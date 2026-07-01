@@ -2,6 +2,7 @@
   "name": "conxa-runtime",
   "version": "0.0.0-dev",
   "host_version": "host-v0.0.0-dev",
+  "ed25519_public_key": "",
   "description": "Conxa local AI runtime — MCP server for company workflow skills",
   "main": "server.js",
   "scripts": {

@@ -28,6 +28,7 @@ if (!exe || !fs.existsSync(exe)) {
 const FIXTURE_DIR = path.join(__dirname, "gate-skill");
 const SKILL_PACK_SRC = path.join(FIXTURE_DIR, "skill-pack");
 const FIXTURE_URL = pathToFileURL(path.join(FIXTURE_DIR, "fixture.html")).href;
+const GATE_VERSION = "v0.0.0-gate";
 
 // ── stage a throwaway CONXA_DIR / CONXA_DATA_DIR ──────────────────────────────
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-gate-"));
@@ -44,30 +45,60 @@ function copyDir(src, dst) {
     if (e.isDirectory()) copyDir(s, d); else fs.copyFileSync(s, d);
   }
 }
-copyDir(SKILL_PACK_SRC, path.join(conxaDir, "skill-packs"));
+
+// Every updateable component is laid out as <componentDir>/<version>/ + a `current`
+// directory junction pointing at it (see runtime/version_manager.js). Mirror that here
+// so the gate exercises the exact resolution path bootstrap.js/skill_loader.js use in
+// production, not a flat stand-in.
+function activateVersion(componentDir, versionName, populate) {
+  const versionDir = path.join(componentDir, versionName);
+  fs.mkdirSync(versionDir, { recursive: true });
+  populate(versionDir);
+  if (!fs.existsSync(path.join(versionDir, "version.json"))) {
+    fs.writeFileSync(path.join(versionDir, "version.json"), JSON.stringify({ version: versionName }));
+  }
+  const currentLink = path.join(componentDir, "current");
+  try { fs.unlinkSync(currentLink); } catch (_) {}
+  fs.symlinkSync(versionDir, currentLink, process.platform === "win32" ? "junction" : "dir");
+}
+
+// skill-packs/<company>/pack.json stays flat; each skill under it becomes its own
+// versioned component: skill-packs/<company>/<slug>/<version>/ + current.
+const skillPacksDir = path.join(conxaDir, "skill-packs");
+for (const company of fs.readdirSync(SKILL_PACK_SRC)) {
+  const companySrc = path.join(SKILL_PACK_SRC, company);
+  const companyDst = path.join(skillPacksDir, company);
+  fs.mkdirSync(companyDst, { recursive: true });
+  for (const e of fs.readdirSync(companySrc, { withFileTypes: true })) {
+    if (!e.isDirectory()) { fs.copyFileSync(path.join(companySrc, e.name), path.join(companyDst, e.name)); continue; }
+    const slug = e.name;
+    activateVersion(path.join(companyDst, slug), GATE_VERSION, (versionDir) => copyDir(path.join(companySrc, slug), versionDir));
+  }
+}
 // Empty raw session → getAuthContext skips interactive login (protected_url is "").
 fs.writeFileSync(path.join(sessionsDir, "gate_raw_state.json"), JSON.stringify({ cookies: [], origins: [] }));
 
-// Stage the app layer the host loads from disk (CONXA_DIR/conxa-app/server.js).
-const appDest = path.join(conxaDir, "conxa-app");
-fs.mkdirSync(appDest, { recursive: true });
+// Stage the app layer the host loads from disk (CONXA_DIR/conxa-app/current/server.js).
+const appRoot = path.join(conxaDir, "conxa-app");
 const appSrc = process.argv[3];
-if (appSrc && fs.existsSync(appSrc)) {
-  copyDir(appSrc, appDest);
-} else {
-  // Default: current runtime source as the app layer (host gate tests host vs HEAD).
-  const RUNTIME_ROOT = path.join(__dirname, "..");
-  const APP_FILES = [
-    "server.js", "sync.js", "run.js", "browser.js", "skill_loader.js", "tracker.js",
-    "install_identity.js", "bootstrap.js", "recovery.js", "resolve_adapter.js",
-    "resolver.js", "auth_manager.js",
-  ];
-  for (const f of APP_FILES) fs.copyFileSync(path.join(RUNTIME_ROOT, f), path.join(appDest, f));
-}
-if (!fs.existsSync(path.join(appDest, "version.json"))) {
-  fs.writeFileSync(path.join(appDest, "version.json"),
-    JSON.stringify({ app_version: "app-vGATE", min_host: "host-v1.0.0", files: {} }));
-}
+activateVersion(appRoot, GATE_VERSION, (versionDir) => {
+  if (appSrc && fs.existsSync(appSrc)) {
+    copyDir(appSrc, versionDir);
+  } else {
+    // Default: current runtime source as the app layer (host gate tests host vs HEAD).
+    const RUNTIME_ROOT = path.join(__dirname, "..");
+    const APP_FILES = [
+      "server.js", "sync.js", "run.js", "browser.js", "skill_loader.js", "tracker.js",
+      "install_identity.js", "bootstrap.js", "recovery.js", "resolve_adapter.js",
+      "resolver.js", "auth_manager.js", "version_manager.js", "manifest_manager.js",
+    ];
+    for (const f of APP_FILES) fs.copyFileSync(path.join(RUNTIME_ROOT, f), path.join(versionDir, f));
+  }
+  if (!fs.existsSync(path.join(versionDir, "version.json"))) {
+    fs.writeFileSync(path.join(versionDir, "version.json"),
+      JSON.stringify({ app_version: "app-vGATE", min_host: "host-v1.0.0", files: {} }));
+  }
+});
 
 function cleanup() { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} }
 

@@ -285,316 +285,29 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   }
 });
 
-// ─── 9. Runtime self-update (Phase 6) ────────────────────────────────────────
-// On cold start: if a pending update is ready, apply it via update.bat and exit
-// so the next invocation picks up the new binary. Otherwise, check the cloud
-// manifest and download in the background (applied on the next cold start).
+// ─── 9. Runtime self-update — unified signed manifest ────────────────────────
+// One Ed25519-signed manifest.json (see runtime/manifest_manager.js) replaces the old
+// two-endpoint _checkHostUpdate()/_checkAppUpdate() cold-start checks. Both host and
+// app updates land in their own versioned directory (conxa-runtime/<version>/,
+// conxa-app/<version>/) with a `current` junction flipped by version_manager.js —
+// there is no .bak/.next staging or update.bat dance anymore: the currently running
+// process never has its own files touched, so activation can happen immediately
+// rather than waiting for a "safe" restart.
 const CONXA_API = process.env.CONXA_API_URL || "https://apis.conxa.in";
-const RUNTIME_UPDATE_CACHE   = path.join(CACHE_DIR, "conxa-runtime-update-cache.json");
-const RUNTIME_UPDATE_PENDING = path.join(CACHE_DIR, "conxa-runtime-update-pending.json");
+const manifestManager = (typeof global !== "undefined" && global.__manifestManager)
+  ? global.__manifestManager
+  : require("./manifest_manager");
 
-function _compareVersions(a, b) {
-  // semver.coerce strips any non-numeric prefix ("runtime-v1.0.0" → "1.0.0"),
-  // fixing the default cloud manifest format which doubles as a GitHub release tag.
-  const pa = semver.coerce(String(a));
-  const pb = semver.coerce(String(b));
-  if (!pa && !pb) return 0;
-  if (!pa) return -1;
-  if (!pb) return 1;
-  return semver.compare(pa, pb);
-}
-
-async function _applyPendingUpdate() {
-  if (!fs.existsSync(RUNTIME_UPDATE_PENDING)) return false;
-  let pending;
-  try { pending = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_PENDING, "utf8")); } catch (_) { return false; }
-  if (!pending.ready) return false;
-  const nextExe = path.join(CONXA_DIR, "conxa-runtime.exe.next");
-  if (!fs.existsSync(nextExe)) return false;
-
-  // Write update.bat with a random suffix to avoid predictable path attacks.
-  const suffix = Math.random().toString(36).slice(2);
-  const batPath = path.join(os.tmpdir(), `conxa-update-${suffix}.bat`);
-  const runtimeExe = path.join(CONXA_DIR, "conxa-runtime.exe");
-  const keytarNext    = path.join(CONXA_DIR, "keytar.node.next");
-  const keytarCurrent = path.join(CONXA_DIR, "keytar.node");
-  const batContent = [
-    "@echo off",
-    "timeout /t 3 /nobreak >nul",
-    // Back up old exe before overwriting so we can roll back if new one crashes.
-    `copy /Y "${runtimeExe}" "${runtimeExe}.bak" >nul`,
-    `move /Y "${nextExe}" "${runtimeExe}"`,
-    `if exist "${keytarNext}" move /Y "${keytarNext}" "${keytarCurrent}"`,
-    // Verify new runtime boots cleanly. On failure restore backup and abort.
-    `"${runtimeExe}" --selfcheck`,
-    `if %errorlevel% neq 0 (`,
-    `  copy /Y "${runtimeExe}.bak" "${runtimeExe}" >nul`,
-    `  del "${runtimeExe}.bak"`,
-    `  del "${batPath}"`,
-    `  exit /B 1`,
-    `)`,
-    `del "${runtimeExe}.bak"`,
-    // Re-run Playwright browser install so Chromium revision matches the new exe.
-    // Idempotent: no-op if the revision is already present on disk.
-    `"${runtimeExe}" --install-playwright`,
-    `del "${batPath}"`,
-  ].join("\r\n");
-  fs.writeFileSync(batPath, batContent);
-  const { spawn } = require("child_process");
-  spawn("cmd.exe", ["/C", batPath], { detached: true, stdio: "ignore" }).unref();
-  log("info", "[runtime:update-pending] applying update → restart", { version: pending.version });
-  return true;
-}
-
-async function _checkHostUpdate() {
+async function _checkForUpdates() {
   if (process.env.CONXA_SKIP_SELF_UPDATE === "1") return;
-  if (fs.existsSync(RUNTIME_UPDATE_PENDING)) return; // already downloaded, wait for next cold start
-
-  let manifest = null;
-  // Try local cache first (valid for 24h)
-  if (fs.existsSync(RUNTIME_UPDATE_CACHE)) {
-    try {
-      const cached = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_CACHE, "utf8"));
-      if (cached._cached_at && Date.now() - cached._cached_at < 24 * 60 * 60 * 1000) {
-        manifest = cached;
-      }
-    } catch (_) {}
-  }
-
-  if (!manifest) {
-    try {
-      manifest = await new Promise((resolve, reject) => {
-        const req = https.get(`${CONXA_API}/api/v1/updates/conxa-runtime-manifest`, (res) => {
-          let data = "";
-          res.on("data", (c) => { data += c; });
-          res.on("end", () => {
-            try {
-              const parsed = JSON.parse(data);
-              parsed._cached_at = Date.now();
-              fs.mkdirSync(path.dirname(RUNTIME_UPDATE_CACHE), { recursive: true });
-              fs.writeFileSync(RUNTIME_UPDATE_CACHE, JSON.stringify(parsed));
-              resolve(parsed);
-            } catch (e) { reject(e); }
-          });
-        });
-        req.setTimeout(8000, () => { req.destroy(); reject(new Error("timeout")); });
-        req.on("error", reject);
-      });
-    } catch (_) {
-      return; // network unavailable — skip silently
-    }
-  }
-
-  if (!manifest || !manifest.host_version) return;
-  if (_compareVersions(manifest.host_version, RUNTIME_VERSION) <= 0) return;
-
-  // Newer version available — download in background
-  log("info", `[runtime:update-pending] v${RUNTIME_VERSION}→${manifest.host_version} downloading`);
-  const nextExe = path.join(CONXA_DIR, "conxa-runtime.exe.next");
-  try {
-    const buf = await new Promise((resolve, reject) => {
-      const req = https.get(manifest.url, (res) => {
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => resolve(Buffer.concat(chunks)));
-      });
-      req.setTimeout(120_000, () => { req.destroy(); reject(new Error("download timeout")); });
-      req.on("error", reject);
-    });
-    // SHA-256 verify — skip update and keep current version if server omits the hash
-    if (!manifest.sha256) {
-      log("warn", "runtime_update_skipped", { reason: "manifest missing sha256 — keeping current version" });
-      return;
-    }
-    const { createHash } = require("crypto");
-    const actual = createHash("sha256").update(buf).digest("hex");
-    if (actual.toLowerCase() !== manifest.sha256.toLowerCase()) {
-      throw new Error(`SHA-256 mismatch: expected ${manifest.sha256} got ${actual}`);
-    }
-    fs.mkdirSync(path.dirname(nextExe), { recursive: true });
-    fs.writeFileSync(nextExe, buf);
-
-    // Download keytar.node.next alongside the exe — must match the new Node ABI.
-    let hasKeytar = false;
-    if (manifest.keytar_url) {
-      try {
-        const keytarBuf = await new Promise((resolve, reject) => {
-          const req = https.get(manifest.keytar_url, (res) => {
-            const chunks = [];
-            res.on("data", (c) => chunks.push(c));
-            res.on("end", () => resolve(Buffer.concat(chunks)));
-          });
-          req.setTimeout(60_000, () => { req.destroy(); reject(new Error("keytar download timeout")); });
-          req.on("error", reject);
-        });
-        if (manifest.keytar_sha256) {
-          const { createHash } = require("crypto");
-          const actual = createHash("sha256").update(keytarBuf).digest("hex");
-          if (actual.toLowerCase() !== manifest.keytar_sha256.toLowerCase())
-            throw new Error(`keytar SHA-256 mismatch: expected ${manifest.keytar_sha256} got ${actual}`);
-        }
-        fs.writeFileSync(path.join(CONXA_DIR, "keytar.node.next"), keytarBuf);
-        hasKeytar = true;
-      } catch (e) {
-        log("warn", "keytar_update_download_failed", { reason: e.message });
-        // Non-fatal: old keytar stays in place; token storage still works unless Node ABI changed.
-      }
-    }
-
-    fs.writeFileSync(RUNTIME_UPDATE_PENDING, JSON.stringify({ version: manifest.host_version, ready: true, has_keytar: hasKeytar }));
-    log("info", `[runtime:update-pending] v${RUNTIME_VERSION}→${manifest.host_version} ready (keytar=${hasKeytar})`);
-  } catch (e) {
-    log("warn", "runtime_update_download_failed", { reason: e.message });
-  }
-}
-
-function _isValidAppDir(dir) {
-  try {
-    if (!fs.existsSync(path.join(dir, "server.js"))) return false;
-    JSON.parse(fs.readFileSync(path.join(dir, "version.json"), "utf8"));
-    return true;
-  } catch (_) { return false; }
-}
-
-async function _checkAppUpdate() {
-  if (process.env.CONXA_SKIP_SELF_UPDATE === "1") return;
-
-  const appDir      = path.join(CONXA_DIR, "conxa-app");
-  const cacheFile   = path.join(CACHE_DIR, "conxa-app-update-cache.json");
-  const versionFile = path.join(appDir, "version.json");
-
-  let localVersion = "none";
-  try { localVersion = JSON.parse(fs.readFileSync(versionFile, "utf8")).app_version || "none"; } catch (_) {}
-
-  // Cache manifest for 1h
-  let manifest = null;
-  if (fs.existsSync(cacheFile)) {
-    try {
-      const c = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
-      if (Date.now() - c._cached_at < 60 * 60 * 1000) manifest = c;
-    } catch (_) {}
-  }
-
-  if (!manifest) {
-    try {
-      manifest = await new Promise((resolve, reject) => {
-        const req = https.get(`${CONXA_API}/api/v1/updates/conxa-app-manifest`, (res) => {
-          let d = "";
-          res.on("data", c => { d += c; });
-          res.on("end", () => {
-            try {
-              const p = JSON.parse(d);
-              p._cached_at = Date.now();
-              fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-              fs.writeFileSync(cacheFile, JSON.stringify(p));
-              resolve(p);
-            } catch (e) { reject(e); }
-          });
-        });
-        req.setTimeout(8000, () => { req.destroy(); reject(new Error("timeout")); });
-        req.on("error", reject);
-      });
-    } catch (_) {
-      return; // network unavailable — skip silently
-    }
-  }
-
-  if (!manifest || !manifest.bundle_url) return;
-  if (manifest.app_version === localVersion) return; // already up to date
-
-  // min_host guard: skip if the new app layer needs a host newer than what's running.
-  if (manifest.min_host && _compareVersions(manifest.min_host, RUNTIME_VERSION) > 0) {
-    log("warn", "[app:update] new app layer requires a newer host — skipping until host updates", {
-      min_host: manifest.min_host, host_version: RUNTIME_VERSION,
-    });
-    return;
-  }
-
-  log("info", `[app:update] ${localVersion}→${manifest.app_version} downloading`);
-
-  const buf = await new Promise((resolve, reject) => {
-    const req = https.get(manifest.bundle_url, (res) => {
-      const chunks = [];
-      res.on("data", c => chunks.push(c));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-    });
-    req.setTimeout(30_000, () => { req.destroy(); reject(new Error("download timeout")); });
-    req.on("error", reject);
+  await manifestManager.checkForUpdates({
+    apiUrl: CONXA_API,
+    conxaDir: CONXA_DIR,
+    installId: INSTALL_ID,
+    publicKeyB64: (typeof global !== "undefined" && global.__manifestPublicKey) || "",
+    isComponentBusy: (component) => component === "conxa_app" && activeExecution !== null,
+    log,
   });
-
-  // Skip update and keep current app layer if server omits the hash
-  if (!manifest.bundle_sha256) {
-    log("warn", "app_update_skipped", { reason: "manifest missing bundle_sha256 — keeping current version" });
-    return;
-  }
-  const { createHash } = require("crypto");
-  const actual = createHash("sha256").update(buf).digest("hex");
-  if (actual.toLowerCase() !== manifest.bundle_sha256.toLowerCase())
-    throw new Error("app bundle SHA-256 mismatch");
-
-  // Stage on the SAME volume as CONXA_DIR so the final rename is atomic (avoids
-  // EXDEV cross-device errors that occur when os.tmpdir() is on a different volume).
-  const nextDir = appDir + ".next";
-  const bakDir  = appDir + ".bak";
-  const zipPath = appDir + ".zip";
-  // Clean up any leftover staging artefacts from prior interrupted runs.
-  try { fs.rmSync(nextDir, { recursive: true }); } catch (_) {}
-  try { fs.unlinkSync(zipPath); } catch (_) {}
-
-  fs.mkdirSync(nextDir, { recursive: true });
-  fs.writeFileSync(zipPath, buf);
-
-  await new Promise((resolve, reject) => {
-    const { spawn } = require("child_process");
-    let cmd, args2;
-    if (process.platform === "win32") {
-      cmd   = "powershell";
-      args2 = ["-NonInteractive", "-Command",
-        `Expand-Archive -Path '${zipPath}' -DestinationPath '${nextDir}' -Force`];
-    } else {
-      cmd   = "unzip";
-      args2 = ["-o", zipPath, "-d", nextDir];
-    }
-    const ps = spawn(cmd, args2, { stdio: "ignore" });
-    ps.on("close", code => code === 0 ? resolve() : reject(new Error(`unzip exit ${code}`)));
-  });
-  try { fs.unlinkSync(zipPath); } catch (_) {}
-
-  // Validate the newly-staged dir before touching the live brain.
-  if (!_isValidAppDir(nextDir)) {
-    try { fs.rmSync(nextDir, { recursive: true }); } catch (_) {}
-    throw new Error("[app:update] staged bundle invalid — server.js or version.json missing");
-  }
-
-  // Atomic swap: promote the current good brain to .bak, then install the new one.
-  // The window where appDir is absent spans only two fast renames; .bak covers it.
-  if (_isValidAppDir(appDir)) {
-    // Current brain is good — keep it as last-known-good backup.
-    if (fs.existsSync(bakDir)) fs.rmSync(bakDir, { recursive: true });
-    fs.renameSync(appDir, bakDir);
-  } else if (fs.existsSync(appDir)) {
-    // Current brain is broken/partial — discard it, but KEEP any existing .bak.
-    fs.rmSync(appDir, { recursive: true });
-  }
-  fs.renameSync(nextDir, appDir);
-  log("info", `[app:update] ${manifest.app_version} installed — effective on next restart`);
-}
-
-// Apply pending update before connecting (may exit process on Windows).
-if (process.platform === "win32") {
-  const _pendingApplied = _applyPendingUpdate();
-  // _applyPendingUpdate() is async but its shell spawn is fire-and-forget;
-  // if it returns true the process exits in the bat timeout window — safe to continue.
-}
-// Delete the pending marker after a confirmed successful first run post-update.
-if (fs.existsSync(RUNTIME_UPDATE_PENDING)) {
-  try {
-    const p = JSON.parse(fs.readFileSync(RUNTIME_UPDATE_PENDING, "utf8"));
-    if (p.ready && !fs.existsSync(path.join(CONXA_DIR, "conxa-runtime.exe.next"))) {
-      fs.unlinkSync(RUNTIME_UPDATE_PENDING);
-      log("info", "runtime_update_applied", { version: p.version });
-    }
-  } catch (_) {}
 }
 
 // ─── 10. Connect MCP immediately ─────────────────────────────────────────────
@@ -613,9 +326,13 @@ const startupSync = (async () => {
         .then(()  => { syncState.skillsDone = true; })
         .catch(() => { syncState.skillsDone = true; }),
 
-      _checkAppUpdate()
+      // One manifest fetch decides both host and app updates now, instead of two
+      // separate unsigned endpoint checks. App-layer activation only affects the
+      // *next* cold start (this process already has server.js in its module cache),
+      // so it never blocks the execution gate any more than the old check did.
+      _checkForUpdates()
         .then(()  => { syncState.appDone = true; })
-        .catch(e  => { log("warn", "app_update_skipped", { reason: e.message }); syncState.appDone = true; }),
+        .catch(e  => { log("warn", "update_check_skipped", { reason: e.message }); syncState.appDone = true; }),
     ]);
   } finally {
     syncState.complete = true;
@@ -625,7 +342,6 @@ const startupSync = (async () => {
   }
 
   _phonehome().catch(() => {});
-  _checkHostUpdate().catch(() => {}); // background host binary check — never blocks execution
 })();
 
 // ─── 12. Graceful shutdown ────────────────────────────────────────────────────
@@ -1075,7 +791,7 @@ async function _handleTool(name, args, extra) {
 
       // Integrity gate
       try {
-        skillLoader.verifySkillIntegrity(entry.skillDir, entry.manifest);
+        skillLoader.verifySkillIntegrity(entry.skillDir, entry.manifest, entry.slug);
       } catch (integrityErr) {
         // Trigger background re-sync
         sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 4000, log: (m) => log("info", m) })
@@ -1105,17 +821,22 @@ async function _handleTool(name, args, extra) {
         appendRecoveryEvent({ event: "agent_override_applied", slug: entry.slug, count: overrideCount });
       }
 
+      // `resume_from: 0` is a legitimate resume (the failed step was the very first one) and must
+      // stay distinguishable from "no resume_from given" (a fresh run) — both normalize to index 0,
+      // so track explicitness separately rather than testing `resumeFrom > 0` downstream.
+      const isResume = Number.isInteger(run.resume_from) && run.resume_from >= 0;
       resolved.push({
         entry,
         steps,
         inputs:     (run.inputs && typeof run.inputs === "object") ? run.inputs : {},
-        resumeFrom: (Number.isInteger(run.resume_from) && run.resume_from > 0) ? run.resume_from : 0,
+        resumeFrom: isResume ? run.resume_from : 0,
+        isResume,
       });
     }
 
     // Retry budget check on resume
     const primary = resolved[0];
-    if (primary.resumeFrom > 0 && !checkRetryBudget(primary.entry.slug, primary.resumeFrom))
+    if (primary.isResume && !checkRetryBudget(primary.entry.slug, primary.resumeFrom))
       return err(`Retry budget exhausted at step ${primary.resumeFrom}. Fix the root cause in execution.json before retrying from step 0.`);
 
     // Acquire execution lock
@@ -1196,7 +917,7 @@ async function _handleTool(name, args, extra) {
     let   _totalRecovered = 0;
 
     // Signal agent-mediated recovery retry (Tier 3/4) when resuming mid-plan.
-    if (primary.resumeFrom > 0) {
+    if (primary.isResume) {
       const hasOverride = AGENT_RECOVERY_ENABLED && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
       _runTracker.emit("rec_start", { si: primary.resumeFrom, l: hasOverride ? 3 : 5, sc: hasOverride ? "agent_override" : "llm_intent" });
     }
@@ -1204,7 +925,7 @@ async function _handleTool(name, args, extra) {
 
     // Adopt a parked failed page when the agent is resuming THIS skill with an override, so the
     // corrected selector acts on the exact DOM state the recovery request was built from.
-    const _resumeOverride = AGENT_RECOVERY_ENABLED && resolved.length === 1 && primary.resumeFrom > 0
+    const _resumeOverride = AGENT_RECOVERY_ENABLED && resolved.length === 1 && primary.isResume
       && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
     let _park = null;
     if (_resumeOverride && _parkedRecovery

@@ -4,6 +4,13 @@ const path   = require("path");
 const crypto = require("crypto");
 const https  = require("https");
 
+// Prefer the host-bridged instance (bootstrap.js sets this) so every layer shares one
+// implementation of the junction-handling logic; fall back to a local copy for direct
+// `node server.js` dev runs or test fixtures that never went through bootstrap.js.
+const versionManager = (typeof global !== "undefined" && global.__versionManager)
+  ? global.__versionManager
+  : require("./version_manager");
+
 function _fetchJSON(url, token, timeoutMs) {
   return new Promise((resolve, reject) => {
     const headers = { "User-Agent": "conxa-runtime/1.0" };
@@ -53,25 +60,9 @@ function atomicWrite(targetPath, content, expectedSha256) {
   fs.renameSync(tmpPath, targetPath);
 }
 
-function backupSkill(skillDir) {
-  const backupDir = skillDir + ".bak";
-  if (fs.existsSync(skillDir)) {
-    if (fs.existsSync(backupDir)) {
-      try { fs.rmSync(backupDir, { recursive: true }); } catch (_) {}
-    }
-    try { fs.cpSync(skillDir, backupDir, { recursive: true }); } catch (_) {}
-  }
-}
-
-function restoreSkillBackup(skillDir) {
-  const backupDir = skillDir + ".bak";
-  if (fs.existsSync(backupDir)) {
-    try {
-      if (fs.existsSync(skillDir)) fs.rmSync(skillDir, { recursive: true });
-      fs.renameSync(backupDir, skillDir);
-    } catch (_) {}
-  }
-}
+// version_manager.activate() already keeps the last few versions on disk, so rollback
+// never needs a backup-copy dance the way flat-file sync used to — a failed activation
+// just leaves `current` pointing at whatever it pointed at before.
 
 async function _syncCompany(skillPacksDir, company, log) {
   const packPath = path.join(skillPacksDir, company, "pack.json");
@@ -98,9 +89,24 @@ async function _syncCompany(skillPacksDir, company, log) {
     }
   }
 
+  // Each skill is compared independently against its own last-known version (read
+  // from its own version.json, not one shared company-wide counter), so republishing
+  // one skill never triggers a redownload of skills that haven't changed.
+  const sinceMap = {};
+  for (const slug of pack.skills || []) {
+    const skillRoot = path.join(skillPacksDir, company, slug);
+    const currentDir = versionManager.resolveCurrent(skillRoot);
+    let version = "0";
+    if (currentDir) {
+      try { version = JSON.parse(fs.readFileSync(path.join(currentDir, "version.json"), "utf8")).skill_version || "0"; }
+      catch (_) {}
+    }
+    sinceMap[slug] = version;
+  }
+
   let delta;
   {
-    const url = `${syncEndpoint}?since=${encodeURIComponent(pack.skill_pack_version || "0")}`;
+    const url = `${syncEndpoint}?since=${encodeURIComponent(JSON.stringify(sinceMap))}`;
     let lastErr;
     for (const waitMs of [0, 300]) {
       if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
@@ -118,66 +124,72 @@ async function _syncCompany(skillPacksDir, company, log) {
     }
   }
 
-  if (!delta.files || delta.files.length === 0) {
+  const changed = (delta.skills || []).filter((s) => s.action === "update");
+  if (changed.length === 0) {
     log(`[sync:status] ${company} up-to-date`);
     return;
   }
 
-  const updatedSlugs = new Set(delta.files.map(f => f.skill).filter(Boolean));
-  for (const slug of updatedSlugs)
-    backupSkill(path.join(skillPacksDir, company, slug));
-
-  // Download all files in parallel, then write sequentially
+  // Download all files for all changed skills in parallel first — nothing touches
+  // disk until every buffer is in hand, so a mid-batch network failure never leaves
+  // a skill half-written.
   let downloaded;
   try {
-    downloaded = await Promise.all(delta.files.map(async (fileEntry) => {
-      let content;
-      if (fileEntry.content_base64) {
-        content = Buffer.from(fileEntry.content_base64, "base64");
-      } else if (fileEntry.content_url) {
-        content = await _downloadBuffer(fileEntry.content_url, 8000);
-      } else {
-        throw new Error("no content source in delta entry");
-      }
-      return { fileEntry, content };
+    downloaded = await Promise.all(changed.map(async (skillEntry) => {
+      const files = await Promise.all((skillEntry.files || []).map(async (fileEntry) => {
+        let content;
+        if (fileEntry.content_base64) {
+          content = Buffer.from(fileEntry.content_base64, "base64");
+        } else if (fileEntry.content_url) {
+          content = await _downloadBuffer(fileEntry.content_url, 8000);
+        } else {
+          throw new Error(`no content source for ${skillEntry.name}/${fileEntry.path}`);
+        }
+        return { fileEntry, content };
+      }));
+      return { skillEntry, files };
     }));
   } catch (e) {
     log(`[sync:error] ${company} download failed — ${e.message}`);
-    for (const slug of updatedSlugs)
-      restoreSkillBackup(path.join(skillPacksDir, company, slug));
     return;
   }
 
-  let allOk = true;
-  for (const { fileEntry, content } of downloaded) {
-    const targetPath = path.join(skillPacksDir, company, fileEntry.path);
+  const activated = [];
+  for (const { skillEntry, files } of downloaded) {
+    const slug = skillEntry.name;
+    const rawVersion = String(skillEntry.version || "0");
+    const versionDirName = /^v/.test(rawVersion) ? rawVersion : `v${rawVersion}`;
+    const skillRoot  = path.join(skillPacksDir, company, slug);
+    const versionDir = path.join(skillRoot, versionDirName);
     try {
-      atomicWrite(targetPath, content, fileEntry.sha256);
+      // Clear any stale partial staging from a previously interrupted attempt at
+      // this exact version before writing fresh files into it.
+      try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
+      for (const { fileEntry, content } of files) {
+        atomicWrite(path.join(versionDir, fileEntry.path), content, fileEntry.sha256);
+      }
+      if (!fs.existsSync(path.join(versionDir, "version.json"))) {
+        fs.writeFileSync(path.join(versionDir, "version.json"), JSON.stringify({
+          skill_version: skillEntry.version,
+          released_at: new Date().toISOString(),
+        }));
+      }
+      versionManager.activate(skillRoot, versionDir, { keep: 3, requiredFiles: ["manifest.json"] });
+      activated.push(`${slug}@${skillEntry.version}`);
     } catch (e) {
-      log(`[sync:error] ${company}/${fileEntry.path}: file write failed — ${e.message}`);
-      for (const slug of updatedSlugs)
-        restoreSkillBackup(path.join(skillPacksDir, company, slug));
-      allOk = false;
-      break;
+      log(`[sync:error] ${company}/${slug}: activation failed — ${e.message}`);
+      try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
     }
   }
 
-  if (!allOk) return;
+  if (activated.length === 0) return;
 
-  // Bump version only after all files written and verified
-  pack.skill_pack_version = delta.current_version;
   pack.last_synced = new Date().toISOString();
   const packTmp = packPath + ".tmp";
   fs.writeFileSync(packTmp, JSON.stringify(pack, null, 2));
   fs.renameSync(packTmp, packPath);
 
-  // Clean up backups on success
-  for (const slug of updatedSlugs) {
-    const backupDir = path.join(skillPacksDir, company, slug + ".bak");
-    try { if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true }); } catch (_) {}
-  }
-
-  log(`[sync:status] ${company} updated v${pack.skill_pack_version || "0"}→${delta.current_version} (${delta.files.length} file${delta.files.length !== 1 ? "s" : ""})`);
+  log(`[sync:status] ${company} updated (${activated.length} skill${activated.length !== 1 ? "s" : ""}: ${activated.join(", ")})`);
 }
 
 async function _doSync(skillPacksDir, log) {

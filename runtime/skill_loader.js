@@ -3,6 +3,13 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
+// Each skill is a versioned component (skill-packs/<company>/<slug>/v1.0.0/ + current/,
+// see runtime/version_manager.js). skillDir always points at the `current` junction, which
+// the OS resolves transparently to the active version dir for every fs call below.
+function _skillCurrentDir(companyDir, slug) {
+  return path.join(companyDir, slug, "current");
+}
+
 // Scan skill-packs/ dir → flat index { "company:slug": {slug, company, skillDir, manifest, pack} }
 function loadSkillRegistry(skillPacksDir, cacheDir) {
   const index = {};
@@ -21,7 +28,7 @@ function loadSkillRegistry(skillPacksDir, cacheDir) {
     try { pack = JSON.parse(fs.readFileSync(packPath, "utf8")); } catch (_) { continue; }
 
     for (const slug of (pack.skills || [])) {
-      const skillDir     = path.join(companyDir, slug);
+      const skillDir     = _skillCurrentDir(companyDir, slug);
       const manifestPath = path.join(skillDir, "manifest.json");
       if (!fs.existsSync(manifestPath)) continue;
       let manifest;
@@ -54,12 +61,15 @@ function loadSkillRegistryFromCache(skillPacksDir, cacheDir) {
 
 // Verify SHA-256 checksums declared in manifest.json
 // Throws Error if any file is missing or hash mismatches
-function verifySkillIntegrity(skillDir, manifest) {
+function verifySkillIntegrity(skillDir, manifest, label) {
   const checksums = manifest.checksum || {};
+  // skillDir normally resolves through a `current` junction, so path.basename(skillDir)
+  // would just say "current" — prefer an explicit label (the skill slug) when given.
+  const name = label || path.basename(skillDir);
   for (const [file, expected] of Object.entries(checksums)) {
     const fullPath = path.join(skillDir, file);
     if (!fs.existsSync(fullPath))
-      throw new Error(`Integrity: missing ${file} in ${path.basename(skillDir)}`);
+      throw new Error(`Integrity: missing ${file} in ${name}`);
     const actual = crypto.createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex");
     if (actual !== expected)
       throw new Error(`Integrity: ${file} checksum mismatch`);
@@ -68,7 +78,7 @@ function verifySkillIntegrity(skillDir, manifest) {
 
 // Reload a single skill in the live index without process restart
 function hotReloadSkill(company, slug, skillPacksDir, index) {
-  const skillDir     = path.join(skillPacksDir, company, slug);
+  const skillDir     = _skillCurrentDir(path.join(skillPacksDir, company), slug);
   const manifestPath = path.join(skillDir, "manifest.json");
   const key          = `${company}:${slug}`;
   if (!fs.existsSync(manifestPath)) {
