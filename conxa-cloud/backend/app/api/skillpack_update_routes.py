@@ -117,52 +117,61 @@ def _pack_version(company: str) -> str:
         return "0"
 
 
-def _build_delta(company: str, since_version: str) -> dict[str, Any]:
-    """Compute which skill files changed since `since_version`.
+def _skill_version(company: str, slug: str) -> str:
+    """Each skill's own version, recorded independently in component_versions KV at
+    publish time (see publish_routes.post_publish). Falls back to the shared pack-level
+    version for skill packs published before independent per-skill versioning existed,
+    so old publishes don't regress to "always changed"."""
+    rec = db_get("component_versions", f"skill_packs:{company}:{slug}")
+    if isinstance(rec, dict) and rec.get("version"):
+        return str(rec["version"])
+    return _pack_version(company)
 
-    Simplified implementation: returns all files whenever the pack version
-    differs from `since_version`. For production, this should diff by
-    comparing individual file checksums against a version manifest.
-    """
+
+def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
+    """Per-skill delta: each skill in the pack is compared independently against the
+    client's last-known version for that specific skill, so only the skills that
+    actually changed are shipped — never the whole company just because one skill
+    was republished."""
     _ensure_skill_pack_on_disk(company)
     packs_dir = _skill_packs_dir(company)
     pack_path = packs_dir / "pack.json"
     if not pack_path.is_file():
         raise HTTPException(status_code=404, detail=f"Skill pack not found: {company}")
-
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
-    current_version = pack.get("skill_pack_version", "0")
 
-    if current_version == since_version:
-        return {"current_version": current_version, "base_version": since_version, "files": []}
-
-    files: list[dict[str, Any]] = []
+    skills_out: list[dict[str, Any]] = []
     for slug in pack.get("skills", []):
+        current_version = _skill_version(company, slug)
+        client_version = since_map.get(slug, "0")
         skill_dir = packs_dir / slug
-        if not skill_dir.is_dir():
+
+        if current_version == client_version or not skill_dir.is_dir():
+            skills_out.append({"name": slug, "action": "no_change"})
             continue
+
+        files: list[dict[str, Any]] = []
         for fname in ("execution.json", "recovery.json", "inputs.json", "manifest.json", "validation.json"):
             fpath = skill_dir / fname
             if not fpath.is_file():
                 continue
             files.append({
-                "skill":          slug,
-                "path":           f"{slug}/{fname}",
-                "action":         "update",
-                "sha256":         _sha256_file(fpath),
-                "_content_bytes": fpath.read_bytes(),
+                "path": fname,
+                "sha256": _sha256_file(fpath),
+                "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
             })
+        skills_out.append({"name": slug, "version": current_version, "action": "update", "files": files})
 
-    for f in files:
-        raw = f.pop("_content_bytes", b"")
-        f["content_base64"] = base64.b64encode(raw).decode("ascii")
-
-    return {"current_version": current_version, "base_version": since_version, "files": files}
+    return {"skills": skills_out}
 
 
 @router.get("/{company}/delta")
-def get_skill_pack_delta(company: str, since: str = "0", request: Request = None) -> dict[str, Any]:
-    """Return files changed since `since` version as base64-encoded content.
+def get_skill_pack_delta(company: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
+    """Return per-skill deltas for skills whose version differs from the client's
+    last-known version for that specific skill.
+
+    `since` is a JSON-encoded map of {skill_slug: last_known_version}, letting each
+    skill be compared and shipped independently instead of one shared pack version.
 
     Authentication: Bearer token must match the per-company sync_token minted
     at publish time and embedded in the installer's pack.json.
@@ -172,7 +181,13 @@ def get_skill_pack_delta(company: str, since: str = "0", request: Request = None
     _verify_sync_token(company, token)
     if token:
         _check_rate_limit(token)
-    return _build_delta(company, since)
+    try:
+        since_map = json.loads(since) if since else {}
+        if not isinstance(since_map, dict):
+            since_map = {}
+    except (json.JSONDecodeError, TypeError):
+        since_map = {}
+    return _build_delta(company, {str(k): str(v) for k, v in since_map.items()})
 
 
 # ─── Telemetry ────────────────────────────────────────────────────────────────

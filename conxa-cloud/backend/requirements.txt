@@ -13,5 +13,10 @@ PyJWT[crypto]>=2.8.0
 stripe>=11.0.0
 httpx>=0.27.0
 
+# Ed25519 signing for the unified runtime update manifest (manifest_signer.py).
+# Already pulled in transitively by PyJWT[crypto]; declared explicitly since we use
+# cryptography's Ed25519 primitives directly, not just through PyJWT.
+cryptography>=42.0.0
+
 # Postgres driver (db.py uses SQLAlchemy + psycopg2 in production)
 psycopg2-binary>=2.9.0

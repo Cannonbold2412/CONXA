@@ -21,9 +21,19 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 
+from conxa_core.db import db_get, db_set
+from app.api.manifest_signer import load_signing_key, sign_manifest
+
 router = APIRouter(tags=["updates"])
 
 _ADMIN_TOKEN = os.environ.get("CONXA_ADMIN_TOKEN", "")
+
+# ── Unified signed manifest — KV-backed (conxa_core.db dual store: Postgres in prod, ──
+# ── filesystem in local dev). Replaces the module-level globals below as the source ──
+# ── of truth; those globals remain only as *defaults* the KV falls back to until the ──
+# ── first component version is ever published. ────────────────────────────────────
+_COMPONENT_VERSIONS_NS = "component_versions"
+_MANIFEST_NS = "manifest"
 
 # ── Defaults baked in (CI overrides via env) ──────────────────────────────────
 
@@ -196,34 +206,77 @@ def studio_manifest() -> dict:
     }
 
 
+def _component(name: str) -> dict | None:
+    """Read a component_versions KV record, or None if never published."""
+    return db_get(_COMPONENT_VERSIONS_NS, name)
+
+
+def _file_sha256(component: dict, filename: str) -> str:
+    for f in component.get("files", []):
+        if f.get("filename") == filename:
+            return f.get("sha256", "")
+    return ""
+
+
+def _file_url(component: dict, filename: str) -> str:
+    for f in component.get("files", []):
+        if f.get("filename") == filename:
+            return f.get("url", "")
+    return ""
+
+
 @router.get("/updates/conxa-runtime-manifest", include_in_schema=False)
 def runtime_host_manifest() -> dict:
     """
-    runtime/server.js fetches this on each cold start (cached 1h) to check whether
-    conxa-runtime.exe needs updating.
+    Deprecated in favour of GET /api/v1/manifest.json (unified, signed). Kept as a
+    thin shim, now reading from the same KV-backed component_versions store instead
+    of process-local globals, for runtimes that haven't picked up the manifest-driven
+    self-updater yet (see runtime/manifest_manager.js).
     """
+    c = _component("conxa_runtime")
+    if c is None:
+        return {
+            "host_version": _HOST_VERSION,
+            "url": _release_url(_HOST_VERSION, "conxa-runtime.exe"),
+            "sha256": _HOST_WIN_SHA256,
+            "keytar_url": _release_url(_HOST_VERSION, "keytar.node"),
+            "keytar_sha256": _RUNTIME_KEYTAR_SHA256,
+            "playwright_version": _PLAYWRIGHT_VERSION,
+            "chromium_revision": _CHROMIUM_REVISION,
+        }
+    version = c.get("version", _HOST_VERSION)
     return {
-        "host_version": _HOST_VERSION,
-        "url": _release_url(_HOST_VERSION, "conxa-runtime.exe"),
-        "sha256": _HOST_WIN_SHA256,
-        "keytar_url": _release_url(_HOST_VERSION, "keytar.node"),
-        "keytar_sha256": _RUNTIME_KEYTAR_SHA256,
-        "playwright_version": _PLAYWRIGHT_VERSION,
-        "chromium_revision": _CHROMIUM_REVISION,
+        "host_version": version,
+        "url": _file_url(c, "conxa-runtime.exe") or _release_url(version, "conxa-runtime.exe"),
+        "sha256": _file_sha256(c, "conxa-runtime.exe"),
+        "keytar_url": _file_url(c, "keytar.node") or _release_url(version, "keytar.node"),
+        "keytar_sha256": _file_sha256(c, "keytar.node"),
+        "playwright_version": c.get("playwright_version", _PLAYWRIGHT_VERSION),
+        "chromium_revision": c.get("chromium_revision", _CHROMIUM_REVISION),
     }
 
 
 @router.get("/updates/conxa-app-manifest", include_in_schema=False)
 def runtime_app_manifest() -> dict:
     """
-    runtime/server.js fetches this on each cold start (cached 1h) to check whether
-    the app layer zip needs updating. A new 60 KB zip ships on every code release.
+    Deprecated in favour of GET /api/v1/manifest.json (unified, signed). Kept as a
+    thin shim reading from the same KV-backed component_versions store.
     """
+    c = _component("conxa_app")
+    if c is None:
+        return {
+            "app_version": _APP_VERSION,
+            "min_host": _APP_MIN_HOST,
+            "bundle_url": _release_url(_APP_VERSION, f"conxa-app-{_APP_VERSION}.zip"),
+            "bundle_sha256": _APP_BUNDLE_SHA,
+        }
+    version = c.get("version", _APP_VERSION)
+    filename = f"conxa-app-{version}.zip"
     return {
-        "app_version": _APP_VERSION,
-        "min_host": _APP_MIN_HOST,
-        "bundle_url": _release_url(_APP_VERSION, f"conxa-app-{_APP_VERSION}.zip"),
-        "bundle_sha256": _APP_BUNDLE_SHA,
+        "app_version": version,
+        "min_host": c.get("min_host", _APP_MIN_HOST),
+        "bundle_url": _file_url(c, filename) or _release_url(version, filename),
+        "bundle_sha256": _file_sha256(c, filename),
     }
 
 
@@ -235,23 +288,96 @@ def _require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-@router.post("/updates/conxa-runtime-manifest", include_in_schema=False)
-def update_runtime_host_manifest(body: dict, authorization: str = Header(default="")) -> dict:
-    """CI calls this after each host build to update in-memory manifest vars."""
-    _require_admin(authorization)
-    global _HOST_VERSION, _HOST_WIN_SHA256, _RUNTIME_KEYTAR_SHA256
-    if "host_version"  in body: _HOST_VERSION          = body["host_version"]
-    if "sha256"        in body: _HOST_WIN_SHA256        = body["sha256"]
-    if "keytar_sha256" in body: _RUNTIME_KEYTAR_SHA256  = body["keytar_sha256"]
-    return {"ok": True}
+def _compose_manifest() -> dict:
+    """Assemble the unified manifest from component_versions KV records, sign it,
+    and persist the result to the `manifest` KV namespace. Called after every
+    admin component-versions POST so GET /manifest.json is always a cheap KV read
+    with no signing on the read path."""
+    host = _component("conxa_runtime") or {
+        "version": _HOST_VERSION,
+        "released_at": datetime.now(timezone.utc).isoformat(),
+        "files": [
+            {"filename": "conxa-runtime.exe", "url": _release_url(_HOST_VERSION, "conxa-runtime.exe"), "sha256": _HOST_WIN_SHA256},
+            {"filename": "keytar.node", "url": _release_url(_HOST_VERSION, "keytar.node"), "sha256": _RUNTIME_KEYTAR_SHA256},
+        ],
+    }
+    app = _component("conxa_app") or {
+        "version": _APP_VERSION,
+        "released_at": datetime.now(timezone.utc).isoformat(),
+        "min_host": _APP_MIN_HOST,
+        "files": [
+            {"filename": f"conxa-app-{_APP_VERSION}.zip", "url": _release_url(_APP_VERSION, f"conxa-app-{_APP_VERSION}.zip"), "sha256": _APP_BUNDLE_SHA},
+        ],
+    }
+
+    # db_list_kv's filesystem fallback (no SKILL_DATABASE_URL) returns a hashed
+    # filename stem instead of the original key, so "company:slug" can't be
+    # recovered by parsing db_list_kv's key column portably. Instead we maintain
+    # our own index of published skill identifiers (updated in
+    # update_component_version) and look each one up directly by its known key —
+    # this works identically against Postgres and the filesystem fallback.
+    skill_packs: dict[str, dict[str, dict]] = {}
+    for identifier in (db_get(_MANIFEST_NS, "skill_pack_index") or []):
+        company, _, slug = identifier.partition(":")
+        record = _component(f"skill_packs:{company}:{slug}")
+        if record is not None:
+            skill_packs.setdefault(company, {})[slug] = record
+
+    manifest = {
+        "manifest_version": 3,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mcp_protocol_version": "2024-11-05",
+        "minimum_versions": db_get(_MANIFEST_NS, "minimum_versions") or {},
+        "compatibility": db_get(_MANIFEST_NS, "compatibility") or {},
+        "conxa_runtime": host,
+        "conxa_app": app,
+        "skill_packs": skill_packs,
+        "signature": "",
+    }
+
+    signing_key = load_signing_key()
+    if signing_key is not None:
+        manifest["signature"] = sign_manifest(manifest, signing_key)
+
+    db_set(_MANIFEST_NS, "current", manifest)
+    return manifest
 
 
-@router.post("/updates/conxa-app-manifest", include_in_schema=False)
-def update_runtime_app_manifest(body: dict, authorization: str = Header(default="")) -> dict:
-    """CI calls this after each app-layer build to update in-memory manifest vars."""
+@router.get("/manifest.json", include_in_schema=False)
+def unified_manifest() -> dict:
+    """
+    Single signed manifest for the runtime's self-updater (runtime/manifest_manager.js):
+    component versions, compatibility matrix, minimum versions, rollout, checksums, and
+    an Ed25519 signature over the whole thing. Public — served straight from KV, no
+    signing on the read path (signing happens once, at publish time, in _compose_manifest).
+    """
+    cached = db_get(_MANIFEST_NS, "current")
+    return cached if cached is not None else _compose_manifest()
+
+
+@router.post("/admin/component-versions/{component}", include_in_schema=False)
+def update_component_version(component: str, body: dict, authorization: str = Header(default="")) -> dict:
+    """
+    CI (after each host/app build) and publish_routes.py (after each skill-pack
+    publish) call this instead of the old per-endpoint POSTs. Persists the given
+    component's version record to KV, then recomposes and re-signs the full manifest
+    so GET /manifest.json reflects it immediately.
+
+    `component` is one of: "conxa_runtime", "conxa_app", or "skill_packs:{company}:{skill}".
+    """
     _require_admin(authorization)
-    global _APP_VERSION, _APP_MIN_HOST, _APP_BUNDLE_SHA
-    if "app_version"   in body: _APP_VERSION    = body["app_version"]
-    if "min_host"      in body: _APP_MIN_HOST   = body["min_host"]
-    if "bundle_sha256" in body: _APP_BUNDLE_SHA = body["bundle_sha256"]
-    return {"ok": True}
+    if not re.match(r"^[a-zA-Z0-9_.-]+(:[a-zA-Z0-9_.-]+){0,2}$", component):
+        raise HTTPException(status_code=400, detail="invalid component name")
+
+    db_set(_COMPONENT_VERSIONS_NS, component, body)
+
+    if component.startswith("skill_packs:"):
+        _, company, slug = component.split(":", 2)
+        identifier = f"{company}:{slug}"
+        index = db_get(_MANIFEST_NS, "skill_pack_index") or []
+        if identifier not in index:
+            index.append(identifier)
+            db_set(_MANIFEST_NS, "skill_pack_index", index)
+
+    manifest = _compose_manifest()
+    return {"ok": True, "manifest_version": manifest["manifest_version"], "generated_at": manifest["generated_at"]}

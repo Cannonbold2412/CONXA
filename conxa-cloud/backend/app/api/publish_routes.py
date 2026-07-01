@@ -34,6 +34,11 @@ from conxa_core.storage.plugin_store import create_plugin, list_plugins, save_pl
 from app.services.entitlements import EntitlementError, ensure_installer_slot_available
 from app.services.rbac import require_admin
 from app.services.saas import add_audit_event, ensure_principal, principal_from_request
+from app.api.updates_routes import (
+    _COMPONENT_VERSIONS_NS,
+    _MANIFEST_NS,
+    _compose_manifest,
+)
 
 router = APIRouter(prefix="/plugins", tags=["publish"])
 installers_router = APIRouter(prefix="/installers", tags=["installers"])
@@ -362,6 +367,29 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         {"path": "pack.json", "content_base64": base64.b64encode(pack_bytes).decode("ascii")},
     )
     _upsert_published_plugin(body, principal.workspace_id, principal.user_id)
+
+    # Record each skill's version in the unified signed manifest so runtimes can
+    # compare against it before pulling a delta. `files` is intentionally left empty
+    # here — skill content is delivered through the existing per-company delta-sync
+    # (Bearer sync_token), not broadcast in a public manifest; the manifest only
+    # needs to know "what version is current" and any compatibility gate.
+    published_at_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_at))
+    index = db_get(_MANIFEST_NS, "skill_pack_index") or []
+    index_changed = False
+    for skill_slug in body.skills:
+        identifier = f"{slug}:{skill_slug}"
+        db_set(
+            _COMPONENT_VERSIONS_NS,
+            f"skill_packs:{slug}:{skill_slug}",
+            {"version": body.skill_pack_version, "released_at": published_at_iso, "files": []},
+        )
+        if identifier not in index:
+            index.append(identifier)
+            index_changed = True
+    if index_changed:
+        db_set(_MANIFEST_NS, "skill_pack_index", index)
+    if body.skills:
+        _compose_manifest()
 
     add_audit_event(
         principal,

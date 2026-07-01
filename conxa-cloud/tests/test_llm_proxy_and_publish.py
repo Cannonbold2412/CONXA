@@ -112,14 +112,59 @@ def test_publish_and_sync_roundtrip():
     assert db_get("tracking_tokens", "acme-test")["workspace_id"] == "wrk_local"
     assert any(p.slug == "acme-test" for p in list_plugins(workspace_id="wrk_local"))
 
-    # The delta endpoint should now serve the published pack.
-    d = client.get("/api/v1/skill-packs/acme-test/delta?since=0")
+    # The delta endpoint should now serve the published pack, per skill.
+    d = client.get("/api/v1/skill-packs/acme-test/delta?since=%7B%7D")
     assert d.status_code == 200
-    assert d.json()["current_version"] == "0.3.0"
+    skills = {s["name"]: s for s in d.json()["skills"]}
+    assert skills["deploy"]["action"] == "update"
+    assert skills["deploy"]["version"] == "0.3.0"
 
     companies = client.get("/api/v1/tracking/companies")
     assert companies.status_code == 200
     assert any(row["company"] == "acme-test" for row in companies.json()["companies"])
+
+
+def test_delta_ships_only_the_skill_that_actually_changed():
+    """Two skills under one company must version and sync independently — bumping one
+    skill's component_versions record must not affect the other's delta result."""
+    import json as _json
+
+    files = [
+        {"path": "pack.json", "content_base64": base64.b64encode(b'{"company":"multi-skill-test"}').decode()},
+        {"path": "invoice-automation/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
+        {"path": "approval-workflow/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
+    ]
+    r = client.post(
+        "/api/v1/plugins/publish",
+        json={
+            "slug": "multi-skill-test",
+            "display_name": "Multi Skill Test",
+            "target_url": "https://multi.test",
+            "skill_pack_version": "1.0.0",
+            "skills": ["invoice-automation", "approval-workflow"],
+            "files": files,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    # Simulate an independent version bump for one skill only (a future enhanced
+    # publish flow would do this directly; today the KV record is what the delta
+    # endpoint actually reads, per _skill_version()).
+    db_set(
+        "component_versions",
+        "skill_packs:multi-skill-test:invoice-automation",
+        {"version": "1.1.0", "released_at": "2026-07-01T00:00:00Z", "files": []},
+    )
+
+    since = _json.dumps({"invoice-automation": "1.0.0", "approval-workflow": "1.0.0"})
+    d = client.get(f"/api/v1/skill-packs/multi-skill-test/delta?since={since}")
+    assert d.status_code == 200, d.text
+    skills = {s["name"]: s for s in d.json()["skills"]}
+
+    assert skills["invoice-automation"]["action"] == "update"
+    assert skills["invoice-automation"]["version"] == "1.1.0"
+    assert skills["approval-workflow"]["action"] == "no_change"
+    assert "files" not in skills["approval-workflow"]
 
 
 def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
@@ -149,10 +194,12 @@ def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
     shutil.rmtree(tmp_path / "skill-packs", ignore_errors=True)
     assert not (tmp_path / "skill-packs" / slug / "pack.json").exists()
 
-    d = client.get(f"/api/v1/skill-packs/{slug}/delta?since=0")
+    d = client.get(f"/api/v1/skill-packs/{slug}/delta?since=%7B%7D")
     assert d.status_code == 200, d.text
-    assert d.json()["current_version"] == "1.0.0"
-    assert "deploy/execution.json" in {f["path"] for f in d.json()["files"]}
+    skills = {s["name"]: s for s in d.json()["skills"]}
+    assert skills["deploy"]["action"] == "update"
+    assert skills["deploy"]["version"] == "1.0.0"
+    assert "execution.json" in {f["path"] for f in skills["deploy"]["files"]}
 
 
 def test_publish_upsert_updates_existing_plugin_slug(monkeypatch, tmp_path):
@@ -208,7 +255,7 @@ def test_skill_pack_delta_requires_sync_token_when_cloud_auth_required(monkeypat
     )
 
     assert ok.status_code == 200, ok.text
-    assert ok.json()["current_version"] == "9.9.9"
+    assert ok.json()["skills"] == []  # pack.json declares no skills in this fixture
 
 
 def test_tracking_ingest_requires_published_token_and_lists_runs():
