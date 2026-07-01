@@ -25,9 +25,11 @@ router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 CASHFREE_TOTAL_CYCLES = 1200
 
 # Cashfree Subscription Management API v1
+# Note: subscription-management v1 uses test.cashfree.com / www.cashfree.com,
+# NOT sandbox.cashfree.com / api.cashfree.com (those are for the newer payments API)
 _CF_BASE = {
-    "PROD": "https://api.cashfree.com",
-    "TEST": "https://sandbox.cashfree.com",
+    "PROD": "https://www.cashfree.com",
+    "TEST": "https://test.cashfree.com",
 }
 
 
