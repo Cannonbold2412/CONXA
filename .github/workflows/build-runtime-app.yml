@@ -70,7 +70,8 @@ jobs:
           $files = @(
             "server.js", "sync.js", "run.js", "browser.js",
             "skill_loader.js", "tracker.js", "install_identity.js",
-            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js"
+            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
+            "version_manager.js", "manifest_manager.js"
           )
           foreach ($f in $files) {
             javascript-obfuscator $f `
@@ -112,7 +113,8 @@ jobs:
           $files = @(
             "server", "sync", "run", "browser",
             "skill_loader", "auth_manager", "tracker", "install_identity",
-            "bootstrap", "recovery", "resolve_adapter", "resolver"
+            "bootstrap", "recovery", "resolve_adapter", "resolver", "version_manager",
+            "manifest_manager"
           )
           foreach ($base in $files) {
             Copy-Item obfuscated/$base.js dist-app/$base.js
@@ -174,15 +176,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish app-manifest to cloud API
+      - name: Publish conxa_app version to the unified signed manifest
+        # Writes into the component_versions KV store; the cloud endpoint recomposes
+        # and re-signs the full manifest.json immediately after. No private signing
+        # key material touches this runner.
         if: vars.CLOUD_API_URL != ''
         run: |
           $body = @{
-            app_version   = "$env:APP_VERSION"
-            min_host      = "$env:MIN_HOST"
-            bundle_sha256 = "$env:APP_BUNDLE_SHA256"
-          } | ConvertTo-Json
-          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/updates/conxa-app-manifest" `
+            version      = "$env:APP_VERSION"
+            min_host     = "$env:MIN_HOST"
+            released_at  = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+            files        = @(
+              @{ filename = "conxa-app-$env:APP_VERSION.zip"; url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:APP_VERSION/conxa-app-$env:APP_VERSION.zip"; sha256 = "$env:APP_BUNDLE_SHA256" }
+            )
+          } | ConvertTo-Json -Depth 5
+          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/admin/component-versions/conxa_app" `
             -Method POST -Body $body -ContentType "application/json" `
             -Headers @{ Authorization = "Bearer $env:CLOUD_ADMIN_TOKEN" }
           Write-Output "Manifest posted: app-$env:APP_VERSION"

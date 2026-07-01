@@ -49,22 +49,30 @@ jobs:
         working-directory: runtime
         run: npm ci
 
-      - name: Stamp version and host_version from release tag
+      - name: Stamp version, host_version, and manifest public key
         working-directory: runtime
         run: |
-          # bootstrap.js bakes both fields from package.json into the pkg exe at build time —
-          # env vars are NOT readable at runtime from inside the pkg binary.
-          #   host_version → HOST_VERSION constant used for app layer min_host semver gate
-          #   version      → global.__runtimeVersion exposed to the disk-resident app layer
-          # Both are derived from the git tag so no manual edits to package.json are needed.
+          # bootstrap.js bakes these fields from package.json into the pkg exe at build
+          # time — env vars are NOT readable at runtime from inside the pkg binary.
+          #   host_version        → HOST_VERSION constant used for app layer min_host semver gate
+          #   version             → global.__runtimeVersion exposed to the disk-resident app layer
+          #   ed25519_public_key  → global.__manifestPublicKey, used by manifest_manager.js to
+          #                         verify the signed manifest.json's Ed25519 signature. This is a
+          #                         long-lived org secret (does not change per release), stored as
+          #                         the CONXA_MANIFEST_PUBLIC_KEY repo variable — never the private
+          #                         key, which stays server-side as CONXA_MANIFEST_SIGNING_KEY.
           $semver = "$env:HOST_VERSION" -replace '^host-v', ''
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
           $pkg.version      = $semver
           $pkg.host_version = "$env:HOST_VERSION"
+          if ("$env:MANIFEST_PUBLIC_KEY") { $pkg.ed25519_public_key = "$env:MANIFEST_PUBLIC_KEY" }
           $pkg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 package.json
           Write-Output "version stamped:      $semver"
           Write-Output "host_version stamped: $env:HOST_VERSION"
+          Write-Output "manifest public key stamped: $(if ($env:MANIFEST_PUBLIC_KEY) { 'yes' } else { 'no (unset)' })"
         shell: pwsh
+        env:
+          MANIFEST_PUBLIC_KEY: ${{ vars.CONXA_MANIFEST_PUBLIC_KEY }}
 
       - name: Build conxa-runtime.exe
         working-directory: runtime
@@ -139,15 +147,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish host-manifest to cloud API
+      - name: Publish conxa_runtime version to the unified signed manifest
+        # Writes into the component_versions KV store; the cloud endpoint recomposes
+        # and re-signs the full manifest.json immediately after. No private signing
+        # key material touches this runner — signing happens cloud-side with
+        # CONXA_MANIFEST_SIGNING_KEY, which CI never sees.
         if: vars.CLOUD_API_URL != ''
         run: |
           $body = @{
-            host_version  = "$env:HOST_VERSION"
-            sha256        = "$env:HOST_WIN_SHA256"
-            keytar_sha256 = "$env:KEYTAR_SHA256"
-          } | ConvertTo-Json
-          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/updates/conxa-runtime-manifest" `
+            version      = "$env:HOST_VERSION"
+            released_at  = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+            files        = @(
+              @{ filename = "conxa-runtime.exe"; url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:HOST_VERSION/conxa-runtime.exe"; sha256 = "$env:HOST_WIN_SHA256" }
+              @{ filename = "keytar.node";       url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:HOST_VERSION/keytar.node";       sha256 = "$env:KEYTAR_SHA256" }
+            )
+          } | ConvertTo-Json -Depth 5
+          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/admin/component-versions/conxa_runtime" `
             -Method POST -Body $body -ContentType "application/json" `
             -Headers @{ Authorization = "Bearer $env:CLOUD_ADMIN_TOKEN" }
         shell: pwsh
