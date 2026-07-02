@@ -33,7 +33,12 @@
 !define SKILL_VER_DIR  "{{SKILL_VERSION_DIR}}"
 !define STAGING_DIR    "{{STAGING_DIR}}"
 ; Per-user install: no UAC, correct user profile
-!define INSTALL_DIR    "$PROFILE\.conxa"
+; Install tree is environment-scoped ({{INSTALL_SUBDIR}} = .conxa | .conxa-dev) so a
+; dev-built installer never collides with a prod install on the same machine.
+!define INSTALL_DIR    "$PROFILE\{{INSTALL_SUBDIR}}"
+!define MCP_SERVER     "{{MCP_SERVER_NAME}}"
+!define CONXA_ENV      "{{CONXA_ENV}}"
+!define UPDATE_CHANNEL "{{CONXA_UPDATE_CHANNEL}}"
 !define RUNTIME_DIR    "${INSTALL_DIR}"
 !define RUNTIME_ROOT   "${INSTALL_DIR}\conxa-runtime"
 !define APP_ROOT       "${INSTALL_DIR}\conxa-app"
@@ -220,8 +225,8 @@ Section "MCPRegistration" SEC_MCP
   FileWrite $0 "$$dir = Split-Path $$p; if (-not (Test-Path $$dir)) { New-Item -ItemType Directory -Force $$dir | Out-Null }$\r$\n"
   FileWrite $0 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { $$c = [PSCustomObject]@{} }$\r$\n"
   FileWrite $0 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $0 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
-  FileWrite $0 "$$c.mcpServers | Add-Member conxa $$entry -Force$\r$\n"
+  FileWrite $0 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}'; CONXA_ENV = '${CONXA_ENV}'; CONXA_UPDATE_CHANNEL = '${UPDATE_CHANNEL}' } }$\r$\n"
+  FileWrite $0 "$$c.mcpServers | Add-Member ${MCP_SERVER} $$entry -Force$\r$\n"
   FileWrite $0 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
   FileClose $0
 
@@ -239,8 +244,8 @@ Section "MCPRegistration" SEC_MCP
   FileWrite $1 "if (-not (Test-Path $$p)) { exit 0 }$\r$\n"
   FileWrite $1 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { exit 0 }$\r$\n"
   FileWrite $1 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $1 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}' } }$\r$\n"
-  FileWrite $1 "$$c.mcpServers | Add-Member conxa $$entry -Force$\r$\n"
+  FileWrite $1 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}'; CONXA_ENV = '${CONXA_ENV}'; CONXA_UPDATE_CHANNEL = '${UPDATE_CHANNEL}' } }$\r$\n"
+  FileWrite $1 "$$c.mcpServers | Add-Member ${MCP_SERVER} $$entry -Force$\r$\n"
   FileWrite $1 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
   FileClose $1
 
@@ -258,7 +263,7 @@ Section "MCPRegistration" SEC_MCP
   Goto mcp_done
 
   mcp_err:
-  MessageBox MB_OK "Setup complete — skill files installed.$\n$\nCould not auto-configure Claude Desktop (code $0).$\n$\nTo finish manually, add this to claude_desktop_config.json:$\n  Store app: %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\$\n  Standard:  %APPDATA%\Claude\$\n$\n  mcpServers > conxa:$\n    command: ${RUNTIME_ROOT}\current\conxa-runtime.exe$\n    env.CONXA_DIR: ${INSTALL_DIR}$\n$\nThen restart Claude Desktop."
+  MessageBox MB_OK "Setup complete — skill files installed.$\n$\nCould not auto-configure Claude Desktop (code $0).$\n$\nTo finish manually, add this to claude_desktop_config.json:$\n  Store app: %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\$\n  Standard:  %APPDATA%\Claude\$\n$\n  mcpServers > ${MCP_SERVER}:$\n    command: ${RUNTIME_ROOT}\current\conxa-runtime.exe$\n    env.CONXA_DIR: ${INSTALL_DIR}$\n    env.CONXA_ENV: ${CONXA_ENV}$\n    env.CONXA_UPDATE_CHANNEL: ${UPDATE_CHANNEL}$\n$\nThen restart Claude Desktop."
   mcp_done:
 SectionEnd
 

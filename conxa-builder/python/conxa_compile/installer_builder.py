@@ -404,6 +404,17 @@ def _render_nsis_script(
         raise FileNotFoundError(f"NSIS template not found: {template_path}")
     template = template_path.read_text(encoding="utf-8")
     icon_directive = f'Icon "{icon_path}"' if icon_path else ""
+
+    # Environment-scoped install so a dev-built installer lands in its own tree and
+    # registers a distinct MCP server, letting Dev and Prod agents run side by side
+    # under Claude Desktop. The Studio's CONXA_ENV decides this at build time.
+    from conxa_core.config import active_environment
+    env = active_environment()
+    if env == "dev":
+        install_subdir, mcp_name, channel = ".conxa-dev", "conxa-dev", "dev"
+    else:
+        install_subdir, mcp_name, channel = ".conxa", "conxa", "stable"
+
     rendered = (
         template
         .replace("{{COMPANY_SLUG}}", company_slug)
@@ -414,6 +425,10 @@ def _render_nsis_script(
         .replace("{{SKILL_VERSION_DIR}}", skill_version_dir_name or (version if version.startswith("v") else f"v{version}"))
         .replace("{{STAGING_DIR}}", str(tmp))
         .replace("{{ICON_DIRECTIVE}}", icon_directive)
+        .replace("{{INSTALL_SUBDIR}}", install_subdir)
+        .replace("{{MCP_SERVER_NAME}}", mcp_name)
+        .replace("{{CONXA_ENV}}", env)
+        .replace("{{CONXA_UPDATE_CHANNEL}}", channel)
     )
     nsi_path = tmp / "setup.nsi"
     nsi_path.write_text(rendered, encoding="utf-8")

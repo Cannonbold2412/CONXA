@@ -5,10 +5,17 @@ const os            = require("os");
 const semver        = require("semver");
 const versionManager = require("./version_manager");
 
+// Resolve the dev/prod environment FIRST and normalize process.env, so every
+// disk-loaded layer (server.js, run.js, sync.js) and child spawn inherits the
+// same isolated path roots + update channel. See env.js for the safety default.
+const envInfo = require("./env").apply();
+
 const HOST_VERSION = require("./package.json").host_version || "host-v1.0.0";
-const CONXA_DIR    = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
+const CONXA_DIR    = process.env.CONXA_DIR; // set by env.apply() above
 // APP_ROOT is the component root (contains v1.0.0/, v1.1.0/, current/) — not the live dir itself.
-const APP_ROOT = process.env.CONXA_APP_DIR || path.join(CONXA_DIR, "conxa-app");
+const APP_ROOT = process.env.CONXA_APP_DIR;
+// Expose the resolved environment to disk-loaded layers without re-deriving it.
+global.__conxaEnv = envInfo;
 
 // Expose bundled npm modules and host metadata to disk-loaded app code.
 // App JS files use (global.__hostRequire || require)('playwright') etc.

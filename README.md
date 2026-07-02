@@ -120,7 +120,38 @@ npm run build:mac          # → dist/runtime-mac
 
 ### Configuration
 
-Copy `.env.example` → `.env`. All backend settings use the `SKILL_` prefix — see `packages/conxa-core/conxa_core/config.py`. LLM provider keys feed the multi-provider pool (Groq, Google AI Studio, NVIDIA NIM by default) — see `conxa-cloud/backend/ROUTER_SETUP.md`.
+All backend settings use the `SKILL_` prefix — see `packages/conxa-core/conxa_core/config.py`. LLM provider keys feed the multi-provider pool (Groq, Google AI Studio, NVIDIA NIM by default) — see `conxa-cloud/backend/ROUTER_SETUP.md`.
+
+### Dev / Prod environment isolation
+
+A single switch, **`CONXA_ENV`** (`dev` | `prod`), selects one of two fully isolated
+stacks so Development and Production coexist on one machine with zero interference:
+
+| | Dev lane | Prod lane |
+|---|---|---|
+| Env file | `.env.dev` (copy from `.env.dev.example`) | `.env.prod` |
+| Runtime tree | `~/.conxa-dev` | `~/.conxa` |
+| Studio state | `~/.conxa-build-studio-dev` | `~/.conxa-build-studio` |
+| Cloud | `127.0.0.1:8000` (or `dev-apis.conxa.in`) | `apis.conxa.in` |
+| Update channel | `dev` (prerelease tags) | `stable` (promoted) |
+| Billing | Cashfree `TEST` | Cashfree `PROD` |
+
+Use the launcher (the one switch a human touches):
+
+```bash
+./scripts/conxa.sh dev studio      # or: make dev-studio
+./scripts/conxa.sh dev backend     #     make dev-backend
+./scripts/conxa.sh prod backend    #     make prod-backend
+```
+
+```powershell
+.\scripts\conxa.ps1 dev studio      # Windows
+```
+
+Releases flow Dev → Prod by **promotion, never rebuild**: dev prerelease tags
+(`app-v1.3.0-dev.1`) publish to the `dev` update channel; once validated, the
+`promote-release.yml` workflow re-publishes the *exact signed artifact* to `stable`.
+Full design: `docs/TRD.md` → "Dev/Prod Environment Isolation".
 
 ---
 

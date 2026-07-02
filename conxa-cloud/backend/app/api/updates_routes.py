@@ -35,6 +35,35 @@ _ADMIN_TOKEN = os.environ.get("CONXA_ADMIN_TOKEN", "")
 _COMPONENT_VERSIONS_NS = "component_versions"
 _MANIFEST_NS = "manifest"
 
+# ── Update channels ────────────────────────────────────────────────────────────
+# Dev builds (prerelease tags) publish to the "dev" channel; promoted, fully tested
+# releases live on "stable". A runtime/Studio fetches its own channel via ?channel=,
+# so a dev install can never pull a stable artifact and a prod install can never pull
+# an untested dev prerelease.
+#
+# BACKWARD-COMPAT: "stable" maps to the ORIGINAL unsuffixed KV namespaces, so all
+# already-published stable data and the default (no ?channel=) behavior are
+# byte-identical to before this change. Only "dev" (and any future channel) gets a
+# ":<channel>"-suffixed namespace — purely additive.
+_STABLE_CHANNEL = "stable"
+_KNOWN_CHANNELS = {"stable", "dev"}
+
+
+def _normalize_channel(raw: str | None) -> str:
+    ch = str(raw or "").strip().lower()
+    if ch in ("", "prod", "production", "stable"):
+        return "stable"
+    if ch in ("dev", "development"):
+        return "dev"
+    if ch in _KNOWN_CHANNELS:
+        return ch
+    raise HTTPException(status_code=400, detail=f"unknown channel: {raw!r}")
+
+
+def _ns(base: str, channel: str) -> str:
+    """KV namespace for a channel. Stable keeps the legacy unsuffixed name."""
+    return base if channel == _STABLE_CHANNEL else f"{base}:{channel}"
+
 # ── Defaults baked in (CI overrides via env) ──────────────────────────────────
 
 _NSIS_VERSION = os.environ.get("CONXA_NSIS_VERSION", "3.10")
@@ -206,9 +235,9 @@ def studio_manifest() -> dict:
     }
 
 
-def _component(name: str) -> dict | None:
-    """Read a component_versions KV record, or None if never published."""
-    return db_get(_COMPONENT_VERSIONS_NS, name)
+def _component(name: str, channel: str = _STABLE_CHANNEL) -> dict | None:
+    """Read a component_versions KV record for a channel, or None if never published."""
+    return db_get(_ns(_COMPONENT_VERSIONS_NS, channel), name)
 
 
 def _file_sha256(component: dict, filename: str) -> str:
@@ -288,12 +317,17 @@ def _require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def _compose_manifest() -> dict:
-    """Assemble the unified manifest from component_versions KV records, sign it,
-    and persist the result to the `manifest` KV namespace. Called after every
-    admin component-versions POST so GET /manifest.json is always a cheap KV read
-    with no signing on the read path."""
-    host = _component("conxa_runtime") or {
+def _compose_manifest(channel: str = _STABLE_CHANNEL) -> dict:
+    """Assemble the unified manifest for a channel from its component_versions KV
+    records, sign it, and persist the result to that channel's `manifest` KV
+    namespace. Called after every admin component-versions POST so GET
+    /manifest.json is always a cheap KV read with no signing on the read path.
+
+    The Ed25519 signing key is the SAME for every channel — the runtime's baked-in
+    public key verifies dev and stable manifests identically; only the channel's set
+    of published versions differs."""
+    manifest_ns = _ns(_MANIFEST_NS, channel)
+    host = _component("conxa_runtime", channel) or {
         "version": _HOST_VERSION,
         "released_at": datetime.now(timezone.utc).isoformat(),
         "files": [
@@ -301,7 +335,7 @@ def _compose_manifest() -> dict:
             {"filename": "keytar.node", "url": _release_url(_HOST_VERSION, "keytar.node"), "sha256": _RUNTIME_KEYTAR_SHA256},
         ],
     }
-    app = _component("conxa_app") or {
+    app = _component("conxa_app", channel) or {
         "version": _APP_VERSION,
         "released_at": datetime.now(timezone.utc).isoformat(),
         "min_host": _APP_MIN_HOST,
@@ -317,18 +351,19 @@ def _compose_manifest() -> dict:
     # update_component_version) and look each one up directly by its known key —
     # this works identically against Postgres and the filesystem fallback.
     skill_packs: dict[str, dict[str, dict]] = {}
-    for identifier in (db_get(_MANIFEST_NS, "skill_pack_index") or []):
+    for identifier in (db_get(manifest_ns, "skill_pack_index") or []):
         company, _, slug = identifier.partition(":")
-        record = _component(f"skill_packs:{company}:{slug}")
+        record = _component(f"skill_packs:{company}:{slug}", channel)
         if record is not None:
             skill_packs.setdefault(company, {})[slug] = record
 
     manifest = {
         "manifest_version": 3,
+        "channel": channel,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mcp_protocol_version": "2024-11-05",
-        "minimum_versions": db_get(_MANIFEST_NS, "minimum_versions") or {},
-        "compatibility": db_get(_MANIFEST_NS, "compatibility") or {},
+        "minimum_versions": db_get(manifest_ns, "minimum_versions") or {},
+        "compatibility": db_get(manifest_ns, "compatibility") or {},
         "conxa_runtime": host,
         "conxa_app": app,
         "skill_packs": skill_packs,
@@ -339,45 +374,65 @@ def _compose_manifest() -> dict:
     if signing_key is not None:
         manifest["signature"] = sign_manifest(manifest, signing_key)
 
-    db_set(_MANIFEST_NS, "current", manifest)
+    db_set(manifest_ns, "current", manifest)
     return manifest
 
 
 @router.get("/manifest.json", include_in_schema=False)
-def unified_manifest() -> dict:
+def unified_manifest(channel: str | None = None) -> dict:
     """
     Single signed manifest for the runtime's self-updater (runtime/manifest_manager.js):
     component versions, compatibility matrix, minimum versions, rollout, checksums, and
     an Ed25519 signature over the whole thing. Public — served straight from KV, no
     signing on the read path (signing happens once, at publish time, in _compose_manifest).
+
+    `?channel=dev|stable` selects the update channel. Omitted → stable (the promoted,
+    fully tested lane), so existing prod runtimes are unaffected.
     """
-    cached = db_get(_MANIFEST_NS, "current")
-    return cached if cached is not None else _compose_manifest()
+    ch = _normalize_channel(channel)
+    cached = db_get(_ns(_MANIFEST_NS, ch), "current")
+    return cached if cached is not None else _compose_manifest(ch)
 
 
 @router.post("/admin/component-versions/{component}", include_in_schema=False)
-def update_component_version(component: str, body: dict, authorization: str = Header(default="")) -> dict:
+def update_component_version(
+    component: str,
+    body: dict,
+    channel: str | None = None,
+    authorization: str = Header(default=""),
+) -> dict:
     """
     CI (after each host/app build) and publish_routes.py (after each skill-pack
     publish) call this instead of the old per-endpoint POSTs. Persists the given
-    component's version record to KV, then recomposes and re-signs the full manifest
-    so GET /manifest.json reflects it immediately.
+    component's version record to the channel's KV, then recomposes and re-signs
+    that channel's manifest so GET /manifest.json?channel=<channel> reflects it
+    immediately.
 
     `component` is one of: "conxa_runtime", "conxa_app", or "skill_packs:{company}:{skill}".
+    `?channel=dev|stable` selects the target channel (default stable). Dev builds
+    (prerelease tags) publish to dev; the promotion workflow re-publishes the same
+    signed record to stable.
     """
     _require_admin(authorization)
     if not re.match(r"^[a-zA-Z0-9_.-]+(:[a-zA-Z0-9_.-]+){0,2}$", component):
         raise HTTPException(status_code=400, detail="invalid component name")
 
-    db_set(_COMPONENT_VERSIONS_NS, component, body)
+    ch = _normalize_channel(channel)
+    db_set(_ns(_COMPONENT_VERSIONS_NS, ch), component, body)
 
     if component.startswith("skill_packs:"):
         _, company, slug = component.split(":", 2)
         identifier = f"{company}:{slug}"
-        index = db_get(_MANIFEST_NS, "skill_pack_index") or []
+        manifest_ns = _ns(_MANIFEST_NS, ch)
+        index = db_get(manifest_ns, "skill_pack_index") or []
         if identifier not in index:
             index.append(identifier)
-            db_set(_MANIFEST_NS, "skill_pack_index", index)
+            db_set(manifest_ns, "skill_pack_index", index)
 
-    manifest = _compose_manifest()
-    return {"ok": True, "manifest_version": manifest["manifest_version"], "generated_at": manifest["generated_at"]}
+    manifest = _compose_manifest(ch)
+    return {
+        "ok": True,
+        "channel": ch,
+        "manifest_version": manifest["manifest_version"],
+        "generated_at": manifest["generated_at"],
+    }

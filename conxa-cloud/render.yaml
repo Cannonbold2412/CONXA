@@ -1,4 +1,10 @@
 services:
+  # ── PRODUCTION cloud backend ────────────────────────────────────────────────
+  # CONXA_ENV=prod + SKILL_AUTH_REQUIRED=true put the service in prod mode; the app
+  # REFUSES TO BOOT unless every var below is set (see main.py
+  # _validate_production_config). Values marked `sync: false` are entered as secrets
+  # in the Render dashboard — the keys are listed here so prod's required config
+  # lives in-repo instead of tribal knowledge.
   - type: web
     name: conxa-api
     plan: free
@@ -10,9 +16,55 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
+      # The single switch — puts config on the prod lane (.env.prod semantics).
+      - key: CONXA_ENV
+        value: prod
       - key: SKILL_AUTH_REQUIRED
         value: true
+      # Pins the base embedded into pack.json (anti X-Forwarded-Host injection).
+      - key: SKILL_API_BASE_URL
+        value: https://apis.conxa.in
+      - key: SKILL_CORS_ORIGINS
+        value: https://conxa.in,https://www.conxa.in
+      # Clerk auth (prod instance).
+      - key: SKILL_CLERK_ISSUER
+        sync: false
+      - key: SKILL_CLERK_JWKS_URL
+        sync: false
+      - key: SKILL_CLERK_AUTHORIZED_PARTIES
+        sync: false
+      - key: SKILL_CLERK_AUDIENCE
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
       - key: SKILL_API_PROXY_SHARED_SECRET
+        sync: false
+      # Manifest signing (Ed25519 private key, PEM PKCS8) + admin token for CI POSTs.
+      - key: CONXA_MANIFEST_SIGNING_KEY
+        sync: false
+      - key: CONXA_ADMIN_TOKEN
+        sync: false
+      - key: SKILL_TRACKING_HMAC_SECRET
+        sync: false
+      # Cashfree billing — LIVE.
+      - key: CASHFREE_ENV
+        value: PROD
+      - key: CASHFREE_APP_ID
+        sync: false
+      - key: CASHFREE_SECRET_KEY
+        sync: false
+      - key: CASHFREE_WEBHOOK_SECRET
+        sync: false
+      - key: CASHFREE_STARTER_PLAN_ID
+        sync: false
+      - key: CASHFREE_PRO_PLAN_ID
+        sync: false
+      # LLM provider keys (at least one required by the Settings validator).
+      - key: GROQ_API_KEYS
+        sync: false
+      - key: GOOGLE_AI_STUDIO_API_KEYS
+        sync: false
+      - key: NVIDIA_NIM_API_KEYS
         sync: false
       - key: SKILL_DATABASE_URL
         fromDatabase:

@@ -15,6 +15,7 @@ const path = require("path");
 const fs = require("fs");
 const readline = require("readline");
 const { Bridge } = require("./bridge");
+const conxaEnv = require("./env");
 
 // electron-updater config — manual-only, no auto-download or auto-install.
 autoUpdater.autoDownload = false;
@@ -123,12 +124,11 @@ function startBackend() {
     env: {
       ...process.env,
       SKILL_ALLOW_NO_PROVIDERS: "1",
-      // Production auth + cloud config baked in as defaults.
-      // Set these env vars in the shell to override for dev/staging.
-      CONXA_CLERK_DOMAIN:
-        process.env.CONXA_CLERK_DOMAIN || "https://clerk.conxa.in",
-      CONXA_CLERK_CLIENT_ID:
-        process.env.CONXA_CLERK_CLIENT_ID || "Z7O8UdIVowd3Aegx",
+      // Dev/prod cloud + auth + Studio-state config, resolved by env.js. Defaults
+      // to prod (the shipped Studio publishes to the production cloud); an explicit
+      // CONXA_ENV=dev (from the launcher) selects the isolated dev lane. Any single
+      // value can still be overridden by setting its env var in the shell.
+      ...conxaEnv.backendEnv(),
       // CONXA_CLERK_CLIENT_SECRET is optional: auth_service uses PKCE (public client)
       // so the secret is not required for the token exchange. If Clerk is configured
       // as a confidential client, set this env var in the shell before `npm run dev`,
@@ -137,8 +137,6 @@ function startBackend() {
       ...(process.env.CONXA_CLERK_CLIENT_SECRET
         ? { CONXA_CLERK_CLIENT_SECRET: process.env.CONXA_CLERK_CLIENT_SECRET }
         : {}),
-      CONXA_CLOUD_API:
-        process.env.CONXA_CLOUD_API || "https://apis.conxa.in",
       // In dev, add source paths so Python can import conxa_core and conxa_compile
       // without requiring a full pip install. In packaged mode these directories
       // don't exist on disk and the frozen bundle has everything it needs — omit them.
@@ -258,7 +256,7 @@ ipcMain.handle("update:check", async () => {
   if (IS_DEV) {
     return { available: false, currentVersion };
   }
-  const CLOUD_API = process.env.CONXA_CLOUD_API || "https://apis.conxa.in";
+  const CLOUD_API = conxaEnv.resolve().cloudApi;
   try {
     const res = await fetch(`${CLOUD_API}/api/v1/updates/studio-manifest`, {
       signal: AbortSignal.timeout(8000),

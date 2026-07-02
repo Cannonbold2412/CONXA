@@ -2,6 +2,44 @@
 
 ---
 
+## Fully isolated Development and Production environments — 2026-07-02
+
+Until now there was no clean way to build and test new things without risking the live
+Production system. Settings, folders, and web addresses all pointed at Production by
+default, and "am I in Production?" was guessed from several separate switches that had to
+be set just right by hand. This change introduces **one master switch** so Development and
+Production are completely separate and can even run on the same computer at the same time
+without stepping on each other.
+
+**One switch: `CONXA_ENV=dev` or `CONXA_ENV=prod`.** Flip it and everything follows — which
+settings file loads (`.env.dev` vs `.env.prod`), which folders get used, which web address
+things talk to, and which updates you receive. There are ready-to-copy `.env.dev.example`
+and `.env.prod.example` templates (for the app and the website).
+
+**Development and Production never share anything.** Dev keeps its files under
+`~/.conxa-dev` and `~/.conxa-build-studio-dev`; Prod stays in `~/.conxa` and
+`~/.conxa-build-studio`. Dev talks to a local (or separate dev) cloud; Prod talks to the
+live one. Dev uses the payment sandbox; Prod uses real payments. Installers built in Dev
+even register a separate "conxa-dev" entry in Claude Desktop, so a Dev agent and a Prod
+agent can run side by side.
+
+**An easy launcher.** `./scripts/conxa.sh dev studio` (or `make dev-studio`, and
+`conxa.ps1` on Windows) starts any piece in the environment you pick — no need to remember
+a dozen settings.
+
+**Production only gets tested, promoted releases.** Development builds are labeled as
+previews (e.g. `app-v1.3.0-dev.1`) and go onto a separate "dev" update track. When a build
+is proven good, a promotion step copies that *exact same signed file* onto the "stable"
+track that Production uses — Production is never handed something that wasn't tested first,
+and nothing is rebuilt in between (so it can't accidentally change).
+
+**Two safety fixes along the way.** (1) A prod-labeled server now refuses to start if login
+protection is turned off, catching a dangerous misconfiguration early; the Render config
+now also lists every value Production needs so it can't silently boot half-configured.
+(2) Fixed a spot where the runtime could save Dev login tokens into the Production folder.
+
+---
+
 ## Phase 2 production-readiness: billing limits, cache cleanup, drift warnings, friendlier errors — 2026-07-01
 
 This batch closes four of the remaining "Production Readiness" gaps and lays groundwork for two more.

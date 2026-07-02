@@ -54,6 +54,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve release channel
+        # Prerelease tags (app-v1.3.0-dev.1 / -beta.N / -rc.N) publish to the DEV
+        # update channel on the dev cloud; clean semver tags publish to STABLE on
+        # the prod cloud. The promotion workflow later re-publishes a tested dev
+        # version to stable — Prod never receives an un-promoted build.
+        shell: pwsh
+        run: |
+          $v = "$env:APP_VERSION"
+          if ($v -match '-(dev|beta|rc|alpha)') { $channel = "dev"; $pre = "true" }
+          else                                  { $channel = "stable"; $pre = "false" }
+          Write-Output "CHANNEL=$channel"      | Out-File -Append $env:GITHUB_ENV
+          Write-Output "IS_PRERELEASE=$pre"    | Out-File -Append $env:GITHUB_ENV
+          Write-Output "Channel: $channel (prerelease=$pre)"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -176,17 +190,21 @@ jobs:
             ${{ env.APP_BUNDLE_ZIP }}  ${{ env.APP_BUNDLE_SHA256 }}
             ```
           files: runtime/${{ env.APP_BUNDLE_ZIP }}
-          prerelease: false
+          prerelease: ${{ env.IS_PRERELEASE }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish conxa_app version to the unified signed manifest
-        # Writes into the component_versions KV store; the cloud endpoint recomposes
-        # and re-signs the full manifest.json immediately after. No private signing
-        # key material touches this runner.
-        if: vars.CLOUD_API_URL != ''
+        # Writes into the channel's component_versions KV store; the cloud endpoint
+        # recomposes and re-signs that channel's manifest.json immediately after. No
+        # private signing key material touches this runner. Dev tags target the dev
+        # cloud/channel; stable tags target the prod cloud/channel.
         run: |
+          $channel = "$env:CHANNEL"
+          if ($channel -eq "dev") { $api = "$env:CLOUD_API_URL_DEV"; $token = "$env:CLOUD_ADMIN_TOKEN_DEV" }
+          else                    { $api = "$env:CLOUD_API_URL";     $token = "$env:CLOUD_ADMIN_TOKEN" }
+          if (-not $api) { Write-Output "No cloud API configured for channel '$channel' — skipping publish"; exit 0 }
           $body = @{
             version      = "$env:APP_VERSION"
             min_host     = "$env:MIN_HOST"
@@ -195,11 +213,13 @@ jobs:
               @{ filename = "conxa-app-$env:APP_VERSION.zip"; url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:APP_VERSION/conxa-app-$env:APP_VERSION.zip"; sha256 = "$env:APP_BUNDLE_SHA256" }
             )
           } | ConvertTo-Json -Depth 5
-          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/admin/component-versions/conxa_app" `
+          Invoke-RestMethod -Uri "$api/api/v1/admin/component-versions/conxa_app?channel=$channel" `
             -Method POST -Body $body -ContentType "application/json" `
-            -Headers @{ Authorization = "Bearer $env:CLOUD_ADMIN_TOKEN" }
-          Write-Output "Manifest posted: app-$env:APP_VERSION"
+            -Headers @{ Authorization = "Bearer $token" }
+          Write-Output "Manifest posted to '$channel': app-$env:APP_VERSION"
         shell: pwsh
         env:
-          CLOUD_API_URL:    ${{ vars.CLOUD_API_URL }}
-          CLOUD_ADMIN_TOKEN: ${{ secrets.CLOUD_ADMIN_TOKEN }}
+          CLOUD_API_URL:         ${{ vars.CLOUD_API_URL }}
+          CLOUD_ADMIN_TOKEN:     ${{ secrets.CLOUD_ADMIN_TOKEN }}
+          CLOUD_API_URL_DEV:     ${{ vars.CLOUD_API_URL_DEV }}
+          CLOUD_ADMIN_TOKEN_DEV: ${{ secrets.CLOUD_ADMIN_TOKEN_DEV }}

@@ -827,14 +827,23 @@ def _write_skill_packs_format(
     This format is consumed by conxa-runtime.exe (the installer-distributed MCP server).
     The legacy skills/ layout is kept untouched for backward compatibility.
     """
-    from conxa_core.config import settings
+    from conxa_core.config import settings, active_environment
 
     company      = bundle_slug
+    # Resolve the public base that gets FROZEN into pack.json (sync + tracking) from
+    # the active environment, so a dev-built installer embeds the dev cloud and a
+    # prod-built one embeds prod — consistently across BOTH sync_endpoint and
+    # tracking_url. Explicit overrides win; then SKILL_API_BASE_URL from .env.<env>;
+    # then an env-appropriate default. (The old code defaulted to prod and separately
+    # special-cased tracking to localhost, which could split the two across envs.)
+    _env = active_environment()
+    _env_default_base = f"http://127.0.0.1:{settings.port}" if _env == "dev" else "https://apis.conxa.in"
     api_base     = (
         conxa_api_url
         or os.environ.get("CONXA_API_URL")
         or os.environ.get("CONXA_CLOUD_API")
-        or "https://apis.conxa.in"
+        or (settings.api_base_url or "").strip()
+        or _env_default_base
     ).rstrip("/")
     tracking_base = os.environ.get("CONXA_TRACKING_API_URL", api_base).rstrip("/")
     tracking_events_url = os.environ.get("CONXA_TRACKING_EVENTS_URL", "").strip()
@@ -958,13 +967,9 @@ def _write_skill_packs_format(
         from conxa_core.db import db_set
         db_set("tracking_tokens", company, {"token": _tracking_token, "version": version})
 
-    # In local dev (no secret, no explicit URL overrides), point to the local API server
-    # so the dashboard at localhost receives run data immediately.
-    _explicit_url  = os.environ.get("CONXA_TRACKING_EVENTS_URL", "").strip()
-    _explicit_base = (os.environ.get("CONXA_API_URL", "") or os.environ.get("CONXA_CLOUD_API", "")).strip()
-    if not _tracking_secret and not _explicit_url and not _explicit_base:
-        tracking_events_url = f"http://127.0.0.1:{settings.port}/api/tracking/{company}/events"
-
+    # tracking_events_url already derives from the env-consistent api_base above
+    # (via tracking_base), so no per-env localhost special-case is needed — dev builds
+    # embed the dev cloud, prod builds embed prod, for both sync and tracking.
     pack["tracking"] = {
         "enabled":          True,
         "tracking_url":     tracking_events_url,

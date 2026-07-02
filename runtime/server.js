@@ -304,6 +304,9 @@ async function _checkForUpdates() {
     apiUrl: CONXA_API,
     conxaDir: CONXA_DIR,
     installId: INSTALL_ID,
+    // Pull only this install's update channel — dev installs never see stable, and
+    // deployed prod installs never see dev prereleases. Defaults to stable.
+    channel: process.env.CONXA_UPDATE_CHANNEL || "stable",
     publicKeyB64: (typeof global !== "undefined" && global.__manifestPublicKey) || "",
     isComponentBusy: (component) => component === "conxa_app" && activeExecution !== null,
     log,

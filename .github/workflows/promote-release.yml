@@ -1,0 +1,127 @@
+name: Promote Release (dev → stable)
+
+# Promote a fully tested DEV runtime component to the STABLE channel that
+# production runtimes pull from — WITHOUT a rebuild. It fetches the exact signed
+# artifact that was validated on the dev channel, verifies its SHA-256 byte-for-
+# byte, republishes the identical bytes under the clean stable tag, and posts the
+# stable manifest record. This is the ONLY path by which Prod receives a release:
+# nothing reaches stable that was not built, signed, and tested in Dev first.
+#
+# Signing is unchanged — the cloud re-signs the stable manifest with the same
+# server-side Ed25519 key the runtime's baked-in public key already verifies.
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Component to promote"
+        required: true
+        type: choice
+        options: [conxa_runtime, conxa_app]
+      source_version:
+        description: "Tested dev version (e.g. app-v1.3.0-dev.1)"
+        required: true
+      target_version:
+        description: "Clean stable version (e.g. app-v1.3.0)"
+        required: true
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create the stable GitHub Release
+    env:
+      COMPONENT:      ${{ inputs.component }}
+      SOURCE_VERSION: ${{ inputs.source_version }}
+      TARGET_VERSION: ${{ inputs.target_version }}
+      GH_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          prefix=$([ "$COMPONENT" = "conxa_app" ] && echo "app" || echo "host")
+          # Target must be a CLEAN semver tag for the right component — no prerelease suffix.
+          if [[ ! "$TARGET_VERSION" =~ ^${prefix}-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "target_version '$TARGET_VERSION' must be a clean ${prefix}-vX.Y.Z tag"; exit 1
+          fi
+          if [[ ! "$SOURCE_VERSION" =~ ^${prefix}-v ]]; then
+            echo "source_version '$SOURCE_VERSION' does not match component '$COMPONENT'"; exit 1
+          fi
+          if [ -z "${CLOUD_API_URL_DEV:-}" ] || [ -z "${CLOUD_API_URL:-}" ]; then
+            echo "Both CLOUD_API_URL_DEV and CLOUD_API_URL repo vars must be set"; exit 1
+          fi
+        env:
+          CLOUD_API_URL_DEV: ${{ vars.CLOUD_API_URL_DEV }}
+          CLOUD_API_URL:     ${{ vars.CLOUD_API_URL }}
+
+      - name: Fetch the tested dev record
+        run: |
+          set -euo pipefail
+          curl -fsSL "$CLOUD_API_URL_DEV/api/v1/manifest.json?channel=dev" -o dev-manifest.json
+          rec=$(jq -c ".${COMPONENT}" dev-manifest.json)
+          echo "$rec" > dev-record.json
+          got=$(jq -r '.version' dev-record.json)
+          if [ "$got" != "$SOURCE_VERSION" ]; then
+            echo "Dev channel currently serves '$got', not '$SOURCE_VERSION' — refusing to promote a version that is not the one live on dev."; exit 1
+          fi
+          echo "Promoting the dev record for $SOURCE_VERSION"
+          jq . dev-record.json
+        env:
+          CLOUD_API_URL_DEV: ${{ vars.CLOUD_API_URL_DEV }}
+
+      - name: Download + verify artifacts (byte-identity gate)
+        run: |
+          set -euo pipefail
+          mkdir -p promote
+          # For each file: download the exact dev asset, verify its SHA-256, and copy
+          # to its stable filename (version substring swapped; bytes untouched → hash
+          # is identical, which we assert below).
+          jq -c '.files[]' dev-record.json | while read -r f; do
+            url=$(jq -r '.url' <<<"$f")
+            sha=$(jq -r '.sha256' <<<"$f")
+            name=$(jq -r '.filename' <<<"$f")
+            target_name="${name//$SOURCE_VERSION/$TARGET_VERSION}"
+            echo "↓ $name  ($sha)"
+            curl -fsSL "$url" -o "promote/$target_name"
+            actual=$(sha256sum "promote/$target_name" | awk '{print $1}')
+            if [ "$actual" != "$sha" ]; then
+              echo "SHA-256 mismatch for $name: manifest=$sha actual=$actual"; exit 1
+            fi
+            echo "✓ verified, staged as $target_name (same bytes → same hash)"
+          done
+
+      - name: Publish stable GitHub Release
+        run: |
+          set -euo pipefail
+          if gh release view "$TARGET_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TARGET_VERSION" promote/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TARGET_VERSION" promote/* --repo "$GITHUB_REPOSITORY" \
+              --title "$TARGET_VERSION" \
+              --notes "Promoted from $SOURCE_VERSION (dev channel). Byte-identical, SHA-256 verified."
+          fi
+
+      - name: Post stable manifest record (prod cloud)
+        run: |
+          set -euo pipefail
+          # Rebuild files[] with the stable tag's download URLs; SHA-256 values are the
+          # verified dev hashes (bytes are identical). min_host (for conxa_app) carries
+          # over from the tested dev record.
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TARGET_VERSION"
+          files=$(jq -c --arg src "$SOURCE_VERSION" --arg tgt "$TARGET_VERSION" --arg base "$base" '
+            [ .files[] | { filename: (.filename | gsub($src; $tgt)), sha256: .sha256 }
+                       | .url = ($base + "/" + .filename) ]' dev-record.json)
+          body=$(jq -n --arg v "$TARGET_VERSION" --argjson files "$files" \
+            --argjson minhost "$(jq -c '.min_host // null' dev-record.json)" '
+            { version: $v, released_at: (now | todateiso8601), files: $files }
+            + ( if $minhost == null then {} else { min_host: $minhost } end )')
+          echo "$body" | jq .
+          curl -fsSL -X POST \
+            "$CLOUD_API_URL/api/v1/admin/component-versions/$COMPONENT" \
+            -H "Authorization: Bearer $CLOUD_ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body"
+          echo "Promoted $COMPONENT $TARGET_VERSION to the stable channel."
+        env:
+          CLOUD_API_URL:     ${{ vars.CLOUD_API_URL }}
+          CLOUD_ADMIN_TOKEN: ${{ secrets.CLOUD_ADMIN_TOKEN }}

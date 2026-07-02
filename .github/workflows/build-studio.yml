@@ -98,7 +98,9 @@ jobs:
             conxa-builder/electron/dist/studio/*.exe
             conxa-builder/electron/dist/studio/*.exe.blockmap
             conxa-builder/electron/dist/studio/latest*.yml
-          prerelease: ${{ contains(env.STUDIO_VERSION, 'beta') }}
+          # Dev-lane prereleases (studio-v1.3.0-dev.N / -beta.N / -rc.N) are marked
+          # prerelease so the stable auto-updater channel never offers them.
+          prerelease: ${{ contains(env.STUDIO_VERSION, '-dev') || contains(env.STUDIO_VERSION, 'beta') || contains(env.STUDIO_VERSION, '-rc') }}
           fail_on_unmatched_files: true
 
       - name: Upload installer artifact

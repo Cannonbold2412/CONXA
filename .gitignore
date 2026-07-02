@@ -31,6 +31,9 @@ env/
 .env.*
 !.env.example
 !*.env.example
+# Per-environment templates are tracked; the real .env.dev / .env.prod are not.
+!.env.dev.example
+!.env.prod.example
 frontend/.env.local
 frontend/.env*.local
 credentials.json

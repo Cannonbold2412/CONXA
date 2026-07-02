@@ -116,7 +116,7 @@ function _downloadBuffer(url, timeoutMs) {
 // the cache file is only ever written after a successful verify, so re-serving it is
 // always safe.
 async function fetchManifest(apiUrl, cacheFile, options = {}) {
-  const { cacheTtlMs = 60 * 60 * 1000, publicKeyB64, log = () => {} } = options;
+  const { cacheTtlMs = 60 * 60 * 1000, publicKeyB64, log = () => {}, channel } = options;
 
   if (fs.existsSync(cacheFile)) {
     try {
@@ -127,7 +127,8 @@ async function fetchManifest(apiUrl, cacheFile, options = {}) {
 
   let manifest;
   try {
-    manifest = await _fetchJSON(`${apiUrl}/api/v1/manifest.json`, 8000);
+    const q = channel ? `?channel=${encodeURIComponent(channel)}` : "";
+    manifest = await _fetchJSON(`${apiUrl}/api/v1/manifest.json${q}`, 8000);
   } catch (e) {
     log("warn", "manifest_fetch_failed", { reason: e.message });
     return _lastVerifiedCache(cacheFile);
@@ -279,13 +280,13 @@ async function updateAppComponent(componentDir, entry, log = () => {}) {
 // broadcasts one company's proprietary workflow checksums to every other install.
 async function checkForUpdates(ctx) {
   const {
-    apiUrl, conxaDir, installId, publicKeyB64,
+    apiUrl, conxaDir, installId, publicKeyB64, channel,
     isComponentBusy = () => false, // e.g. () => activeExecution !== null
     log = () => {},
   } = ctx;
 
   const cacheFile = path.join(conxaDir, "manifest.json");
-  const manifest = await fetchManifest(apiUrl, cacheFile, { publicKeyB64, log });
+  const manifest = await fetchManifest(apiUrl, cacheFile, { publicKeyB64, log, channel });
   if (!manifest) { log("warn", "manifest_unavailable", {}); return { manifest: null }; }
 
   const minimums = manifest.minimum_versions || {};

@@ -1183,6 +1183,57 @@ In production (`SKILL_AUTH_REQUIRED=true`), the app refuses to start without `SK
 
 ## 16. Deployment Architecture
 
+### 16.0 Dev/Prod Environment Isolation
+
+A single switch, **`CONXA_ENV`** (`dev` | `prod`), selects one of two fully isolated
+stacks so Development and Production coexist on one machine with zero interference and
+Production only ever receives releases promoted from Dev.
+
+**The switch resolves everywhere from one variable:**
+- **Python (cloud + Studio backend):** `conxa_core.config.active_environment()` reads
+  `CONXA_ENV` and loads `.env.{dev,prod}` (`env_files()`), sets the first-class
+  `settings.environment`, and a model-validator refuses to boot a `prod`-labeled
+  process with auth off. `state_base_dir()` honors `CONXA_STUDIO_HOME` so Studio state
+  splits into `~/.conxa-build-studio-dev` vs `~/.conxa-build-studio`.
+- **Runtime (`runtime/env.js`, applied once at the top of `bootstrap.js`):** normalizes
+  `process.env` with the per-env `CONXA_DIR` / `CONXA_DATA_DIR` / `CONXA_APP_DIR` /
+  `CONXA_UPDATE_CHANNEL` / `CONXA_API_URL`. **Safety default = prod** (a shipped install
+  with no `CONXA_ENV` must keep its `~/.conxa` tree and the `stable` channel); dev is
+  opt-in. The cloud/Studio side defaults the *other* way (dev), because the danger on a
+  developer workstation is accidentally touching prod.
+- **Studio (`conxa-builder/electron/env.js`):** injects the dev/prod cloud, Clerk, and
+  `CONXA_STUDIO_HOME` into the spawned Python backend. Shipped default = prod.
+
+**Isolation matrix**
+
+| Concern | Dev | Prod | Lever |
+|---|---|---|---|
+| Env file | `.env.dev` | `.env.prod` | `CONXA_ENV` → `env_files()` |
+| Runtime install/data | `~/.conxa-dev` / `Conxa-Dev` | `~/.conxa` / `Conxa` | `CONXA_DIR`, `CONXA_DATA_DIR` |
+| Studio state | `~/.conxa-build-studio-dev` | `~/.conxa-build-studio` | `CONXA_STUDIO_HOME` |
+| Cloud API | `127.0.0.1:8000` / `dev-apis` | `apis.conxa.in` | `CONXA_CLOUD_API`, `CONXA_API_URL` |
+| Update channel | `dev` | `stable` | `CONXA_UPDATE_CHANNEL` → `?channel=` |
+| MCP server entry | `conxa-dev` | `conxa` | NSIS `MCP_SERVER` (build-time) |
+| Billing | Cashfree `TEST` | Cashfree `PROD` | `CASHFREE_ENV` |
+
+**Operator switch:** `scripts/conxa.sh <dev|prod> <backend|frontend|studio|runtime>`
+(`conxa.ps1` on Windows; `make dev-*` / `make prod-*` shortcuts). It exports `CONXA_ENV`
+plus the isolated path roots, then launches the target.
+
+**pack.json invariant:** `sync_endpoint` and `tracking_url` are frozen into each pack at
+publish time from the cloud's `SKILL_API_BASE_URL` (`plugin_builder.py`). Because Dev
+publishes against the dev cloud, dev-built installers embed dev URLs — a dev installer
+never phones home to prod. Both sync and tracking now derive from one env-consistent base.
+
+**Release flow (promotion, never rebuild):** dev prerelease tags (`app-v1.3.0-dev.1`,
+`host-…-dev.N`, `studio-…-dev.N`) build in CI and publish to the **dev** update channel on
+the dev cloud (`CLOUD_API_URL_DEV`). Once validated, `promote-release.yml` fetches the
+*exact signed artifact* from the dev channel, verifies its SHA-256 byte-for-byte,
+republishes the identical bytes under the clean stable tag, and posts the **stable**
+manifest record on the prod cloud. Signing is unchanged — the same server-side Ed25519 key
+signs both channels; the runtime's baked-in public key verifies both. Prod runtimes poll
+`?channel=stable` only, so un-promoted dev builds are invisible to them.
+
 ### 16.1 Cloud Backend (Render)
 
 ```

@@ -32,6 +32,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve release channel
+        # Prerelease tags (host-v1.2.0-dev.1 / -beta.N / -rc.N) publish to the DEV
+        # channel on the dev cloud; clean semver tags publish to STABLE on prod.
+        shell: pwsh
+        run: |
+          $v = "$env:HOST_VERSION"
+          if ($v -match '-(dev|beta|rc|alpha)') { $channel = "dev"; $pre = "true" }
+          else                                  { $channel = "stable"; $pre = "false" }
+          Write-Output "CHANNEL=$channel"   | Out-File -Append $env:GITHUB_ENV
+          Write-Output "IS_PRERELEASE=$pre" | Out-File -Append $env:GITHUB_ENV
+          Write-Output "Channel: $channel (prerelease=$pre)"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -142,18 +154,21 @@ jobs:
           files: |
             runtime/dist/conxa-runtime.exe
             runtime/keytar.node
-          prerelease: false
+          prerelease: ${{ env.IS_PRERELEASE }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish conxa_runtime version to the unified signed manifest
-        # Writes into the component_versions KV store; the cloud endpoint recomposes
-        # and re-signs the full manifest.json immediately after. No private signing
-        # key material touches this runner — signing happens cloud-side with
-        # CONXA_MANIFEST_SIGNING_KEY, which CI never sees.
-        if: vars.CLOUD_API_URL != ''
+        # Writes into the channel's component_versions KV store; the cloud endpoint
+        # recomposes and re-signs that channel's manifest.json immediately after. No
+        # private signing key material touches this runner — signing happens cloud-side
+        # with CONXA_MANIFEST_SIGNING_KEY, which CI never sees.
         run: |
+          $channel = "$env:CHANNEL"
+          if ($channel -eq "dev") { $api = "$env:CLOUD_API_URL_DEV"; $token = "$env:CLOUD_ADMIN_TOKEN_DEV" }
+          else                    { $api = "$env:CLOUD_API_URL";     $token = "$env:CLOUD_ADMIN_TOKEN" }
+          if (-not $api) { Write-Output "No cloud API configured for channel '$channel' — skipping publish"; exit 0 }
           $body = @{
             version      = "$env:HOST_VERSION"
             released_at  = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
@@ -162,13 +177,16 @@ jobs:
               @{ filename = "keytar.node";       url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:HOST_VERSION/keytar.node";       sha256 = "$env:KEYTAR_SHA256" }
             )
           } | ConvertTo-Json -Depth 5
-          Invoke-RestMethod -Uri "$env:CLOUD_API_URL/api/v1/admin/component-versions/conxa_runtime" `
+          Invoke-RestMethod -Uri "$api/api/v1/admin/component-versions/conxa_runtime?channel=$channel" `
             -Method POST -Body $body -ContentType "application/json" `
-            -Headers @{ Authorization = "Bearer $env:CLOUD_ADMIN_TOKEN" }
+            -Headers @{ Authorization = "Bearer $token" }
+          Write-Output "Manifest posted to '$channel': $env:HOST_VERSION"
         shell: pwsh
         env:
-          CLOUD_API_URL:    ${{ vars.CLOUD_API_URL }}
-          CLOUD_ADMIN_TOKEN: ${{ secrets.CLOUD_ADMIN_TOKEN }}
+          CLOUD_API_URL:         ${{ vars.CLOUD_API_URL }}
+          CLOUD_ADMIN_TOKEN:     ${{ secrets.CLOUD_ADMIN_TOKEN }}
+          CLOUD_API_URL_DEV:     ${{ vars.CLOUD_API_URL_DEV }}
+          CLOUD_ADMIN_TOKEN_DEV: ${{ secrets.CLOUD_ADMIN_TOKEN_DEV }}
 
   # ── macOS host layer (Phase 2.4) — scaffolding, disabled ────────────────────
   # Skeleton for producing the macOS host binary + arm64/x64 keytar.node and

@@ -9,6 +9,37 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def active_environment() -> str:
+    """Resolve the active deployment environment from ``CONXA_ENV``.
+
+    This is *the single switch* for the whole platform. It selects which
+    ``.env.<env>`` file is loaded (see ``Settings.model_config`` below) and which
+    isolated tree of paths / endpoints / update channel everything derives from.
+
+    Defaults to ``"dev"`` when unset — fail *safe*, not fail *prod*: an
+    unconfigured process must never silently target production. ``prod`` is opt-in
+    only via an explicit ``CONXA_ENV=prod``. Values other than dev/prod (e.g. a
+    future ``staging``) pass through unchanged.
+    """
+    raw = os.environ.get("CONXA_ENV", "").strip().lower()
+    if raw in ("prod", "production"):
+        return "prod"
+    if raw in ("", "dev", "development", "local"):
+        return "dev"
+    return raw
+
+
+def env_files() -> tuple[str, ...]:
+    """Env files pydantic loads, lowest-priority first.
+
+    Legacy ``.env`` is read first (backward compatibility), then the
+    environment-specific ``.env.<env>`` overrides it — so an existing ``.env``
+    acts as a shared base while ``.env.dev`` / ``.env.prod`` carry the values that
+    differ between lanes and always win.
+    """
+    return (".env", f".env.{active_environment()}")
+
+
 def state_base_dir() -> Path:
     """Writable base directory for generated runtime state (``data/``, ``output/``).
 
@@ -17,7 +48,14 @@ def state_base_dir() -> Path:
     ``~/.conxa-build-studio``, keeping all Build Studio state under one root alongside
     the deps cache. Development keeps the in-repo source default so ``pip install -e``
     and ``python backend.py`` workflows are unchanged.
+
+    ``CONXA_STUDIO_HOME`` overrides the root entirely. The dev/prod launcher sets it
+    (``~/.conxa-build-studio-dev`` vs ``~/.conxa-build-studio``) so the two lanes
+    keep fully separate deps caches, sandboxes, and generated bundles on one machine.
     """
+    override = os.environ.get("CONXA_STUDIO_HOME", "").strip()
+    if override:
+        return Path(os.path.expanduser(override))
     if getattr(sys, "frozen", False):
         return Path(os.path.expanduser("~/.conxa-build-studio"))
     return Path(__file__).resolve().parent.parent
@@ -42,7 +80,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="SKILL_",
-        env_file=".env",
+        env_file=env_files(),
         extra="ignore",
         populate_by_name=True,
     )
@@ -90,7 +128,14 @@ class Settings(BaseSettings):
     gc_interval_secs: int = 6 * 60 * 60
     # Directory name at project root for generated bundles (default skill_package). Overrides .skill_bundle_root after UI rename.
     package_bundle_root: str = "skill_package"
-    environment: str = "local"
+    # First-class deployment environment — the single switch. Sourced from CONXA_ENV
+    # (or SKILL_ENVIRONMENT) and normalized to "dev"/"prod". Cross-checked against
+    # auth_required below so a mislabeled config (prod env with auth off, or real
+    # auth while labeled dev) refuses to boot instead of silently misbehaving.
+    environment: str = Field(
+        default_factory=active_environment,
+        validation_alias=AliasChoices("SKILL_ENVIRONMENT", "CONXA_ENV"),
+    )
 
     # Public API / browser boundary.
     cors_allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
@@ -288,6 +333,16 @@ class Settings(BaseSettings):
     cashfree_pro_plan_id: str = Field(default="", validation_alias="CASHFREE_PRO_PLAN_ID")
     cashfree_env: str = Field(default="TEST", validation_alias="CASHFREE_ENV")  # TEST | PROD
 
+    @field_validator("environment", mode="before")
+    @classmethod
+    def _normalize_environment(cls, value: object) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in ("prod", "production"):
+            return "prod"
+        if raw in ("", "dev", "development", "local"):
+            return "dev"
+        return raw
+
     @field_validator("package_bundle_root", mode="before")
     @classmethod
     def _strip_package_bundle_root(cls, value: object) -> str:
@@ -386,6 +441,29 @@ class Settings(BaseSettings):
                 ))
 
         return result
+
+    @model_validator(mode="after")
+    def _require_env_auth_consistency(self) -> "Settings":
+        """Cross-check the environment label against the real auth posture.
+
+        The old design inferred prod from a scatter of independent flags; nothing
+        stopped ``environment=prod`` from running with auth off — a silent,
+        dangerous misconfig (public cloud with no authentication). Enforce the one
+        direction that matters: a prod-labeled process MUST have auth enabled.
+
+        The reverse (auth on while labeled ``dev``) is intentionally allowed — a
+        hosted dev *tier* runs real Clerk auth against its own dev instance. Bypass
+        with ``SKILL_ALLOW_ENV_MISMATCH=1`` for the rare deliberate case.
+        """
+        if os.environ.get("SKILL_ALLOW_ENV_MISMATCH") == "1":
+            return self
+        if self.environment == "prod" and not self.auth_required:
+            raise ValueError(
+                "CONXA_ENV=prod but SKILL_AUTH_REQUIRED is false. Production must run "
+                "with auth enabled. Set SKILL_AUTH_REQUIRED=true (and the Clerk/DB/"
+                "Cashfree values main.py requires), or use CONXA_ENV=dev for local work."
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_at_least_one_provider(self) -> "Settings":

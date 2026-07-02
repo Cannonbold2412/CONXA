@@ -20,7 +20,10 @@ function _getKeytar() {
   } catch (e) {
     // keytar unavailable — fall back to plaintext file (dev/testing only)
     _keytar = {
-      _file: path.join(process.env.CONXA_DATA_DIR || require("os").homedir() + "/.conxa", "cache", ".keytar.json"),
+      // Honor the resolved CONXA_DATA_DIR (set per-env by bootstrap's env.apply())
+      // so dev tokens land in the dev tree, never the prod ~/.conxa. Uses path.join
+      // instead of the old string concat, which mis-joined the fallback.
+      _file: path.join(process.env.CONXA_DATA_DIR || path.join(require("os").homedir(), ".conxa"), "cache", ".keytar.json"),
       _load() {
         try { return JSON.parse(fs.readFileSync(this._file, "utf8")); } catch (_) { return {}; }
       },
