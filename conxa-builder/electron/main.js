@@ -124,6 +124,13 @@ function startBackend() {
     env: {
       ...process.env,
       SKILL_ALLOW_NO_PROVIDERS: "1",
+      // conxa_core's Settings cross-checks environment=prod against SKILL_AUTH_REQUIRED
+      // (see _require_env_auth_consistency) — a safeguard meant for the cloud backend's
+      // Clerk-JWT gate. Studio's local Python process never sets SKILL_AUTH_REQUIRED (it
+      // authenticates via PKCE in auth_service.py, not that flag), so with the prod
+      // default from env.js below every packaged install would fail this check on
+      // startup. Bypass it here — it doesn't apply to Studio.
+      SKILL_ALLOW_ENV_MISMATCH: "1",
       // Dev/prod cloud + auth + Studio-state config, resolved by env.js. Defaults
       // to prod (the shipped Studio publishes to the production cloud); an explicit
       // CONXA_ENV=dev (from the launcher) selects the isolated dev lane. Any single

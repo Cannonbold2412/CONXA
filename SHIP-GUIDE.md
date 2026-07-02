@@ -271,6 +271,75 @@ something new or rebuilt.
 
 ---
 
+## Step-by-step: shipping conxa-app, conxa-runtime, and Build Studio
+
+This is Feature 12 above, written out as a full walkthrough for each of the three things you
+can actually ship a change in.
+
+### conxa-app (and conxa-runtime/host, if that changed too) — automated dev → stable pipeline
+
+1. **Commit your change** to whatever branch, then merge to main.
+2. **Cut a dev prerelease tag** and push it:
+   ```bash
+   git tag app-v1.3.0-dev.1
+   git push origin app-v1.3.0-dev.1
+   ```
+   (For a host-layer change, use `host-v1.3.0-dev.1` instead — same pattern.)
+
+   The `-(dev|beta|rc|alpha)` suffix is what routes it. Pushing this tag triggers
+   `build-runtime-app.yml` (or `build-runtime-host.yml` for the host), which builds,
+   obfuscates, zips, publishes a GitHub Release marked `prerelease`, and posts the manifest to
+   the **dev cloud** (`CLOUD_API_URL_DEV`). Production is untouched at this point.
+3. **Test it on dev.** Point a test runtime install at the dev channel, let it self-update via
+   `manifest.json?channel=dev`, and verify it behaves correctly end-to-end. This is where
+   `runtime/test/gate_replay.js` (real skill replay) should run before anything ships — it's
+   currently noted as temporarily disabled in the workflow, so don't skip a manual pass.
+4. **Promote to stable** — manually trigger the **Promote Release** workflow
+   (`promote-release.yml`, run via `workflow_dispatch` in GitHub → Actions) with:
+   - `component`: `conxa_app` (or `conxa_runtime` for a host-layer change)
+   - `source_version`: `app-v1.3.0-dev.1` — must match what's *currently live* on dev, or the
+     workflow refuses to run.
+   - `target_version`: `app-v1.3.0` — a clean semver tag, no prerelease suffix.
+
+   This workflow does **not** rebuild anything. It fetches the exact dev artifact, re-verifies
+   its SHA-256, re-uploads the identical bytes under the clean stable tag, and posts the stable
+   manifest record to the **prod cloud admin API**, which re-signs `manifest.json?channel=stable`
+   with the Ed25519 key.
+5. **Production runtimes pick it up automatically** on their next update poll — signature
+   verified against the baked-in public key, SHA-256 verified, then `bootstrap.js` does the
+   atomic swap with `.bak` rollback if anything goes wrong.
+
+### Build Studio — no promotion step, this one is manual
+
+There is no dev/stable manifest system for Build Studio. It ships differently:
+
+1. Commit your change.
+2. Tag it:
+   - `studio-v1.2.3-beta.1` to test — this marks the GitHub Release `prerelease`, so it will
+     **not** reach the stable auto-update channel.
+   - `studio-v1.2.3` for a real release.
+
+   Either tag triggers `build-studio.yml`, which runs `electron-builder publish` straight to a
+   GitHub Release.
+3. **To make it live**, you must manually update Render env vars on the `conxa-api` service:
+   `CONXA_STUDIO_VERSION`, `CONXA_STUDIO_WIN_URL`, `CONXA_STUDIO_WIN_SHA256`, and
+   `CONXA_STUDIO_WIN_SHA512`. The `/api/v1/updates/studio-manifest` endpoint — the one the
+   dashboard and the Studio's own self-updater read from — is driven entirely by these env
+   vars. Nothing promotes automatically the way conxa-app/conxa-runtime do.
+
+### If the source repo goes private, does any of this change?
+
+No — same tags, same triggers, same `workflow_dispatch` for promotion. The one thing that
+breaks is the **URLs these steps produce**. `promote-release.yml` and the cloud's
+`_release_url()` helper both build links like
+`https://github.com/<repo>/releases/download/...`, which become authenticated-fetch-only once
+the repo is private — a plain customer machine with no GitHub token gets a 404/401. That's the
+exact problem `research-analysis/private-repo-migration.md` covers. Fix it once (point releases
+at a Conxa-owned artifact base instead of GitHub Releases) and this shipping process is
+otherwise unaffected by repo visibility.
+
+---
+
 ## Feature 13 — Hosted Dev cloud tier (optional)
 
 **What it is.** A second cloud on Render that mirrors Production, for full end-to-end testing

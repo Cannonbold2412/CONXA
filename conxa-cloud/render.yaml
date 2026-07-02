@@ -46,6 +46,9 @@ services:
         sync: false
       - key: SKILL_TRACKING_HMAC_SECRET
         sync: false
+      # Signs time-limited installer download links (SG-07).
+      - key: SKILL_INSTALLER_SIGNING_KEY
+        sync: false
       # Cashfree billing — LIVE.
       - key: CASHFREE_ENV
         value: PROD

@@ -2,6 +2,28 @@
 
 ---
 
+## Fixed a production outage caused by a missing deploy setting — 2026-07-02
+
+The live cloud service (`conxa-api` on Render) crashed on startup right after the last
+security fixes went out, refusing to boot with: *"SKILL_TRACKING_HMAC_SECRET" and
+"SKILL_INSTALLER_SIGNING_KEY" are unset*.
+
+This wasn't a bug — the app was correctly refusing to start half-configured. The real
+problem: those security fixes introduced a new required setting
+(`SKILL_INSTALLER_SIGNING_KEY`), but the deployment checklist files (`render.yaml`,
+`.env.prod.example`) were never updated to include it, so there was no place to even enter
+a value for it.
+
+**Fixed:**
+- Added the missing setting to both deployment checklist files so it's no longer possible
+  to forget it on the next deploy.
+- Generated two secure random values and set them directly on the live service.
+- Confirmed the service redeployed cleanly and is responding to health checks again.
+
+Total downtime: about 2 minutes from crash to confirmed-healthy.
+
+---
+
 ## Closed the last 4 open security gaps (Medium severity) — 2026-07-02
 
 Went through the 4 remaining open items in `docs/Security.md` and fixed each one in code
