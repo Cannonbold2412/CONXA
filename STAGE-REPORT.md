@@ -9,7 +9,7 @@
 
 Conxa is **past Alpha and MVP, but not ready for Open Beta or General Availability**.
 
-The core product loop — Record → Compile → Package → Publish → Install → Execute — works end-to-end. Real infrastructure is in place: cloud backend, billing gateway, telemetry, authentication, self-updating runtime. However, significant foundational gaps remain open: RBAC is scaffolded but not enforced, Windows SmartScreen will block installers (no code signing), billing quotas are not enforced, delta sync ships full packs every time, and rate limiting is in-memory only. A critical production bug (broken element finder in the `.exe`) was fixed on 2026-06-27, and CI safety nets are still being wired.
+The core product loop — Record → Compile → Package → Publish → Install → Execute — works end-to-end. Real infrastructure is in place: cloud backend, billing gateway, telemetry, authentication, self-updating runtime. Several foundational gaps have since closed (RBAC enforced, billing quotas enforced, per-skill delta sync, persistent rate limiting, plain-English errors, pre-execution drift warnings, scheduled cache GC). The main remaining gap is Windows code signing (SmartScreen still warns until an EV/OV certificate is added — the CI/config plumbing is scaffolded), plus macOS distribution. A critical production bug (broken element finder in the `.exe`) was fixed on 2026-06-27, and CI safety nets are still being wired.
 
 The right label is **Private Beta**: validated with internal users or hand-picked design partners, but not ready to be handed to general end-customers without supervision.
 
@@ -76,9 +76,9 @@ The entire end-to-end workflow works:
 | Gap | What it means for users | Location |
 |---|---|---|
 | ~~**RBAC not enforced**~~ **RESOLVED (2026-07-01)** | `require_admin` now guards publish, plugin create/delete, and bundle release (403 for non-admin/owner) | `app/services/rbac.py` enforced in `publish_routes.py`, `plugin_routes.py`, `product_routes.py` |
-| **No Windows code signing** | Windows SmartScreen shows "Unknown Publisher" warning and may block install for non-technical users | `installer_builder.py` — no `signtool.exe` step |
-| **Billing quotas not enforced** | Plans exist (Free/Starter/Pro/Enterprise) but no limit on workflows, token usage, or installs | `app/services/saas.py`, `razorpay_routes.py` |
-| **macOS runtime not distributable** | Build scripts reference macOS targets but no macOS installer builder exists | `installer_builder.py` — Windows only |
+| **No Windows code signing** (scaffolded) | Windows SmartScreen shows "Unknown Publisher" warning and may block install for non-technical users. Signing plumbing wired (CI env, electron-builder keys); needs an EV/OV certificate | `installer_builder.py` signtool block (dormant), `build-studio.yml`, `electron-builder.yml` |
+| ~~**Billing quotas not enforced**~~ **RESOLVED (2026-07-01)** | Plan limits enforced at publish, compile-credit reservation, and Human-Edit pool; enforce flags on by default (provider is **Cashfree**, not Razorpay) | `app/services/entitlements.py`, `publish_routes.py`, `llm_proxy_routes.py`, `config.py` |
+| **macOS runtime not distributable** (scaffolded) | Build scripts reference macOS targets; inert CI job added but no macOS installer builder yet. Needs Apple account + notarization | `installer_builder.py` — Windows only; `build-runtime-host.yml` mac job (`if: false`) |
 
 ### Medium-Severity Gaps — Block Open Beta
 
@@ -86,9 +86,9 @@ The entire end-to-end workflow works:
 |---|---|---|
 | ~~**Delta sync sends all files**~~ **RESOLVED (2026-07-01)** | Per-skill diffing: republishing one skill no longer re-ships the whole pack (residual: a changed skill sends its ~5 small JSON files) | `_build_delta()` in `skillpack_update_routes.py` uses `component_versions` KV |
 | ~~**Rate limit is in-memory**~~ **RESOLVED (2026-07-01)** | Limit persisted in the KV store — survives restarts, shared across instances | `rate_limits` namespace via `conxa_core.db` in `skillpack_update_routes.py` |
-| **Error messages are raw codes** | Users in Build Studio see strings like `cloud_unreachable`, `auth_file_in_build_input` instead of plain-English explanations | No `errorMessages.ts` map yet |
-| **No pre-execution drift detection** | `structural_fingerprint` is compiled but never checked before execution starts | `runtime/run.js` — post-hoc repair events work; pre-exec gate open |
-| **Selector cache GC not scheduled** | Cache grows without bound; GC function exists but no cron or startup task runs it | `snapshots_gc.py` — unscheduled |
+| ~~**Error messages are raw codes**~~ **RESOLVED (2026-07-01)** | Build Studio maps codes like `cloud_unreachable`, `auth_file_in_build_input` to plain-English text | `renderer/src/lib/errorMessages.ts` + `errorMessage()` in `workflowApi.ts` |
+| ~~**No pre-execution drift detection**~~ **RESOLVED (2026-07-01)** | `structural_fingerprint` now plumbed into the runtime manifest and checked before step 0; emits `drift_detected` (warn-not-block) | `runtime/drift.js`, `runtime/run.js`, `plugin_builder.py`, `tracking_routes.py` |
+| ~~**Selector cache GC not scheduled**~~ **RESOLVED (2026-07-01)** | New expired-entry sweep + snapshot GC run on a background loop in the cloud lifespan | `selector_cache.cleanup_expired_entries()`, `main.py` lifespan, `snapshots_gc.py` |
 | ~~**Nonce store in-memory**~~ **MOOT** | CLI auth flow was removed (sync-token model); no nonce store exists | n/a |
 
 ### Low-Severity Gaps — Tech Debt
@@ -120,13 +120,13 @@ Phase 1 — Architecture Consolidation — ✅ COMPLETE (updated 2026-07-01)
 
 Phase 2 — Production Readiness (6–10 weeks estimated)
   ✅ 2.1  Device & runtime registration (cloud has visibility)
-  ⬜ 2.2  Drift detection pre-execution (post-hoc works; pre-exec gate open)
+  ✅ 2.2  Drift detection pre-execution (warn-not-block landmark gate; drift_detected → /drift queue) — 2026-07-01
   ✅ 2.3  Audit log (was returning empty [])
-  ⬜ 2.4  macOS runtime support (no installer builder)
-  ⬜ 2.5  Windows code signing (SmartScreen blocks unknown publisher)
-  ⬜ 2.6  Selector cache GC scheduler
-  ⬜ 2.7  Billing plan enforcement (quota, feature limits)
-  ⬜ 2.8  User-friendly error messages in Build Studio
+  🟡 2.4  macOS runtime support — scaffolded (inert CI job); needs Apple account + notarization + installer format
+  🟡 2.5  Windows code signing — scaffolded (CI/env/electron-builder plumbing); needs EV/OV certificate
+  ✅ 2.6  Selector cache GC scheduler (background sweep in cloud lifespan) — 2026-07-01
+  ✅ 2.7  Billing plan enforcement (quota + feature limits enforced; enforce flags on) — 2026-07-01
+  ✅ 2.8  User-friendly error messages in Build Studio (errorMessages.ts map) — 2026-07-01
   ✅ 2.9  Final Selector Architecture (multi-signal identity, recovery, drift queue)
   ✅      Runtime split architecture (89 MB → 60 KB code updates)
 
@@ -148,7 +148,7 @@ Phase 4 — AI Agent Platform (12–24 weeks, parallel with Phase 3)
 
 **Phase completion summary:**
 - Phase 1: ✅ **100% complete** (all 8 items done, superseded, or moot as of 2026-07-01)
-- Phase 2: ~50% complete (4 of 9 items done)
+- Phase 2: ~78% complete (7 of 9 items done; 2.4 macOS and 2.5 code signing scaffolded, blocked on external assets)
 - Phase 3: 0% (not started)
 - Phase 4: 0% (not started)
 
@@ -173,14 +173,14 @@ All commits since 2026-06-20 have been in the `ci:` and `fix:` namespaces — ha
 
 ### To reach **Open Beta** (hand it to anyone who signs up)
 1. ✅ Wire RBAC to all write routes (publish, delete, plugin create/delete, release) — DONE
-2. Obtain and wire Windows code signing certificate
-3. Enforce billing plan limits at publish and compile time
+2. Obtain and wire Windows code signing certificate (plumbing scaffolded; cert pending)
+3. ✅ Enforce billing plan limits at publish and compile time — DONE (2026-07-01)
 4. ✅ Real per-skill delta sync (whole-pack transfer eliminated) — DONE
 5. ✅ Shared/persistent rate limit (KV store, restart + multi-instance safe) — DONE
-6. Replace raw error codes with user-friendly messages in Build Studio UI
+6. ✅ Replace raw error codes with user-friendly messages in Build Studio UI — DONE (2026-07-01)
 
-**Remaining for Open Beta: Windows code signing, billing enforcement, error-message UX
-(all Phase 2). Phase 1 is complete.**
+**Remaining for Open Beta: Windows code signing (needs an EV/OV certificate; CI/config
+plumbing already scaffolded). Billing enforcement and error-message UX are now complete.**
 
 ### To reach **General Availability (GA)**
 Everything above, plus:
@@ -217,11 +217,8 @@ If you put Conxa in front of a hand-picked technical user or a friendly SaaS par
 - Execution telemetry streaming back to the vendor dashboard
 
 **What they will bump into:**
-- Windows SmartScreen warning on installer install (code signing missing)
-- Any workspace member can accidentally publish over another's work (RBAC unenforced)
-- No macOS support
-- Raw error codes if something goes wrong in the Build Studio
-- Billing is present but not enforcing limits
+- Windows SmartScreen warning on installer install (code signing scaffolded, cert pending)
+- No macOS support (scaffolded, pending Apple assets)
 
 ---
 
@@ -235,11 +232,11 @@ If you put Conxa in front of a hand-picked technical user or a friendly SaaS par
 | Auth (Build Studio) | **Working** | Clerk PKCE → OS keyring |
 | Auth (Runtime) | **Working** | Sync token in installer; no customer login |
 | Skill sync | **Working** | Full-pack (delta TBD) |
-| Billing gateway | **Wired, not enforced** | Razorpay/Cashfree; plan limits not checked |
+| Billing gateway | **Wired + enforced** | Cashfree; plan limits checked at publish, compile credits, Human-Edit pool |
 | RBAC | **Enforced on write routes** | `require_admin` on publish, plugin create/delete, bundle release |
-| Code signing | **Missing** | SmartScreen warning |
-| macOS support | **Missing** | Windows only |
-| Error UX | **Raw codes** | No user-friendly message map |
+| Code signing | **Scaffolded** | Plumbing wired; SmartScreen warning until EV/OV cert added |
+| macOS support | **Scaffolded** | Windows only; inert macOS CI job pending Apple assets |
+| Error UX | **Plain-English** | `errorMessages.ts` code→message map |
 | Enterprise features | **Not started** | SSO, version history, on-prem |
 | Compliance | **Not started** | SOC 2, GDPR, data residency |
 

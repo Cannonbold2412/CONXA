@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { cmd, CmdError } from "@/lib/ipc";
+import { cmd } from "@/lib/ipc";
+import { errorMessage } from "@/api/workflowApi";
 import { useBackendEvents } from "@/hooks/usePythonCmd";
 
 type StepState = "pending" | "running" | "done" | "error";
@@ -81,7 +82,7 @@ export function CompileProgress() {
         );
       })
       .catch((e) => {
-        setError(e instanceof CmdError ? e.message : String(e));
+        setError(errorMessage(e, "Compile failed."));
         setOverallStatus("error");
         setSteps((prev) =>
           prev.map((s) =>

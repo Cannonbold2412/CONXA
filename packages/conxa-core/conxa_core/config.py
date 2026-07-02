@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     snapshot_surrounding_text_radius_px: int = 200
     snapshot_capture_a11y: bool = True
     snapshot_retention_days: int = 30
+    # Interval for the background GC that prunes expired selector-cache entries
+    # and old session-snapshot blobs. 0 disables the scheduler (e.g. tests, local).
+    gc_interval_secs: int = 6 * 60 * 60
     # Directory name at project root for generated bundles (default skill_package). Overrides .skill_bundle_root after UI rename.
     package_bundle_root: str = "skill_package"
     environment: str = "local"
@@ -111,9 +114,13 @@ class Settings(BaseSettings):
     # requests carrying the X-Conxa-Client header below.
     llm_proxy_monthly_token_quota: int = 5_000_000
     llm_proxy_client_header: str = "build-studio"
-    entitlements_enforce_compile: bool = False
-    entitlements_enforce_human_edit: bool = False
-    entitlements_enforce_installers: bool = False
+    # Plan-aware quota enforcement. Enabled by default so paid plans are honored
+    # in production; workspaces on the `development` plan (unlimited limits) and
+    # any plan whose limit resolves to None are never blocked, so local dev is
+    # unaffected. Tests that need enforcement off flip these per-case.
+    entitlements_enforce_compile: bool = True
+    entitlements_enforce_human_edit: bool = True
+    entitlements_enforce_installers: bool = True
     entitlements_reservation_ttl_secs: int = 30 * 60
 
     # Production backing services. The local MVP still has file-backed fallbacks.

@@ -790,6 +790,15 @@ def _build_workflow_from_saved_skill(
     (skill_dir / "input.json").write_text(dumps_safe({"inputs": inputs}, indent=2, ensure_ascii=False), encoding="utf-8")
     (skill_dir / "SKILL.md").write_text(scrub_text(_render_saved_skill_markdown(title, inputs, execution_steps)), encoding="utf-8")
 
+    # Carry the compiled structural fingerprint through to the runtime pack so the
+    # runtime can run a pre-execution drift check. It rides on SkillMeta and would
+    # otherwise be dropped by _write_skill_packs_format (which reads from disk).
+    structural_fp = meta.get("structural_fingerprint")
+    if isinstance(structural_fp, dict) and structural_fp.get("landmarks"):
+        (skill_dir / "structural_fingerprint.json").write_text(
+            dumps_safe(structural_fp, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
 
 # ─────────────────────────────────────────────────
 # skill-packs/{company}/ output format
@@ -895,6 +904,17 @@ def _write_skill_packs_format(
             except Exception:
                 pass
 
+        # Structural fingerprint (optional) for the runtime's pre-execution drift gate.
+        structural_fp: dict[str, Any] = {}
+        fp_src = src_dir / "structural_fingerprint.json"
+        if fp_src.is_file():
+            try:
+                loaded = json.loads(fp_src.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    structural_fp = loaded
+            except (OSError, json.JSONDecodeError):
+                structural_fp = {}
+
         manifest = {
             "slug":             slug,
             "name":             skill_name,
@@ -904,6 +924,7 @@ def _write_skill_packs_format(
             "company":          company,
             "target_url":       target_url,
             "inputs_required":  inputs_required,
+            "structural_fingerprint": structural_fp,
             "checksum":         checksums,
         }
         (dest_dir / "manifest.json").write_text(

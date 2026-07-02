@@ -60,6 +60,14 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
     if usage_class not in ALLOWED_USAGE_CLASSES:
         raise HTTPException(status_code=400, detail="invalid_usage_class")
 
+    # Two complementary meters guard this proxy:
+    #   * llm_metering — a flat, plan-blind per-org monthly *token* quota. It is a
+    #     global abuse backstop only; it does not know about plan tiers.
+    #   * entitlements  — the plan-aware layer. Compile *runs* are metered as
+    #     `compile_credits` via the reserve/commit/release protocol that Build
+    #     Studio drives around each compile (see backend.py), NOT per proxy call,
+    #     so compile-class calls are only token-metered here. Human-edit calls are
+    #     charged against the plan's human-edit token pool below.
     if usage_class == "compile" and llm_metering.quota_exceeded(org_id, settings.llm_proxy_monthly_token_quota):
         raise HTTPException(status_code=429, detail="quota_exceeded")
 

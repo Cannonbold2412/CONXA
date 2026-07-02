@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cmd } from '@/lib/ipc'
+import { errorMessage } from '@/api/workflowApi'
 import type { Identity } from '@/contexts/AuthContext'
 
 export function LoginOverlay({ onLogin }: { onLogin: (identity: Identity) => void }) {
@@ -20,7 +21,7 @@ export function LoginOverlay({ onLogin }: { onLogin: (identity: Identity) => voi
         setLoading(false)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.')
+      setError(errorMessage(err, 'Sign-in failed. Please try again.'))
       setLoading(false)
     }
   }

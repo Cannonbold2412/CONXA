@@ -1,5 +1,6 @@
-import { cmd } from '@/lib/ipc'
+import { cmd, CmdError } from '@/lib/ipc'
 import type { BackendEvent } from '@/lib/ipc'
+import { errorMessages } from '@/lib/errorMessages'
 import type { WorkflowResponse } from '../types/workflow'
 
 export { RECORDING_SCREENSHOT_DRAG_MIME, RECORDING_DRAG_MODE_CLEAR_VISUAL } from '@/lib/dragConstants'
@@ -18,6 +19,11 @@ export class SkillPackBuildRequestError extends Error {
 }
 
 export const errorMessage = (err: unknown, fallback: string) => {
+  // Prefer friendly copy keyed on the backend error code, then the raw backend
+  // message, then the caller's fallback.
+  if (err instanceof CmdError && errorMessages[err.code]) {
+    return errorMessages[err.code]
+  }
   if (err instanceof Error) {
     const msg = err.message.trim()
     if (msg) return msg

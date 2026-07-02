@@ -130,7 +130,7 @@ endpoints (`run_routes.py` events, `job_routes.py` cancel) are left open by desi
 **What was present:** more than just config — `product_routes.py` carried live but orphaned
 Stripe `checkout`/`portal`/`webhook` endpoints, `security.py` whitelisted the webhook,
 `saas.py` computed a `stripe_configured` flag, the frontend surfaced it, and `stripe>=11.0.0`
-was a backend dependency. The wired gateway is Razorpay/Cashfree.
+was a backend dependency. The wired gateway is Cashfree (`cashfree_routes.py`).
 
 **What was removed:** the three Stripe endpoints + `_stripe_client` helper, the
 `/api/v1/webhooks/stripe` public-path entry, the `stripe_configured` billing flag (backend
@@ -184,7 +184,14 @@ billing enforcement, error-message UX).
 
 ### 2.2 Implement Drift Detection
 
-**What's designed but not implemented:** `SkillMeta.structural_fingerprint` stores the hash of the first 3 steps' landmark selectors. This was designed for pre-execution drift detection.
+**✅ Implemented (2026-07-01).** The pre-execution gate ships. `structural_fingerprint` is now
+plumbed from `SkillMeta` into the runtime `manifest.json` (`plugin_builder.py`) and checked at run
+start in `runtime/drift.js` (called from `runPlan` in `run.js`). It scores the recorded landmarks
+against the live page with the pure resolver (no LLM) and emits `drift_detected` — warn only, never
+blocks. The cloud aggregates these per plugin version and surfaces them at `GET /drift`
+(`_pre_exec_drift_queue`). Unit tests: `runtime/test/test_drift.js`, `tests/test_skill_pack_fingerprint.py`.
+
+**Original design notes:** `SkillMeta.structural_fingerprint` stores the hash of the first 3 steps' landmark selectors. This was designed for pre-execution drift detection.
 
 **Fix:**
 - In `runtime/run.js`, before executing step 0: check if current page's landmark selectors match `structural_fingerprint`.
@@ -312,9 +319,15 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 ### 2.6 Selector Cache GC
 
-**What's present:** Selector cache (`conxa_core/storage/selector_cache.py`) has a `ttl_days` config (30 days). GC function exists (`snapshots_gc.py`).
+**✅ Implemented (2026-07-01).** `snapshots_gc.py` only covered session snapshot blobs; the selector
+cache had *no* bulk GC (only lazy per-read expiry, which never deleted). Added
+`selector_cache.cleanup_expired_entries()` (purges expired KV entries + on-disk cache files) and a
+background loop in the cloud lifespan (`main.py`) that runs it plus `cleanup_old_snapshots()` at
+startup and every `gc_interval_secs` (default 6h). Test: `tests/test_selector_cache_gc.py`.
 
-**What's missing:** No scheduled job runs the GC. The cache grows without bound.
+**Original notes — What's present:** Selector cache (`conxa_core/storage/selector_cache.py`) has a `ttl_days` config (30 days). GC function exists (`snapshots_gc.py`).
+
+**Was missing:** No scheduled job ran the GC. The cache grew without bound.
 
 **Fix:**
 - Add a startup task (or Render cron job) to run selector cache GC on schedule.
@@ -326,29 +339,31 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 ### 2.7 Hardened Billing Integration
 
-**What's present:** Razorpay routes exist (`razorpay_routes.py`). Config fields are wired. Webhook handling is present.
+**✅ Implemented (2026-07-01).** Correction to earlier notes: the payment provider is **Cashfree**
+(`cashfree_routes.py`), not Razorpay, and a full entitlements service already existed
+(`app/services/entitlements.py`, `PLAN_LIMITS` for Free/Starter/Pro/Enterprise/development) — it was
+simply gated off. This item: (a) turned the `entitlements_enforce_*` flags on by default
+(`config.py`); (b) added a plan/installer-slot gate at publish (`publish_routes.py`); (c) kept
+compile-credit enforcement via the existing reserve→commit→release protocol Build Studio already
+drives (`backend.py`), and the Human-Edit token pool at the LLM proxy; (d) reconciled the flat
+`llm_metering` token backstop with the plan-aware meters (documented inline in `llm_proxy_routes.py`);
+(e) derived the Billing-page feature copy from `PLAN_LIMITS` so numbers can't drift. `development` and
+any `None` limit stay unlimited, so local dev is unaffected.
 
-**What's missing (assumed — not fully reviewed):** Plan enforcement (quota, feature limits) based on subscription status.
-
-**Fix:**
-- Define plan tiers (Free, Starter, Pro, Enterprise) with limits (max workflows, max token quota, max installs).
-- Enforce limits at publish and compile time.
-- Surface plan status in Build Studio and Dashboard.
-
-**Files:** `app/services/saas.py`, `razorpay_routes.py`, `llm_proxy_routes.py`
+**Files:** `app/services/entitlements.py`, `app/api/publish_routes.py`, `app/api/llm_proxy_routes.py`, `app/api/cashfree_routes.py`, `packages/conxa-core/conxa_core/config.py`
 
 ---
 
 ### 2.8 Error Code User-Friendly Mapping (UI)
 
-**What's broken:** Raw error codes (`cloud_unreachable`, `quota_exceeded`, `auth_file_in_build_input`) are shown to users in the Build Studio renderer.
+**✅ Implemented (2026-07-01).** Added `renderer/src/lib/errorMessages.ts` (a `Record<code, message>`
+covering the full backend `_CommandError` set plus transport codes) and upgraded the shared
+`errorMessage(err, fallback)` helper in `workflowApi.ts` to prefer `errorMessages[err.code]`, then the
+raw backend message, then the caller's fallback. Direct `.message` display sites (BuildInstallerPage,
+CompileProgress, RecordingFeed, SetupWizard, LoginOverlay) now route through the helper; the many
+`toast.error(errorMessage(...))` sites improve automatically.
 
-**Fix:**
-- Create an error code → human message map in `conxa-builder/electron/renderer/src/lib/`.
-- Every error displayed to the user goes through this map.
-- Unknown codes show: "Unexpected error: {code}. Contact support."
-
-**Files:** `conxa-builder/electron/renderer/src/lib/errorMessages.ts` (new)
+**Files:** `conxa-builder/electron/renderer/src/lib/errorMessages.ts` (new), `renderer/src/api/workflowApi.ts`, and the display sites above
 
 ---
 

@@ -2,6 +2,38 @@
 
 ---
 
+## Phase 2 production-readiness: billing limits, cache cleanup, drift warnings, friendlier errors — 2026-07-01
+
+This batch closes four of the remaining "Production Readiness" gaps and lays groundwork for two more.
+
+**Billing now actually enforces plan limits.** The plans (Free/Starter/Pro/Enterprise) existed but
+nothing stopped a workspace from going over. Now, when someone is on a paid plan, the cloud checks
+their limits before letting them publish a new product, use up compile credits, or use their monthly
+"Human Edit" allowance — and returns a clear "limit reached" message instead of silently allowing it.
+Local development and the unlimited "development" plan are unaffected. We also made the pricing text
+shown on the Billing page come straight from the real limits, so the numbers can never drift apart.
+
+**The selector cache now cleans up after itself.** The app remembers how to find buttons and fields
+on customer sites, but old entries were never deleted and would pile up forever. A background janitor
+now runs every few hours (and once at startup) to sweep out expired cache entries and old page
+snapshots, so disk use stays flat.
+
+**Skills now warn when a website has been redesigned.** Each skill records a "fingerprint" of the
+first few things it interacts with. Before a skill runs, the runtime now quietly checks whether those
+landmarks are still on the page. If most of them have vanished — a sign the site was redesigned — it
+sends a heads-up to the vendor dashboard. This never blocks the skill from running; it just flags it
+for review.
+
+**Error messages in Build Studio are now in plain English.** Instead of seeing raw codes like
+`cloud_unreachable` or `auth_file_in_build_input`, users now see sentences like "Can't reach Conxa
+Cloud right now. Check your internet connection and try again."
+
+**Windows code signing and macOS support — groundwork only.** We wired up the plumbing (build
+settings, environment variables, an inert macOS build job) so that once a Windows signing certificate
+and an Apple developer account are purchased, turning these on is a small step. Until then, Windows
+still shows an "Unknown Publisher" warning and there is no macOS build — these need external accounts
+we can't create in code.
+
 ## Added a strategy write-up for TwelveLabs video understanding — 2026-07-02
 
 **What's new.** A new document, `docs/twelvelabs-video-understanding-strategy.md`, explaining where

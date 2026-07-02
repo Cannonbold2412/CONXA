@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from conxa_core.config import settings
-from conxa_core.db import db_get, db_set
+from conxa_core.db import db_delete, db_get, db_list_kv, db_set, using_database
 
 
 _NAMESPACE = "selector_cache"
+
+_logger = logging.getLogger(__name__)
 
 
 def _cache_dir() -> Path:
@@ -119,6 +122,82 @@ def invalidate(dom_hash: str) -> int:
             except (OSError, json.JSONDecodeError):
                 pass
     return count
+
+
+def cleanup_expired_entries() -> dict[str, int]:
+    """Purge selector-cache entries older than the configured TTL.
+
+    ``get()`` only expires lazily on read and never deletes, so without this
+    sweep the KV namespace and the on-disk JSON cache grow without bound. This
+    removes expired entries from both backing stores.
+
+    Returns stats: ``{deleted_kv, deleted_files, error_count}``.
+    """
+    now = time.time()
+    ttl = _ttl_seconds()
+    stats = {"deleted_kv": 0, "deleted_files": 0, "error_count": 0}
+
+    def _is_expired(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        created = float(entry.get("created_at") or 0.0)
+        return bool(created) and (now - created) > ttl
+
+    # KV namespace. With a real database the listed key is the exact stored key,
+    # so db_delete round-trips. In filesystem-fallback mode keys are hashed into
+    # opaque filenames (see conxa_core.db._fs_path), so db_delete cannot address
+    # them by the listed stem — delete those backing files directly instead.
+    try:
+        if using_database():
+            for key, entry in db_list_kv(_NAMESPACE):
+                if _is_expired(entry):
+                    try:
+                        db_delete(_NAMESPACE, key)
+                        stats["deleted_kv"] += 1
+                    except Exception:  # noqa: BLE001
+                        stats["error_count"] += 1
+        else:
+            kv_dir = settings.data_dir / "kv" / _NAMESPACE
+            if kv_dir.is_dir():
+                for path in kv_dir.glob("*.json"):
+                    try:
+                        entry = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        stats["error_count"] += 1
+                        continue
+                    if _is_expired(entry):
+                        try:
+                            path.unlink()
+                            stats["deleted_kv"] += 1
+                        except OSError:
+                            stats["error_count"] += 1
+    except Exception:  # noqa: BLE001
+        stats["error_count"] += 1
+
+    # Content-addressed file cache under cache/selectors/ (written on every set()).
+    base = _cache_dir()
+    if base.is_dir():
+        for path in base.glob("*.json"):
+            try:
+                entry = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                stats["error_count"] += 1
+                continue
+            if _is_expired(entry):
+                try:
+                    path.unlink()
+                    stats["deleted_files"] += 1
+                except OSError:
+                    stats["error_count"] += 1
+
+    if stats["deleted_kv"] or stats["deleted_files"]:
+        _logger.info(
+            "Selector cache GC: purged %d KV entries and %d files (errors: %d)",
+            stats["deleted_kv"],
+            stats["deleted_files"],
+            stats["error_count"],
+        )
+    return stats
 
 
 def hit_rate(window_keys: list[str] | None = None) -> dict[str, Any]:

@@ -7,5 +7,18 @@
   "company": "gate",
   "target_url": "",
   "inputs_required": ["fixture_url"],
+  "structural_fingerprint": {
+    "landmarks": [
+      {
+        "intent": "click the gate button",
+        "primary_selector": "[data-testid=\"gate-btn\"]",
+        "data_testid": "gate-btn",
+        "aria_label": "",
+        "inner_text": "Click Me",
+        "tag": "button"
+      }
+    ],
+    "landmark_count": 1
+  },
   "checksum": {}
 }

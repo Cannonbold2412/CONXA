@@ -8,6 +8,7 @@ const { mapErrorToCode } = require("./tracker");
 const { classifyException, remedyFor, buildRepairEvent, CLASS } = require("./recovery");
 const { resolve: resolveSignals } = require("./resolver");
 const { signalToLocator, gatherCandidates, bundleFingerprint } = require("./resolve_adapter");
+const { detectPreExecDrift } = require("./drift");
 
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 
@@ -982,7 +983,7 @@ function stepFailure(step, stepIndex, cause, preShot) {
   return err;
 }
 
-async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, observerMs, downloadQueue } = {}) {
+async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, observerMs, downloadQueue, structuralFingerprint } = {}) {
   const t = tracker || { emit: () => {} };
   const paceOpts = { observerMs: observerMs ?? 600 };
   let recoveredSteps = 0;
@@ -992,6 +993,25 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
   // Settle the page before the first step so step 0 doesn't fire against a still-hydrating SPA.
   // Uses the same timeout constant as navigation waits; best-effort (catch swallowed).
   await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
+
+  // Pre-execution drift gate (advisory only). On a fresh run, check whether the
+  // pack's recorded structural landmarks are still present. If most have vanished
+  // the target app was likely redesigned — emit a signal for the fleet dashboard.
+  // This NEVER blocks: execution proceeds and per-step recovery still applies.
+  if (startFrom === 0 && structuralFingerprint && Array.isArray(structuralFingerprint.landmarks) && structuralFingerprint.landmarks.length) {
+    try {
+      const verdict = await detectPreExecDrift(page, structuralFingerprint);
+      if (verdict.drift) {
+        t.emit("drift_detected", {
+          total: verdict.total,
+          missing: verdict.missing,
+          drift_ratio: Number(verdict.driftRatio.toFixed(3)),
+          missing_intents: (verdict.missingIntents || []).slice(0, 5),
+          url: (() => { try { return page.url(); } catch (_) { return ""; } })(),
+        });
+      }
+    } catch (_) { /* advisory gate never affects execution */ }
+  }
 
   for (let i = startFrom; i < steps.length; i++) {
     if (cancelCheck && cancelCheck()) {

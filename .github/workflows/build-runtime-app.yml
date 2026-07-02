@@ -11,6 +11,11 @@ name: Build Runtime App Layer
 # Obfuscation (self-defending, string-array rc4) still protects the source.
 #
 # Tag format: app-v<semver>  (e.g. app-v1.2.0)
+#
+# macOS (Phase 2.4): the app layer is platform-neutral obfuscated JS — the same
+# zip loads on the macOS host once it exists — so no separate macOS app job is
+# needed here. The macOS work lives in build-runtime-host.yml (host binary +
+# keytar.node + notarization), which is the OS-specific piece.
 
 on:
   push:
@@ -71,7 +76,7 @@ jobs:
             "server.js", "sync.js", "run.js", "browser.js",
             "skill_loader.js", "tracker.js", "install_identity.js",
             "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
-            "version_manager.js", "manifest_manager.js"
+            "drift.js", "version_manager.js", "manifest_manager.js"
           )
           foreach ($f in $files) {
             javascript-obfuscator $f `
@@ -113,7 +118,7 @@ jobs:
           $files = @(
             "server", "sync", "run", "browser",
             "skill_loader", "auth_manager", "tracker", "install_identity",
-            "bootstrap", "recovery", "resolve_adapter", "resolver", "version_manager",
+            "bootstrap", "recovery", "resolve_adapter", "resolver", "drift", "version_manager",
             "manifest_manager"
           )
           foreach ($base in $files) {

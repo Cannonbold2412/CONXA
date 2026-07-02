@@ -9,6 +9,7 @@ import {
   type Plugin,
 } from '@/api/pluginApi'
 import { fetchEntitlements } from '@/api/usageApi'
+import { errorMessage } from '@/api/workflowApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -276,7 +277,7 @@ export function BuildInstallerPage() {
       setInstallerDone(true)
       void pluginsQ.refetch()
     } catch (err) {
-      setInstallerError(err instanceof Error ? err.message : 'Installer build failed')
+      setInstallerError(errorMessage(err, 'Installer build failed'))
     } finally {
       setBuilding(false)
     }

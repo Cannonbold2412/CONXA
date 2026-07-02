@@ -169,3 +169,38 @@ jobs:
         env:
           CLOUD_API_URL:    ${{ vars.CLOUD_API_URL }}
           CLOUD_ADMIN_TOKEN: ${{ secrets.CLOUD_ADMIN_TOKEN }}
+
+  # ── macOS host layer (Phase 2.4) — scaffolding, disabled ────────────────────
+  # Skeleton for producing the macOS host binary + arm64/x64 keytar.node and
+  # publishing them to the signed runtime manifest. Kept inert (`if: false`)
+  # until the external prerequisites exist:
+  #   * an Apple Developer account + Developer ID cert (secrets: APPLE_CSC_LINK,
+  #     APPLE_CSC_KEY_PASSWORD) and notarytool creds (APPLE_ID, APPLE_APP_PASSWORD,
+  #     APPLE_TEAM_ID),
+  #   * a macOS installer format (.pkg/.dmg) — no macOS installer_builder exists yet,
+  #   * runtime/bootstrap.js + version_manager.js verified on darwin.
+  # `runtime/package.json` already exposes `build:mac` (pkg node24-mac-x64).
+  build-conxa-runtime-macos:
+    if: false
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      HOST_VERSION: ${{ github.ref_name || inputs.tag }}
+      NODE_VERSION: "24.15.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install runtime deps
+        working-directory: runtime
+        run: npm ci
+      - name: Build macOS host binary
+        working-directory: runtime
+        run: npm run build:mac   # → dist/conxa-runtime-mac
+      # TODO(2.4): stage arm64/x64 keytar.node, codesign + notarize (notarytool),
+      # compute SHA-256, upload release asset, and POST the mac entry to the
+      # signed runtime manifest (mirror the Windows publish step above).

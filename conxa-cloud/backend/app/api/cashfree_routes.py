@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
+from app.services.entitlements import PLAN_LIMITS
 from app.services.rbac import require_admin
 from app.services.saas import Principal, ensure_principal, principal_from_request, upsert_billing
 
@@ -36,27 +37,55 @@ def current_principal(request: Request) -> Principal:
     return principal
 
 
+def _plan_features(tier: str) -> list[str]:
+    """Derive the human-readable feature list from the single source of truth
+    (``PLAN_LIMITS`` in the entitlements service) so pricing copy can never drift
+    from what is actually enforced."""
+    limits = PLAN_LIMITS.get(tier, {})
+
+    def _seat(n: int | None) -> str:
+        return "Unlimited seats" if n is None else f"{n} seat" + ("s" if n != 1 else "")
+
+    def _slot(n: int | None) -> str:
+        return "Unlimited installer slots" if n is None else f"{n} installer slot" + ("s" if n != 1 else "")
+
+    def _credits(n: int | None) -> str:
+        return "Unlimited compile credits/month" if n is None else f"{n} compile credits/month"
+
+    def _tokens(n: int | None) -> str:
+        if n is None:
+            return "Unlimited Human Edit tokens/month"
+        return f"{n // 1_000_000}M Human Edit tokens/month"
+
+    return [
+        _seat(limits.get("seats")),
+        _slot(limits.get("installer_slots")),
+        _credits(limits.get("compile_credits")),
+        _tokens(limits.get("human_edit_tokens")),
+    ]
+
+
 TIER_INFO = {
     "free": {
         "name": "Free",
         "amount": 0,
         "currency": "INR",
         "period": None,
-        "features": ["1 seat", "1 installer slot", "50 compile credits/month", "1M Human Edit tokens/month"],
+        "features": _plan_features("free"),
     },
     "starter": {
         "name": "Starter",
         "amount": 29999,  # INR (Cashfree uses actual rupees, not paise)
         "currency": "INR",
         "period": "monthly",
-        "features": ["3 seats", "3 installer slots", "300 compile credits/month", "10M Human Edit tokens/month"],
+        "features": _plan_features("starter"),
     },
     "pro": {
         "name": "Pro",
         "amount": 79999,  # INR
         "currency": "INR",
         "period": "monthly",
-        "features": ["10 seats", "10 installer slots", "1000 compile credits/month", "50M Human Edit tokens/month"],
+        "features": _plan_features("pro"),
     },
 }
 

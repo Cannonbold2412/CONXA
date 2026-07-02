@@ -41,6 +41,17 @@ win:
     - target: nsis
       arch:
         - x64
+  # ── Code signing (Phase 2.5) — scaffolding, awaiting certificate ──────────
+  # Uncomment once an EV/OV code-signing certificate is procured. Without this
+  # the Studio installer is unsigned and Windows SmartScreen shows
+  # "Unknown Publisher". electron-builder reads the cert from the CSC_LINK /
+  # CSC_KEY_PASSWORD env vars wired in build-studio.yml (or set certificateSha1
+  # for a machine-store cert on a signing runner).
+  # signingHashAlgorithms:
+  #   - sha256
+  # certificateSha1: ""        # thumbprint of an installed EV/OV cert, OR
+  # certificateFile: ""        # path to a .pfx (with CSC_KEY_PASSWORD)
+  # rfc3161TimeStampServer: http://timestamp.digicert.com
 
 nsis:
   # Per-user install: no UAC prompt, no wizard, silent update via quitAndInstall().

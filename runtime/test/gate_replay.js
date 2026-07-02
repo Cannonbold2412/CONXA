@@ -90,7 +90,7 @@ activateVersion(appRoot, GATE_VERSION, (versionDir) => {
     const APP_FILES = [
       "server.js", "sync.js", "run.js", "browser.js", "skill_loader.js", "tracker.js",
       "install_identity.js", "bootstrap.js", "recovery.js", "resolve_adapter.js",
-      "resolver.js", "auth_manager.js", "version_manager.js", "manifest_manager.js",
+      "resolver.js", "drift.js", "auth_manager.js", "version_manager.js", "manifest_manager.js",
     ];
     for (const f of APP_FILES) fs.copyFileSync(path.join(RUNTIME_ROOT, f), path.join(versionDir, f));
   }

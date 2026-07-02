@@ -409,6 +409,7 @@ class WorkflowIntentGraph(BaseModel):
 | `tier_ok` | A resolution/recovery tier succeeded | `si`, `tier`, `sel` |
 | `verify_fail` | Post-action VERIFY failed | `si`, `ch` (assertion channel) |
 | `repair_event` | A step was recovered — drift signal for the admin flywheel queue | `step_id`, `tier` (L1/L2), `method`, `score`, `margin`, `stable_hash_match`, `stable_hash`, `drift_hint`, `app_version_fingerprint` |
+| `drift_detected` | Pre-execution structural drift warning (advisory; emitted at run start, never blocks) | `total` (landmarks), `missing`, `drift_ratio`, `missing_intents` (≤5), `url` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
 | `wf_fail` | Workflow failed | `dur`, `fsi` (failed step index), `fc` (failure code) |
 
@@ -416,6 +417,12 @@ class WorkflowIntentGraph(BaseModel):
 It aggregates into the admin drift-review queue at `GET /api/v1/tracking/{company}/drift`
 (keyed by plugin/version/step). Detection is automatic and fleet-wide; a durable fix is always
 an admin-reviewed, manually published re-sign — publishing is never automatic.
+
+**`drift_detected`** is emitted by the runtime before step 0 when most of a pack's recorded
+structural landmarks are no longer present on the live page (a redesign signal). It is advisory —
+execution proceeds and per-step recovery still applies. `GET /api/v1/tracking/{company}/drift`
+returns these separately under `pre_exec` (aggregated per plugin/version by `_pre_exec_drift_queue`),
+alongside the per-step `repair_event` `queue`.
 
 ### 4.2 Stored Event Batch (Cloud)
 
@@ -580,13 +587,20 @@ Request:
 {"reservation_id": "cmp_org_123_plugin_wf_session_attempt"}
 ```
 
-Stable entitlement error details:
-- `compile_credit_limit_exceeded`
-- `human_edit_pool_exceeded`
-- `installer_limit_exceeded`
-- `seat_limit_exceeded`
-- `entitlements_unavailable`
-- `invalid_usage_class`
+Stable entitlement error details (returned as HTTP `402` for quota-exhausted, `403`/`503` for
+config/availability):
+- `compile_credit_limit_exceeded` — 402, compile-credit reservation at limit (checked at `/usage/compile/reserve`)
+- `human_edit_pool_exceeded` — 402, monthly Human-Edit token pool exhausted (checked at the LLM proxy)
+- `installer_limit_exceeded` — 402, plan installer/product-slot limit reached (checked at **publish** and installer upload)
+- `seat_limit_exceeded` — 402, workspace seat limit reached
+- `entitlements_unavailable` — 503, cloud could not evaluate entitlements (quota-gated actions blocked)
+- `invalid_usage_class` — 400
+
+**Enforcement is on by default** (`entitlements_enforce_compile|_human_edit|_installers = True` in
+`config.py`). Workspaces on the `development` plan, or any plan whose limit resolves to `None`
+(e.g. an `enterprise` override), are never blocked. Enforcement points: publish
+(`publish_routes.post_publish`), installer upload, the compile-credit reserve/commit protocol
+(driven by Build Studio around each compile), and the Human-Edit pool at `llm_proxy_routes`.
 
 ### 5.4 Billing
 

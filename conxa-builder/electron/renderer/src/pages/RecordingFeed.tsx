@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { cmd, CmdError } from "@/lib/ipc";
+import { cmd } from "@/lib/ipc";
+import { errorMessage } from "@/api/workflowApi";
 import { useBackendEvents } from "@/hooks/usePythonCmd";
 import { ActionBadge } from "@/components/ActionBadge";
 
@@ -64,7 +65,7 @@ export function RecordingFeed() {
       });
       setSessionId(r.session_id);
     } catch (e) {
-      setError(e instanceof CmdError ? e.message : String(e));
+      setError(errorMessage(e, "Couldn't start recording."));
       setStatus("idle");
     }
   }
@@ -75,7 +76,7 @@ export function RecordingFeed() {
     try {
       await cmd("stop_recording", { session_id: sessionId });
     } catch (e) {
-      setError(e instanceof CmdError ? e.message : String(e));
+      setError(errorMessage(e, "Couldn't stop recording."));
       setStatus("recording");
     }
   }
@@ -89,7 +90,7 @@ export function RecordingFeed() {
       });
       navigate(`/plugins/${encodeURIComponent(pluginId)}/compile/${encodeURIComponent(r.job_id)}`);
     } catch (e) {
-      setError(e instanceof CmdError ? e.message : String(e));
+      setError(errorMessage(e, "Couldn't start compiling."));
     }
   }
 

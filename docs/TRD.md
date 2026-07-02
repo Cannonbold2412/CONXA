@@ -924,6 +924,18 @@ queue at **`GET /api/v1/tracking/{company}/drift`** (`_drift_review_queue`), key
 admin-approved, never automatic** — the endpoint surfaces evidence only and marks entries
 `needs_review`. No re-sign or fleet push happens without an explicit admin action.
 
+### 10.6 Pre-Execution Drift Gate (advisory)
+
+Each pack carries a compiled `structural_fingerprint` (the first ~3 interactive "landmarks" — see
+compiler `_build_structural_fingerprint`), plumbed through `plugin_builder.py` into the runtime
+`manifest.json`. Before executing step 0, `runPlan` calls `runtime/drift.js` `detectPreExecDrift`,
+which locates each landmark on the live page (testid → aria-label → primary selector → text) and
+scores it with the **pure resolver** (`scoreCandidate`, zero LLM). If a majority of landmarks are
+missing (default: ≥50% below a 0.5 agreement threshold) it emits a **`drift_detected`** event.
+This is **warn-not-block** — execution always proceeds and per-step recovery still applies (consistent
+with the zero-token Tier 1/2 rule). The cloud aggregates these per (plugin, version) via
+`_pre_exec_drift_queue` and returns them under `pre_exec` in the `/drift` response.
+
 ### 10.3 Dialog-Scoped Recovery
 
 If the element is expected inside a dialog, recovery first restricts the search to `[role="dialog"]`, `[role="alertdialog"]`, `[aria-modal="true"]`, `.modal`. Fuzzy fallback expands to the full page if no match.
@@ -1224,6 +1236,8 @@ MCP registration is done by the NSIS installer itself: a generated PowerShell sc
 | Gap | Location | Severity | Notes |
 |---|---|---|---|
 | Delta sync ships all files | `skillpack_update_routes.py` | Medium | Code comment: "simplified implementation" |
+| ~~Selector cache GC unscheduled~~ **RESOLVED** | `selector_cache.cleanup_expired_entries()` + `main.py` lifespan | — | Background loop (default 6h + startup) sweeps expired selector-cache entries and old snapshot blobs |
+| ~~Billing quotas not enforced~~ **RESOLVED** | `entitlements.py`, `publish_routes.py`, `llm_proxy_routes.py` | — | Plan limits enforced (publish slot, compile credits, Human-Edit pool); enforce flags on by default; provider is Cashfree |
 | Sync token is a shared installer secret | `sync_tokens` KV + pack.json | Low | Read-only, single-company scope; per-machine session encryption key mitigates session-file risk |
 | ~~Rate limit cache in-memory~~ **RESOLVED** | `rate_limits` KV namespace | — | Persisted in `conxa_core.db`; survives restarts, shared across instances (in-memory fallback in local dev) |
 | ~~Stripe fields in config~~ **RESOLVED** | removed | — | Stripe fully removed (config, endpoints, dep, frontend flag); Razorpay/Cashfree is the wired gateway |

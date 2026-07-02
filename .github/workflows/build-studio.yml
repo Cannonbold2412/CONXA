@@ -81,6 +81,13 @@ jobs:
         run: npx electron-builder --config electron-builder.yml --win --publish never
         env:
           GH_TOKEN: ""
+          # Code signing (Phase 2.5) — scaffolding, awaiting certificate.
+          # Store the base64-encoded .pfx and its password as repo secrets, then
+          # uncomment the matching keys in electron-builder.yml (win:). Until the
+          # secrets exist these are empty and electron-builder produces an
+          # unsigned installer (SmartScreen "Unknown Publisher").
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

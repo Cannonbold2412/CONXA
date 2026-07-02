@@ -5,6 +5,8 @@ hosting, runtime sync/update manifests, and telemetry. Recording, compiling, and
 building all happen locally in the Build Studio.
 """
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,6 +15,8 @@ from fastapi.responses import JSONResponse
 
 from conxa_core.config import settings
 from conxa_core.db import healthcheck, init_db, using_database
+from conxa_core.storage.selector_cache import cleanup_expired_entries
+from conxa_core.storage.snapshots_gc import cleanup_old_snapshots
 
 from app.api.entitlement_routes import router as entitlement_router
 from app.api.job_routes import router as job_router
@@ -63,11 +67,43 @@ def _validate_production_config() -> None:
         )
 
 
+_logger = logging.getLogger(__name__)
+
+
+async def _run_gc_once() -> None:
+    """Run every background GC pass off the event loop (they do blocking IO)."""
+    try:
+        await asyncio.to_thread(cleanup_old_snapshots)
+        await asyncio.to_thread(cleanup_expired_entries)
+    except Exception:  # noqa: BLE001
+        _logger.exception("Background GC pass failed")
+
+
+async def _gc_loop(interval_secs: int) -> None:
+    """Run GC once at startup, then every ``interval_secs``."""
+    while True:
+        await _run_gc_once()
+        await asyncio.sleep(interval_secs)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     _validate_production_config()
     init_db()
-    yield
+    gc_task: asyncio.Task | None = None
+    interval = int(settings.gc_interval_secs)
+    if interval > 0:
+        gc_task = asyncio.create_task(_gc_loop(interval))
+        app.state.gc_task = gc_task
+    try:
+        yield
+    finally:
+        if gc_task is not None:
+            gc_task.cancel()
+            try:
+                await gc_task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="Conxa Cloud", version="0.1.0", lifespan=_lifespan)

@@ -1007,6 +1007,7 @@ async function _handleTool(name, args, extra) {
               tracker:       _runTracker,
               observerMs:    _observerMs,
               downloadQueue: _downloadQueue,
+              structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
             });
             _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
             break;

@@ -402,6 +402,46 @@ def _drift_review_queue(principal: Principal) -> list[dict[str, Any]]:
     return queue
 
 
+def _pre_exec_drift_queue(principal: Principal) -> list[dict[str, Any]]:
+    """Aggregate runtime pre-execution `drift_detected` signals per plugin version.
+
+    These are advisory: the runtime warns (never blocks) when a pack's recorded
+    structural landmarks are mostly missing at run start, hinting the target app
+    was redesigned. Grouped per (plugin_id, plugin_ver) since the signal is
+    per-run, not per-step.
+    """
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in _visible_run_records(principal):
+        summary = record.get("summary") or {}
+        plugin_id = str(summary.get("plugin_id") or "")
+        plugin_ver = str(summary.get("plugin_ver") or "")
+        for evt in record.get("events") or []:
+            if evt.get("e") != "drift_detected":
+                continue
+            key = (plugin_id, plugin_ver)
+            entry = by_key.get(key)
+            if entry is None:
+                entry = {
+                    "plugin_id": plugin_id,
+                    "plugin_ver": plugin_ver,
+                    "occurrences": 0,
+                    "max_drift_ratio": 0.0,
+                    "missing_intents": {},
+                    "last_seen": 0,
+                    "status": "needs_review",
+                }
+                by_key[key] = entry
+            entry["occurrences"] += 1
+            entry["max_drift_ratio"] = max(float(entry["max_drift_ratio"]), _number(evt.get("drift_ratio")))
+            for intent in evt.get("missing_intents") or []:
+                label = str(intent)
+                entry["missing_intents"][label] = entry["missing_intents"].get(label, 0) + 1
+            entry["last_seen"] = max(int(entry["last_seen"]), _epoch_ms(evt.get("ts")))
+    queue = list(by_key.values())
+    queue.sort(key=lambda e: (e["occurrences"], e["last_seen"]), reverse=True)
+    return queue
+
+
 def _failed_step_index(record: dict[str, Any]) -> int | None:
     summary = record.get("summary") or {}
     value = summary.get("failed_step_id")
@@ -770,7 +810,13 @@ def tracking_drift_queue(
     always an explicit admin action, never automatic.
     """
     queue = _drift_review_queue(principal)
-    return {"queue": queue, "total": len(queue)}
+    pre_exec = _pre_exec_drift_queue(principal)
+    return {
+        "queue": queue,
+        "total": len(queue),
+        "pre_exec": pre_exec,
+        "pre_exec_total": len(pre_exec),
+    }
 
 
 @router.get("/{company}/runs")

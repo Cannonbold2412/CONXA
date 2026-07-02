@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { cmd, CmdError } from "@/lib/ipc";
+import { cmd } from "@/lib/ipc";
+import { errorMessage } from "@/api/workflowApi";
 
 /** First-run wizard: name a plugin, optionally record auth, optionally record a workflow. */
 export function SetupWizard({ onCreated }: { onCreated?: () => void }) {
@@ -22,7 +23,7 @@ export function SetupWizard({ onCreated }: { onCreated?: () => void }) {
       onCreated?.();
       setStep(2);
     } catch (e) {
-      setError(e instanceof CmdError ? e.message : String(e));
+      setError(errorMessage(e, "Couldn't create the plugin."));
     }
   }
 

@@ -297,6 +297,16 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     slug = _validate_slug(body.slug)
     _assert_owner(slug, principal.workspace_id)
 
+    # Enforce the plan's product/installer-slot limit. Publishing to a slug that
+    # already has a release is always allowed (updates), so only creating a brand
+    # new product beyond the plan's slot count is blocked.
+    try:
+        ensure_installer_slot_available(principal, slug)
+    except EntitlementError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail="entitlements_unavailable") from exc
+
     packs_dir = _skill_packs_dir(slug)
     packs_dir.mkdir(parents=True, exist_ok=True)
     pack_path = packs_dir / "pack.json"

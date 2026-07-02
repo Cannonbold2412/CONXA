@@ -391,6 +391,12 @@ sequenceDiagram
 
 ## 13. Execution with Recovery
 
+Before step 0, the runtime runs an **advisory pre-execution drift check** (`runtime/drift.js`):
+it looks for the pack's recorded structural landmarks on the live page and, if most are gone
+(a redesign signal), emits a `drift_detected` telemetry event that surfaces on the vendor
+dashboard's `/drift` queue. This **never blocks** — execution proceeds straight into the per-step
+loop below and normal recovery still applies. See TRD §10.6.
+
 ```mermaid
 flowchart TD
     A[executeStep for step N] --> B[resolveStep: IdentityBundle over live DOM]
