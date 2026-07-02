@@ -203,7 +203,7 @@ All under `/api/v1/` except health endpoints:
 | `POST /api/v1/usage/compile/release` | Release an uncommitted compile reservation | Clerk JWT |
 | `POST /api/v1/plugins/publish` | Skill pack publish | Clerk JWT |
 | `POST /api/v1/plugins/{slug}/installer/upload` | Upload .exe | Clerk JWT |
-| `GET /api/v1/installers/{slug}` | Public installer download | Public |
+| `GET /api/v1/installers/{slug}` | Installer download | Public if `SKILL_INSTALLER_SIGNING_KEY` unset (dev); otherwise requires `ts`+`sig` query params, HMAC-SHA256 signed, 10-min default window (SG-07) |
 | `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync — per-skill delta (see below) | Rate-limited; token optional |
 | `POST /api/tracking/{co}/events` | Telemetry ingest | Package tracking token |
 | `GET /api/v1/tracking/companies` | Company list | Clerk JWT |
@@ -317,7 +317,7 @@ sequenceDiagram
     participant App as conxa-app/server.js
     participant Cloud as Conxa Cloud
 
-    CD->>RT: spawn conxa-runtime\current\conxa-runtime.exe (MCP stdio)
+    CD->>RT: spawn conxa-runtime/current/conxa-runtime.exe (MCP stdio)
     RT->>RT: version_manager.resolveCurrent(conxa-app) → check min_host compatibility
     RT->>App: require conxa-app/current/server.js (or rollback to previous version)
     App->>App: resolve CONXA_DIR, CONXA_DATA_DIR
@@ -1164,7 +1164,7 @@ In production (`SKILL_AUTH_REQUIRED=true`), the app refuses to start without `SK
 | Build Studio auth | Clerk PKCE (no implicit flow) |
 | Runtime session encryption | AES-256-GCM, key = HKDF(company_token) |
 | Telemetry ingest | Package tracking token (secrets.token_urlsafe(32)) |
-| Installer download | Public (slug in URL is the only "credential") |
+| Installer download | HMAC-SHA256 signed, time-limited `ts`+`sig` query params when `SKILL_INSTALLER_SIGNING_KEY` is set (SG-07); public (slug is the only "credential") in dev when unset |
 | Skill pack sync | Rate-limited; token optional in local dev |
 | Auth file exclusion | Compiler refuses if auth.json found in build input |
 | Request body limits | 1MB general; 250MB publish/upload |
@@ -1176,8 +1176,8 @@ In production (`SKILL_AUTH_REQUIRED=true`), the app refuses to start without `SK
 - Sync token is a shared secret across all of a company's end users — a leaked installer grants read-only access to that company's data-only skill packs. Session encryption uses a separate per-machine key so individual users' sessions remain protected.
 - Skill pack delta rate limit is in-memory — not persisted across restarts.
 - No device registration or runtime instance tracking.
-- Installer download is fully public — anyone with the slug URL can download.
-- `SKILL_TRACKING_HMAC_SECRET` is optional; without it, telemetry accepts any token.
+- Installer download requires a signed, time-limited link once `SKILL_INSTALLER_SIGNING_KEY` is configured in production (SG-07); still fully public — anyone with the slug URL can download — when that key is left unset (dev).
+- `SKILL_TRACKING_HMAC_SECRET` (or `SKILL_AUTH_REQUIRED`) now gates the fallback: telemetry from a company with no stored token is rejected in production, and only still accepted in dev when neither is set (SG-05).
 
 ---
 
@@ -1295,7 +1295,7 @@ MCP registration is done by the NSIS installer itself: a generated PowerShell sc
 | No device/runtime registration | Cloud | High | No visibility into how many runtimes are active |
 | ~~No enterprise RBAC enforcement~~ **PARTIAL** | `app/services/rbac.py` | Medium | `require_admin` enforced on publish, plugin create/delete, bundle release; fine-grained per-skill/analyst roles still Phase 3 |
 | Runtime auth per-company only | `auth_manager.js` | Medium | No per-user identity at runtime |
-| Installer download fully public | `publish_routes.py:get_installer` | Medium | Slug guessing gives access to installer |
+| ~~Installer download fully public~~ **RESOLVED** | `publish_routes.py:get_installer` | — | Requires signed, time-limited `ts`+`sig` when `SKILL_INSTALLER_SIGNING_KEY` is set; public download preserved only in dev (SG-07) |
 | ~~`research/frontend/` is a dead prototype~~ **N/A** | — | — | Directory does not exist in the repo |
 | Aptfile has Playwright deps | `conxa-cloud/backend/Aptfile` | Low | Cloud doesn't use Playwright; leftover from old arch |
 | `worker.py` scaffold | `app/worker.py` | Low | Queue scaffold, not implemented |

@@ -1,6 +1,6 @@
 # Security Gaps
 
-**Status:** Current as of 2026-06-14  
+**Status:** Current as of 2026-07-02  
 **Scope:** Conxa platform — Build Studio, Conxa Cloud, Runtime  
 **Audience:** Internal engineering, security reviewers, auditors
 
@@ -26,14 +26,14 @@ This document is the detailed reference for known security gaps across all three
 | [SG-01](#sg-01-rbac-not-enforced-on-routes) | RBAC not enforced on routes | Cloud API | High ✅ Fixed | `app/services/rbac.py`, `app/api/` |
 | [SG-02](#sg-02-proxy-identity-bypass) | Proxy identity bypass via shared header secret | Cloud API | High ✅ Fixed | `app/services/saas.py` |
 | [SG-03](#sg-03-x-forwarded-host-not-sanitised) | X-Forwarded-Host not sanitised in `_api_base()` | Cloud API | Medium ✅ Fixed | `app/api/publish_routes.py` |
-| [SG-04](#sg-04-in-memory-rate-limit-on-delta-endpoint) | In-memory rate limit cleared on restart | Cloud API | Medium | `app/api/skillpack_update_routes.py` |
-| [SG-05](#sg-05-tracking-hmac-secret-is-optional) | Tracking HMAC secret optional — fallback accepts any token | Cloud API | Medium | `app/api/tracking_routes.py` |
-| [SG-06](#sg-06-telemetry-payload-unbounded) | Telemetry payload unbounded — no event count or field size cap | Cloud API | Medium | `app/api/tracking_routes.py` |
-| [SG-07](#sg-07-installer-download-is-fully-public) | Installer download is fully public | Distribution | Medium | `app/api/publish_routes.py` |
+| [SG-04](#sg-04-in-memory-rate-limit-on-delta-endpoint) | In-memory rate limit cleared on restart | Cloud API | Medium ✅ Fixed | `app/api/skillpack_update_routes.py` |
+| [SG-05](#sg-05-tracking-hmac-secret-is-optional) | Tracking HMAC secret optional — fallback accepts any token | Cloud API | Medium ✅ Fixed | `app/api/tracking_routes.py` |
+| [SG-06](#sg-06-telemetry-payload-unbounded) | Telemetry payload unbounded — no event count or field size cap | Cloud API | Medium ✅ Fixed | `app/api/tracking_routes.py` |
+| [SG-07](#sg-07-installer-download-is-fully-public) | Installer download is fully public | Distribution | Medium ✅ Fixed | `app/api/publish_routes.py` |
 | [SG-08](#sg-08-sync-token-is-a-shared-installer-secret) | Sync token is a shared installer secret | Distribution | Low | `app/api/skillpack_update_routes.py`, `runtime/sync.js` |
-| [SG-09](#sg-09-no-code-signing-on-self-update-binary) | No code signing on self-update binary | Runtime | High | `runtime/server.js` |
-| [SG-10](#sg-10-update-bat-uses-mathrandom-for-temp-filename) | Update `.bat` uses `Math.random()` for temp filename | Runtime | Low | `runtime/server.js` |
-| [SG-11](#sg-11-plaintext-session-fallback-is-silent) | Plaintext session fallback is silent on keytar failure | Runtime | Medium | `runtime/auth_manager.js` |
+| [SG-09](#sg-09-no-code-signing-on-self-update-binary) | No code signing on self-update binary | Runtime | High ⚠️ Partially Fixed | `runtime/manifest_manager.js` |
+| [SG-10](#sg-10-update-bat-uses-mathrandom-for-temp-filename) | Update `.bat` uses `Math.random()` for temp filename | Runtime | Low ✅ Resolved (mechanism removed) | `runtime/manifest_manager.js` |
+| [SG-11](#sg-11-plaintext-session-fallback-is-silent) | Plaintext session fallback is silent on keytar failure | Runtime | Medium ✅ Fixed | `runtime/auth_manager.js` |
 | [SG-12](#sg-12-company-name-used-in-file-paths-without-re-validation) | Company name used in file paths without re-validation | Runtime | Low | `runtime/auth_manager.js`, `runtime/sync.js` |
 | [SG-13](#sg-13-no-per-user-identity-at-runtime) | No per-user identity at runtime — `uid` is spoofable | Runtime | Low | `runtime/server.js`, `runtime/tracker.js` |
 
@@ -60,13 +60,14 @@ Wire `require_admin()` (or a new `require_role(principal, min_role)`) into publi
 
 ### Fix Applied
 
-`require_admin` is now imported in `app/api/publish_routes.py` and called immediately after `ensure_principal(principal)` in three endpoints:
+`require_admin` is now called immediately after `ensure_principal(principal)` on every mutating endpoint that previously accepted any workspace member:
 
-- `post_publish()` — POST `/api/v1/plugins/publish`
-- `post_installer_upload()` — POST `/api/v1/plugins/{slug}/installer/upload`
-- `get_installer_versions()` — GET `/api/v1/plugins/{slug}/installer/versions`
+- `app/api/publish_routes.py` — `post_publish()` (POST `/api/v1/plugins/publish`), `post_installer_upload()` (POST `/api/v1/plugins/{slug}/installer/upload`), `get_installer_versions()` (GET `/api/v1/plugins/{slug}/installer/versions`)
+- `app/api/plugin_routes.py` — `post_create_plugin()` (POST `/plugins`), `delete_plugin_endpoint()` (DELETE `/plugins/{id}`)
+- `app/api/product_routes.py` — `patch_bundle_release()` (PATCH `/packages/bundles/{slug}/release`)
+- `app/api/cashfree_routes.py` — subscription creation (`create_subscription`)
 
-Any caller whose `principal.role` is not `"admin"` or `"owner"` receives `HTTP 403 admin role required`. Local dev is unaffected (the anonymous local `Principal` defaults to `role="owner"`).
+Any caller whose `principal.role` is not `"admin"` or `"owner"` receives `HTTP 403`. Local dev is unaffected (the anonymous local `Principal` defaults to `role="owner"`). Intentionally-public runtime phone-home endpoints (`run_routes.py` events, `job_routes.py` cancel) remain open by design — they carry no workspace-mutation risk. Tested in `tests/test_product_routes.py` (member→403, admin→200).
 
 ---
 
@@ -142,22 +143,22 @@ New config field: `SKILL_API_BASE_URL` (string, default `""`). Set to the canoni
 
 ## SG-04 — In-Memory Rate Limit Cleared on Restart
 
-**Severity:** Medium  
-**Component:** Cloud API — `app/api/skillpack_update_routes.py:_rate_cache` (line 25)
+**Severity:** Medium — ✅ Fixed 2026-07-01  
+**Component:** Cloud API — `app/api/skillpack_update_routes.py`
 
 ### Description
 
-The skill-pack delta endpoint (`GET /api/v1/skill-packs/{company}/delta`) rate-limits to 1 request per 5 minutes per token using a module-level dict `_rate_cache`. This dict is in-process memory and is cleared on every process restart. Render restarts the process on each new deploy and on crash recovery.
+The skill-pack delta endpoint (`GET /api/v1/skill-packs/{company}/delta`) rate-limits to 1 request per 5 minutes per token. It previously used a module-level dict `_rate_cache` — in-process memory, cleared on every process restart. Render restarts the process on each new deploy and on crash recovery.
 
-Consequence: an attacker with a valid sync token can drain the full skill pack on every process restart. On a busy service with frequent deploys this could be every few minutes.
+Consequence: an attacker with a valid sync token could drain the full skill pack on every process restart. On a busy service with frequent deploys this could be every few minutes.
 
-### Current Mitigation
+### Current Mitigation (superseded by fix below)
 
 Skill packs contain only compiled automation data (selectors, intents, recovery strategies) — no credentials, no secrets, no user data. The rate limit is a bandwidth/cost control, not a confidentiality control.
 
-### Recommended Fix
+### Fix Applied
 
-Move the rate limit state to Redis (or Render's KV) keyed by `sha256(token)[:16]`. The connection details can be injected via `SKILL_REDIS_URL`. The TRD §11.1 already notes this as the intended future state.
+The rate-limit timestamp is now persisted in the existing `conxa_core.db` KV dual-store (new `rate_limits` namespace, keyed by `sha256(token)[:16]` via `_rate_limit_key()`) whenever a database is configured (`using_database()`) — see `_rate_limit_last()` / `_rate_limit_set()`. The 5-minute window now survives restarts and is shared across horizontally-scaled instances. Falls back to the original in-memory dict only in local/Studio mode where no database is configured. **Redis was not introduced** — it isn't installed or provisioned; the KV store already provides durable, shared storage, so the TRD §11.1 "move to Redis" note is superseded by this simpler fix. Tested in `tests/test_skillpack_sync.py`.
 
 ---
 
@@ -180,6 +181,10 @@ Accepted telemetry is write-only from an attacker's perspective — it can infla
 
 In production (`SKILL_AUTH_REQUIRED=true`), change the fallback to **reject** when `tracking_tokens[company]` is absent (return 401, not a synthetic workspace dict). The HMAC secret path can remain for legacy scenarios but should log a warning when used.
 
+### Fix Applied
+
+`_verify_token()` now returns `None` (→ 401) instead of the synthetic `{"workspace_id": ""}` whenever either `SKILL_TRACKING_HMAC_SECRET` or `SKILL_AUTH_REQUIRED` is set, and logs a `logger.warning(...)` every time a company with no stored token is rejected. The permissive fallback only survives in true local dev (`auth_required=False` and no HMAC secret configured). `_validate_production_config()` in `app/main.py` now also requires `SKILL_TRACKING_HMAC_SECRET` when `SKILL_AUTH_REQUIRED=true`, so production can no longer boot without it. Tested in `tests/test_llm_proxy_and_publish.py`.
+
 ---
 
 ## SG-06 — Telemetry Payload Unbounded
@@ -200,6 +205,10 @@ The 1MB general body cap in `ProductionRequestMiddleware` provides some protecti
 - Cap `evts` array at a reasonable maximum (e.g. 200 events per batch).
 - Truncate or reject individual field values that exceed a sane length (e.g. 256 chars per field).
 - Consider a per-company daily ingest quota (track in KV alongside the telemetry).
+
+### Fix Applied
+
+`ingest_events()` now caps each batch to `SKILL_TRACKING_MAX_EVENTS_PER_BATCH` (default 200, oldest-first truncation) and truncates any string field longer than `SKILL_TRACKING_MAX_FIELD_CHARS` (default 256) before appending to KV storage. A `logger.warning(...)` fires once per request whenever truncation occurred, including the company and before/after counts. A per-company daily quota was **not** added — the batch/field caps bound worst-case storage per request, which was the concrete risk; a daily quota is tracked as a possible follow-up, not required to close this gap. Tested in `tests/test_llm_proxy_and_publish.py`.
 
 ---
 
@@ -222,6 +231,10 @@ Skills packs contain no credentials. Session encryption uses a separate per-mach
 
 Short-term: generate a per-download signed URL (time-limited, signed with `SKILL_INSTALLER_SIGNING_KEY`) and serve the binary via redirect, so the stable slug URL becomes a meta-endpoint rather than a direct download. This removes the ability to share a permanent download link.  
 Long-term: require the end user to be authenticated with the company's identity provider before receiving the installer (delivered as a first-party install flow, not a public link).
+
+### Fix Applied
+
+`get_installer()` and `get_installer_version()` now require `ts`+`sig` query params whenever `SKILL_INSTALLER_SIGNING_KEY` is configured — `sig` is `HMAC-SHA256(key, f"{ts}:{slug}:{version or ''}")`, checked with `secrets.compare_digest` and a max age of `SKILL_INSTALLER_SIGNING_WINDOW` (default 600s). This mirrors the timestamped-HMAC pattern already used for the SG-02 proxy-identity fix (`app/services/saas.py:_trusted_proxy_identity()`), rather than the Ed25519 scheme used for manifest signing — signing and verification both happen on the same backend here, so symmetric HMAC is simpler and sufficient. The authenticated, `require_admin`-gated `get_installer_versions()` endpoint mints fresh signed `download_url` values on every call, so the dashboard always hands out valid links. **The `ts`+`sig` requirement is skipped entirely when `SKILL_INSTALLER_SIGNING_KEY` is unset**, preserving the previous public-download behavior for local dev — `_validate_production_config()` now requires the key when `SKILL_AUTH_REQUIRED=true`, so production can't boot without it. The dashboard's `PluginVersionsPage.tsx` no longer constructs an unsigned fallback URL client-side (impossible without shipping the secret to the browser) — its legacy single-row fallback for pre-versioning plugins now disables the download button instead. Tested in `tests/test_llm_proxy_and_publish.py`.
 
 ---
 
@@ -250,40 +263,39 @@ Issue per-install tokens at installer-download time (requires solving SG-07 firs
 
 ## SG-09 — No Code Signing on Self-Update Binary
 
-**Severity:** High  
-**Component:** Runtime — `runtime/server.js:_checkRuntimeUpdate()` (line 214)
+**Severity:** High — ⚠️ Partially Fixed 2026-07-01 (manifest signing done; binary Authenticode signing still open)  
+**Component:** Runtime — `runtime/manifest_manager.js`, `.github/workflows/build-runtime-host.yml`
 
-### Description
+### Description (original)
 
-The runtime self-update mechanism downloads `runtime-win.exe` from a URL supplied in the manifest (`GET /api/v1/updates/runtime-manifest`). It verifies the SHA-256 hash against the value in the manifest. However:
+The runtime self-update mechanism downloaded `runtime-win.exe` from a URL supplied in an unsigned manifest (`GET /api/v1/updates/runtime-manifest`), verifying only a SHA-256 hash. Three problems: (1) the manifest URL/content wasn't code-signed by Conxa, (2) the downloaded binary itself wasn't Authenticode-signed, (3) if the manifest endpoint or CDN delivery were compromised, an attacker could replace both the manifest hash and the binary — the SHA-256 check would pass because the hash came from the same compromised source. The old `.bat`-based apply mechanism (`runtime.exe.next`) has since been removed entirely (see SG-10).
 
-1. The manifest is fetched over HTTPS but the manifest URL and content are **not code-signed** by Conxa.
-2. The downloaded binary is **not code-signed** with a Conxa Authenticode certificate.
-3. If the manifest endpoint or CDN delivery is compromised (e.g. via a supply-chain attack on Render), an attacker can replace both the manifest hash and the binary — the SHA-256 check passes because the hash is from the same compromised source.
+### Fix Applied (manifest half)
 
-The resulting `runtime.exe.next` is then applied on the next cold start via a `.bat` file, giving the attacker persistent code execution on every end-user machine that has Conxa installed.
+The Enterprise-Grade Auto-Update Architecture (2026-07-01) replaced the unsigned manifest with a single Ed25519-signed `GET /api/v1/manifest.json`. `runtime/manifest_manager.js:verifyManifestSignature()` verifies the signature against a public key baked into the host exe at build time (`global.__manifestPublicKey`, stamped from `package.json`) — the trust anchor lives in the already-installed binary, not fetched from the network, exactly as the original recommendation asked. A manifest that fails verification is discarded outright and treated identically to a network failure (falls back to the last previously-verified cache). `updateHostComponent()` additionally spawns the freshly-downloaded exe with `--selfcheck` before `current` is ever pointed at it.
 
-### Recommended Fix
+### Still Open (binary half)
 
-- Sign `runtime-win.exe` with a Conxa Authenticode certificate and verify the signature in `_applyPendingUpdate()` before executing.
-- Additionally, sign the manifest JSON with a Conxa private key and verify the signature in `_checkRuntimeUpdate()` using a Conxa public key bundled inside the current binary (so the trust anchor is in the already-installed binary, not fetched from the network).
+The downloaded `conxa-runtime.exe` itself is still **not Authenticode-signed** — only its SHA-256 (sourced from the now-signed manifest) is checked. If the manifest signing key (`CONXA_MANIFEST_SIGNING_KEY`, server-side only) were ever compromised, an attacker could still ship an arbitrary signed manifest entry pointing at a malicious binary. `build-runtime-host.yml` has no `signtool` step for `conxa-runtime.exe` (unlike the Studio Electron installer — see Sales-Blockers.md 2.5, which has inert `electron-builder.yml` signing scaffolding for the *Studio* installer, not this binary).
+
+### Recommended Fix (remaining)
+
+Sign `conxa-runtime.exe` with a Conxa Authenticode certificate as part of `build-runtime-host.yml`, and verify the signature in `manifest_manager.js` before `_selfcheck`/activation — a second, independent trust check beyond the manifest's own signature, so a compromised manifest-signing key alone is insufficient to install a malicious binary.
 
 ---
 
 ## SG-10 — Update `.bat` Uses `Math.random()` for Temp Filename
 
-**Severity:** Low  
-**Component:** Runtime — `runtime/server.js:_applyPendingUpdate()` (line 182)
+**Severity:** Low — ✅ Resolved 2026-07-01 (mechanism removed, not patched)  
+**Component:** Runtime — formerly `runtime/server.js:_applyPendingUpdate()`
 
-### Description
+### Description (original)
 
-The update script writes a `.bat` file to `os.tmpdir()` with a suffix derived from `Math.random().toString(36).slice(2)`. `Math.random()` is not a cryptographically secure PRNG. In a targeted attack scenario, an adversary who can create files in `%TEMP%` could pre-create `conxa-update-<predicted-suffix>.bat` files to be executed when the runtime applies its update.
+The old single-backup update script wrote a `.bat` file to `os.tmpdir()` with a suffix derived from `Math.random().toString(36).slice(2)` — not a cryptographically secure PRNG. An adversary who could create files in `%TEMP%` could in theory pre-create `conxa-update-<predicted-suffix>.bat` files.
 
-In practice, `Math.random()` produces ~52 bits of entropy in V8, making prediction impractical without additional information about the random state.
+### Resolution
 
-### Recommended Fix
-
-Replace `Math.random().toString(36).slice(2)` with `crypto.randomBytes(12).toString("hex")` (already imported in the file) for the temp filename suffix.
+The Enterprise-Grade Auto-Update Architecture (2026-07-01) replaced the entire `.bak`/`.next`/`.bat` single-backup update dance with the versioned-directory model (`runtime/version_manager.js`): each component update downloads into its own `<component>/<version>/` directory and flips a directory junction atomically — there is no `.bat` file, no `os.tmpdir()` staging, and no `Math.random()` call in the update path anymore. `runtime/manifest_manager.js:updateAppComponent()` does use a predictable-looking staging name (`` `${versionDir}.staging-${process.pid}-${Date.now()}` ``) for the app-layer zip extraction, but this lives under `CONXA_DIR` (not the world-writable `%TEMP%`) and is immediately `fs.renameSync`'d over the real version directory — the original attack (planting a `%TEMP%` file with a predicted name ahead of time) no longer applies since there's no `%TEMP%` write in the path. No further action needed.
 
 ---
 
@@ -309,6 +321,17 @@ The raw session file is scoped to the user's local machine at `%APPDATA%\Conxa\c
 - In `saveEncryptedSession`, if encryption fails, log a warning and return without falling back to plaintext.
 - At startup in `auth_manager.js`, after successfully loading keytar, check for any existing `{company}_raw_state.json` files and re-encrypt them, then delete the plaintext originals.
 - Emit a visible log event (`"warn"` level) whenever a plaintext session file is written or read.
+
+### Fix Applied
+
+Investigation found the actual code was worse than described: `server.js`'s post-execution save (`saveRawSession()` after every successful skill run) was **unconditional**, with no encryption attempt at all — not merely a rare fallback. Fixed at the root:
+
+- `saveEncryptedSession()` now returns `true`/`false` instead of silently swallowing every error, and logs `"warn" session_encryption_failed` on failure via an injected `logFn` (dependency-injected the same way `sessionsDir` already was, to avoid a circular import with `server.js`'s logger).
+- All three write sites — `server.js`'s post-execution save, and `browser.js`'s initial interactive-auth capture and mid-execution `captureReAuth()` — now attempt `saveEncryptedSession()` first and only call `saveRawSession()` when it reports failure, which itself now logs `"warn" plaintext_session_written`.
+- `_getKeytar()` logs `"warn" keytar_unavailable_fallback` when it falls back to the plaintext keytar shim; `loadRawSession()` logs `"warn" plaintext_session_loaded` whenever a plaintext file is actually read.
+- New `reencryptPlaintextSessions()` sweeps `SESSIONS_DIR` for stale `*_raw_state.json` files at every startup (wired into `server.js`'s `startupSync`), re-encrypting and deleting each on success; a file is left in place (with a warning) if re-encryption fails, so no data is lost.
+
+No new config — reuses the existing `CONXA_DATA_DIR`/`SESSIONS_DIR` layout and `server.js`'s structured `log()`. Tested in `runtime/test/test_auth_recovery.js`.
 
 ---
 
@@ -366,9 +389,9 @@ The following gaps from `TRD.md §17` overlap with security concerns and are tra
 
 | TRD §17 entry | Security relevance |
 |---|---|
-| No enterprise RBAC enforcement | Covered by SG-01 above |
+| No enterprise RBAC enforcement | Covered by SG-01 above — ✅ Fixed |
 | Sync token is a shared installer secret | Covered by SG-08 above |
-| Rate limit cache in-memory | Covered by SG-04 above |
+| Rate limit cache in-memory | Covered by SG-04 above — ✅ Fixed |
 | Installer download fully public | Covered by SG-07 above |
-| No device/runtime registration | Partially addressed by `runtime_registrations` KV (TRD §3.2); full gap is SG-13 |
+| No device/runtime registration | Resolved — `runtime_registrations` KV + `GET /api/v1/telemetry/runtimes` (TRD §3.2, Sales-Blockers.md 2.1); residual per-user gap is SG-13 |
 | `SKILL_TRACKING_HMAC_SECRET` optional | Covered by SG-05 above |
