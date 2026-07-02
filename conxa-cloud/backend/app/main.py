@@ -60,6 +60,10 @@ def _validate_production_config() -> None:
         missing.append("CASHFREE_STARTER_PLAN_ID / CASHFREE_PRO_PLAN_ID")
     if not settings.api_base_url:
         missing.append("SKILL_API_BASE_URL (set to prevent X-Forwarded-Host injection into pack.json)")
+    if not settings.tracking_hmac_secret:
+        missing.append("SKILL_TRACKING_HMAC_SECRET (required so telemetry ingest rejects unrecognized companies)")
+    if not settings.installer_signing_key:
+        missing.append("SKILL_INSTALLER_SIGNING_KEY (required to sign time-limited installer download links)")
     if missing:
         raise RuntimeError(
             "Refusing to start: SKILL_AUTH_REQUIRED=true but these are unset: "

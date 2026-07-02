@@ -2,6 +2,108 @@
 
 ---
 
+## Closed the last 4 open security gaps (Medium severity) — 2026-07-02
+
+Went through the 4 remaining open items in `docs/Security.md` and fixed each one in code
+(not just documentation this time):
+
+- **Telemetry could sneak past company checks (SG-05).** If a company's tracking token ever
+  went missing, the system used to quietly accept the data anyway under an "unknown"
+  workspace instead of rejecting it. Now, in production, a missing token is rejected
+  outright, and a warning is logged so a lost or leaked token gets noticed before it's
+  abused. Local development is unaffected.
+- **No limit on how much telemetry one message could carry (SG-06).** A single batch of
+  usage events had no cap, so a bad actor with a leaked token could send huge amounts of
+  data to run up storage costs. Batches are now capped at 200 events and individual fields
+  are trimmed to 256 characters, with a warning logged whenever that happens. Normal-sized
+  batches are completely unaffected.
+- **Anyone who knew a company's install link could download its installer forever (SG-07).**
+  The installer file — which contains a secret sync token — was available to download by
+  anyone who guessed or was given the link, with no expiry. Download links are now
+  time-limited and cryptographically signed (valid for 10 minutes), and the dashboard always
+  hands out a fresh one. This only takes effect once a signing key is configured in
+  production; local development keeps working exactly as before.
+- **A user's saved login could be written to disk without any protection (SG-11).** While
+  investigating, we found this was worse than previously documented: after every successful
+  automation run, the system saved the browser's login session to disk completely
+  unencrypted, every time — not just as a rare fallback. Now it always tries to encrypt the
+  session first, only falls back to an unencrypted save if encryption genuinely fails (and
+  logs a visible warning when that happens), and on startup it automatically finds and
+  re-encrypts any old unencrypted session files left over from before this fix.
+
+All four fixes include new automated tests, and none of them change behavior for normal
+users or in local development — they only close gaps that would otherwise let someone
+with partial access do more damage than they should be able to.
+
+---
+
+## Refreshed the Security Gaps tracker — 2026-07-02
+
+The `docs/Security.md` doc (a running list of known security weak spots across Build
+Studio, the cloud, and the runtime) hadn't been checked since 2026-06-14, so it was
+missing several fixes that shipped since then. Went through each open item and checked it
+against the actual code before updating anything:
+
+- **RBAC gap (SG-01):** was documented as fixed only on the publish routes. It's now
+  actually enforced much more broadly — plugin create/delete, bundle release, and
+  subscription creation all require admin/owner too. Updated to list everywhere it's
+  enforced.
+- **Rate limit gap (SG-04):** was "in-memory, wiped on every restart." Now marked fixed —
+  the limit is stored in the shared database instead, so it survives restarts and works
+  correctly even when the cloud runs on multiple machines at once.
+- **Self-update binary signing (SG-09):** partially fixed. The list of available updates
+  (the "manifest") is now cryptographically signed and checked against a key baked into
+  the app itself — so a compromised server can no longer quietly swap in a fake update
+  list. What's *still* missing: the actual update file isn't signed with a Windows
+  publisher certificate yet, so a compromised signing key could still slip through a bad
+  update. Documented as the remaining gap.
+- **Random temp filename gap (SG-10):** the old update mechanism this described (a
+  temporary `.bat` file with a guessable name) doesn't exist anymore — it was replaced by
+  a safer versioned-folder update system. Marked resolved by removal rather than by a
+  patch.
+- Everything else (tracking token fallback, unbounded telemetry payloads, public installer
+  downloads, plaintext session fallback, etc.) was checked and confirmed still open — left
+  as-is rather than guessed at.
+
+No code changed — documentation only, brought in line with what's actually shipped.
+
+---
+
+## Refreshed the Sales-Blockers status doc — 2026-07-02
+
+The `docs/Sales-Blockers.md` doc (a checklist of "what must ship before we can sign our
+first enterprise customer") had gone stale. It still said Phase 1 was only 3/8 done and
+Phase 2 was 0/8 done, when in reality almost everything has since shipped. Cross-checked
+against the authoritative roadmap and the recent commits, then rewrote the status so it
+reflects the truth:
+
+- **Phase 1: now complete** — auth, sync tokens, delta sync, shared rate limiting, RBAC,
+  Stripe removal are all done or no longer relevant.
+- **Phase 2: 6 of 8 done** — device registration, audit log, drift detection, cache
+  cleanup, billing limits, and friendly error messages have all shipped.
+- **Bottom line:** only **one hard blocker remains — signing the Windows installer** (so
+  Windows won't flag it as coming from an "unknown publisher"). The build plumbing for it
+  is already in place but switched off; what's left is buying the certificate and turning
+  it on (~3 days). macOS support is the only other open item, and that's an optional extra,
+  not a blocker.
+
+Updated every table, checklist, and the "path to first sale" estimate (was ~3 weeks, now
+~3 days) to match. No code changed — documentation only.
+
+---
+
+## Fixed the Startup Sequence diagram not showing — 2026-07-02
+
+The "Startup Sequence" diagram in `docs/TRD.md` wasn't displaying at all. The cause was a
+Windows-style file path written with backslashes (`conxa-runtime\current\conxa-runtime.exe`)
+inside the diagram. The diagram tool (Mermaid) treats a backslash as a special "escape"
+character, so that one path silently broke the whole picture. Swapped the backslashes for
+forward slashes (`conxa-runtime/current/conxa-runtime.exe`) — which is also how the same path
+is already written elsewhere in the doc — and the diagram renders again. No content or meaning
+changed; the steps it describes are unchanged.
+
+---
+
 ## Fully isolated Development and Production environments — 2026-07-02
 
 Until now there was no clean way to build and test new things without risking the live

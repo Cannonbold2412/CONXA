@@ -182,6 +182,13 @@ class Settings(BaseSettings):
     # Tracking HMAC secret for signing runtime telemetry tokens.
     # Set SKILL_TRACKING_HMAC_SECRET in production to enable company-scoped tracking.
     tracking_hmac_secret: str = ""
+    tracking_max_events_per_batch: int = 200
+    tracking_max_field_chars: int = 256
+
+    # Installer download link signing (SG-07). Empty key preserves the legacy
+    # public/unsigned download behavior for local dev.
+    installer_signing_key: str = ""
+    installer_signing_window: int = 600  # seconds; longer than the proxy window — human download clicks, not machine calls
 
     # Multi-provider LLM key pool (free-tier rotation)
     groq_enabled: bool = Field(default=True, validation_alias=_provider_env("GROQ_ENABLED"))

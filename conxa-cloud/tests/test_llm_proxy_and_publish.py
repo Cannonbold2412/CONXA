@@ -788,3 +788,157 @@ def test_installer_upload_updates_plugin_latest_metadata():
 def test_installer_download_missing_is_404():
     r = client.get("/api/v1/installers/nope-not-here")
     assert r.status_code == 404
+
+
+# --- SG-05: tracking token fallback must reject, not accept, in production ---
+
+def test_tracking_rejects_unknown_company_when_auth_required(monkeypatch):
+    monkeypatch.setattr(settings, "auth_required", True)
+    r = client.post(
+        "/api/tracking/no-such-company/events",
+        json={"rid": "run-x", "evts": [{"e": "wf_start", "ts": 1}]},
+        headers={"X-Tracking-Token": "whatever"},
+    )
+    assert r.status_code == 401
+
+
+def test_tracking_accepts_unknown_company_in_dev_mode(monkeypatch):
+    monkeypatch.setattr(settings, "auth_required", False)
+    monkeypatch.setattr(settings, "tracking_hmac_secret", "")
+    r = client.post(
+        "/api/tracking/dev-unknown-company/events",
+        json={"rid": "run-dev", "evts": [{"e": "wf_start", "ts": 1}]},
+        headers={"X-Tracking-Token": "whatever"},
+    )
+    assert r.status_code == 202
+
+
+def test_tracking_rejects_unknown_company_when_hmac_secret_set(monkeypatch):
+    monkeypatch.setattr(settings, "auth_required", False)
+    monkeypatch.setattr(settings, "tracking_hmac_secret", "some-secret")
+    r = client.post(
+        "/api/tracking/no-such-company-2/events",
+        json={"rid": "run-y", "evts": [{"e": "wf_start", "ts": 1}]},
+        headers={"X-Tracking-Token": "whatever"},
+    )
+    assert r.status_code == 401
+
+
+# --- SG-06: telemetry batch/field caps ---------------------------------------
+
+def test_tracking_ingest_caps_oversized_batch_and_fields(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "tracking_max_events_per_batch", 3)
+    monkeypatch.setattr(settings, "tracking_max_field_chars", 10)
+
+    pub = client.post(
+        "/api/v1/plugins/publish",
+        json={"slug": "cap-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+    )
+    assert pub.status_code == 200, pub.text
+    token = pub.json()["tracking"]["tracking_token"]
+
+    evts = [{"e": f"event-{i}", "ts": i} for i in range(10)]
+    evts[0]["msg"] = "x" * 50  # longer than the 10-char cap
+
+    r = client.post(
+        "/api/tracking/cap-test/events",
+        json={"rid": "run-cap", "evts": evts},
+        headers={"X-Tracking-Token": token},
+    )
+    assert r.status_code == 202, r.text
+
+    timeline = client.get("/api/v1/tracking/cap-test/runs/run-cap")
+    assert timeline.status_code == 200, timeline.text
+    stored = timeline.json()["timeline"]
+    assert len(stored) == 3  # capped from 10
+    assert len(stored[0]["msg"]) == 10  # truncated from 50 chars
+
+
+def test_tracking_ingest_passes_through_normal_batches_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    pub = client.post(
+        "/api/v1/plugins/publish",
+        json={"slug": "no-cap-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+    )
+    assert pub.status_code == 200, pub.text
+    token = pub.json()["tracking"]["tracking_token"]
+
+    evts = [{"e": "wf_start", "ts": 1}, {"e": "wf_ok", "ts": 2, "dur": 10, "tot": 1, "rec": 0}]
+    r = client.post(
+        "/api/tracking/no-cap-test/events",
+        json={"rid": "run-no-cap", "evts": evts},
+        headers={"X-Tracking-Token": token},
+    )
+    assert r.status_code == 202, r.text
+
+    timeline = client.get("/api/v1/tracking/no-cap-test/runs/run-no-cap")
+    assert timeline.status_code == 200, timeline.text
+    assert timeline.json()["timeline"] == evts
+
+
+# --- SG-07: signed installer download links ----------------------------------
+
+def test_installer_download_requires_signature_when_configured(monkeypatch):
+    monkeypatch.setattr(settings, "installer_signing_key", "installer-secret")
+    payload = b"MZ\x90\x00signed-exe-bytes"
+    up = client.post(
+        "/api/v1/plugins/signed-dl-test/installer/upload?filename=Signed-Setup.exe&version=1.0.0&release_notes=v1",
+        content=payload,
+    )
+    assert up.status_code == 200, up.text
+
+    # No ts/sig at all -> rejected.
+    bare = client.get("/api/v1/installers/signed-dl-test")
+    assert bare.status_code == 401
+
+    # Tampered signature -> rejected.
+    ts = int(time.time())
+    tampered = client.get(f"/api/v1/installers/signed-dl-test?ts={ts}&sig=deadbeef")
+    assert tampered.status_code == 401
+
+    # Expired timestamp -> rejected.
+    old_ts = ts - settings.installer_signing_window - 60
+    from app.api.publish_routes import _sign_installer
+    expired_sig = _sign_installer("signed-dl-test", None, old_ts)
+    expired = client.get(f"/api/v1/installers/signed-dl-test?ts={old_ts}&sig={expired_sig}")
+    assert expired.status_code == 401
+
+    # Valid ts/sig -> succeeds.
+    valid_sig = _sign_installer("signed-dl-test", None, ts)
+    valid = client.get(f"/api/v1/installers/signed-dl-test?ts={ts}&sig={valid_sig}")
+    assert valid.status_code == 200
+    assert valid.content == payload
+
+
+def test_installer_versions_endpoint_mints_signed_download_urls(monkeypatch):
+    monkeypatch.setattr(settings, "installer_signing_key", "installer-secret")
+    payload = b"MZversioned"
+    slug = "signed-versions-test"
+    up = client.post(
+        f"/api/v1/plugins/{slug}/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=v1",
+        content=payload,
+    )
+    assert up.status_code == 200, up.text
+
+    versions = client.get(f"/api/v1/plugins/{slug}/installer/versions")
+    assert versions.status_code == 200, versions.text
+    row = versions.json()["versions"][0]
+    assert "ts=" in row["download_url"] and "sig=" in row["download_url"]
+
+    dl = client.get(row["download_url"])
+    assert dl.status_code == 200
+    assert dl.content == payload
+
+
+def test_installer_download_stays_public_when_signing_key_unset():
+    """Dev-mode fallback: SKILL_INSTALLER_SIGNING_KEY unset -> unsigned downloads still work."""
+    payload = b"MZunsigned"
+    up = client.post(
+        "/api/v1/plugins/unsigned-dl-test/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=v1",
+        content=payload,
+    )
+    assert up.status_code == 200, up.text
+    dl = client.get("/api/v1/installers/unsigned-dl-test")
+    assert dl.status_code == 200
+    assert dl.content == payload

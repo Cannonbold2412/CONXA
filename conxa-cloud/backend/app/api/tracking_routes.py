@@ -8,6 +8,7 @@ GET  /api/v1/tracking/{company}/runs/{run_id} — single run event timeline
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 from typing import Any
@@ -24,6 +25,8 @@ from app.services.saas import (
     principal_from_request,
     visible_workspace_ids_for,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
 public_router = APIRouter(prefix="/api/tracking", tags=["tracking"])
@@ -48,7 +51,9 @@ def _verify_token(company: str, token: str) -> dict[str, Any] | None:
     """Verify the tracking token for a company.
 
     Published packs get a server-issued token stored in kv_store. Local dev
-    without a stored token or secret still accepts telemetry for convenience.
+    without a stored token or secret still accepts telemetry for convenience —
+    but in production (SKILL_AUTH_REQUIRED=true) a missing token is rejected
+    rather than silently treated as an empty workspace (SG-05).
     """
     stored = db_get("tracking_tokens", company)
     if isinstance(stored, dict) and stored.get("token"):
@@ -56,8 +61,9 @@ def _verify_token(company: str, token: str) -> dict[str, Any] | None:
         if token and secrets.compare_digest(expected, token):
             return stored
         return None
-    if not settings.tracking_hmac_secret:
+    if not settings.tracking_hmac_secret and not settings.auth_required:
         return {"workspace_id": ""}
+    logger.warning("tracking_token_missing company=%s auth_required=%s", company, settings.auth_required)
     return None
 
 
@@ -752,6 +758,11 @@ async def ingest_events(company: str, request: Request) -> dict[str, Any]:
     if not run_id:
         return {"ok": True}  # drop malformed batches silently
 
+    evts = body.get("evts", [])
+    if not isinstance(evts, list):
+        evts = []
+    capped_evts = _cap_events(evts, company)
+
     enriched: dict[str, Any] = {
         "run_id":      run_id,
         "company":     company,
@@ -763,11 +774,41 @@ async def ingest_events(company: str, request: Request) -> dict[str, Any]:
         "workspace_id": token_record.get("workspace_id", ""),
         "owner_user_id": token_record.get("owner_user_id", ""),
         "server_ts":   time.time(),
-        "events":      body.get("evts", []),
+        "events":      capped_evts,
         "schema_v":    body.get("sv", 1),
     }
     db_append(f"tracking/{company}", run_id, [enriched])
     return {"ok": True}
+
+
+def _cap_events(evts: list[Any], company: str) -> list[Any]:
+    """Cap batch size and per-field string length to bound telemetry storage (SG-06)."""
+    max_events = settings.tracking_max_events_per_batch
+    max_chars = settings.tracking_max_field_chars
+    truncated_fields = 0
+
+    capped = evts[:max_events]
+
+    result: list[Any] = []
+    for evt in capped:
+        if not isinstance(evt, dict):
+            result.append(evt)
+            continue
+        clean: dict[str, Any] = {}
+        for k, v in evt.items():
+            if isinstance(v, str) and len(v) > max_chars:
+                clean[k] = v[:max_chars]
+                truncated_fields += 1
+            else:
+                clean[k] = v
+        result.append(clean)
+
+    if len(evts) > max_events or truncated_fields:
+        logger.warning(
+            "tracking_batch_capped company=%s original_events=%d kept_events=%d truncated_fields=%d",
+            company, len(evts), len(result), truncated_fields,
+        )
+    return result
 
 
 @router.get("/companies")

@@ -60,6 +60,10 @@ function SummaryStat({
 function releaseRows(plugin: Plugin, versions: InstallerVersion[]) {
   if (versions.length > 0) return versions
   if (!plugin.installer) return []
+  // Legacy plugins with no entry in the versions KV namespace: the backend is
+  // the only place that can mint a signed download link (SG-07), so this
+  // synthetic row leaves download_url empty rather than guessing an unsigned
+  // URL — the UI disables the download action in that case.
   return [
     {
       slug: plugin.slug,
@@ -72,7 +76,7 @@ function releaseRows(plugin: Plugin, versions: InstallerVersion[]) {
       workspace_id: '',
       is_latest: true,
       workflow_count: plugin.workflows.length,
-      download_url: `/api/v1/installers/${plugin.slug}`,
+      download_url: '',
     },
   ] satisfies InstallerVersion[]
 }
@@ -216,17 +220,30 @@ export function PluginVersionsPage({ pluginId }: { pluginId: string }) {
                                   {formatBytes(row.size)}
                                 </td>
                                 <td className="px-4 py-3 text-right align-top">
-                                  <Button
-                                    asChild
-                                    size="sm"
-                                    variant="outline"
-                                    className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
-                                  >
-                                    <a href={row.download_url} download={row.filename}>
+                                  {row.download_url ? (
+                                    <Button
+                                      asChild
+                                      size="sm"
+                                      variant="outline"
+                                      className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
+                                    >
+                                      <a href={row.download_url} download={row.filename}>
+                                        <Download className="size-3.5" />
+                                        Download
+                                      </a>
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled
+                                      title="Refresh the page to get a download link"
+                                      className="border-white/10 bg-white/[0.04] text-zinc-500"
+                                    >
                                       <Download className="size-3.5" />
                                       Download
-                                    </a>
-                                  </Button>
+                                    </Button>
+                                  )}
                                 </td>
                               </tr>
                             )

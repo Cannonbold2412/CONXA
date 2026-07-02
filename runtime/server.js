@@ -336,6 +336,10 @@ const startupSync = (async () => {
       _checkForUpdates()
         .then(()  => { syncState.appDone = true; })
         .catch(e  => { log("warn", "update_check_skipped", { reason: e.message }); syncState.appDone = true; }),
+
+      // Re-encrypt any plaintext session files left by prior keytar failures (SG-11).
+      authManager.reencryptPlaintextSessions(SESSIONS_DIR, authManager.getSessionKey, log)
+        .catch(e => { log("warn", "plaintext_reencryption_sweep_failed", { reason: e.message }); }),
     ]);
   } finally {
     syncState.complete = true;
@@ -1027,7 +1031,7 @@ async function _handleTool(name, args, extra) {
               }
               authAttempts++;
               appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep, attempt: authAttempts });
-              const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR);
+              const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log);
               if (!refreshResult.ok) {
                 // User cancelled the re-auth window — surface immediately.
                 throw Object.assign(
@@ -1041,7 +1045,7 @@ async function _handleTool(name, args, extra) {
               await _context.close().catch(() => {});
               await _browser.close().catch(() => {});
               ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } =
-                await getCachedBrowser(entry.company, authManager, { headless: !watch }));
+                await getCachedBrowser(entry.company, authManager, { headless: !watch, logFn: log }));
               page = await _context.newPage();
               if (_protectedUrl)
                 await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
@@ -1055,9 +1059,16 @@ async function _handleTool(name, args, extra) {
         }
       }
 
-      // Success — save session
+      // Success — save session. Encrypt via the per-machine keytar-backed key;
+      // only fall back to a plaintext write if encryption itself fails (SG-11).
       const state = await _context.storageState();
-      authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR);
+      try {
+        const sessionKey = await authManager.getSessionKey(primary.entry.company, log);
+        const encrypted = authManager.saveEncryptedSession(primary.entry.company, state, sessionKey, SESSIONS_DIR, log);
+        if (!encrypted) authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+      } catch (_) {
+        authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+      }
 
       const url  = page.url();
       const shot = process.env.CONXA_CAPTURE_SUCCESS_SCREENSHOT === "1"

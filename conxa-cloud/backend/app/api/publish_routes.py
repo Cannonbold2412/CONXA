@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import io
 import json
 import re
@@ -86,6 +87,34 @@ def _validate_rel_path(rel: str) -> str:
     if not r or r.startswith("/") or ".." in r.split("/"):
         raise HTTPException(status_code=400, detail=f"invalid_file_path: {rel}")
     return r
+
+
+def _sign_installer(slug: str, version: str | None, ts: int) -> str:
+    """HMAC-SHA256 over ts:slug:version, mirroring saas.py's proxy-identity HMAC (SG-02)."""
+    key = settings.installer_signing_key.encode()
+    msg = f"{ts}:{slug}:{version or ''}".encode()
+    return hmac.new(key, msg, "sha256").hexdigest()
+
+
+def _verify_installer_signature(slug: str, version: str | None, request: Request) -> None:
+    """Reject expired/tampered installer download links (SG-07).
+
+    A blank SKILL_INSTALLER_SIGNING_KEY preserves the legacy public-download
+    behavior for local dev — matches the SKILL_API_BASE_URL fallback pattern.
+    """
+    if not settings.installer_signing_key:
+        return
+    ts_param = request.query_params.get("ts", "")
+    sig_param = request.query_params.get("sig", "")
+    try:
+        ts = int(ts_param)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="invalid_or_expired_download_link")
+    if abs(time.time() - ts) > settings.installer_signing_window:
+        raise HTTPException(status_code=401, detail="invalid_or_expired_download_link")
+    expected = _sign_installer(slug, version, ts)
+    if not sig_param or not secrets.compare_digest(sig_param, expected):
+        raise HTTPException(status_code=401, detail="invalid_or_expired_download_link")
 
 
 def _validate_version(version: str) -> str:
@@ -571,6 +600,11 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
 
     def _row_from_meta(meta: dict[str, Any], fallback_version: str) -> dict[str, Any]:
         version = str(meta.get("version") or fallback_version)
+        ts = int(time.time())
+        sig = _sign_installer(slug, version, ts)
+        download_url = f"/api/v1/installers/{slug}/versions/{version}"
+        if settings.installer_signing_key:
+            download_url += f"?ts={ts}&sig={sig}"
         row = {
             "slug": slug,
             "version": version,
@@ -581,7 +615,7 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
             "uploaded_at": float(meta.get("uploaded_at") or 0),
             "workspace_id": str(meta.get("workspace_id") or ""),
             "is_latest": bool(meta.get("is_latest")),
-            "download_url": f"/api/v1/installers/{slug}/versions/{version}",
+            "download_url": download_url,
         }
         if "workflow_count" in meta:
             row["workflow_count"] = int(meta.get("workflow_count") or 0)
@@ -648,17 +682,22 @@ def _stream_installer(
 
 
 @installers_router.get("/{slug}/versions/{version}")
-def get_installer_version(slug: str, version: str) -> StreamingResponse:
-    """Public exact-version installer download."""
+def get_installer_version(slug: str, version: str, request: Request) -> StreamingResponse:
+    """Installer download for an exact version. Requires a valid ts+sig when
+    SKILL_INSTALLER_SIGNING_KEY is configured (SG-07); public otherwise (dev)."""
     slug = _validate_slug(slug)
     version = _validate_version(version)
+    _verify_installer_signature(slug, version, request)
     version_dir = _installer_version_dir(slug, version)
     return _stream_installer(version_dir / "installer.exe", version_dir / "meta.json", slug=slug, version=version)
 
 
 @installers_router.get("/{slug}")
-def get_installer(slug: str) -> StreamingResponse:
-    """Public end-user installer download. SHA-256 returned in X-Conxa-SHA256."""
+def get_installer(slug: str, request: Request) -> StreamingResponse:
+    """Latest installer download. SHA-256 returned in X-Conxa-SHA256. Requires a
+    valid ts+sig when SKILL_INSTALLER_SIGNING_KEY is configured (SG-07); public
+    otherwise (dev)."""
     slug = _validate_slug(slug)
+    _verify_installer_signature(slug, None, request)
     out_dir = _installer_dir(slug)
     return _stream_installer(out_dir / "installer.exe", out_dir / "meta.json", slug=slug, version=None)

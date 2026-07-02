@@ -294,3 +294,5 @@ When in doubt, update the doc. A stale sentence in the TRD costs future engineer
 - A new phase is added to the roadmap after completing a major milestone.
 
 For everything else — adding a feature, fixing a flow, shipping a phase — update the technical docs (`TRD.md`, `Backend-Schema.md`, `App-Flow.md`, `Implementation-Plan.md`) and leave the PRD alone.
+
+After every prompt update the FIX.md file with a summary of the changes made, including any new features, bug fixes, or improvements. This will help keep track of the evolution of the codebase and provide context for future developers. But it should be in easy language, not technical. The goal is to make it easy for anyone to understand what has changed and why.

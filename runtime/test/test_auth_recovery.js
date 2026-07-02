@@ -103,6 +103,51 @@ function makePage(url, title = "My App") {
     assert.match(result.message, /3 times|limit|escalat/i);
   });
 
+  console.log("\nsession encryption fallback logging (SG-11):");
+  const authManager = require("../auth_manager");
+  const fs = require("fs");
+  const path = require("path");
+  const os = require("os");
+
+  await test("saveEncryptedSession returns false and logs a warning on failure", async () => {
+    // A regular file in place of the sessions dir makes mkdirSync throw deterministically.
+    const blockingFile = path.join(os.tmpdir(), `conxa-test-block-${Date.now()}`);
+    fs.writeFileSync(blockingFile, "x");
+    const warnings = [];
+    const logFn = (level, msg) => { if (level === "warn") warnings.push(msg); };
+    const ok = authManager.saveEncryptedSession("acme", { cookies: [] }, "aa".repeat(32), blockingFile, logFn);
+    fs.unlinkSync(blockingFile);
+    assert.equal(ok, false);
+    assert.ok(warnings.includes("session_encryption_failed"));
+  });
+
+  await test("reencryptPlaintextSessions encrypts and deletes a planted plaintext session", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-sessions-"));
+    const company = "reencrypt-co";
+    const rawPath = path.join(dir, `${company}_raw_state.json`);
+    fs.writeFileSync(rawPath, JSON.stringify({ cookies: [] }));
+    const events = [];
+    const logFn = (level, msg) => events.push(`${level}:${msg}`);
+    await authManager.reencryptPlaintextSessions(dir, async () => "bb".repeat(32), logFn);
+    assert.ok(!fs.existsSync(rawPath), "plaintext original should be deleted");
+    assert.ok(fs.existsSync(path.join(dir, `${company}_state.json`)), "encrypted file should exist");
+    assert.ok(events.includes("info:plaintext_session_reencrypted"));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test("reencryptPlaintextSessions leaves plaintext in place if key fetch fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-sessions-"));
+    const company = "reencrypt-fail-co";
+    const rawPath = path.join(dir, `${company}_raw_state.json`);
+    fs.writeFileSync(rawPath, JSON.stringify({ cookies: [] }));
+    const events = [];
+    const logFn = (level, msg) => events.push(`${level}:${msg}`);
+    await authManager.reencryptPlaintextSessions(dir, async () => { throw new Error("keytar down"); }, logFn);
+    assert.ok(fs.existsSync(rawPath), "plaintext should remain when re-encryption fails");
+    assert.ok(events.includes("warn:plaintext_session_reencrypt_failed"));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   const total = passed + failed;
   console.log(`\n${passed}/${total} passed`);
   process.exit(failed > 0 ? 1 : 0);

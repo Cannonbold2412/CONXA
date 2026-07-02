@@ -46,7 +46,7 @@ async function getCachedBrowser(company, authManager, opts = {}) {
       }
     }
   }
-  const result = await getAuthContext(company, authManager, { headless });
+  const result = await getAuthContext(company, authManager, { headless, logFn: opts.logFn });
   if (headless) {
     _cache.set(company, { browser: result.browser, context: result.context, protectedUrl: result.protectedUrl, idleTimer: null });
     _scheduleCleanup(company);
@@ -248,6 +248,7 @@ async function _captureInteractiveAuth(company, targetUrl) {
 
 async function getAuthContext(company, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
+  const logFn = opts.logFn;
   let _hadEncryptedSession = false; // set true if encrypted path ran; raw session is then stale
   // Resolve pack config for this company
   const packPath = path.join(CONXA_DIR, "skill-packs", company, "pack.json");
@@ -259,7 +260,7 @@ async function getAuthContext(company, authManager, opts = {}) {
   // Try encrypted session (uses per-machine session key from keytar)
   if (authManager) {
     try {
-      const token = await authManager.getSessionKey(company);
+      const token = await authManager.getSessionKey(company, logFn);
       if (token) {
         const stored = authManager.loadDecryptedSession(company, token, SESSIONS_DIR);
         if (stored) {
@@ -296,13 +297,15 @@ async function getAuthContext(company, authManager, opts = {}) {
   const { state, protectedUrl: capturedProtectedUrl } = await _captureInteractiveAuth(company, targetUrl);
   _writeAuthMeta(company, { protected_url: capturedProtectedUrl });
 
-  // Encrypt and save the session using the per-machine session key.
+  // Encrypt and save the session using the per-machine session key; only fall
+  // back to a plaintext write if encryption itself reports failure (SG-11).
   if (authManager) {
     try {
-      const sessionKey = await authManager.getSessionKey(company);
-      authManager.saveEncryptedSession(company, state, sessionKey, SESSIONS_DIR);
+      const sessionKey = await authManager.getSessionKey(company, logFn);
+      const encrypted = authManager.saveEncryptedSession(company, state, sessionKey, SESSIONS_DIR, logFn);
+      if (!encrypted) authManager.saveRawSession(company, state, SESSIONS_DIR, logFn);
     } catch (_) {
-      authManager.saveRawSession(company, state, SESSIONS_DIR);
+      authManager.saveRawSession(company, state, SESSIONS_DIR, logFn);
     }
   } else {
     fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -316,15 +319,16 @@ async function getAuthContext(company, authManager, opts = {}) {
 // Open a fresh headed Chromium at loginUrl for mid-execution re-auth.
 // Reuses _captureInteractiveAuth (auto-close + session capture) and saves
 // the result via authManager.  Called from server.js on auth failure.
-async function captureReAuth(company, loginUrl, authManager, sessionsDir) {
+async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn) {
   try {
     const { state, protectedUrl } = await _captureInteractiveAuth(company, loginUrl);
     if (authManager) {
       try {
-        const sessionKey = await authManager.getSessionKey(company);
-        authManager.saveEncryptedSession(company, state, sessionKey, sessionsDir);
+        const sessionKey = await authManager.getSessionKey(company, logFn);
+        const encrypted = authManager.saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
+        if (!encrypted) authManager.saveRawSession(company, state, sessionsDir, logFn);
       } catch (_) {
-        authManager.saveRawSession(company, state, sessionsDir);
+        authManager.saveRawSession(company, state, sessionsDir, logFn);
       }
     }
     _writeAuthMeta(company, { protected_url: protectedUrl });
