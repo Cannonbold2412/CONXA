@@ -220,8 +220,6 @@ class AuthService:
         result: dict[str, Any] = {}
         done = threading.Event()
 
-        service = self
-
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_a):  # silence default logging
                 pass

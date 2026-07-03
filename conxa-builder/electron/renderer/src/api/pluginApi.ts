@@ -265,49 +265,45 @@ export function updateWorkflow(
   return cmd('update_workflow', { plugin_id: pluginId, workflow_id: workflowId, ...body })
 }
 
-export async function buildPlugin(
-  pluginId: string,
-  version = '0.1.0',
-  onLog: (message: string) => void = () => {},
-): Promise<PluginBuild> {
+/** Subscribes to backend events of a given `kind` and forwards their `message`
+ * to `onLog` for the duration of `fn`. Shared by buildPlugin/buildInstaller/
+ * testWorkflow, which all stream progress lines this way. */
+async function withKindLog<T>(kind: string, onLog: (message: string) => void, fn: () => Promise<T>): Promise<T> {
   const unsub = window.conxa.onEvent((ev: BackendEvent) => {
-    if (ev.kind === 'plugin_build' && ev.message) onLog(String(ev.message))
+    if (ev.kind === kind && ev.message) onLog(String(ev.message))
   })
   try {
-    return await cmd<PluginBuild>('build_plugin', { plugin_id: pluginId, version })
+    return await fn()
   } finally {
     unsub()
   }
 }
 
-export async function buildInstaller(
+export function buildPlugin(
+  pluginId: string,
+  version = '0.1.0',
+  onLog: (message: string) => void = () => {},
+): Promise<PluginBuild> {
+  return withKindLog('plugin_build', onLog, () =>
+    cmd<PluginBuild>('build_plugin', { plugin_id: pluginId, version }),
+  )
+}
+
+export function buildInstaller(
   pluginId: string,
   onLog: (message: string) => void = () => {},
   logoPath?: string | null,
   version?: string,
   releaseNotes?: string,
 ): Promise<InstallerBuildResult> {
-  const unsub = window.conxa.onEvent((ev: BackendEvent) => {
-    if (ev.kind === 'installer_build' && ev.message) onLog(String(ev.message))
-  })
-  try {
-    return await cmd<InstallerBuildResult>('build_installer', {
+  return withKindLog('installer_build', onLog, () =>
+    cmd<InstallerBuildResult>('build_installer', {
       plugin_id: pluginId,
       logo_path: logoPath ?? null,
       version,
       release_notes: releaseNotes,
-    })
-  } finally {
-    unsub()
-  }
-}
-
-export function installerDownloadUrl(pluginId: string): string {
-  return pluginId
-}
-
-export function downloadPlugin(pluginId: string): string {
-  return pluginId
+    }),
+  )
 }
 
 export function getCompiledSkill(
@@ -325,36 +321,19 @@ export function fetchRun(runId: string): Promise<{ run: Run }> {
   return cmd<{ run: Run }>('get_run', { run_id: runId })
 }
 
-export async function testWorkflow(
+export function testWorkflow(
   pluginId: string,
   workflowId: string,
   inputs: Record<string, unknown> = {},
   headless = false,
   onLog: (message: string) => void = () => {},
 ): Promise<unknown> {
-  const unsub = window.conxa.onEvent((ev: BackendEvent) => {
-    if (ev.kind === 'workflow_test' && ev.message) onLog(String(ev.message))
-  })
-  try {
-    return await cmd('test_workflow', {
+  return withKindLog('workflow_test', onLog, () =>
+    cmd('test_workflow', {
       plugin_id: pluginId,
       workflow_id: workflowId,
       inputs,
       headless,
-    })
-  } finally {
-    unsub()
-  }
-}
-
-export function fetchTrackingRuns(
-  _company: string,
-  _limit = 50,
-  _offset = 0,
-): Promise<TrackingRunsResponse> {
-  return Promise.reject(new Error('Tracking runs not available in Build Studio'))
-}
-
-export function fetchTrackingRun(_company: string, _runId: string): Promise<TrackingRunDetail> {
-  return Promise.reject(new Error('Tracking detail not available in Build Studio'))
+    }),
+  )
 }

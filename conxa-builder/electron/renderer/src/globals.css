@@ -53,7 +53,7 @@
   --brand-subtle: rgba(217, 119, 87, 0.12);
   --brand-ring: rgba(217, 119, 87, 0.45);
 
-  /* Legacy tokens from designTokens.ts — kept for backward compat */
+  /* Surface/background tokens referenced by inline styles in the renderer. */
   --bg-base: #1a1a1a;
   --bg-sidebar: #1e1e1e;
   --bg-surface: #252525;

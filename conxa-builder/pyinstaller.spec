@@ -87,6 +87,15 @@ a = Analysis(
             "services.llm_proxy_client",
             "services.metadata_reporter",
             "services.validation",
+            # JSON-RPC command handler mixins used by backend.py.
+            "handlers.protocol",
+            "handlers.session",
+            "handlers.compile",
+            "handlers.plugins",
+            "handlers.workflow_editor",
+            "handlers.visual",
+            "handlers.skill_packages",
+            "handlers.runs",
             # Python stdlib extras sometimes missed by the hook.
             "email.mime.multipart",
             "email.mime.text",

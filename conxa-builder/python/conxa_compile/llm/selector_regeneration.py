@@ -1,17 +1,16 @@
-"""LLM-driven selector compilation (Phase 3).
+"""LLM-assisted selector regeneration for the 1-click fix API (Phase 6 patch flow).
 
-The recorder captures raw signals (DOM snapshot, ancestors, bbox, surrounding text).
-This module asks an LLM to generate Playwright CSS selector candidates against the
-recorded DOM snapshot, validates each candidate, and caches the result by
-(dom_hash, element_bbox, model).
-
-The runtime then tries these in order before falling back to a11y / LLM recovery.
+When a user edits a step's target element in the workflow editor, `patch.py`
+re-runs selector generation against the original recorded DOM snapshot with the
+new bounding box, so the compiled selector list matches the corrected element.
+This is the one place outside the primary compile pipeline where selector
+strings are still produced by an LLM call rather than by `IdentityBundle` +
+`selector_grammar.py` — see `patch.py::_regenerate_compiled_selectors`.
 """
 
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,10 +18,8 @@ from conxa_core.config import settings
 from conxa_compile.llm.openapi_client import (
     SelectorCandidate,
     generate_selector_candidates,
-    infer_workflow_intent,
 )
 from conxa_core.storage import selector_cache, snapshots
-from conxa_core.models.skill_spec import WorkflowIntentGraph, WorkflowIntentStep
 
 
 _TOO_GENERIC = {"button", "div", "span", "input", "a", "form", "li", "ul", "p", "h1", "h2", "h3"}
@@ -225,71 +222,6 @@ def compile_selectors_for_task(
         [c.to_dict() for c in ranked],
     )
     return ranked
-
-
-def compile_workflow_selectors(
-    tasks: list[SelectorCompileTask],
-    *,
-    session_id: str,
-    model: str | None = None,
-) -> dict[int, list[SelectorCandidate]]:
-    """Compile selectors for all tasks. Groups by snapshot_hash for cache efficiency.
-
-    Returns {step_index: [candidates...]}.
-    """
-    by_hash: dict[str, list[SelectorCompileTask]] = defaultdict(list)
-    no_hash: list[SelectorCompileTask] = []
-    for t in tasks:
-        if t.snapshot_hash:
-            by_hash[t.snapshot_hash].append(t)
-        else:
-            no_hash.append(t)
-
-    result: dict[int, list[SelectorCandidate]] = {}
-    for _h, group in by_hash.items():
-        # Same DOM state across many steps: cache amortizes per-element calls.
-        for task in group:
-            result[task.step_index] = compile_selectors_for_task(task, session_id=session_id, model=model)
-    for task in no_hash:
-        # Without a snapshot we still ask the LLM but can only do rule-based filtering.
-        result[task.step_index] = compile_selectors_for_task(task, session_id=session_id, model=model)
-    return result
-
-
-def build_workflow_intent_graph(
-    steps_summary: list[dict[str, Any]],
-    page_urls: list[str],
-    *,
-    model: str | None = None,
-) -> WorkflowIntentGraph:
-    """Single LLM call producing high-level goal + per-step semantic intent."""
-    raw = infer_workflow_intent(
-        steps_summary=steps_summary,
-        page_urls=page_urls,
-        model=model,
-    )
-    if not raw:
-        return WorkflowIntentGraph()
-    intent_steps: list[WorkflowIntentStep] = []
-    for item in raw.get("steps") or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            intent_steps.append(
-                WorkflowIntentStep(
-                    index=int(item.get("index") or 0),
-                    intent=str(item.get("intent") or ""),
-                    verification_anchor=str(item.get("verification_anchor") or ""),
-                )
-            )
-        except (TypeError, ValueError):
-            continue
-    return WorkflowIntentGraph(
-        goal=str(raw.get("goal") or ""),
-        steps=intent_steps,
-        decision_points=list(raw.get("decision_points") or []),
-        expected_end_state=dict(raw.get("expected_end_state") or {}),
-    )
 
 
 def task_from_recorded_event(ev: dict[str, Any], step_index: int) -> SelectorCompileTask:

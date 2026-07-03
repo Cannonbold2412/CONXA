@@ -25,7 +25,6 @@ def generic_intents(policy: dict[str, Any]) -> set[str]:
         "click_button",
         "click_input",
         "focus_button",
-        "focus_input",
     }
 
 

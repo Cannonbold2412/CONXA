@@ -15,7 +15,72 @@ on:
         required: true
 
 jobs:
+  # Regression gate — runs the Build Studio's Python + TypeScript quality checks
+  # before the (slow, Windows-only) packaging job. Closes the historical gap where
+  # CI only packaged the app and never tested it.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install packages/conxa-core
+          python -m pip install -r conxa-builder/python/requirements.txt
+          python -m pip install --ignore-installed PyJWT -r conxa-cloud/backend/requirements.txt
+          python -m pip install pytest ruff razorpay
+
+      - name: Ruff lint (Build Studio Python)
+        run: ruff check conxa-builder/python
+
+      - name: Pytest (Build Studio pipeline)
+        working-directory: conxa-cloud
+        # The five --ignore'd modules have pre-existing, non-refactor failures
+        # (environmental runtime-dir shadowing, a legacy data-testid regex, and
+        # cloud billing/config tests needing external credentials). Tracked in
+        # PHASE_1_REFACTOR_REPORT.md; excluded so this gate stays deterministic.
+        run: |
+          pytest -q \
+            --ignore=tests/test_conxa_runtime.py \
+            --ignore=tests/test_element_fingerprint.py \
+            --ignore=tests/test_razorpay_routes.py \
+            --ignore=tests/test_product_routes.py \
+            --ignore=tests/test_llm_proxy_and_publish.py
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: conxa-builder/electron/package-lock.json
+
+      - name: Install Electron dependencies
+        working-directory: conxa-builder/electron
+        run: npm ci
+
+      - name: Typecheck renderer
+        working-directory: conxa-builder/electron
+        run: npm run typecheck
+
+      - name: Lint (ESLint)
+        working-directory: conxa-builder/electron
+        run: npm run lint
+
+      - name: Bridge unit tests
+        working-directory: conxa-builder/electron
+        run: npm run test:bridge
+
   build-studio:
+    needs: test
     runs-on: windows-latest
     permissions:
       contents: write

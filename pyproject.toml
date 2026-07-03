@@ -1,0 +1,27 @@
+# Repo-root Ruff configuration for the Build Studio Python backend.
+#
+# Lint-only: the formatter (`ruff format`) is intentionally NOT wired into CI, so
+# Phase 1 refactors stay reviewable without a whole-tree reformat. This config
+# scopes Ruff to the Build Studio's Python sources (recorder / compiler / editor /
+# services / backend). Run with:  ruff check conxa-builder/python
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["conxa-builder/python"]
+extend-exclude = ["**/dist", "**/build", "**/node_modules"]
+
+[tool.ruff.lint]
+# Conservative, high-signal rule set: pyflakes (unused imports/vars, undefined
+# names) and flake8-bugbear (real correctness smells). Deliberately excluded:
+# style/whitespace (E/W), import-sorting (I) and pyupgrade (UP) are formatting-
+# adjacent (no autoformat this phase); PLC0415 (import-outside-top-level) is an
+# established intentional pattern here (lazy imports break circular refs / speed
+# up stdio startup — see backend.py).
+select = ["F", "B"]
+ignore = [
+  "B008",  # function calls in argument defaults — used deliberately in a few places
+  "B905",  # zip() strict= — adding it would change behavior; out of scope
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/test_*.py" = ["F401", "F811"]

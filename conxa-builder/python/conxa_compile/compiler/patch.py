@@ -65,8 +65,7 @@ def _regenerate_compiled_selectors(step: dict[str, Any], document: dict[str, Any
         if not source_session_id:
             return out
 
-        from conxa_compile.compiler.llm_selector_generator import (
-            SelectorCompileTask,
+        from conxa_compile.llm.selector_regeneration import (
             compile_selectors_for_task,
             task_from_recorded_event,
         )

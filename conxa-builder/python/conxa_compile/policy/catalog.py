@@ -10,28 +10,28 @@ from conxa_compile.policy.interfaces import ReplacementTarget
 HARDENED_SITE_CATALOG: list[dict[str, Any]] = [
     {
         "id": "compiler_v3_submit_heuristic",
-        "module": "conxa_compile.compiler.v3",
+        "module": "conxa_compile.compiler.step_anchors",
         "category": "workflow",
         "replacement": ReplacementTarget.SUBMIT_DETECTION,
         "notes": "Submit-like clicks inferred from policy tokens + button semantics, not login-only lists.",
     },
     {
         "id": "compiler_v3_step_order",
-        "module": "conxa_compile.compiler.v3",
+        "module": "conxa_compile.compiler.step_anchors",
         "category": "workflow",
         "replacement": ReplacementTarget.WORKFLOW_ORDERING,
         "notes": "Recording order preserved; optional same-target focus-before-type insert only (no dependency reorder).",
     },
     {
         "id": "compiler_v3_selector_ranks",
-        "module": "conxa_compile.compiler.v3",
+        "module": "conxa_compile.compiler.step_anchors",
         "category": "selector",
         "replacement": ReplacementTarget.SELECTOR_PRIORITY,
         "notes": "Selector ranking uses policy base scores + stability heuristics.",
     },
     {
         "id": "compiler_v3_validation_login",
-        "module": "conxa_compile.compiler.v3",
+        "module": "conxa_compile.compiler.state_validation",
         "category": "validation",
         "replacement": ReplacementTarget.VALIDATION_STATIC,
         "notes": "Success conditions derived from state_diff; no /login or dashboard literals.",

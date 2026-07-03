@@ -2,18 +2,11 @@ import { useEffect } from 'react'
 import { Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useUpdater } from '@/hooks/useUpdater'
+import { formatBytes } from '@/lib/format'
 
 interface Props {
   currentVersion: string
   latestVersion: string
-}
-
-function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB']
-  let n = bytes
-  let unit = 0
-  while (n >= 1024 && unit < units.length - 1) { n /= 1024; unit++ }
-  return `${n.toFixed(unit === 0 || n >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
 export function UpdateRequiredScreen({ currentVersion, latestVersion }: Props) {

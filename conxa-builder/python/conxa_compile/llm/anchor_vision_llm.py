@@ -12,10 +12,13 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from conxa_compile.compiler.v3 import finalize_vision_anchors
+from conxa_compile.compiler.step_anchors import finalize_vision_anchors
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
-from conxa_core.llm.client import call_llm, supports_multimodal_chat
+# supports_multimodal_chat is re-exported here as part of this module's patchable
+# surface (test_phases patches it on this module); keep the import even though the
+# call happens elsewhere.
+from conxa_core.llm.client import call_llm, supports_multimodal_chat  # noqa: F401
 from conxa_compile.policy.bundle import get_policy_bundle
 
 

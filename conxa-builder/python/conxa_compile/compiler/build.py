@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from datetime import datetime, timezone
@@ -13,41 +12,28 @@ from conxa_compile.compiler.action_policy import no_recovery_block, recovery_ena
 from conxa_compile.editor.action_registry import MARKER_ACTIONS
 from conxa_compile.compiler.decision_layer import rank_merged_anchors
 from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
-from conxa_compile.compiler.input_binding_v2 import derive_input_binding_v2
+from conxa_compile.compiler.input_binding import derive_input_binding
 from conxa_compile.compiler.recovery_policy import (
     default_recovery_block,
     merge_recovery_strategies_for_wait_shape,
 )
 from conxa_compile.compiler.selector_filters import (
-    dedup_by_orthogonality,
     filter_selectors_dict,
     is_dynamic_id,
-    is_ephemeral_anchor,
     is_low_quality_anchor,
     selector_passes_filters,
     uniqueness_gate,
 )
 from conxa_compile.compiler.selector_score import (
     durability_score,
-    rank_by_durability,
     rank_selectors_scored,
     score_selector_row,
-    tag_orthogonality_class,
 )
 from conxa_compile.compiler.stable_hash import compute_stable_hash
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
 from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to_display
-from conxa_compile.compiler.v3 import (
-    capture_state_snapshot,
-    clean_steps,
-    clean_anchors,
-    compare_state,
-    fix_step_order,
-    generate_stable_selector,
-    optimize_scroll,
-    scroll_payload,
-    validation_from_diff,
-)
+from conxa_compile.compiler.state_validation import capture_state_snapshot, compare_state, optimize_scroll, scroll_payload, validation_from_diff
+from conxa_compile.compiler.step_anchors import clean_anchors, clean_steps, fix_step_order, generate_stable_selector
 from conxa_core.config import settings
 from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError, generate_anchors_for_step_or_raise
 from conxa_compile.llm.intent_llm import generate_intent_with_llm
@@ -67,6 +53,7 @@ from conxa_core.models.skill_spec import (
     SkillPolicies,
     SkillStep,
     ValidationBlock,
+    WorkflowIntentGraph,
 )
 from conxa_compile.policy.bundle import PolicyBundle, get_policy_bundle
 from conxa_compile.policy.intent_ontology import intent_specificity_score, normalize_compiler_intent
@@ -752,8 +739,8 @@ def _build_signals(
 
 
 def _derive_input_binding(ev: dict[str, Any], policy: dict[str, Any]) -> tuple[Any, str | None]:
-    """Delegate to derive_input_binding_v2 with priority signals (label_text → placeholder → aria_label → value pattern → input_type)."""
-    return derive_input_binding_v2(ev, policy)
+    """Delegate to derive_input_binding with priority signals (label_text → placeholder → aria_label → value pattern → input_type)."""
+    return derive_input_binding(ev, policy)
 
 
 def _build_validation(ev: dict[str, Any], state_diff: dict[str, Any], policy: dict[str, Any]) -> ValidationBlock:
@@ -1150,18 +1137,14 @@ def _build_intent_graph(
     cleaned_events: list[dict[str, Any]],
     *,
     session_id: str,
-) -> "WorkflowIntentGraph":
+) -> WorkflowIntentGraph:
     """Build the workflow-level intent graph (one LLM call).
 
     Selector generation is fully deterministic and runs in _build_step via
     generate_deterministic_signals(). This function does not generate selectors.
     """
-    from conxa_core.models.skill_spec import WorkflowIntentGraph  # noqa: PLC0415 — local import to avoid circular ref
-
     try:
-        from conxa_compile.compiler.llm_selector_generator import (  # noqa: PLC0415
-            build_workflow_intent_graph,
-        )
+        from conxa_compile.llm.workflow_intent import build_workflow_intent_graph  # noqa: PLC0415
     except ImportError:
         return WorkflowIntentGraph()
 

@@ -16,7 +16,7 @@ from conxa_compile.compiler.selector_filters import (
     uniqueness_gate,
 )
 from conxa_compile.compiler.selector_score import rank_by_durability
-from conxa_compile.compiler.llm_selector_generator_v2 import to_playwright_grammar
+from conxa_compile.compiler.selector_grammar import to_playwright_grammar
 from conxa_core.models.skill_spec import IdentitySignal
 
 _EXCLUDED_ROLES = frozenset({

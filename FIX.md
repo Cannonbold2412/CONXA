@@ -2,6 +2,506 @@
 
 ---
 
+## Fixed Record Login hanging forever after closing the browser — 2026-07-04
+
+This one was caused by an earlier fix in this log (the flicker fix, below). Here's the chain:
+
+To stop the login window from flickering, we made it stop repeatedly saving your login session
+every 2 seconds while you were typing, and instead only save it once, right at the moment you
+close the browser. That part worked. But it introduced a new problem: saving the session
+requires briefly talking to the browser, and if the browser has *just* closed, that
+conversation can have nobody on the other end to answer — and the save attempt would then wait
+forever for a reply that was never coming. Since the app was waiting on that save to finish
+before it could mark the recording as "browser closed," everything downstream got stuck: the
+Studio just sat there, forever thinking the browser window was still open.
+
+Fixed by two changes working together:
+1. Bringing back a periodic save while you're logging in, but much less often (every 6 seconds
+   instead of every 2) — frequent enough to almost always have a very recent save ready, rare
+   enough to not cause the original flicker.
+2. Before attempting to save at the moment of closing, the app now checks whether the browser
+   connection is already gone. If it is, it skips that attempt entirely instead of waiting
+   forever — it just relies on the last periodic save from a few seconds earlier.
+
+Net effect: no more flicker while typing, and no more indefinite hang after closing the browser.
+
+---
+
+## Fixed "Failed to save auth session: Cannot switch to a different thread" — 2026-07-04
+
+After finishing a login recording and closing the browser, some logins were failing to save
+with a confusing technical error mentioning "greenlet" and "threads." Here's what was actually
+happening: when you close the login browser, the app tries to save your session in two places
+at once — once safely (in the background process that was actually running the browser) and
+once again, redundantly, from a different internal process that isn't allowed to touch that
+browser at all. The browser-automation library we use (Playwright) is strict about this: only
+the process that opened a browser window is allowed to interact with it. The second, redundant
+save attempt was breaking that rule, and depending on timing, it could either fail silently or
+surface this confusing error and block the save entirely.
+
+The fix removes that redundant, unsafe second attempt entirely. The app now properly waits for
+the background recording process to fully finish (which includes its own, correct save) before
+checking whether the login was saved — instead of racing against it. This also means the app no
+longer needs to reach into the live browser a second time to figure out the final login page
+URL; it uses the URL it already tracked safely throughout the recording.
+
+If you saw this error before applying this fix, the login itself likely still completed —
+it's the save step immediately after closing the browser that was failing. Try recording login
+again after this update.
+
+---
+
+## Fixed "A recording is already active" getting permanently stuck — 2026-07-04
+
+If you clicked "Record Login" or "Start Recording" and got the error *"A recording is already
+active"* even though no browser window was actually open, this is why: the app remembers "a
+recording is in progress" using a single flag that only gets cleared when a recording finishes
+the normal way. If that normal finish never happened — the app reloaded mid-recording, the
+browser crashed, or you closed the whole Studio app while a recording was still open — that
+flag stayed stuck "on" forever, and every future attempt to record got blocked by a recording
+that no longer actually existed.
+
+Now, before blocking a new recording, the app double-checks whether that old recording's
+browser window is actually still open. If it's not, it clears the stale flag automatically and
+lets you start recording right away. If a recording genuinely is still open, you'll now see a
+clearer message: "You already have a recording in progress. Finish or close that browser window
+before starting a new one" — telling you what to actually do, instead of just stating a fact.
+
+(If you hit this error before applying this fix, restarting the Build Studio app also would
+have cleared it immediately, since this flag was only ever held in memory, never saved to
+disk.)
+
+---
+
+## Fixed the flickering login recording window — 2026-07-04
+
+When you click "Record Login" in the Build Studio, a real Chrome window opens for you to log
+into the target app. Two things about that window were annoying:
+
+1. **It blinked while you were typing your login details.** This was happening because, only
+   during login recording, the app was quietly saving your login session to disk every 2
+   seconds in the background — and that save operation was visibly flickering the window while
+   you typed. It now only saves once you finish (either by reaching the end of login or by
+   closing the window), so there's no more repeated flicker while you're actively logging in.
+2. **Two extra browser windows flashed open and closed right after you closed the login
+   window.** This wasn't a hidden "verification" step — we checked and there's no such step in
+   the code. It's most likely Chrome's own behavior when it shuts down (things like its "did
+   Chrome crash last time?" popup or restore-session logic trying to kick in for a split
+   second). We added the standard Chrome startup flags that suppress that behavior. If this
+   still shows up after testing, it means the real cause is a lower-level Chrome/Windows quirk
+   we'll need to dig into further with more targeted logging.
+
+Regular workflow recording (recording the actual steps of a task, after you're logged in) was
+not affected by this change — it never had the 2-second autosave running in the first place.
+
+---
+
+## New companion doc: every problem with both the founder's and Fable's solutions, in plain language — 2026-07-03
+
+Created `research-analysis/conxa-solutions-by-problem.md`. It's a simpler companion to the
+main critical-analysis file. For each of the 10 problems it lays out, side by side and in
+everyday language with a concrete example:
+
+- **The problem** — what's wrong, with an example.
+- **What the founders say** — the founders' solution(s), with an example.
+- **What Fable says (my answer)** — Fable's own solution(s), including the new ideas, with
+  an example.
+- **Where it stands** — current severity and whether it's built yet.
+
+It ends with a one-page table listing every founder solution and every Fable solution across
+all 10 problems. The goal is that a non-technical reader can see, per problem, every idea we
+have to fix it — without reading the full analysis. Two problems (the wrong-click safety
+system, and the connector-squeeze answer) are noted as ones the founders asked Fable to solve.
+
+---
+
+## Critical-analysis report: added Fable's own solutions section — 2026-07-03
+
+A new §8 was added to `research-analysis/conxa-critical-analysis.md`: Fable's own answer to
+each of the ten problems — separate from the founders' answers, written as "what I would
+actually do." Where the solution was already in the build plan it says so; five ideas are
+genuinely new:
+
+1. **Free self-serve operability scanner** — publish the recordability pre-check as a free
+   "paste your URL, get an AI-operability score" tool, so every scan is a qualified lead
+   and market data at the same time.
+2. **Backend-agnostic skill contract** — define the skill as a governed spec (steps, entity
+   bindings, verifications, audit) with the executor pluggable underneath: browser today, an
+   official connector after graduation, even a computer-use model someday. Whichever
+   execution technology wins, Conxa owns the layer above it.
+3. **Per-tenant learning overlay** — after every successful run, quietly update local signal
+   weights for that customer's account, so skills *converge toward* each tenant instead of
+   merely surviving it. Signed pack untouched, same rule as repair memory.
+4. **Vendor-controlled automation sessions + a declared automation lane** — since the vendor
+   owns the target app (Option A), they can issue longer-lived sessions for their own
+   automation and recognize the runtime's signed traffic as a first-party class, turning
+   both the auth ceiling and the bot-blocker question into configuration.
+5. **Skill CI in the vendor's deploy pipeline** — a "conxa test" step that dry-runs published
+   skills against staging on every deploy and fails the build if a skill breaks. Drift gets
+   caught on a Tuesday before release instead of by customers. Possibly Conxa's most
+   differentiated feature, and it falls out of Option A almost for free.
+
+Plus two smaller ones: publish per-skill safety numbers as SLOs, and a queue rule of
+"parallel across apps, serial within an app" so write conflicts disappear by construction.
+The last two sections were renumbered (§9 going-forward, §10 final word).
+
+---
+
+## Critical-analysis report: final clean rewrite with all twelve answers integrated — 2026-07-03
+
+`research-analysis/conxa-critical-analysis.md` was rewritten one final time. After answers
+10–12 (open MCP standard, domain verification, and the safe-action system) were bolted onto
+the previous version, the document had grown patchy again. The final version integrates
+everything cleanly:
+
+- **Header:** the four recorded decisions up front (Option A with SMB vendors as the target,
+  signed installers, Mac versions, domain-verified vendor-owned software only).
+- **§2:** all ten problems in one table showing where each *started* and where it *stands
+  now* — every one has an answer on record; the dividing line is now "built vs. not yet
+  built," not "answered vs. unanswered."
+- **§3:** all twelve answers with honest verdicts, cleanly written — including the two
+  Fable wrote at the founders' request (the connector-squeeze answer and the five-layer
+  safe-action system) and the strongest founder argument (determinism → Strict Mode).
+- **§4:** the hard-limits list, now eight items, each with its route-around.
+- **§5:** the build plan grown to twelve items with a "how they chain" walkthrough —
+  domain verification added to the early sequence since it should gate publishing before
+  vendor sign-ups scale.
+- **§6–§8:** trust costs, the two proofs, and the month-by-month forward plan, updated to
+  include domain verification this month and multi-host registration in the 6–12 month window.
+- **§9:** a final word that honestly states where the review started, what changed, and
+  what the race ahead looks like.
+
+Nothing was lost from the review — every answer, severity change, cost figure, and build
+item survives in its final organized place.
+
+---
+
+## Critical-analysis report: answered the last open problem — silent wrong clicks and no undo — 2026-07-03
+
+At the founders' request, the report's final unanswered problem ("a wrong click can succeed
+silently, and there is no undo") now has an answer — Answer 12 in
+`research-analysis/conxa-critical-analysis.md`, a five-layer safe-action system. Risk
+lowered from High to Medium-High (Medium once built):
+
+1. **Classify every step by consequence** (read-only / reversible / irreversible) — mostly
+   automatic from the intent the compiler already extracts; the vendor confirms in the editor.
+2. **Entity binding — the key piece.** Before clicking Delete, verify the target row contains
+   this run's actual data ("Invoice #12345"). The wrong row doesn't contain it, so the
+   wrong-row delete becomes structurally impossible, not just unlikely.
+3. **Fail closed at the point of no return** — fuzzy "find something close" repair is disabled
+   on irreversible steps, plus an optional "about to delete X — confirm" screenshot gate.
+4. **Stage-then-commit + dry-run** — record workflows so the irreversible click comes last
+   (the compiler warns when it doesn't), and a dry-run mode stops just before it — which also
+   makes first-run calibration on a new customer account completely side-effect-free.
+5. **Compensation flows instead of undo** — a recorded "cleanup" workflow the runtime offers
+   when a run dies midway. Honest framing: nobody has undo across systems — a workflow
+   spanning three SaaS APIs can't roll back either; compensation is how the whole industry
+   handles it.
+
+Plus before/after screenshots on every consequential step. The honest benchmark set in the
+report: not zero errors (impossible for anyone, including humans) but measurably *below*
+human error rates, with every action evidenced — a standard enterprises already accept from
+their own staff. With this, every problem in the report now has an answer on record; the
+build plan's item 6 was expanded into the full safe-action system.
+
+---
+
+## Critical-analysis report: eleventh founder answer — domain verification kills the bot-blocker risk — 2026-07-03
+
+The founders answered the "automating other companies' websites violates their rules"
+criticism: Conxa only automates software the vendor *owns*, and domain verification will
+enforce it. The report (`research-analysis/conxa-critical-analysis.md`) records this as
+Answer 11 and drops the risk from Medium-High to Low:
+
+- **You can't violate your own terms of service** — with Option A chosen, the target site
+  belongs to the customer, so the legal exposure that haunts browser-automation companies
+  doesn't apply.
+- **Bot-blockers flip from enemy to colleague** — a vendor allowlists their own runtime on
+  their own Cloudflare instead of Conxa sneaking past it. The unwinnable arms race is won
+  by never entering it.
+- **Domain verification makes the policy enforceable** (prove ownership via a DNS record,
+  like Google Search Console) and also protects Conxa itself from someone using its pipeline
+  to ship skills that automate websites they don't own. Added to the build plan as item 12
+  (small effort, large de-risking).
+- **A side benefit:** the "human-like pacing" feature loses its awkward bot-evasion optics —
+  if you only automate your own sites, you never need to look human.
+- **The trade-off recorded honestly:** strict domain verification narrows the enterprise
+  segment to internal tools the enterprise actually controls; truly third-party sites
+  (supplier portals, government websites) are out of scope by policy. Deliberate, and
+  probably right at this stage — a clean posture in exchange for a legally-gray segment.
+
+---
+
+## Critical-analysis report: tenth founder answer — MCP is open, Claude is the start, not the ceiling — 2026-07-03
+
+The founders answered the "everything depends on Claude Desktop" risk: the runtime speaks
+MCP, an open standard, so any MCP-capable AI agent can connect — Claude is just where it
+starts. The report (`research-analysis/conxa-critical-analysis.md`) now records this as
+Answer 10 and lowers the risk (High → Medium-High), with the honest fine print:
+
+- Right in principle — the risk changes from "architectural lock-in" to "packaging choice."
+- What's still Claude-only in practice today: the installer registers only into Claude's
+  config files (small fix); the smart recovery loop is tuned to Claude's behavior and needs
+  testing per new host; and customer pricing is framed in Claude subscription allowances.
+- What the answer does not fix: Anthropic itself competing (first-party recording/skills)
+  hurts no matter how many hosts are supported — that stays on the "cannot be fixed" list,
+  now narrowed to only the competition half.
+- Build plan updated: multi-host registration added to item 8 (marked Small on its own),
+  which turns the claim from principle into a demo.
+
+---
+
+## Critical-analysis report: full rewrite into a founder-ready Q&A document — 2026-07-03
+
+`research-analysis/conxa-critical-analysis.md` was completely restructured. After a day of
+back-and-forth (nine founder answers, several risk downgrades, two recorded decisions), the
+document had grown patchy. It is now rewritten top to bottom in easy language, organized as
+direct questions a founder would ask:
+
+1. What is Conxa, in one minute?
+2. What are the problems? (all ten, one sentence each, with current severity)
+3. What were the founders' arguments, and what does Fable think of each? (all nine answers
+   with honest verdicts — including which one was the strongest: determinism/Strict Mode)
+4. What can NEVER be fixed? (eight hard limits — API speed, no undo, MFA walls, elastic
+   burst, top-of-market connector erosion, bot-blockers, silent wrong clicks, platform-owner
+   competition — each with how to route around it)
+5. What CAN be fixed, and how much does each fix improve things? (the 11-item build plan
+   with measurable payoffs, e.g. repair memory = ~3× more runs per Claude session)
+6. Engineering problems vs. execution problems (the two proofs, who not to sell to,
+   housekeeping investors will find)
+7. Is the trust stuff hard? (signing = weeks; SOC 2 = ~a year and ~$15–40k)
+8. What do we do going forward? (a direct month-by-month plan: this month / 90 days /
+   3–6 months / 6–12 months, plus the weekly metrics to track)
+9. The final word (where the review started, where it ended, what remains)
+
+Nothing was lost — every answer, risk rating, cost figure, and build item from the earlier
+versions survives, just reorganized so a founder can read once and know exactly what to do.
+
+---
+
+## Critical-analysis report: answered the last open criticism — the official-connector squeeze — 2026-07-03
+
+The founders asked for an answer to the one remaining unanswered risk in
+`research-analysis/conxa-critical-analysis.md`: "every month more software vendors ship
+official AI connectors, shrinking Conxa's market from above." The report now answers it
+(new subsection in §9.2, risk downgraded Critical → High), with three observations from
+history and one strategic move:
+
+1. **The long tail never gets covered.** "Every vendor will integrate" has been predicted
+   for 25 years and never happened: APIs have been standard since the 2000s, Zapier has
+   spent ~15 years making integration easy and covers roughly 8,000 apps out of tens of
+   thousands — and even those expose only a fraction of their features. The constraint was
+   never effort; it's willingness. Below SaaS sits the layer that will never integrate:
+   government portals, legacy systems, internal tools.
+2. **Connectors expose operations; customers need workflows.** A real workflow crosses
+   several apps and uses screens the vendor's API never exposes — the chain falls back to
+   the browser at its weakest link, and Conxa wins the whole chain when any link lacks a
+   connector.
+3. **Connectors decay.** The two-week build isn't the cost — year five is (auth changes,
+   versioning, support). Small vendors abandon integrations; the stale-Zapier-app graveyard
+   is the evidence.
+4. **Own the graduation path.** A Conxa recording is effectively the *specification* for an
+   official connector — and the recorder can also observe the network calls behind each
+   step. So when a vendor outgrows browser automation, Conxa can *generate* their official
+   connector as a paid upgrade, and keep running the same governed skill over the connector
+   as a faster backend. The biggest long-term threat becomes expansion revenue. Added to
+   the build plan as item 11.
+
+With this, every criticism in the report now has an answer on record. The honest caveat
+kept: erosion at the top of the market is real, and the graduation strategy only counts
+once it ships.
+
+---
+
+## Critical-analysis report: expired logins are handled by design — user re-authenticates at next run — 2026-07-03
+
+The founders answered the report's "login problem" criticism: when a session expires, the
+user simply signs in again manually at the next run — that's the design, not a gap. The
+report (`research-analysis/conxa-critical-analysis.md`, §5.5 and the risk table) now treats
+this as an accepted, managed limitation rather than an unsolved problem, and lowered the
+risk (High → Medium-High):
+
+- **For a person at their laptop, it works fine** — a 30-second sign-in interruption, like
+  any other app. Two details make it feel polished instead of broken: check the session
+  *before* step 1 (not at step 9 with half the workflow already written into the target
+  system), and show a clear "your login expired — sign in to continue" message. That's
+  exactly what the "session keeper" item in the build plan delivers — it's now marked as
+  the companion piece this policy needs.
+- **For unattended runs and runner machines, it's a real recurring cost** — a 3 a.m. run
+  dies if the session expired at 2 a.m. and waits for a human. Real RPA teams live exactly
+  this way (morning login runbooks for their bot machines), so enterprises find it familiar,
+  but the report says it must be priced in honestly, not hidden.
+- One firm line kept: never build anything that tries to automate past MFA — unwinnable,
+  and exactly the behavior that gets a runtime flagged as malware.
+
+---
+
+## Critical-analysis report: the "one run at a time" limit is now marked largely fixable — 2026-07-03
+
+The founders challenged the report's claim that execution is stuck at one run per computer,
+arguing it's an engineering problem. The report now agrees in large part (§6, risk table,
+and the build plan updated; risk R8 downgraded from Medium-High to Medium):
+
+- **Step 1 (pure engineering):** the browser engine already supports several isolated
+  sessions at once, so a pool of 3–5 parallel runs per machine is buildable now — a laptop
+  goes from ~10 runs/hour to ~30–50. Watch-outs: two runs writing to the same record can
+  collide, and runs a human is watching can't usefully parallelize.
+- **Step 2 (the real unlock):** dedicated always-on "runner machines" — customer-owned VMs
+  that never sleep, kept logged in, triggered by a scheduler instead of somebody's chat
+  window. This is exactly how the big RPA vendors deliver unattended automation, enterprises
+  already accept the model, and it reaches thousands of runs per day **without breaking
+  Conxa's "the cloud never executes" rule** — the VMs belong to the customer.
+- **What stays structural:** elastic burst (an API can absorb 10,000 parallel calls in a
+  second; runner VMs are capacity you provision in advance) and the login problem (each VM's
+  sessions must be kept alive; an MFA prompt on a headless VM is a support ticket).
+
+Bonus effect: the runner pattern makes the report's advice against building a Conxa-hosted
+execution cloud even stronger — customers get volume on their own machines, so the hosted
+tier's only remaining lure (burst capacity) isn't worth trading the trust story for.
+
+---
+
+## Critical-analysis report: added the founders' answer to the "shrinking market" risk — 2026-07-03
+
+The one criticism in `research-analysis/conxa-critical-analysis.md` that had no founder answer
+("the market gap is shrinking from both sides") now has one, weighed honestly in §9.2:
+
+1. **"Enterprises don't want AI training on their data"** — right instinct, but providers
+   already offer no-training contracts; what the instinct really points to is answer 3.
+2. **"AI models were never trained on enterprise software behind login walls"** — partially
+   right, and most right exactly in Conxa's niche: screen-driving AIs handle ordinary modern
+   UIs they've never seen, but measurably struggle on dense legacy screens (old ERPs,
+   government portals, homegrown tools) — Conxa's best targets. Caveat: this moat erodes
+   with every model generation.
+3. **"Enterprises want deterministic, trackable execution, not a hallucinating AI"** — the
+   strongest answer. A compiled skill runs the same steps every time with a full log; a live
+   agent improvises every run. Best part: the runtime already has the switch (the recovery
+   ceiling) that makes execution 100% deterministic with zero AI in the loop — the report
+   recommends productizing it as a named enterprise "Strict Mode", added to the build plan.
+4. **"Latency is an engineering problem"** — half true: pacing delays, browser cold-start,
+   and conservative waits could be cut ~2–3×, but page loading is a floor Conxa can never
+   engineer away. Sharper framing: for scheduled, unattended runs nobody is watching, so the
+   latency gap mostly stops mattering there.
+
+Net: the "smarter AI" half of the squeeze is now credibly answered and the risk was
+downgraded (Critical → High–Critical). The other half — every month it gets easier for any
+software vendor to ship an official connector — remains unanswered and is the clock the
+chosen strategy races against.
+
+---
+
+## Critical-analysis report: recorded the founders' strategy decision, Mac commitment, and added a build-forward plan — 2026-07-03
+
+Three updates to `research-analysis/conxa-critical-analysis.md`:
+
+1. **Mac versions are committed.** Every "Windows only" criticism in the report was updated.
+   The signing guidance now also covers the Apple side: a $99/year Apple Developer ID plus
+   notarization (Apple's automated safety scan) wired into the build pipeline — without it,
+   modern Macs refuse to open the app.
+2. **The strategy decision is recorded.** The founders have chosen Option A — the Conxa
+   vendor-distribution path aimed at small and mid-sized SaaS vendors. The report's role
+   shifted from arguing the choice to naming what must be proven and what to build.
+3. **A new section 12, "The Build-Forward Plan."** Ten ranked build items, each tied to the
+   risk it fixes, its rough effort, and what it measurably buys. The top four in detail:
+   - **First-run calibration** — check every skill against the customer's own account at
+     install time, so "this button doesn't exist on your plan" is caught before the first
+     real run instead of during it. The highest-value single build.
+   - **Persistent repair memory** — remember an AI-assisted fix instead of re-paying for it
+     on every run. By the report's own numbers, a workflow with two weak steps drops from
+     ~7,200 tokens per run to ~1,200 after the first repair — about 3× more runs per Claude
+     session for the customer.
+   - **Recordability pre-check** — a green/yellow/red "will your product work with Conxa?"
+     score shown during recording, turning the "too dynamic sites are out of scope" policy
+     into a measurable gate and keeping bad-fit customers from becoming churn stories.
+   - **Skill health dashboard + fast re-record** — makes "maintaining Conxa is less hassle
+     than maintaining an API" provably true by compressing the vendor's fix loop to minutes.
+   The section ends with a 90-day / 6-month / 12-month sequence and an honest note on what
+   no build plan changes (API speed, MFA walls, the market squeeze) — the plan maximizes the
+   space between those forces rather than beating them.
+
+---
+
+## Phase 1 cleanup of the Build Studio's code — 2026-07-03
+
+The Build Studio (the Windows desktop app where companies record and package their
+workflows) had a lot of AI-generated clutter: duplicate code, dead files nobody used
+anymore, and several files that had grown to 1,000+ lines because everything kept getting
+piled into the same place instead of being organized. None of that clutter caused bugs by
+itself, but it made the app much harder for engineers to safely change going forward — and
+there was no automated check to catch new problems before they shipped.
+
+What changed:
+- **Added safety nets that didn't exist before.** The project now automatically checks for
+  type errors, common bug patterns, and unused code every time it builds, and a new CI step
+  runs the full test suite before a release is packaged (previously CI only built the app —
+  it never actually tested it).
+- **Deleted dead code.** Six unused screens/files in the desktop app, nine functions that
+  did nothing (mostly leftovers from an earlier cloud-only version of this feature), and one
+  unused Python helper.
+- **Cleaned up a confusing "v1 vs v2" fork** in the code that generates element selectors
+  (the logic that finds the right button/field on a webpage). One version was fully dead;
+  the parts that were actually used got moved to clearly-named homes.
+- **Removed repeated code** — the same response-handling logic, event-streaming logic, and
+  formatting logic were copy-pasted in several places; those are now single shared pieces.
+- **Broke up the biggest files.** The Python backend's command dispatcher was one 1,968-line
+  file handling 56 different request types — it's now organized into 7 focused files by
+  what they do (recording, compiling, publishing, etc.), with zero change in how requests
+  are routed. Several other oversized files (skill packaging, the recording engine's helper
+  functions, the workflow editor) got the same treatment. On the app's screens, the two
+  biggest ones were split so the visual pieces live in their own files instead of one giant
+  page file.
+- **Found and fixed one real test-breaking bug** caused by the file reorganization (a test
+  was listening for backend events in the wrong place after a file moved) — caught it, fixed
+  it properly, verified it end-to-end.
+
+What did **not** change: no feature was added, removed, or behaves differently. Every step
+was checked against the full test suite and the app was smoke-tested by actually spawning
+the backend and sending it real requests. A few very large files were deliberately **left
+alone** — they turned out to be one tightly-connected piece of logic (like the core
+compiler and the live recording engine) where forcing a split would trade one kind of mess
+for a riskier one; a full writeup of what's done and what's next lives in
+`PHASE_1_REFACTOR_REPORT.md`.
+
+---
+
+## Cleaned up the Conxa Cloud dashboard and backend — no visible changes, just tidier code — 2026-07-03
+
+The Conxa Cloud app (the dashboard companies use for billing, plugins, and telemetry, plus
+the backend that powers it) had built up a lot of leftover clutter from earlier development —
+things like an old workflow-editor screen that got replaced but never deleted, duplicate
+copies of the same helper code scattered across multiple files, and a couple of files that had
+grown to nearly a thousand lines each. None of that was visible to anyone using the app, but it
+made the codebase slower to work in and easier to introduce bugs into.
+
+This pass cleaned it up without changing how anything behaves:
+
+- **Deleted ~4,700 lines of dead code** — an entire old "workflow editor" screen from a
+  previous version of this product that no page ever linked to anymore, plus a leftover
+  payment-provider integration (Razorpay) that was fully replaced by the current one
+  (Cashfree) months ago but never got removed.
+- **Removed duplicate code.** The same "who is this user, and are they allowed to do this?"
+  check was copy-pasted into five different files on the backend; the same "turn a server
+  error into a readable message" logic was copy-pasted four times on the frontend. Both are
+  now written once and reused everywhere.
+- **Split up two oversized files** (one nearly 1,000 lines, one over 700) into smaller,
+  focused pieces — one for handling web requests, one for the actual business logic — so a
+  future change only needs to touch the relevant piece instead of scrolling through
+  everything.
+- **Added tests that didn't exist before** for the billing and telemetry-dashboard code, so
+  future changes there can be checked automatically instead of by hand.
+- **Fixed a small inefficiency** where checking for "drift" (a signal that an automation might
+  need to be re-recorded) was scanning all the telemetry data twice instead of once.
+- Wrote up a full report (`conxa-cloud/PHASE_3_REFACTOR_REPORT.md`) documenting everything
+  changed, what was deliberately left alone and why (some things that looked like duplicate
+  code turned out to be doing genuinely different jobs), and what's recommended next —
+  most notably, setting up automated testing on every code change, since none currently runs
+  for this part of the app.
+
+Every step was checked against the existing test suite and a full app build before moving to
+the next one, so this should be invisible to anyone using the dashboard.
+
+---
+
 ## Added a costed reality-check on code signing and SOC 2 to the critical-analysis report — 2026-07-03
 
 The report `research-analysis/conxa-critical-analysis.md` previously said enterprise trust

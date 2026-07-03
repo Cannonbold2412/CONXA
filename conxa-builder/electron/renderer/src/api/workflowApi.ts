@@ -1,7 +1,12 @@
 import { cmd, CmdError } from '@/lib/ipc'
 import type { BackendEvent } from '@/lib/ipc'
 import { errorMessages } from '@/lib/errorMessages'
-import type { WorkflowResponse } from '../types/workflow'
+import type {
+  WorkflowResponse,
+  WorkflowRevalidationResponse,
+  WorkflowStepMutationResponse,
+  WorkflowUndoRedoResponse,
+} from '../types/workflow'
 
 export { RECORDING_SCREENSHOT_DRAG_MIME, RECORDING_DRAG_MODE_CLEAR_VISUAL } from '@/lib/dragConstants'
 
@@ -147,14 +152,7 @@ export function postApplyRecordingVisual(
   skillId: string,
   stepIndex: number,
   body: { event_index: number },
-): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  revalidation: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+): Promise<WorkflowRevalidationResponse> {
   return cmd('apply_recording_visual', { skill_id: skillId, step_index: stepIndex, ...body })
 }
 
@@ -162,28 +160,14 @@ export function postApplyStepFrame(
   skillId: string,
   stepIndex: number,
   frameLabel: string,
-): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  revalidation: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+): Promise<WorkflowRevalidationResponse> {
   return cmd('apply_step_frame', { skill_id: skillId, step_index: stepIndex, frame_label: frameLabel })
 }
 
 export function postClearStepVisual(
   skillId: string,
   stepIndex: number,
-): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  revalidation: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+): Promise<WorkflowRevalidationResponse> {
   return cmd('clear_step_visual', { skill_id: skillId, step_index: stepIndex })
 }
 
@@ -191,14 +175,7 @@ export function postUpdateVisualBbox(
   skillId: string,
   stepIndex: number,
   body: { x: number; y: number; w: number; h: number },
-): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  revalidation: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+): Promise<WorkflowRevalidationResponse> {
   return cmd('update_visual_bbox', { skill_id: skillId, step_index: stepIndex, ...body })
 }
 
@@ -207,14 +184,7 @@ export function patchStep(
   stepIndex: number,
   patch: Record<string, unknown>,
   assistLlm = false,
-): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  revalidation: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+): Promise<WorkflowRevalidationResponse> {
   return cmd('patch_step', { skill_id: skillId, step_index: stepIndex, patch, assist_llm: assistLlm })
 }
 
@@ -244,58 +214,26 @@ export function postValidate(skillId: string): Promise<Record<string, unknown>> 
   return cmd<Record<string, unknown>>('validate_workflow', { skill_id: skillId })
 }
 
-export function postReorder(skillId: string, newOrder: number[]): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+export function postReorder(skillId: string, newOrder: number[]): Promise<WorkflowStepMutationResponse> {
   return cmd('reorder_steps', { skill_id: skillId, new_order: newOrder })
 }
 
 export function postInsertStep(
   skillId: string,
   body: { action_kind: string; insert_after?: number | null },
-): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+): Promise<WorkflowStepMutationResponse> {
   return cmd('insert_step', { skill_id: skillId, ...body })
 }
 
-export function deleteStep(skillId: string, stepIndex: number): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo?: boolean
-  can_redo?: boolean
-}> {
+export function deleteStep(skillId: string, stepIndex: number): Promise<WorkflowStepMutationResponse> {
   return cmd('delete_step', { skill_id: skillId, step_index: stepIndex })
 }
 
-export function undoWorkflow(skillId: string): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  revalidation: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo: boolean
-  can_redo: boolean
-}> {
+export function undoWorkflow(skillId: string): Promise<WorkflowUndoRedoResponse> {
   return cmd('undo_workflow', { skill_id: skillId })
 }
 
-export function redoWorkflow(skillId: string): Promise<{
-  skill_id: string
-  meta: Record<string, unknown>
-  revalidation: Record<string, unknown>
-  workflow: WorkflowResponse
-  can_undo: boolean
-  can_redo: boolean
-}> {
+export function redoWorkflow(skillId: string): Promise<WorkflowUndoRedoResponse> {
   return cmd('redo_workflow', { skill_id: skillId })
 }
 
@@ -372,13 +310,17 @@ export function renameStoredSkillPackage(
   })
 }
 
-export async function postBuildSkillPack(body: SkillPackBuildPayload): Promise<SkillPackBuildApiResult> {
+export function postBuildSkillPack(body: SkillPackBuildPayload): Promise<SkillPackBuildApiResult> {
   return cmd<SkillPackBuildApiResult>('build_skill_pack', body)
 }
 
-export async function postBuildSkillPackStream(
-  body: SkillPackBuildPayload,
-  onLog?: (entry: SkillPackBuildLogEntry) => void,
+/** Shared listener for the `pack_log` / `pack_done` / `pack_error` event stream
+ * emitted by both `build_skill_pack_stream` and `append_skill_pack_stream`. */
+function runSkillPackStream(
+  rpcCommand: string,
+  payload: Record<string, unknown>,
+  onLog: ((entry: SkillPackBuildLogEntry) => void) | undefined,
+  failureMessage: string,
 ): Promise<SkillPackBuildApiResult> {
   return new Promise<SkillPackBuildApiResult>((resolve, reject) => {
     const unsub = window.conxa.onEvent((ev: BackendEvent) => {
@@ -390,39 +332,34 @@ export async function postBuildSkillPackStream(
       if (ev.phase === 'pack_error') {
         unsub()
         const bl = Array.isArray(ev.build_log) ? (ev.build_log as SkillPackBuildLogEntry[]) : []
-        reject(new SkillPackBuildRequestError(String(ev.message ?? 'Skill pack build failed'), bl))
+        reject(new SkillPackBuildRequestError(String(ev.message ?? failureMessage), bl))
       }
     })
-    cmd('build_skill_pack_stream', body).catch((err) => {
+    cmd(rpcCommand, payload).catch((err) => {
       unsub()
       reject(err)
     })
   })
 }
 
-export async function postAppendSkillPackStream(
+export function postBuildSkillPackStream(
+  body: SkillPackBuildPayload,
+  onLog?: (entry: SkillPackBuildLogEntry) => void,
+): Promise<SkillPackBuildApiResult> {
+  return runSkillPackStream('build_skill_pack_stream', body, onLog, 'Skill pack build failed')
+}
+
+export function postAppendSkillPackStream(
   bundleName: string,
   body: { json_text: string; package_name?: string },
   onLog?: (entry: SkillPackBuildLogEntry) => void,
 ): Promise<SkillPackBuildApiResult> {
-  return new Promise<SkillPackBuildApiResult>((resolve, reject) => {
-    const unsub = window.conxa.onEvent((ev: BackendEvent) => {
-      if (ev.phase === 'pack_log' && onLog) onLog(ev.entry as SkillPackBuildLogEntry)
-      if (ev.phase === 'pack_done') {
-        unsub()
-        resolve(ev.result as SkillPackBuildApiResult)
-      }
-      if (ev.phase === 'pack_error') {
-        unsub()
-        const bl = Array.isArray(ev.build_log) ? (ev.build_log as SkillPackBuildLogEntry[]) : []
-        reject(new SkillPackBuildRequestError(String(ev.message ?? 'Skill pack append failed'), bl))
-      }
-    })
-    cmd('append_skill_pack_stream', { bundle_name: bundleName, ...body }).catch((err) => {
-      unsub()
-      reject(err)
-    })
-  })
+  return runSkillPackStream(
+    'append_skill_pack_stream',
+    { bundle_name: bundleName, ...body },
+    onLog,
+    'Skill pack append failed',
+  )
 }
 
 export function postAppendSkillPack(
@@ -434,32 +371,4 @@ export function postAppendSkillPack(
 
 export function patchSkillPackBundleRoot(bundleRoot: string): Promise<{ bundle_root: string }> {
   return cmd<{ bundle_root: string }>('set_skill_pack_bundle_root', { bundle_root: bundleRoot })
-}
-
-// ─────────────────────────────────────────────────
-// Cloud job queue stubs (not available in Studio)
-// ─────────────────────────────────────────────────
-
-export function fetchJob(_jobId: string): Promise<JobRecord> {
-  return Promise.reject(new Error('Job queue not available in Build Studio'))
-}
-
-export function streamJobEvents(
-  _jobId: string,
-  _onEvent: (event: JobEvent) => void,
-  _signal?: AbortSignal,
-): Promise<void> {
-  return Promise.reject(new Error('Job queue not available in Build Studio'))
-}
-
-export function enqueueCompileJob(_sessionId: string, _skillTitle?: string): Promise<EnqueuedJob> {
-  return Promise.reject(new Error('Job queue not available in Build Studio'))
-}
-
-export function enqueueRecompileSkillJob(_skillId: string, _skillTitle?: string): Promise<EnqueuedJob> {
-  return Promise.reject(new Error('Job queue not available in Build Studio'))
-}
-
-export function enqueuePackageBuildJob(_body: SkillPackBuildPayload): Promise<EnqueuedJob> {
-  return Promise.reject(new Error('Job queue not available in Build Studio'))
 }

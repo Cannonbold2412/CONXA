@@ -9,7 +9,6 @@ import {
   deleteStep,
   errorMessage,
   fetchMetrics,
-  fetchRecordingScreenshots,
   fetchSkillList,
   fetchWorkflow,
   postApplyRecordingVisual,
@@ -135,14 +134,6 @@ export function HumanEditPage() {
     queryKey: ['workflow', skillId],
     queryFn: () => fetchWorkflow(skillId as string),
     enabled: Boolean(skillId),
-    staleTime: 30_000,
-  })
-
-  // Deferred: reading session events is expensive — only fetch when the pane is open.
-  const recordingShotsQ = useQuery({
-    queryKey: ['recordingScreenshots', skillId],
-    queryFn: () => fetchRecordingScreenshots(skillId as string),
-    enabled: Boolean(skillId && activeToolsPane === 'screenshots'),
     staleTime: 30_000,
   })
 

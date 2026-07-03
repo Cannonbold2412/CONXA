@@ -291,12 +291,10 @@ function WorkflowRow({
   workflow,
   pluginId,
   onDelete,
-  onCompiled,
 }: {
   workflow: Plugin['workflows'][number]
   pluginId: string
   onDelete: () => void
-  onCompiled: () => void
 }) {
   const navigate = useNavigate()
 
@@ -859,7 +857,7 @@ export function PluginDetailPage() {
           ) : (
             <div className="rounded-xl border border-white/8 bg-white/[0.02]">
               {plugin.workflows.map((wf) => (
-                <WorkflowRow key={wf.id} workflow={wf} pluginId={plugin.id} onDelete={refresh} onCompiled={refresh} />
+                <WorkflowRow key={wf.id} workflow={wf} pluginId={plugin.id} onDelete={refresh} />
               ))}
             </div>
           )}

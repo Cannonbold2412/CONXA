@@ -12,9 +12,12 @@
     "dev:electron": "node scripts/dev-electron.js",
     "build:renderer": "vite build --config renderer/vite.config.ts",
     "build": "npm run build:renderer && electron-builder --config electron-builder.yml",
+    "typecheck": "tsc --noEmit -p renderer/tsconfig.json",
+    "lint": "eslint .",
     "test:bridge": "node test/bridge.test.js"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@tailwindcss/vite": "^4.0.0",
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
@@ -23,8 +26,13 @@
     "cross-env": "^7.0.3",
     "electron": "^42.3.0",
     "electron-builder": "^26.8.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^17.7.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.0.0",
+    "typescript-eslint": "^8.62.1",
     "vite": "^8.0.16"
   },
   "dependencies": {

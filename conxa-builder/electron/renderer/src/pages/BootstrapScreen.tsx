@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BackendEvent } from "@/lib/ipc";
+import { formatBytes } from "@/lib/format";
 
 type DepName = "chromium" | "nsis" | "conxa-runtime";
 type DepState = "pending" | "downloading" | "installing" | "extracting" | "verifying" | "ready" | "error";
@@ -30,19 +31,6 @@ function initialDeps(): Record<DepName, DepStatus> {
 
 function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function formatBytes(value?: number): string | null {
-  if (value == null || !Number.isFinite(value)) return null;
-  const units = ["B", "KB", "MB", "GB"];
-  let n = value;
-  let unit = 0;
-  while (n >= 1024 && unit < units.length - 1) {
-    n /= 1024;
-    unit += 1;
-  }
-  const digits = unit === 0 || n >= 100 ? 0 : 1;
-  return `${n.toFixed(digits)} ${units[unit]}`;
 }
 
 interface CombinedProgress {

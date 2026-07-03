@@ -85,7 +85,7 @@ def suggest_anchors_from_context(
     page: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Relational anchors: semantic phrases first; structural extras only when policy allows."""
-    from conxa_compile.compiler.v3 import semantic_anchor_phrase_kept, semantic_context_anchor_candidates
+    from conxa_compile.compiler.step_anchors import semantic_anchor_phrase_kept, semantic_context_anchor_candidates
 
     anchors: list[dict[str, Any]] = list(
         semantic_context_anchor_candidates(context, semantic, target or {}, policy)
@@ -102,11 +102,6 @@ def suggest_anchors_from_context(
             if a not in anchors:
                 anchors.append(a)
     sec = policy.get("anchors") if isinstance(policy.get("anchors"), dict) else {}
-    sem_cfg = sec.get("semantic_anchors") if isinstance(sec.get("semantic_anchors"), dict) else {}
-    skip_redundant = bool(sem_cfg.get("skip_redundant_structural_when_semantic", True))
-    structural_ok = bool(sem_cfg.get("suggest_structural_extras", True))
-    structural_only_when_no_phrases = bool(sem_cfg.get("structural_only_when_no_phrase_anchors", True))
-    has_semantic = bool(anchors)
 
     it = str(semantic.get("input_type") or "").lower()
     role = str(semantic.get("role") or "").lower()
@@ -129,9 +124,6 @@ def suggest_anchors_from_context(
         anchors.append({"element": "email_input", "relation": "near"})
     if role in {"combobox", "listbox"}:
         anchors.append({"element": "combobox", "relation": "inside"})
-    allow_structural = structural_ok and (not skip_redundant or not has_semantic)
-    if structural_only_when_no_phrases and has_semantic:
-        allow_structural = False
     allowed = set((policy.get("anchors") or {}).get("allowed_elements") or [])
     if allowed:
         anchors = [

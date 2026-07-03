@@ -21,8 +21,11 @@ from conxa_compile.compiler.selector_score import durability_score, tag_orthogon
 
 
 # ---------------------------------------------------------------------------
-# Minimal internal-grammar helpers (inlined to avoid llm_selector_generator_v2's
-# heavy import chain that instantiates Settings at module load time).
+# Minimal internal-grammar helpers used by display_to_signal/signal_to_display
+# below. Kept separate from to_playwright_grammar() (further down) even though
+# both build internal: grammar strings — the two serve different call shapes
+# (engine+value+name vs. parsed display strings) and merging them risked
+# behavior drift across their independently-tested edge cases.
 # ---------------------------------------------------------------------------
 
 def _to_internal_role(role: str, name: str = "") -> str:
@@ -245,6 +248,44 @@ def rebuild_identity_signals_from_target(step: dict[str, Any]) -> list[dict[str,
             })
 
     return new_signals
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Playwright native grammar conversion
+# ---------------------------------------------------------------------------
+
+def to_playwright_grammar(engine: str, value: str, name: str = "") -> str:
+    """Convert an (engine, value) selector to Playwright's native internal: grammar.
+
+    Grammar reference (selectorParser.ts):
+      testid   → internal:testid=[data-testid="X"]
+      role     → internal:role=button[name="X"]
+      text     → internal:text="X"
+      relational → passed through as-is (caller already formatted)
+      frame    → internal:control=enter-frame
+      css/xpath → passed through unchanged
+    """
+    eng = engine.lower()
+    if eng == "testid":
+        m = re.match(r'\[(data-test(?:-?id)?)=["\']?([^"\'>\s\]]+)["\']?\]', value)
+        attr_name, testid_val = (m.group(1), m.group(2)) if m else ("data-testid", value)
+        return f'internal:testid=[{attr_name}="{testid_val}"]'
+    if eng in ("role", "aria"):
+        # Normalise: strip existing internal:role= prefix if already there
+        role_val = re.sub(r'^internal:role=', '', value).strip()
+        role_name = role_val.split("[")[0].strip()
+        n = name.strip()
+        if n:
+            return f'internal:role={role_name}[name="{n}"]'
+        return f'internal:role={role_name}'
+    if eng in ("text", "text_based"):
+        text = re.sub(r'^text=["\']?|["\']?$', '', value.strip())
+        return f'internal:text="{text}"'
+    if eng == "frame":
+        return "internal:control=enter-frame"
+    if eng == "relational":
+        return value  # already formatted by caller
+    return value  # css, xpath, css-id, css-structural: pass through
 
 
 def signals_to_display_list(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:

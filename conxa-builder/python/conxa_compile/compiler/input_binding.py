@@ -90,7 +90,7 @@ def parse_keyboard_event_value(value: Any) -> str | None:
     return None
 
 
-def derive_input_binding_v2(
+def derive_input_binding(
     ev: dict[str, Any],
     policy: dict[str, Any],
 ) -> tuple[Any, str | None]:

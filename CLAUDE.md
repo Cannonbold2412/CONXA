@@ -67,6 +67,8 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
   electron/                 Electron main + React renderer (Vite + TypeScript)
   python/                   Python stdio backend (spawned by Electron; depends on conxa-core)
     backend.py              JSON-RPC dispatcher; wires cloud proxy via conxa_core.llm.set_router
+    handlers/               cmd_* RPC handlers, grouped by domain, mixed into the Backend class;
+                            protocol.py holds the shared substrate (_CommandError, event emission)
     requirements.txt        playwright, Pillow, bs4, lxml  (conxa-core installed separately)
     services/               auth_service, bootstrap, llm_proxy_client, metadata_reporter
     conxa_compile/          Full local pipeline (no cloud involvement):
@@ -80,8 +82,8 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
         selector_score.py   Confidence scoring from IdentityBundle signal quality
         build.py            _build_intent_graph (was _llm_compile_selectors); IdentityBundle runs before _build_target
       editor/               Workflow editor service + DTOs + patch gate
-      llm/                  Task clients (intent, relational vision anchor, recovery, workflow intent graph)
-                            Note: LLM selector-writing passes removed — deterministic floor is sole generator
+      llm/                  Task clients (intent, relational vision anchor, recovery, workflow intent graph,
+                            selector_regeneration.py — user-edit re-compile only, see Key Invariants)
       anchors/, confidence/, policy/
       plugin_builder.py, installer_builder.py, conxa_runtime.py
   pyinstaller.spec          Bundles conxa_core + conxa_compile into dist/backend/
@@ -223,7 +225,7 @@ The full technical reference — pipeline stages, runtime filesystem layout, all
 
 Quick orientation:
 
-- **Build Studio** (`conxa-builder/python/conxa_compile/`): `bridge.js` → `session.py` → `pipeline/run.py` → `compiler/build.py` → `plugin_builder.py`. All local. Cloud is not involved. Compiler now uses `IdentityBundle` as sole identity source — LLM no longer writes selector strings (only intent, vision anchors, recovery, and intent graph remain LLM-driven).
+- **Build Studio** (`conxa-builder/python/conxa_compile/`): `bridge.js` → `session.py` → `pipeline/run.py` → `compiler/build.py` → `plugin_builder.py`. All local. Cloud is not involved. Compiler uses `IdentityBundle` as sole identity source on the primary compile path — LLM writes selector strings only via the 1-click fix API's re-compile path (see Key Invariants); otherwise LLM is limited to intent, vision anchors, recovery, and the intent graph.
 - **Cloud** (`conxa-cloud/`): coordination only — LLM proxy, skill pack hosting, telemetry ingest, billing. Does not record, compile, or execute.
 - **Runtime** (`runtime/`): two-layer architecture on the customer's machine.
   - **Host exe** (`@yao-pkg/pkg`, built `--no-bytecode`): bundles `bootstrap.js` + `_pkg_stubs.js` only. Provides `__hostRequire` so disk-loaded app code can use Playwright etc. Built with `build-runtime-host.yml`, tagged `host-vX.Y.Z`.
@@ -287,7 +289,7 @@ These are non-negotiable. Do not work around them.
 - **The cloud does not compile or execute.** Recording, compilation, plugin building, and skill execution are local-only. Keep them that way.
 - **Host exe built `--no-bytecode`.** V8 bytecode (.jsc) masks the Node version and causes the Playwright selector engine to segfault in pkg-bundled binaries. Never re-enable bytecode for the host exe.
 - **Resolver never blindly picks `candidate[0]`.** `resolver.js` requires the winning candidate's margin over the runner-up to clear `uniqueMargin` (default 0.15); otherwise it falls through to the next signal. Do not add shortcut paths that skip this gate.
-- **LLM does not write selector strings.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators. LLM is retained only for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph.
+- **LLM does not write selector strings on the primary compile path.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators when a workflow is first compiled. LLM is retained for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph. The one exception is the 1-click fix API (`compiler/patch.py::_regenerate_compiled_selectors`, via `llm/selector_regeneration.py`), which re-runs LLM-assisted selector generation against the original DOM snapshot when a user manually re-targets a step's element in the editor — this is a narrow, user-initiated re-compile path, not part of the primary compiler.
 - **App-layer min_host is enforced at load time.** `bootstrap.js` reads `version.json` from `conxa-app/` and refuses to load if `min_host` > current host semver. Do not bypass this check when bumping the app layer.
 
 ---

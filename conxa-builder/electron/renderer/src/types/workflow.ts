@@ -76,3 +76,36 @@ export type WorkflowResponse = {
   suggestions: SuggestionItem[]
   asset_base_url: string
 }
+
+/** Common shape returned by workflow-editor mutation endpoints (`patch_step`,
+ * `apply_recording_visual`, `insert_step`, `undo_workflow`, etc.) — all return
+ * the skill_id, the (possibly partial) package meta, and the refreshed workflow. */
+type WorkflowMutationBase = {
+  skill_id: string
+  meta: Record<string, unknown>
+  workflow: WorkflowResponse
+}
+
+/** Mutations that re-run validation and report undo/redo availability
+ * (`apply_recording_visual`, `apply_step_frame`, `clear_step_visual`,
+ * `update_visual_bbox`, `patch_step`). */
+export type WorkflowRevalidationResponse = WorkflowMutationBase & {
+  revalidation: Record<string, unknown>
+  can_undo?: boolean
+  can_redo?: boolean
+}
+
+/** Structural mutations that report undo/redo availability but don't
+ * revalidate (`reorder_steps`, `insert_step`, `delete_step`). */
+export type WorkflowStepMutationResponse = WorkflowMutationBase & {
+  can_undo?: boolean
+  can_redo?: boolean
+}
+
+/** undo_workflow / redo_workflow — like WorkflowRevalidationResponse but
+ * can_undo/can_redo are always present (not optional). */
+export type WorkflowUndoRedoResponse = WorkflowMutationBase & {
+  revalidation: Record<string, unknown>
+  can_undo: boolean
+  can_redo: boolean
+}
