@@ -1,4 +1,8 @@
-"""Small job abstraction used by the API while Redis workers are being wired in."""
+"""In-process job store and executor for the API's async operations.
+
+Jobs run in a background thread within the web process; there is no separate
+worker. Progress events are captured via ``conxa_core.progress`` sinks.
+"""
 
 from __future__ import annotations
 
@@ -11,12 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from conxa_core.progress import (
-    append_current_job_event,  # noqa: F401  (re-exported for existing importers)
-    current_job_id,  # noqa: F401
-    job_event_scope,
-    set_event_sink,
-)
+from conxa_core.progress import job_event_scope, set_event_sink
 
 JobStatus = Literal["queued", "running", "succeeded", "failed", "canceled"]
 TerminalStatus = Literal["succeeded", "failed", "canceled"]

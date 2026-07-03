@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import io
 import json
 import re
@@ -32,9 +31,19 @@ from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_list_kv, using_database
 from conxa_core.models.plugin import PluginBuild, PluginInstaller, PluginWorkflow
 from conxa_core.storage.plugin_store import create_plugin, list_plugins, save_plugin
-from app.services.entitlements import EntitlementError, ensure_installer_slot_available
+from app.api.deps import current_principal, entitlement_http_error
+from app.api.installer_storage import (
+    installer_dir,
+    installer_version_dir,
+    installer_versions_ns,
+    load_installer_from_db,
+    sign_installer,
+    verify_installer_signature,
+)
+from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
+from app.services.entitlements import ensure_installer_slot_available
 from app.services.rbac import require_admin
-from app.services.saas import add_audit_event, ensure_principal, principal_from_request
+from app.services.saas import add_audit_event
 from app.api.updates_routes import (
     _COMPONENT_VERSIONS_NS,
     _MANIFEST_NS,
@@ -89,34 +98,6 @@ def _validate_rel_path(rel: str) -> str:
     return r
 
 
-def _sign_installer(slug: str, version: str | None, ts: int) -> str:
-    """HMAC-SHA256 over ts:slug:version, mirroring saas.py's proxy-identity HMAC (SG-02)."""
-    key = settings.installer_signing_key.encode()
-    msg = f"{ts}:{slug}:{version or ''}".encode()
-    return hmac.new(key, msg, "sha256").hexdigest()
-
-
-def _verify_installer_signature(slug: str, version: str | None, request: Request) -> None:
-    """Reject expired/tampered installer download links (SG-07).
-
-    A blank SKILL_INSTALLER_SIGNING_KEY preserves the legacy public-download
-    behavior for local dev — matches the SKILL_API_BASE_URL fallback pattern.
-    """
-    if not settings.installer_signing_key:
-        return
-    ts_param = request.query_params.get("ts", "")
-    sig_param = request.query_params.get("sig", "")
-    try:
-        ts = int(ts_param)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=401, detail="invalid_or_expired_download_link")
-    if abs(time.time() - ts) > settings.installer_signing_window:
-        raise HTTPException(status_code=401, detail="invalid_or_expired_download_link")
-    expected = _sign_installer(slug, version, ts)
-    if not sig_param or not secrets.compare_digest(sig_param, expected):
-        raise HTTPException(status_code=401, detail="invalid_or_expired_download_link")
-
-
 def _validate_version(version: str) -> str:
     value = str(version or "").strip()
     if not _SEMVER_RE.fullmatch(value):
@@ -131,56 +112,6 @@ def _validate_release_notes(notes: str | None) -> str:
     if len(value) > 2000:
         raise HTTPException(status_code=400, detail="release_notes_too_long")
     return value
-
-
-def _skill_packs_dir(slug: str) -> Path:
-    return settings.data_dir / "skill-packs" / slug
-
-
-def _installer_dir(slug: str) -> Path:
-    return settings.data_dir / "installers" / slug
-
-
-def _installer_version_dir(slug: str, version: str) -> Path:
-    return _installer_dir(slug) / "versions" / version
-
-
-def _installer_versions_ns(slug: str) -> str:
-    # No ':' — the fs-fallback KV store (local dev / Windows) uses the namespace
-    # as a literal directory name, and ':' is illegal in Windows paths.
-    return f"installer_versions__{slug}"
-
-
-def _skillpack_files_ns(slug: str) -> str:
-    return f"skillpack_files__{slug}"
-
-
-def _load_installer_from_db(slug: str, version: str | None) -> tuple[dict[str, Any], bytes] | None:
-    """Durable fallback for when the Render local disk has been wiped (free plan has no
-    persistent disk and idles out, taking on-disk installer files with it). Postgres is the
-    source of truth; local disk is just a fast-path cache rehydrated from here on miss."""
-    if not using_database():
-        return None
-    if version:
-        meta = db_get(_installer_versions_ns(slug), version)
-        rows = [(version, meta)] if isinstance(meta, dict) else []
-    else:
-        rows = [(k, v) for k, v in db_list_kv(_installer_versions_ns(slug)) if isinstance(v, dict)]
-    if not rows:
-        return None
-    if version:
-        _key, meta = rows[0]
-    else:
-        latest = next((r for r in rows if r[1].get("is_latest")), None)
-        if latest is None:
-            latest = max(rows, key=lambda r: float(r[1].get("uploaded_at") or 0))
-        _key, meta = latest
-    content_b64 = meta.get("content_base64")
-    if not content_b64:
-        return None
-    content = base64.b64decode(content_b64)
-    meta_out = {k: v for k, v in meta.items() if k != "content_base64"}
-    return meta_out, content
 
 
 def _owner_of(slug: str) -> str | None:
@@ -198,14 +129,22 @@ def _assert_owner(slug: str, workspace_id: str) -> None:
         db_set(_OWNERS_NS, slug, {"workspace_id": workspace_id, "claimed_at": time.time()})
 
 
-def _tracking_token(slug: str, workspace_id: str, version: str, owner_user_id: str) -> str:
-    existing = db_get("tracking_tokens", slug)
+def _mint_pack_token(
+    namespace: str, slug: str, workspace_id: str, version: str, owner_user_id: str
+) -> str:
+    """Return the per-company long-lived token in ``namespace``, minting one on
+    first publish and reusing it on republish.
+
+    Rotating a token is done by deleting its KV entry, which forces a new one on
+    the next publish.
+    """
+    existing = db_get(namespace, slug)
     if isinstance(existing, dict) and existing.get("token"):
         token = str(existing["token"])
     else:
         token = secrets.token_urlsafe(32)
     db_set(
-        "tracking_tokens",
+        namespace,
         slug,
         {
             "token": token,
@@ -217,34 +156,17 @@ def _tracking_token(slug: str, workspace_id: str, version: str, owner_user_id: s
         },
     )
     return token
+
+
+def _tracking_token(slug: str, workspace_id: str, version: str, owner_user_id: str) -> str:
+    """Telemetry ingest token embedded in pack.json (see tracking_routes)."""
+    return _mint_pack_token("tracking_tokens", slug, workspace_id, version, owner_user_id)
 
 
 def _sync_token(slug: str, workspace_id: str, version: str, owner_user_id: str) -> str:
-    """Return the per-company long-lived sync token, minting one on first publish.
-
-    The token is embedded in pack.json and shipped inside the installer so the
-    runtime can pull skill-pack deltas without any user-facing Conxa login.
-    It is stable across republishes (reused if present) and can be rotated by
-    deleting the 'sync_tokens' KV entry, which forces a new token on next publish.
-    """
-    existing = db_get("sync_tokens", slug)
-    if isinstance(existing, dict) and existing.get("token"):
-        token = str(existing["token"])
-    else:
-        token = secrets.token_urlsafe(32)
-    db_set(
-        "sync_tokens",
-        slug,
-        {
-            "token": token,
-            "company": slug,
-            "version": version,
-            "workspace_id": workspace_id,
-            "owner_user_id": owner_user_id,
-            "updated_at": time.time(),
-        },
-    )
-    return token
+    """Long-lived skill-pack delta-sync token embedded in pack.json and shipped
+    inside the installer so the runtime can pull updates without a Conxa login."""
+    return _mint_pack_token("sync_tokens", slug, workspace_id, version, owner_user_id)
 
 
 def _api_base(request: Request) -> str:
@@ -320,8 +242,7 @@ def _upsert_published_plugin(body: PublishBody, workspace_id: str, owner_user_id
 
 @router.post("/publish")
 def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
-    principal = principal_from_request(request)
-    ensure_principal(principal)
+    principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(body.slug)
     _assert_owner(slug, principal.workspace_id)
@@ -331,12 +252,10 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     # new product beyond the plan's slot count is blocked.
     try:
         ensure_installer_slot_available(principal, slug)
-    except EntitlementError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail="entitlements_unavailable") from exc
+        raise entitlement_http_error(exc) from exc
 
-    packs_dir = _skill_packs_dir(slug)
+    packs_dir = skill_packs_dir(slug)
     packs_dir.mkdir(parents=True, exist_ok=True)
     pack_path = packs_dir / "pack.json"
 
@@ -352,7 +271,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         tmp = target.with_suffix(target.suffix + ".tmp")
         tmp.write_bytes(raw)
         tmp.replace(target)
-        db_set(_skillpack_files_ns(slug), rel, {"path": rel, "content_base64": f.content_base64})
+        db_set(skillpack_files_ns(slug), rel, {"path": rel, "content_base64": f.content_base64})
         written += 1
 
     published_at = time.time()
@@ -374,7 +293,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         # Local disk may have been wiped (Render free plan has no persistent disk) since
         # the last publish; recover the prior pack.json from Postgres so republishing
         # doesn't lose fields like company_display.
-        stored_pack = db_get(_skillpack_files_ns(slug), "pack.json")
+        stored_pack = db_get(skillpack_files_ns(slug), "pack.json")
         if isinstance(stored_pack, dict) and stored_pack.get("content_base64"):
             try:
                 pack = json.loads(base64.b64decode(stored_pack["content_base64"]).decode("utf-8"))
@@ -401,7 +320,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     tmp.write_bytes(pack_bytes)
     tmp.replace(pack_path)
     db_set(
-        _skillpack_files_ns(slug),
+        skillpack_files_ns(slug),
         "pack.json",
         {"path": "pack.json", "content_base64": base64.b64encode(pack_bytes).decode("ascii")},
     )
@@ -460,17 +379,14 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
 
     Query params: ``filename`` (display name), ``version``, ``release_notes``.
     """
-    principal = principal_from_request(request)
-    ensure_principal(principal)
+    principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(slug)
     _assert_owner(slug, principal.workspace_id)
     try:
         ensure_installer_slot_available(principal, slug)
-    except EntitlementError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail="entitlements_unavailable") from exc
+        raise entitlement_http_error(exc) from exc
 
     max_bytes = settings.build_artifact_upload_max_bytes
     cl = request.headers.get("content-length")
@@ -494,10 +410,10 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     )
     workflow_count = len(plugin_record.workflows) if plugin_record is not None else 0
 
-    out_dir = _installer_dir(slug)
+    out_dir = installer_dir(slug)
     out_dir.mkdir(parents=True, exist_ok=True)
-    version_dir = _installer_version_dir(slug, version)
-    if version_dir.exists() or db_get(_installer_versions_ns(slug), version) is not None:
+    version_dir = installer_version_dir(slug, version)
+    if version_dir.exists() or db_get(installer_versions_ns(slug), version) is not None:
         raise HTTPException(status_code=409, detail="installer_version_exists")
     version_dir.mkdir(parents=True, exist_ok=False)
     version_exe_path = version_dir / "installer.exe"
@@ -534,11 +450,11 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     # Store metadata only — the binary is too large (~20 MB) to fit in a JSONB field.
     # Disk is the primary store; DB tracks version history and is_latest state.
     db_set(
-        _installer_versions_ns(slug),
+        installer_versions_ns(slug),
         version,
         meta,
     )
-    for _other_key, other_meta in db_list_kv(_installer_versions_ns(slug)):
+    for _other_key, other_meta in db_list_kv(installer_versions_ns(slug)):
         if not isinstance(other_meta, dict):
             continue
         other_version = other_meta.get("version")
@@ -546,7 +462,7 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
             continue
         if other_meta.get("is_latest"):
             other_meta["is_latest"] = False
-            db_set(_installer_versions_ns(slug), other_version, other_meta)
+            db_set(installer_versions_ns(slug), other_version, other_meta)
 
     latest_exe_path = out_dir / "installer.exe"
     tmp_latest = latest_exe_path.with_suffix(".exe.tmp")
@@ -590,8 +506,7 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
 @router.get("/{slug}/installer/versions")
 def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     """Authenticated installer release history for the dashboard."""
-    principal = principal_from_request(request)
-    ensure_principal(principal)
+    principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(slug)
     owner = _owner_of(slug)
@@ -601,7 +516,7 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     def _row_from_meta(meta: dict[str, Any], fallback_version: str) -> dict[str, Any]:
         version = str(meta.get("version") or fallback_version)
         ts = int(time.time())
-        sig = _sign_installer(slug, version, ts)
+        sig = sign_installer(slug, version, ts)
         download_url = f"/api/v1/installers/{slug}/versions/{version}"
         if settings.installer_signing_key:
             download_url += f"?ts={ts}&sig={sig}"
@@ -624,7 +539,7 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     # Merge disk (fast path, may be missing after a wipe) with Postgres (durable source
     # of truth). Postgres wins on conflict since disk can only ever be stale or absent.
     versions_by_key: dict[str, dict[str, Any]] = {}
-    versions_dir = _installer_dir(slug) / "versions"
+    versions_dir = installer_dir(slug) / "versions"
     if versions_dir.is_dir():
         for meta_path in versions_dir.glob("*/meta.json"):
             try:
@@ -635,7 +550,7 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
                 continue
             versions_by_key[meta_path.parent.name] = _row_from_meta(meta, meta_path.parent.name)
     if using_database():
-        for key, meta in db_list_kv(_installer_versions_ns(slug)):
+        for key, meta in db_list_kv(installer_versions_ns(slug)):
             if not isinstance(meta, dict) or meta.get("workspace_id") != principal.workspace_id:
                 continue
             dedup_key = str(meta.get("version") or key)
@@ -650,7 +565,7 @@ def _stream_installer(
     exe_path: Path, meta_path: Path, *, slug: str, version: str | None
 ) -> StreamingResponse:
     if not exe_path.is_file() or not meta_path.is_file():
-        fallback = _load_installer_from_db(slug, version)
+        fallback = load_installer_from_db(slug, version)
         if fallback is None:
             raise HTTPException(status_code=404, detail="installer_not_published")
         meta, content = fallback
@@ -687,8 +602,8 @@ def get_installer_version(slug: str, version: str, request: Request) -> Streamin
     SKILL_INSTALLER_SIGNING_KEY is configured (SG-07); public otherwise (dev)."""
     slug = _validate_slug(slug)
     version = _validate_version(version)
-    _verify_installer_signature(slug, version, request)
-    version_dir = _installer_version_dir(slug, version)
+    verify_installer_signature(slug, version, request)
+    version_dir = installer_version_dir(slug, version)
     return _stream_installer(version_dir / "installer.exe", version_dir / "meta.json", slug=slug, version=version)
 
 
@@ -698,6 +613,6 @@ def get_installer(slug: str, request: Request) -> StreamingResponse:
     valid ts+sig when SKILL_INSTALLER_SIGNING_KEY is configured (SG-07); public
     otherwise (dev)."""
     slug = _validate_slug(slug)
-    _verify_installer_signature(slug, None, request)
-    out_dir = _installer_dir(slug)
+    verify_installer_signature(slug, None, request)
+    out_dir = installer_dir(slug)
     return _stream_installer(out_dir / "installer.exe", out_dir / "meta.json", slug=slug, version=None)

@@ -166,7 +166,7 @@ class ProductRoutesTests(unittest.TestCase):
         payload = res.json()["subscription"]
         self.assertEqual(payload["plan"], "development")
 
-    def test_production_config_requires_razorpay_plan_ids(self) -> None:
+    def test_production_config_requires_cashfree_plan_ids(self) -> None:
         from app.main import _validate_production_config
 
         with (
@@ -175,13 +175,13 @@ class ProductRoutesTests(unittest.TestCase):
             patch("conxa_core.config.settings.clerk_issuer", "https://clerk.example"),
             patch("conxa_core.config.settings.clerk_jwks_url", "https://clerk.example/.well-known/jwks.json"),
             patch("conxa_core.config.settings.cors_allowed_origins", "https://app.example"),
-            patch("conxa_core.config.settings.razorpay_key_id", "rzp_key"),
-            patch("conxa_core.config.settings.razorpay_key_secret", "rzp_secret"),
-            patch("conxa_core.config.settings.razorpay_webhook_secret", "rzp_webhook"),
-            patch("conxa_core.config.settings.razorpay_starter_plan_id", ""),
-            patch("conxa_core.config.settings.razorpay_pro_plan_id", ""),
+            patch("conxa_core.config.settings.cashfree_app_id", "cf_app"),
+            patch("conxa_core.config.settings.cashfree_secret_key", "cf_secret"),
+            patch("conxa_core.config.settings.cashfree_webhook_secret", "cf_webhook"),
+            patch("conxa_core.config.settings.cashfree_starter_plan_id", ""),
+            patch("conxa_core.config.settings.cashfree_pro_plan_id", ""),
         ):
-            with self.assertRaisesRegex(RuntimeError, "RAZORPAY_STARTER_PLAN_ID / RAZORPAY_PRO_PLAN_ID"):
+            with self.assertRaisesRegex(RuntimeError, "CASHFREE_STARTER_PLAN_ID / CASHFREE_PRO_PLAN_ID"):
                 _validate_production_config()
 
     def test_patch_bundle_release_records_release_and_audit(self) -> None:

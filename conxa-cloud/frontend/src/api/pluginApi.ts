@@ -1,40 +1,11 @@
-import { apiFetch } from '@/lib/apiBase'
-
-async function json<T>(response: Response): Promise<T> {
-  const raw = (await response.text()).trim()
-  if (!response.ok) {
-    let message = raw || response.statusText
-    try {
-      const parsed = JSON.parse(raw) as { detail?: unknown; message?: unknown }
-      const detail = parsed.detail ?? parsed.message
-      if (typeof detail === 'string' && detail.trim()) message = detail.trim()
-    } catch {
-      // keep raw
-    }
-    throw new Error(message)
-  }
-  return raw ? (JSON.parse(raw) as T) : ({} as T)
-}
-
-async function streamErrorMessage(response: Response): Promise<string> {
-  const raw = (await response.text()).trim()
-  if (!raw) return response.statusText || 'Request failed'
-  try {
-    const parsed = JSON.parse(raw) as { detail?: unknown; message?: unknown }
-    const detail = parsed.detail ?? parsed.message
-    if (typeof detail === 'string' && detail.trim()) return detail.trim()
-  } catch {
-    // keep raw
-  }
-  return raw
-}
+import { apiFetch, errorDetail, json } from '@/lib/apiBase'
 
 export async function readPluginSse<T = unknown>(
   response: Response,
   onLog: (message: string) => void,
 ): Promise<T | null> {
   if (!response.ok) {
-    throw new Error(await streamErrorMessage(response))
+    throw new Error(await errorDetail(response))
   }
   if (!response.body) throw new Error('No response body')
 

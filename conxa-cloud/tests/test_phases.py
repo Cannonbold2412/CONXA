@@ -409,7 +409,7 @@ class PhaseTests(unittest.TestCase):
         )
 
     def test_clean_anchors_prefers_semantic_parent_scope_over_bare_form(self) -> None:
-        from conxa_compile.compiler.v3 import clean_anchors
+        from conxa_compile.compiler.step_anchors import clean_anchors
         from conxa_compile.policy.bundle import load_policy_bundle
 
         pol = load_policy_bundle().data
@@ -485,7 +485,7 @@ class PhaseTests(unittest.TestCase):
 
     def test_clean_steps_merges_nonconsecutive_duplicate_type_in_place(self) -> None:
         """Later type on same field updates the earlier type row; cross-field order stays chronological."""
-        from conxa_compile.compiler.v3 import clean_steps
+        from conxa_compile.compiler.step_anchors import clean_steps
 
         def _ev(action: str, name: str, value: str | None = None) -> dict:
             base = {
@@ -525,14 +525,14 @@ class PhaseTests(unittest.TestCase):
                 ("type", "password", "secret"),
             ],
         )
-        from conxa_compile.compiler.v3 import sanitize_steps_preserving_order
+        from conxa_compile.compiler.step_anchors import sanitize_steps_preserving_order
 
         with_focus = sanitize_steps_preserving_order(out, {})
         actions = [(s.get("action") or {}).get("action") for s in with_focus]
         self.assertEqual(actions, ["focus", "type", "focus", "type"])
 
     def test_sanitize_steps_preserving_order_inserts_focus_only_when_needed(self) -> None:
-        from conxa_compile.compiler.v3 import clean_steps, sanitize_steps_preserving_order
+        from conxa_compile.compiler.step_anchors import clean_steps, sanitize_steps_preserving_order
 
         type_email = {
             "action": {"action": "type", "value": "x@y.com"},
@@ -567,7 +567,7 @@ class PhaseTests(unittest.TestCase):
         self.assertEqual(actions, ["focus", "type", "focus", "type"])
 
     def test_compiler_clean_steps_drops_post_type_field_click(self) -> None:
-        from conxa_compile.compiler.v3 import clean_steps
+        from conxa_compile.compiler.step_anchors import clean_steps
 
         type_ev = {
             "action": {"action": "type", "value": "secret"},

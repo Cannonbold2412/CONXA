@@ -13,7 +13,7 @@ Implemented a multi-provider LLM router with automatic failover, per-key cool-do
 - Tracks per-entry metrics: `requests_sent`, `requests_429`, `cooled_until`, `last_used_at`
 - Skips text-only providers for vision tasks
 
-### 2. Extended Configuration (`app/config.py`)
+### 2. Extended Configuration (`packages/conxa-core/conxa_core/config.py`)
 - Added 7 provider blocks pre-configured with latest free-tier models (May 2026):
   - **Groq** (enabled by default): 300+ tok/s, 30 req/min, text + vision
   - **Google AI Studio** (enabled): Best free-tier vision, 1500 req/day
@@ -26,20 +26,17 @@ Implemented a multi-provider LLM router with automatic failover, per-key cool-do
 - Router behavior knobs: `LLM_ROUTER_COOLDOWN_SECS`, `MAX_RETRIES`, `REQUEST_TIMEOUT_MS`, `PREFER_FAST_FOR_TEXT`
 - Backward compatible: if no provider enabled, falls back to legacy single-endpoint config
 
-### 3. Router Integration (`app/llm/client.py`)
-- Modified `call_llm()` to transparently use multi-provider router when available
-- All existing LLM call sites (semantic_llm, intent_llm, recovery_llm, etc.) benefit automatically
-- Graceful fallback on router error → single-endpoint config
+### 3. Router Integration
+- The cloud exposes the pool behind `POST /api/v1/llm/proxy/{text,vision}`
+  (`app/api/llm_proxy_routes.py`). Build Studio's compile pipeline calls the proxy
+  via the `conxa_core.llm` router protocol (`conxa_core/llm/client.py`).
+- The proxy meters usage per org and enforces the monthly token quota before
+  dispatching to the router pool.
 
-### 4. LLM-Native Selector Generation (`app/compiler/llm_selector_generator_v2.py`)
-- `generate_selector_with_objective_confidence()` generates high-confidence selectors
-- Computes confidence from 3 objective signals (not LLM self-report):
-  1. **DOM uniqueness** (0.4 max): How many elements match selector in recorded DOM
-  2. **Self-consistency** (0.3 max): Agreement rate across N LLM calls (typically 5)
-  3. **Visual verification** (0.3 max): [Future] Cross-frame visual confirmation
-- Returns: selector + confidence (0.0–1.0) + breakdown + rationale
-- If confidence < 0.50, returns empty selector (high-confidence only)
-- Helper functions for DOM matching: `data-testid`, `aria-label`, `text` content, tags
+> **Note:** LLM-native selector generation was removed. Selectors are produced
+> deterministically by `IdentityBundle` + `selector_grammar.py` in the Build
+> Studio compiler; the LLM never writes selector strings. See the invariants in
+> the root `CLAUDE.md`.
 
 ## Usage
 
@@ -89,42 +86,9 @@ LLM_ROUTER_REQUEST_TIMEOUT_MS=30000
 LLM_ROUTER_PREFER_FAST_FOR_TEXT=true
 ```
 
-## Example: Recompiling with Multi-Provider Router
-
-```bash
-# Compile with 3 enabled providers, 5 keys each = 15 entries in pool
-# Each LLM call tries the next available key in LRU order
-# On 429 error, cools that key for 60s and tries the next
-# With ~189 LLM calls per 21-step recording, distributes load across 15 keys
-
-python scripts/compile_skill.py --session-id c3d7bd48-... --with-llm
-```
-
-Expected behavior:
-- Pool stats in compile report show distribution: each key gets ~12-13 calls
-- No `429_retry_exhausted` errors in `llm_router_stats`
-- Compile finishes in reasonable time (not rate-limited)
-
-## Future Work
-
-- [ ] Video recording during recording phase (frames T-500ms, T-100ms, T+100ms, T+500ms per event)
-- [ ] Frame extraction post-record + visual verification in selector generation
-- [ ] Wire LLM-native selector generation into build.py (with fallback to heuristics)
-- [ ] Input binding from visual context (label_text, placeholder, aria_label priority)
-- [ ] Keyboard event preservation with recorded keys (e.g. value: "Enter" instead of {{text}})
-- [ ] Compile report with confidence breakdown and warnings per step
-- [ ] CLI option to toggle LLM-native generation vs heuristic approach
-
 ## Backward Compatibility
 
-- If **no providers enabled** in .env, router pool is empty → automatically uses legacy single-endpoint config (SKILL_LLM_TEXT_ENDPOINT, SKILL_LLM_VISION_ENDPOINT)
-- Existing deployments continue to work unchanged
-- `.env.example` includes both multi-provider block (new) and legacy single-endpoint section (kept for compatibility)
-
-## Known Limitations (Fixed by Future Commits)
-
-- [ ] Selector generation not yet wired into compile phase (ready but not integrated)
-- [ ] DOM uniqueness check requires full DOM snapshot (workaround: skip if not available)
-- [ ] Visual verification placeholder (future: implement with video frames)
-- [ ] No input binding derivation from visual context yet (future)
-- [ ] No keyboard event key preservation yet (future)
+- If **no providers enabled** in .env, the router pool is empty → it falls back to
+  the legacy single-endpoint config (`SKILL_LLM_TEXT_ENDPOINT`, `SKILL_LLM_VISION_ENDPOINT`).
+- `.env.example` includes both the multi-provider block and the legacy single-endpoint
+  section.

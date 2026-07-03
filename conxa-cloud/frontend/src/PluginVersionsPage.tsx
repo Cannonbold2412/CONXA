@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ChevronLeft, Clock3, Download, PackageCheck, ShieldCheck } from 'lucide-react'
+import { queryKeys } from '@/lib/queryKeys'
 
 function formatBytes(size: number) {
   if (!Number.isFinite(size) || size <= 0) return 'Unknown size'
@@ -83,13 +84,13 @@ function releaseRows(plugin: Plugin, versions: InstallerVersion[]) {
 
 export function PluginVersionsPage({ pluginId }: { pluginId: string }) {
   const pluginQ = useQuery({
-    queryKey: ['plugin', pluginId],
+    queryKey: queryKeys.plugin(pluginId),
     queryFn: () => fetchPlugin(pluginId),
     staleTime: 10_000,
   })
   const plugin = pluginQ.data?.plugin
   const versionsQ = useQuery({
-    queryKey: ['installer-versions', plugin?.slug],
+    queryKey: queryKeys.installerVersions(plugin?.slug),
     queryFn: () => fetchInstallerVersions(plugin?.slug ?? ''),
     enabled: !!plugin?.slug,
     staleTime: 30_000,

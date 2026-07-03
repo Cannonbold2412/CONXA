@@ -12,6 +12,7 @@ import { OpenInStudioButton } from '@/components/OpenInStudioButton'
 import { StudioDownloadDialog } from '@/components/StudioDownloadDialog'
 import { ChevronRight, Download, Globe, PackageCheck } from 'lucide-react'
 import { useState } from 'react'
+import { queryKeys } from '@/lib/queryKeys'
 
 function formatCount(value: number | null | undefined) {
   if (value == null) return 'Unlimited'
@@ -34,7 +35,7 @@ function statusBadge(status: Plugin['status']) {
 }
 
 function InstallerSlotSummary() {
-  const q = useQuery({ queryKey: ['entitlements'], queryFn: fetchEntitlements, staleTime: 30_000, retry: 1 })
+  const q = useQuery({ queryKey: queryKeys.entitlements, queryFn: fetchEntitlements, staleTime: 30_000, retry: 1 })
   const meter = q.data?.meters?.installer_slots
 
   if (q.isLoading) {
@@ -78,7 +79,7 @@ function InstallerSlotSummary() {
 
 export function PluginsPage() {
   const [downloadOpen, setDownloadOpen] = useState(false)
-  const q = useQuery({ queryKey: ['plugins'], queryFn: fetchPlugins, staleTime: 10_000 })
+  const q = useQuery({ queryKey: queryKeys.plugins, queryFn: fetchPlugins, staleTime: 10_000 })
   const plugins = normalizePluginList(q.data)
 
   return (

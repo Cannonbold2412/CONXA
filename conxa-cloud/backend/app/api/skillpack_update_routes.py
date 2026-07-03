@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_list, db_list_kv, using_database
+from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
 from app.services.saas import principal_from_request, ensure_principal
 
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
@@ -93,14 +94,6 @@ def _verify_sync_token(company: str, token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid_sync_token")
 
 
-def _skill_packs_dir(company: str) -> Path:
-    return settings.data_dir / "skill-packs" / company
-
-
-def _skillpack_files_ns(company: str) -> str:
-    return f"skillpack_files__{company}"
-
-
 def _ensure_skill_pack_on_disk(company: str) -> None:
     """Rehydrate the local skill-pack cache from Postgres if the disk was wiped.
 
@@ -110,13 +103,13 @@ def _ensure_skill_pack_on_disk(company: str) -> None:
     """
     if not using_database():
         return
-    pack_path = _skill_packs_dir(company) / "pack.json"
+    pack_path = skill_packs_dir(company) / "pack.json"
     if pack_path.is_file():
         return
-    rows = db_list_kv(_skillpack_files_ns(company))
+    rows = db_list_kv(skillpack_files_ns(company))
     if not rows:
         return
-    packs_dir = _skill_packs_dir(company)
+    packs_dir = skill_packs_dir(company)
     for rel, value in rows:
         if not isinstance(value, dict) or not value.get("content_base64"):
             continue
@@ -132,7 +125,7 @@ def _sha256_file(p: Path) -> str:
 
 
 def _pack_version(company: str) -> str:
-    pack_path = _skill_packs_dir(company) / "pack.json"
+    pack_path = skill_packs_dir(company) / "pack.json"
     if not pack_path.is_file():
         return "0"
     try:
@@ -158,7 +151,7 @@ def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
     actually changed are shipped — never the whole company just because one skill
     was republished."""
     _ensure_skill_pack_on_disk(company)
-    packs_dir = _skill_packs_dir(company)
+    packs_dir = skill_packs_dir(company)
     pack_path = packs_dir / "pack.json"
     if not pack_path.is_file():
         raise HTTPException(status_code=404, detail=f"Skill pack not found: {company}")

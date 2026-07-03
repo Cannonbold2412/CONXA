@@ -199,7 +199,7 @@ function PageContent({ state }: { state: SimState }) {
   return <OnboardingDocsPage state={state} />
 }
 
-function Field({ label, value, target, state }: { label: string; value?: string; target: string; state: SimState }) {
+function Field({ label, value, state }: { label: string; value?: string; target: string; state: SimState }) {
   const active = state.typingTarget === label
   const text = active ? state.typingText : (value ?? '')
   return (

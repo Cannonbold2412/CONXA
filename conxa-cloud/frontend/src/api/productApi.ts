@@ -1,20 +1,4 @@
-import { apiFetch } from '@/lib/apiBase'
-
-async function json<T>(response: Response): Promise<T> {
-  const raw = (await response.text()).trim()
-  if (!response.ok) {
-    let message = raw || response.statusText
-    try {
-      const parsed = JSON.parse(raw) as { detail?: unknown; message?: unknown }
-      const detail = parsed.detail ?? parsed.message
-      if (typeof detail === 'string' && detail.trim()) message = detail.trim()
-    } catch {
-      // keep raw response text
-    }
-    throw new Error(message)
-  }
-  return raw ? (JSON.parse(raw) as T) : ({} as T)
-}
+import { apiFetch, json } from '@/lib/apiBase'
 
 export type Workspace = {
   id: string

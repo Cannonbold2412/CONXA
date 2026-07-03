@@ -1,4 +1,19 @@
 'use client'
+import { toneStyle, type Tone } from '@/lib/tone'
+import { queryKeys } from '@/lib/queryKeys'
+import {
+  EMPTY_METRICS,
+  DEFAULT_RECOVERY_USAGE,
+  buildRiskRows,
+  clampPercent,
+  deriveDashboardHealth,
+  fmtDuration,
+  fmtNumber,
+  fmtPercent,
+  fmtRelative,
+  rangeLabel,
+  type RiskRow,
+} from '@/dashboard/dashboardData'
 
 import { useMemo, useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -27,167 +42,6 @@ import {
   Zap,
 } from 'lucide-react'
 
-const EMPTY_METRICS: TrackingDashboardResponse['metrics'] = {
-  total_installs: 0,
-  active_users: 0,
-  active_companies: 0,
-  total_executions: 0,
-  executions_last_24h: 0,
-  success_rate: 0,
-  failed_executions: 0,
-  recovery_rate: 0,
-  average_execution_time: 0,
-}
-
-const DEFAULT_RECOVERY_USAGE: TrackingDashboardResponse['recovery_type_usage'] = [
-  { type: 'Selector', count: 0 },
-  { type: 'Text Anchor', count: 0 },
-  { type: 'Text Variant', count: 0 },
-  { type: 'Vision', count: 0 },
-]
-
-type Tone = 'good' | 'warn' | 'bad' | 'neutral'
-
-type DashboardHealth = {
-  label: 'Healthy' | 'Degraded' | 'Attention needed' | 'No telemetry'
-  tone: Tone
-  description: string
-}
-
-type RiskRow = {
-  id: string
-  type: 'Workflow' | 'Step'
-  name: string
-  context: string
-  failedExecutions: number
-  failureCode: string
-  lastSeen: number
-}
-
-function fmtNumber(value: number) {
-  return new Intl.NumberFormat().format(value || 0)
-}
-
-function fmtPercent(value: number) {
-  return `${Number(value || 0).toFixed(1).replace(/\.0$/, '')}%`
-}
-
-function fmtDuration(ms: number) {
-  if (!ms) return '0ms'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')}s`
-  return `${Math.round(ms / 60_000)}m`
-}
-
-function fmtRelative(epochMs: number) {
-  if (!epochMs) return 'No timestamp'
-  const diff = Date.now() - epochMs
-  if (diff < 60_000) return 'just now'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
-  return new Date(epochMs).toLocaleDateString([], { month: 'short', day: 'numeric' })
-}
-
-function rangeLabel(range: TrackingDashboardRange) {
-  return range === '30d' ? 'Last 30 days' : 'Last 7 days'
-}
-
-function clampPercent(value: number) {
-  return `${Math.max(0, Math.min(100, Math.round(value)))}%`
-}
-
-function deriveDashboardHealth(metrics: TrackingDashboardResponse['metrics']): DashboardHealth {
-  if (metrics.total_executions === 0) {
-    return {
-      label: 'No telemetry',
-      tone: 'neutral',
-      description: 'Production runtime data will appear here after the first customer execution.',
-    }
-  }
-
-  if (metrics.success_rate >= 95 && metrics.failed_executions === 0) {
-    return {
-      label: 'Healthy',
-      tone: 'good',
-      description: 'Executions are completing cleanly with no active failure pressure.',
-    }
-  }
-
-  if (metrics.success_rate >= 85) {
-    return {
-      label: 'Degraded',
-      tone: 'warn',
-      description: 'Reliability is usable, but failures or recoveries need operator review.',
-    }
-  }
-
-  return {
-    label: 'Attention needed',
-    tone: 'bad',
-    description: 'Execution health is below target. Prioritize the risk queue before new rollout work.',
-  }
-}
-
-function buildRiskRows(data?: TrackingDashboardResponse): RiskRow[] {
-  if (!data) return []
-
-  const workflowRows = data.most_failed_workflows.map((row) => ({
-    id: `workflow:${row.workflow}`,
-    type: 'Workflow' as const,
-    name: row.workflow,
-    context: 'Workflow failure',
-    failedExecutions: row.failed_executions,
-    failureCode: row.last_failure_code || 'unknown failure',
-    lastSeen: row.last_seen,
-  }))
-
-  const stepRows = data.most_failed_steps.map((row) => ({
-    id: `step:${row.workflow}:${row.step_index ?? 'unknown'}:${row.step_label}`,
-    type: 'Step' as const,
-    name: row.step_label,
-    context: `${row.workflow}${row.step_index === null ? '' : ` / step ${row.step_index + 1}`}`,
-    failedExecutions: row.failed_executions,
-    failureCode: row.last_failure_code || 'unknown failure',
-    lastSeen: row.last_seen,
-  }))
-
-  return [...workflowRows, ...stepRows]
-    .sort((a, b) => b.failedExecutions - a.failedExecutions || b.lastSeen - a.lastSeen)
-    .slice(0, 8)
-}
-
-function toneClasses(tone: Tone) {
-  if (tone === 'good') {
-    return {
-      text: 'text-emerald-300',
-      bg: 'bg-emerald-500/10',
-      border: 'border-emerald-500/25',
-      icon: 'bg-emerald-500/10 text-emerald-300',
-    }
-  }
-  if (tone === 'warn') {
-    return {
-      text: 'text-amber-300',
-      bg: 'bg-amber-500/10',
-      border: 'border-amber-500/25',
-      icon: 'bg-amber-500/10 text-amber-300',
-    }
-  }
-  if (tone === 'bad') {
-    return {
-      text: 'text-red-300',
-      bg: 'bg-red-500/10',
-      border: 'border-red-500/25',
-      icon: 'bg-red-500/10 text-red-300',
-    }
-  }
-  return {
-    text: 'text-zinc-100',
-    bg: 'bg-white/[0.035]',
-    border: 'border-white/10',
-    icon: 'bg-white/[0.05] text-zinc-400',
-  }
-}
 
 function MetricCell({
   label,
@@ -202,7 +56,7 @@ function MetricCell({
   icon: ComponentType<{ className?: string }>
   tone?: Tone
 }) {
-  const classes = toneClasses(tone)
+  const classes = toneStyle(tone)
 
   return (
     <div className="min-w-0 rounded-lg border border-white/8 bg-white/[0.025] px-3 py-3">
@@ -226,7 +80,7 @@ function CommandSummary({
   range: TrackingDashboardRange
 }) {
   const health = deriveDashboardHealth(metrics)
-  const classes = toneClasses(health.tone)
+  const classes = toneStyle(health.tone)
   const rangeText = rangeLabel(range).toLowerCase()
 
   return (
@@ -570,7 +424,7 @@ function DashboardSkeleton() {
 export function DashboardPage() {
   const [range, setRange] = useState<TrackingDashboardRange>('7d')
   const dashboardQ = useQuery({
-    queryKey: ['tracking-dashboard', range],
+    queryKey: queryKeys.trackingDashboard(range),
     queryFn: () => fetchTrackingDashboard(range),
     staleTime: 30_000,
     refetchInterval: 30_000,

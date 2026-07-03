@@ -22,7 +22,14 @@ def backend():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     out: list[dict] = []
-    mod._write = lambda obj: out.append(obj)  # capture protocol output
+    capture = lambda obj: out.append(obj)  # capture protocol output
+    # _write lives in handlers.protocol (imported into backend.py's namespace);
+    # command handlers emit events via handlers.protocol._event_sink, which
+    # calls handlers.protocol._write directly, so both bindings need patching.
+    from handlers import protocol as _protocol
+
+    mod._write = capture
+    _protocol._write = capture
     b = mod.Backend()
     return b, out
 

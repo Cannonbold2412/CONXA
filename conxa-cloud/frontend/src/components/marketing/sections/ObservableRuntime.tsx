@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useRef, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { SectionHeader } from '../primitives/SectionHeader'
 import { Reveal } from '../primitives/Reveal'

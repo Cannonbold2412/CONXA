@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
+from app.api.deps import current_principal, entitlement_http_error
 from app.llm.router import get_router
 from app.services import llm_metering
 from app.services.entitlements import (
@@ -27,7 +28,6 @@ from app.services.entitlements import (
     ensure_human_edit_available,
     record_llm_usage,
 )
-from app.services.saas import Principal, ensure_principal, principal_from_request
 
 router = APIRouter(prefix="/llm/proxy", tags=["llm-proxy"], include_in_schema=False)
 
@@ -46,15 +46,9 @@ def _require_studio_client(request: Request) -> None:
         raise HTTPException(status_code=403, detail="proxy_requires_build_studio_client")
 
 
-def _principal(request: Request) -> Principal:
-    principal = principal_from_request(request)
-    ensure_principal(principal)
-    return principal
-
-
 def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[str, Any]:
     _require_studio_client(request)
-    principal = _principal(request)
+    principal = current_principal(request)
     org_id = principal.workspace_id
     usage_class = str(body.usage_class or "compile").strip()
     if usage_class not in ALLOWED_USAGE_CLASSES:
@@ -68,7 +62,7 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
         try:
             ensure_human_edit_available(principal, estimated_tokens=input_tokens)
         except EntitlementError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+            raise entitlement_http_error(exc) from exc
 
     router_impl = get_router()
     error_detail: list[str] = []
@@ -100,10 +94,8 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
-    except EntitlementError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail="entitlements_unavailable") from exc
+        raise entitlement_http_error(exc) from exc
     return result
 
 
@@ -121,7 +113,7 @@ def proxy_vision(body: ProxyBody, request: Request) -> dict[str, Any]:
 def proxy_usage(request: Request) -> dict[str, Any]:
     """Current-month usage for the calling org (Build Studio shows this in Settings)."""
     _require_studio_client(request)
-    principal = _principal(request)
+    principal = current_principal(request)
     org_id = principal.workspace_id
     usage = llm_metering.get_usage(org_id)
     try:

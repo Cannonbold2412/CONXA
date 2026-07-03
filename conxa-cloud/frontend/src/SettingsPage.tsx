@@ -1,4 +1,6 @@
 'use client'
+import { queryKeys } from '@/lib/queryKeys'
+import { toneBadgeClasses, type Tone } from '@/lib/tone'
 
 import Link from 'next/link'
 import { type ReactNode } from 'react'
@@ -19,7 +21,6 @@ import {
   Users,
 } from 'lucide-react'
 
-type Tone = 'good' | 'warn' | 'neutral'
 
 function titleCase(value: string) {
   return value
@@ -34,15 +35,8 @@ function proxyStatusTone(status?: ProxyIdentityStatus): Tone {
 }
 
 function StatusBadge({ label, tone = 'neutral' }: { label: string; tone?: Tone }) {
-  const toneClass =
-    tone === 'good'
-      ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-      : tone === 'warn'
-        ? 'border-amber-500/25 bg-amber-500/10 text-amber-200'
-        : 'border-white/10 bg-white/[0.04] text-zinc-300'
-
   return (
-    <Badge variant="outline" className={toneClass}>
+    <Badge variant="outline" className={toneBadgeClasses(tone)}>
       {label}
     </Badge>
   )
@@ -192,7 +186,7 @@ function SettingsBody({ me }: { me: MeResponse }) {
 }
 
 export function SettingsPage() {
-  const meQ = useQuery({ queryKey: ['me'], queryFn: fetchMe })
+  const meQ = useQuery({ queryKey: queryKeys.me, queryFn: fetchMe })
 
   return (
     <div className="h-full overflow-y-auto">

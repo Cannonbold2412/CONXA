@@ -9,6 +9,7 @@ served here.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 import uuid
@@ -21,8 +22,9 @@ from pydantic import BaseModel, Field
 from conxa_core.config import settings
 from conxa_core.db import db_get
 from conxa_core.models.plugin import Plugin, PluginBuild, PluginInstaller, PluginWorkflow
+from app.api.deps import current_principal
 from app.services.rbac import require_admin
-from app.services.saas import add_audit_event, principal_from_request, ensure_principal, visible_workspace_ids_for
+from app.services.saas import add_audit_event, principal_from_request, visible_workspace_ids_for
 from conxa_core.storage.plugin_store import (
     create_plugin,
     delete_plugin,
@@ -30,6 +32,8 @@ from conxa_core.storage.plugin_store import (
     list_plugins,
     save_plugin,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
 
@@ -79,8 +83,8 @@ def _backfill_plugin(plugin: Plugin) -> Plugin:
                     release_notes="",
                 )
                 changed = True
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.warning("plugin_backfill_installer_failed slug=%s", slug, exc_info=True)
 
     # ── build + workflows ──────────────────────────────────────────────────────
     if plugin.build is None or not plugin.workflows:
@@ -122,8 +126,8 @@ def _backfill_plugin(plugin: Plugin) -> Plugin:
                         version=str(sync_rec["version"]),
                     )
                     changed = True
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.warning("plugin_backfill_build_failed slug=%s", slug, exc_info=True)
 
     if changed:
         plugin = save_plugin(plugin)
@@ -156,8 +160,7 @@ def _plugin_or_404(plugin_id: str, principal) -> Plugin:
 
 @router.post("")
 def post_create_plugin(body: CreatePluginBody, request: Request) -> dict[str, Any]:
-    principal = principal_from_request(request)
-    ensure_principal(principal)
+    principal = current_principal(request)
     require_admin(principal)
     plugin = create_plugin(
         name=body.name,
@@ -193,8 +196,7 @@ def get_plugin_detail(plugin_id: str, request: Request) -> dict[str, Any]:
 
 @router.delete("/{plugin_id}")
 def delete_plugin_endpoint(plugin_id: str, request: Request) -> dict[str, Any]:
-    principal = principal_from_request(request)
-    ensure_principal(principal)
+    principal = current_principal(request)
     require_admin(principal)
     plugin = _plugin_or_404(plugin_id, principal)
     # Remove built output if present.

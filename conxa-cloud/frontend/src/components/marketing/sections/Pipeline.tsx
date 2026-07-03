@@ -3,7 +3,6 @@
 import { useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { SectionHeader } from '../primitives/SectionHeader'
-import { Reveal } from '../primitives/Reveal'
 
 const STAGES = [
   {

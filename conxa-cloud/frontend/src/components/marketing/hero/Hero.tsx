@@ -1,7 +1,6 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import Image from 'next/image'
 import { GradientMesh } from '../GradientMesh'
 import { GridBackground } from '../GridBackground'
 import { GlowButton } from '../primitives/GlowButton'

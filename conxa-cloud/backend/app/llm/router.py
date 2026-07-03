@@ -5,18 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
 
-from conxa_core.config import ProviderConfig, settings
+from conxa_core.config import settings
 from conxa_core.llm.client import (
     _chat_completions_url,
     _debug_log,
     _is_openai_compatible_endpoint,
     _normalize_openai_response,
     _openai_body_dict,
-    _parse_json_object_content,
     _provider_top_level_error,
     _safe_error_snippet,
 )

@@ -404,7 +404,7 @@ class TestCallRuntimeToolEnv:
             raise OSError("stopped for test")
 
         import subprocess as _subprocess
-        from conxa_compile.conxa_runtime import call_runtime_tool
+        from conxa_compile.runtime_tool import call_runtime_tool
 
         with patch.object(_subprocess, "Popen", fake_popen):
             try:
@@ -437,7 +437,7 @@ class TestCallRuntimeToolEnv:
 
         import shutil as _shutil
         import subprocess as _subprocess
-        from conxa_compile.conxa_runtime import call_runtime_tool
+        from conxa_compile.runtime_tool import call_runtime_tool
 
         with patch.object(_shutil, "which", lambda _: "node"), \
              patch.object(_subprocess, "Popen", fake_popen):

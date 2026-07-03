@@ -27,8 +27,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { clerkAppearance } from '@/lib/clerkAppearance'
 import { cn } from '@/lib/utils'
+import { queryKeys } from '@/lib/queryKeys'
+import { toneBadgeClasses, type Tone } from '@/lib/tone'
 
-type Tone = 'good' | 'warn' | 'neutral'
 
 function formatCount(value: number | null | undefined) {
   if (value == null) return 'Unlimited'
@@ -60,11 +61,6 @@ function seatTone(meter?: EntitlementMeter): Tone {
   return seatPercent(meter) >= 80 ? 'warn' : 'good'
 }
 
-function toneClasses(tone: Tone) {
-  if (tone === 'good') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-  if (tone === 'warn') return 'border-amber-500/25 bg-amber-500/10 text-amber-200'
-  return 'border-white/10 bg-white/[0.04] text-zinc-300'
-}
 
 function StatusPill({
   children,
@@ -76,7 +72,7 @@ function StatusPill({
   icon?: LucideIcon
 }) {
   return (
-    <Badge variant="outline" className={cn('gap-1.5', toneClasses(tone))}>
+    <Badge variant="outline" className={cn('gap-1.5', toneBadgeClasses(tone))}>
       {Icon ? <Icon className="size-3" /> : null}
       {children}
     </Badge>
@@ -314,21 +310,21 @@ function MemberDirectory() {
 }
 
 export function TeamPage() {
-  const meQ = useQuery({ queryKey: ['me'], queryFn: fetchMe, staleTime: 30_000, retry: 1 })
+  const meQ = useQuery({ queryKey: queryKeys.me, queryFn: fetchMe, staleTime: 30_000, retry: 1 })
   const entitlementsQ = useQuery({
-    queryKey: ['entitlements'],
+    queryKey: queryKeys.entitlements,
     queryFn: fetchEntitlements,
     staleTime: 30_000,
     retry: 1,
   })
   const subscriptionQ = useQuery({
-    queryKey: ['subscription'],
+    queryKey: queryKeys.subscription,
     queryFn: fetchSubscription,
     staleTime: 30_000,
     retry: 1,
   })
   const auditQ = useQuery({
-    queryKey: ['auditEvents', 'team'],
+    queryKey: queryKeys.auditEvents('team'),
     queryFn: () => fetchAuditEvents(4),
     staleTime: 30_000,
     retry: 1,

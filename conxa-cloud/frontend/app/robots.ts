@@ -14,7 +14,6 @@ export default function robots(): MetadataRoute.Robots {
         '/packages',
         '/compile',
         '/build-installer',
-        '/plugin-health',
         '/settings',
         '/team',
         '/test',

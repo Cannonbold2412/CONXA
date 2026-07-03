@@ -17,9 +17,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
+from app.api.deps import current_principal
 from app.services.entitlements import PLAN_LIMITS
 from app.services.rbac import require_admin
-from app.services.saas import Principal, ensure_principal, principal_from_request, upsert_billing
+from app.services.saas import Principal, upsert_billing
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
@@ -29,12 +30,6 @@ _CF_BASE = {
     "PROD": "https://api.cashfree.com",
     "TEST": "https://sandbox.cashfree.com",
 }
-
-
-def current_principal(request: Request) -> Principal:
-    principal = principal_from_request(request)
-    ensure_principal(principal)
-    return principal
 
 
 def _plan_features(tier: str) -> list[str]:

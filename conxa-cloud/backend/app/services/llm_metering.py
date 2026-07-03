@@ -11,6 +11,7 @@ The estimate is intentionally conservative and only used for quota enforcement.
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime, timezone
 from typing import Any
@@ -78,8 +79,6 @@ def _stringify(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     try:
-        import json
-
         return json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(payload)

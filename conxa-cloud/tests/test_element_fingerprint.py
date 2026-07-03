@@ -21,7 +21,7 @@ from conxa_compile.compiler.selector_score import (
     tag_orthogonality_class,
 )
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
-from conxa_compile.compiler.llm_selector_generator_v2 import to_playwright_grammar
+from conxa_compile.compiler.selector_grammar import to_playwright_grammar
 from conxa_compile.compiler.stable_hash import compute_stable_hash
 from conxa_core.models.skill_spec import (
     Assertion,
@@ -577,7 +577,7 @@ def test_deterministic_signals_durability_descending():
 # ─── Phase 5: Frame context ───────────────────────────────────────────────────
 
 def test_iframe_fingerprint_from_attrs():
-    from conxa_compile.recorder.session import _iframe_fingerprint_from_attrs
+    from conxa_compile.recorder.frame_utils import _iframe_fingerprint_from_attrs
     attrs = {
         "data-test-id": "reports-frame",
         "name": "reports",
@@ -594,7 +594,7 @@ def test_iframe_fingerprint_from_attrs():
 
 
 def test_iframe_fingerprint_has_url_pattern():
-    from conxa_compile.recorder.session import _iframe_fingerprint_from_attrs
+    from conxa_compile.recorder.frame_utils import _iframe_fingerprint_from_attrs
     attrs = {"name": "reports"}
     fp = _iframe_fingerprint_from_attrs(attrs, "https://app.example.com/reports/overview")
     assert fp["url_pattern"] != ""

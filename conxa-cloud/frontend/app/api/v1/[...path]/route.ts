@@ -130,27 +130,9 @@ type RouteContext = {
   }>
 }
 
-export async function GET(request: Request, context: RouteContext) {
+async function handler(request: Request, context: RouteContext) {
   const { path } = await context.params
   return proxy(request, path)
 }
 
-export async function POST(request: Request, context: RouteContext) {
-  const { path } = await context.params
-  return proxy(request, path)
-}
-
-export async function PUT(request: Request, context: RouteContext) {
-  const { path } = await context.params
-  return proxy(request, path)
-}
-
-export async function PATCH(request: Request, context: RouteContext) {
-  const { path } = await context.params
-  return proxy(request, path)
-}
-
-export async function DELETE(request: Request, context: RouteContext) {
-  const { path } = await context.params
-  return proxy(request, path)
-}
+export { handler as GET, handler as POST, handler as PUT, handler as PATCH, handler as DELETE }

@@ -12,7 +12,8 @@ import {
 } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { updateWorkflow } from '@/api/pluginApi'
-import { enqueueCompileJob, fetchJob, type JobStatus } from '@/api/workflowApi'
+import { enqueueCompileJob, fetchJob, type JobStatus } from '@/api/jobsApi'
+import { queryKeys } from '@/lib/queryKeys'
 
 type CompileStatus = JobStatus | 'enqueuing'
 
@@ -179,8 +180,8 @@ export function PluginWorkflowCompileProvider({ children }: { children: ReactNod
           try {
             await updateWorkflow(entry.pluginId, entry.workflowId, { skill_id: skillId })
             await Promise.all([
-              queryClient.invalidateQueries({ queryKey: ['plugin', entry.pluginId] }),
-              queryClient.invalidateQueries({ queryKey: ['plugins'] }),
+              queryClient.invalidateQueries({ queryKey: queryKeys.plugin(entry.pluginId) }),
+              queryClient.invalidateQueries({ queryKey: queryKeys.plugins }),
             ])
             clearCompile(entry.pluginId, entry.workflowId)
           } catch (err) {

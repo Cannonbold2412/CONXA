@@ -5,18 +5,17 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
+from app.api.deps import current_principal
 from app.services.rbac import require_admin
 from app.services.saas import (
     Principal,
     audit_events_for,
     billing_for,
     dashboard_for,
-    ensure_principal,
-    principal_from_request,
     release_for,
     update_release,
     usage_for,
@@ -24,12 +23,6 @@ from app.services.saas import (
 from conxa_core.storage.skill_packages import bundle_root_dir
 
 router = APIRouter(tags=["product"])
-
-
-def current_principal(request: Request) -> Principal:
-    principal = principal_from_request(request)
-    ensure_principal(principal)
-    return principal
 
 
 class ReleasePatchBody(BaseModel):

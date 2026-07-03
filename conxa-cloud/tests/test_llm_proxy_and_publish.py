@@ -899,13 +899,13 @@ def test_installer_download_requires_signature_when_configured(monkeypatch):
 
     # Expired timestamp -> rejected.
     old_ts = ts - settings.installer_signing_window - 60
-    from app.api.publish_routes import _sign_installer
-    expired_sig = _sign_installer("signed-dl-test", None, old_ts)
+    from app.api.installer_storage import sign_installer
+    expired_sig = sign_installer("signed-dl-test", None, old_ts)
     expired = client.get(f"/api/v1/installers/signed-dl-test?ts={old_ts}&sig={expired_sig}")
     assert expired.status_code == 401
 
     # Valid ts/sig -> succeeds.
-    valid_sig = _sign_installer("signed-dl-test", None, ts)
+    valid_sig = sign_installer("signed-dl-test", None, ts)
     valid = client.get(f"/api/v1/installers/signed-dl-test?ts={ts}&sig={valid_sig}")
     assert valid.status_code == 200
     assert valid.content == payload

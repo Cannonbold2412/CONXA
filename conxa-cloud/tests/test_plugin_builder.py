@@ -8,15 +8,17 @@ import re
 import pytest
 from PIL import Image
 
-from conxa_compile.plugin_builder import (
-    _build_workflow_from_saved_skill,
+from conxa_compile.plugin_builder import build_plugin
+from conxa_compile.plugin_builder_output import (
     _clean_stale_artifacts,
     _copy_plugin_templates,
-    _is_login_step,
-    _normalize_saved_skill_inputs,
     _render_license,
     _render_readme,
-    build_plugin,
+)
+from conxa_compile.plugin_builder_saved_skill import (
+    _build_workflow_from_saved_skill,
+    _is_login_step,
+    _normalize_saved_skill_inputs,
     strip_login_steps,
 )
 
@@ -500,14 +502,14 @@ class TestSavedSkillJsonBuild:
         ]
 
     def test_saved_skill_recovery_writes_visual_refs_from_saved_step_screenshots(self, tmp_path, monkeypatch):
-        import conxa_compile.plugin_builder as plugin_builder
+        import conxa_compile.plugin_builder_saved_skill as plugin_builder_saved_skill
 
         data_dir = tmp_path / "data"
         image_dir = data_dir / "sessions" / "sess_visual" / "images"
         image_dir.mkdir(parents=True)
         source_image = image_dir / "click.jpg"
         Image.new("RGB", (120, 80), "white").save(source_image)
-        monkeypatch.setattr(plugin_builder, "resolve_skill_asset", lambda rel: data_dir / rel)
+        monkeypatch.setattr(plugin_builder_saved_skill, "resolve_skill_asset", lambda rel: data_dir / rel)
 
         saved_skill = {
             "meta": {

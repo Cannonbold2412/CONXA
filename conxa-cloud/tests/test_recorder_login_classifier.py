@@ -6,7 +6,7 @@ from conxa_core.models.events import (
     ActionMeta, DomContext, PageContext, RecordedEvent, SnapshotRef,
     SemanticFeatures, Selectors, StateChange, TargetDom, Timing, VisualFeatures,
 )
-from conxa_compile.recorder.session import classify_login_flow
+from conxa_compile.recorder.frame_utils import classify_login_flow
 
 
 # ─────────────────────────────────────────────────

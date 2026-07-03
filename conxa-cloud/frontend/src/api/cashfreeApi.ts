@@ -1,17 +1,4 @@
-import { apiFetch } from '@/lib/apiBase'
-
-async function json<T>(response: Response): Promise<T> {
-  const raw = (await response.text()).trim()
-  if (!response.ok) {
-    let message = raw || response.statusText
-    try {
-      const parsed = JSON.parse(raw) as { detail?: unknown }
-      if (typeof parsed.detail === 'string' && parsed.detail.trim()) message = parsed.detail.trim()
-    } catch { /* keep raw */ }
-    throw new Error(message)
-  }
-  return raw ? (JSON.parse(raw) as T) : ({} as T)
-}
+import { apiFetch, json } from '@/lib/apiBase'
 
 export type Plan = {
   tier: string

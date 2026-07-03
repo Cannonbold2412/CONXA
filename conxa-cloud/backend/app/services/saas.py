@@ -15,8 +15,6 @@ import secrets
 import threading
 import time
 import urllib.request
-
-_log = logging.getLogger(__name__)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +28,8 @@ from conxa_core.workspace import LOCAL_WORKSPACE_ID  # single source of truth
 from app.services.jobs import job_store
 from conxa_core.storage.json_store import list_skill_summaries
 from conxa_core.storage.skill_packages import list_skill_bundle_summaries
+
+_log = logging.getLogger(__name__)
 
 LOCAL_USER_ID = "user_local"
 LOCAL_WORKSPACE_SLUG = "local"

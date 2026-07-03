@@ -1,4 +1,5 @@
 'use client'
+import { queryKeys } from '@/lib/queryKeys'
 
 import { useMemo, useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -212,7 +213,7 @@ function AuditTable({ rows }: { rows: AuditEvent[] }) {
 export function AuditPage() {
   const [search, setSearch] = useState('')
   const [action, setAction] = useState(ALL_ACTIONS)
-  const auditQ = useQuery({ queryKey: ['auditEvents'], queryFn: () => fetchAuditEvents(200) })
+  const auditQ = useQuery({ queryKey: queryKeys.auditEvents(), queryFn: () => fetchAuditEvents(200) })
 
   const events = useMemo(() => auditQ.data?.audit_events ?? [], [auditQ.data?.audit_events])
   const actions = useMemo(() => Array.from(new Set(events.map((event) => event.action))).sort(), [events])

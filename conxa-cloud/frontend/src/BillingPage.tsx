@@ -1,4 +1,15 @@
 'use client'
+import { queryKeys } from '@/lib/queryKeys'
+import {
+  displayPlanName,
+  formatMeterValue,
+  formatPeriod,
+  formatPrice,
+  formatUnixDate,
+  meterPercent,
+  meterTone,
+  normalizePlan,
+} from '@/billing/billingData'
 
 import { useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -95,88 +106,21 @@ const METER_CONFIGS: UsageMeterConfig[] = [
   },
 ]
 
-function normalizePlan(plan?: string | null) {
-  const tier = (plan || 'free').toLowerCase()
-  return tier === 'basic' ? 'starter' : tier
-}
-
-function displayPlanName(plan?: string | null) {
-  const normalized = normalizePlan(plan)
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
-}
-
-function formatPrice(plan: Plan) {
-  if (normalizePlan(plan.tier) === 'enterprise') return 'Custom'
-  if (!plan.amount) return 'Free'
-  const currency = (plan.currency || 'INR').toUpperCase()
-  const symbol = currency === 'INR' ? '₹' : `${currency} `
-  return `${symbol}${plan.amount.toLocaleString()}`
-}
-
-function formatPeriod(plan: Plan) {
-  if (normalizePlan(plan.tier) === 'enterprise') return 'contract'
-  if (!plan.amount) return 'forever'
-  return plan.period || 'month'
-}
-
-function formatDate(value?: string | null) {
-  if (!value) return 'Not scheduled'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return 'Not scheduled'
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
-
-function formatUnixDate(value?: number | null) {
-  if (!value) return 'Not scheduled'
-  return formatDate(new Date(value * 1000).toISOString())
-}
-
-function formatCompactNumber(value?: number | null) {
-  if (value == null) return 'Unlimited'
-  return new Intl.NumberFormat(undefined, {
-    notation: Math.abs(value) >= 1_000_000 ? 'compact' : 'standard',
-    maximumFractionDigits: 1,
-  }).format(value)
-}
-
-function formatMeterValue(value?: number | null, key?: EntitlementMeterKey) {
-  if (value == null) return 'Unlimited'
-  if (key === 'human_edit_tokens') return formatCompactNumber(value)
-  return value.toLocaleString()
-}
-
-function meterPercent(meter?: EntitlementMeter) {
-  if (!meter || meter.unlimited || !meter.limit) return 0
-  return Math.min(100, Math.round((meter.used / meter.limit) * 100))
-}
-
-function meterTone(meter?: EntitlementMeter) {
-  if (!meter || meter.unlimited || !meter.limit) return 'neutral'
-  const percent = meterPercent(meter)
-  if (percent >= 100) return 'danger'
-  if (percent >= 80) return 'warning'
-  return 'healthy'
-}
 
 export function BillingPage() {
   const queryClient = useQueryClient()
   const [processingTier, setProcessingTier] = useState<string | null>(null)
-  const [currentPlanOverride, setCurrentPlanOverride] = useState<string | null>(null)
 
   const plansQuery = useQuery({
-    queryKey: ['billing-plans'],
+    queryKey: queryKeys.billingPlans,
     queryFn: listPlans,
   })
   const subscriptionQuery = useQuery({
-    queryKey: ['subscription'],
+    queryKey: queryKeys.subscription,
     queryFn: fetchSubscription,
   })
   const entitlementsQuery = useQuery({
-    queryKey: ['entitlements'],
+    queryKey: queryKeys.entitlements,
     queryFn: fetchEntitlements,
   })
 
@@ -189,8 +133,8 @@ export function BillingPage() {
     void verifyCashfreeSubscription(pendingSubId)
       .then(async () => {
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['subscription'] }),
-          queryClient.invalidateQueries({ queryKey: ['entitlements'] }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.subscription }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.entitlements }),
         ])
         toast.success('Subscription activated')
       })
@@ -216,7 +160,7 @@ export function BillingPage() {
   const subscription = subscriptionQuery.data?.subscription
   const entitlements = entitlementsQuery.data
   const currentPlan = normalizePlan(
-    currentPlanOverride ?? subscription?.plan ?? entitlements?.plan ?? 'free',
+    subscription?.plan ?? entitlements?.plan ?? 'free',
   )
   const hasError = plansQuery.isError || subscriptionQuery.isError || entitlementsQuery.isError
 
