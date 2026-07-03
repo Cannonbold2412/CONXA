@@ -2,6 +2,144 @@
 
 ---
 
+## Added a costed reality-check on code signing and SOC 2 to the critical-analysis report — 2026-07-03
+
+The report `research-analysis/conxa-critical-analysis.md` previously said enterprise trust
+needed "about two years of work" without showing the math. After the founders asked "is it
+actually hard to get SOC 2 and code signing?", the answer was added to the report itself
+(security section §7 and recommendation §11.6): **no, the paperwork half is cheap and fast.**
+
+- **Code signing** is a purchase, not a project: an EV certificate (~$300–600/year), a cloud
+  signing service for CI (keys must live in hardware since 2023), and pipeline wiring — done
+  in weeks. Since Conxa's product *generates* installers for vendors, signing has to happen
+  inside the build pipeline automatically.
+- **SOC 2** is process, not genius: a compliance platform (~$7–20k/yr) plus an auditor
+  (~$5–20k), Type I in ~3 months, Type II in 6–12 months because its observation window is
+  unavoidable waiting time. Conxa's thin cloud (no customer data in the execution path) makes
+  the audit smaller and cheaper than for a typical SaaS company. One heads-up recorded: buyers
+  will ask about compile-time screenshots flowing through the LLM proxy — the data-flow and
+  retention story should be written before they ask.
+- The genuinely slow part is the **engineering half** — SSO, per-device identity with remote
+  revocation, and enterprise packaging. Run both halves in parallel and everything lands in
+  roughly a year. The report's message changed from "two years of trust work" to "one year,
+  ~$15–40k, and the only way to lose is to start late."
+
+---
+
+## Added the founders' fourth answer to the critical-analysis report: MCP setup is too hard for normal people — 2026-07-03
+
+A fourth founder response was folded into `research-analysis/conxa-critical-analysis.md`:
+non-technical people can't configure MCP tools by hand — it means editing a JSON config
+file, which feels like coding — so Conxa's installer doing that setup automatically is a
+genuine feature, not just a security worry. The report now credits this in three places:
+the big-vendor comparison (with the honest caveat that vendor-*hosted* connectors are just
+a "Connect" button, so the point mainly defends Conxa's own local runtime, not the case
+against vendors building connectors), the end-customer friction list (the auto-configuration
+is called out as the right design for a non-technical audience), and the security section
+(the design intent is good UX, but IT teams judge mechanisms, not intentions — the fix that
+satisfies both is enterprise packaging so IT can do the deploying on managed fleets).
+
+---
+
+## Updated the critical-analysis report with the founders' answers to three criticisms — 2026-07-03
+
+The report `research-analysis/conxa-critical-analysis.md` was updated after the founders
+responded to three of its criticisms. The report now presents each answer where the original
+criticism appeared, says honestly how much it resolves, and adjusts the risk ratings:
+
+1. **"Installers will be digitally signed."** Accepted — this removes the scariest warning
+   (Windows flagging an unknown publisher) and the report's risk wording was softened. It also
+   notes what signing doesn't fix: security tools judge what a program *does* (edit Claude's
+   settings, hold logged-in sessions, self-update), not just who signed it.
+2. **"Big companies can build their own connectors, but for small and mid-sized SaaS companies,
+   maintaining an API is more hassle than maintaining Conxa."** Taken seriously — the "no market"
+   verdict was downgraded to "a smaller, plausible, unproven market" (risk lowered from Critical
+   to High). The report now asks for the proof that would settle it: a few paying small-vendor
+   customers who stick around through one of their own UI redesigns.
+3. **"Recordings are generalized, and websites that are too dynamic per user we simply don't
+   automate."** Partially accepted — the risk was lowered (High → Medium-High). The report agrees
+   the multi-signal design absorbs ordinary changes, but points out that missing plan-gated
+   buttons, translated labels, and permission-hidden menus aren't "dynamic websites" — they're
+   normal SaaS behavior — so the cheap cross-account test is still the way to prove the claim
+   and to define where the "too dynamic" line actually sits.
+
+The recommendations were reshaped to match: "flip the target customer" became "run two named
+bets (small vendors + enterprises with API-less software) and stop pitching big vendors," and
+the closing verdict now names the two proofs that would turn the founders' arguments into a
+fundable thesis.
+
+---
+
+## Rewrote the critical-analysis report in plain language with real-world examples — 2026-07-03
+
+The report `research-analysis/conxa-critical-analysis.md` (added earlier today) was rewritten
+from dense analyst-speak into everyday language. Same conclusions, same structure — but now
+every major point is explained through a concrete story instead of jargon. For example: an
+imaginary CRM company ("AcmeCRM") choosing between using Conxa or just building its own
+connector; a skill recorded on an English admin demo account breaking on a German customer's
+Starter-plan account; and the "wrong Delete button" scenario showing why a confident wrong
+click is worse than a visible failure. Technical terms like MCP, selectors, and token costs
+are now explained in passing, so a non-engineer (or an investor) can read it start to finish.
+
+---
+
+## Added a brutally honest outside-in review of Conxa's strategy and architecture — 2026-07-03
+
+No code changed. We wrote a new report, `research-analysis/conxa-critical-analysis.md`,
+that deliberately plays devil's advocate: it assumes Conxa will fail and asks what the
+evidence says. It compares Conxa against the alternatives customers actually have (official
+APIs and native MCP connectors), and is written to be shown to founders or investors.
+
+The report's biggest conclusions, in plain terms:
+- Our main target customer today (SaaS vendors automating their own product) is the one
+  group that least needs us — they already own the code and can build a native connector
+  cheaply. The customer who genuinely needs Conxa is the enterprise stuck with software
+  it can't change and can't get an API for.
+- The riskiest untested assumption is that a workflow recorded on one account works on
+  every customer's account — different plans, languages, and permissions can make screens
+  genuinely different. The report recommends testing this with real design partners before
+  anything else.
+- Enterprises won't trust the current install experience yet (unsigned installer, shared
+  company token, no SSO or compliance certifications) — that's a fixable but year-long
+  program of work.
+- The market gap Conxa fills is shrinking from both sides: more vendors ship official
+  connectors, and AI models keep getting better at driving screens without pre-recorded
+  skills. The one lasting advantage we could build is the fleet-wide data about how real
+  websites drift and which selectors survive — which we currently collect but keep siloed.
+
+The report ends with six fundamental recommendations (reposition the target customer, run
+the cross-account test, build the drift-data asset, add extra safety around irreversible
+steps, support more than just Claude Desktop, and fund the enterprise-trust checklist).
+
+## Fixed Build Studio crashing on every fresh install, and a login check that trusted stale sessions forever — 2026-07-03
+
+Two issues found while testing a fresh install of Conxa Build Studio:
+
+**1. The app crashed immediately after installing, every time.** Right after downloading
+its setup files, Build Studio would show "The backend stopped unexpectedly and could not
+be restarted." This wasn't specific to one machine — it would happen on any fresh install.
+The cause: a safety check meant for the cloud service (which refuses to start in production
+without login security turned on) was accidentally also applying to Build Studio's own local
+backend, which doesn't use that same login system at all. So every packaged install failed
+this check it was never supposed to be subject to, and crashed before it could open.
+Fixed by exempting Build Studio's backend from that particular check, the same way another,
+similar exemption already worked for it.
+
+**2. The app could open without asking the user to sign in.** This turned out to be two
+separate things layered together:
+- On the machine we tested on, an old sign-in from previous testing was still saved in
+  Windows' credential store. That storage lives outside the app, so uninstalling and
+  reinstalling Build Studio doesn't clear it — the app was correctly finding a real saved
+  session, not skipping login. A real customer's first install won't have this.
+- Separately, we found the sign-in check itself was too trusting: once a session was saved,
+  the app never rechecked whether it had expired or been revoked — it just assumed anyone
+  with *something* saved was still validly signed in. Fixed so Build Studio now re-validates
+  (and refreshes if needed) the saved session every time it checks who's signed in, the same
+  way it already does before making other authenticated calls. An expired or revoked session
+  now correctly sends the user back to the login screen instead of letting them in.
+
+---
+
 ## Fixed a production outage caused by a missing deploy setting — 2026-07-02
 
 The live cloud service (`conxa-api` on Render) crashed on startup right after the last

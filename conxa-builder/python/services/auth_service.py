@@ -453,10 +453,21 @@ class AuthService:
         }
 
     def current_identity(self) -> dict[str, Any] | None:
-        tokens = self._load()
-        if not tokens:
+        """Return the signed-in identity, or None if there's no live session.
+
+        Validates the cached token the same way ``get_token`` does (refreshing
+        it if near expiry) rather than trusting whatever's in the keyring —
+        an expired access token with a dead/revoked refresh token must not
+        read as "signed in".
+        """
+        if not self._load():
             return None
-        identity = self._claims(tokens)
+        try:
+            self.get_token()
+        except Exception:
+            return None
+        tokens = self._load()
+        identity = self._claims(tokens) if tokens else None
         if not identity or not identity.get("user_id"):
             return None
         return identity
