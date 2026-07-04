@@ -40,6 +40,29 @@ def env_files() -> tuple[str, ...]:
     return (".env", f".env.{active_environment()}")
 
 
+def _load_env_files_into_process() -> None:
+    """Populate ``os.environ`` from ``env_files()``, not just this Settings instance.
+
+    ``Settings.model_config``'s ``env_file`` only feeds pydantic-settings' own
+    field resolution — it never touches the real process environment. Plenty of
+    code (``updates_routes.py``'s ``CONXA_HOST_VERSION``/``CONXA_APP_VERSION``,
+    Build Studio's ``backend.py``) reads non-``SKILL_``-prefixed vars straight off
+    ``os.environ``, so a value that only exists in ``.env.dev``/``.env.prod`` was
+    silently invisible to them. ``override=False`` so a real shell/launcher-set
+    env var always wins over the file, matching every other explicit-override rule
+    in this codebase.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    for _f in env_files():
+        load_dotenv(_f, override=False)
+
+
+_load_env_files_into_process()
+
+
 def state_base_dir() -> Path:
     """Writable base directory for generated runtime state (``data/``, ``output/``).
 

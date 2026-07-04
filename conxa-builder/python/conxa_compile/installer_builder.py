@@ -21,6 +21,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from conxa_core.config import settings
 from conxa_compile.conxa_runtime import _bootstrap_app_dir, stage_runtime_payload
@@ -46,21 +47,20 @@ def _find_makensis() -> str | None:
       4. Well-known Windows install locations (last resort)
     """
     # 1. Explicit env var — bootstrap.ensure_nsis sets this to the managed copy.
-    # Validate that makensisw.exe is beside it; the top-level copy may be a stub without it.
     env_val = os.getenv("MAKENSIS_PATH", "")
     if env_val and os.path.isfile(env_val):
-        if (Path(env_val).parent / "makensisw.exe").is_file():
-            return env_val
+        return env_val
 
     # 2. Bootstrap cache location (in case env var was not propagated).
-    # makensis.exe on Windows is a stub that needs makensisw.exe in the same dir,
-    # so search for a copy that has its companion rather than using the top-level stub.
-    base = os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio")
-    nsis_dir = Path(base) / "deps" / "nsis"
+    base = (
+        os.environ.get("CONXA_STUDIO_HOME")
+        or os.environ.get("SKILL_DATA_DIR")
+        or "~/.conxa-build-studio"
+    )
+    nsis_dir = Path(os.path.expanduser(base)) / "deps" / "nsis"
     if nsis_dir.is_dir():
         for p in nsis_dir.rglob("makensis.exe"):
-            if (p.parent / "makensisw.exe").is_file():
-                return str(p)
+            return str(p)
 
     # 3. System PATH (e.g. CI where choco installs NSIS globally).
     on_path = shutil.which("makensis")
@@ -168,7 +168,15 @@ def build_installer(
     # The installer must carry a sync_token so the runtime can pull updates without
     # any user-facing Conxa login. publish_skill_pack() writes this token after a
     # successful publish. If it is absent the installer would silently fail to sync.
-    if not pack.get("sync_token"):
+    #
+    # A pack built against a local dev cloud (sync_endpoint host 127.0.0.1/localhost)
+    # never goes through publish at all — backend.py's _auto_publish_enabled() skips
+    # cloud publish entirely for a local API base — so it can never carry a token. Such
+    # a pack is only ever useful for the developer's own local install anyway (its
+    # sync_endpoint can't be reached from any other machine), so only enforce the
+    # guard once the pack is actually bound to a real, non-local cloud.
+    sync_host = urlparse(str(pack.get("sync_endpoint") or "")).hostname
+    if sync_host not in (None, "", "127.0.0.1", "localhost") and not pack.get("sync_token"):
         raise RuntimeError(
             "pack.json is missing sync_token. "
             "Publish the skill pack to Conxa Cloud before building the installer — "
@@ -261,6 +269,7 @@ def build_installer(
             check=False,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
         if result.stdout.strip():
             for line in result.stdout.strip().splitlines():
@@ -280,7 +289,7 @@ def build_installer(
                 "/tr",   "http://timestamp.digicert.com",
                 "/td",   "SHA256",
                 str(installer_path),
-            ], check=False, capture_output=True, text=True)
+            ], check=False, capture_output=True, text=True, stdin=subprocess.DEVNULL)
             if sign_result.returncode != 0:
                 _log(f"Code signing failed (non-fatal): {sign_result.stderr[-500:]}", warning=True)
             else:
@@ -328,7 +337,12 @@ _STUDIO_RUNTIME_MISSING = (
 
 
 def _studio_runtime_root() -> Path:
-    return Path.home() / ".conxa-build-studio" / "deps" / "conxa-runtime"
+    base = (
+        os.environ.get("CONXA_STUDIO_HOME")
+        or os.environ.get("SKILL_DATA_DIR")
+        or "~/.conxa-build-studio"
+    )
+    return Path(os.path.expanduser(base)) / "deps" / "conxa-runtime"
 
 
 def _runtime_version_sort_key(path: Path) -> tuple[int, tuple[int, ...], str]:

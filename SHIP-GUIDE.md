@@ -309,6 +309,47 @@ can actually ship a change in.
    verified against the baked-in public key, SHA-256 verified, then `bootstrap.js` does the
    atomic swap with `.bak` rollback if anything goes wrong.
 
+### conxa-runtime (the host exe) — when and how to ship it
+
+The "host" is the small `conxa-runtime.exe` that Claude Desktop actually spawns. It only
+contains `bootstrap.js` + `_pkg_stubs.js`, built with `@yao-pkg/pkg` using `--no-bytecode`
+(never turn bytecode back on — V8 `.jsc` masks the Node version and segfaults the Playwright
+selector engine inside a pkg-bundled binary). Its only job is to read `version.json`, check
+`min_host` compatibility, and load the real logic from the disk-resident app layer
+(`conxa-app/`, shipped separately — see the section above). Everything that actually changes
+week to week (recorder, resolver, recovery, MCP tools) lives in `conxa-app`, not here.
+
+**You only need to touch the host when `bootstrap.js`, `_pkg_stubs.js`, or the pkg bundling
+config itself changes** — new stubbed dependency, a `min_host` semver bump, a change to how
+the host locates/loads the app layer, etc. Ordinary feature work never requires a host release.
+
+1. Commit your change, merge to main.
+2. Cut a dev prerelease tag the same way as conxa-app, just with the `host-` prefix:
+   ```bash
+   git tag host-v1.1.0-dev.1
+   git push origin host-v1.1.0-dev.1
+   ```
+   This triggers `build-runtime-host.yml`, which builds the exe with `--no-bytecode`,
+   publishes a `prerelease` GitHub Release, and posts the manifest to the **dev cloud**.
+3. **Test it on dev.** Install a Dev runtime, let it self-update: on startup the app layer
+   checks the manifest, and if `conxa_runtime` is newer it downloads the new host files,
+   runs `--selfcheck` against the new exe, then `activate()`s it — this never touches the
+   *running* process's own file, so the swap takes effect on the next launch. Confirm Claude
+   Desktop can still spawn it and the MCP handshake still works.
+4. **Promote to stable** via the same `promote-release.yml` workflow used for conxa-app, with
+   `component: conxa_runtime`, `source_version: host-v1.1.0-dev.1`, `target_version: host-v1.1.0`.
+   Same guarantee: no rebuild, exact tested bytes, checksum re-verified, re-signed onto the
+   stable manifest.
+5. Production runtimes pick it up on their next update poll, same as app-layer updates.
+
+**Two things that make the host different from conxa-app in practice:**
+- New customer installers embed the host exe directly, so a customer who installs fresh
+  always gets whatever host version is live on `stable` at build time — you don't need a host
+  release just to get a fix to new installs, only to update machines that installed earlier.
+- Because host releases are rare and load-bearing (everything else depends on it booting
+  correctly), always confirm the built exe still launches with `--no-bytecode` intact before
+  tagging a promotion — check the CI build log for the pkg command, don't just trust the tag.
+
 ### Build Studio — no promotion step, this one is manual
 
 There is no dev/stable manifest system for Build Studio. It ships differently:
