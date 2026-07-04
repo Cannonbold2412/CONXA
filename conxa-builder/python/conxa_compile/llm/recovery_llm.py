@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
-from conxa_core.llm.client import call_llm
+from conxa_compile.llm.client import call_llm
 
 
 class RecoveryCandidate(BaseModel):

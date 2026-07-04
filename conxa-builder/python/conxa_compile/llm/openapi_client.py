@@ -1,6 +1,6 @@
 """High-level LLM abstraction for selector generation + runtime recovery.
 
-Wraps conxa_core.llm.client.call_llm with task-specific helpers.
+Wraps conxa_compile.llm.client.call_llm with task-specific helpers.
 call_llm internally uses the multi-provider router (if available) or falls back to single-endpoint config.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from conxa_core.config import settings
-from conxa_core.llm.client import call_llm
+from conxa_compile.llm.client import call_llm
 
 
 class SelectorCandidate:

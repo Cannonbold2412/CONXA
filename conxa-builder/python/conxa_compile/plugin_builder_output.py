@@ -46,7 +46,8 @@ def _write_skill_packs_format(
     This format is consumed by conxa-runtime.exe (the installer-distributed MCP server).
     The legacy skills/ layout is kept untouched for backward compatibility.
     """
-    from conxa_core.config import settings, active_environment
+    from conxa_core.config import active_environment
+    from conxa_core.config import settings
 
     company      = bundle_slug
     # Resolve the public base that gets FROZEN into pack.json (sync + tracking) from
@@ -212,7 +213,8 @@ def _plugin_bundle_slug(plugin_id: str, plugin_name: str) -> str:
 
 
 def _bundle_root(bundle_slug: str) -> Path:
-    from conxa_core.storage.skill_packages import bundle_root_dir, ensure_bundle_scaffold
+    from conxa_core.storage.skill_packages import bundle_root_dir
+    from conxa_compile.storage.skill_packages_build import ensure_bundle_scaffold
     root = bundle_root_dir(bundle_slug)
     if root is None:
         root = ensure_bundle_scaffold(bundle_slug)
@@ -224,11 +226,10 @@ def _bundle_root(bundle_slug: str) -> Path:
 # ─────────────────────────────────────────────────
 
 def _templates_dir() -> Path:
-    # Templates ship with the shared conxa_core.storage package (and are bundled
-    # by PyInstaller via collect_data_files('conxa_core', includes=['storage/**'])).
-    import conxa_core.storage as _storage
-
-    return Path(_storage.__file__).parent / "plugin_templates"
+    # Templates ship alongside this module in conxa_compile (bundled by PyInstaller
+    # via the source-glob collector in pyinstaller.spec, which walks conxa_compile
+    # for *.tmpl/*.gitignore files).
+    return Path(__file__).parent / "plugin_templates"
 
 
 def _render_plugin_template(name: str, **subs: str) -> str:

@@ -266,7 +266,7 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 **Result:** Code-only release download: 89 MB → ~60 KB. Update time: ~70s → <1s on any connection.
 
-**Files:** `runtime/bootstrap.js` (new), `runtime/server.js`, `runtime/sync.js`, `runtime/browser.js`, `runtime/package.json`, `conxa-cloud/backend/app/api/updates_routes.py`, `conxa-builder/python/conxa_compile/installer_builder.py`, `conxa-builder/python/services/bootstrap.py`, `packages/conxa-core/conxa_core/storage/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-app.yml` (new), `.github/workflows/build-runtime-host.yml` (new), `.env.example`
+**Files:** `runtime/bootstrap.js` (new), `runtime/server.js`, `runtime/sync.js`, `runtime/browser.js`, `runtime/package.json`, `conxa-cloud/backend/app/api/updates_routes.py`, `conxa-builder/python/conxa_compile/installer_builder.py`, `conxa-builder/python/services/bootstrap.py`, `conxa-builder/python/conxa_compile/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-app.yml` (new), `.github/workflows/build-runtime-host.yml` (new), `.env.example`
 
 ---
 
@@ -285,7 +285,7 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 **Result:** Instant no-network rollback (vs. one-step-only before); tamper-proof update manifest (vs. unsigned); staged rollout capability (vs. all-or-nothing); per-skill update granularity (vs. whole-company re-sync).
 
-**Files:** `runtime/version_manager.js` (new), `runtime/manifest_manager.js` (new), `runtime/bootstrap.js`, `runtime/server.js`, `runtime/sync.js`, `runtime/skill_loader.js`, `runtime/test/test_version_manager.js` (new), `runtime/test/test_manifest_manager.js` (new), `runtime/test/gate_replay.js`, `packages/conxa-core/conxa_core/models/manifest.py` (new), `conxa-cloud/backend/app/api/manifest_signer.py` (new), `conxa-cloud/backend/app/api/updates_routes.py`, `skillpack_update_routes.py`, `publish_routes.py`, `conxa-cloud/tests/test_manifest_signing.py` (new), `conxa-builder/python/conxa_compile/installer_builder.py`, `packages/conxa-core/conxa_core/storage/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-host.yml`, `build-runtime-app.yml`
+**Files:** `runtime/version_manager.js` (new), `runtime/manifest_manager.js` (new), `runtime/bootstrap.js`, `runtime/server.js`, `runtime/sync.js`, `runtime/skill_loader.js`, `runtime/test/test_version_manager.js` (new), `runtime/test/test_manifest_manager.js` (new), `runtime/test/gate_replay.js`, `packages/conxa-core/conxa_core/models/manifest.py` (new), `conxa-cloud/backend/app/api/manifest_signer.py` (new), `conxa-cloud/backend/app/api/updates_routes.py`, `skillpack_update_routes.py`, `publish_routes.py`, `conxa-cloud/tests/test_manifest_signing.py` (new), `conxa-builder/python/conxa_compile/installer_builder.py`, `conxa-builder/python/conxa_compile/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-host.yml`, `build-runtime-app.yml`
 
 ---
 

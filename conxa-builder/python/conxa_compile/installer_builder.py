@@ -396,9 +396,7 @@ def _render_nsis_script(
     skill_version_dir_name: str | None = None,
     icon_path: Path | None = None,
 ) -> Path:
-    import conxa_core.storage as _storage
-
-    template_path = Path(_storage.__file__).parent / "installer_templates" / "setup.nsi.tmpl"
+    template_path = Path(__file__).parent / "installer_templates" / "setup.nsi.tmpl"
     if not template_path.is_file():
         raise FileNotFoundError(f"NSIS template not found: {template_path}")
     template = template_path.read_text(encoding="utf-8")

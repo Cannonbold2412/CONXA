@@ -21,7 +21,5 @@ include = ["conxa_core*"]
 
 [tool.setuptools.package-data]
 conxa_core = [
-    "storage/plugin_templates/**/*",
-    "storage/installer_templates/**/*",
     "**/*.json",
 ]
