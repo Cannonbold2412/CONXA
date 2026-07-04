@@ -2,6 +2,48 @@
 
 ---
 
+## Created the local dev config file (.env.dev) — 2026-07-04
+
+To run the Conxa Cloud locally in "dev" mode, the app needs a settings file called `.env.dev`.
+I built it by starting from the dev template (`.env.dev.example`) and filling in the AI provider
+keys pulled from a separate API keys file you had in Downloads.
+
+The important bit: that Downloads file was actually the *production* settings — it pointed at the
+live website, the live payment system, and the real database. Copying all of that into dev would
+be dangerous (dev work could accidentally touch real customer data or take real payments). So I
+only carried over the pieces that are safe to share: the AI provider keys (Groq, Google, NVIDIA,
+plus four extra providers). Everything else was kept in safe "local only" mode — talking to your
+own machine, no login required, and payments left in test mode. None of the live/production
+secrets were copied in.
+
+---
+
+## Cleaned up the shared code library that both apps depend on — 2026-07-03
+
+Both the Build Studio (the Windows desktop app where companies record and package their
+automations) and the Cloud dashboard share one common code library behind the scenes. Over time
+that shared library had accumulated things that really only belonged to one side or the other —
+Windows installer templates that only the Build Studio uses, AI-prompt text that's really used
+by the cloud, and a big file-management module that mixed "read an existing package" (used by
+both) with "create/edit a package" (only used by the Build Studio).
+
+What changed: moved the Build-Studio-only pieces (installer templates, plugin templates, the
+package-building code, a build-progress logger) out of the shared library and into the Build
+Studio's own code, where they belong. Also split a large file-storage module so the "just look
+up an existing package" part stays shared (both the dashboard and the Build Studio need it) while
+the "build/edit a package" part now lives only in the Build Studio.
+
+One additional idea — splitting the shared settings/configuration file into a cloud-specific
+piece and a Build-Studio-specific piece — was tried and then undone. It broke test isolation in a
+way that risked masking real bugs (some tests quietly stopped checking what they were supposed to
+check), so that particular file was left as-is rather than shipping something risky. Everything
+else works exactly as before; no user-facing behavior changed anywhere.
+
+See `PHASE_4_REFACTOR_REPORT.md` at the repo root for the full technical write-up, including what
+was investigated and left alone on purpose.
+
+---
+
 ## Fixed Record Login hanging forever after closing the browser — 2026-07-04
 
 This one was caused by an earlier fix in this log (the flicker fix, below). Here's the chain:

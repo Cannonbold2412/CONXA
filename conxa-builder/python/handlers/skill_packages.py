@@ -136,7 +136,7 @@ class SkillPackagesMixin:
         return {"package_name": package_name, "files": files}
 
     def cmd_delete_skill_package(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        from conxa_core.storage.skill_packages import delete_skill_package_bundle
+        from conxa_compile.storage.skill_packages_build import delete_skill_package_bundle
 
         package_name = str(payload.get("package_name") or "").strip()
         if not package_name:
@@ -146,7 +146,7 @@ class SkillPackagesMixin:
         return {"package_name": package_name, "deleted": True}
 
     def cmd_rename_skill_package(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        from conxa_core.storage.skill_packages import rename_skill_package_bundle
+        from conxa_compile.storage.skill_packages_build import rename_skill_package_bundle
 
         package_name = str(payload.get("package_name") or "").strip()
         new_name = str(payload.get("new_name") or "").strip()

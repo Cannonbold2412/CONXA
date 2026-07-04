@@ -58,10 +58,13 @@ packages/conxa-core/        Shared Python foundation — pip package `conxa_core
     config.py               Pydantic settings (env_prefix=SKILL_)
     db.py                   Dual store: Postgres (cloud) / filesystem (Studio) + healthcheck()
     models/                 Pydantic schemas: SkillPackage, RecordedEvent, Plugin
-    storage/                JSON/SQLite stores, snapshots, plugin/installer templates
-    llm/                    Router protocol + get/set_router singleton + HTTP client (call_llm)
-    metrics/, progress.py, workspace.py, skill_pack_build_log.py
-  pyproject.toml            Package-data: templates/bridge.js ships with pip install
+    storage/                JSON/SQLite stores, snapshots, plugin_store, skill_packages.py
+                            (read/list side only — generation lives in conxa_compile, see below)
+    llm/                    Router protocol + get/set_router singleton + shared OpenAI-compatible
+                            HTTP/prompt-building engine (client.py) — the cloud's own provider
+                            router imports this; the pipeline's call_llm() lives in conxa_compile
+    metrics/, progress.py, workspace.py
+  pyproject.toml            No bundled templates — those ship with conxa_compile now
 
 conxa-builder/              Electron desktop studio — records + compiles + builds LOCALLY (Windows)
   electron/                 Electron main + React renderer (Vite + TypeScript)
@@ -82,8 +85,15 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
         selector_score.py   Confidence scoring from IdentityBundle signal quality
         build.py            _build_intent_graph (was _llm_compile_selectors); IdentityBundle runs before _build_target
       editor/               Workflow editor service + DTOs + patch gate
-      llm/                  Task clients (intent, relational vision anchor, recovery, workflow intent graph,
-                            selector_regeneration.py — user-edit re-compile only, see Key Invariants)
+      llm/                  client.py — call_llm() dispatcher (routes through conxa_core.llm's
+                            installed router); task clients (intent, relational vision anchor,
+                            recovery, workflow intent graph, selector_regeneration.py — user-edit
+                            re-compile only, see Key Invariants)
+      storage/              skill_packages_build.py — bundle generation/write/delete/rename
+                            (read/list side is conxa_core.storage.skill_packages); formatters,
+                            templates
+      plugin_templates/, installer_templates/   Templates copied into generated bundles/installers
+      skill_pack_build_log.py  Request-scoped build log for skill-pack writes
       anchors/, confidence/, policy/
       plugin_builder.py, installer_builder.py, conxa_runtime.py
   pyinstaller.spec          Bundles conxa_core + conxa_compile into dist/backend/
