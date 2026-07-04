@@ -181,6 +181,57 @@ class TestSyncSkillPack:
 
         assert (dest / "pack.json").read_text() == '{"v":2}'
 
+    def test_stages_skill_into_versioned_current_layout(self, tmp_path: Path) -> None:
+        """Regression test: runtime/skill_loader.js only reads <slug>/current/manifest.json.
+
+        A locally built, unpublished skill pack has no sync_token, so runtime/sync.js's
+        cloud-driven activation (which normally creates `current`) always no-ops — sync_skill_pack
+        must produce that same versioned+current layout itself, offline.
+        """
+        source = tmp_path / "src" / "acme"
+        skill_src = source / "make-widget"
+        skill_src.mkdir(parents=True)
+        (source / "pack.json").write_text(
+            '{"skills":["make-widget"]}', encoding="utf-8"
+        )
+        (skill_src / "manifest.json").write_text('{"version":"0.2.0"}', encoding="utf-8")
+        (skill_src / "execution.json").write_text('{}', encoding="utf-8")
+
+        runtime_dir = tmp_path / "rt"
+        runtime_dir.mkdir()
+
+        from conxa_compile.conxa_runtime import sync_skill_pack
+        with patch("conxa_compile.conxa_runtime.resolve_conxa_data_dir", return_value=tmp_path / "data"):
+            sync_skill_pack(company="acme", source_dir=source, runtime_dir=runtime_dir)
+
+        slug_dir = runtime_dir / "skill-packs" / "acme" / "make-widget"
+        current = slug_dir / "current"
+        assert current.is_dir()
+        assert (current / "manifest.json").is_file()
+        assert (current / "execution.json").is_file()
+        assert current.resolve() == (slug_dir / "v0.2.0").resolve()
+
+    def test_re_sync_replaces_stale_version(self, tmp_path: Path) -> None:
+        """Re-syncing after a version bump should drop the old version dir, not accumulate."""
+        source = tmp_path / "src" / "acme"
+        skill_src = source / "make-widget"
+        skill_src.mkdir(parents=True)
+        (source / "pack.json").write_text('{"skills":["make-widget"]}', encoding="utf-8")
+        (skill_src / "manifest.json").write_text('{"version":"0.1.0"}', encoding="utf-8")
+
+        runtime_dir = tmp_path / "rt"
+        runtime_dir.mkdir()
+
+        from conxa_compile.conxa_runtime import sync_skill_pack
+        with patch("conxa_compile.conxa_runtime.resolve_conxa_data_dir", return_value=tmp_path / "data"):
+            sync_skill_pack(company="acme", source_dir=source, runtime_dir=runtime_dir)
+            (skill_src / "manifest.json").write_text('{"version":"0.2.0"}', encoding="utf-8")
+            sync_skill_pack(company="acme", source_dir=source, runtime_dir=runtime_dir)
+
+        slug_dir = runtime_dir / "skill-packs" / "acme" / "make-widget"
+        assert not (slug_dir / "v0.1.0").exists()
+        assert (slug_dir / "current").resolve() == (slug_dir / "v0.2.0").resolve()
+
 
 # ─── stage_runtime_payload ────────────────────────────────────────────────────
 
@@ -290,7 +341,7 @@ class TestEnsureTestSandbox:
         from conxa_compile.conxa_runtime import ensure_test_sandbox
         with patch.object(_sys, "frozen", True, create=True):
             # Patch out junction creation (not relevant to this assertion)
-            with patch("conxa_compile.conxa_runtime._ensure_chromium_link", return_value=True):
+            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
                 conxa_dir, _ = ensure_test_sandbox(runtime_dir, app_dir)
 
         assert (conxa_dir / "conxa-runtime.exe").is_file()
@@ -315,7 +366,7 @@ class TestEnsureTestSandbox:
         import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
         with patch.object(_sys, "frozen", True, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_chromium_link", return_value=True):
+            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
                 ensure_test_sandbox(runtime_dir, app_dir)
 
         # Original bytes preserved — no re-copy happened
@@ -339,7 +390,7 @@ class TestEnsureTestSandbox:
         import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
         with patch.object(_sys, "frozen", True, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_chromium_link", return_value=True):
+            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
                 ensure_test_sandbox(runtime_dir, app_dir)
 
         # Exe should have been replaced with the new v2 content
@@ -362,7 +413,7 @@ class TestEnsureTestSandbox:
         import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
         with patch.object(_sys, "frozen", True, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_chromium_link", return_value=True):
+            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
                 ensure_test_sandbox(runtime_dir, app_dir)
 
         # Re-staged due to app version change
@@ -377,7 +428,7 @@ class TestEnsureTestSandbox:
         import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
         with patch.object(_sys, "frozen", False, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_chromium_link", return_value=True):
+            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
                 conxa_dir, _ = ensure_test_sandbox(runtime_dir, app_dir)
 
         assert not (conxa_dir / "conxa-runtime.exe").exists()

@@ -23,7 +23,17 @@ def build_installer(
 ) -> dict[str, Any]:
     # Ensure all deps (NSIS, runtime) are at the latest cloud version before packaging.
     # This is a safety net for sessions started before a dep release was available.
-    cloud_api = os.environ.get("CONXA_CLOUD_API", "https://apis.conxa.in")
+    #
+    # Must resolve the same way backend.py resolves self._cloud_api (env-aware, dev
+    # defaults to the local dev cloud) — defaulting straight to prod here would make a
+    # Dev build silently fetch deps from apis.conxa.in even though everything else
+    # (publish, sync_endpoint, tracking_url) was resolved against the local dev cloud.
+    from conxa_core.config import active_environment, settings as _core_settings
+
+    _env_default_cloud_api = (
+        f"http://127.0.0.1:{_core_settings.port}" if active_environment() == "dev" else "https://apis.conxa.in"
+    )
+    cloud_api = os.environ.get("CONXA_CLOUD_API", _env_default_cloud_api)
     from services import bootstrap as _bs
 
     def _fwd(evt: dict) -> None:
@@ -39,15 +49,17 @@ def build_installer(
         )
 
     # Point the shared builder at the bootstrapped NSIS if not already set.
-    # Verify makensisw.exe is beside any candidate — the top-level copy is a stub without it.
     if not os.environ.get("MAKENSIS_PATH"):
-        base = os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio")
-        nsis_dir = Path(base) / "deps" / "nsis"
+        base = (
+            os.environ.get("CONXA_STUDIO_HOME")
+            or os.environ.get("SKILL_DATA_DIR")
+            or "~/.conxa-build-studio"
+        )
+        nsis_dir = Path(os.path.expanduser(base)) / "deps" / "nsis"
         if nsis_dir.is_dir():
             for p in nsis_dir.rglob("makensis.exe"):
-                if (p.parent / "makensisw.exe").is_file():
-                    os.environ["MAKENSIS_PATH"] = str(p)
-                    break
+                os.environ["MAKENSIS_PATH"] = str(p)
+                break
 
     from conxa_compile.installer_builder import build_installer as _build
 

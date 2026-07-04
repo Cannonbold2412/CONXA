@@ -41,8 +41,7 @@ def _bootstrap_runtime_dir() -> Path | None:
     Mirrors services.bootstrap._deps_dir(); kept inline so this module stays
     dependency-free. Returns the highest-versioned dir that holds a packed exe.
     """
-    base = os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio")
-    runtime_root = Path(base) / "deps" / "conxa-runtime"
+    runtime_root = _studio_base() / "deps" / "conxa-runtime"
     if not runtime_root.is_dir():
         return None
     candidates = [d for d in runtime_root.iterdir() if d.is_dir() and _runtime_exe(d) is not None]
@@ -65,8 +64,7 @@ def _bootstrap_app_dir() -> Path | None:
         if p.is_dir():
             return p
 
-    base = os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio")
-    app_root = Path(base) / "deps" / "conxa-app"
+    app_root = _studio_base() / "deps" / "conxa-app"
     if not app_root.is_dir():
         return None
     candidates = [d for d in app_root.iterdir() if d.is_dir() and not d.name.startswith(".")]
@@ -77,8 +75,19 @@ def _bootstrap_app_dir() -> Path | None:
 
 
 def _studio_base() -> Path:
-    """Root of all Build Studio user state (~/.conxa-build-studio by default)."""
-    return Path(os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio"))
+    """Root of all Build Studio user state (~/.conxa-build-studio by default).
+
+    ``CONXA_STUDIO_HOME`` takes priority — the dev/prod launcher sets it so the
+    two lanes (``~/.conxa-build-studio-dev`` vs ``~/.conxa-build-studio``) keep
+    fully separate deps caches, sandboxes, and generated bundles on one machine.
+    Mirrors conxa_core.config.state_base_dir()'s precedence.
+    """
+    base = (
+        os.environ.get("CONXA_STUDIO_HOME")
+        or os.environ.get("SKILL_DATA_DIR")
+        or "~/.conxa-build-studio"
+    )
+    return Path(os.path.expanduser(base))
 
 
 def _deps_chromium_dir() -> Path:
@@ -86,16 +95,26 @@ def _deps_chromium_dir() -> Path:
     return _studio_base() / "deps" / "chromium"
 
 
-def _ensure_chromium_link(link_path: Path, chromium_source: Path) -> bool:
-    """Ensure link_path is a junction (Windows) or symlink (other) pointing to chromium_source.
+def _is_link(path: Path) -> bool:
+    """True for a symlink (all platforms) or a Windows directory junction.
 
-    Returns True when the link exists and is correct or could be created, False on failure
-    (caller falls back to PLAYWRIGHT_BROWSERS_PATH).  Does NOT remove a real directory
-    in case it already contains a valid Chromium install.
+    Path.is_symlink() alone misses junctions: mklink /J creates an NTFS reparse point
+    that Windows reports as a plain directory, not a symlink, to os.path.islink().
     """
-    if link_path.is_symlink():
+    if path.is_symlink():
+        return True
+    return sys.platform == "win32" and hasattr(os.path, "isjunction") and os.path.isjunction(str(path))
+
+
+def _ensure_junction(link_path: Path, target: Path) -> bool:
+    """Ensure link_path is a junction (Windows) or symlink (other) pointing to target.
+
+    Returns True when the link exists and is correct or could be created, False on failure.
+    Does NOT remove a real directory in case it already contains valid staged content.
+    """
+    if _is_link(link_path):
         try:
-            if Path(os.readlink(str(link_path))).resolve() == chromium_source.resolve():
+            if Path(os.readlink(str(link_path))).resolve() == target.resolve():
                 return True
         except (OSError, ValueError):
             pass
@@ -110,8 +129,7 @@ def _ensure_chromium_link(link_path: Path, chromium_source: Path) -> bool:
                 link_path.unlink()
         except OSError:
             return False
-
-    if link_path.exists():
+    elif link_path.exists():
         # Real directory already present (older install or manual copy) — leave it.
         return True
 
@@ -119,12 +137,12 @@ def _ensure_chromium_link(link_path: Path, chromium_source: Path) -> bool:
     try:
         if sys.platform == "win32":
             result = subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(link_path), str(chromium_source)],
+                ["cmd", "/c", "mklink", "/J", str(link_path), str(target)],
                 check=False, capture_output=True, text=True,
             )
             return result.returncode == 0
         else:
-            os.symlink(str(chromium_source), str(link_path), target_is_directory=True)
+            os.symlink(str(target), str(link_path), target_is_directory=True)
             return True
     except Exception:
         return False
@@ -236,7 +254,7 @@ def ensure_test_sandbox(
 
     # ── chromium: junction/symlink → deps/chromium (no per-test copy) ────────
     chromium_source = _deps_chromium_dir()
-    _ensure_chromium_link(conxa_dir / "chromium", chromium_source)
+    _ensure_junction(conxa_dir / "chromium", chromium_source)
 
     return conxa_dir, data_dir
 
@@ -287,6 +305,14 @@ def sync_skill_pack(
 ) -> None:
     """Copy source_dir → <runtime_dir>/skill-packs/<company>/, then bust the manifest cache.
 
+    Each skill is written straight into a <slug>/v<version>/ directory with a `current`
+    junction pointing at it: runtime/skill_loader.js only ever reads
+    <slug>/current/manifest.json, and that junction is normally created by
+    runtime/sync.js after a real cloud delta sync. A locally built, unpublished (or
+    rebuilt-since-published) skill pack never carries a sync_token, so that sync always
+    no-ops (runtime/sync.js:77-81) — reproduce the same end state locally here, offline,
+    so a freshly built skill is immediately visible to the local test run.
+
     The runtime caches skill index in CONXA_DATA_DIR/cache/manifests.json for fast startup.
     Deleting that file forces a fresh filesystem scan so the newly synced skill is visible.
 
@@ -297,7 +323,40 @@ def sync_skill_pack(
 
     dest = runtime_dir / "skill-packs" / company
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(str(source_dir), str(dest), dirs_exist_ok=True)
+
+    pack_src = source_dir / "pack.json"
+    if not pack_src.is_file():
+        return
+    shutil.copy2(str(pack_src), str(dest / "pack.json"))
+    try:
+        pack = json.loads(pack_src.read_text(encoding="utf-8"))
+    except Exception:
+        pack = {}
+
+    for slug in pack.get("skills") or []:
+        src_slug_dir = source_dir / slug
+        manifest_src = src_slug_dir / "manifest.json"
+        if not manifest_src.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_src.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        version = str(manifest.get("version") or "0.0.0")
+        slug_dir = dest / slug
+        version_dir = slug_dir / f"v{version}"
+
+        # The local sandbox only ever needs one active version — drop any other.
+        if slug_dir.is_dir():
+            for entry in slug_dir.iterdir():
+                if entry.is_dir() and entry.name.startswith("v") and entry != version_dir:
+                    shutil.rmtree(str(entry), ignore_errors=True)
+
+        if version_dir.exists():
+            shutil.rmtree(str(version_dir))
+        shutil.copytree(str(src_slug_dir), str(version_dir))
+        _ensure_junction(slug_dir / "current", version_dir)
 
     # Bust the skill manifest cache so the spawned runtime rescans from disk
     cache_file = (data_dir or resolve_conxa_data_dir()) / "cache" / "manifests.json"

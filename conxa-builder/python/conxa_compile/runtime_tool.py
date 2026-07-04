@@ -90,6 +90,12 @@ def call_runtime_tool(
         "CONXA_MAX_RECOVERY_TIER": (env or {}).get("CONXA_MAX_RECOVERY_TIER")
             or os.environ.get("CONXA_MAX_RECOVERY_TIER", "2"),
     }
+    if runtime_is_source:
+        # `node server.js` run directly (no bootstrap.js, so no real baked-in version) reports
+        # package.json's placeholder "0.0.0-dev", which fails every skill's required_runtime
+        # floor. Only server.js's dev-source fallback reads this — a real packed install always
+        # has global.__runtimeVersion set first, so this can never affect a customer runtime.
+        proc_env.setdefault("CONXA_DEV_RUNTIME_VERSION", "999.999.999")
     # CONXA_APP_DIR is NOT set: the sandbox/customer install provides conxa-app/ under
     # CONXA_DIR so the runtime resolves it via its own default logic (bootstrap.js:9).
 

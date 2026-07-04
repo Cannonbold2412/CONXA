@@ -36,8 +36,12 @@ EventSink = Callable[[dict[str, Any]], None]
 
 
 def _deps_dir() -> Path:
-    base = os.environ.get("SKILL_DATA_DIR") or os.path.expanduser("~/.conxa-build-studio")
-    d = Path(base) / "deps"
+    base = (
+        os.environ.get("CONXA_STUDIO_HOME")
+        or os.environ.get("SKILL_DATA_DIR")
+        or "~/.conxa-build-studio"
+    )
+    d = Path(os.path.expanduser(base)) / "deps"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -321,15 +325,13 @@ def _download(url: str, dest: Path, on_event: EventSink | None, label: str, file
 
 
 def _find_nsis_in_dir(nsis_dir: Path) -> Path | None:
-    """Return a makensis.exe that has makensisw.exe alongside it, or None.
+    """Return a makensis.exe under nsis_dir, or None.
 
-    On Windows, makensis.exe (2 KB stub) delegates to makensisw.exe in the same
-    directory. A standalone makensis.exe without its companion fails with
-    'Unable to start child process, error 0x2'.
+    Modern NSIS (3.x) ships a fully standalone command-line makensis.exe — verified
+    by direct compile, no makensisw.exe companion required.
     """
     for p in nsis_dir.rglob("makensis.exe"):
-        if (p.parent / "makensisw.exe").is_file():
-            return p
+        return p
     return None
 
 
@@ -376,6 +378,7 @@ def _run_playwright_install(cmd: list[str], on_event: EventSink | None) -> None:
     _emit(on_event, dep="chromium", status="installing", file_name="Chromium")
     proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

@@ -221,6 +221,53 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
     assert any("workspace wrk_123" in entry["message"] for entry in logs)
 
 
+def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend, monkeypatch, tmp_path):
+    """A local dev cloud that isn't running should degrade to a skip, not a crash —
+    but the same failure against a real, non-local cloud must still be fatal."""
+    import urllib.request
+
+    b, _out = backend
+    from conxa_core.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    b._auth = SimpleNamespace(get_token=lambda: "studio-token")
+
+    packs_dir = tmp_path / "skill-packs" / "render"
+    packs_dir.mkdir(parents=True)
+    (packs_dir / "pack.json").write_text(
+        json.dumps({"company": "render", "skills": []}), encoding="utf-8"
+    )
+
+    def fake_urlopen_refused(req, timeout):
+        raise ConnectionRefusedError("Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen_refused)
+
+    # Local API base: skip gracefully.
+    b._cloud_api = "http://127.0.0.1:8000"
+    logs: list[dict] = []
+    result = b._publish_skill_pack_for_installer(
+        company_slug="render",
+        plugin=SimpleNamespace(name="Render", target_url="", protected_url=""),
+        version="1.0.0",
+        release_notes="",
+        sink=logs.append,
+    )
+    assert result == {}
+    assert any("skipped" in entry["message"] for entry in logs)
+
+    # Real, non-local cloud: the same unreachability must still fail the build.
+    b._cloud_api = "https://apis.conxa.in"
+    with pytest.raises(Exception, match="Cloud publish failed"):
+        b._publish_skill_pack_for_installer(
+            company_slug="render",
+            plugin=SimpleNamespace(name="Render", target_url="", protected_url=""),
+            version="1.0.0",
+            release_notes="",
+            sink=lambda _e: None,
+        )
+
+
 def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp_path):
     b, _out = backend
 

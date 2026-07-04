@@ -266,10 +266,6 @@ class Backend(
         import base64
         import urllib.request
 
-        if not self._auto_publish_enabled():
-            sink({"kind": "installer_build", "message": "Cloud publish skipped for local API base"})
-            return {}
-
         data_dir = Path(_settings.data_dir)
         packs_dir = data_dir / "skill-packs" / company_slug
         pack_path = packs_dir / "pack.json"
@@ -304,20 +300,35 @@ class Backend(
                 "files": files,
             }
         ).encode("utf-8")
-        req = urllib.request.Request(f"{cloud_api}/api/v1/plugins/publish", data=body, method="POST")
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self._cloud_token()}")
         sink({"kind": "installer_build", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
         try:
+            req = urllib.request.Request(f"{cloud_api}/api/v1/plugins/publish", data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            # _cloud_token() also belongs inside this try: not being signed in is just as
+            # much a reason a local dev cloud attempt can't proceed as it being unreachable.
+            req.add_header("Authorization", f"Bearer {self._cloud_token()}")
             with urllib.request.urlopen(req, timeout=120) as resp:
                 published = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            # The cloud responded — it's reachable but rejected the request (bad auth,
+            # bad payload, etc). Always a real failure, local cloud or not.
             try:
                 body = exc.read().decode("utf-8", errors="replace")
             except Exception:
                 body = ""
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body}") from exc
         except Exception as exc:
+            # Nothing responded at all (connection refused, DNS failure, timeout, or not
+            # signed in). For a local API base this just means there's no usable dev cloud
+            # to publish to right now — skip publishing gracefully rather than blocking the
+            # build (installer_builder.py only requires a sync_token once the pack is bound
+            # to a real, non-local cloud). A real, non-local cloud failing is still fatal.
+            if not self._auto_publish_enabled():
+                sink({
+                    "kind": "installer_build",
+                    "message": f"Cloud publish skipped — {cloud_api} is not reachable ({exc})",
+                })
+                return {}
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc}") from exc
 
         tracking = dict(published.get("tracking") or {})
