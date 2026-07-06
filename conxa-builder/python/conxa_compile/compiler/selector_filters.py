@@ -176,53 +176,107 @@ _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 _METACHAR_RE = re.compile(r"[>+~|^$]")  # CSS combinators / unsanitisable metacharacters
 
 
-def _count_selector_matches_dom(selector: str, dom: dict[str, Any]) -> int:
-    """Minimal DOM counter for common selector patterns (data-testid, aria-label, text=)."""
+_TESTID_SEL_RE = re.compile(r'^internal:testid=\[([\w-]+)=["\']?([^"\']+)["\']?\]$')
+_TEXT_SEL_RE = re.compile(r'^internal:text="(.*)"$', re.DOTALL)
+_ROLE_SEL_RE = re.compile(r'^internal:role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?$')
+
+
+def _count_css(html: str, css_selector: str) -> int:
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+    except ImportError:
+        return 1  # can't verify without bs4 — allow through
+    try:
+        return len(BeautifulSoup(html, "lxml").select(css_selector))
+    except Exception:  # noqa: BLE001 — selector grammar bs4 can't parse
+        return 1
+
+
+def _count_text(html: str, text: str) -> int:
+    target = text.strip().lower()
+    if not target:
+        return 1
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+    except ImportError:
+        return 1
+    soup = BeautifulSoup(html, "lxml")
+    return sum(
+        1 for el in soup.find_all(True)
+        if not el.find(True) and el.get_text(strip=True).lower() == target
+    )
+
+
+def _count_role(a11y_tree: dict[str, Any], role: str, name: str | None) -> int:
+    """Count nodes in the Playwright accessibility snapshot matching role (+ name).
+
+    ARIA role isn't derivable from raw HTML alone, so this walks the recorded
+    a11y tree (the browser's own computed roles) rather than the HTML.
+    """
+    wanted_role = role.strip().lower()
+    wanted_name = (name or "").strip().lower()
+    count = 0
+
+    def walk(node: Any) -> None:
+        nonlocal count
+        if not isinstance(node, dict):
+            return
+        if str(node.get("role") or "").strip().lower() == wanted_role:
+            if not wanted_name or str(node.get("name") or "").strip().lower() == wanted_name:
+                count += 1
+        for child in node.get("children") or []:
+            walk(child)
+
+    walk(a11y_tree)
+    return count
+
+
+def _count_selector_matches(
+    selector: str, dom_html: str, a11y_tree: dict[str, Any] | None
+) -> int:
+    """Count matches for a compiled (internal: grammar or raw CSS) selector against the
+    recorded page. Relational (`>> right-of=...`) selectors are spatially disambiguated
+    by the runtime resolver, not by static counting here — treated as unique.
+    """
     selector = selector.strip()
     if not selector:
         return 0
-    m = re.match(r'\[data-testid=["\']?([^"\']+)["\']?\]', selector)
+
+    m = _TESTID_SEL_RE.match(selector)
     if m:
-        return _count_attr(dom, "data-testid", m.group(1))
-    m = re.match(r'\[aria-label=["\']?([^"\']+)["\']?\]', selector)
+        return _count_css(dom_html, f'[{m.group(1)}="{m.group(2)}"]')
+
+    m = _TEXT_SEL_RE.match(selector)
     if m:
-        return _count_attr(dom, "aria-label", m.group(1))
-    m = re.match(r'text=["\']?([^"\']+)["\']?', selector)
+        return _count_text(dom_html, m.group(1))
+
+    m = _ROLE_SEL_RE.match(selector)
     if m:
-        return _count_text(dom, m.group(1))
-    return 1  # complex selectors: assume unique
+        if a11y_tree is None:
+            return 1  # can't verify role without the a11y tree — allow through
+        return _count_role(a11y_tree, m.group(1), m.group(2))
+
+    if selector.startswith("internal:") or ">>" in selector:
+        return 1  # relational / composite — not counted here
+
+    return _count_css(dom_html, selector)  # raw css / css-id fallback
 
 
-def _count_attr(dom: dict[str, Any], attr: str, value: str) -> int:
-    count = 0
-    if isinstance(dom, dict):
-        attrs = dom.get("attributes") or {}
-        if isinstance(attrs, dict) and str(attrs.get(attr) or "") == value:
-            count = 1
-        for child in dom.get("children") or []:
-            count += _count_attr(child, attr, value)
-    return count
+def uniqueness_gate(
+    selector: str,
+    dom_html: str | None,
+    a11y_tree: dict[str, Any] | None = None,
+) -> bool:
+    """Return True if selector matches exactly 1 node in the recorded page.
 
-
-def _count_text(dom: dict[str, Any], text: str) -> int:
-    count = 0
-    if isinstance(dom, dict):
-        inner = str(dom.get("inner_text") or "").strip()
-        if inner.lower() == text.lower() or text.lower() in inner.lower():
-            count = 1
-        for child in dom.get("children") or []:
-            count += _count_text(child, text)
-    return count
-
-
-def uniqueness_gate(selector: str, dom_snapshot: dict[str, Any] | None) -> bool:
-    """Return True if selector matches exactly 1 node in the recorded DOM snapshot.
-
-    Returns True when no snapshot is available (can't verify, allow through).
+    `dom_html` is the recorded page's raw HTML (conxa_core.storage.snapshots.read_dom_snapshot);
+    `a11y_tree` is the Playwright accessibility snapshot (read_a11y_snapshot), needed to count
+    internal:role= matches since ARIA role isn't derivable from raw HTML.
+    Returns True when no HTML snapshot is available (can't verify, allow through).
     """
-    if not dom_snapshot:
+    if not dom_html:
         return True
-    return _count_selector_matches_dom(selector, dom_snapshot) == 1
+    return _count_selector_matches(selector, dom_html, a11y_tree) == 1
 
 
 def dedup_by_orthogonality(signals: list["IdentitySignal"]) -> list["IdentitySignal"]:

@@ -317,35 +317,77 @@ def test_identity_signal_model():
 
 
 # ─── Phase 2: Selector filtering gates ───────────────────────────────────────
-
-def _dom_with_testid(testid: str) -> dict:
-    return {"tag": "div", "attributes": {"data-testid": testid}, "children": []}
-
+# uniqueness_gate takes the recorded page's raw HTML (as read from
+# conxa_core.storage.snapshots.read_dom_snapshot) — not a hand-built DOM tree —
+# since that's the only form the real compile pipeline has available.
 
 def test_uniqueness_gate_passes_single_match():
-    dom = _dom_with_testid("submit-btn")
-    assert uniqueness_gate('[data-testid="submit-btn"]', dom) is True
+    html = '<div data-testid="submit-btn"></div>'
+    assert uniqueness_gate('internal:testid=[data-testid="submit-btn"]', html) is True
 
 
 def test_uniqueness_gate_rejects_no_match():
-    dom = _dom_with_testid("other-btn")
-    assert uniqueness_gate('[data-testid="submit-btn"]', dom) is False
+    html = '<div data-testid="other-btn"></div>'
+    assert uniqueness_gate('internal:testid=[data-testid="submit-btn"]', html) is False
 
 
 def test_uniqueness_gate_rejects_multi_match():
-    dom = {
-        "tag": "div",
-        "attributes": {},
-        "children": [
-            {"tag": "button", "attributes": {"data-testid": "btn"}, "children": []},
-            {"tag": "button", "attributes": {"data-testid": "btn"}, "children": []},
-        ],
-    }
-    assert uniqueness_gate('[data-testid="btn"]', dom) is False
+    html = '<button data-testid="btn"></button><button data-testid="btn"></button>'
+    assert uniqueness_gate('internal:testid=[data-testid="btn"]', html) is False
 
 
 def test_uniqueness_gate_passes_without_snapshot():
     assert uniqueness_gate("button.submit", None) is True
+
+
+def test_uniqueness_gate_text_selector_multi_match():
+    html = "<button>Edit</button><button>Edit</button>"
+    assert uniqueness_gate('internal:text="Edit"', html) is False
+
+
+def test_uniqueness_gate_text_selector_single_match():
+    html = "<button>Edit</button><button>Delete</button>"
+    assert uniqueness_gate('internal:text="Edit"', html) is True
+
+
+def test_uniqueness_gate_role_without_a11y_tree_allows_through():
+    # ARIA role can't be derived from raw HTML alone — without the a11y snapshot
+    # the gate can't verify a role selector, so it allows it through.
+    html = "<button>Edit</button><button>Edit</button>"
+    assert uniqueness_gate('internal:role=button[name="Edit"]', html) is True
+
+
+def test_uniqueness_gate_role_with_a11y_tree_multi_match():
+    html = "<button>Edit</button><button>Edit</button>"
+    a11y_tree = {
+        "role": "WebArea",
+        "children": [
+            {"role": "button", "name": "Edit"},
+            {"role": "button", "name": "Edit"},
+        ],
+    }
+    assert uniqueness_gate('internal:role=button[name="Edit"]', html, a11y_tree) is False
+
+
+def test_uniqueness_gate_role_with_a11y_tree_single_match():
+    html = "<button>Edit</button><button>Delete</button>"
+    a11y_tree = {
+        "role": "WebArea",
+        "children": [
+            {"role": "button", "name": "Edit"},
+            {"role": "button", "name": "Delete"},
+        ],
+    }
+    assert uniqueness_gate('internal:role=button[name="Edit"]', html, a11y_tree) is True
+
+
+def test_uniqueness_gate_relational_selector_assumed_unique():
+    # Relational selectors are spatially disambiguated by the runtime resolver,
+    # not counted here.
+    html = "<button>Edit</button><button>Edit</button>"
+    assert uniqueness_gate(
+        'internal:role=button[name="Edit"] >> right-of=internal:text="Acme"', html
+    ) is True
 
 
 def test_dedup_by_orthogonality_keeps_best():

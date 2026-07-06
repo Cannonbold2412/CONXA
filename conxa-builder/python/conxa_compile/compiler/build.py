@@ -57,6 +57,7 @@ from conxa_core.models.skill_spec import (
 )
 from conxa_compile.policy.bundle import PolicyBundle, get_policy_bundle
 from conxa_compile.policy.intent_ontology import intent_specificity_score, normalize_compiler_intent
+from conxa_core.storage import snapshots
 from conxa_core.progress import append_current_job_event
 
 
@@ -306,7 +307,27 @@ def _build_element_fingerprint(ev: dict[str, Any]) -> ElementFingerprint:
     )
 
 
-def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
+def _load_step_snapshot(ev: dict[str, Any], session_id: str) -> tuple[str | None, dict[str, Any] | None]:
+    """Load the recorded page's HTML + accessibility tree for compile-time uniqueness checks.
+
+    The event only carries a `dom_hash` pointer (see session.py) — the actual blobs live in
+    the session's content-addressable snapshot store and must be read from disk.
+    """
+    if not session_id:
+        return None, None
+    dom_hash = str((ev.get("snapshot") or {}).get("dom_hash") or "").strip()
+    if not dom_hash:
+        return None, None
+    html = snapshots.read_dom_snapshot(session_id, dom_hash)
+    a11y_tree = snapshots.read_a11y_snapshot(session_id, dom_hash)
+    return html, a11y_tree
+
+
+def _build_identity_bundle(
+    ev: dict[str, Any],
+    dom_html: str | None = None,
+    a11y_tree: dict[str, Any] | None = None,
+) -> IdentityBundle:
     """Build durability-ranked, orthogonality-deduplicated IdentityBundle from a recorded event.
 
     Uses the deterministic-floor generator (Playwright grammar, zero-LLM) as the signal base.
@@ -320,7 +341,7 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
     fingerprint = _build_element_fingerprint(ev)
 
     # Phase 4: use deterministic-floor generator (Playwright grammar)
-    signals = generate_deterministic_signals(ev)
+    signals = generate_deterministic_signals(ev, dom_html=dom_html, a11y_tree=a11y_tree)
 
     distinct_classes = {s.orthogonality_class for s in signals}
     if len(distinct_classes) < 2:
@@ -398,14 +419,15 @@ def _build_identity_bundle(ev: dict[str, Any]) -> IdentityBundle:
     )
 
 
-def _populate_hover_chains(steps: list[SkillStep], events: list[dict[str, Any]]) -> None:
+def _populate_hover_chains(steps: list[SkillStep], events: list[dict[str, Any]], session_id: str = "") -> None:
     """Set handler_hints.hover_chain on steps whose recorded predecessor was a hover (Phase 7)."""
     from conxa_compile.compiler.action_semantics import detect_hover_precondition
     for i, ev in enumerate(events):
         prev_ev = events[i - 1] if i > 0 else None
         if not detect_hover_precondition(ev, prev_ev):
             continue
-        hover_signals = generate_deterministic_signals(prev_ev)
+        dom_html, a11y_tree = _load_step_snapshot(prev_ev, session_id)
+        hover_signals = generate_deterministic_signals(prev_ev, dom_html=dom_html, a11y_tree=a11y_tree)
         if hover_signals and i < len(steps):
             steps[i].handler_hints.hover_chain = hover_signals
 
@@ -510,7 +532,10 @@ def _confidence_from_identity_bundle(bundle: Any) -> float:
 
 
 def _build_target(
-    ev: dict[str, Any], policy: dict[str, Any], identity_bundle: Any = None
+    ev: dict[str, Any],
+    policy: dict[str, Any],
+    identity_bundle: Any = None,
+    dom_html: str | None = None,
 ) -> dict[str, Any]:
     if str((ev.get("action") or {}).get("action") or "").lower() in MARKER_ACTIONS:
         return {}
@@ -603,7 +628,6 @@ def _build_target(
     # Keep all admissible candidates (no over-aggressive orthogonality collapse against the
     # bundle — that's already done inside the IdentityBundle itself). Only collapse
     # near-identical structural strings that differ solely by CSS combinator (+/~).
-    _dom_snapshot = (ev.get("snapshot") or {}).get("dom")
     _seen_fb: set[str] = set()
     # (durability, engine, selector)
     _dur_fb: list[tuple[float, str, str]] = []
@@ -615,8 +639,8 @@ def _build_target(
         if not selector_passes_filters(_s) and _engine not in ("testid", "role", "text_based", "relational"):
             continue
         # Drop non-unique structural selectors when a DOM snapshot is available.
-        if _engine in ("css-structural", "css", "css-id", "xpath") and _dom_snapshot is not None:
-            if not uniqueness_gate(_s, _dom_snapshot):
+        if _engine in ("css-structural", "css", "css-id", "xpath") and dom_html is not None:
+            if not uniqueness_gate(_s, dom_html):
                 continue
         _seen_fb.add(_s)
         _dur = durability_score(_engine, _s)
@@ -884,8 +908,9 @@ def _build_step(
     else:
         recovery_dict = no_recovery_block(intent)
     recovery = RecoveryBlock(**recovery_dict)
-    identity_bundle = _build_identity_bundle(ev_with_intent)
-    target = _build_target(ev, policy, identity_bundle=identity_bundle)
+    dom_html, a11y_tree = _load_step_snapshot(ev_with_intent, session_root.name)
+    identity_bundle = _build_identity_bundle(ev_with_intent, dom_html=dom_html, a11y_tree=a11y_tree)
+    target = _build_target(ev, policy, identity_bundle=identity_bundle, dom_html=dom_html)
     signals = _build_signals(
         ev,
         resolved_intent=intent,
@@ -1081,7 +1106,7 @@ def compile_skill_package(
     steps = [_build_step(e, bundle, session_root=session_root, step_index=i) for i, e in enumerate(cleaned_events)]
 
     # Phase 7: populate hover_chain handler hints from hover-then-act sequences.
-    _populate_hover_chains(steps, cleaned_events)
+    _populate_hover_chains(steps, cleaned_events, session_id=sid)
 
     # Phase 3: Build the workflow-level intent graph (one LLM call). Selector generation
     # is fully deterministic and already complete — no LLM selector passes run here.

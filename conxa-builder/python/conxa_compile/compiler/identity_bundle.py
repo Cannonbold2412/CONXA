@@ -27,11 +27,19 @@ _EXCLUDED_ROLES = frozenset({
 _NATIVE_ENGINES = frozenset({"testid", "role", "text_based", "relational"})
 
 
-def generate_deterministic_signals(ev: dict[str, Any]) -> list[IdentitySignal]:
+def generate_deterministic_signals(
+    ev: dict[str, Any],
+    dom_html: str | None = None,
+    a11y_tree: dict[str, Any] | None = None,
+) -> list[IdentitySignal]:
     """Return durability-ranked, orthogonality-deduplicated IdentitySignal list (no LLM).
 
     Produces signals in Playwright's native internal: grammar where applicable.
     Falls back to raw CSS/XPath for structural signals.
+
+    `dom_html`/`a11y_tree` are the recorded page's snapshot (see
+    conxa_core.storage.snapshots) used by uniqueness_gate to mark each signal
+    unique_at_compile; omit when no snapshot was captured for this event.
     """
     target = ev.get("target") or {}
     semantic = ev.get("semantic") or {}
@@ -84,13 +92,12 @@ def generate_deterministic_signals(ev: dict[str, Any]) -> list[IdentitySignal]:
 
     testid_present = bool(data_testid)
     ranked = rank_by_durability(candidates, testid_present=testid_present)
-    dom_snapshot = (ev.get("snapshot") or {}).get("dom")
 
     signals: list[IdentitySignal] = []
     for dur, engine, sel, oc in ranked:
         if engine not in _NATIVE_ENGINES and not selector_passes_filters(sel):
             continue
-        unique = uniqueness_gate(sel, dom_snapshot)
+        unique = uniqueness_gate(sel, dom_html, a11y_tree)
         signals.append(IdentitySignal(
             engine=engine,
             selector=sel,

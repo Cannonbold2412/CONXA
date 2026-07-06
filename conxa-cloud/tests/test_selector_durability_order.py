@@ -115,41 +115,19 @@ def test_uniqueness_gate_no_snapshot() -> None:
 
 
 def test_uniqueness_gate_multi_match() -> None:
-    # DOM with two buttons → input[type=button] matches multiple nodes → gate returns False.
-    dom = {
-        "tag": "div",
-        "children": [
-            {"tag": "input", "attributes": {"type": "button"}, "children": []},
-            {"tag": "input", "attributes": {"type": "button"}, "children": []},
-        ],
-    }
-    # The gate's DOM counter for CSS attribute selectors returns >1 match.
-    # uniqueness_gate uses _count_selector_matches_dom which handles [data-testid=] / [aria-label=] /
-    # text= patterns; for generic CSS it returns 1 (assumed unique). Adjust expectation accordingly.
-    # (The gate intentionally only counters the patterns it can parse deterministically.)
-    result = uniqueness_gate("input[type='button']", dom)
-    # For a pattern not in its fast-path the gate conservatively returns True (unknown = allow).
-    assert isinstance(result, bool)
+    # Raw CSS selectors are counted directly against the recorded HTML via BeautifulSoup.
+    html = "<input type='button'><input type='button'>"
+    assert uniqueness_gate("input[type='button']", html) is False
 
 
 def test_uniqueness_gate_testid_unique() -> None:
-    dom = {
-        "tag": "div",
-        "attributes": {"data-testid": "btn-new"},
-        "children": [],
-    }
-    assert uniqueness_gate('[data-testid="btn-new"]', dom) is True
+    html = '<div data-testid="btn-new"></div>'
+    assert uniqueness_gate('internal:testid=[data-testid="btn-new"]', html) is True
 
 
 def test_uniqueness_gate_testid_multi_match() -> None:
-    dom = {
-        "tag": "div",
-        "children": [
-            {"tag": "button", "attributes": {"data-testid": "btn-new"}, "children": []},
-            {"tag": "button", "attributes": {"data-testid": "btn-new"}, "children": []},
-        ],
-    }
-    assert uniqueness_gate('[data-testid="btn-new"]', dom) is False
+    html = '<button data-testid="btn-new"></button><button data-testid="btn-new"></button>'
+    assert uniqueness_gate('internal:testid=[data-testid="btn-new"]', html) is False
 
 
 # ---------------------------------------------------------------------------
