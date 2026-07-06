@@ -65,20 +65,13 @@ def _regenerate_compiled_selectors(step: dict[str, Any], document: dict[str, Any
         if not source_session_id:
             return out
 
+        from conxa_compile.editor.retarget import find_source_event
         from conxa_compile.llm.selector_regeneration import (
             compile_selectors_for_task,
             task_from_recorded_event,
         )
-        from conxa_core.storage.session_events import read_session_events
 
-        events = read_session_events(source_session_id)
-        matching_event = None
-        for ev in events:
-            ev_snapshot = ev.get("snapshot") or {}
-            if ev_snapshot.get("ref") == snapshot_ref:
-                matching_event = ev
-                break
-
+        matching_event = find_source_event(step, document)
         if not matching_event:
             return out
 

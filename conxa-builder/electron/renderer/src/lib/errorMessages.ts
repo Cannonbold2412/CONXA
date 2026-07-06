@@ -59,6 +59,10 @@ export const errorMessages: Record<string, string> = {
   invalid_document: "This skill file is missing its skills and can't be opened.",
   invalid_selector:
     "One of the recorded elements can't be targeted reliably. Re-record that step.",
+  session_artifacts_missing:
+    "The original recording for this step is no longer available, so we can't re-find the element. You can still reposition it without changing the selector.",
+  bbox_too_small: "Draw a larger region around the element — the selection is too small to identify.",
+  primary_selector_required: "Choose one of the generated selectors (or enter one manually) before applying.",
 
   // Input / validation
   invalid_input: "Some required information is missing. Fill in the highlighted fields.",

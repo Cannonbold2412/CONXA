@@ -141,6 +141,7 @@ The production source of truth is:
 **Components:**
 - `WorkflowViewer.tsx` — step list with action/intent display
 - `StepEditorPanel.tsx` — edit intent, selectors, assertions for a step
+- `retarget/RetargetWizardDialog.tsx` — 3-phase re-target wizard (see below)
 - `ParameterizationDrawer.tsx` — convert literal values to `{{variables}}`
 - `RecordingScreenshotsPanel.tsx` — match steps to recording screenshots
 - `ValidationEditor.tsx` — edit assertions
@@ -148,6 +149,13 @@ The production source of truth is:
 - `ValidationReportPanel.tsx` — compile report summary
 - `CompiledSkillsTab.tsx` — view raw compiled output
 - `EntitlementMeters.tsx` — shows Human Edit pool for LLM-assisted edits
+
+**Re-target wizard:** `StepEditorPanel`'s "Re-target element" button opens `RetargetWizardDialog`, a 3-phase guided flow that replaces the old immediate-persist "Visual bbox" draw toggle:
+1. **Pick element** — draw the new element region on the step's screenshot (`RetargetPhasePick.tsx`, reuses `ScreenshotViewer`'s draw mode via a new `autoActivateDraw` prop).
+2. **Review selectors** — `cmd_retarget_preview` regenerates selector candidates against the original recorded DOM snapshot (LLM-assisted, the sanctioned 1-click-fix exception — see `CLAUDE.md` Key Invariants) and returns each with an engine badge, durability score, and DOM match count; ambiguous or zero-candidate results are flagged with a way back to Phase 1 (`RetargetPhaseSelectors.tsx`).
+3. **Confirm & apply** — shows the step's current vs. proposed wait-for/assertions in plain language with a "keep existing" checkbox; a strong, unambiguous pick with unchanged validation collapses this phase to a single confirm (`RetargetPhaseValidation.tsx`).
+
+Nothing persists until Apply, which calls `cmd_retarget_apply` once — bbox, target selectors, `identity_bundle`, and (optionally) validation land as a single undo entry. If the original recording session is gone, Phase 1 offers a "apply position only" fallback that updates the bbox without touching selectors.
 
 **Layout (3-zone editor):** A top toolbar (skill title + id/copy, version, undo/redo, Back, and the brand-clay **Finish editing** CTA with a live "N unsaved" indicator driven by the editor store's `dirtySteps`), a slim entitlement-meter strip, then a resizable three-pane body: left **Workflow** step list (`WorkflowViewer`), center **Step editor** (`StepEditorPanel`), right **Tools** rail. The Tools rail is a vertical segmented control (Validation / Suggestions / Input variables / Recording screenshots / Compiled selectors) with a framer-motion active indicator and cross-faded panels; each tool sits beside its own info affordance. The "no skill" state is a guided landing with a Record → Compile → Edit → Finish explainer, a primary **Resume a skill** card, and a **Diagnostics** card whose raw metrics JSON is collapsed by default.
 

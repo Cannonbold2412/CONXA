@@ -1,9 +1,10 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react'
 import { FormProvider, useForm, useFormState, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 import type { StepEditorDTO, WorkflowResponse } from '../types/workflow'
-import { patchStep, postUpdateVisualBbox } from '../api/workflowApi'
+import { patchStep } from '../api/workflowApi'
 import { ScreenshotViewer } from './ScreenshotViewer'
+import { RetargetWizardDialog } from './retarget/RetargetWizardDialog'
 import { useEditorStore } from '../store/editorStore'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -243,28 +244,7 @@ export const StepEditorPanel = forwardRef<StepEditorPanelHandle, Props>(
     }
   }, [step, methods])
 
-  const saveVisualBbox = useCallback(
-    async (b: { x: number; y: number; w: number; h: number }) => {
-      if (!step || step.flags.is_scroll) return
-      try {
-        const res = await postUpdateVisualBbox(
-          skillId,
-          step.step_index,
-          { x: b.x, y: b.y, w: b.w, h: b.h },
-        )
-        onWorkflowUpdated(res.workflow)
-        if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-        const next = res.workflow.steps.find((s) => s.step_index === step.step_index)
-        if (next) methods.reset(defaultsFromStep(next))
-        toast.success('Visual bbox saved; anchors recomputed')
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Could not save visual bbox and recompute anchors'
-        toast.error(msg)
-        throw e
-      }
-    },
-    [methods, onHistoryUpdate, onWorkflowUpdated, skillId, step],
-  )
+  const [retargetOpen, setRetargetOpen] = useState(false)
 
   const persistStepValues = useCallback(
     async (values: FormValues, options?: { silentToast?: boolean }) => {
@@ -562,7 +542,6 @@ export const StepEditorPanel = forwardRef<StepEditorPanelHandle, Props>(
         onClearStepVisual={onClearStepVisual}
         onApplyStepFrame={onApplyStepFrame}
         isScrollStep={step.flags.is_scroll}
-        onSaveVisualBbox={!step.flags.is_scroll ? saveVisualBbox : undefined}
       />
           <div
             className={cn(
@@ -595,7 +574,26 @@ export const StepEditorPanel = forwardRef<StepEditorPanelHandle, Props>(
             {bboxSummary.label}
           </p>
         </div>
+        {!step.flags.is_scroll ? (
+          <Button size="sm" variant="outline" onClick={() => setRetargetOpen(true)}>
+            Re-target element
+          </Button>
+        ) : null}
           </div>
+          {!step.flags.is_scroll ? (
+            <RetargetWizardDialog
+              open={retargetOpen}
+              step={step}
+              skillId={skillId}
+              onOpenChange={setRetargetOpen}
+              onApplied={(wf) => {
+                onWorkflowUpdated(wf)
+                const next = wf.steps.find((s) => s.step_index === step.step_index)
+                if (next) methods.reset(defaultsFromStep(next))
+              }}
+              onHistoryUpdate={onHistoryUpdate}
+            />
+          ) : null}
           <FormProvider {...methods}>
             <DirtySync stepIndex={step.step_index} />
             <form onSubmit={onSubmit} className="space-y-2">

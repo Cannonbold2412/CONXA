@@ -396,6 +396,9 @@ type Props = {
   /** Non-scroll steps: allow drawing a bbox and PATCH ``signals.visual.bbox``. */
   onSaveVisualBbox?: (bbox: { x: number; y: number; w: number; h: number }) => void | Promise<void>
   isScrollStep?: boolean
+  /** Start already in draw mode (e.g. the re-target wizard's Phase 1, where drawing
+   * the element is the phase's whole purpose — no separate toggle click needed). */
+  autoActivateDraw?: boolean
 } & Partial<DropRecordingScreenshotHandlers>
 
 function recordingDragLikely(dt: DataTransfer | null | undefined, recordingShotDragActive?: boolean): boolean {
@@ -414,12 +417,13 @@ export function ScreenshotViewer({
   onApplyStepFrame,
   onSaveVisualBbox,
   isScrollStep = false,
+  autoActivateDraw = false,
 }: Props) {
   const src = screenshot.full_url || screenshot.element_url || screenshot.scroll_url
   const bbox = screenshot.bbox || {}
   const [optimisticSrc, setOptimisticSrc] = useState<string | null>(null)
   const [optimisticNoImage, setOptimisticNoImage] = useState(false)
-  const [bboxDrawActive, setBboxDrawActive] = useState(false)
+  const [bboxDrawActive, setBboxDrawActive] = useState(autoActivateDraw)
   const [bboxDrawSaving, setBboxDrawSaving] = useState(false)
 
   useEffect(() => {
@@ -431,7 +435,13 @@ export function ScreenshotViewer({
   const effectiveBbox =
     optimisticSrc || optimisticNoImage ? ({} as Record<string, unknown>) : bbox
 
+  const isFirstDrawResetRef = useRef(true)
   useEffect(() => {
+    // Skip the reset on mount so `autoActivateDraw` sticks for the wizard's Phase 1.
+    if (isFirstDrawResetRef.current) {
+      isFirstDrawResetRef.current = false
+      return
+    }
     setBboxDrawActive(false)
   }, [stepIndex, effectiveSrc])
 

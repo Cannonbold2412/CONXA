@@ -179,6 +179,54 @@ export function postUpdateVisualBbox(
   return cmd('update_visual_bbox', { skill_id: skillId, step_index: stepIndex, ...body })
 }
 
+// ─────────────────────────────────────────────────
+// Re-target wizard (Phase 2/3 preview + atomic apply)
+// ─────────────────────────────────────────────────
+
+export type Bbox = { x: number; y: number; w: number; h: number }
+
+export type RetargetCandidate = {
+  selector: string
+  engine: string
+  durability: number
+  match_count: number
+  unique: boolean
+  descriptor: string
+}
+
+export type PickQuality = 'good' | 'ambiguous' | 'none'
+
+export type RetargetPreviewResponse = {
+  bbox: Bbox
+  pick_quality: PickQuality
+  candidates: RetargetCandidate[]
+  current_wait_for: Record<string, unknown>
+  proposed_wait_for: Record<string, unknown>
+  current_assertions: Record<string, unknown>[]
+  proposed_assertions: Record<string, unknown>[]
+  validation_changed: boolean
+  fast_finish: boolean
+}
+
+export function retargetPreview(skillId: string, stepIndex: number, bbox: Bbox): Promise<RetargetPreviewResponse> {
+  return cmd('retarget_preview', { skill_id: skillId, step_index: stepIndex, ...bbox })
+}
+
+export function retargetApply(
+  skillId: string,
+  stepIndex: number,
+  body: {
+    bbox: Bbox
+    primary_selector: string
+    fallback_selectors: string[]
+    keep_validation: boolean
+    proposed_wait_for?: Record<string, unknown>
+    proposed_assertions?: Record<string, unknown>[]
+  },
+): Promise<WorkflowRevalidationResponse> {
+  return cmd('retarget_apply', { skill_id: skillId, step_index: stepIndex, ...body })
+}
+
 export function patchStep(
   skillId: string,
   stepIndex: number,

@@ -388,7 +388,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P3 — Low Urgency, Opportunistic (12 items)
+## P3 — Low Urgency, Opportunistic (13 items)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -521,6 +521,17 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** last — explicitly speculative and not gating anything else in this file.
 - **Complexity:** L per integration point; the source doc scopes each of the four independently, so they don't need to land together.
 - **Success criteria:** at least one integration point (most likely compile-time intent enrichment, the simplest of the four) is validated against a sample of real recordings and shown to measurably improve compiled-skill quality before investing in the remaining three.
+
+### BUILD-3 — Stale-validation badge for manual selector edits
+- **Category:** Builder
+- **Description:** The new 3-phase re-target wizard (`RetargetWizardDialog.tsx`) shows a plain-language current-vs-proposed validation diff whenever the user re-targets a step's element through it. But a user can still hand-edit `target.primary_selector`/`fallback_selectors` directly in `StepEditorPanel`'s selector fields via `cmd_patch_step`, which does not surface any "the wait-for/assertions may now be stale" signal — the editor has no dependency awareness outside the wizard.
+- **Why required:** identified during the re-target wizard design as explicitly out of scope for that task (kept surgical); the gap is real but narrower than the wizard itself, since manual selector edits are the less common path (the wizard is now the primary re-target entry point).
+- **Business value:** small — reduces the chance a manually-edited step silently ships with assertions that no longer match its new target.
+- **Technical value:** the plumbing already exists (`infer_wait_for_shape` + `_build_assertions`, already reused by `conxa_compile/editor/retarget.py::preview_retarget`); this is mostly a `cmd_patch_step` response addition plus a UI badge, not new compiler logic.
+- **Dependencies:** none blocking; natural follow-up to the re-target wizard.
+- **Suggested order:** opportunistic — pick up next time `StepEditorPanel.tsx` or `cmd_patch_step` is touched.
+- **Complexity:** S — a "re-check validation" badge with a one-click regenerate action reusing `preview_retarget`'s validation-diff computation.
+- **Success criteria:** hand-editing a step's target selector in `StepEditorPanel` (outside the wizard) shows a visible warning when the current `validation` block no longer matches what `infer_wait_for_shape`/`_build_assertions` would produce for the new target, with a one-click way to regenerate it.
 
 ---
 

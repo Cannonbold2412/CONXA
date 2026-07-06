@@ -4,6 +4,146 @@
 
 ---
 
+## Redrew the left-hand navigation in the Build Studio design proposal — 2026-07-07
+
+**What changed.** The sidebar sketch in the design proposal (below) was too bare — just two real
+pages ("Automations" and "Activity") padded out with blank spacer rows and single-icon labels that
+didn't say what was actually on each page. It's been redrawn with five proper, clearly-named
+destinations instead: **Automations** (the home page), **Activity** (a live feed of everything
+running or finished), **Distribution** (a brand-new page — every company's installer, its
+permanent download link, its current version, and a "Rebuild" button, all in one place), plus
+**Settings** and **Developer Tools**. Each one now has a one-line description of what it's actually
+for, right in the sketch.
+
+The new **Distribution** page also fixes a loose end from the last update: it gives "Build
+Installer" — the rare, once-per-company action from last time — a real, easy-to-find home instead
+of vaguely gesturing at "an overflow menu somewhere."
+
+**Where it lives.** Same file as before: `conxa-builder-workflow-redesign.md`, section 8
+("Wireframe-level UI/UX recommendations"). Still just a written plan — nothing in the app has
+changed yet.
+
+---
+
+## Added "Build Installer" back as its own step, plus a full write-up of how installers actually work — 2026-07-07
+
+**What this is.** Another update to the same Build Studio design proposal (below). The plan had
+settled on five steps ending in "Publish Skill Package," with building the actual installer file
+treated as a rare, tucked-away action. That's been revised again: **Build Installer is now its own
+explicit sixth step**, because producing the file a brand-new customer actually downloads is real,
+visible work — it just doesn't happen often.
+
+**The decided flow is now:** **Record → Compile (background) → Human Edit → Test Skill → Publish
+Skill Package → Build Installer.** In plain terms: publishing a Skill Package is the everyday
+action (a vendor does it every time they add or fix a workflow, and it reaches customers who
+already have the app installed with zero effort on their part). Building the installer is the rare
+one — normally just once, the first time a vendor ships to a brand-new company, and only
+occasionally after that for a big platform change. Today that build runs locally inside Conxa
+Builder; once there are paying customers, it's meant to move to Conxa Cloud so companies can
+generate and manage their own installers remotely, without needing anyone to have the desktop app
+open.
+
+**Also new: a full explanation of how the installer and its update system actually work**, covering
+how the installer file gets built, what's baked into it versus what gets downloaded afterward, what
+happens on the customer's machine during install, how the two update-able pieces (the "Runtime" and
+the "App") start up and check compatibility with each other, how already-installed customers get
+new Skill Packages automatically, how a request to "run an automation" actually gets carried out
+step by step (including when the customer's own AI steps in to fix something that broke), and why
+the installer itself is rebuilt so much less often than everything else — the short version being
+that the installer contains a real program binary that's risky to swap out while it's running,
+while Skill Package updates are just data files with none of that risk.
+
+**Where it lives.** Same file as before: `conxa-builder-workflow-redesign.md`. Still just a written
+plan — nothing in the app has changed yet.
+
+---
+
+## Added a guided 3-step wizard for re-targeting a step's element — 2026-07-07
+
+**What changed.** Previously, if a recorded step was clicking on (or typing into) the wrong
+element, the only fix was to draw a box around the right spot on the screenshot and hope the
+app quietly picked good replacement selectors behind the scenes — with no chance to check its
+work before it saved. Now there's a proper 3-step wizard for this in the Human Edit screen's
+step editor, opened with a new **"Re-target element"** button:
+
+1. **Pick element** — draw a box around the element on the screenshot, same as before.
+2. **Review selectors** — the app shows a few candidate ways to identify that element (e.g. by
+   its test ID, its visible text, its accessibility role), each with a plain-language
+   description, a durability score, and whether it's confirmed to uniquely match that one
+   element in the original recorded page. If nothing looks trustworthy, you're warned and can
+   go back and re-draw the box, or type in a selector yourself.
+3. **Confirm & apply** — the app shows, in plain English, how it currently checks that this step
+   worked versus how it would check going forward (e.g. "the page address changes" or "an
+   element appears"), and lets you keep the old check or switch to the new one. If everything
+   looks strong and nothing needs to change, this step collapses down to a single "Apply"
+   click.
+
+Nothing is saved until you click Apply at the very end, and undoing (Ctrl+Z) reverses the whole
+wizard in one step, not three separate ones. If the original recording this step came from is no
+longer available, the wizard tells you plainly and offers to just move the target box without
+touching the underlying selectors.
+
+---
+
+## Rewrote the Build Studio redesign proposal end-to-end around the final, decided-on workflow — 2026-07-07
+
+**What this is.** The design proposal from yesterday (below) originally argued for squeezing
+everything down to three steps — Record → Review → Publish — with reviewing the compiled steps and
+testing that they work merged into one "Review" screen. That idea has been dropped. The whole
+document has now been rewritten, top to bottom, around the actual decided-on flow instead of just
+bolting a note onto the end.
+
+**The decided flow:** **Record → Compile (in the background) → Human Edit → Test Skill → Publish
+Skill Package.** Reviewing the compiled steps and testing that they actually work are two separate
+pages, not one merged screen — they're different jobs and deserve their own space. Every section of
+the document — the summary, the reasoning, the wireframe sketches, the phased build-out plan — now
+consistently describes this five-step flow instead of the old three-step one.
+
+**What's genuinely new work vs. already built:**
+
+- Compiling already costs money per run today, and today it locks up the app until it finishes —
+  only one workflow can compile at a time. Making Compile a background job you explicitly click to
+  start (see Queued/Compiling/Completed/Failed update live while you keep working elsewhere) is
+  real, new engineering work.
+- Skill Packages already update independently of the installer behind the scenes — that delivery
+  pipe already exists. This proposal mostly asks the product to *lean on* that, and make "Publish
+  Skill Package" the thing people do routinely instead of rebuilding the whole installer.
+- Each company already gets one permanent installer download link that always serves the latest
+  build — that also already exists. The proposal's ask is discipline: stop rebuilding the installer
+  for every workflow change, tuck that action away on its own page, and save it for real
+  platform-level changes.
+
+**Where it lives.** Same file as yesterday: `conxa-builder-workflow-redesign.md`. Still just a
+written plan — nothing in the app has changed yet.
+
+---
+
+## New design proposal: a simpler, 3-step Build Studio workflow — 2026-07-06
+
+**What this is.** A written design proposal (not a code change yet) that rethinks how people use
+the Build Studio from scratch. Today, making one automation walks you through seven named steps —
+Record, Compile, Human Edit, Build Plugin, View Package, Test Skill, Build Installer — and four of
+those are really just the app showing you its own internal machinery.
+
+**The idea.** Shrink those seven steps down to three things a person actually decides:
+
+1. **Record** — show the task once in a real browser.
+2. **Review** — check that Conxa understood it, click "Try it" to watch it run, and approve.
+3. **Publish** — ship it to your customers.
+
+Everything in between (compiling, packaging, building the plugin folder) happens quietly in the
+background, the same way you don't watch Vercel compile your website — you just push and get a
+link. All the technical detail is still there for engineers who want it, tucked into an "Inspect"
+panel that's off by default. The proposal also reorganizes the app around the *automation* you're
+building, so you stop having to re-pick the same plugin on four different pages.
+
+**Where it lives.** The full write-up is in a new file at the repo root:
+`conxa-builder-workflow-redesign.md`. It includes the reasoning, wireframe sketches, a step-by-step
+migration plan, and the risks — enough detail to actually build from later. Nothing in the app has
+changed yet; this is the blueprint.
+
+---
+
 ## Fixed (the real cause this time): "Build failed" right after a successful publish, in Dev mode — 2026-07-04
 
 **What you saw.** Publishing to the local Dev cloud worked (tokens embedded in pack.json,

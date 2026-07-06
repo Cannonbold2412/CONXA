@@ -215,13 +215,15 @@ flowchart TD
     E --> N[Update input variables] --> O[cmd_update_workflow_inputs]
     E --> P[Replace literal with variable] --> Q[cmd_replace_literals]
     E --> R[Apply recording screenshot to step] --> S[cmd_apply_recording_visual]
-    E --> T[Update visual bounding box] --> U[cmd_update_visual_bbox → regenerate anchors]
+    E --> T[Re-target element wizard] --> T1[Phase 1: draw region] --> T2[cmd_retarget_preview: candidates + validation diff] --> T3[Phase 3: Apply] --> T4[cmd_retarget_apply → bbox + target + identity_bundle + validation, one undo entry]
     E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true]
 ```
 
 **Patch gate:** Each edit increments the skill version. `revalidate_step()` checks that selector and intent remain coherent after the patch.
 
-Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, and sign-off. LLM-assisted actions such as selector regeneration, visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
+**Re-target wizard (replaces the old direct "update visual bbox" flow):** `cmd_update_visual_bbox` still exists (bbox + vision-anchor regeneration only, no selector change) but the primary re-target entry point is the 3-phase wizard — Pick element → Review selectors → Confirm & apply. `cmd_retarget_preview` is read-only (generates and scores candidates + a validation diff without persisting); `cmd_retarget_apply` is the only command that writes, composing bbox + `target.primary_selector`/`fallback_selectors` + rebuilt `identity_bundle` + (optionally) regenerated `validation.wait_for`/`assertions` into a single document mutation and a single undo entry. See `docs/UI-UX-Brief.md` §2.7 for the UI.
+
+Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, and sign-off. LLM-assisted actions such as selector regeneration (including the re-target wizard's Phase 2 candidate generation), visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
 
 ---
 

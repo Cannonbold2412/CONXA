@@ -209,6 +209,71 @@ class WorkflowEditorMixin:
         result.update(self._history_flags(skill_id))
         return result
 
+    def cmd_retarget_preview(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Phase 2/3 preview for the re-target wizard: generate selector candidates and a
+        validation diff for a user-drawn bbox, without persisting anything."""
+        from conxa_compile.editor.retarget import RetargetError, preview_retarget
+        from conxa_core.storage.json_store import read_skill
+        from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        step_index = int(payload.get("step_index") or 0)
+        bbox = {k: payload.get(k) for k in ("x", "y", "w", "h")}
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        self._install_proxy_router(usage_class="human_edit")
+        try:
+            return preview_retarget(doc, step_index, bbox)
+        except RetargetError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
+        except EntitlementBlocked as exc:
+            raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
+        except QuotaExceeded as exc:
+            raise _CommandError("quota_exceeded", str(exc)) from exc
+        except CloudUnreachable as exc:
+            raise _CommandError("cloud_unreachable", str(exc)) from exc
+
+    def cmd_retarget_apply(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Atomically apply the re-target wizard's chosen selector + bbox + validation.
+
+        Lands as a single undo entry — nothing from `cmd_retarget_preview` was persisted.
+        """
+        import copy
+
+        from conxa_compile.editor.retarget import RetargetError, apply_retarget
+        from conxa_compile.compiler.patch import revalidate_step
+        from conxa_core.storage.json_store import read_skill, write_skill
+        from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        step_index = int(payload.get("step_index") or 0)
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        snapshot = copy.deepcopy(doc)
+        self._install_proxy_router(usage_class="human_edit")
+        try:
+            doc = apply_retarget(doc, step_index, payload)
+        except RetargetError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
+        except EntitlementBlocked as exc:
+            raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
+        except QuotaExceeded as exc:
+            raise _CommandError("quota_exceeded", str(exc)) from exc
+        except CloudUnreachable as exc:
+            raise _CommandError("cloud_unreachable", str(exc)) from exc
+
+        skills = doc.get("skills") or [{}]
+        steps = (skills[0] or {}).get("steps") or []
+        step = steps[step_index] if step_index < len(steps) else {}
+        revalidation = revalidate_step(step)
+        self._push_undo(skill_id, snapshot)
+        write_skill(skill_id, doc)
+        result = _skill_response(skill_id, doc, revalidation)
+        result.update(self._history_flags(skill_id))
+        return result
+
     def cmd_sign_off_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         import time
         from conxa_core.storage.plugin_store import list_plugins, save_plugin
