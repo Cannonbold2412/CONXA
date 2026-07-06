@@ -16,7 +16,7 @@ Record + compile locally     Proxy / host / bill      Execute locally via MCP
 ```
 
 - **Build Studio** — Windows Electron + Python desktop app. Records browser workflows via Playwright, compiles them into structured skill packages with multi-signal element identity, self-healing recovery blocks, and outcome assertions. Everything happens locally; the cloud is never involved in recording or compilation.
-- **Conxa Cloud** — Thin SaaS layer. Proxies LLM calls (metered), hosts published skill packages, handles billing (Razorpay), manages team auth (Clerk), and streams telemetry from the runtime.
+- **Conxa Cloud** — Thin SaaS layer. Proxies LLM calls (metered), hosts published skill packages, handles billing (Cashfree), manages team auth (Clerk), and streams telemetry from the runtime.
 - **Runtime** — Node.js MCP server that ships to the customer's machine as a bundled `.exe`. Syncs skill packages from the cloud, executes them step-by-step with a 5-tier self-healing recovery cascade, and surfaces them to Claude via MCP tools.
 
 ---
@@ -57,6 +57,11 @@ Read the relevant doc before making non-trivial changes — the code is downstre
 | [`docs/Implementation-Plan.md`](docs/Implementation-Plan.md) | Prioritised 4-phase engineering roadmap. Start here for new tasks. |
 | [`docs/PRD.md`](docs/PRD.md) | Product vision, personas, positioning, long-term roadmap. |
 | [`docs/cost_model.md`](docs/cost_model.md) | LLM unit economics — cost per compile, hosting cost, revenue model. |
+| [`docs/Security.md`](docs/Security.md) | Numbered security-gap tracker (SG-01…) with fix status. |
+| [`docs/Sales-Blockers.md`](docs/Sales-Blockers.md) | What's still blocking an enterprise sale — sales-framed view of `Implementation-Plan.md`. |
+| [`docs/Auth-and-Updater.md`](docs/Auth-and-Updater.md) | Build Studio + runtime auth flows and both auto-updaters. |
+| [`SHIP-GUIDE.md`](SHIP-GUIDE.md) | Step-by-step runbook for shipping a release. |
+| [`TODO.md`](TODO.md) | The single prioritized backlog spanning documentation, architecture, and every subsystem. |
 
 New to the codebase? Start with `docs/TRD.md`.
 
@@ -175,17 +180,9 @@ compiler/build.py            compile_skill_package():
 plugin_builder.py            data-only skill package (auth files never included)
 ```
 
-### Runtime — 5-Tier Self-Healing Recovery
+### Runtime — Self-Healing Recovery Cascade
 
-For every step, tiers run in order. LLM fires only at Tier 3+.
-
-| Tier | Method | LLM cost |
-|------|--------|----------|
-| 1 | Compiled selectors (CSS, ARIA, text, XPath) | 0 |
-| 2 | a11y tree — role + name lookup | 0 |
-| 3 | Semantic recovery — Claude reads current DOM | yes |
-| 4 | Vision recovery — Claude reads screenshot | yes |
-| 5 | Escalation — human review queue | — |
+For every step, tiers run in order and LLM fires only at Tier 3+ — see `docs/TRD.md` §10.1 for the authoritative tier table.
 
 ### MCP Tools (exposed to Claude)
 
@@ -208,7 +205,7 @@ For every step, tiers run in order. LLM fires only at Tier 3+.
 
 Root directory: `conxa-cloud/backend`. `build.sh` installs `packages/conxa-core` then `requirements.txt`; `start.sh` runs `uvicorn app.main:app`. `GET /readyz` gates deploys (DB ping); `GET /healthz` is liveness.
 
-With `SKILL_AUTH_REQUIRED=true` the backend **refuses to start** unless `SKILL_DATABASE_URL`, Clerk issuer/JWKS, `CORS_ORIGINS`, Razorpay credentials, and at least one LLM provider key are set. No silent fallback to filesystem DB in production.
+With `SKILL_AUTH_REQUIRED=true` the backend **refuses to start** unless `SKILL_DATABASE_URL`, Clerk issuer/JWKS, `CORS_ORIGINS`, Cashfree credentials, and at least one LLM provider key are set. No silent fallback to filesystem DB in production.
 
 ### Cloud frontend (Vercel)
 
@@ -250,7 +247,7 @@ These are non-negotiable.
 - **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. No silent LLM fallbacks in compiled-selector or a11y paths.
 - **Iframe chain is preserved verbatim** from recording through compile through execution. Bounding boxes are page-level (offsets accumulated up the parent chain).
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** Never retried.
-- **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix.
+- **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. One known exception is tracked in `TODO.md` — see `CLAUDE.md`'s Key Invariants for detail.
 - **The cloud does not compile or execute.** Recording, compilation, and skill execution are local-only.
 
-# CONXA
+Full invariant list (10 total, including resolver/selector/host-build rules): `CLAUDE.md` → "Key Invariants".

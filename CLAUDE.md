@@ -32,7 +32,13 @@ The `docs/` folder is the authoritative source of truth for this codebase. Befor
 | [`docs/Implementation-Plan.md`](docs/Implementation-Plan.md) | Starting on a new engineering task. Contains the prioritised 4-phase roadmap with specific files to change and risk assessments per item. |
 | [`docs/PRD.md`](docs/PRD.md) | Understanding product goals, personas, positioning, or long-term strategy. **Do not edit for individual features** — see doc maintenance rules below. |
 | [`docs/cost_model.md`](docs/cost_model.md) | Making decisions that affect LLM usage at compile or execution time. |
-| [`docs/agentic-discovery-strategy.md`](docs/agentic-discovery-strategy.md) | Understanding how multi-agent skill discovery and the durability flywheel are gated and governed. |
+| [`docs/Security.md`](docs/Security.md) | Touching auth, RBAC, billing, or any security-sensitive surface. Numbered gap tracker (SG-01…) with fix status, cross-referenced from `docs/TRD.md` §15/§17. |
+| [`docs/Sales-Blockers.md`](docs/Sales-Blockers.md) | Checking what's still blocking an enterprise sale. Sales-framed view of the same Phase 1/2 checklist tracked in `docs/Implementation-Plan.md`. |
+| [`docs/Auth-and-Updater.md`](docs/Auth-and-Updater.md) | Touching Build Studio auth (Clerk PKCE), runtime auth (per-company sync token), or either auto-updater (Build Studio electron-updater, runtime manifest-driven self-update). |
+| [`SHIP-GUIDE.md`](SHIP-GUIDE.md) | Shipping a release — dev/prod promotion workflow, channel tagging, runtime host/app versioning. |
+| [`research-analysis/07-go-to-market/agentic-discovery-strategy.md`](research-analysis/07-go-to-market/agentic-discovery-strategy.md) | Understanding how multi-agent skill discovery and the durability flywheel are gated and governed. |
+| [`docs/archive/`](docs/archive/) | Looking for historical context only — superseded reports and rotated `FIX.md` logs. Not current guidance. Includes `docs/archive/refactors/PHASE_4_REFACTOR_REPORT.md`, which documents a failed approach to splitting `config.py` — read it before attempting that refactor again. |
+| [`TODO.md`](TODO.md) | Picking up new engineering work. The single prioritized backlog spanning documentation, architecture, and every subsystem. |
 
 ---
 
@@ -102,12 +108,12 @@ conxa-cloud/                Thin cloud SaaS — proxy / auth / billing / dashboa
   backend/                  FastAPI (depends on conxa-core; NO recorder/compiler/Playwright)
     app/
       main.py               Routers + fail-fast prod config validation + /healthz, /readyz
-      worker.py             Render worker entrypoint (queue scaffold)
-      api/                  llm_proxy, razorpay, product, publish, skillpack_update,
-                            updates, tracking, run, job, plugins, security
+      api/                  llm_proxy, cashfree, product, publish, skillpack_update,
+                            updates, tracking, job, plugins, security, entitlement_routes,
+                            manifest_signer, installer_storage, skillpack_storage
       llm/router.py         Multi-provider pool: Groq, Google AI Studio, NVIDIA NIM
       services/             saas, rbac, llm_metering, jobs
-    requirements.txt, build.sh, start.sh, Dockerfile, Aptfile, ROUTER_SETUP.md
+    requirements.txt, build.sh, start.sh, Dockerfile, ROUTER_SETUP.md
   frontend/                 Next.js 16 dashboard (Dashboard, Plugins, Billing, Team, Settings)
     package.json            Clerk, TanStack Query, Tailwind 4, shadcn/ui, Framer Motion
   scripts/                  recompile_session.py, test_plugin.py
@@ -137,8 +143,11 @@ data/                       Runtime state: sessions/, plugins/, skills/, saas/, 
 .github/workflows/
   build-runtime-host.yml    CI: builds host exe (--no-bytecode), tags host-vX.Y.Z releases
   build-runtime-app.yml     CI: obfuscates disk-resident app layer, tags app-vX.Y.Z releases;
-                            runs gate_replay.js (real skill replay) as execution gate before publish
+                            execution gate (gate_replay.js, real skill replay) is currently
+                            disabled in this workflow (see comment above the Zip app layer step) —
+                            re-enable before shipping customer builds; see TODO.md
   build-studio.yml          CI: Electron + Python bundle
+  promote-release.yml       CI: dev→stable channel promotion, Ed25519 re-signing (see docs/TRD.md §16)
 
 docs/
   TRD.md                    Authoritative technical deep-dive
@@ -147,8 +156,11 @@ docs/
   Backend-Schema.md         Data models, API contracts, ERD diagrams, KV namespace map
   UI-UX-Brief.md            Every screen in Build Studio and Cloud Dashboard; UX issues
   Implementation-Plan.md    Prioritised engineering roadmap across 4 phases
+  Security.md               Numbered security-gap tracker (SG-01…) with fix status
+  Sales-Blockers.md         Sales/GTM-framed gap tracker — what blocks the first enterprise sale
+  Auth-and-Updater.md       Build Studio + runtime auth flows and both auto-updaters
   cost_model.md             Unit economics — LLM cost per compile, hosting, revenue model
-  agentic-discovery-strategy.md  Durability flywheel governance — gated behind admin approval
+  archive/                  Superseded reports, refactor case studies, rotated FIX.md logs
 ```
 
 ---
@@ -239,7 +251,7 @@ Quick orientation:
 - **Cloud** (`conxa-cloud/`): coordination only — LLM proxy, skill pack hosting, telemetry ingest, billing. Does not record, compile, or execute.
 - **Runtime** (`runtime/`): two-layer architecture on the customer's machine.
   - **Host exe** (`@yao-pkg/pkg`, built `--no-bytecode`): bundles `bootstrap.js` + `_pkg_stubs.js` only. Provides `__hostRequire` so disk-loaded app code can use Playwright etc. Built with `build-runtime-host.yml`, tagged `host-vX.Y.Z`.
-  - **App layer** (`conxa-app/`, disk-resident at `~/.conxa/conxa-app/`): contains `server.js`, `run.js`, `resolver.js`, `resolve_adapter.js`, `recovery.js` and the rest. Obfuscated JS, independently updatable without reinstalling the host exe. `bootstrap.js` enforces `min_host` semver before loading. Built with `build-runtime-app.yml`, tagged `app-vX.Y.Z`. Atomic `.bak` rollback on failed update. Studio sandbox (`sandbox/.conxa/`) mirrors this layout for local workflow tests.
+  - **App layer** (`conxa-app/`, disk-resident at `~/.conxa/conxa-app/`): contains `server.js`, `run.js`, `resolver.js`, `resolve_adapter.js`, `recovery.js` and the rest. Obfuscated JS, independently updatable without reinstalling the host exe. `bootstrap.js` enforces `min_host` semver before loading. Built with `build-runtime-app.yml`, tagged `app-vX.Y.Z`. Versioned-directory rollback (via `version_manager.js`) on failed update. Studio sandbox (`sandbox/.conxa/`) mirrors this layout for local workflow tests.
 
 MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `list_skills`, `get_skill_inputs`, `get_execution_status`, `cancel_execution`, `refresh_skills`, `get_runtime_status`.
 
@@ -268,20 +280,20 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Runtime two-layer bootstrap | `runtime/bootstrap.js` — min_host check, app-layer load, `.bak` fallback |
 | Host / app update manifests | `conxa-cloud/backend/app/api/updates_routes.py` (manifest_version 2; deps: `conxa-runtime`, `conxa-app`) |
 | Studio sandbox for workflow tests | `conxa-builder/python/conxa_compile/conxa_runtime.py` — stages host exe + app layer under `sandbox/.conxa/` |
-| CI execution gate | `runtime/test/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay run in `build-runtime-app.yml` |
+| CI execution gate | `runtime/test/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay, currently **disabled** in `build-runtime-app.yml` pending re-enablement (see `TODO.md`); run it manually before shipping customer builds |
 | Frontend screens | `conxa-cloud/frontend/src/` — Dashboard, Plugins, Billing, Team, Settings |
 
 ---
 
 ## Deployment
 
-**Cloud backend** runs on Render. Root directory: `conxa-cloud/backend`. `build.sh` installs `packages/conxa-core` then `requirements.txt`. `start.sh` runs `uvicorn app.main:app` (`init_db()` creates schema on startup). A `Dockerfile` exists (build context = repo root). `GET /readyz` gates deploys (DB ping); `GET /healthz` is liveness. With `SKILL_AUTH_REQUIRED=true` the app **refuses to start** unless `SKILL_DATABASE_URL`, Clerk issuer/JWKS, `CORS_ORIGINS`, Razorpay credentials, and at least one LLM provider key are set. No silent fallback to filesystem DB in production.
+**Cloud backend** runs on Render. Root directory: `conxa-cloud/backend`. `build.sh` installs `packages/conxa-core` then `requirements.txt`. `start.sh` runs `uvicorn app.main:app` (`init_db()` creates schema on startup). A `Dockerfile` exists (build context = repo root). `GET /readyz` gates deploys (DB ping); `GET /healthz` is liveness. With `SKILL_AUTH_REQUIRED=true` the app **refuses to start** unless `SKILL_DATABASE_URL`, Clerk issuer/JWKS, `CORS_ORIGINS`, Cashfree credentials, and at least one LLM provider key are set. No silent fallback to filesystem DB in production.
 
 **Cloud frontend** runs on Vercel. Project root: `conxa-cloud/frontend`. Build: `npm run build`. The Next.js route handler `/api/v1/*` proxies to `API_ORIGIN`. Requires `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`.
 
 **Runtime** ships as two artifacts embedded in the NSIS installer:
 - **Host exe** (`dist/runtime-win.exe`): built with `--no-bytecode` so the Playwright selector engine works. Contains only `bootstrap.js` + `_pkg_stubs.js`. Tagged `host-vX.Y.Z`. Installed to `~/.conxa/` on Windows.
-- **App layer** (`conxa-app/`): obfuscated JS bundle (`server.js`, `run.js`, `resolver.js`, etc.). Tagged `app-vX.Y.Z`. Staged beside the host exe at `~/.conxa/conxa-app/`. Independently updatable via cloud; `bootstrap.js` enforces `min_host` semver before loading it, and rolls back to `.bak` on failure.
+- **App layer** (`conxa-app/`): obfuscated JS bundle (`server.js`, `run.js`, `resolver.js`, etc.). Tagged `app-vX.Y.Z`. Staged beside the host exe at `~/.conxa/conxa-app/`. Independently updatable via cloud; `bootstrap.js` enforces `min_host` semver before loading it, and `version_manager.js` rolls back to the previous versioned directory on failure.
 
 Self-updates poll `/api/v1/updates/runtime-manifest` (manifest_version 2; deps keyed `conxa-runtime` + `conxa-app`). SHA-256 integrity required for both artifacts.
 
@@ -295,7 +307,7 @@ These are non-negotiable. Do not work around them.
 - **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. Do not introduce silent LLM fallbacks into compiled-selector or a11y resolution paths. `recovery.js` implements L1/L2; `run.js` escalates to Tier 3+ only after both are exhausted.
 - **Iframe chain is preserved verbatim** from recording through compile and execution. Bounding boxes are page-level (offsets accumulated up the parent chain in `session.py`).
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** These are navigation markers, not interactable elements. They are never retried.
-- **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. Do not route anything else there.
+- **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. Do not route anything else there. **Known exception (tracked in `TODO.md`, not accepted as permanent):** `tracking_routes.py`'s public telemetry-ingest endpoint currently lives at `/api/tracking/{company}/events`, not `/api/v1/tracking/...`. This was found during a 2026-07 documentation audit and needs a proper fix with compat handling for already-deployed runtimes — do not treat it as sanctioned, and do not add further routes outside `/api/v1` by analogy with it.
 - **The cloud does not compile or execute.** Recording, compilation, plugin building, and skill execution are local-only. Keep them that way.
 - **Host exe built `--no-bytecode`.** V8 bytecode (.jsc) masks the Node version and causes the Playwright selector engine to segfault in pkg-bundled binaries. Never re-enable bytecode for the host exe.
 - **Resolver never blindly picks `candidate[0]`.** `resolver.js` requires the winning candidate's margin over the runner-up to clear `uniqueMargin` (default 0.15); otherwise it falls through to the next signal. Do not add shortcut paths that skip this gate.
@@ -331,6 +343,14 @@ The `docs/` files are living documentation. After making significant changes to 
 - Test additions.
 
 When in doubt, update the doc. A stale sentence in the TRD costs future engineers hours.
+
+### FIX.md rotation
+
+Keep appending to `FIX.md` after every prompt as usual. When `FIX.md` crosses a calendar-month boundary, or exceeds ~800 lines before one does, rotate the completed portion into `docs/archive/fix-log/FIX-<YYYY-MM>.md`, add a row to `docs/archive/fix-log/INDEX.md`, and leave only the current entries live in `FIX.md`.
+
+### TODO.md
+
+`TODO.md` at the repo root is the single prioritized backlog spanning documentation, architecture, and every subsystem. When you complete an item from it, mark it done in place (don't delete it — strike it through with a resolution date, matching the pattern used in `docs/Sales-Blockers.md`/`docs/Security.md`). When you discover new, still-open work during a task, add it to `TODO.md` rather than leaving it undocumented.
 
 ### PRD update policy
 

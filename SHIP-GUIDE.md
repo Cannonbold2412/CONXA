@@ -375,7 +375,7 @@ breaks is the **URLs these steps produce**. `promote-release.yml` and the cloud'
 `_release_url()` helper both build links like
 `https://github.com/<repo>/releases/download/...`, which become authenticated-fetch-only once
 the repo is private — a plain customer machine with no GitHub token gets a 404/401. That's the
-exact problem `research-analysis/private-repo-migration.md` covers. Fix it once (point releases
+exact problem `research-analysis/ops/private-repo-migration.md` covers. Fix it once (point releases
 at a Conxa-owned artifact base instead of GitHub Releases) and this shipping process is
 otherwise unaffected by repo visibility.
 

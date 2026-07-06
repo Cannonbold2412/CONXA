@@ -1,6 +1,6 @@
 # Backend Schema Document
 
-**Status:** Current as of 2026-06-11
+**Status:** Current as of 2026-07-04
 **Scope:** All data models, storage architecture, and API contracts
 
 ---
@@ -511,24 +511,7 @@ Response (201):
 
 ### 5.2 Skill Pack Delta
 
-**GET /api/v1/skill-packs/{company}/delta?since={version}**
-
-Response (200):
-```json
-{
-  "current_version": "0.3.0",
-  "base_version": "0.2.0",
-  "files": [
-    {
-      "skill": "submit_expense",
-      "path": "submit_expense/execution.json",
-      "action": "update",
-      "sha256": "abc123...",
-      "content_base64": "..."
-    }
-  ]
-}
-```
+See §5.9 (Skill-Pack Delta Sync) — the sole current contract for this endpoint. An earlier revision of this document described a single shared pack-wide version here; that has been superseded by §5.9's per-skill version map and removed to avoid two contradictory contracts for the same endpoint.
 
 ### 5.3 Entitlements
 
@@ -550,7 +533,7 @@ Response:
 }
 ```
 
-For paid Razorpay workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`).
+For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`).
 
 **POST /api/v1/usage/compile/reserve**
 
@@ -604,36 +587,34 @@ config/availability):
 
 ### 5.4 Billing
 
+The live payment gateway is **Cashfree** (switched from Razorpay 2026-06-30 — see `cashfree_routes.py`, mounted at `/api/v1/subscriptions`).
+
 **POST /api/v1/subscriptions/create**
 
 Request:
 ```json
-{"tier": "starter"}
+{"tier": "starter", "customer_email": "...", "customer_phone": "..."}
 ```
 
-Response:
+Calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns:
 ```json
 {
-  "subscription_id": "sub_123",
-  "plan_id": "plan_123",
-  "key_id": "rzp_live_xxx",
+  "subscription_id": "<Cashfree subReferenceId>",
+  "auth_link": "https://payments.cashfree.com/...",
+  "plan_id": "<Cashfree planId>",
   "amount": 2999900,
   "currency": "INR",
   "tier": "starter"
 }
 ```
 
-`key_id` is the public Razorpay Checkout key for the same account/mode that created the subscription. Secrets stay backend-only.
+The workspace↔subscription↔tier mapping is stored server-side in the `cashfree_sub_workspace` KV namespace (keyed by `subReferenceId`) for later webhook lookup, since Cashfree webhooks only carry the subscription reference id, not the originating workspace. The frontend redirects the user to `auth_link` to complete payment.
 
 **POST /api/v1/subscriptions/verify**
 
 Request:
 ```json
-{
-  "razorpay_payment_id": "pay_123",
-  "razorpay_subscription_id": "sub_123",
-  "razorpay_signature": "..."
-}
+{"subscription_id": "<Cashfree subReferenceId>"}
 ```
 
 Response:
@@ -641,11 +622,11 @@ Response:
 {"success": true}
 ```
 
-On success, the billing record stores the active tier, Razorpay subscription id, and `current_period_end` from Razorpay `charge_at` with `current_end` as a fallback. The dashboard uses that timestamp as the usage reset date.
+Fetches `GET /api/v2/subscriptions/{subscription_id}` from Cashfree, resolves the tier from the returned `planId`, and upserts the billing record (`plan`, `status: "active"`, `subscription_id`, `current_period_end`).
 
-**POST /api/v1/subscriptions/webhooks/razorpay**
+**POST /api/v1/subscriptions/webhooks/cashfree**
 
-Razorpay webhook endpoint. When `RAZORPAY_WEBHOOK_SECRET` is configured, requests must include a valid `x-razorpay-signature`. Activation and charge webhooks refresh `current_period_end`; cancellation clears it.
+Cashfree webhook endpoint. When `cashfree_webhook_secret` is configured, the signature is verified by sorting all `cf_`-prefixed payload fields, concatenating `key+value` pairs, and comparing against the provided signature using the shared secret (`_cf_webhook_signature()`). Activation/charge events refresh `current_period_end`; cancellation clears it.
 
 ### 5.5 LLM Proxy Usage Class
 

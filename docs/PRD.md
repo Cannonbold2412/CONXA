@@ -133,7 +133,7 @@ A thin coordination layer (FastAPI on Render, Next.js on Vercel) that handles:
 - Skill package hosting and versioning
 - Installer hosting and distribution
 - LLM proxy for compile-time AI calls (multi-provider: Groq, Google AI Studio, NVIDIA NIM)
-- Billing and subscription management (Razorpay)
+- Billing and subscription management (Cashfree)
 - Execution telemetry and run analytics
 - Team and organization management
 
@@ -175,19 +175,9 @@ Recorded sessions are normalized, deduplicated, and enriched through a local com
 - **Assertions** — expected post-step UI state to validate correct execution
 - **Recovery metadata** — everything needed to re-find and re-execute if the element has moved or changed
 
-### Self-Healing Execution — 5-Tier Recovery
+### Self-Healing Execution — Recovery Cascade
 
-When a step fails to find its target element, the runtime escalates through five recovery tiers:
-
-| Tier | Strategy | LLM Cost |
-|---|---|---|
-| 1 | Compiled selectors — try each in ranked order | Zero |
-| 2 | Accessibility tree — role + name lookup | Zero |
-| 3 | Semantic recovery — Claude analyzes DOM to find the element | LLM call |
-| 4 | Vision recovery — Claude analyzes screenshot to locate target | LLM call |
-| 5 | Escalation — surface to human for review | Human |
-
-Tiers 1 and 2 consume zero LLM tokens. The system only escalates to Claude when cheaper methods are exhausted.
+When a step fails to find its target element, the runtime escalates through a multi-tier recovery cascade, only calling Claude once cheaper, zero-token methods are exhausted — see `docs/TRD.md` §10.1 for the authoritative tier table.
 
 ### Workflow Editing
 

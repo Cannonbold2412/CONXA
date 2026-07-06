@@ -1,6 +1,6 @@
 # Conxa — Sales Blockers & Implementation Roadmap
 
-**Date:** 2026-07-02  
+**Date:** 2026-07-04  
 **Purpose:** Define what code must ship before Conxa can close its first enterprise customer.
 
 ---
@@ -11,7 +11,7 @@ The product works. Core features ship. **You can demonstrate to customers today.
 
 Since this doc was first written, almost every gap has closed. **Phase 1 is complete.** Of the eight Phase 2 items, six are done — device registration, audit log, RBAC (Phase 1), drift detection, selector-cache GC, billing enforcement, and friendly error messages have all shipped.
 
-**One hard sales blocker remains: Windows installer code signing (2.5).** The build scaffolding for it is already in place (inert) — what's left is procuring the certificate and switching it on. macOS support (2.4) is the only other open Phase 2 item, and it's an upsell, not a blocker.
+**One hard sales blocker remains: Windows installer code signing (2.5).** The signing code itself is fully implemented and already wired into the installer build — what's left is procuring a certificate and setting one env var. macOS support (2.4) is the only other open Phase 2 item, and it's an upsell, not a blocker.
 
 This doc separates:
 
@@ -54,7 +54,7 @@ This doc separates:
 | ✅ 2.2 Drift Detection | DONE | No | Yes | — |
 | ✅ 2.3 Audit Log | DONE | was **YES** | Yes | — |
 | 2.4 macOS Runtime Support | Open (groundwork inert) | No | Upsell | 7 |
-| 2.5 Installer Code Signing (Windows) | **Open (groundwork inert)** | **YES** | Yes | 3 |
+| 2.5 Installer Code Signing (Windows) | **Open (code done, cert not procured)** | **YES** | Yes | 3 |
 | ✅ 2.6 Selector Cache GC | DONE | No | Yes | — |
 | ✅ 2.7 Hardened Billing Integration | DONE | No | Yes | — |
 | ✅ 2.8 Error Code UX Mapping | DONE | No | All | — |
@@ -67,19 +67,18 @@ This doc separates:
 
 #### 2.5 Installer Code Signing (Windows) — **THE REMAINING BLOCKER**
 
-**Status:** Open. Build scaffolding is in place but inert — `installer_builder.py`, `electron-builder.yml`, and the host/studio CI workflows carry the signing groundwork; it is not yet wired to a real certificate.
+**Status (corrected 2026-07-04):** Open, but the code is fully implemented, not just scaffolding — `installer_builder.py` already runs a conditional `signtool.exe sign /sha1 ... /fd SHA256 /tr http://timestamp.digicert.com` step after the NSIS build. It only activates when `CONXA_SIGN_CERT_SHA1` (a certificate thumbprint, not a file path) is set and a matching cert is installed in the local certificate store. As of this writing, no certificate has been procured, so builds still ship unsigned.
 
 **Why it matters:**  
 Unsigned `.exe` triggers Windows SmartScreen: "Unknown Publisher — Windows protected your PC." Users click "Run anyway" — but many enterprises block unsigned executables via GPO.
 
 **What's left:**
-- Obtain Windows EV code signing cert (cost: ~$200/yr).
-- Activate the `signtool.exe` step in `installer_builder.py` post-NSIS build (scaffolding present).
-- Env vars: `CONXA_SIGN_TOOL_PATH`, `CONXA_SIGN_CERT_PATH`, `CONXA_SIGN_PASSWORD`.
+- Obtain a Windows EV code signing cert (cost: ~$200/yr) and install it in the build machine's certificate store.
+- Set `CONXA_SIGN_CERT_SHA1` (the cert's thumbprint) and `CONXA_SIGNTOOL_PATH` (if `signtool.exe` isn't already on PATH) in the build/CI environment — no code changes needed.
 
 **Business impact:** Without this, large enterprises cannot deploy to their fleet. SmartScreen block = dead on arrival.
 
-**Effort:** ~3 days (cert procurement + flipping the build integration on). Unblocked by Phase 1.
+**Effort:** ~3 days, entirely cert procurement — no remaining engineering work.
 
 ---
 
@@ -188,7 +187,7 @@ Before you ask a customer to sign:
 
 ## Recommended Sequence
 
-**Now:** 2.5 (Windows code signing) — procure the EV cert and switch on the existing (inert) build scaffolding. This is the last thing between the current build and a fleet-deployable, GPO-safe installer.
+**Now:** 2.5 (Windows code signing) — procure the EV cert and set `CONXA_SIGN_CERT_SHA1`; the signing step itself already runs automatically once that's set. This is the last thing between the current build and a fleet-deployable, GPO-safe installer.
 
 **After first Windows sale:** 2.4 (macOS support) to expand the addressable market to Mac teams.
 

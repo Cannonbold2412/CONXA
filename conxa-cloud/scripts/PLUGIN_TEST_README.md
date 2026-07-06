@@ -1,5 +1,16 @@
 # Plugin Test Runner
 
+> **Flagged 2026-07-04 during a documentation audit — needs a maintainer decision, not resolved
+> here.** This doc describes a bundle schema (`manifest.json`, `orchestration/`, `SKILL.md`, a
+> 4-layer recovery strategy) that does not match the current authoritative skill-pack schema
+> (`pack.json`, `skills/{slug}/{execution,recovery,inputs}.json`, `CLAUDE.md`+`index.md`, a 4-tier
+> T1–T4 recovery cascade — see `docs/TRD.md` §8/§10, `docs/Backend-Schema.md` §3). It also
+> references `app/services/skill_pack_builder.py`, which does not exist anywhere in the current
+> backend (the real generator is `conxa_compile/plugin_builder.py`, and per the "cloud does not
+> compile" invariant, the cloud shouldn't have a skill-pack builder at all). This may be a legacy
+> or parallel test harness that predates the current schema. **Needs a maintainer call:** archive
+> this tool and doc, or rewrite both to match the current schema. Tracked in `TODO.md`.
+
 End-to-end validation for CONXA skill packages. Tests 5 phases:
 
 - **Phase 1**: Bundle structure (files present, JSON valid, manifest fields correct)

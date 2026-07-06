@@ -1,5 +1,9 @@
 # Conxa Platform — Stage Assessment Report
 
+> **Archived 2026-07-04.** Superseded by `docs/Sales-Blockers.md` and `docs/Implementation-Plan.md`,
+> which track the same Phase 1/Phase 2 checklist and are kept current going forward. Kept here for
+> historical reference only — do not treat the verdict or open-items list below as current.
+
 **Generated:** 2026-06-28  
 **Based on:** Implementation Plan (updated 2026-06-20), TRD (updated 2026-06-11), FIX.md (2026-06-27), git log (126 commits), PRD v1.0
 

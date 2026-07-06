@@ -349,7 +349,7 @@ flowchart TD
     P --> Q[Sync complete]
 ```
 
-**First-time token:** The `auth.json` (Playwright storageState) is staged into `cache/sessions/` by the installer. On first sync, if no keytar token exists for the company, the runtime cannot sync. Token acquisition for the runtime is the **current gap** — the `getAuthChallengeUrl()` function generates a challenge URL but there is no in-app flow to complete this yet.
+**No token-acquisition step needed:** the runtime authenticates to Conxa Cloud using the **installer-embedded sync token** — a `secrets.token_urlsafe(32)` string minted at publish time and written into `pack.json` (see `docs/TRD.md` §5.4, `docs/Auth-and-Updater.md` §1.3). It's sent as `Authorization: Bearer` on every delta-sync request straight out of the installer, with no keytar lookup and no user login required. This superseded an earlier design (a Clerk-token/`setup_company` challenge-URL flow) that would have required an in-app completion step — that flow was replaced before shipping, so there is no first-sync gap to close here.
 
 ---
 

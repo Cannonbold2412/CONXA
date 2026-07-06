@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status:** Current as of 2026-07-01 — **Phase 1 COMPLETE** (1.1–1.8 all done, superseded, or moot). Phase 2 partially done (2.1, 2.3, 2.9, runtime-split + auto-update arch).
+**Status:** Current as of 2026-07-04 — **Phase 1 COMPLETE** (1.1–1.8 all done, superseded, or moot). Phase 2 mostly done (2.1, 2.2, 2.3, 2.5 code/wiring, 2.6, 2.7, 2.8, 2.9, runtime-split + auto-update arch); 2.4 (macOS) and 2.5's certificate procurement remain open — see `TODO.md`.
 **Audience:** Engineering team
 
 This plan is grounded in the actual codebase. Each item references the specific file or system that needs to change. Items are ordered by risk and dependency, not effort.
@@ -118,7 +118,9 @@ enforced on the three previously-unguarded write routes, matching the existing
 
 Enforced directly (no audit-only phase). Local/dev principals default to role `owner`, so
 existing single-user workflows are unaffected. Intentionally-public runtime phone-home
-endpoints (`run_routes.py` events, `job_routes.py` cancel) are left open by design.
+endpoints (`/api/v1/telemetry/runtime-start`, tracking-event ingest, skill-pack sync, installer
+downloads — see `PUBLIC_PATHS`/`PUBLIC_PATH_PREFIXES` in `app/api/security.py`) are left open
+by design, authenticated by sync token rather than Clerk role.
 
 **Files:** `app/services/rbac.py`, `plugin_routes.py`, `product_routes.py`.
 **Tests:** `tests/test_product_routes.py` (member→403, admin→200).
@@ -225,7 +227,7 @@ open; runtime-side post-hoc drift surfacing is implemented.
   (`tracking_routes.py`).
 
 **Tests:** `tests/test_element_fingerprint.py` 66/66; Node `test_resolver.js` / `test_verify.js`
-/ `test_recovery.js` all green. See `implementation-status.md` for the full phase log.
+/ `test_recovery.js` all green.
 
 **Still open:** LLM enrichment of residual-uncertainty signals (deterministic floor ships now);
 closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift gate (§2.2).
@@ -237,15 +239,15 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 **What was missing:** No record of which user took which action. The Settings page called `GET /api/v1/audit-events` which was a stub returning `[]`.
 
 **What was built:**
-- New `audit_routes.py`: `write_audit_log(user_id, workspace_id, action, resource_type, resource_id, ip, metadata)` helper uses `db_append("audit_log", workspace_id, [entry])` to persist events per workspace. `GET /api/v1/audit-events` (Clerk-authed) returns workspace-scoped entries, most recent first, paginated by `limit` param (max 500).
-- IP extracted from `X-Forwarded-For` first hop (Render proxy-aware); falls back to `request.client.host`.
+- New `add_audit_event(principal, action, resource_type, resource_id, metadata)` helper in `app/services/saas.py` appends to a per-workspace `audit_events` list (capped at the last 500) in the SaaS state store. `GET /api/v1/audit-events` — implemented as `list_audit_events()` in `app/api/product_routes.py`, backed by `audit_events_for(principal, limit)` — returns workspace-scoped entries, most recent first, paginated by `limit` param (max 500).
 - Events written on: `publish` (publish_routes.py), `installer_upload` (publish_routes.py), `plugin_create` and `plugin_delete` (plugin_routes.py).
-- Removed the empty stub from `v1_alias_routes.py`; Settings page now gets real data.
-- Registered `audit_router` in `main.py`.
+- Settings page now gets real data instead of the old stub.
 
-**Fields per entry:** `id`, `workspace_id`, `user_id`, `action`, `resource_type`, `resource_id`, `metadata`, `created_at` (epoch seconds), `ip`.
+**Fields per entry:** `id`, `workspace_id`, `user_id`, `action`, `resource_type`, `resource_id`, `metadata`, `created_at` (epoch seconds).
 
-**Files:** `audit_routes.py` (new), `publish_routes.py`, `plugin_routes.py`, `v1_alias_routes.py`, `main.py`
+**Files:** `app/services/saas.py`, `app/api/product_routes.py`, `publish_routes.py`, `plugin_routes.py`
+
+> **Correction (2026-07-04):** this entry originally named `audit_routes.py` (new) and `v1_alias_routes.py` as the implementing files. Neither exists in the current codebase — the functionality described above is real and shipped, but lives in `product_routes.py` + `services/saas.py` as corrected above.
 
 ---
 
@@ -255,8 +257,10 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 **Changes:**
 - **Host layer** (`conxa-runtime.exe`, ~85 MB): Node.js + all npm deps + `bootstrap.js`. Updated only when Node.js, Playwright, or native deps change (quarterly).
-- **App layer** (`conxa-app/`, ~60 KB zip): all application JS compiled to V8 bytecode (`.jsc`) via `javascript-obfuscator` → `bytenode`. Hot-synced on every cold start with no restart required.
-- `bootstrap.js` (new) is the pkg entry point. Loads `conxa-app/server.jsc` from disk; falls back to bundled copy if absent or `min_host` incompatible.
+- **App layer** (`conxa-app/`, ~60 KB zip): all application JS obfuscated via `javascript-obfuscator`. Hot-synced on every cold start with no restart required.
+- `bootstrap.js` (new) is the pkg entry point. Loads `conxa-app/server.js` from disk; falls back to bundled copy if absent or `min_host` incompatible.
+
+> **Correction (2026-07-04):** this entry originally described the app layer as compiled to V8 bytecode (`.jsc` via `bytenode`) and loaded as `server.jsc`. That approach was tried and reverted — V8 bytecode masks the Node version and caused the Playwright selector engine to segfault in pkg-bundled binaries (see `docs/TRD.md` §4.3/§5.8 and the `--no-bytecode` Key Invariant in `CLAUDE.md`). The app layer ships as plain obfuscated JS (`server.js`), not bytecode.
 - `(global.__hostRequire || require)` bridge lets disk-loaded `.jsc` files resolve npm deps bundled in the host VFS.
 - **Sync optimisation:** `sync.js` rewritten — parallel company sync (`Promise.allSettled`), parallel file downloads (`Promise.all`), 5-min recency skip (client-side, prevents 429s), reduced timeouts (delta: 3s, files: 8s). Outer timeout: 15s → 4s.
 - **`syncState` execution gate:** `execute_skill` awaits both skill-pack sync and app-layer update before running. Never hangs (all failures caught, gate opens with cached data).
@@ -272,7 +276,7 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 ### ✅ Enterprise-Grade Auto-Update Architecture — DONE 2026-07-01
 
-**What was built:** Replaced the two-layer split's `.bak`/`.next` single-backup update mechanism and two unsigned manifest endpoints with a versioned-directory + single-signed-manifest architecture. See TRD.md §4.1, §4.3, §4.4, §5.8, §11.3 for the authoritative reference; `docs/Runtime-Update-Architecture.md` (the original design proposal for the split above) is now marked superseded where it diverges.
+**What was built:** Replaced the two-layer split's `.bak`/`.next` single-backup update mechanism and two unsigned manifest endpoints with a versioned-directory + single-signed-manifest architecture. See TRD.md §4.1, §4.3, §4.4, §5.8, §11.3 for the authoritative reference.
 
 **Changes:**
 - **Versioned directories.** Every component — `conxa-runtime`, `conxa-app`, and each individual skill — is now `<component>/<version>/` with a `current` directory junction, retaining the last 3 versions (`runtime/version_manager.js`, new). Rollback is instant and needs no re-download; junctions were chosen over JSON pointer files specifically because Claude Desktop's MCP config stores a literal path to the host exe, which only the OS can resolve transparently.
@@ -306,14 +310,13 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 ### 2.5 Installer Code Signing
 
-**What's missing:** The Windows `.exe` installer is not code-signed. Windows SmartScreen will block it with an "Unknown Publisher" warning for end users.
+**Status (corrected 2026-07-04): code/wiring done, certificate not yet procured.** `installer_builder.py` already runs a conditional `signtool.exe sign /sha1 ... /fd SHA256 /tr http://timestamp.digicert.com` step after the NSIS build, gated on `CONXA_SIGNTOOL_PATH` (default `signtool.exe`) and `CONXA_SIGN_CERT_SHA1` env vars. This entry previously described the signing step itself as missing — it isn't; only a real Windows EV code-signing certificate installed in the local certificate store (referenced by its SHA-1 thumbprint via `CONXA_SIGN_CERT_SHA1`) remains to be procured. Until that happens, the installer builds unsigned and Windows SmartScreen will show an "Unknown Publisher" warning.
 
-**Fix:**
-- Obtain Windows EV code signing certificate.
-- Add `signtool.exe` step to `installer_builder.py` after NSIS build.
-- Configurable via env var (`CONXA_SIGN_TOOL_PATH`, `CONXA_SIGN_CERT_PATH`).
+**Remaining work:**
+- Procure a Windows EV code-signing certificate and install it in the build machine's certificate store.
+- Set `CONXA_SIGN_CERT_SHA1` (and `CONXA_SIGNTOOL_PATH` if `signtool.exe` isn't on PATH) in the CI/build environment.
 
-**Files:** `conxa-builder/python/services/installer_builder.py`
+**Files:** `conxa-builder/python/conxa_compile/installer_builder.py` (signing step already implemented)
 
 ---
 

@@ -67,7 +67,9 @@ Wire `require_admin()` (or a new `require_role(principal, min_role)`) into publi
 - `app/api/product_routes.py` — `patch_bundle_release()` (PATCH `/packages/bundles/{slug}/release`)
 - `app/api/cashfree_routes.py` — subscription creation (`create_subscription`)
 
-Any caller whose `principal.role` is not `"admin"` or `"owner"` receives `HTTP 403`. Local dev is unaffected (the anonymous local `Principal` defaults to `role="owner"`). Intentionally-public runtime phone-home endpoints (`run_routes.py` events, `job_routes.py` cancel) remain open by design — they carry no workspace-mutation risk. Tested in `tests/test_product_routes.py` (member→403, admin→200).
+Any caller whose `principal.role` is not `"admin"` or `"owner"` receives `HTTP 403`. Local dev is unaffected (the anonymous local `Principal` defaults to `role="owner"`). Intentionally-public runtime phone-home endpoints (`/api/v1/telemetry/runtime-start`, the tracking-event ingest prefixes, skill-pack sync, installer downloads — see `PUBLIC_PATHS`/`PUBLIC_PATH_PREFIXES` in `app/api/security.py`) remain open by design — they carry no workspace-mutation risk and are authenticated by sync token, not Clerk role. Tested in `tests/test_product_routes.py` (member→403, admin→200).
+
+> **Correction (2026-07-04):** this note previously referenced `run_routes.py`, which does not exist in the current codebase — corrected above to the actual public-path list in `security.py`.
 
 ---
 

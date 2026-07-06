@@ -124,38 +124,38 @@ Verification (`app/api/security.py`):
 
 ---
 
-### 1.3 Runtime Authentication (Per-Company Token + Session Encryption)
+### 1.3 Runtime Authentication (Installer-Embedded Sync Token + Session Encryption)
 
-The Runtime is a different system entirely. It authenticates against the Conxa Cloud on behalf of the end customer (to sync skill packs and submit telemetry) and manages Playwright browser sessions on the customer's target websites.
+The Runtime is a different system entirely. It authenticates against the Conxa Cloud on behalf of the end customer using the **installer-embedded sync token** described in `docs/TRD.md` §5.4 (a `secrets.token_urlsafe(32)` string minted at publish time, written into `pack.json`, sent as `Authorization: Bearer` on every skill-pack delta request — no keytar lookup, no user login, no refresh flow). It separately manages Playwright browser sessions on the customer's target websites, encrypted at rest with a per-company key described below.
 
-#### Per-company Conxa token (keytar)
+#### Per-company session-encryption key (keytar)
 
-Each installed skill pack belongs to a company. The runtime stores one Conxa-issued token per company in the OS credential manager via `keytar` (native Node.js module):
+`runtime/auth_manager.js`'s `getSessionKey()` stores one **random, per-machine, per-company session-encryption key** in the OS credential manager via `keytar` (native Node.js module) — this is deliberately **not** a Conxa cloud-auth token and has no expiry or refresh flow:
 
 ```
-keytar service = "conxa"
+keytar service = "conxa-session"
 keytar account = "{company_id}"
-value = JSON { token, expires_at }
+value = 32-byte random key, hex-encoded (generated on first use if absent)
 ```
 
 **In the packaged exe:** `keytar.node` is placed as a sibling file next to `runtime-win.exe`. The runtime uses `process.dlopen()` to load it directly (pkg bundles can't include native modules inline).
 
-**Fallback (dev/testing only):** If keytar is unavailable, tokens are stored in a plaintext JSON file at `~/.conxa/cache/.keytar.json`. This is never used in production.
+**Fallback (dev/testing only):** If keytar is unavailable, the key is stored in a plaintext JSON file at `~/.conxa/cache/.keytar.json`. This is never used in production.
 
-**Token refresh:** If `expires_at` is within 5 minutes, the runtime calls `POST https://apis.conxa.in/auth/refresh` with the old token. A per-company mutex (`_refreshLocks`) prevents concurrent refresh races.
+Keeping this key separate from the installer-embedded sync token is intentional (see the comment in `auth_manager.js`): a leaked installer exposes the sync token (read-only skill-pack access) but cannot decrypt any individual user's session file, since the encryption key is machine-specific and never leaves the OS keychain.
 
 #### Playwright session encryption (AES-256-GCM)
 
 When a skill executes in Playwright, the browser's session state (cookies, localStorage) is saved encrypted to disk:
 
 ```
-Key derivation: HKDF-SHA-256(Conxa token, salt=32-byte zero, info="conxa-session-v1") → 32-byte key
+Key derivation: HKDF-SHA-256(per-company session key, salt=32-byte zero, info="conxa-session-v1") → 32-byte key
 Encryption: AES-256-GCM, random 12-byte IV per save
 File: ~/.conxa/data/sessions/{company}_state.json
      { iv, tag, data } — all base64
 ```
 
-The session is only decryptable with the same Conxa token used to encrypt it. If the token changes (re-auth), the old session file is unreadable and a fresh session starts — this is intentional.
+The session is only decryptable with the same per-company session key used to encrypt it. If that key is ever rotated or lost, the old session file is unreadable and a fresh session starts — this is intentional.
 
 #### Target website re-login
 
@@ -359,12 +359,13 @@ The manifest is fetched from `GET /api/v1/updates/deps-manifest` (public — cal
 ## Summary: Which token goes where
 
 ```
-Token                   Lives in                  Used for
-─────────────────────   ──────────────────────    ────────────────────────────────────────
-Clerk access token      OS keyring (Python)       Cloud LLM proxy, plugin publish, billing
-Clerk refresh token     OS keyring (Python)       Refreshing the access token silently
-Conxa company token     OS keyring (Node/keytar)  Skill pack sync, telemetry ingestion
-Playwright storageState AES-GCM file on disk      Target website session (cookies/localStorage)
+Token                     Lives in                  Used for
+───────────────────────   ──────────────────────    ────────────────────────────────────────
+Clerk access token        OS keyring (Python)       Cloud LLM proxy, plugin publish, billing
+Clerk refresh token       OS keyring (Python)       Refreshing the access token silently
+Sync token                pack.json (per company)    Skill-pack delta sync (TRD.md §5.4) — no keychain, no refresh
+Per-company session key   OS keyring (Node/keytar)  Encrypting Playwright storageState at rest
+Playwright storageState   AES-GCM file on disk      Target website session (cookies/localStorage)
 ```
 
-No token ever leaves the machine it was issued for. The cloud does not hold Playwright sessions. The runtime does not hold Clerk tokens.
+No token ever leaves the machine it was issued for. The cloud does not hold Playwright sessions. The runtime does not hold Clerk tokens. Telemetry ingestion is authenticated separately — see `docs/TRD.md` §5.9 / `docs/Backend-Schema.md` for the tracking-endpoint contract.

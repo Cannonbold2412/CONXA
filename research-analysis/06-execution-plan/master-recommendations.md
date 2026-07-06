@@ -1,5 +1,10 @@
 # Master Recommendations (Phase 13)
 
+> **This is the canonical execution-priority ranking** — `03-insights/master-insights.md` (Part 2, a
+> finer-grained 1–25 insight ranking with framing/positioning items too) and
+> `06-execution-plan/cto-report.md` (§6/§7, condensed leadership-facing summaries) both point back
+> here rather than maintaining their own independent R-numbered rankings.
+
 Every recommendation with: **Source · Problem Solved · Reliability Gain · Recovery Gain · Enterprise Gain · Strategic Value · Competitive Advantage · Complexity · Risk · ROI**, ranked highest ROI first.
 
 Gains 1–10; Complexity/Risk Low/Med/High. ROI is the final rank-ordering metric (benefit weighted by cost/risk and dependency position). Sources: the research database (`master-insights.md`, `master-insights.md`), the current-state findings (`current-state.md`), and the gap analysis (`gap-analysis.md`). Philosophy is enforced — no recommendation puts the LLM in the deterministic hot path.

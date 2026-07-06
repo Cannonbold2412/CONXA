@@ -56,7 +56,7 @@
 
 ## 6. Top 10 highest-ROI improvements
 
-(From `master-recommendations.md`, ranked by ROI.)
+See [`master-recommendations.md`](master-recommendations.md) for the canonical R1–R14 ranked list — full Source/Problem/Gains/ROI detail per item, plus the dependency-ordered critical path. This report's top 10 is that list's top 10 by ROI, headlines only:
 1. **R1 — Independent post-condition verification** (the correctness gate).
 2. **R2 — Autonomous verified recovery + write-back** (make self-healing real).
 3. **R3 — Fleet drift flywheel** (the moat).
@@ -69,6 +69,8 @@
 10. **R10 — Compiler IR + reproducible compiles** (the substrate for durability/rollback).
 
 ## 7. Top 10 strategic improvements
+
+A different lens than §6 above — ordered by strategic/defensibility weight rather than ROI, and mixing in positioning moves (not just R-numbered engineering items) that don't appear in `master-recommendations.md`'s ranking at all.
 
 1. **The fleet flywheel** (R3) — the only compounding, uncopyable moat.
 2. **Durability-for-years as the headline promise** (R5) — attacks RPA's #1 pain and agents' #1 weakness simultaneously.

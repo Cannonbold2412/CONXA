@@ -1,6 +1,6 @@
 # Technical Reference Document (TRD)
 
-**Status:** Current as of 2026-06-11  
+**Status:** Current as of 2026-07-04  
 **Scope:** Conxa platform — Build Studio, Conxa Cloud, Runtime
 
 ---
@@ -220,8 +220,8 @@ All under `/api/v1/` except health endpoints:
 | `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
 | `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, plugin create/delete) | Clerk JWT |
-| `POST /api/v1/subscriptions/create` | Create Razorpay subscription (`subscription_id`, `plan_id`, public `key_id`) | Clerk JWT |
-| `POST /api/v1/subscriptions/webhooks/razorpay` | Razorpay webhook | Webhook secret HMAC |
+| `POST /api/v1/subscriptions/create` | Create Cashfree subscription (`subscription_id`, `auth_link`, `plan_id`) | Clerk JWT |
+| `POST /api/v1/subscriptions/webhooks/cashfree` | Cashfree webhook | Webhook secret HMAC over sorted `cf_`-prefixed fields |
 | `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
 | `GET /api/v1/plugins` | Plugin list | Clerk JWT |
 | `GET /api/v1/runs` | Run list (local) | Clerk JWT |
@@ -261,7 +261,7 @@ In local dev (`SKILL_AUTH_REQUIRED=false`), all requests are treated as a synthe
 
 ### 3.5 Billing
 
-Razorpay is the wired payment gateway (`app/api/razorpay_routes.py`). Production checkout uses pre-provisioned Razorpay monthly plan IDs for Starter and Pro (`RAZORPAY_STARTER_PLAN_ID`, `RAZORPAY_PRO_PLAN_ID`); runtime checkout must not create Razorpay plans dynamically. Local development can still fall back to dynamic plan creation when those IDs are absent. Subscription verification and Razorpay activation/charge webhooks persist `current_period_end` from Razorpay's next-charge timestamp (`charge_at`, falling back to `current_end`) so paid usage windows reset on the monthly payment date. The config has orphaned `stripe_*` fields — these are **not wired** in any route handler (see §17).
+Cashfree is the wired payment gateway (`app/api/cashfree_routes.py`, mounted at `/api/v1/subscriptions`; switched from Razorpay 2026-06-30). `POST /create` calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns an `auth_link` for the frontend to redirect to; the workspace↔subscription↔tier mapping is stored server-side (`cashfree_sub_workspace` KV) since Cashfree webhooks only carry the subscription reference id. `POST /verify` fetches the subscription from Cashfree and resolves the tier from its `planId`. `POST /webhooks/cashfree` verifies the signature by sorting all `cf_`-prefixed payload fields and comparing against the shared webhook secret. Activation/charge webhooks persist `current_period_end` so paid usage windows reset on the monthly payment date. See `docs/Backend-Schema.md` §5.4 for the full request/response contracts. Stripe was previously present as orphaned unwired config fields and has since been fully removed (see §17).
 
 ---
 
@@ -531,26 +531,22 @@ sequenceDiagram
     participant Cloud as Conxa Cloud
 
     Note over RT: On startup (async, after MCP connect)
-    RT->>RT: read all pack.json files in SKILL_PACKS_DIR
-    loop for each company
-        RT->>RT: getToken(company) from keytar
-        RT->>Cloud: GET /api/v1/skill-packs/{co}/delta?since={version}
-        Note over RT,Cloud: Bearer token<br/>Rate-limited: 1 req / 5 min per token
-        Cloud->>Cloud: compare versions
-        alt version unchanged
-            Cloud-->>RT: {files: []} (empty delta)
-        else version changed
-            Cloud-->>RT: {files: [...base64 content...], current_version}
-            RT->>RT: backup existing skill dirs
-            RT->>RT: atomicWrite each file (SHA-256 verified)
-            RT->>RT: update pack.json skill_pack_version
-            RT->>RT: clean up backups
-        end
+    RT->>RT: read pack.json (sync_token, sync_endpoint) per company
+    RT->>RT: build since={skill_slug: last_known_version} from local skill dirs
+    RT->>Cloud: GET /api/v1/skill-packs/{co}/delta?since={json-map}
+    Note over RT,Cloud: Bearer sync_token (installer-embedded, §5.4)<br/>Rate-limited: KV-backed, shared across instances
+    Cloud->>Cloud: compare each skill's own version independently
+    Cloud-->>RT: {skills: [{name, action: "no_change"} | {name, version, action: "update", files: [...]}]}
+    loop for each skill with action "update"
+        RT->>RT: backup existing skill dir
+        RT->>RT: atomicWrite each file (SHA-256 verified)
+        RT->>RT: update component_versions for that skill
+        RT->>RT: clean up backup
     end
     RT->>RT: reload skill index from updated files
 ```
 
-**CURRENT STATE gap:** The delta endpoint ships **all files** when the version differs — no per-file checksum diffing. Each delta call transfers the entire skill pack regardless of what changed. Code comment in `skillpack_update_routes.py`: `"Simplified implementation"`.
+See §5.9 / §11.1 for the full endpoint contract. Sync is per-skill, not per-company — republishing one skill never triggers a re-download of the others. Within a single changed skill, all of that skill's files are still sent (no per-file checksum diffing inside one skill) — a much smaller gap than the old whole-company retransfer this replaced, since each skill is only a handful of small JSON files.
 
 ### 5.7 Telemetry Flow
 
@@ -829,6 +825,8 @@ After navigation steps: waits for `domcontentloaded` + 600ms observer pause.
 
 ### 10.1 Four-Tier Recovery Cascade + Ceiling
 
+> This table is the canonical, authoritative recovery-tier reference — `README.md`, `AGENTS.md`, `docs/PRD.md`, `docs/App-Flow.md`, and `docs/cost_model.md` all link here rather than repeating it. Some of those docs describe this as a "5-tier" cascade, counting human review/escalation after T4 is exhausted as an informal fifth tier — that's a framing difference, not a contradiction; the automated cascade itself has exactly four tiers.
+
 When step resolution fails to find the target:
 
 | Tier | Mechanism | LLM Cost | Trigger | Where |
@@ -950,15 +948,9 @@ If the element is expected inside a dialog, recovery first restricts the search 
 
 ### 11.1 Skill Pack Delta Sync
 
-**Endpoint:** `GET /api/v1/skill-packs/{company}/delta?since={version}`
+**Endpoint:** `GET /api/v1/skill-packs/{company}/delta?since={json-map}`
 
-**CURRENT STATE (simplified):**
-- If `current_version == since_version` → return `{files: []}`.
-- Otherwise → return ALL files in the skill pack as base64.
-- No per-file checksum comparison.
-- Rate-limited: 1 request per 5 minutes per token (in-memory `_rate_cache` dict).
-
-**FUTURE STATE:** Per-file SHA-256 comparison against a version manifest. Only changed files transferred. Redis-backed rate limiting.
+**Current state:** `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (see §5.9 for the full contract and §5.6 for the sequence). Each skill is compared against its own version independently — `_build_delta()` in `skillpack_update_routes.py` returns `{"name": slug, "action": "no_change"}` for unchanged skills and `{"name": slug, "version", "action": "update", "files": [...]}` for changed ones. Republishing one skill never triggers a re-download of the others. Within a changed skill, all of that skill's files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) are still sent — there is no per-file checksum comparison *within* a single skill, which remains a real but low-impact gap (a handful of small JSON files, not a whole company pack). Rate-limiting is KV-backed (`rate_limits` namespace in `conxa_core.db`), persisted across restarts and shared across instances — not the in-memory dict this section used to describe, and Redis was deliberately not introduced (see `docs/Security.md` SG-04).
 
 ### 11.2 Atomic File Updates
 
@@ -1076,7 +1068,7 @@ Plan defaults:
 - `enterprise`: explicit workspace overrides.
 - `development`: unlimited.
 
-Legacy `basic` billing records normalize to `starter`. Paid Razorpay workspaces use `billing:<current_period_end_unix>` as the usage period and reset at the next monthly payment timestamp stored on the billing record. Workspaces without a subscription timestamp fall back to the UTC calendar month (`YYYY-MM`) and reset at the first day of the next UTC month.
+Legacy `basic` billing records normalize to `starter`. Paid (Cashfree-subscribed) workspaces use `billing:<current_period_end_unix>` as the usage period and reset at the next monthly payment timestamp stored on the billing record. Workspaces without a subscription timestamp fall back to the UTC calendar month (`YYYY-MM`) and reset at the first day of the next UTC month.
 
 Fresh compile flow:
 1. Build Studio determines the workflow has no `skill_id`.
@@ -1245,12 +1237,11 @@ Start command:     ./start.sh
   uvicorn app.main:app --host 0.0.0.0 --port $PORT
 Health check:      GET /healthz (liveness)
 Deploy gate:       GET /readyz (DB ping)
-System deps:       Aptfile (Playwright/Chromium system packages — not used in cloud, leftover)
 Environment:       SKILL_AUTH_REQUIRED=true requires:
   SKILL_DATABASE_URL, SKILL_CLERK_ISSUER, SKILL_CLERK_JWKS_URL,
-  SKILL_CORS_ORIGINS, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
-  RAZORPAY_WEBHOOK_SECRET, RAZORPAY_STARTER_PLAN_ID,
-  RAZORPAY_PRO_PLAN_ID, + at least one *_API_KEYS
+  SKILL_CORS_ORIGINS, CASHFREE_APP_ID, CASHFREE_SECRET_KEY,
+  CASHFREE_WEBHOOK_SECRET, CASHFREE_STARTER_PLAN_ID,
+  CASHFREE_PRO_PLAN_ID, + at least one *_API_KEYS
 ```
 
 ### 16.2 Cloud Frontend (Vercel)
@@ -1286,18 +1277,19 @@ MCP registration is done by the NSIS installer itself: a generated PowerShell sc
 
 | Gap | Location | Severity | Notes |
 |---|---|---|---|
-| Delta sync ships all files | `skillpack_update_routes.py` | Medium | Code comment: "simplified implementation" |
+| Delta sync ships all files **within a changed skill** | `skillpack_update_routes.py::_build_delta()` | Low | Per-skill granularity is real (§5.9/§11.1) — republishing one skill never re-downloads others. What remains is per-*file* diffing inside a single changed skill (a handful of small JSON files each), a much smaller gap than the whole-company retransfer this replaced. |
 | ~~Selector cache GC unscheduled~~ **RESOLVED** | `selector_cache.cleanup_expired_entries()` + `main.py` lifespan | — | Background loop (default 6h + startup) sweeps expired selector-cache entries and old snapshot blobs |
 | ~~Billing quotas not enforced~~ **RESOLVED** | `entitlements.py`, `publish_routes.py`, `llm_proxy_routes.py` | — | Plan limits enforced (publish slot, compile credits, Human-Edit pool); enforce flags on by default; provider is Cashfree |
 | Sync token is a shared installer secret | `sync_tokens` KV + pack.json | Low | Read-only, single-company scope; per-machine session encryption key mitigates session-file risk |
 | ~~Rate limit cache in-memory~~ **RESOLVED** | `rate_limits` KV namespace | — | Persisted in `conxa_core.db`; survives restarts, shared across instances (in-memory fallback in local dev) |
-| ~~Stripe fields in config~~ **RESOLVED** | removed | — | Stripe fully removed (config, endpoints, dep, frontend flag); Razorpay/Cashfree is the wired gateway |
-| No device/runtime registration | Cloud | High | No visibility into how many runtimes are active |
+| ~~Stripe fields in config~~ **RESOLVED** | removed | — | Stripe fully removed (config, endpoints, dep, frontend flag); Cashfree is the wired gateway (switched from Razorpay 2026-06-30) |
+| ~~No device/runtime registration~~ **RESOLVED** | `telemetry_routes.py` `/runtime-start`, `runtime/drift.js` | — | Runtime-start telemetry + pre-execution structural-fingerprint drift gate give visibility into active runtimes and redesign detection (Implementation-Plan §2.1/§2.2) |
 | ~~No enterprise RBAC enforcement~~ **PARTIAL** | `app/services/rbac.py` | Medium | `require_admin` enforced on publish, plugin create/delete, bundle release; fine-grained per-skill/analyst roles still Phase 3 |
 | Runtime auth per-company only | `auth_manager.js` | Medium | No per-user identity at runtime |
 | ~~Installer download fully public~~ **RESOLVED** | `publish_routes.py:get_installer` | — | Requires signed, time-limited `ts`+`sig` when `SKILL_INSTALLER_SIGNING_KEY` is set; public download preserved only in dev (SG-07) |
 | ~~`research/frontend/` is a dead prototype~~ **N/A** | — | — | Directory does not exist in the repo |
-| Aptfile has Playwright deps | `conxa-cloud/backend/Aptfile` | Low | Cloud doesn't use Playwright; leftover from old arch |
-| `worker.py` scaffold | `app/worker.py` | Low | Queue scaffold, not implemented |
+| ~~Aptfile has Playwright deps~~ **N/A** | — | — | `conxa-cloud/backend/Aptfile` does not exist in the current repo — removed at some point after this gap was first logged, not merely unused |
+| ~~`worker.py` scaffold~~ **N/A** | — | — | `app/worker.py` does not exist in the current repo — the job-queue scaffold described here was never committed (or was removed); see `TODO.md` for the actual durable-queue gap |
+| `tracking_routes.py` public ingest endpoint bypasses `/api/v1` | `app/api/tracking_routes.py`, `main.py` | Medium | The public telemetry-ingest route is mounted at `/api/tracking/{company}/events`, not `/api/v1/tracking/...`, violating the documented all-routes-under-`/api/v1` invariant. Found during the 2026-07 documentation audit; tracked as a bug in `TODO.md`, not accepted as permanent — needs a fix with compat handling for already-deployed runtimes. |
 | No CDN/multi-region blob storage | `blob_read_write_token` config | Low | Config field still unwired, but durability gap is closed: installer versions and skill-pack files now persist to Postgres (`installer_versions__{slug}`, `skillpack_files__{slug}` KV namespaces), surviving Render disk wipes. Base64-in-Postgres doesn't scale indefinitely — revisit if installers approach `build_artifact_upload_max_bytes` (250 MB) regularly or DB storage cost/limits become an issue. |
 | `selector_cache_ttl_days` | Config | Low | Cache exists but no GC scheduler wired |

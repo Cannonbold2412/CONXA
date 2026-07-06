@@ -1,6 +1,6 @@
 # UI/UX Brief
 
-**Status:** Current as of 2026-06-11
+**Status:** Current as of 2026-07-04
 **Scope:** Build Studio (Electron) + Cloud Dashboard (Next.js)
 
 ---
@@ -34,9 +34,11 @@ Both use:
 - Clerk for auth (different SDK: Electron uses custom PKCE; web uses `@clerk/nextjs`)
 - TanStack Query (cloud dashboard) or direct IPC calls (Build Studio)
 
-The `research/frontend/` directory contains a prototype/research copy of both the cloud dashboard and a previous version of the Build Studio UI. This prototype is **not deployed**. The production source of truth is:
+The production source of truth is:
 - Build Studio: `conxa-builder/electron/renderer/src/`
 - Cloud Dashboard: `conxa-cloud/frontend/`
+
+(A `research/frontend/` prototype directory was referenced in earlier drafts of this doc — it does not exist in the repo; see `docs/Implementation-Plan.md` §1.8, marked MOOT.)
 
 ---
 
@@ -302,7 +304,7 @@ The `research/frontend/` directory contains a prototype/research copy of both th
 
 ## 3. Cloud Dashboard Screens
 
-Source: `conxa-cloud/frontend/` (and `research/frontend/` for prototype reference)
+Source: `conxa-cloud/frontend/`
 
 ### 3.1 Marketing/Landing Page
 
@@ -371,12 +373,12 @@ Source: `conxa-cloud/frontend/` (and `research/frontend/` for prototype referenc
 
 ### 3.6 Billing Page (`app/(protected)/billing/page.tsx`)
 
-**Purpose:** Subscription management via Razorpay.  
+**Purpose:** Subscription management via Cashfree.  
 **Inputs:** Plan selection.  
 **Outputs:** Checkout readiness, plan tier, and workspace usage meters.
 **User goal:** Upgrade or manage subscription.
 
-**Meter behavior:** Shows all four customer meters first: seats, installer slots, compile credits, and Human Edit pool. Account timing and checkout state live in the Billing Operations panel rather than top summary cards. The panel shows active plan and Usage reset only; Usage reset uses the Razorpay monthly payment/renewal timestamp, and the separate Billing period end row is not shown.
+**Meter behavior:** Shows all four customer meters first: seats, installer slots, compile credits, and Human Edit pool. Account timing and checkout state live in the Billing Operations panel rather than top summary cards. The panel shows active plan and Usage reset only; Usage reset uses the Cashfree monthly payment/renewal timestamp, and the separate Billing period end row is not shown.
 
 **UX issues:**
 - No invoice history.
@@ -524,7 +526,7 @@ AppChrome (layout)
 | Compile step | No time estimate; LLM progress hidden | Users cancel thinking it's stuck |
 | HumanEdit | No guided review checklist | Steps signed off incorrectly |
 | Parameterization | Not discoverable | Workflows hardcoded; break on different users |
-| Runtime token | No in-app acquisition flow | Skills don't sync without manual token setup |
+| ~~Runtime token~~ | ~~No in-app acquisition flow~~ | **Resolved** — installer-embedded sync token (`docs/Auth-and-Updater.md` §1.3, `docs/TRD.md` §5.4) needs no acquisition step at all |
 | Error codes | Raw codes shown to user | Confusing (e.g. `cloud_unreachable` for quota exceeded) |
 | Recording | No live screenshot preview | Can't confirm recorder is capturing correctly |
 | Build → installer | Two steps not explained | Users confused about why two actions needed |
@@ -536,19 +538,17 @@ AppChrome (layout)
 
 ## 7. Missing Experiences
 
-### 7.1 Runtime Token Acquisition (Critical Gap)
+### 7.1 Runtime Token Acquisition — Resolved
 
-There is no in-app flow for the end customer to acquire a runtime auth token. The `auth_manager.js:getAuthChallengeUrl()` function generates a challenge URL, but the runtime's `server.js` does not expose a tool to trigger this. This means skill sync silently fails for new installations.
-
-**Needed:** An MCP tool or installer step that prompts the user to authenticate the runtime on first launch.
+This section previously described a critical gap: no in-app flow for the end customer to acquire a runtime auth token, with skill sync silently failing on new installations. That design (a Clerk-token/`setup_company` challenge-URL flow via `getAuthChallengeUrl()`) was superseded before shipping by the installer-embedded sync-token model — the token is minted at publish time, written into `pack.json`, and used directly by the runtime with zero user interaction. See `docs/Auth-and-Updater.md` §1.3 and `docs/TRD.md` §5.4 for the current model. There is no first-sync gap to close here.
 
 ### 7.2 Execution Visibility in Build Studio
 
 The Build Studio has no view of execution history from deployed customers. Engineers must open the Cloud Dashboard separately to see telemetry. There's no "how are my customers doing?" view within the tool where the engineer lives.
 
-### 7.3 Drift Alerts
+### 7.3 Drift Alerts — Resolved
 
-The `structural_fingerprint` in `SkillMeta` was designed for drift detection — comparing the first 3 steps' landmark selectors before execution to detect site redesigns. This comparison is not implemented in the runtime (`run.js`) yet. No alert surfaces to engineers when their skills are likely failing due to site changes.
+This section previously described the `structural_fingerprint` comparison as designed but not implemented in the runtime. It's now implemented: `runtime/drift.js` runs an advisory pre-execution drift check (see `docs/TRD.md` §10.6) and emits a `drift_detected` telemetry event that surfaces on the vendor dashboard's `/drift` review queue (Implementation-Plan §2.2) when it fires. This never blocks execution — it's a signal, not a gate.
 
 ### 7.4 Workflow Diff / Version History
 
@@ -597,9 +597,9 @@ The Build Studio can record and partially edit offline (events are local). Compi
 
 Bootstrap surfaces download URLs for IT whitelisting, which is good. However, the Clerk auth flow opens a system browser and uses a fixed port range (52741–52750). Corporate proxy environments may block this. There's no proxy configuration UI.
 
-### 8.5 Role-Based Access in Dashboard
+### 8.5 Role-Based Access in Dashboard — Partially Resolved
 
-The Cloud Dashboard has Team and Settings pages but RBAC is not enforced. All workspace members can see all data, trigger all actions. For enterprise customers, read-only analyst roles are needed.
+`require_admin` is now enforced on publish, plugin create/delete, and bundle-release routes (`app/services/rbac.py`; Implementation-Plan §1.6). Fine-grained per-skill ACLs and a read-only analyst role for enterprise customers are still open — Phase 3, tracked in `TODO.md`.
 
 ---
 
@@ -607,9 +607,9 @@ The Cloud Dashboard has Team and Settings pages but RBAC is not enforced. All wo
 
 ### Priority 1: Fix critical UX gaps (blockers for reliable use)
 
-1. **Translate error codes to human messages.** Map all `_CommandError` codes to user-friendly strings in the renderer. `compile_credit_limit_exceeded`, `human_edit_pool_exceeded`, and `installer_limit_exceeded` should produce upgrade/blocking messages. `cloud_unreachable` should say "Cannot reach Conxa Cloud. Check your internet connection."
+1. ~~**Translate error codes to human messages.**~~ **Resolved** (Implementation-Plan §2.8) — `errorMessages.ts` now maps `_CommandError` codes to user-friendly strings in the renderer.
 
-2. **Runtime token acquisition flow.** Add an MCP tool (`setup_company`) or installer step that guides the end user through authenticating the runtime for a company on first use. Without this, skill sync silently fails for new installations.
+2. ~~**Runtime token acquisition flow.**~~ **Resolved** — no acquisition flow is needed; see §7.1 above.
 
 3. **Compile time estimate.** Before compilation starts, show an estimate based on event count: `~N steps → approximately M minutes`. Update the estimate as steps complete.
 

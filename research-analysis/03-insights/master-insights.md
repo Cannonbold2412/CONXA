@@ -159,6 +159,13 @@ Conxa's reliability comes from doing the boring deterministic things exhaustivel
 The same insights flattened into a single highest-value-first list. Ranking blends the strategic
 priority order above with implementation ROI.
 
+> **Relationship to `06-execution-plan/master-recommendations.md`:** that document is the canonical,
+> execution-priority ranking (R1–R14, engineering-detail granularity, full Source/Problem/Gains/ROI
+> per item, with a dependency-ordered critical path) — go there for "what to build in what order."
+> This list is insight-level (finer-grained, includes framing/positioning insights with no direct
+> R-number, e.g. #17/#21/#24/#25 below) and is the one to read for "why," not "in what sequence."
+> Each entry below that has a direct execution-plan counterpart is tagged `maps to R<n>`.
+
 **Legend:** Impact scores 1–10. Complexity / Risk: Low / Med / High. "Risk" = risk of the insight
 being wrong, hard, or backfiring — not the risk it addresses.
 

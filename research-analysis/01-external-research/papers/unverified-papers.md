@@ -2,6 +2,13 @@
 
 These three papers were present in the research corpus but their arXiv IDs do not match expected web automation topics. They should be manually verified before inclusion in the main research index.
 
+> **Last checked: 2026-07-04 (documentation audit).** Re-confirmed via arXiv-ID metadata lookup only —
+> control theory / quantum computing / semantic communications, respectively, none of which fits the
+> web-automation corpus. The underlying PDFs were still not actually opened during this check (same
+> limitation as when this doc was first written — see `/tmp/research-corpus/papers/` note below,
+> which is an ephemeral path and may no longer exist). This remains an open, actionable item — tracked
+> in `TODO.md` — not something this pass resolved.
+
 ---
 
 ## 2402.10157v1.pdf

@@ -38,13 +38,13 @@ Grounding: `current-state.md`, `vs-state-of-the-art.md`, `master-insights.md`. P
 - **Reliability:** 9 · **Enterprise:** 6 · **Strategic:** 6
 - **ROI:** **8** — kills a whole flakiness class at zero token cost; well-understood, copyable from Playwright/SeleniumBase.
 
-### G5 — Compiler/Runtime: wire fingerprint scoring + deterministic floor
-- **Current:** Compile-time `ElementFingerprint` + `selector_score.py`, but runtime tries selectors in order; no live scoring; LLM-only generation.
+### G5 — Compiler/Runtime: wire fingerprint scoring + deterministic floor — **RESOLVED**
+- **Current (at time of writing):** Compile-time `ElementFingerprint` + `selector_score.py`, but runtime tries selectors in order; no live scoring; LLM-only generation.
 - **Target:** Runtime scores live candidates against the fingerprint with a live uniqueness gate; emit *orthogonal* signals ordered by durability (semantic>structural); add a deterministic Playwright-style generator floor.
 - **Difficulty:** Med · **Risk:** Low · **Complexity:** Med
 - **Reliability:** 9 · **Enterprise:** 6 · **Strategic:** 7
 - **ROI:** **8** — makes the multi-signal investment actually pay off at runtime; fixes the C.1 ordering contradiction.
-- **Real-world evidence:** the [`render-deploy-selector-failure`](../incidents/render-deploy-selector-failure.md) incident is exactly this gap in production — the full compiler produced multi-signal `element_fingerprint`s, but the shipped data-only package threw that signal away and the runtime fell back to a garbage single selector. See its §5.3 for the long-term fix (carry multi-signal identity into the package + score it live).
+- **Status (2026-07 audit):** Resolved. `IdentityBundle` is now the sole identity source, and `runtime/resolver.js` implements the live uniqueness/margin gate this gap called for (see `CLAUDE.md`'s "Resolver never blindly picks `candidate[0]`" invariant). The real-world incident that originally corroborated this gap (a shipped data-only package throwing away multi-signal `element_fingerprint`s and falling back to a single garbage selector) was removed from `research-analysis/incidents/` in commit `02b3055` — the incident write-up no longer exists, but the fix it called for shipped regardless.
 
 ### G6 — Skill format: conditional / optional / branch steps
 - **Current:** Linear replay only; stochastic states (banners, interstitials, MFA) break plans. (Impl-Plan 4.1 planned.)
