@@ -134,7 +134,7 @@ Token costs at Groq (text) + Google AI Studio (vision):
 
 **Key insight on continuous iteration:** Both intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps — the rest are cache hits. This makes daily iteration cheap regardless of provider. Selector strings are generated deterministically at zero token cost in all cases.
 
-**Human Edit pool:** Human Edit can trigger extra LLM calls after the initial compile: step repair, selector or anchor regeneration, validation, and recovery artifact updates. Each plan gets a monthly Human Edit token pool that applies to both text and vision repair calls:
+**Human Edit pool:** Human Edit can trigger extra LLM calls after the initial compile: step repair, selector or anchor regeneration, validation, and recovery artifact updates. Each plan gets a monthly Human Edit token pool that applies to both text and vision repair calls. The re-target wizard's "draw a new region" step (Pick element phase) is one of these vision calls (`region_selector_vision.py`, cached by DOM hash + drawn bbox so redrawing the same box doesn't re-bill) — it replaced a text-only regenerate call that couldn't actually resolve a drawn region to a DOM element (see `docs/App-Flow.md` §7 re-target wizard note), so this is a cost-neutral swap of one Human Edit call for another, not a new charge:
 
 | Plan | Monthly Human Edit pool |
 |------|----------------------------|

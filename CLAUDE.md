@@ -93,8 +93,9 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
       editor/               Workflow editor service + DTOs + patch gate
       llm/                  client.py — call_llm() dispatcher (routes through conxa_core.llm's
                             installed router); task clients (intent, relational vision anchor,
-                            recovery, workflow intent graph, selector_regeneration.py — user-edit
-                            re-compile only, see Key Invariants)
+                            recovery, workflow intent graph, selector_regeneration.py +
+                            region_selector_vision.py — user-edit re-compile only, see Key
+                            Invariants)
       storage/              skill_packages_build.py — bundle generation/write/delete/rename
                             (read/list side is conxa_core.storage.skill_packages); formatters,
                             templates
@@ -313,7 +314,7 @@ These are non-negotiable. Do not work around them.
 - **The cloud does not compile or execute.** Recording, compilation, plugin building, and skill execution are local-only. Keep them that way.
 - **Host exe built `--no-bytecode`.** V8 bytecode (.jsc) masks the Node version and causes the Playwright selector engine to segfault in pkg-bundled binaries. Never re-enable bytecode for the host exe.
 - **Resolver never blindly picks `candidate[0]`.** `resolver.js` requires the winning candidate's margin over the runner-up to clear `uniqueMargin` (default 0.15); otherwise it falls through to the next signal. Do not add shortcut paths that skip this gate.
-- **LLM does not write selector strings on the primary compile path.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators when a workflow is first compiled. LLM is retained for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph. The one exception is the 1-click fix API (`compiler/patch.py::_regenerate_compiled_selectors`, via `llm/selector_regeneration.py`), which re-runs LLM-assisted selector generation against the original DOM snapshot when a user manually re-targets a step's element in the editor — this is a narrow, user-initiated re-compile path, not part of the primary compiler.
+- **LLM does not write selector strings on the primary compile path.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators when a workflow is first compiled. LLM is retained for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph. Two narrow, user-initiated re-compile exceptions exist, neither part of the primary compiler: the 1-click fix API (`compiler/patch.py::_regenerate_compiled_selectors`, via `llm/selector_regeneration.py`), which re-runs LLM-assisted selector generation against the original DOM snapshot when a user manually re-targets a step's element in the editor; and the Human Edit re-target wizard's "draw a new region" path (`editor/retarget.py` → `llm/region_selector_vision.py`, task `region_selector`), which uses a vision LLM — screenshot with the drawn region highlighted, plus the recorded DOM — because no recording stores per-element geometry a text prompt could resolve a drawn region against.
 - **App-layer min_host is enforced at load time.** `bootstrap.js` reads `version.json` from `conxa-app/` and refuses to load if `min_host` > current host semver. Do not bypass this check when bumping the app layer.
 
 ---

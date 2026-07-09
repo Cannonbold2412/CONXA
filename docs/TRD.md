@@ -730,7 +730,14 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 | `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
 | `recovery_llm.py` | Per-step recovery block | Medium |
 
-Selector generation is **fully deterministic** — `identity_bundle.py:generate_deterministic_signals()` reads the recorded DOM at compile time and emits Playwright-native-grammar signals ranked by durability. No LLM call is made to produce or score selector strings (SeeAct Finding 3: ~30% hallucination rate for LLM-written selectors). `llm_selector_generator_v2.to_playwright_grammar()` is still used as a pure string-formatting utility by `identity_bundle.py`.
+Selector generation is **fully deterministic** on the primary compile path, with two narrow,
+user-initiated re-compile exceptions: the 1-click-fix API's `selector_regeneration.py` (task
+`selector_generation`, text-only) and the Human Edit re-target wizard's "draw a new region" path,
+`region_selector_vision.py` (task `region_selector`, vision — screenshot + drawn region highlight
++ DOM snippet, since no recording stores per-element geometry a text prompt could resolve a drawn
+region against). Neither runs during normal compile.
+
+On the primary compile path itself, `identity_bundle.py:generate_deterministic_signals()` reads the recorded DOM at compile time and emits Playwright-native-grammar signals ranked by durability. No LLM call is made to produce or score selector strings (SeeAct Finding 3: ~30% hallucination rate for LLM-written selectors). `llm_selector_generator_v2.to_playwright_grammar()` is still used as a pure string-formatting utility by `identity_bundle.py`.
 
 ### 7.3 SkillPackage Output Schema
 

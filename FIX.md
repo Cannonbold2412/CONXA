@@ -4,6 +4,87 @@
 
 ---
 
+## Showed reviewers the "durability score" behind each selector, not just the selector text — 2026-07-10
+
+When someone reviews a recorded step in Human Edit, they've always been able to see and edit the
+selector text used to find an element on the page. But there was a lot of important information
+about *how good* each selector actually is that never made it into the screen — how likely it is
+to keep working after the target app changes, whether it uniquely matched the element when it was
+recorded, and whether the app itself (the compiler), an AI, or a person typed it in by hand. That
+information was already being calculated and saved every time a workflow was built — it just
+wasn't shown to anyone.
+
+Now the Review Selectors screen shows two new labels on every selector: an "orthogonality" badge
+(what *kind* of thing about the page it depends on — a test ID, visible text, position on screen,
+etc.) and a "source" badge (compiler, AI-assisted, or manually edited). A new "compile confidence"
+percentage also appears at the top of that screen, giving a one-number summary of how trustworthy
+the whole set of selectors is for that step. Selectors that were hand-edited are now correctly
+marked as manual, instead of keeping whatever label they had before the edit.
+
+A companion "Current identity" card was also built for the Pick Element screen, meant to show this
+same information for the step's existing (already-compiled) selectors before someone decides
+whether to re-target anything — but it isn't wired into that screen yet, since that screen is
+under active, separate work right now. The card itself is finished and tested; connecting it is
+follow-up work (tracked in TODO.md).
+
+---
+
+## Fixed "no usable selector" error when re-targeting an element by drawing a box — 2026-07-10
+
+On the Human Edit screen's re-target wizard, drawing a new box around an element and clicking
+Continue almost always failed with "No usable selector could be generated for this region," even
+for a perfectly good element. Two problems were causing this.
+
+First, there was a plain bug: the code was accidentally handing the AI the wrong piece of
+information about the element (a bundle of already-built selector strings instead of a
+description of the element itself — its tag, its visible text, its label), so the AI had almost
+nothing useful to work from.
+
+Second, and more fundamentally, the system had no way to figure out which element on the page a
+freshly drawn box was pointing at — it only remembered the position of the one element that was
+originally clicked during recording, and it never gave the AI the actual screenshot, so drawing a
+box over a different button or link couldn't work even once the first bug was fixed.
+
+The fix teaches the wizard to actually look at the picture. When someone draws a new box now, the
+system highlights that region in red on the recorded screenshot and sends the image — along with
+the page's underlying structure — to an AI that can see images, so it can visually identify the
+exact element inside the box and produce a selector for it. This is the same "look at a
+screenshot" technique already used elsewhere in the compiler to describe elements in plain
+language; it's now been extended to also produce a working selector. Redrawing the same box twice
+reuses the previous result instead of asking the AI again, so it doesn't cost extra every time.
+
+---
+
+## Fixed ugly step labels in the workflow step list — 2026-07-10
+
+The step list in the workflow viewer was showing broken or hard-to-read labels for some
+steps: "Focus" steps with no visible text showed literal empty quotes (`Focus ""`)
+instead of just saying "Focus", and "type" steps (typing into a text box) fell through
+to a generic catch-all and showed the raw internal name for what the step was doing,
+like `type — enter_input_value`, instead of a real sentence. Also added proper wording
+for several other step kinds (selecting from a dropdown, checking a box, picking a
+date, dragging and dropping, uploading a file, keyboard shortcuts, waits, and more)
+that previously all fell through to that same raw-internal-name fallback. Any step kind
+that still isn't explicitly handled now at least shows its internal name converted to
+plain words (e.g. `custom_thing` becomes "Custom thing") instead of the raw
+underscored version.
+
+---
+
+## Added a "show all recording screenshots" button to the Human Edit screenshot picker — 2026-07-10
+
+In the Human Edit screen's "Recording screenshots" pop-up, a step could previously only pick from
+the 5 timed frames captured around when it happened (half a second before to half a second after).
+Added a button that flips the pop-up to show every screenshot captured across the entire recording
+instead, so a step can borrow a clearer image from anywhere else in the flow if the 5 nearby frames
+aren't good enough. Clicking the button again switches back to the 5-frame view. Picking one of the
+"all screenshots" images works the same way dragging one onto a step already did — it attaches that
+screenshot to the step and re-runs the visual matching for it. The screen already had a working
+backend endpoint for listing every recording screenshot that nothing in the interface was calling;
+this wires it up to the new button instead of building anything new on the backend.
+
+---
+
 ## Made element recording more accurate, closed a blind spot in the drift dashboard, and hardened two recovery edge cases — 2026-07-09
 
 Implemented three of the seven improvements from the earlier runtime architecture review.
