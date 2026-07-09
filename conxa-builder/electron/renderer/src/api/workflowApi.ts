@@ -67,6 +67,11 @@ export type SkillPackageFiles = {
   files: Record<string, string>
 }
 
+export type RecordingScreenshotFrameDTO = {
+  label: string
+  url: string
+}
+
 export type RecordingScreenshotItemDTO = {
   event_index: number
   sequence: number
@@ -75,6 +80,8 @@ export type RecordingScreenshotItemDTO = {
   viewport: string
   has_element_snapshot: boolean
   frame: Record<string, unknown>
+  /** Every timed frame (before_far/before_near/at/after_near/after_far) captured around this event. */
+  frames: RecordingScreenshotFrameDTO[]
 }
 
 export type SkillPackBuildPayload = {
@@ -151,7 +158,7 @@ export function fetchRecordingScreenshots(skillId: string): Promise<{
 export function postApplyRecordingVisual(
   skillId: string,
   stepIndex: number,
-  body: { event_index: number },
+  body: { event_index: number; frame_label?: string },
 ): Promise<WorkflowRevalidationResponse> {
   return cmd('apply_recording_visual', { skill_id: skillId, step_index: stepIndex, ...body })
 }
@@ -189,6 +196,11 @@ export type RetargetCandidate = {
   selector: string
   engine: string
   durability: number
+  /** test-contract | semantic-aria | visible-text | spatial-anchor | structural — signals in
+   *  different classes are independent axes of identity (see selector_score.py). */
+  orthogonality_class?: string
+  /** compiler | llm | input_bound | user — where this candidate's selector came from. */
+  source?: string
   match_count: number
   unique: boolean
   /** unique = uniquely matched the recorded page; not_unique = matched 0 or many; unverified =
@@ -196,6 +208,11 @@ export type RetargetCandidate = {
   verified?: 'unique' | 'not_unique' | 'unverified'
   descriptor: string
 }
+
+/** `RetargetCandidate` plus a client-only stable id, so the Review Selectors phase can let a
+ *  human reorder/edit/add/remove candidates by identity instead of by array index. Never sent
+ *  to the backend — `retargetApply` only ever sees the plain `selector` strings. */
+export type EditableCandidate = RetargetCandidate & { id: string }
 
 export type PickQuality = 'good' | 'ambiguous' | 'none'
 
@@ -209,6 +226,9 @@ export type RetargetPreviewResponse = {
   proposed_assertions: Record<string, unknown>[]
   validation_changed: boolean
   fast_finish: boolean
+  /** Step-level identity-signal-quality rollup (0-1); null/undefined when there's no
+   *  identity_bundle to derive it from. */
+  compile_confidence?: number | null
 }
 
 // regenerate=false reviews the already-compiled selectors (no LLM); pass true only when the
