@@ -8,14 +8,22 @@
  * restarted up to 3 times on unexpected exit before surfacing a fatal dialog.
  */
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, protocol, net } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const readline = require("readline");
+const { pathToFileURL } = require("url");
 const { Bridge } = require("./bridge");
 const conxaEnv = require("./env");
+
+// Local skill assets (screenshots, frames) are streamed from disk through this
+// scheme instead of being base64-inlined into every RPC response — see FIX.md.
+// Must be registered before app is ready.
+protocol.registerSchemesAsPrivileged([
+  { scheme: "conxa-asset", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+]);
 
 // electron-updater config — manual-only, no auto-download or auto-install.
 autoUpdater.autoDownload = false;
@@ -368,6 +376,24 @@ app.whenReady().then(() => {
   if (!app.isDefaultProtocolClient("conxa-studio")) {
     app.setAsDefaultProtocolClient("conxa-studio");
   }
+
+  // Streams conxa-asset://local/<relative-path> from <studioHome>/data on demand —
+  // the renderer counterpart to assets.py's asset_url(). Rejects traversal outside
+  // the data dir the same way resolve_skill_asset() does on the Python side.
+  const assetsRoot = path.resolve(path.join(conxaEnv.resolve().studioHome, "data"));
+  protocol.handle("conxa-asset", (request) => {
+    const url = new URL(request.url);
+    const relPath = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+    if (!relPath || relPath.includes("..")) {
+      return new Response("Forbidden", { status: 403 });
+    }
+    const target = path.resolve(assetsRoot, relPath);
+    if (target !== assetsRoot && !target.startsWith(assetsRoot + path.sep)) {
+      return new Response("Forbidden", { status: 403 });
+    }
+    return net.fetch(pathToFileURL(target).toString());
+  });
+
   startBackend();
   createWindow();
 
