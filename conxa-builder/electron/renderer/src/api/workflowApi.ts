@@ -302,8 +302,16 @@ export function postCompileUpdated(
   return cmd<Record<string, unknown>>('compile_updated', { skill_id: skillId, skill_title: skillTitle ?? null })
 }
 
-export function postSignOff(skillId: string): Promise<{ skill_id: string; signed_off: boolean }> {
-  return cmd<{ skill_id: string; signed_off: boolean }>('sign_off_workflow', { skill_id: skillId })
+export type SignOffResult = {
+  skill_id: string
+  signed_off: boolean
+  built: boolean
+  waiting_on: string[]
+  build_error?: string
+}
+
+export function postSignOff(skillId: string): Promise<SignOffResult> {
+  return cmd<SignOffResult>('sign_off_workflow', { skill_id: skillId })
 }
 
 export function postStartRecording(body: { capture_hover?: boolean } = {}): Promise<{ session_id: string }> {

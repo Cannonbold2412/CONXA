@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from handlers.protocol import _CommandError, _deep_merge, _safe_id, _skill_response
+from handlers.protocol import _CommandError, _deep_merge, _event_sink, _safe_id, _skill_response
 
 class WorkflowEditorMixin:
     def cmd_patch_step(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -278,17 +278,54 @@ class WorkflowEditorMixin:
         result.update(self._history_flags(skill_id))
         return result
 
-    def cmd_sign_off_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+    def cmd_sign_off_workflow(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         import time
         from conxa_core.storage.plugin_store import list_plugins, save_plugin
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        target_plugin = None
         for plugin in list_plugins():
             for wf in plugin.workflows:
                 if wf.skill_id == skill_id:
                     wf.edited_at = time.time()
                     wf.signed_off = True
                     save_plugin(plugin)
-                    return {"skill_id": skill_id, "signed_off": True}
-        return {"skill_id": skill_id, "signed_off": True}
+                    target_plugin = plugin
+                    break
+            if target_plugin is not None:
+                break
+
+        if target_plugin is None:
+            return {"skill_id": skill_id, "signed_off": True, "built": False, "waiting_on": []}
+
+        # Sign-off gates the build (plugin_builder.py's raise-on-uncompiled/unedited is
+        # the enforcement point); auto-build simply fires the moment that gate is
+        # satisfied for every workflow in the plugin, so the user never has to visit
+        # a separate build page after approving the last one.
+        waiting_on = [
+            wf.name for wf in target_plugin.workflows if not wf.skill_id or not wf.edited_at
+        ]
+        if waiting_on:
+            return {
+                "skill_id": skill_id,
+                "signed_off": True,
+                "built": False,
+                "waiting_on": waiting_on,
+            }
+
+        from conxa_compile.plugin_builder import build_plugin
+
+        sink = _event_sink(rid)
+        try:
+            build_plugin(target_plugin.id, realtime_sink=sink)
+            return {"skill_id": skill_id, "signed_off": True, "built": True, "waiting_on": []}
+        except Exception as exc:
+            sink({"kind": "plugin_build", "message": f"Auto-build failed: {exc}"})
+            return {
+                "skill_id": skill_id,
+                "signed_off": True,
+                "built": False,
+                "waiting_on": [],
+                "build_error": str(exc),
+            }
 
