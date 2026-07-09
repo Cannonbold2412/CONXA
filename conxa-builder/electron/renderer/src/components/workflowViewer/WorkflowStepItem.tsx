@@ -81,18 +81,21 @@ export function WorkflowStepItem({
         onClick={selectStep}
         onKeyDown={onRowKeyDown}
         className={cn(
-          'border-border bg-background hover:bg-muted/50 relative flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-lg border p-2.5 text-left text-sm transition-colors',
+          'group border-border bg-background hover:bg-muted/50 relative flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-lg border p-2.5 text-left text-sm transition-colors',
           'focus-visible:ring-brand-ring focus-visible:ring-2 focus-visible:outline-none',
           isSelected &&
             'border-brand/40 bg-brand-subtle before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-brand',
           isDragging && 'opacity-70',
         )}
       >
-        <span className="text-muted-foreground mt-0.5 shrink-0" aria-hidden>
+        <span className="text-muted-foreground mt-0.5 shrink-0 cursor-grab" aria-hidden>
           <GripVertical className="size-4" />
         </span>
         <span
-          className="bg-muted text-muted-foreground flex h-6 w-6 shrink-0 items-center justify-center rounded text-xs font-medium"
+          className={cn(
+            'flex h-6 w-6 shrink-0 items-center justify-center rounded text-xs font-medium',
+            isSelected ? 'bg-brand/15 text-brand' : 'bg-muted text-muted-foreground',
+          )}
           aria-hidden
         >
           {step.step_index + 1}
@@ -114,7 +117,7 @@ function VisualBboxBadge({ state }: { state: BboxState }) {
         <span
           className={cn(
             'mt-1 inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[0.65rem] leading-none',
-            state.usable ? 'border-sky-400/25 bg-sky-400/10 text-sky-300' : 'border-white/10 bg-white/[0.03] text-zinc-500',
+            state.usable ? 'border-sky-400/20 bg-sky-400/[0.06] text-sky-300/90' : 'border-white/8 bg-white/[0.02] text-zinc-500',
           )}
         >
           <BoxSelect className="size-3 shrink-0" aria-hidden />
@@ -158,7 +161,7 @@ function StepBadges({
             type="button"
             size="icon-sm"
             variant="ghost"
-            className="text-destructive hover:text-destructive -mr-1 h-7 w-7"
+            className="text-destructive hover:text-destructive -mr-1 h-7 w-7 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
             onClick={(event) => {
               event.stopPropagation()
               onDeleteRequest(step.step_index)

@@ -71,6 +71,38 @@ def _click_list_label(recorded_label: str, primary_selector: str) -> str:
     return recorded_label
 
 
+def _humanize_slug(text: str) -> str:
+    """Turn a snake_case/kebab-case identifier into space-separated words."""
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[_\-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_ACTION_VERBS = {
+    "select": "Select",
+    "select_option": "Select option",
+    "set_checkbox": "Toggle checkbox",
+    "set_radio": "Select radio option",
+    "date_pick": "Pick date",
+    "drag_drop": "Drag and drop",
+    "keyboard_shortcut": "Press keyboard shortcut",
+    "upload": "Upload file",
+}
+
+_STATIC_ACTION_LABELS = {
+    "wait": "Wait",
+    "assert": "Check condition",
+    "screenshot": "Take screenshot",
+    "check": "Check page state",
+    "upload_intent": "Recorded upload intent",
+    "if_present": "Conditionally run if element present",
+    "try_dismiss": "Try to dismiss element",
+    "wait_for_one_of": "Wait for one of several outcomes",
+}
+
+
 def describe_step(step: dict[str, Any], step_index: int) -> str:
     n = step_index + 1
     act = action_name(step).lower()
@@ -90,16 +122,17 @@ def describe_step(step: dict[str, Any], step_index: int) -> str:
         if url:
             return f"Step {n}: Go to {url[:80]}{'…' if len(url) > 80 else ''}"
         return f"Step {n}: Navigate"
-    if act == "fill":
+    if act in {"fill", "type"}:
+        verb = "Fill" if act == "fill" else "Type"
         v = step.get("value")
         tail = f' "{label}"' if label else ""
         if v is not None and str(v):
-            return f"Step {n}: Fill{tail} with value"
-        return f"Step {n}: Fill{tail}"
+            return f"Step {n}: {verb}{tail} with value"
+        return f"Step {n}: {verb}{tail}".strip()
     if act in {"click", "dblclick", "right_click"}:
         list_label = _click_list_label(label, sel)
         quoted = _enquote_click_label(list_label) if list_label else ""
-        intent_part = f" ({intent})" if intent else ""
+        intent_part = f" ({_humanize_slug(intent)})" if intent else ""
         verb = {"click": "Click on", "dblclick": "Double click", "right_click": "Right click"}.get(act, "Click on")
         if quoted:
             return f"Step {n}: {verb} {quoted}{intent_part}".strip()
@@ -109,15 +142,31 @@ def describe_step(step: dict[str, Any], step_index: int) -> str:
     if act == "hover":
         list_label = _click_list_label(label, sel)
         quoted = _enquote_click_label(list_label) if list_label else ""
-        intent_part = f" ({intent})" if intent else ""
+        intent_part = f" ({_humanize_slug(intent)})" if intent else ""
         if quoted:
             return f"Step {n}: Hover over {quoted}{intent_part}".strip()
         if sel:
             return f"Step {n}: Hover over target {sel}{intent_part}".strip()
         return f"Step {n}: Hover{intent_part}".strip()
     if act == "focus":
-        quoted = _enquote_click_label(_click_list_label(label, sel)) if (label or sel) else ""
-        return f"Step {n}: Focus {quoted or sel}".strip()
+        list_label = _click_list_label(label, sel)
+        quoted = _enquote_click_label(list_label) if list_label else ""
+        if quoted:
+            return f"Step {n}: Focus {quoted}".strip()
+        if sel:
+            return f"Step {n}: Focus target {sel}".strip()
+        return f"Step {n}: Focus".strip()
+    if act in _ACTION_VERBS:
+        verb = _ACTION_VERBS[act]
+        list_label = _click_list_label(label, sel)
+        quoted = _enquote_click_label(list_label) if list_label else ""
+        if quoted:
+            return f"Step {n}: {verb} {quoted}".strip()
+        if sel:
+            return f"Step {n}: {verb} target {sel}".strip()
+        return f"Step {n}: {verb}".strip()
+    if act in _STATIC_ACTION_LABELS:
+        return f"Step {n}: {_STATIC_ACTION_LABELS[act]}"
     marker_labels = {
         "tab_open": "Recorded tab open",
         "tab_switch": "Recorded tab switch",
@@ -135,6 +184,7 @@ def describe_step(step: dict[str, Any], step_index: int) -> str:
     if act in marker_labels:
         return f"Step {n}: {marker_labels[act]}"
     if act:
-        extra = f" — {intent}" if intent else ""
-        return f"Step {n}: {act}{extra}".strip()
-    return f"Step {n}: {intent or 'Recorded action'}".strip()
+        extra = f" — {_humanize_slug(intent)}" if intent else ""
+        return f"Step {n}: {_humanize_slug(act).capitalize()}{extra}".strip()
+    humanized_intent = _humanize_slug(intent)
+    return f"Step {n}: {humanized_intent or 'Recorded action'}".strip()

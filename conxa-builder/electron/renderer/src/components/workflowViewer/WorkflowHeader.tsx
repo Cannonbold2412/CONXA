@@ -7,28 +7,26 @@ import { ADD_ACTION_OPTIONS, type AddActionKind } from '@/lib/workflowViewerHelp
 import { ChevronDown, Plus } from 'lucide-react'
 
 type WorkflowHeaderProps = {
-  version: number
   onAddAction: (actionKind: AddActionKind) => void
 }
 
-export function WorkflowHeader({ version, onAddAction }: WorkflowHeaderProps) {
+export function WorkflowHeader({ onAddAction }: WorkflowHeaderProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false)
 
   return (
-    <div className="border-border/80 space-y-2 border-b bg-muted/5 p-3">
+    <div className="border-border/80 flex h-14 items-center justify-between gap-2 border-b bg-muted/5 px-3 py-3">
       <div className="flex items-center gap-1.5">
         <h2 className="text-foreground text-base font-semibold tracking-tight">Workflow</h2>
         <InfoHint {...editorHelp.workflowTips} side="bottom" align="start" />
       </div>
       <div className="flex items-center gap-2">
-        <p className="text-muted-foreground min-w-0 flex-1 text-xs">Version {version}</p>
         <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
           <PopoverTrigger asChild>
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className="h-8 gap-1.5 px-2.5 text-xs"
+              className="h-8 gap-1.5 border-white/12 bg-white/[0.04] px-2.5 text-xs text-zinc-200 hover:bg-white/[0.08] hover:text-white"
               aria-label="Add action after the selected step"
             >
               <Plus className="size-3.5" />
