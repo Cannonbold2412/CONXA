@@ -456,6 +456,56 @@ export type TrackingDashboardResponse = {
     failed: number
     recovered: number
   }>
+  assertion_health_by_step: Array<{
+    company: string
+    workflow: string
+    step_index: number | null
+    step_label: string
+    total: number
+    passed: number
+    pass_rate: number
+    advisory_failures: number
+    last_seen: number
+  }>
+}
+
+export type TrackingDriftEntry = {
+  plugin_id: string
+  plugin_ver: string
+  step_id: number | null
+  occurrences: number
+  run_count: number
+  total_runs: number
+  occurrence_rate_pct: number
+  dominant_tier: string
+  dominant_method: string
+  tiers: Record<string, number>
+  methods: Record<string, number>
+  stable_hash: string
+  app_version_fingerprint: string
+  last_seen: number
+  status: string
+}
+
+export type TrackingPreExecDriftEntry = {
+  plugin_id: string
+  plugin_ver: string
+  occurrences: number
+  max_drift_ratio: number
+  missing_intents: Record<string, number>
+  last_seen: number
+  status: string
+}
+
+export type TrackingDriftResponse = {
+  queue: TrackingDriftEntry[]
+  total: number
+  pre_exec: TrackingPreExecDriftEntry[]
+  pre_exec_total: number
+}
+
+export function fetchTrackingDrift(): Promise<TrackingDriftResponse> {
+  return apiFetch('/tracking/drift').then((r) => json<TrackingDriftResponse>(r))
 }
 
 export function fetchTrackingRuns(

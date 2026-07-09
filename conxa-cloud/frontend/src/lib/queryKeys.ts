@@ -16,4 +16,5 @@ export const queryKeys = {
   auditEvents: (scope?: string) =>
     (scope ? ['auditEvents', scope] : ['auditEvents']) as readonly string[],
   trackingDashboard: (range: string) => ['tracking-dashboard', range] as const,
+  trackingDrift: () => ['tracking-drift'] as const,
 } as const

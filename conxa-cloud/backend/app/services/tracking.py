@@ -360,11 +360,17 @@ def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ``records`` is the workspace-visible run set (see ``_visible_run_records``),
     passed in so the caller can compute it once and share it with the pre-exec queue.
     """
+    # Distinct runs per (plugin_id, plugin_ver) — the denominator for occurrence_rate_pct.
+    # A run can emit more than one repair_event for the same step (retried across escalating
+    # tiers), so "how often does this step need repair" must count runs, not raw events.
+    runs_by_version: dict[tuple[str, str], set[str]] = {}
     by_key: dict[tuple[str, str, Any], dict[str, Any]] = {}
     for record in records:
         summary = record.get("summary") or {}
         plugin_id = str(summary.get("plugin_id") or "")
         plugin_ver = str(summary.get("plugin_ver") or "")
+        run_id = str(summary.get("run_id") or "")
+        runs_by_version.setdefault((plugin_id, plugin_ver), set()).add(run_id)
         for evt in record.get("events") or []:
             if evt.get("e") != "repair_event":
                 continue
@@ -379,6 +385,7 @@ def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "occurrences": 0,
                     "tiers": {},
                     "methods": {},
+                    "run_ids": set(),
                     "stable_hash": evt.get("stable_hash", ""),
                     "app_version_fingerprint": evt.get("app_version_fingerprint", ""),
                     "last_seen": 0,
@@ -386,6 +393,7 @@ def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
                 by_key[key] = entry
             entry["occurrences"] += 1
+            entry["run_ids"].add(run_id)
             tier = str(evt.get("tier") or "")
             method = str(evt.get("method") or evt.get("drift_hint") or "")
             if tier:
@@ -393,8 +401,21 @@ def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if method:
                 entry["methods"][method] = entry["methods"].get(method, 0) + 1
             entry["last_seen"] = max(int(entry["last_seen"]), _epoch_ms(evt.get("ts")))
-    queue = list(by_key.values())
-    queue.sort(key=lambda e: (e["occurrences"], e["last_seen"]), reverse=True)
+
+    queue = []
+    for entry in by_key.values():
+        version_key = (entry["plugin_id"], entry["plugin_ver"])
+        total_runs = len(runs_by_version.get(version_key) or set()) or 1
+        run_count = len(entry.pop("run_ids"))
+        entry["run_count"] = run_count
+        entry["total_runs"] = total_runs
+        entry["occurrence_rate_pct"] = round((run_count / total_runs) * 100, 1)
+        entry["dominant_tier"] = max(entry["tiers"], key=entry["tiers"].get) if entry["tiers"] else ""
+        entry["dominant_method"] = max(entry["methods"], key=entry["methods"].get) if entry["methods"] else ""
+        queue.append(entry)
+    # Surface "this step fails in most of its runs" ahead of "this step has many events
+    # because the plugin runs constantly" — rate first, raw occurrences as a tiebreaker.
+    queue.sort(key=lambda e: (e["occurrence_rate_pct"], e["occurrences"], e["last_seen"]), reverse=True)
     return queue
 
 
@@ -458,6 +479,52 @@ def _event_step_index(evt: dict[str, Any]) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _assertion_health_by_step(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aggregate runtime `verify_result` events into a per-step assertion pass-rate view.
+
+    `verify_result` carries `{si, ok, n, advFail}` for every step that ran post-condition
+    assertions (`runtime/run.js::verifyStep`'s full audit, emitted on the primary execution
+    path). This is the fleet-wide early-warning signal for assertion decay: an advisory check
+    that's starting to fail more often is visible here before it ever becomes a required-
+    assertion hard failure. Sorted worst-pass-rate first so decaying steps surface at the top.
+    """
+    by_key: dict[tuple[str, str, int | None], dict[str, Any]] = {}
+    for record in records:
+        summary = record.get("summary") or {}
+        workflow = str(summary.get("plugin_id") or "Unknown workflow")
+        company = str(record.get("company") or "")
+        for evt in record.get("events") or []:
+            if evt.get("e") != "verify_result":
+                continue
+            step_index = _event_step_index(evt)
+            key = (company, workflow, step_index)
+            entry = by_key.get(key)
+            if entry is None:
+                entry = {
+                    "company": company,
+                    "workflow": workflow,
+                    "step_index": step_index,
+                    "step_label": f"Step {step_index + 1}" if step_index is not None else "Unknown step",
+                    "total": 0,
+                    "passed": 0,
+                    "advisory_failures": 0,
+                    "last_seen": 0,
+                }
+                by_key[key] = entry
+            entry["total"] += 1
+            if evt.get("ok"):
+                entry["passed"] += 1
+            entry["advisory_failures"] += int(_number(evt.get("advFail")))
+            entry["last_seen"] = max(int(entry["last_seen"]), _epoch_ms(evt.get("ts")))
+
+    rows = [
+        {**entry, "pass_rate": round((entry["passed"] / entry["total"]) * 100, 1) if entry["total"] else 100.0}
+        for entry in by_key.values()
+    ]
+    rows.sort(key=lambda r: (r["pass_rate"], -r["total"]))
+    return rows[:12]
 
 
 def _dashboard_metrics(principal: Principal, range_value: str) -> dict[str, Any]:
@@ -730,6 +797,7 @@ def _dashboard_metrics(principal: Principal, range_value: str) -> dict[str, Any]
             reverse=True,
         )[:6],
         "execution_trend": list(buckets.values()),
+        "assertion_health_by_step": _assertion_health_by_step(range_records),
     }
 
 

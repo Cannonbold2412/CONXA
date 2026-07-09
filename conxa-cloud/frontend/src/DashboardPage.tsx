@@ -19,8 +19,10 @@ import { useMemo, useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   fetchTrackingDashboard,
+  fetchTrackingDrift,
   type TrackingDashboardRange,
   type TrackingDashboardResponse,
+  type TrackingDriftEntry,
 } from '@/api/pluginApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +36,7 @@ import {
   CheckCircle2,
   Clock3,
   Download,
+  Radar,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
@@ -400,6 +403,110 @@ function RecoveryIntelligence({
   )
 }
 
+function AssertionHealth({ rows }: { rows: TrackingDashboardResponse['assertion_health_by_step'] }) {
+  return (
+    <Card className="h-full border-white/8 bg-white/[0.025] shadow-none">
+      <CardHeader className="border-b border-white/6 pb-3">
+        <CardTitle className="flex items-center gap-2 text-xs font-semibold text-zinc-400">
+          <ShieldCheck className="size-3.5" />
+          Assertion health
+          {rows.length > 0 && (
+            <Badge variant="outline" className="ml-auto border-white/10 bg-black/10 text-[10px] text-zinc-400">
+              {rows.length} tracked
+            </Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {rows.length === 0 ? (
+          <div className="flex min-h-56 flex-col items-center justify-center px-4 py-10 text-center">
+            <CheckCircle2 className="mb-3 size-7 text-zinc-700" />
+            <p className="text-sm font-medium text-zinc-400">No assertion data yet</p>
+            <p className="mt-1 max-w-sm text-xs leading-5 text-zinc-600">
+              Post-condition pass/fail rates per step appear here once runtime executions report
+              verification results — the earliest signal that a step&apos;s check is starting to decay,
+              before it becomes an outright failure.
+            </p>
+          </div>
+        ) : rows.map((row) => {
+          const tone: Tone = row.pass_rate >= 95 ? 'good' : row.pass_rate >= 80 ? 'warn' : 'bad'
+          const classes = toneStyle(tone)
+          const barTone = tone === 'good' ? 'bg-emerald-500/80' : tone === 'warn' ? 'bg-amber-500/80' : 'bg-red-500/80'
+          const key = `${row.company}:${row.workflow}:${row.step_index ?? 'unknown'}`
+          return (
+            <div key={key} className="grid gap-3 border-t border-white/6 px-4 py-3 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-zinc-200">{row.step_label}</p>
+                <p className="mt-1 truncate text-[11px] text-zinc-600">
+                  {row.workflow} / {row.company} / {fmtNumber(row.total)} checks / {fmtRelative(row.last_seen)}
+                  {row.advisory_failures > 0 ? ` / ${fmtNumber(row.advisory_failures)} advisory fails` : ''}
+                </p>
+                <div className="mt-2 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-white/8">
+                  <div className={`h-full rounded-full ${barTone}`} style={{ width: clampPercent(row.pass_rate) }} />
+                </div>
+              </div>
+              <span className={`shrink-0 text-sm font-semibold tabular-nums ${classes.text}`}>{fmtPercent(row.pass_rate)}</span>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
+function DriftReviewQueue({ rows }: { rows: TrackingDriftEntry[] }) {
+  return (
+    <Card className="h-full border-white/8 bg-white/[0.025] shadow-none">
+      <CardHeader className="border-b border-white/6 pb-3">
+        <CardTitle className="flex items-center gap-2 text-xs font-semibold text-zinc-400">
+          <Radar className="size-3.5" />
+          Drift review queue
+          {rows.length > 0 && (
+            <Badge variant="outline" className="ml-auto border-amber-500/25 bg-amber-500/10 text-[10px] text-amber-300">
+              {rows.length} needs review
+            </Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {rows.length === 0 ? (
+          <div className="flex min-h-56 flex-col items-center justify-center px-4 py-10 text-center">
+            <CheckCircle2 className="mb-3 size-7 text-emerald-500/70" />
+            <p className="text-sm font-medium text-zinc-300">No drift detected</p>
+            <p className="mt-1 max-w-sm text-xs leading-5 text-zinc-600">
+              Steps that repeatedly need self-healing recovery appear here — a step drifting
+              this often is a signal the target app changed and the pack may need re-recording,
+              never an automatic fix.
+            </p>
+          </div>
+        ) : rows.map((row) => {
+          const tone: Tone = row.occurrence_rate_pct >= 50 ? 'bad' : row.occurrence_rate_pct >= 20 ? 'warn' : 'neutral'
+          const classes = toneStyle(tone)
+          const barTone = tone === 'bad' ? 'bg-red-500/80' : tone === 'warn' ? 'bg-amber-500/80' : 'bg-zinc-500/60'
+          const key = `${row.plugin_id}:${row.plugin_ver}:${row.step_id ?? 'unknown'}`
+          const stepLabel = row.step_id != null ? `Step ${Number(row.step_id) + 1}` : 'Unknown step'
+          return (
+            <div key={key} className="grid gap-3 border-t border-white/6 px-4 py-3 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-zinc-200">{stepLabel}</p>
+                <p className="mt-1 truncate text-[11px] text-zinc-600">
+                  {row.plugin_id} v{row.plugin_ver} / {fmtNumber(row.run_count)} of {fmtNumber(row.total_runs)} runs
+                  {row.dominant_tier ? ` / mostly ${row.dominant_tier}` : ''}
+                  {row.dominant_method ? ` via ${row.dominant_method}` : ''} / {fmtRelative(row.last_seen)}
+                </p>
+                <div className="mt-2 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-white/8">
+                  <div className={`h-full rounded-full ${barTone}`} style={{ width: clampPercent(row.occurrence_rate_pct) }} />
+                </div>
+              </div>
+              <span className={`shrink-0 text-sm font-semibold tabular-nums ${classes.text}`}>{fmtPercent(row.occurrence_rate_pct)}</span>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
 function DashboardSkeleton() {
   return (
     <div className="space-y-4">
@@ -429,12 +536,20 @@ export function DashboardPage() {
     staleTime: 30_000,
     refetchInterval: 30_000,
   })
+  const driftQ = useQuery({
+    queryKey: queryKeys.trackingDrift(),
+    queryFn: fetchTrackingDrift,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  })
 
   const data = dashboardQ.data
   const metrics = data?.metrics ?? EMPTY_METRICS
   const riskRows = useMemo(() => buildRiskRows(data), [data])
   const recoveryTypeRows = data?.recovery_type_usage ?? DEFAULT_RECOVERY_USAGE
   const recoveryWorkflows = data?.recovery_usage_by_workflow ?? []
+  const assertionHealthRows = data?.assertion_health_by_step ?? []
+  const driftRows = driftQ.data?.queue ?? []
   const isInitialLoading = dashboardQ.isLoading && !data
 
   return (
@@ -501,6 +616,11 @@ export function DashboardPage() {
             <section className="grid gap-4 xl:grid-cols-[minmax(20rem,0.38fr)_minmax(0,1fr)]">
               <RiskQueue rows={riskRows} />
               <RecoveryIntelligence typeRows={recoveryTypeRows} workflows={recoveryWorkflows} />
+            </section>
+
+            <section className="grid gap-4 xl:grid-cols-2">
+              <AssertionHealth rows={assertionHealthRows} />
+              <DriftReviewQueue rows={driftRows} />
             </section>
           </>
         )}

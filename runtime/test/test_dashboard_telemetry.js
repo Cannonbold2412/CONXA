@@ -75,7 +75,7 @@ function makeClickPage() {
       {},
       0,
       "workflow-a",
-      { tracker: { emit: (event, fields) => events.push({ event, ...fields }) }, observerMs: 0 },
+      { tracker: { emit: (event, fields) => events.push({ event, ...fields }) } },
     );
 
     assert.equal(result.recoveredSteps, 1);

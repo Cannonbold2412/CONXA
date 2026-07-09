@@ -102,6 +102,16 @@ class TrackingRoutesTests(unittest.TestCase):
         self.assertEqual(drift.status_code, 200)
         self.assertIn("queue", drift.json())
 
+    def test_dashboard_includes_assertion_health_by_step_key(self) -> None:
+        # Full company-discovery + workspace-visibility aggregation is exercised directly
+        # against app.services.tracking._assertion_health_by_step in test_tracking_service.py
+        # (that function's inputs are easier to construct precisely than a fully-discoverable
+        # tracking company in this route-level harness). This just locks in that the dashboard
+        # response wires the field through.
+        dashboard = self._client().get("/api/v1/tracking/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn("assertion_health_by_step", dashboard.json())
+
 
 if __name__ == "__main__":
     unittest.main()
