@@ -31,6 +31,10 @@ if ($Env -eq "dev") {
   if (-not $env:CONXA_APP_DIR)        { $env:CONXA_APP_DIR        = "$env:CONXA_DIR\conxa-app" }
   if (-not $env:CONXA_STUDIO_HOME)    { $env:CONXA_STUDIO_HOME    = "$HOME\.conxa-build-studio-dev" }
   if (-not $env:CONXA_UPDATE_CHANNEL) { $env:CONXA_UPDATE_CHANNEL = "dev" }
+  # Opt-in: download the real host exe + app layer (like a customer install) instead of
+  # running the repo-local runtime/ source tree. Set CONXA_FORCE_DEPS="" before calling
+  # this script to fall back to the fast local-source dev loop.
+  if (-not $env:CONXA_FORCE_DEPS)     { $env:CONXA_FORCE_DEPS     = "1" }
 } else {
   if (-not $env:CONXA_DIR)            { $env:CONXA_DIR            = "$HOME\.conxa" }
   if (-not $env:CONXA_DATA_DIR)       { $env:CONXA_DATA_DIR       = "$env:APPDATA\Conxa" }
@@ -44,6 +48,7 @@ Write-Host "  CONXA_DIR            = $($env:CONXA_DIR)"
 Write-Host "  CONXA_DATA_DIR       = $($env:CONXA_DATA_DIR)"
 Write-Host "  CONXA_STUDIO_HOME    = $($env:CONXA_STUDIO_HOME)"
 Write-Host "  CONXA_UPDATE_CHANNEL = $($env:CONXA_UPDATE_CHANNEL)"
+Write-Host "  CONXA_FORCE_DEPS     = $($env:CONXA_FORCE_DEPS)"
 Write-Host "  env file             = .env.$($env:CONXA_ENV)"
 Write-Host "-----------------------------------------------------------------"
 

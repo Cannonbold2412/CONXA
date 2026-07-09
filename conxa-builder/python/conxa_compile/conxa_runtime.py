@@ -74,6 +74,16 @@ def _bootstrap_app_dir() -> Path | None:
     return candidates[-1]
 
 
+def _force_deps() -> bool:
+    """True when CONXA_FORCE_DEPS=1 (set by scripts/conxa.ps1's dev lane).
+
+    Opts a dev checkout back into the customer-faithful path: run the
+    downloaded host exe + app layer instead of the repo-local runtime/
+    source tree, and stage them into the test sandbox as a frozen build would.
+    """
+    return os.environ.get("CONXA_FORCE_DEPS", "").strip() == "1"
+
+
 def _studio_base() -> Path:
     """Root of all Build Studio user state (~/.conxa-build-studio by default).
 
@@ -235,8 +245,8 @@ def ensure_test_sandbox(
     (data_dir / "cache").mkdir(parents=True, exist_ok=True)
     (data_dir / "logs").mkdir(parents=True, exist_ok=True)
 
-    # ── re-stage runtime payload when version changed (frozen only) ───────────
-    if getattr(sys, "frozen", False):
+    # ── re-stage runtime payload when version changed (frozen, or forced in dev) ──
+    if getattr(sys, "frozen", False) or _force_deps():
         need_stage = True
         version_file = conxa_dir / "version.json"
         if version_file.is_file() and _runtime_exe(conxa_dir) is not None:
@@ -265,9 +275,10 @@ def resolve_runtime_dir() -> Path | None:
     Two environments, in priority order:
       1. $CONXA_RUNTIME_LOCAL_DIR — explicit override. Set manually in a dev checkout,
          or by the deps bootstrap (services.bootstrap) to the active version dir in prod.
-      2. Dev checkout (not frozen): the repo-local runtime/ source tree, so JS edits take
-         effect immediately without a binary rebuild.
-      3. Production: the deps-managed runtime (~/.conxa-build-studio/deps/runtime/<version>/).
+      2. Dev checkout (not frozen, and CONXA_FORCE_DEPS not set): the repo-local runtime/
+         source tree, so JS edits take effect immediately without a binary rebuild.
+      3. Production, or a dev checkout with CONXA_FORCE_DEPS=1: the deps-managed runtime
+         (~/.conxa-build-studio/deps/runtime/<version>/).
 
     Returns None if no valid runtime is found.
     """
@@ -277,8 +288,11 @@ def resolve_runtime_dir() -> Path | None:
         if _is_runtime_dir(p):
             return p
 
-    # In a dev checkout prefer the source tree so JS edits are reflected immediately.
-    if not getattr(sys, "frozen", False):
+    # In a dev checkout prefer the source tree so JS edits are reflected immediately,
+    # unless CONXA_FORCE_DEPS=1 opts back into the downloaded, customer-faithful runtime
+    # (e.g. on a fresh backend restart where this session never called ensure_all(), so
+    # CONXA_RUNTIME_LOCAL_DIR above was never (re-)set).
+    if not getattr(sys, "frozen", False) and not _force_deps():
         local_source = _find_local_runtime_source()
         if local_source is not None:
             return local_source

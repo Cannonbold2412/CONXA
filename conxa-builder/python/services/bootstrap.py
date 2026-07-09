@@ -477,11 +477,20 @@ def check_status() -> dict[str, Any]:
                 runtime_ready = True
                 break
 
-    all_ready = nsis_ready and chromium_ready and runtime_ready
+    app_ready = False
+    app_dir = deps / "conxa-app"
+    if app_dir.is_dir():
+        for ver_dir in app_dir.iterdir():
+            if ver_dir.is_dir() and not ver_dir.name.startswith(".") and (ver_dir / "server.js").is_file():
+                app_ready = True
+                break
+
+    all_ready = nsis_ready and chromium_ready and runtime_ready and app_ready
     return {
         "nsis": nsis_ready,
         "chromium": chromium_ready,
         "runtime": runtime_ready,
+        "app": app_ready,
         "all_ready": all_ready,
         "versions": {
             k: v.get("version") for k, v in installed.items() if isinstance(v, dict)
