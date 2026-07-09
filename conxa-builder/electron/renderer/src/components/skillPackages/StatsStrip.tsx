@@ -1,7 +1,7 @@
 import { Clock, FileCode2, GitBranch, Package } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { relativeTime } from '@/lib/skillPackageTree'
-import { PanelChrome } from '@/components/skillPackages/PanelChrome'
+import { PanelChrome } from '@/components/ui/panel-chrome'
 import type { SkillPackageSummary } from '@/api/workflowApi'
 
 export function StatsStrip({ packages }: { packages: SkillPackageSummary[] }) {

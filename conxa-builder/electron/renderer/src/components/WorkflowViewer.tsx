@@ -48,7 +48,10 @@ export function WorkflowViewer({
 
   return (
     <>
-      <aside className="border-border bg-card/35 supports-[backdrop-filter]:bg-card/25 relative z-10 flex min-h-0 min-w-0 flex-col border-b backdrop-blur-[2px] md:border-r md:border-b-0">
+      {/* Same gradient-fill depth treatment as PanelChrome (components/ui/panel-chrome.tsx), applied
+          inline rather than nested — this pane is flush against the grid's draggable resizer, so
+          PanelChrome's rounded corners + outer shadow would clash with that boundary. */}
+      <aside className="border-border relative z-10 flex min-h-0 min-w-0 flex-col border-b bg-[linear-gradient(180deg,rgba(17,24,39,0.9),rgba(7,10,16,0.95))] ring-1 ring-inset ring-white/[0.03] md:border-r md:border-b-0">
         <WorkflowHeader version={version} onAddAction={onAddAction} />
         <ScrollArea className="min-h-[12rem] w-full flex-1 md:min-h-0">
           {steps.length === 0 ? (

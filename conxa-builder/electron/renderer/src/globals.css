@@ -3,10 +3,18 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Status colors */
+  /* Status colors — success/warning/error, consumed via Tailwind utilities registered below.
+     -subtle/-ring companions follow the same shape as --brand-subtle/--brand-ring so status
+     badges/banners can use the same "tinted background + ring" recipe as brand accents. */
   --status-ok: oklch(0.74 0.17 160);
+  --status-ok-subtle: oklch(0.74 0.17 160 / 12%);
+  --status-ok-ring: oklch(0.74 0.17 160 / 45%);
   --status-warn: oklch(0.78 0.15 75);
+  --status-warn-subtle: oklch(0.78 0.15 75 / 12%);
+  --status-warn-ring: oklch(0.78 0.15 75 / 45%);
   --status-error: oklch(0.64 0.22 25);
+  --status-error-subtle: oklch(0.64 0.22 25 / 12%);
+  --status-error-ring: oklch(0.64 0.22 25 / 45%);
 
   /* Border scale */
   --border-subtle: oklch(1 0 0 / 8%);
@@ -106,6 +114,15 @@
   --color-brand-foreground: var(--brand-foreground);
   --color-brand-subtle: var(--brand-subtle);
   --color-brand-ring: var(--brand-ring);
+  --color-status-ok: var(--status-ok);
+  --color-status-ok-subtle: var(--status-ok-subtle);
+  --color-status-ok-ring: var(--status-ok-ring);
+  --color-status-warn: var(--status-warn);
+  --color-status-warn-subtle: var(--status-warn-subtle);
+  --color-status-warn-ring: var(--status-warn-ring);
+  --color-status-error: var(--status-error);
+  --color-status-error-subtle: var(--status-error-subtle);
+  --color-status-error-ring: var(--status-error-ring);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);

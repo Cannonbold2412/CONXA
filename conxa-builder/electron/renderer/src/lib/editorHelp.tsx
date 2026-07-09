@@ -104,6 +104,19 @@ export const editorHelp = {
       </p>
     ),
   },
+  toolAgentView: {
+    label: "How Claude sees this skill",
+    summary:
+      "A preview of what a customer's Claude Desktop understands about this skill: its name, a plain-language summary of what it does, and the inputs it will ask for.",
+    details: (
+      <p>
+        This is a readable approximation built from the step descriptions and input list — not a
+        byte-for-byte copy of the tool text Claude receives (that's generated when the skill is
+        published). Sharpening a step's intent or an input's label here directly improves what the
+        agent understands.
+      </p>
+    ),
+  },
   toolSelectors: {
     label: "Compiled selectors",
     summary:

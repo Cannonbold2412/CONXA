@@ -20,21 +20,18 @@ function severityIcon(sev: SuggestionItem['severity']) {
     case 'error':
       return <AlertCircle className="text-destructive size-3.5 shrink-0" aria-hidden />
     case 'warn':
-      return <AlertCircle className="text-amber-500 size-3.5 shrink-0" aria-hidden />
+      return <AlertCircle className="text-status-warn size-3.5 shrink-0" aria-hidden />
     default:
       return <Info className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
   }
 }
 
-function severityBadgeClass(sev: SuggestionItem['severity']) {
-  switch (sev) {
-    case 'error':
-      return 'bg-destructive/15 text-destructive border-destructive/30'
-    case 'warn':
-      return 'bg-amber-500/10 text-amber-200 border-amber-500/30'
-    default:
-      return 'border-border text-muted-foreground'
-  }
+/** Badge variant per severity — reuses the shared destructive/warning variants
+ * (components/ui/badge.tsx) instead of hand-rolled colors. */
+function severityBadgeVariant(sev: SuggestionItem['severity']): 'destructive' | 'warning' | 'outline' {
+  if (sev === 'error') return 'destructive'
+  if (sev === 'warn') return 'warning'
+  return 'outline'
 }
 
 function SuggestionsList({ suggestions }: { suggestions: SuggestionItem[] }) {
@@ -75,7 +72,7 @@ function SuggestionsList({ suggestions }: { suggestions: SuggestionItem[] }) {
             </div>
             <p className="pl-0.5 text-sm leading-relaxed text-zinc-400">{s.message}</p>
             <div className="pl-0.5">
-              <Badge variant="outline" className={cn('text-[0.65rem] font-normal', severityBadgeClass(s.severity))}>
+              <Badge variant={severityBadgeVariant(s.severity)} className="text-[0.65rem] font-normal">
                 {s.severity}
               </Badge>
             </div>
@@ -90,7 +87,7 @@ export function SuggestionsInlinePanel({ suggestions }: { suggestions: Suggestio
   return (
     <Card className="border-white/8 bg-white/[0.02] flex min-h-0 flex-1 flex-col shadow-none">
       <CardHeader className="p-3 pb-2">
-        <CardTitle className="text-sm text-white">Suggestions</CardTitle>
+        <CardTitle className="text-base font-semibold text-white">Suggestions</CardTitle>
         <CardDescription className="text-xs text-zinc-500">All steps</CardDescription>
       </CardHeader>
       <CardContent className="min-h-0 flex-1 p-0">

@@ -18,20 +18,21 @@ const stateConfig: Record<StepState, {
 }> = {
   done: {
     icon: <CheckCircle2 className="size-4" />,
-    node: 'border-emerald-500/60 bg-emerald-500/15 text-emerald-400',
-    label: 'text-emerald-300',
-    connector: 'bg-emerald-500/30',
+    node: 'border-status-ok/60 bg-status-ok/15 text-status-ok',
+    label: 'text-status-ok',
+    connector: 'bg-status-ok/30',
   },
   active: {
-    icon: <Circle className="size-4 fill-sky-400 text-sky-400" />,
-    node: 'border-sky-500/60 bg-sky-500/15 text-sky-400',
+    // Active = "current step," not a status — stays brand-accented rather than a status color.
+    icon: <Circle className="size-4 fill-brand text-brand" />,
+    node: 'border-brand/60 bg-brand/15 text-brand',
     label: 'text-white font-semibold',
     connector: 'bg-white/10',
   },
   blocked: {
     icon: <AlertCircle className="size-4" />,
-    node: 'border-amber-500/50 bg-amber-500/10 text-amber-400',
-    label: 'text-amber-300',
+    node: 'border-status-warn/50 bg-status-warn/10 text-status-warn',
+    label: 'text-status-warn',
     connector: 'bg-white/8',
   },
   pending: {

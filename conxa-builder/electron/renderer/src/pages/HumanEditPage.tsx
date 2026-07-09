@@ -21,8 +21,10 @@ import {
   undoWorkflow,
 } from '@/api/workflowApi'
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
+import { ConfidenceBanner } from '@/components/ConfidenceBanner'
+import { HowClaudeSeesThisPanel } from '@/components/HowClaudeSeesThisPanel'
 import { WorkflowViewer } from '@/components/WorkflowViewer'
-import { StepEditorPanel, type StepEditorPanelHandle } from '@/components/StepEditorPanel'
+import { InlineRetargetFlow, type InlineRetargetFlowHandle } from '@/components/retarget/InlineRetargetFlow'
 import { SuggestionsInlinePanel } from '@/components/SuggestionsPanel'
 import { ParameterizationInlinePanel } from '@/components/ParameterizationDrawer'
 import { useEditorStore } from '@/store/editorStore'
@@ -42,6 +44,8 @@ import { cn } from '@/lib/utils'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
+  BadgeCheck,
+  Bot,
   ChevronDown,
   ChevronLeft,
   Copy,
@@ -56,15 +60,12 @@ import {
 } from 'lucide-react'
 import type { HelpEntry } from '@/lib/editorHelp'
 
-type ToolPaneKey = 'suggestions' | 'variables' | 'screenshots'
+type ToolPaneKey = 'suggestions' | 'variables' | 'screenshots' | 'agentView'
 
 const SKILL_ID_CAPTION_CLASS =
   'max-w-[12rem] truncate font-mono text-[10px] leading-none text-zinc-500 sm:max-w-[16rem]'
 
-const BRAND_BUTTON_CLASS =
-  'bg-brand text-brand-foreground hover:bg-brand-hover focus-visible:ring-brand-ring'
-
-const FLOW_STEPS = ['Record', 'Compile', 'Edit', 'Finish'] as const
+const FLOW_STEPS = ['Record', 'Compile', 'Edit', 'Approve'] as const
 
 /** Compact "how editing works" strip for newcomers on the landing screen. */
 function FlowExplainer() {
@@ -113,7 +114,7 @@ export function HumanEditPage() {
   const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const splitPaneRef = useRef<HTMLDivElement | null>(null)
-  const stepEditorRef = useRef<StepEditorPanelHandle>(null)
+  const stepEditorRef = useRef<InlineRetargetFlowHandle>(null)
   const selected = useEditorStore((s) => s.selectedStepIndex)
   const setValidationReport = useEditorStore((s) => s.setValidationReport)
   const setSelectedStepIndex = useEditorStore((s) => s.setSelectedStepIndex)
@@ -124,10 +125,14 @@ export function HumanEditPage() {
   const resetHistory = useEditorStore((s) => s.resetHistory)
   const prefersReducedMotion = useReducedMotion()
 
+  // Only used by the "Resume a skill" picker on the no-skill-selected landing state
+  // below — skip the full skills-directory scan entirely when a skill is already
+  // open (e.g. arriving here via a "Review" link), since the result is unused then.
   const skillsListQ = useQuery({
     queryKey: ['skillList'],
     queryFn: fetchSkillList,
     staleTime: 60_000,
+    enabled: !skillId,
   })
 
   const q = useQuery({
@@ -374,11 +379,11 @@ export function HumanEditPage() {
     }
   }
 
-  const finishEditing = async () => {
+  const approveWorkflow = async () => {
     if (!skillId) return
     const savedOk = await (stepEditorRef.current?.submitIfDirty() ?? Promise.resolve(true))
     if (!savedOk) {
-      toast.error('Could not save the open step — fix errors or tap Save step, then try Finish.')
+      toast.error('Could not save the open step — fix errors or tap Save step, then try Approve.')
       return
     }
     const dirtySteps = useEditorStore.getState().dirtySteps
@@ -387,23 +392,42 @@ export function HumanEditPage() {
         dirtySteps.size === 1
           ? `step ${[...dirtySteps][0]}`
           : `${dirtySteps.size} steps (${[...dirtySteps].sort((a, b) => a - b).join(', ')})`
-      toast.warning(`Still have unsaved changes on ${label} — switch to each and save before finishing`)
+      toast.warning(`Still have unsaved changes on ${label} — switch to each and save before approving`)
       return
     }
+    let signOff
     try {
-      await postSignOff(skillId)
-    } catch {
-      // Non-fatal: sign-off failure only means edited_at may not be set.
+      signOff = await postSignOff(skillId)
+    } catch (err) {
+      toast.error(errorMessage(err, 'Could not approve this workflow — please try again.'))
+      return
     }
-    setFlowStatus('Finished editing; your skill stays the same id and title on disk.')
+    setFlowStatus('Approved; your skill stays the same id and title on disk.')
     void qc.invalidateQueries({ queryKey: ['skillList'] })
-    toast.success(`${skillId} saved in place — same skill id as when you compiled from the recording.`)
+    if (signOff.built) {
+      toast.success(`${skillId} approved and built — ready to test.`)
+      navigate('/test')
+      return
+    }
+    if (signOff.build_error) {
+      toast.error(`Approved, but the package failed to build: ${signOff.build_error}`)
+    } else if (signOff.waiting_on.length > 0) {
+      toast.success(
+        `Approved. Waiting on ${signOff.waiting_on.length === 1 ? signOff.waiting_on[0] : `${signOff.waiting_on.length} other workflows`} before this plugin can build.`,
+      )
+    } else {
+      toast.success(`${skillId} saved in place — same skill id as when you compiled from the recording.`)
+    }
     navigate(fromPath ?? '/edit')
   }
 
-  const toggleToolsPane = (pane: 'suggestions' | 'variables' | 'screenshots') => {
+  const toggleToolsPane = (pane: ToolPaneKey) => {
     setActiveToolsPane((current) => (current === pane ? null : pane))
   }
+
+  // Always opens (never toggle-closes) — used by the confidence banner's "Review" action, which
+  // should reliably land on the Suggestions tab regardless of what's currently open.
+  const jumpToSuggestions = () => setActiveToolsPane('suggestions')
 
   const onDroppedRecordingScreenshot = useCallback(
     async (stepIndex: number, eventIndex: number) => {
@@ -493,7 +517,7 @@ export function HumanEditPage() {
           actions={
             <>
               <Button variant="outline" size="sm" asChild className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08]">
-                <Link to="/dashboard">
+                <Link to="/record">
                   <Home className="size-3.5" />
                   Home
                 </Link>
@@ -510,7 +534,7 @@ export function HumanEditPage() {
                   <InfoHint {...editorHelp.openSkill} side="bottom" align="start" />
                 </CardTitle>
                 <CardDescription className="text-zinc-500">
-                  Fine-tune a compiled workflow, then Finish to save it back to the same skill.
+                  Fine-tune a compiled workflow, then Approve to save it back to the same skill.
                 </CardDescription>
                 <FlowExplainer />
               </CardHeader>
@@ -573,7 +597,7 @@ export function HumanEditPage() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" onClick={() => openSkillForEdit(resumePick || manualSkillId)} className={BRAND_BUTTON_CLASS}>
+                    <Button type="button" variant="brand" onClick={() => openSkillForEdit(resumePick || manualSkillId)}>
                       Load and edit
                     </Button>
                     <Button
@@ -743,6 +767,7 @@ export function HumanEditPage() {
     { key: 'suggestions', label: 'Suggestions', icon: Lightbulb, iconClass: 'text-amber-300', help: editorHelp.toolSuggestions, controls: 'suggestions-pane', count: suggestionCount },
     { key: 'variables', label: 'Input variables', icon: SlidersHorizontal, iconClass: 'text-sky-300', help: editorHelp.toolVariables, controls: 'variables-pane' },
     { key: 'screenshots', label: 'Recording screenshots', icon: ImageIcon, iconClass: 'text-fuchsia-300', help: editorHelp.toolScreenshots, controls: 'recording-screenshots-pane', count: currentStep?.screenshot?.frames?.length ?? '—' },
+    { key: 'agentView', label: 'How Claude sees this', icon: Bot, iconClass: 'text-emerald-300', help: editorHelp.toolAgentView, controls: 'agent-view-pane' },
   ]
 
   return (
@@ -857,18 +882,21 @@ export function HumanEditPage() {
             <TooltipTrigger asChild>
               <Button
                 type="button"
+                variant="brand"
                 size="sm"
-                className={cn('h-8 px-4 text-sm font-semibold', BRAND_BUTTON_CLASS)}
-                onClick={() => void finishEditing()}
+                className="ring-brand-ring/50 h-8 gap-1.5 px-4 text-sm font-semibold ring-1"
+                onClick={() => void approveWorkflow()}
               >
-                Finish editing
+                <BadgeCheck className="size-4" aria-hidden />
+                Approve
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Save all changes and return to the skill list</TooltipContent>
+            <TooltipContent>Sign off this workflow — builds the package and moves to Test Skill</TooltipContent>
           </Tooltip>
         </div>
       }
     />
+    <ConfidenceBanner suggestions={wf.suggestions} totalSteps={wf.steps.length} onReviewFlagged={jumpToSuggestions} />
     <div
       ref={splitPaneRef}
         className="relative grid flex-1 min-h-0 w-full min-w-0 grid-cols-1 overflow-hidden border-t border-white/8 md:min-h-0 md:[grid-template-columns:var(--workflow-pane-width)_minmax(0,1fr)_var(--tools-pane-width)] md:items-stretch"
@@ -899,17 +927,13 @@ export function HumanEditPage() {
         >
           <div className="mx-auto h-full w-px bg-white/10 transition-colors group-hover:bg-white/35 group-active:bg-white/45" />
         </div>
-        <StepEditorPanel
+        <InlineRetargetFlow
           key={currentStep?.id ?? 'empty-step-editor'}
           ref={stepEditorRef}
           step={currentStep}
           skillId={skillId}
           onWorkflowUpdated={onWorkflowUpdated}
           onHistoryUpdate={onHistoryUpdate}
-          recordingShotDragActive={recordingShotDragActive}
-          onDroppedRecordingScreenshot={onDroppedRecordingScreenshot}
-          onClearStepVisual={onClearStepVisual}
-          onApplyStepFrame={onApplyStepFrame}
         />
         <div
           className="group absolute inset-y-0 z-20 hidden w-3 -translate-x-1/2 cursor-col-resize md:block"
@@ -924,7 +948,9 @@ export function HumanEditPage() {
         >
           <div className="mx-auto h-full w-px bg-white/10 transition-colors group-hover:bg-white/35 group-active:bg-white/45" />
         </div>
-        <aside className="border-border/60 bg-card/20 supports-[backdrop-filter]:bg-card/10 hidden min-h-0 overflow-hidden border-l p-2 backdrop-blur-sm md:flex md:flex-col md:gap-2">
+        {/* Same gradient-fill depth treatment as the workflow list / wizard columns (flush grid
+            columns, not floating panels — see WorkflowViewer.tsx / InlineRetargetFlow.tsx). */}
+        <aside className="border-border/60 hidden min-h-0 overflow-hidden border-l bg-[linear-gradient(180deg,rgba(17,24,39,0.9),rgba(7,10,16,0.95))] p-2 ring-1 ring-inset ring-white/[0.03] md:flex md:flex-col md:gap-2">
           <section className="shrink-0 space-y-2 px-1 py-1">
             <h2 className="px-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">Tools</h2>
             <div className="flex flex-col gap-1">
@@ -999,6 +1025,7 @@ export function HumanEditPage() {
                 />
               ) : null}
             </div>
+            <div id="agent-view-pane">{activeToolsPane === 'agentView' ? <HowClaudeSeesThisPanel workflow={wf} /> : null}</div>
             </motion.div>
             </AnimatePresence>
           </ScrollArea>

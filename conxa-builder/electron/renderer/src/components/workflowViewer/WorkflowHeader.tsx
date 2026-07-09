@@ -17,7 +17,7 @@ export function WorkflowHeader({ version, onAddAction }: WorkflowHeaderProps) {
   return (
     <div className="border-border/80 space-y-2 border-b bg-muted/5 p-3">
       <div className="flex items-center gap-1.5">
-        <h2 className="text-foreground text-sm font-semibold tracking-tight">Workflow</h2>
+        <h2 className="text-foreground text-base font-semibold tracking-tight">Workflow</h2>
         <InfoHint {...editorHelp.workflowTips} side="bottom" align="start" />
       </div>
       <div className="flex items-center gap-2">
