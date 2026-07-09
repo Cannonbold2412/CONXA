@@ -4,35 +4,70 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAuth, performLogout } from '@/contexts/AuthContext'
 import { WindowTitleBar } from '@/components/layout/WindowTitleBar'
+import { PageHeaderProvider, usePageHeaderContext } from '@/contexts/PageHeaderContext'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import {
   ChevronLeft,
   ChevronRight,
-  FolderKanban,
-  Hammer,
-  Home,
+  Cpu,
   Layers,
   LogOut,
   PackageCheck,
+  PencilLine,
   PlayCircle,
   Settings,
+  UploadCloud,
+  Video,
 } from 'lucide-react'
 
 const SIDEBAR_KEY = 'conxa-sidebar-collapsed'
 
+// One button per stage of Record -> Compile -> Human Edit -> Test Skill ->
+// Publish Skill Package -> Build Installer, so the sidebar mirrors the flow
+// itself instead of the compiler's internal pipeline stages. Record is the
+// app home — it also owns plugin create/delete/search (folded in from the
+// old standalone Dashboard page) alongside the recording workspace.
 const navGroups = [
   {
     label: 'Operate',
     items: [
-      { to: '/dashboard', label: 'Dashboard', icon: Home },
-      { to: '/build', label: 'Build Plugin', icon: Hammer },
-      { to: '/packages', label: 'Packages', icon: FolderKanban },
-      { to: '/test', label: 'Test Plugin', icon: PlayCircle },
+      { to: '/record', label: 'Record', icon: Video },
+      { to: '/compile', label: 'Compile', icon: Cpu },
+      { to: '/human-edit', label: 'Human Edit', icon: PencilLine },
+      { to: '/test', label: 'Test Skill', icon: PlayCircle },
+      { to: '/publish', label: 'Publish Skill Package', icon: UploadCloud },
       { to: '/build-installer', label: 'Build Installer', icon: PackageCheck },
     ],
   },
 ] as const
 
 const settingsNavItem = { to: '/settings', label: 'Settings', icon: Settings } as const
+
+// The current page's title/description, registered by its <PageHeader> via
+// PageHeaderContext, rendered here so it sits next to the logout widget
+// instead of the page repeating its own header block.
+function HeaderPageTitle() {
+  const { header } = usePageHeaderContext()
+  // Always occupies the flex-1 slot (even empty) so the user/logout widget
+  // stays pinned to the right regardless of whether a page has registered a
+  // header yet (e.g. during the initial render tick, or on chrome-only screens).
+  return (
+    <div className="min-w-0 flex-1">
+      {header ? (
+        <>
+          <h1 className={cn('truncate text-sm font-semibold text-white sm:text-base', header.description && 'leading-snug')}>
+            {header.title}
+          </h1>
+          {header.description != null && header.description !== false ? (
+            <div className={cn('mt-0.5 min-w-0', typeof header.description === 'string' ? 'truncate text-xs text-zinc-500' : 'text-xs text-zinc-500')}>
+              {header.description}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  )
+}
 
 function ProductMark() {
   return (
@@ -99,7 +134,7 @@ function DesktopSidebar({ collapsed, setCollapsed }: { collapsed: boolean; setCo
       )}
     >
       <div className="flex items-center gap-3 border-b border-white/8 px-4 py-4">
-        <NavLink to="/dashboard" className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
+        <NavLink to="/record" className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
           <ProductMark />
           {!collapsed && (
             <div className="min-w-0">
@@ -180,31 +215,35 @@ export function AppChrome({ children }: { children: ReactNode }) {
   }, [collapsed])
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-[#0a0c0f] text-zinc-100">
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.05),_transparent_40%),linear-gradient(180deg,_#0f1115_0%,_#090b0d_100%)]" />
-        <div
-          className="absolute inset-0 opacity-[0.18]"
-          style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,0.08) 1px, transparent 1px)', backgroundSize: '24px 24px' }}
-        />
-      </div>
+    <TooltipProvider>
+      <div className="flex h-dvh flex-col overflow-hidden bg-[#0a0c0f] text-zinc-100">
+        <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.05),_transparent_40%),linear-gradient(180deg,_#0f1115_0%,_#090b0d_100%)]" />
+          <div
+            className="absolute inset-0 opacity-[0.18]"
+            style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,0.08) 1px, transparent 1px)', backgroundSize: '24px 24px' }}
+          />
+        </div>
 
-      <WindowTitleBar />
+        <WindowTitleBar />
 
-      <div className="flex min-h-0 flex-1">
-        <DesktopSidebar collapsed={collapsed} setCollapsed={setCollapsed} />
+        <div className="flex min-h-0 flex-1">
+          <DesktopSidebar collapsed={collapsed} setCollapsed={setCollapsed} />
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0b0d10]/88 backdrop-blur">
-            <div className="flex min-h-14 items-center gap-3 px-4 sm:px-6">
-              <div className="flex-1" />
-              <UserWidget />
+          <PageHeaderProvider>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0b0d10]/88 backdrop-blur">
+                <div className="flex items-center gap-3 px-4 py-3 sm:px-6">
+                  <HeaderPageTitle />
+                  <UserWidget />
+                </div>
+              </header>
+
+              <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
             </div>
-          </header>
-
-          <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
+          </PageHeaderProvider>
         </div>
       </div>
-    </div>
+    </TooltipProvider>
   )
 }

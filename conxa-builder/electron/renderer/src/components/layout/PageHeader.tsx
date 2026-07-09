@@ -1,5 +1,6 @@
-import { type ReactNode } from 'react'
+import { type ReactNode, useEffect } from 'react'
 import { cn } from '@/lib/utils'
+import { usePageHeaderContext } from '@/contexts/PageHeaderContext'
 
 type PageHeaderProps = {
   title: string
@@ -8,22 +9,23 @@ type PageHeaderProps = {
   className?: string
 }
 
+/** Registers this page's title/description into AppChrome's sticky top bar
+ * (next to the user/logout widget) so it's never repeated in the page body.
+ * Only renders something here when `actions` are supplied — a right-aligned
+ * strip for page-level buttons that stay put in the body. */
 export function PageHeader({ title, description, actions, className }: PageHeaderProps) {
+  const { setHeader } = usePageHeaderContext()
+
+  useEffect(() => {
+    setHeader({ title, description })
+    return () => setHeader(null)
+  }, [title, description, setHeader])
+
+  if (!actions) return null
+
   return (
-    <div className={cn('border-b border-white/8 px-4 py-4 sm:px-6', className)}>
-      <div className="flex min-h-10 items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <h1 className={cn('truncate text-base font-semibold text-white sm:text-lg', description && 'leading-snug')}>
-            {title}
-          </h1>
-          {description != null && description !== false ? (
-            <div className={cn('mt-0.5 min-w-0', typeof description === 'string' ? 'truncate text-sm text-zinc-500' : 'text-sm text-zinc-500')}>
-              {description}
-            </div>
-          ) : null}
-        </div>
-        {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
-      </div>
+    <div className={cn('flex items-center justify-end gap-2 border-b border-white/8 px-4 py-3 sm:px-6', className)}>
+      {actions}
     </div>
   )
 }

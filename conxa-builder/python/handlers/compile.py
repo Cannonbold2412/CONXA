@@ -169,11 +169,22 @@ class CompileMixin:
         for step in ("selectors", "assertions", "recovery", "package"):
             sink({"phase": "compile_step", "step": step, "status": "done"})
             _log(f"Completed: {step}")
+        compile_report = package.compile_report or {}
         if plugin is not None and workflow is not None:
             workflow.skill_id = skill_id
             workflow.status = "compiled"
+            workflow.compile_status = compile_report.get("status")
+            workflow.compile_min_confidence = compile_report.get("min_confidence")
+            workflow.compile_steps_with_warnings = compile_report.get("steps_with_warnings")
             save_plugin(plugin)
         _log(f"Skill packaged: {skill_id} (version {version}, {step_count} steps)")
         sink({"phase": "compile_done", "skill_id": skill_id, "version": version, "step_count": step_count})
-        return {"skill_id": skill_id, "version": version, "step_count": step_count}
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "step_count": step_count,
+            "compile_status": compile_report.get("status"),
+            "compile_min_confidence": compile_report.get("min_confidence"),
+            "compile_steps_with_warnings": compile_report.get("steps_with_warnings"),
+        }
 

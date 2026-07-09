@@ -31,6 +31,9 @@ interface CompileResult {
   skill_id: string;
   version: number;
   step_count: number;
+  compile_status: "ok" | "review_needed" | "failed" | null;
+  compile_min_confidence: number | null;
+  compile_steps_with_warnings: number | null;
 }
 
 const PIPELINE_STEPS: Omit<CompileStep, "state">[] = [

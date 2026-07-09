@@ -81,17 +81,9 @@ export function RecordingFeed() {
     }
   }
 
-  async function compile() {
+  function compile() {
     if (!sessionId || !pluginId) return;
-    try {
-      const r = await cmd<{ job_id: string }>("compile", {
-        plugin_id: pluginId,
-        session_id: sessionId,
-      });
-      navigate(`/plugins/${encodeURIComponent(pluginId)}/compile/${encodeURIComponent(r.job_id)}`);
-    } catch (e) {
-      setError(errorMessage(e, "Couldn't start compiling."));
-    }
+    navigate(`/plugins/${encodeURIComponent(pluginId)}/compile/${encodeURIComponent(sessionId)}`);
   }
 
   useEffect(() => {

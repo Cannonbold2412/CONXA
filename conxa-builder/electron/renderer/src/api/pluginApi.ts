@@ -14,6 +14,11 @@ export type PluginWorkflow = {
   last_test_status: 'passed' | 'failed' | 'never'
   last_test_error: string | null
   last_test_inputs: Record<string, unknown>
+  signed_off: boolean
+  compile_status: 'ok' | 'review_needed' | 'failed' | null
+  compile_min_confidence: number | null
+  compile_steps_with_warnings: number | null
+  stage: 'recording' | 'ready_to_compile' | 'queued' | 'compiling' | 'needs_review' | 'needs_test' | 'ready' | 'error'
 }
 
 export type PluginAuth = {

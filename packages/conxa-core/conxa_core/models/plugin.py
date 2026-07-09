@@ -22,6 +22,11 @@ class PluginWorkflow(BaseModel):
     last_test_error: str | None = None
     last_test_inputs: dict[str, Any] = Field(default_factory=dict)
     signed_off: bool = False
+    # Confidence summary from the most recent compile's compile_report (see
+    # conxa_compile/compiler/build.py::_build_compile_report). None until compiled.
+    compile_status: Literal["ok", "review_needed", "failed"] | None = None
+    compile_min_confidence: float | None = None
+    compile_steps_with_warnings: int | None = None
 
 
 class PluginAuth(BaseModel):

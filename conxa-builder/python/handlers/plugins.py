@@ -21,6 +21,7 @@ from handlers.protocol import (
     _validate_release_notes,
     _validate_release_version,
 )
+from handlers.status import derive_workflow_stage
 
 class PluginsMixin:
     def cmd_create_plugin(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -37,7 +38,13 @@ class PluginsMixin:
         from conxa_core.storage.plugin_store import list_plugins as _list
 
         plugins = _list()
-        return {"plugins": [p.model_dump(mode="json") for p in plugins]}
+        result = []
+        for p in plugins:
+            data = p.model_dump(mode="json")
+            for wf_data, wf in zip(data["workflows"], p.workflows):
+                wf_data["stage"] = derive_workflow_stage(wf)
+            result.append(data)
+        return {"plugins": result}
 
     def cmd_get_plugin(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         from conxa_core.storage.plugin_store import get_plugin
@@ -58,6 +65,7 @@ class PluginsMixin:
                 except Exception:
                     pass
             wf_data["step_count"] = step_count
+            wf_data["stage"] = derive_workflow_stage(wf)
         return {"plugin": data}
 
     def cmd_list_workflows(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -67,9 +75,14 @@ class PluginsMixin:
         plugin = get_plugin(plugin_id)
         if plugin is None:
             raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
+        workflows = []
+        for wf in plugin.workflows:
+            wf_data = wf.model_dump(mode="json")
+            wf_data["stage"] = derive_workflow_stage(wf)
+            workflows.append(wf_data)
         return {
             "plugin_id": plugin_id,
-            "workflows": [wf.model_dump(mode="json") for wf in plugin.workflows],
+            "workflows": workflows,
         }
 
     def cmd_build_plugin(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:

@@ -9,13 +9,14 @@ import { BootstrapScreen } from '@/pages/BootstrapScreen'
 import { UpdateRequiredScreen } from '@/pages/UpdateRequiredScreen'
 
 // Pages
-import { PluginsPage } from '@/pages/PluginsPage'
 import { PluginDetailPage } from '@/pages/PluginDetailPage'
 import { HumanEditPage } from '@/pages/HumanEditPage'
-import { BuildPage } from '@/pages/BuildPage'
+import { RecordPage } from '@/pages/RecordPage'
+import { CompilePage } from '@/pages/CompilePage'
+import { HumanEditListPage } from '@/pages/HumanEditListPage'
+import { PublishPage } from '@/pages/PublishPage'
 import { BuildInstallerPage } from '@/pages/BuildInstallerPage'
 import { TestPluginPage } from '@/pages/TestPluginPage'
-import { SkillPackagesPage } from '@/pages/SkillPackagesPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 
 // Studio-exclusive pages (keep existing)
@@ -36,7 +37,7 @@ function DeepLinkHandler() {
     return window.conxa.onDeepLink((url) => {
       const pluginMatch = url.match(/[?&]plugin=([^&]+)/)
       const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : null
-      navigate(pluginId ? `/plugins/${pluginId}` : '/dashboard')
+      navigate(pluginId ? `/plugins/${pluginId}` : '/record')
     })
   }, [navigate])
   return null
@@ -158,20 +159,27 @@ export function App() {
         <AppChrome>
           <DeepLinkHandler />
           <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<PluginsPage />} />
-            <Route path="/plugins" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/" element={<Navigate to="/record" replace />} />
+            <Route path="/dashboard" element={<Navigate to="/record" replace />} />
+            <Route path="/plugins" element={<Navigate to="/record" replace />} />
             <Route path="/plugins/:pluginId" element={<PluginDetailPage />} />
             <Route path="/plugins/:pluginId/record/:workflowName" element={<RecordingFeed />} />
             <Route path="/plugins/:pluginId/compile/:sessionId" element={<CompileProgress />} />
             <Route path="/edit" element={<HumanEditPage />} />
             <Route path="/edit/:skillId" element={<HumanEditPage />} />
-            <Route path="/build" element={<BuildPage />} />
+            <Route path="/record" element={<RecordPage />} />
+            <Route path="/compile" element={<CompilePage />} />
+            <Route path="/human-edit" element={<HumanEditListPage />} />
             <Route path="/test" element={<TestPluginPage />} />
+            <Route path="/publish" element={<PublishPage />} />
             <Route path="/build-installer" element={<BuildInstallerPage />} />
-            <Route path="/packages" element={<SkillPackagesPage />} />
+            {/* Build Plugin is superseded by auto-build on sign-off (see cmd_sign_off_workflow);
+                Packages moves into the Inspector drawer (T1.4). Both routes redirect rather
+                than 404 for anyone with an old bookmark or deep link. */}
+            <Route path="/build" element={<Navigate to="/record" replace />} />
+            <Route path="/packages" element={<Navigate to="/record" replace />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/record" replace />} />
           </Routes>
         </AppChrome>
       </ErrorBoundary>
