@@ -1,9 +1,11 @@
 import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
+import { BoxSelect } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { Bbox } from '@/api/workflowApi'
 import type { StepEditorDTO } from '@/types/workflow'
-import { ScreenshotViewer, isWeakVisualBbox } from '../ScreenshotViewer'
+import { ScreenshotViewer, isWeakVisualBbox, type VisualBboxToolbarUi } from '../ScreenshotViewer'
 
 type Props = {
   step: StepEditorDTO
@@ -27,6 +29,7 @@ export function RetargetPhasePick({ step, loading, sessionMissing, onDrawn, onAp
   // to change anything) can click Continue immediately, without being forced to redraw.
   const [pendingBbox, setPendingBbox] = useState<Bbox | null>(() => currentBboxOf(step))
   const [hasDrawnNew, setHasDrawnNew] = useState(false)
+  const [toolbarUi, setToolbarUi] = useState<VisualBboxToolbarUi | null>(null)
 
   const handleDrawn = useCallback((b: Bbox) => {
     setPendingBbox(b)
@@ -66,10 +69,33 @@ export function RetargetPhasePick({ step, loading, sessionMissing, onDrawn, onAp
 
   return (
     <div className="space-y-3">
-      <p className="text-muted-foreground text-sm">
-        This is the element the step currently targets. Draw a new box only if you want to
-        change it — otherwise just continue.
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-muted-foreground text-sm">
+          This is the element the step currently targets. Draw a new box only if you want to
+          change it — otherwise just continue.
+        </p>
+        {toolbarUi ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant={toolbarUi.active ? 'default' : 'outline'}
+                disabled={toolbarUi.saving}
+                className="shrink-0 gap-1"
+                aria-pressed={toolbarUi.active}
+                onClick={() => toolbarUi.onToggle()}
+              >
+                <BoxSelect className="size-3.5 shrink-0" aria-hidden />
+                Visual bbox
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              Draw a rectangle on the screenshot to save the visual region and recompute anchors
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
       <ScreenshotViewer
         screenshot={displayScreenshot}
         label={step.human_readable_description}
@@ -78,6 +104,8 @@ export function RetargetPhasePick({ step, loading, sessionMissing, onDrawn, onAp
         autoActivateDraw
         onSaveVisualBbox={handleDrawn}
         onDrawTooSmall={handleTooSmall}
+        hideToolbar
+        onToolbarUiChange={setToolbarUi}
       />
       {!sessionMissing ? (
         <div className="border-brand/30 bg-brand-subtle flex items-center justify-between gap-3 rounded-lg border p-3 text-sm text-zinc-100">

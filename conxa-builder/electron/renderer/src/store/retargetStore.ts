@@ -1,6 +1,14 @@
 import { create } from 'zustand'
-import type { Bbox, RetargetPreviewResponse } from '@/api/workflowApi'
+import type { Bbox, EditableCandidate, RetargetPreviewResponse } from '@/api/workflowApi'
 import type { AssertionDraft } from '@/components/retarget/RetargetPhaseValidation'
+
+let candidateIdSeq = 0
+/** Stable, client-only id for a Review Selectors row — lets the phase track selection/edits
+ *  by identity across reorders instead of by array index. */
+export function makeCandidateId(): string {
+  candidateIdSeq += 1
+  return `cand_${candidateIdSeq}`
+}
 
 // The re-target wizard is split across three routes (pick → selectors → confirm). React Router
 // unmounts each page on navigation, so the cross-phase state that used to live inside the
@@ -10,8 +18,11 @@ type RetargetState = {
   stepIndex: number | null
   bbox: Bbox | null
   preview: RetargetPreviewResponse | null
-  selectedIndex: number
-  manualSelector: string
+  /** Human-editable working copy of `preview.candidates` — reorderable, editable, and
+   *  add/removable in the Review Selectors phase without mutating the original preview.
+   *  Order is meaningful: `candidates[0]` is always the primary selector, the rest are the
+   *  fallback chain in priority order. */
+  candidates: EditableCandidate[]
   keepValidation: boolean
   /** Human edits made in the Validation phase; null means "use the current/proposed default". */
   editedAssertions: AssertionDraft[] | null
@@ -22,8 +33,7 @@ type RetargetState = {
   ensureFor: (skillId: string, stepIndex: number) => void
   setBbox: (bbox: Bbox | null) => void
   setPreview: (preview: RetargetPreviewResponse | null) => void
-  setSelectedIndex: (index: number) => void
-  setManualSelector: (value: string) => void
+  setCandidates: (candidates: EditableCandidate[]) => void
   setKeepValidation: (value: boolean) => void
   setEditedAssertions: (value: AssertionDraft[] | null) => void
   reset: () => void
@@ -32,11 +42,10 @@ type RetargetState = {
 const EMPTY = {
   bbox: null,
   preview: null,
-  selectedIndex: 0,
-  manualSelector: '',
+  candidates: [] as EditableCandidate[],
   keepValidation: true,
   editedAssertions: null,
-} as const
+}
 
 export const useRetargetStore = create<RetargetState>((set, get) => ({
   skillId: null,
@@ -49,8 +58,7 @@ export const useRetargetStore = create<RetargetState>((set, get) => ({
   },
   setBbox: (bbox) => set({ bbox }),
   setPreview: (preview) => set({ preview }),
-  setSelectedIndex: (selectedIndex) => set({ selectedIndex }),
-  setManualSelector: (manualSelector) => set({ manualSelector }),
+  setCandidates: (candidates) => set({ candidates }),
   setKeepValidation: (keepValidation) => set({ keepValidation }),
   setEditedAssertions: (editedAssertions) => set({ editedAssertions }),
   reset: () => set({ skillId: null, stepIndex: null, ...EMPTY }),

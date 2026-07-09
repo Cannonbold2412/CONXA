@@ -23,6 +23,18 @@ export type StepScreenshotDTO = {
   default_frame_label: string | null
 }
 
+/** A single identity_bundle signal, projected for display — the durability/orthogonality/
+ * uniqueness/source metadata the runtime resolver actually keys off (see
+ * conxa_compile.compiler.selector_grammar.signals_to_display_list). */
+export type IdentityEngineEntry = {
+  selector: string
+  engine: string
+  durability: number
+  orthogonality_class: string
+  unique_at_compile: boolean
+  source: string
+}
+
 export type StepEditorDTO = {
   id: string
   step_index: number
@@ -38,6 +50,9 @@ export type StepEditorDTO = {
   target: Record<string, unknown>
   selectors: Record<string, unknown>
   compiled_selectors?: string[]
+  identity_engines?: IdentityEngineEntry[]
+  /** Step-level rollup of identity signal quality (0-1); null when there's no identity_bundle. */
+  compile_confidence?: number | null
   anchors_signals: Record<string, unknown>[]
   anchors_recovery: Record<string, unknown>[]
   validation: {

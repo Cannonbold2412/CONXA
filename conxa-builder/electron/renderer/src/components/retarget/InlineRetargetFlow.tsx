@@ -9,7 +9,7 @@ import { RetargetPhaseSelectors } from './RetargetPhaseSelectors'
 import { RetargetPhaseValidation } from './RetargetPhaseValidation'
 import { BuildPipelineStepper, type PipelineStep } from '@/components/build/BuildPipelineStepper'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useRetargetStore } from '@/store/retargetStore'
+import { makeCandidateId, useRetargetStore } from '@/store/retargetStore'
 import { cn } from '@/lib/utils'
 
 const PHASE_LABELS = ['Pick element', 'Review selectors', 'Validation'] as const
@@ -54,10 +54,8 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
   const setBbox = useRetargetStore((s) => s.setBbox)
   const preview = useRetargetStore((s) => s.preview)
   const setPreview = useRetargetStore((s) => s.setPreview)
-  const selectedIndex = useRetargetStore((s) => s.selectedIndex)
-  const setSelectedIndex = useRetargetStore((s) => s.setSelectedIndex)
-  const manualSelector = useRetargetStore((s) => s.manualSelector)
-  const setManualSelector = useRetargetStore((s) => s.setManualSelector)
+  const candidates = useRetargetStore((s) => s.candidates)
+  const setCandidates = useRetargetStore((s) => s.setCandidates)
   const keepValidation = useRetargetStore((s) => s.keepValidation)
   const setKeepValidation = useRetargetStore((s) => s.setKeepValidation)
   const editedAssertions = useRetargetStore((s) => s.editedAssertions)
@@ -81,8 +79,8 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
       try {
         const result = await retargetPreview(skillId, step.step_index, drawn, regenerate)
         setPreview(result)
-        setSelectedIndex(0)
-        setManualSelector('')
+        const seeded = result.candidates.map((c) => ({ ...c, id: makeCandidateId() }))
+        setCandidates(seeded)
         setKeepValidation(!result.validation_changed)
         setEditedAssertions(null)
         setPhase(2)
@@ -96,7 +94,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
         setLoading(false)
       }
     },
-    [skillId, step, setBbox, setPreview, setSelectedIndex, setManualSelector, setKeepValidation, setEditedAssertions],
+    [skillId, step, setBbox, setPreview, setCandidates, setKeepValidation, setEditedAssertions],
   )
 
   const handleApplyPositionOnly = useCallback(async () => {
@@ -128,24 +126,29 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
   }, [reset])
 
   const handleContinueToConfirm = useCallback(async () => {
+    if (!candidates[0]?.selector.trim()) {
+      toast.error('Add or drag a selector to the top (primary) before continuing.')
+      return
+    }
     const savedOk = await (formRef.current?.submitIfDirty() ?? Promise.resolve(true))
     if (!savedOk) {
       toast.error('Could not save the step details — fix errors before continuing.')
       return
     }
     setPhase(3)
-  }, [])
+  }, [candidates])
 
   const handleApply = useCallback(async () => {
     if (!step || !bbox || !preview) return
-    const manual = manualSelector.trim()
-    const chosen = preview.candidates[selectedIndex]
-    const primary = manual || chosen?.selector || ''
+    const primary = candidates[0]?.selector.trim() || ''
     if (!primary) {
-      toast.error('Choose one of the generated selectors (or enter one manually) before applying.')
+      toast.error('Add or drag a selector to the top (primary) before applying.')
       return
     }
-    const fallbacks = preview.candidates.map((c) => c.selector).filter((s) => s !== primary)
+    const fallbacks = candidates
+      .slice(1)
+      .map((c) => c.selector.trim())
+      .filter(Boolean)
     setApplying(true)
     try {
       const res = await retargetApply(skillId, step.step_index, {
@@ -169,7 +172,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     } finally {
       setApplying(false)
     }
-  }, [skillId, step, bbox, preview, manualSelector, selectedIndex, keepValidation, editedAssertions, onWorkflowUpdated, onHistoryUpdate, reset])
+  }, [skillId, step, bbox, preview, candidates, keepValidation, editedAssertions, onWorkflowUpdated, onHistoryUpdate, reset])
 
   if (!step) {
     return (
@@ -183,7 +186,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     return (
       <div className={PANEL_CLASS}>
         <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-2 p-2">
+          <div className="space-y-2 p-3">
             <StepConfigForm
               ref={formRef}
               step={step}
@@ -204,11 +207,15 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
 
   return (
     <div className={PANEL_CLASS}>
+      {/* Fixed-height header (matches WorkflowHeader's h-14 on the left pane) so the two panes'
+          border-bottoms line up in the same row instead of this stepper scrolling with the content. */}
+      <div className="border-border/80 flex h-14 items-center justify-center border-b bg-muted/5 px-3">
+        <div className="mx-auto w-full max-w-md">
+          <BuildPipelineStepper steps={pipelineSteps} />
+        </div>
+      </div>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-3 p-2">
-          <div className="px-1 pt-1">
-            <BuildPipelineStepper steps={pipelineSteps} />
-          </div>
+        <div className="space-y-3.5 p-3">
           {phase === 1 ? (
             <RetargetPhasePick
               step={step}
@@ -219,15 +226,34 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               onCancel={handleCancelPick}
             />
           ) : null}
+          {/* Kept mounted (just hidden) across phases so in-progress edits and the ref survive
+              phase changes instead of being lost on unmount. Visible during phase 2 only, per
+              the "review selectors doubles as the step editor" design. hideSelectorTools also
+              suppresses the form's own Validation panel — that's the job of phase 3
+              (RetargetPhaseValidation) here, and showing both would let a user save assertions
+              via two different, inconsistent paths (instant patchStep vs. staged retargetApply).
+              hideSubmitButton: the wizard's own Continue button already calls submitIfDirty(),
+              so a second manual "Save step" button here would be redundant. Rendered above
+              RetargetPhaseSelectors so "Action: <type>" sits above the selector list. */}
+          <div className={phase === 2 ? '' : 'hidden'}>
+            <StepConfigForm
+              ref={formRef}
+              step={step}
+              skillId={skillId}
+              onWorkflowUpdated={onWorkflowUpdated}
+              onHistoryUpdate={onHistoryUpdate}
+              hideSelectorTools
+              hideSubmitButton
+            />
+          </div>
           {phase === 2 && preview ? (
             <RetargetPhaseSelectors
-              preview={preview}
-              selectedIndex={selectedIndex}
-              manualSelector={manualSelector}
-              onSelect={setSelectedIndex}
-              onManualSelectorChange={setManualSelector}
+              pickQuality={preview.pick_quality}
+              candidates={candidates}
+              onCandidatesChange={setCandidates}
               onBack={() => setPhase(1)}
               onContinue={() => void handleContinueToConfirm()}
+              compileConfidence={preview.compile_confidence}
             />
           ) : null}
           {phase === 3 && preview ? (
@@ -242,22 +268,6 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               applying={applying}
             />
           ) : null}
-          {/* Kept mounted (just hidden) across phases so in-progress edits and the ref survive
-              phase changes instead of being lost on unmount. Visible during phase 2 only, per
-              the "review selectors doubles as the step editor" design. hideSelectorTools also
-              suppresses the form's own Validation panel — that's the job of phase 3
-              (RetargetPhaseValidation) here, and showing both would let a user save assertions
-              via two different, inconsistent paths (instant patchStep vs. staged retargetApply). */}
-          <div className={phase === 2 ? '' : 'hidden'}>
-            <StepConfigForm
-              ref={formRef}
-              step={step}
-              skillId={skillId}
-              onWorkflowUpdated={onWorkflowUpdated}
-              onHistoryUpdate={onHistoryUpdate}
-              hideSelectorTools
-            />
-          </div>
         </div>
       </ScrollArea>
     </div>

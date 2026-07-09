@@ -8,7 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
-import { BoxSelect, ImageIcon } from 'lucide-react'
+import { BoxSelect } from 'lucide-react'
 import type { StepScreenshotDTO } from '../types/workflow'
 import { RECORDING_DRAG_MODE_CLEAR_VISUAL, RECORDING_SCREENSHOT_DRAG_MIME } from '@/api/workflowApi'
 import { Button } from '@/components/ui/button'
@@ -83,6 +83,9 @@ type InnerProps = {
   onDrawTooSmall?: () => void
   /** When set, show toolbar control to enter/exit draw mode. */
   bboxToolUi?: { active: boolean; onToggle: () => void; saving: boolean } | null
+  /** Skip rendering the built-in toolbar — the caller renders its own "Visual bbox" control
+   *  elsewhere (via `onToolbarUiChange` on `ScreenshotViewer`) instead. */
+  hideToolbar?: boolean
 }
 
 function ScreenshotViewInner({
@@ -94,6 +97,7 @@ function ScreenshotViewInner({
   onCommitDrawnBbox,
   onDrawTooSmall,
   bboxToolUi,
+  hideToolbar,
 }: InnerProps) {
   const { x = 0, y = 0, w = 0, h = 0 } = bbox as Record<string, number>
   const [zoom, setZoom] = useState(1)
@@ -258,6 +262,34 @@ function ScreenshotViewInner({
           aria-hidden
         />
       ) : null}
+      {bboxToolUi && !hideToolbar ? (
+        <div className="border-border/60 relative z-10 flex items-center justify-end border-b bg-white/[0.03] px-2 py-1.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={bboxToolUi.saving}
+                className={cn(
+                  'h-7 gap-1 rounded-full border px-2 text-[11px] font-semibold shadow-sm transition-colors',
+                  bboxToolUi.active
+                    ? 'border-brand/50 bg-brand/15 text-brand hover:bg-brand/20 hover:text-brand'
+                    : 'border-white/12 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-white',
+                )}
+                aria-pressed={bboxToolUi.active}
+                onClick={() => bboxToolUi.onToggle()}
+              >
+                <BoxSelect className="size-3.5 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
+                Visual bbox
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              Draw a rectangle on the screenshot to save the visual region and recompute anchors
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      ) : null}
       <div
         className={cn(
           'transition-transform duration-200 ease-out will-change-transform motion-reduce:transition-none motion-reduce:duration-0',
@@ -274,13 +306,16 @@ function ScreenshotViewInner({
         onPointerUp={endPan}
         onPointerCancel={endPan}
       >
-        <div className="bg-muted/15 relative inline-block min-w-0 w-full">
-          <div className="shot-wrap relative inline-block min-w-0 max-w-full">
+        <div className="bg-muted/15 relative flex min-w-0 w-full items-center justify-center">
+          <div className="shot-wrap relative inline-block max-w-full">
             <img
               ref={imgRef}
               src={resolvedSrc}
               alt="Captured page region for this step"
-              className={cn('h-auto w-full max-w-full', bboxDrawMode && !bboxDrawSaving && 'select-none')}
+              className={cn(
+                'h-auto max-h-[55vh] w-auto max-w-full',
+                bboxDrawMode && !bboxDrawSaving && 'select-none',
+              )}
               draggable={false}
               onLoad={(e) => {
                 const im = e.currentTarget
@@ -334,46 +369,6 @@ function ScreenshotViewInner({
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-2">
-        <div className="pointer-events-none flex min-w-0 flex-1 items-start gap-1.5">
-          <span
-            className="pointer-events-none flex size-7 shrink-0 items-center justify-center rounded-md border border-black/45 bg-transparent text-zinc-950 shadow-sm"
-            title="Screenshot"
-            aria-hidden
-          >
-            <ImageIcon className="size-3.5 shrink-0 opacity-90" strokeWidth={1.75} aria-hidden />
-          </span>
-          {bboxToolUi ? (
-            <div className="pointer-events-auto shrink-0">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={bboxToolUi.saving}
-                    className={cn(
-                      'h-7 gap-1 rounded-full border bg-transparent px-2 text-[11px] font-bold text-zinc-950 shadow-sm hover:bg-transparent hover:text-zinc-950',
-                      bboxToolUi.active
-                        ? 'border-black/70'
-                        : 'border-black/50',
-                    )}
-                    aria-pressed={bboxToolUi.active}
-                    onClick={() => bboxToolUi.onToggle()}
-                  >
-                    <BoxSelect className="size-3.5 shrink-0 opacity-90" strokeWidth={2} aria-hidden />
-                    Visual bbox
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  Draw a rectangle on the screenshot to save the visual region and recompute anchors
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
       {bboxDrawMode && bboxToolUi ? (
         <p className="text-muted-foreground border-border/60 border-t px-2 py-1.5 text-[11px] leading-snug">
           {bboxToolUi.saving
@@ -396,6 +391,8 @@ export type DropRecordingScreenshotHandlers = {
   onApplyStepFrame?: (frameLabel: string) => void | Promise<void>
 }
 
+export type VisualBboxToolbarUi = { active: boolean; onToggle: () => void; saving: boolean }
+
 type Props = {
   screenshot: StepScreenshotDTO
   label: string
@@ -407,6 +404,12 @@ type Props = {
   /** Start already in draw mode (e.g. the re-target wizard's Phase 1, where drawing
    * the element is the phase's whole purpose — no separate toggle click needed). */
   autoActivateDraw?: boolean
+  /** Skip the built-in "Visual bbox" toolbar — pair with `onToolbarUiChange` to render the
+   *  toggle control elsewhere (e.g. beside the phase's own instructions text). */
+  hideToolbar?: boolean
+  /** Reports the current toggle state/handler whenever it changes, so a caller using
+   *  `hideToolbar` can render its own "Visual bbox" button driven by this same state. */
+  onToolbarUiChange?: (ui: VisualBboxToolbarUi | null) => void
 } & Partial<DropRecordingScreenshotHandlers>
 
 function recordingDragLikely(dt: DataTransfer | null | undefined, recordingShotDragActive?: boolean): boolean {
@@ -427,6 +430,8 @@ export function ScreenshotViewer({
   onDrawTooSmall,
   isScrollStep = false,
   autoActivateDraw = false,
+  hideToolbar = false,
+  onToolbarUiChange,
 }: Props) {
   const src = screenshot.full_url || screenshot.element_url || screenshot.scroll_url
   const bbox = screenshot.bbox || {}
@@ -455,6 +460,15 @@ export function ScreenshotViewer({
   }, [stepIndex, effectiveSrc])
 
   const bboxToolAllowed = Boolean(onSaveVisualBbox && !isScrollStep && effectiveSrc)
+  const toggleBboxDraw = useCallback(() => setBboxDrawActive((a) => !a), [])
+  const toolbarUi = useMemo<VisualBboxToolbarUi | null>(
+    () => (bboxToolAllowed ? { active: bboxDrawActive, onToggle: toggleBboxDraw, saving: bboxDrawSaving } : null),
+    [bboxToolAllowed, bboxDrawActive, toggleBboxDraw, bboxDrawSaving],
+  )
+  useEffect(() => {
+    onToolbarUiChange?.(toolbarUi)
+  }, [toolbarUi, onToolbarUiChange])
+
   const handleCommitBbox = useCallback(
     async (b: { x: number; y: number; w: number; h: number }) => {
       if (!onSaveVisualBbox) return
@@ -613,15 +627,8 @@ export function ScreenshotViewer({
         bboxDrawSaving={bboxDrawSaving}
         onCommitDrawnBbox={bboxToolAllowed ? handleCommitBbox : undefined}
         onDrawTooSmall={onDrawTooSmall}
-        bboxToolUi={
-          bboxToolAllowed
-            ? {
-                active: bboxDrawActive,
-                onToggle: () => setBboxDrawActive((a) => !a),
-                saving: bboxDrawSaving,
-              }
-            : null
-        }
+        bboxToolUi={toolbarUi}
+        hideToolbar={hideToolbar}
       />
     </div>
   )

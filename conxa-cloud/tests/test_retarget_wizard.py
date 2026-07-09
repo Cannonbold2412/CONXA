@@ -91,8 +91,14 @@ def session_fixture(tmp_path, monkeypatch):
 
     session_dir = tmp_path / "sessions" / SESSION_ID
     (session_dir / "blobs").mkdir(parents=True)
+    (session_dir / "images").mkdir(parents=True)
     (session_dir / "events.jsonl").write_text(json.dumps(RECORDED_EVENT) + "\n", encoding="utf-8")
     (session_dir / "blobs" / f"{DOM_HASH}.html.gz").write_bytes(gzip.compress(DOM_HTML.encode("utf-8")))
+    # region_selector_vision reads the recorded full-page screenshot to highlight the drawn
+    # region before sending it to the vision LLM — a real (tiny) image is needed on disk.
+    from PIL import Image
+
+    Image.new("RGB", (100, 100), color="white").save(session_dir / "images" / "step0_full.png")
     return tmp_path
 
 
@@ -103,23 +109,23 @@ def _candidate(selector: str, rank: int, intent: str = ""):
 
 
 def _patch_raw_candidates(monkeypatch, candidates):
-    """Patch at the compile_selectors_for_task layer (bypasses ITS internal
-    uniqueness filtering) so retarget.py's own post-processing/classification
+    """Patch at the compile_selectors_for_region layer (bypasses ITS internal
+    caching/highlighting) so retarget.py's own post-processing/classification
     can be exercised directly, including candidates that are not unique in the
     stored DOM snapshot."""
     monkeypatch.setattr(
-        "conxa_compile.llm.selector_regeneration.compile_selectors_for_task",
+        "conxa_compile.llm.region_selector_vision.compile_selectors_for_region",
         lambda *_a, **_k: candidates,
     )
 
 
 def _patch_llm_candidates(monkeypatch, candidates):
-    """Patch one level lower, at generate_selector_candidates, so the real
-    compile_selectors_for_task (including its own validate/rank/cache) runs —
-    an end-to-end wiring check."""
+    """Patch one level lower, at call_llm, so the real compile_selectors_for_region
+    (highlighting the drawn region on the recorded screenshot, base64-encoding, caching)
+    runs — an end-to-end wiring check."""
     monkeypatch.setattr(
-        "conxa_compile.llm.selector_regeneration.generate_selector_candidates",
-        lambda **_kwargs: candidates,
+        "conxa_compile.llm.region_selector_vision.call_llm",
+        lambda *_a, **_k: {"candidates": [c.to_dict() for c in candidates]},
     )
 
 
@@ -143,9 +149,9 @@ def _patch_validation_planner(monkeypatch, *, wait_for=None, assertions=None):
 
 def test_preview_returns_ranked_candidates_with_match_counts(session_fixture, monkeypatch):
     """Exercises retarget.py's own candidate classification + pruning directly — raw candidates
-    come straight from the mock, bypassing compile_selectors_for_task's internal uniqueness
-    filter, so a non-unique (2-match) candidate reaches retarget.py's own prune and must be
-    dropped there (regenerate path must apply the same "no non-unique" rule as the review path)."""
+    come straight from the mock, so a non-unique (2-match) candidate reaches retarget.py's own
+    validate_selector/prune step and must be dropped there (regenerate path must apply the same
+    "no non-unique" rule as the review path)."""
     from conxa_compile.editor.retarget import preview_retarget
 
     _patch_raw_candidates(
@@ -179,9 +185,9 @@ def test_preview_returns_ranked_candidates_with_match_counts(session_fixture, mo
 
 
 def test_preview_end_to_end_llm_wiring_filters_to_unique_candidates(session_fixture, monkeypatch):
-    """compile_selectors_for_task validates candidates itself before returning —
-    only the unique (in-snapshot) selector should reach preview_retarget's result
-    when going through the real function via a generate_selector_candidates mock."""
+    """Exercises the real compile_selectors_for_region (screenshot load + highlight + base64 +
+    cache) via a call_llm mock — only the unique (in-snapshot) selector should reach
+    preview_retarget's result once retarget.py's own validate_selector/prune step runs."""
     from conxa_compile.editor.retarget import preview_retarget
 
     _patch_llm_candidates(
@@ -306,9 +312,9 @@ def test_preview_fast_finish_when_good_pick_and_validation_unchanged(session_fix
 
 def _fail_if_llm_called(monkeypatch):
     def _boom(*_a, **_k):
-        raise AssertionError("compile_selectors_for_task must not run on the review path")
+        raise AssertionError("compile_selectors_for_region must not run on the review path")
 
-    monkeypatch.setattr("conxa_compile.llm.selector_regeneration.compile_selectors_for_task", _boom)
+    monkeypatch.setattr("conxa_compile.llm.region_selector_vision.compile_selectors_for_region", _boom)
 
 
 def test_preview_review_path_uses_compiled_selectors_without_llm(session_fixture, monkeypatch):
@@ -378,6 +384,55 @@ def test_preview_review_path_surfaces_compile_time_uniqueness(session_fixture, m
     assert "/html[1]/body[1]/div[1]/button[1]" not in by_sel
     assert not any(c["verified"] == "unverified" for c in result["candidates"])
     assert result["pick_quality"] == "good"
+
+
+def test_preview_review_path_surfaces_orthogonality_and_source(session_fixture, monkeypatch):
+    """The review path's candidates must carry orthogonality_class + source through from the
+    bundle's signals, not just selector/engine/durability — this is the identity metadata the
+    Human Edit UI badges (and the runtime resolver) actually rely on."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _fail_if_llm_called(monkeypatch)
+
+    doc = _base_document()
+    step = doc["skills"][0]["steps"][0]
+    step["target"] = {"primary_selector": '[data-testid="submit-btn"]', "fallback_selectors": []}
+    step["identity_bundle"] = {
+        "signals": [
+            {
+                "engine": "testid",
+                "selector": 'internal:testid=[data-testid="submit-btn"]',
+                "durability": 0.99,
+                "orthogonality_class": "test-contract",
+                "unique_at_compile": True,
+                "source": "compiler",
+            },
+        ]
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    cand = result["candidates"][0]
+    assert cand["orthogonality_class"] == "test-contract"
+    assert cand["source"] == "compiler"
+    # a strong, unique, single-class signal still yields a confidence rollup on the response
+    assert result["compile_confidence"] == pytest.approx(0.99 * 0.7)  # only one orthogonality class
+
+
+def test_preview_regenerate_path_tags_candidates_as_llm_sourced(session_fixture, monkeypatch):
+    """Freshly LLM-regenerated candidates (user re-picked the element) must be tagged
+    source='llm', distinguishing them from the compiler's own selectors."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _patch_raw_candidates(monkeypatch, [_candidate('[data-testid="submit-btn"]', rank=0)])
+    _patch_validation_planner(monkeypatch)
+
+    doc = _base_document()
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20})
+
+    cand = result["candidates"][0]
+    assert cand["source"] == "llm"
+    assert cand["orthogonality_class"] == "test-contract"
 
 
 def test_preview_review_path_prunes_below_30pct_durability(session_fixture, monkeypatch):

@@ -152,6 +152,10 @@ type Props = {
    *  Validation panel — used when the re-target flow's own phases own selector picking and
    *  validation editing instead. */
   hideSelectorTools?: boolean
+  /** Hide the "Save step" submit button — used when an outer flow already calls
+   *  `submitIfDirty()` itself (e.g. the re-target wizard's Continue button), so a second,
+   *  redundant manual save action isn't shown alongside it. */
+  hideSubmitButton?: boolean
 }
 
 export type StepConfigFormHandle = {
@@ -260,7 +264,7 @@ function StepValidationPanel({ step, skillId, onWorkflowUpdated, onHistoryUpdate
 }
 
 export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
-  function StepConfigForm({ step, skillId, onWorkflowUpdated, onHistoryUpdate, hideSelectorTools }, ref) {
+  function StepConfigForm({ step, skillId, onWorkflowUpdated, onHistoryUpdate, hideSelectorTools, hideSubmitButton }, ref) {
   const methods = useForm<FormValues>({ defaultValues: step ? defaultsFromStep(step) : emptyForm })
 
   useEffect(() => {
@@ -898,12 +902,16 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
       </>
       ) : null}
 
-      <Separator />
-      <div className="flex items-center justify-end">
-        <Button type="submit" size="default" disabled={methods.formState.isSubmitting || isMarkerStep}>
-          {methods.formState.isSubmitting ? 'Saving…' : 'Save step'}
-        </Button>
-      </div>
+      {!hideSubmitButton ? (
+        <>
+          <Separator />
+          <div className="flex items-center justify-end">
+            <Button type="submit" size="default" disabled={methods.formState.isSubmitting || isMarkerStep}>
+              {methods.formState.isSubmitting ? 'Saving…' : 'Save step'}
+            </Button>
+          </div>
+        </>
+      ) : null}
       {methods.formState.errors.root ? (
         <p className="text-destructive text-sm">{(methods.formState.errors.root as { message?: string }).message}</p>
       ) : null}
