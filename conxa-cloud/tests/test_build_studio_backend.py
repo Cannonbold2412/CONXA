@@ -130,6 +130,93 @@ def test_compile_updated_only_bumps_metadata(backend, monkeypatch, tmp_path):
     assert updated["inputs"] == [{"name": "service_name"}]
 
 
+def test_patch_step_rejects_a_patch_that_drops_a_required_assertion(backend, monkeypatch, tmp_path):
+    # cmd_patch_step must call validate_editor_patch (conxa_compile/editor/patch_gate.py) before
+    # persisting, so a manual edit in StepEditorPanel can't silently drop the enforced
+    # post-condition on a consequential step (BUILD-3's companion wiring gap).
+    from conxa_core.config import settings
+    from conxa_core.storage.json_store import read_skill, write_skill
+    from handlers.protocol import _CommandError
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    b, _out = backend
+    skill_id = "skill_patch_gate"
+    step = {
+        "action": {"action": "fill", "value": "alice@example.com"},
+        "intent": "Enter email address",
+        "value": "alice@example.com",
+        "target": {"primary_selector": "#email", "fallback_selectors": []},
+        "signals": {},
+        "validation": {
+            "wait_for": {"type": "none"},
+            "assertions": [
+                {"type": "value_equals", "target": "#email", "expected": "alice@example.com", "required": True},
+            ],
+        },
+    }
+    write_skill(
+        skill_id,
+        {
+            "meta": {"id": skill_id, "title": "Patch gate", "version": 1},
+            "skills": [{"id": skill_id, "steps": [step]}],
+        },
+    )
+
+    with pytest.raises(_CommandError, match="consequential_step_requires_required_assertion"):
+        b.cmd_patch_step(
+            {"skill_id": skill_id, "step_index": 0, "patch": {"validation": {"assertions": []}}},
+            "rid",
+        )
+
+    # Rejected patch must not be persisted.
+    unchanged = read_skill(skill_id)
+    assert unchanged["skills"][0]["steps"][0]["validation"]["assertions"] == step["validation"]["assertions"]
+    assert unchanged["meta"]["version"] == 1
+
+
+def test_patch_step_allows_an_unrelated_patch_that_keeps_the_required_assertion(backend, monkeypatch, tmp_path):
+    from conxa_core.config import settings
+    from conxa_core.storage.json_store import read_skill, write_skill
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    b, _out = backend
+    skill_id = "skill_patch_gate_ok"
+    step = {
+        "action": {"action": "fill", "value": "alice@example.com"},
+        "intent": "Enter email address",
+        "value": "alice@example.com",
+        "target": {"primary_selector": "#email", "fallback_selectors": []},
+        "signals": {},
+        "validation": {
+            "wait_for": {"type": "none"},
+            "assertions": [
+                {"type": "value_equals", "target": "#email", "expected": "alice@example.com", "required": True},
+            ],
+        },
+    }
+    write_skill(
+        skill_id,
+        {
+            "meta": {"id": skill_id, "title": "Patch gate ok", "version": 1},
+            "skills": [{"id": skill_id, "steps": [step]}],
+        },
+    )
+
+    result = b.cmd_patch_step(
+        {"skill_id": skill_id, "step_index": 0, "patch": {"intent": "Enter the customer email"}},
+        "rid",
+    )
+
+    assert result["skill_id"] == skill_id
+    updated = read_skill(skill_id)
+    assert updated["skills"][0]["steps"][0]["intent"] == "Enter the customer email"
+    assert updated["skills"][0]["steps"][0]["validation"]["assertions"] == step["validation"]["assertions"]
+
+
 def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatch, tmp_path):
     import urllib.request
 

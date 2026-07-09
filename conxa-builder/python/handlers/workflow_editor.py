@@ -14,6 +14,8 @@ class WorkflowEditorMixin:
         from conxa_compile.compiler.selector_filters import selector_passes_filters
         from conxa_compile.compiler.selector_grammar import rebuild_identity_signals_from_target
         from conxa_compile.compiler.build import _confidence_from_identity_bundle
+        from conxa_compile.editor.patch_gate import validate_editor_patch
+        from conxa_compile.policy.bundle import get_policy_bundle
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
@@ -30,6 +32,16 @@ class WorkflowEditorMixin:
         steps = list(block.get("steps") or [])
         if step_index < 0 or step_index >= len(steps):
             raise _CommandError("step_not_found", f"Step {step_index} out of range")
+        original_step = dict(steps[step_index])
+
+        # Reject patches that would silently drop a required post-condition assertion, an
+        # unsupported action kind, or other invariant violations before anything is merged
+        # or persisted (`conxa_compile/editor/patch_gate.py`).
+        try:
+            validate_editor_patch(original_step, patch, get_policy_bundle().data)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Patch rejected: {exc}") from exc
+
         step = _deep_merge(dict(steps[step_index]), patch)
 
         # Quality-gate edited selectors before persisting.

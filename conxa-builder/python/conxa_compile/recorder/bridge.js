@@ -701,7 +701,7 @@
     const id = el.id || null;
     const classes = el.classList ? Array.from(el.classList) : [];
     const innerText = safeText(el, 2000);
-    const role = el.getAttribute("role") || (tag === "a" ? "link" : null);
+    const role = el.getAttribute("role") || implicitAriaRole(el);
     const aria = el.getAttribute("aria-label");
     const name = el.getAttribute("name");
     const inputType = el.getAttribute("type") || (isEditableNode(el) && tag !== "select" ? "text" : null);

@@ -25,6 +25,9 @@ ActionKind = Literal[
     "clipboard_copy", "clipboard_paste",
     # control
     "wait", "assert", "screenshot",
+    # conditional / branch (EXEC-1): optional interstitials — probe + nested step body, never
+    # escalate to recovery. See CLAUDE.md Key Invariants.
+    "if_present", "try_dismiss", "wait_for_one_of",
     # legacy
     "focus", "check",
 ]

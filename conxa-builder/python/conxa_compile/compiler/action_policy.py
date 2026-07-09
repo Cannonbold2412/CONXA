@@ -17,6 +17,9 @@ NO_RECOVERY_ACTION_TYPES = frozenset({
     "tab_open", "tab_switch", "popup", "frame_enter", "frame_exit",
     "upload_intent", "download_observed", "dialog_appeared", "dialog_accept", "dialog_dismiss",
     "file_chooser_opened", "clipboard_copy", "clipboard_paste",
+    # Conditional/branch primitives (EXEC-1): best-effort probe + nested body — never escalate
+    # to Tier 1-4 recovery. See CLAUDE.md Key Invariants.
+    "if_present", "try_dismiss", "wait_for_one_of",
 })
 ELEMENT_ACTION_TOTAL_ATTEMPTS = 2
 NAVIGATE_CHECK_TOTAL_ATTEMPTS = 3

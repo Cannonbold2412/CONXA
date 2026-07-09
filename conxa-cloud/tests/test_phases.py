@@ -400,6 +400,33 @@ class PhaseTests(unittest.TestCase):
         self.assertTrue(out.get("intent_validation_primary"))
         self.assertEqual(out.get("final_intent"), "submit_login_form")
 
+    def test_infer_success_conditions_demotes_ephemeral_elements_from_required(self) -> None:
+        # A cookie-consent banner and a toast happened to appear in the recorded diff alongside
+        # a legitimate confirmation element — only the legitimate one may become the REQUIRED
+        # promotion candidate; the ephemeral ones are demoted to advisory text tokens instead of
+        # silently dropped.
+        from conxa_compile.compiler.validation_planner import infer_success_conditions
+
+        policy = {"validation": {}}
+        wait_for = {"type": "element_appear", "timeout": 8000}
+        state_diff = {
+            "new_elements": [
+                '[aria-label="Accept all cookies"]',
+                ".order-confirmation",
+                ".toast-notification",
+            ],
+            "removed_elements": [],
+            "text_change": [],
+        }
+        out = infer_success_conditions(wait_for, state_diff, "https://ex.test/checkout", policy)
+        required = out.get("required_elements") or []
+        self.assertNotIn('[aria-label="Accept all cookies"]', required)
+        self.assertNotIn(".toast-notification", required)
+        self.assertIn(".order-confirmation", required)
+        tokens = out.get("expected_text_tokens") or []
+        self.assertIn('[aria-label="Accept all cookies"]', tokens)
+        self.assertIn(".toast-notification", tokens)
+
     def test_effective_intent_prefers_final_intent_field(self) -> None:
         from conxa_compile.compiler.intent_access import get_effective_intent
 

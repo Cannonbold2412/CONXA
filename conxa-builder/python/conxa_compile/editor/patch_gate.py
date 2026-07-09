@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from conxa_compile.compiler.action_semantics import action_name
+from conxa_compile.compiler.action_semantics import action_name, commit_intent_hit, is_editable_field_click
 from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
 from conxa_compile.compiler.intent_access import get_effective_intent_from_skill_step
 from conxa_compile.compiler.patch import deep_merge
@@ -177,7 +177,8 @@ def validate_editor_patch(step: dict[str, Any], patch: dict[str, Any], policy: d
         if s and not selector_passes_filters(s):
             raise ValueError("fallback_selector_failed_quality_gates")
 
-    if destructive_compiler_step(skill_step_for_destructive_check(merged), policy):
+    view = skill_step_for_destructive_check(merged)
+    if destructive_compiler_step(view, policy):
         wf = (merged.get("validation") or {}).get("wait_for") or {}
         wf_d = dict(wf) if isinstance(wf, dict) else {}
         if not destructive_wait_for_is_non_none(wf_d):
@@ -185,3 +186,27 @@ def validate_editor_patch(step: dict[str, Any], patch: dict[str, Any], policy: d
         anchors = (merged.get("signals") or {}).get("anchors") or []
         if not anchors:
             raise ValueError("destructive_step_requires_signals_anchors")
+
+    # Any consequential action must retain at least one enforced (required=True) post-condition
+    # assertion after the edit — mirrors the destructive wait_for invariant above. Prevents a
+    # human edit (e.g. clearing validation.assertions) from silently dropping the check that
+    # confirms the action actually produced its intended result.
+    #
+    # Only enforced when there is something to protect: either the patch explicitly touches
+    # `validation` (the Human Editor's Validation phase), or the step already carried a required
+    # assertion before this edit. This keeps packs compiled before enforced post-conditions
+    # existed editable via unrelated patches (intent rename, retarget) without forcing a
+    # recompile — see the plan's backward-compatibility decision.
+    consequential_input = act in {"fill", "type", "select", "select_option"} and bool(merged.get("value"))
+    consequential_click = (
+        act == "click"
+        and not is_editable_field_click(view)
+        and (commit_intent_hit(view, policy) or destructive_compiler_step(view, policy))
+    )
+    if consequential_input or consequential_click:
+        def _has_required(step_dict: dict[str, Any]) -> bool:
+            assertions = (step_dict.get("validation") or {}).get("assertions") or []
+            return any(isinstance(a, dict) and a.get("required", True) is not False for a in assertions)
+
+        if ("validation" in patch or _has_required(step)) and not _has_required(merged):
+            raise ValueError("consequential_step_requires_required_assertion")

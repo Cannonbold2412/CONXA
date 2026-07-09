@@ -381,6 +381,7 @@ def step_to_dto(
         validation={
             "wait_for": dict(validation.get("wait_for") or {}),
             "success_conditions": dict(validation.get("success_conditions") or {}),
+            "assertions": [dict(a) for a in (validation.get("assertions") or []) if isinstance(a, dict)],
         },
         recovery=dict(recovery),
         value=step.get("value"),

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from conxa_compile.compiler.action_policy import no_recovery_block, recovery_enabled_for_action
 from conxa_compile.editor.action_registry import MARKER_ACTIONS
 from conxa_compile.compiler.decision_layer import rank_merged_anchors
+from conxa_compile.compiler.action_semantics import commit_intent_hit, is_editable_field_click
 from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
 from conxa_compile.compiler.input_binding import derive_input_binding
 from conxa_compile.compiler.recovery_policy import (
@@ -155,11 +156,14 @@ def _merge_compile_warnings(
     policy: dict[str, Any],
     *,
     vision_anchor_warning: dict[str, Any] | None = None,
+    weak_fingerprint: bool = False,
 ) -> dict[str, Any]:
     out = dict(protocol)
     cw = dict(out.get("compile_warnings") or {})
     if vision_anchor_warning:
         cw["vision_anchor_fallback"] = vision_anchor_warning
+    if weak_fingerprint:
+        cw["weak_fingerprint"] = True
     unc = policy.get("uncertainty") if isinstance(policy.get("uncertainty"), dict) else {}
     min_a = int(unc.get("destructive_min_anchors_warn", 2))
     if destructive_compiler_step(ev_with_intent, policy) and len(merged_anchors) < min_a:
@@ -262,7 +266,10 @@ def _build_element_fingerprint(ev: dict[str, Any]) -> ElementFingerprint:
 
     # Extract data-testid / data-test-id from CSS selector — highest-stability attribute
     data_testid = ""
-    _TESTID_RE = re.compile(r'data-test(?:-id)?=["\']?([^"\'>\s\]]+)')
+    # `(?:-id)?` alone only matched the hyphenated "data-test-id" convention and missed
+    # the far more common unhyphenated "data-testid" (React/testing-library) attribute
+    # entirely — `(?:-?id)?` covers "data-test", "data-testid", and "data-test-id" alike.
+    _TESTID_RE = re.compile(r'data-test(?:-?id)?=["\']?([^"\'>\s\]]+)')
     css = str(selectors.get("css") or "")
     m = _TESTID_RE.search(css)
     if m:
@@ -310,6 +317,16 @@ def _build_element_fingerprint(ev: dict[str, Any]) -> ElementFingerprint:
             "y_pct": round(int(bbox.get("y") or 0) / vh, 3),
         },
     )
+
+
+def _fingerprint_is_weak(fp: ElementFingerprint) -> bool:
+    """No strong identity signal recorded — a future runtime recovery case waiting to happen.
+
+    Mirrors the three fields runtime/resolver.js::scoreCandidate weights most heavily
+    (testid, aria_label/name, inner_text). A fingerprint carrying none of them can only
+    ever be rescued by the resolver's trusted-contract escape hatch or full recovery.
+    """
+    return not (fp.data_testid or fp.aria_label or fp.name or fp.inner_text)
 
 
 def _load_step_snapshot(ev: dict[str, Any], session_id: str) -> tuple[str | None, dict[str, Any] | None]:
@@ -370,7 +387,7 @@ def _build_identity_bundle(
 
     # Extract testid for guid_like_attrs check
     data_testid = ""
-    _TESTID_RE2 = re.compile(r'data-test(?:-id)?=["\']?([^"\'>\s\]]+)')
+    _TESTID_RE2 = re.compile(r'data-test(?:-?id)?=["\']?([^"\'>\s\]]+)')
     for key in ("css", "aria"):
         m = _TESTID_RE2.search(str(selectors.get(key) or ""))
         if m:
@@ -440,21 +457,46 @@ def _populate_hover_chains(steps: list[SkillStep], events: list[dict[str, Any]],
 def _build_assertions(
     ev: dict[str, Any],
     validation: ValidationBlock,
+    policy: dict[str, Any],
+    target: dict[str, Any],
+    value: Any = None,
 ) -> list[Assertion]:
-    """Compile multiple verifiable post-action assertions from all available evidence."""
+    """Compile verifiable post-action assertions from all available evidence.
+
+    Deterministic "primary signal picker": every consequential action gets exactly one
+    REQUIRED (enforced) assertion — the single post-condition the runtime must re-confirm
+    after the action and after every recovery remedy. All other evidence stays advisory
+    (required=False). focus/scroll have no observable post-action outcome and get nothing.
+    """
     assertions: list[Assertion] = []
     action = str((ev.get("action") or {}).get("action") or "").lower()
 
-    # fill/type have no observable post-action outcome to assert at compile time
-    if action in {"fill", "type", "focus", "scroll"}:
+    if action in {"focus", "scroll"}:
         return []
 
-    # Primary wait_for assertion
     wf = validation.wait_for
     wf_type = str(wf.get("type") or "")
     wf_target = str(wf.get("target") or "")
     wf_timeout = int(wf.get("timeout") or 5000)
+    primary_selector = str(target.get("primary_selector") or "")
 
+    # Text entry / selection: the enforced post-condition is that the field actually holds the
+    # value we typed/selected — this is the action's own direct effect, independent of wait_for.
+    raw_value = (ev.get("action") or {}).get("value")
+    is_key_event = isinstance(raw_value, str) and raw_value.strip().startswith("{")
+    if action in {"fill", "type", "select", "select_option"} and primary_selector and value and not is_key_event:
+        assertions.append(Assertion(
+            type="value_equals",
+            target=primary_selector,
+            expected=str(value),
+            timeout_ms=wf_timeout,
+            required=True,
+        ))
+
+    required_assigned = bool(assertions)  # value_equals already claimed the enforced slot
+
+    # Primary wait_for assertion — becomes the enforced post-condition for actions that didn't
+    # already claim one above (navigation / commit / destructive clicks with DOM evidence).
     if wf_type == "url_change":
         before_url = str((ev.get("page") or {}).get("url") or "")
         # URL must change but we don't know to what — assert it differs from current
@@ -462,34 +504,65 @@ def _build_assertions(
             type="url_changed",
             target=before_url,
             timeout_ms=wf_timeout,
-            required=True,
+            required=not required_assigned,
         ))
+        required_assigned = True
     elif wf_type == "element_appear" and wf_target:
         assertions.append(Assertion(
             type="selector_present",
             target=wf_target,
             timeout_ms=wf_timeout,
-            required=True,
+            required=not required_assigned,
+        ))
+        required_assigned = True
+
+    # A click only counts as "consequential" (submit/commit a form, destructive confirm) when
+    # the deterministic action-semantics helpers say so — this gates BOTH the required_elements
+    # promotion below and the state_changed synthesis, so an incidental click (menu toggle,
+    # tooltip reveal) with unrelated DOM evidence never gets forced into a required assertion.
+    is_consequential_click = (
+        action == "click"
+        and not is_editable_field_click(ev)
+        and (commit_intent_hit(ev, policy) or destructive_compiler_step(ev, policy))
+    )
+
+    # success_conditions evidence: for a consequential click, the first required_element is
+    # promoted to the enforced post-condition if nothing has claimed that slot yet; everything
+    # else (and all required_elements on non-consequential steps) stays advisory.
+    sc = validation.success_conditions
+    required_elements = [el for el in (sc.get("required_elements") or [])[:3] if el and isinstance(el, str)]
+    expected_tokens = [tok for tok in (sc.get("expected_text_tokens") or [])[:3] if tok and isinstance(tok, str)]
+
+    for i, el in enumerate(required_elements):
+        promote = not required_assigned and i == 0 and is_consequential_click
+        assertions.append(Assertion(
+            type="selector_present",
+            target=el,
+            timeout_ms=wf_timeout,
+            required=promote,
+        ))
+        if promote:
+            required_assigned = True
+
+    for tok in expected_tokens:
+        assertions.append(Assertion(
+            type="text_present",
+            target=tok,
+            timeout_ms=min(wf_timeout, 5000),
+            required=False,
         ))
 
-    # success_conditions: required_elements and expected_text_tokens as advisory assertions
-    sc = validation.success_conditions
-    for el in (sc.get("required_elements") or [])[:3]:
-        if el and isinstance(el, str):
-            assertions.append(Assertion(
-                type="selector_present",
-                target=el,
-                timeout_ms=wf_timeout,
-                required=False,
-            ))
-    for tok in (sc.get("expected_text_tokens") or [])[:3]:
-        if tok and isinstance(tok, str):
-            assertions.append(Assertion(
-                type="text_present",
-                target=tok,
-                timeout_ms=min(wf_timeout, 5000),
-                required=False,
-            ))
+    # Consequential clicks that still have no enforced signal (no URL change, no DOM evidence
+    # recorded) get a synthesized state_changed check: confirms the click produced SOME
+    # observable effect instead of silently no-oping. Deliberately stricter than leaving these
+    # advisory — accepted tradeoff for evidence-less commits (see plan).
+    if not required_assigned and is_consequential_click:
+        assertions.append(Assertion(
+            type="state_changed",
+            timeout_ms=wf_timeout,
+            required=True,
+        ))
+        required_assigned = True
 
     return assertions
 
@@ -932,13 +1005,14 @@ def _build_step(
         merged_anchors,
         policy,
         vision_anchor_warning=vision_anchor_warning,
+        weak_fingerprint=_fingerprint_is_weak(identity_bundle.fingerprint),
     )
     sel_conf = target.get("selector_confidence", 1.0)
     if sel_conf <= 0.5:
         cw = dict(confidence_protocol.get("compile_warnings") or {})
         cw["selector_confidence"] = sel_conf
         confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
-    assertions = _build_assertions(ev_with_intent, validation)
+    assertions = _build_assertions(ev_with_intent, validation, policy, target, value)
     if assertions:
         validation = ValidationBlock(
             wait_for=validation.wait_for,

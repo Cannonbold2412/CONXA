@@ -48,6 +48,12 @@ ACTION_KIND_ORDER = (
     "file_chooser_opened",
     "clipboard_copy",
     "clipboard_paste",
+    # Conditional/branch primitives (EXEC-1). Not markers: they carry a real probe
+    # target/candidates/options (in SkillStep.branch), unlike tab_open/frame_enter/etc.
+    # Not insertable — no Build Studio editor authoring path yet (foundation scope).
+    "if_present",
+    "try_dismiss",
+    "wait_for_one_of",
 )
 
 MARKER_ACTIONS = frozenset(
@@ -109,6 +115,9 @@ SELECTOR_ACTIONS = frozenset(
         "date_pick",
         "drag_drop",
         "upload",
+        "if_present",
+        "try_dismiss",
+        "wait_for_one_of",
     }
 )
 
@@ -163,6 +172,9 @@ ACTION_LABELS = {
     "file_chooser_opened": "File chooser opened",
     "clipboard_copy": "Clipboard copy",
     "clipboard_paste": "Clipboard paste",
+    "if_present": "If present",
+    "try_dismiss": "Try dismiss",
+    "wait_for_one_of": "Wait for one of",
 }
 
 CATEGORIES = {
@@ -188,6 +200,9 @@ CATEGORIES = {
     "keyboard_shortcut": "advanced",
     "upload": "advanced",
     "upload_intent": "advanced",
+    "if_present": "conditional",
+    "try_dismiss": "conditional",
+    "wait_for_one_of": "conditional",
 }
 
 VALUE_LABELS = {

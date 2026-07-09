@@ -44,9 +44,15 @@ class RecoveryBlock(BaseModel):
 
 class Assertion(BaseModel):
     """A verifiable post-action condition checked after each step."""
-    # url_pattern | selector_present | selector_absent | text_present | text_absent
+    # url_changed | url_pattern | selector_present | selector_absent | text_present |
+    # text_absent | value_equals | state_changed
+    # (url_pattern is a regex-matching alias of url_changed; url_changed is canonical.)
     type: str
     target: str = ""
+    # Expected value for value_equals (interpolated against runtime inputs). Compared
+    # normalized (trim/collapse-whitespace/lowercase) with a "contains" fallback so masked/
+    # formatted fields (phone, currency) still validate.
+    expected: str = ""
     timeout_ms: int = 5000
     # If True, assertion failure halts execution. If False, records a warning only.
     required: bool = True
@@ -154,6 +160,16 @@ class SkillStep(BaseModel):
     semantic_description: str = ""        # "First Name input in Add Person dialog"
     snapshot_ref: str = ""                # which recorded DOM blob this step compiled against
     snapshot_dom_hash: str = ""           # for cross-compilation cache lookup
+
+    # Conditional/branch primitives (if_present, try_dismiss, wait_for_one_of): probe(s) +
+    # nested step bodies for optional interstitials (cookie banners, session-expired screens,
+    # optional MFA, A/B variants). Empty for ordinary linear steps. Holds `steps` (if_present),
+    # `candidates` (try_dismiss), `options` (wait_for_one_of, each {selector, steps}),
+    # `timeout_ms`, `required`. Nested step entries are raw dicts in the same shape as a saved
+    # SkillStep (action/target/identity_bundle/branch/...); plugin_builder_saved_skill.py
+    # recursively serializes each one into the flat runtime step shape run.js consumes.
+    # Branch bodies run best-effort and never enter Tier 1-4 recovery — CLAUDE.md Key Invariants.
+    branch: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowIntentStep(BaseModel):

@@ -18,6 +18,7 @@ from conxa_compile.compiler.intent_validation_rules import (
     try_intent_validation_facets,
     try_open_select_wait_rule,
 )
+from conxa_compile.compiler.selector_filters import is_ephemeral_anchor
 
 Step = dict[str, Any]
 
@@ -304,11 +305,18 @@ def infer_success_conditions(
     if intent_primary and final_intent and strength < min_strength_for_diff_elements:
         required_from_diff = []
 
+    # Ephemeral elements (cookie/consent banners, toasts, notifications) are typically gone,
+    # dismissed, or repositioned by the time the runtime verifies — never let one become the
+    # REQUIRED promotion candidate in build.py's primary-signal picker. Demote it to an advisory
+    # text token instead of dropping the signal entirely.
+    ephemeral = [el for el in required_from_diff if is_ephemeral_anchor(el)]
+    required_from_diff = [el for el in required_from_diff if not is_ephemeral_anchor(el)]
+
     out = {
         "url_not_contains": "",
         "required_elements": required_from_diff,
         "forbidden_elements": removed[:24],
-        "expected_text_tokens": _merge_tokens(text_change[:8]),
+        "expected_text_tokens": _merge_tokens((text_change[:8] + ephemeral)[:8]),
         "page_url_hint": page_url[:500],
         "state_diff_strength": strength,
         "state_diff_as_hint": True,

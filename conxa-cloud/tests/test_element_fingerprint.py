@@ -8,6 +8,7 @@ from conxa_compile.compiler.build import (
     _build_assertions,
     _build_element_fingerprint,
     _build_structural_fingerprint,
+    _fingerprint_is_weak,
 )
 from conxa_compile.compiler.selector_filters import (
     dedup_by_orthogonality,
@@ -144,6 +145,32 @@ def test_fingerprint_anchor_phrases():
     assert "Password field" in fp.anchor_phrases
 
 
+def test_fingerprint_is_weak_with_no_strong_signal():
+    # No data-testid, no aria_label/name, no inner_text — nothing for the runtime
+    # resolver to score the candidate against.
+    ev = _make_ev(inner_text="", aria_label="", name="", css="button.btn")
+    fp = _build_element_fingerprint(ev)
+    assert _fingerprint_is_weak(fp)
+
+
+def test_fingerprint_is_weak_false_with_testid():
+    ev = _make_ev(inner_text="", aria_label="", name="", css='button[data-testid="signin-btn"]')
+    fp = _build_element_fingerprint(ev)
+    assert not _fingerprint_is_weak(fp)
+
+
+def test_fingerprint_is_weak_false_with_inner_text():
+    ev = _make_ev(inner_text="Sign In", aria_label="", name="", css="button.btn")
+    fp = _build_element_fingerprint(ev)
+    assert not _fingerprint_is_weak(fp)
+
+
+def test_fingerprint_is_weak_false_with_aria_label():
+    ev = _make_ev(inner_text="", aria_label="Sign in", name="", css="button.btn")
+    fp = _build_element_fingerprint(ev)
+    assert not _fingerprint_is_weak(fp)
+
+
 # ─── Assertion building ──────────────────────────────────────────────────────
 
 def _make_validation(wait_for=None, success_conditions=None):
@@ -158,9 +185,10 @@ def test_assertions_url_changed_from_wait_for():
     ev["action"]["action"] = "click"
     ev["page"] = {"url": "https://example.com/login"}
     validation = _make_validation(wait_for={"type": "url_change", "timeout": 8000})
-    assertions = _build_assertions(ev, validation)
+    assertions = _build_assertions(ev, validation, {}, {})
     assertion = next(a for a in assertions if a.type == "url_changed")
     assert assertion.target == ev["page"]["url"]
+    assert assertion.required is True
 
 
 def test_assertions_element_appear_from_wait_for():
@@ -169,19 +197,46 @@ def test_assertions_element_appear_from_wait_for():
     validation = _make_validation(
         wait_for={"type": "element_appear", "target": ".success-banner", "timeout": 5000},
     )
-    assertions = _build_assertions(ev, validation)
-    assert any(a.type == "selector_present" and a.target == ".success-banner" for a in assertions)
+    assertions = _build_assertions(ev, validation, {}, {})
+    assert any(a.type == "selector_present" and a.target == ".success-banner" and a.required for a in assertions)
 
 
-def test_assertions_empty_for_fill():
+def test_assertions_empty_for_fill_without_target():
+    # No resolvable primary_selector — nothing to assert the value landed in.
     ev = _make_ev()
     ev["action"]["action"] = "fill"
     ev["target"]["tag"] = "input"
-    assertions = _build_assertions(ev, _make_validation())
+    assertions = _build_assertions(ev, _make_validation(), {}, {})
     assert assertions == []
 
 
+def test_assertions_value_equals_required_for_fill():
+    ev = _make_ev()
+    ev["action"]["action"] = "fill"
+    ev["action"]["value"] = "alice@example.com"
+    ev["target"]["tag"] = "input"
+    target = {"primary_selector": "#email"}
+    assertions = _build_assertions(ev, _make_validation(), {}, target, "alice@example.com")
+    assertion = next(a for a in assertions if a.type == "value_equals")
+    assert assertion.required is True
+    assert assertion.target == "#email"
+    assert assertion.expected == "alice@example.com"
+
+
+def test_assertions_value_equals_skipped_for_keyboard_event():
+    # Keyboard-shortcut steps serialize their value as a JSON blob (e.g. '{"key":"Enter"}') —
+    # that's not field content, so no value_equals should be synthesized for it.
+    ev = _make_ev()
+    ev["action"]["action"] = "fill"
+    ev["action"]["value"] = '{"key":"Enter"}'
+    target = {"primary_selector": "#email"}
+    assertions = _build_assertions(ev, _make_validation(), {}, target, '{"key":"Enter"}')
+    assert not any(a.type == "value_equals" for a in assertions)
+
+
 def test_assertions_advisory_from_success_conditions():
+    # A generic (non-commit, non-destructive) click with incidental DOM evidence — success
+    # conditions stay advisory since the click isn't classified as consequential.
     ev = _make_ev()
     ev["action"]["action"] = "click"
     validation = _make_validation(
@@ -191,10 +246,50 @@ def test_assertions_advisory_from_success_conditions():
             "expected_text_tokens": ["success"],
         },
     )
-    assertions = _build_assertions(ev, validation)
+    assertions = _build_assertions(ev, validation, {}, {})
     advisory = [a for a in assertions if not a.required]
     assert any(a.type == "selector_present" for a in advisory)
     assert any(a.type == "text_present" for a in advisory)
+    assert not any(a.required for a in assertions)
+
+
+def test_assertions_required_elements_promoted_for_commit_click():
+    # A submit-labeled click with no url_change/element_appear evidence but a recorded DOM
+    # diff: the first required_element is promoted to the enforced post-condition.
+    ev = _make_ev(inner_text="Submit")
+    ev["action"]["action"] = "click"
+    ev["target"]["type"] = "submit"
+    validation = _make_validation(
+        wait_for={"type": "intent_outcome", "timeout": 5000},
+        success_conditions={"required_elements": [".order-confirmation"]},
+    )
+    assertions = _build_assertions(ev, validation, {}, {})
+    promoted = next(a for a in assertions if a.type == "selector_present")
+    assert promoted.required is True
+    assert promoted.target == ".order-confirmation"
+
+
+def test_assertions_state_changed_for_evidence_less_commit():
+    # A submit click with no wait_for evidence and no success_conditions at all still gets a
+    # synthesized, required state_changed check — the "no silent no-op" guarantee.
+    ev = _make_ev(inner_text="Save")
+    ev["action"]["action"] = "click"
+    ev["target"]["type"] = "submit"
+    validation = _make_validation(wait_for={"type": "none"})
+    assertions = _build_assertions(ev, validation, {}, {})
+    assert len(assertions) == 1
+    assert assertions[0].type == "state_changed"
+    assert assertions[0].required is True
+
+
+def test_assertions_no_state_changed_for_non_consequential_click():
+    # A plain click with no submit/destructive signal and no evidence gets nothing — we don't
+    # fabricate a required check where there's genuinely no consequential-action classification.
+    ev = _make_ev(inner_text="Expand row")
+    ev["action"]["action"] = "click"
+    validation = _make_validation(wait_for={"type": "none"})
+    assertions = _build_assertions(ev, validation, {}, {})
+    assert assertions == []
 
 
 # ─── Structural fingerprint ──────────────────────────────────────────────────

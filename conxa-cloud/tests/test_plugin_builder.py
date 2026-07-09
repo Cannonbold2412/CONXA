@@ -15,10 +15,12 @@ from conxa_compile.plugin_builder_output import (
     _render_license,
     _render_readme,
 )
+from conxa_compile.editor.action_registry import is_supported_action
 from conxa_compile.plugin_builder_saved_skill import (
     _build_workflow_from_saved_skill,
     _is_login_step,
     _normalize_saved_skill_inputs,
+    _saved_step_to_execution_step,
     strip_login_steps,
 )
 
@@ -153,6 +155,105 @@ class TestLoginStepDetection:
         ]
         result = strip_login_steps(events)
         assert result == events
+
+
+# ─────────────────────────────────────────────────
+# EXEC-1: conditional/branch step serializer passthrough
+# ─────────────────────────────────────────────────
+
+class TestBranchStepSerialization:
+    """A saved skill's if_present/try_dismiss/wait_for_one_of steps — including their nested
+    step bodies — must survive _saved_step_to_execution_step into the flat runtime step shape
+    execution.json carries, or the branch silently vanishes at build time."""
+
+    def test_action_kinds_are_supported(self):
+        for kind in ("if_present", "try_dismiss", "wait_for_one_of"):
+            assert is_supported_action(kind) is True
+
+    def test_if_present_serializes_with_nested_body(self):
+        step = {
+            "action": "if_present",
+            "target": {"primary_selector": ".cookie-banner"},
+            "branch": {
+                "timeout_ms": 1500,
+                "steps": [
+                    {"action": "click", "target": {"primary_selector": "#accept-cookies"}},
+                ],
+            },
+        }
+        out = _saved_step_to_execution_step(step)
+        assert out == {
+            "type": "if_present",
+            "selector": ".cookie-banner",
+            "steps": [{"type": "click", "selector": "#accept-cookies"}],
+            "timeout_ms": 1500,
+        }
+
+    def test_if_present_dropped_when_probe_selector_missing(self):
+        step = {"action": "if_present", "branch": {"steps": [{"action": "click", "target": {"primary_selector": "#x"}}]}}
+        assert _saved_step_to_execution_step(step) is None
+
+    def test_if_present_dropped_when_body_empty(self):
+        step = {"action": "if_present", "target": {"primary_selector": ".cookie-banner"}, "branch": {}}
+        assert _saved_step_to_execution_step(step) is None
+
+    def test_try_dismiss_dedupes_own_selector_into_candidates(self):
+        step = {
+            "action": "try_dismiss",
+            "target": {"primary_selector": "#accept-cookies"},
+            "branch": {"timeout_ms": 800, "candidates": ["#accept-cookies", ".cookie .accept"]},
+        }
+        out = _saved_step_to_execution_step(step)
+        assert out["type"] == "try_dismiss"
+        assert out["candidates"] == ["#accept-cookies", ".cookie .accept"]
+        assert out["timeout_ms"] == 800
+
+    def test_try_dismiss_carries_fallback_escape_false(self):
+        step = {"action": "try_dismiss", "branch": {"candidates": ["#x"], "fallback_escape": False}}
+        out = _saved_step_to_execution_step(step)
+        assert out["fallback_escape"] is False
+
+    def test_try_dismiss_dropped_when_no_candidates(self):
+        assert _saved_step_to_execution_step({"action": "try_dismiss", "branch": {}}) is None
+
+    def test_wait_for_one_of_serializes_options_with_nested_steps(self):
+        step = {
+            "action": "wait_for_one_of",
+            "branch": {
+                "timeout_ms": 8000,
+                "required": True,
+                "options": [
+                    {
+                        "selector": "#mfa-code",
+                        "steps": [
+                            {"action": "fill", "target": {"primary_selector": "#mfa-code"}, "value": "{{otp}}"},
+                        ],
+                    },
+                    {"selector": "#dashboard"},
+                ],
+            },
+        }
+        out = _saved_step_to_execution_step(step)
+        assert out == {
+            "type": "wait_for_one_of",
+            "options": [
+                {"selector": "#mfa-code", "steps": [{"type": "fill", "selector": "#mfa-code", "value": "{{otp}}"}]},
+                {"selector": "#dashboard"},
+            ],
+            "timeout_ms": 8000,
+            "required": True,
+        }
+
+    def test_wait_for_one_of_drops_options_without_a_selector(self):
+        step = {"action": "wait_for_one_of", "branch": {"options": [{"steps": []}, {"selector": "#dashboard"}]}}
+        out = _saved_step_to_execution_step(step)
+        assert out["options"] == [{"selector": "#dashboard"}]
+
+    def test_wait_for_one_of_dropped_when_no_options(self):
+        assert _saved_step_to_execution_step({"action": "wait_for_one_of", "branch": {}}) is None
+
+    def test_unsupported_action_still_drops_to_none(self):
+        assert _saved_step_to_execution_step({"action": "not_a_real_action"}) is None
 
 
 # ─────────────────────────────────────────────────
