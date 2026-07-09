@@ -4,6 +4,298 @@
 
 ---
 
+## Made element recording more accurate, closed a blind spot in the drift dashboard, and hardened two recovery edge cases — 2026-07-09
+
+Implemented three of the seven improvements from the earlier runtime architecture review.
+
+**Recording accuracy:** found and fixed the actual reason a plain text box or dropdown
+sometimes confused the self-healing recovery system — when recording a workflow, the
+app was saving "input" or "select" (the raw HTML tag) instead of the real role a
+screen reader would announce ("textbox", "combobox"), even though the code to compute
+that correctly already existed elsewhere and just wasn't being used here. Also found
+and fixed a bug where the recorder failed to save an element's test ID at all when it
+used the common `data-testid` naming style (only the less common `data-test-id` style
+worked) — meaning the single most reliable way to re-find an element on a page was
+silently going missing for a lot of recordings. On top of that, the compiler now warns
+when a recorded step has no strong identifying signal at all, so a workflow's author
+can see the risk before publishing instead of finding out when a customer's run needs
+recovery.
+
+**Drift dashboard:** the Cloud dashboard already collected data on which steps needed
+self-healing recovery most often, but nothing on the screen ever showed it to anyone —
+the data went in and nowhere came out. Added a "Drift review queue" card to the
+dashboard that shows, per step, what percentage of runs needed a repair, which recovery
+method usually fixed it, and when it was last seen — so a team can now actually notice
+"this step is quietly breaking most of the time" instead of it staying invisible.
+
+**Recovery edge cases:** fixed a spot where the pre-click safety check could silently
+ignore an element vanishing out from under it mid-check, instead of correctly treating
+that as a failure. Also taught the recovery logic to tell the difference between "the
+page was still loading when we timed out" (worth a longer wait) and "this element just
+never showed up" (not worth waiting on, better to try the next recovery method
+immediately) — previously both were treated identically.
+
+All changes verified with the existing automated test suites (Python and JavaScript),
+plus new tests added for each fix; the only test failures seen were four pre-existing,
+unrelated ones already present before this work (confirmed by checking against the
+prior state of the code).
+
+---
+
+## Fixed the Playwright component and data flow diagrams — 2026-07-09
+
+Cleaned up the Playwright research note's Mermaid diagrams so they are easier for Markdown
+renderers to understand. The component diagram now uses named groups, quoted labels, and explicit
+connections for the package entry points, MCP harness, tool registry, backend, browser context, and
+response path. The data flow diagram now avoids labels like `ImageContent[]` that could break
+Mermaid parsing, while still showing the tool-listing path, tool-call validation path, browser
+action, observation, auto snapshot, and final result.
+
+---
+
+## Fixed the SeleniumBase data flow diagram — 2026-07-09
+
+Cleaned up the SeleniumBase research note's data flow diagram so it now shows the real path a
+call takes: selector input, WebDriver or CDP execution, fallback handling, browser state, recorder
+output, and deferred assertions. The old diagram had a confusing loop where the "clean" path went
+back to element lookup instead of flowing to an action result.
+
+---
+
+## Gave developers a way to test with the real downloaded runtime instead of the local source code — 2026-07-09
+
+Normally, when a Conxa developer runs Build Studio in their everyday dev setup, testing a workflow
+uses the runtime code straight from the project folder — handy because editing that code takes
+effect immediately, but it means dev testing was never actually exercising the same runtime
+package (the "host" program plus its "app" layer of logic) that a real customer downloads and
+installs. There was also no way to turn that download on in dev even if you wanted to — the setup
+screen that fetches it was wired to skip itself completely outside of a packaged build, and it only
+ever fetched half of the two-part package.
+
+**What changed:** flipping on a new switch (`CONXA_FORCE_DEPS`, turned on by default when using the
+`conxa.ps1 dev studio` launcher) makes dev Build Studio behave exactly like a real customer
+install: it downloads both halves of the runtime package, shows both downloads on the setup screen,
+and — this is the important part — actually runs workflow tests using those downloaded files
+instead of the local project code. Turning the switch back off returns to the old fast behavior
+where edits to the runtime code are picked up instantly. Also fixed a related gap where the
+"are we ready?" check only ever looked for one of the two runtime pieces, silently ignoring
+whether the second piece had actually finished downloading.
+
+**Verified with:** the existing bootstrap and runtime-resolution test suites (28 tests) still pass;
+the renderer lints clean; the wider backend test suite shows the same 7 pre-existing, unrelated
+failures before and after this change, confirming nothing here caused a regression.
+
+---
+
+## Documented seven actionable improvements to runtime architecture — 2026-07-09
+
+Performed a detailed analysis of the runtime execution, recovery cascade, and element resolution pipeline to understand how actions are validated and healed. The architecture is well-designed with strong discipline (zero-token Tiers 1–2, mandatory uniqueness gates, verify-after-recovery). Published findings in `docs/Runtime-Architecture-Feedback.md` with a prioritized list of seven actionable improvements, ranging from urgent safety fixes (re-enable CI execution gate) to strategic quality changes (data-driven scoring weights, fingerprint fixes at source, chaos testing).
+
+**Key recommendations:** (1) Turn the execution gate back on immediately, (2) stop hand-tuning resolver weights—build a test zoo and train from fleet data, (3) fix fingerprints at the compiler level rather than working around them in the runtime, (4) measure and expose assertion coverage before publishing, (5) close the telemetry loop with aggregated alerts, (6) add chaos testing to validate recovery cascade real-world resilience, (7) two small code fixes for timeout classification and disabled-check error leakage.
+
+---
+
+## Removed the artificial "human speed" slowdown so skills run as fast as the page allows — 2026-07-09
+
+The runtime used to pause on purpose between actions — a short random wait after every click,
+typed field, dropdown pick, and mouse hover, plus a guaranteed minimum "look at the new page"
+pause after every navigation — so the browser felt like it was being driven by a person instead of
+a program. That was slowing every run down for no functional benefit: those pauses did not make a
+skill more reliable, they only made it slower to watch.
+
+**What changed:** all of that artificial pacing is gone, everywhere it existed — the runtime code,
+the environment-variable switch that used to control it, the per-company setting a skill pack could
+carry for it, and every test that referenced it. The runtime still waits for a page to actually
+finish loading after a step that navigates (that's a real necessity, not a pacing trick), but there
+is no more manual delay layered on top of that, and non-navigation steps now run back-to-back with
+no wait between them at all.
+
+**Verified with:** all existing runtime unit tests still pass after the change (13/13 branch-step
+tests, 6/6 recovery-verify tests); the one dashboard-telemetry test failure seen afterward was
+confirmed to already exist before this change (an unrelated mock-page gap) and is not something
+this introduced.
+
+---
+
+## Taught skills to handle "this pop-up sometimes shows up" instead of treating it as a broken step — 2026-07-09
+
+Cookie banners, "your session expired, log in again" screens, an occasional extra security-code
+prompt, a slightly different version of a page for some customers — these are things that only
+show up *sometimes*. Until now, a recorded skill had no way to say "handle this if it appears";
+every one of these got treated exactly like a genuinely broken step, which meant it could escalate
+all the way to the most expensive kind of AI-assisted recovery — a cost that lands on the
+customer's own AI usage, not ours. This was flagged as the single biggest missing piece across all
+of the reliability research done on this product so far.
+
+**What changed:** three new building blocks a skill can use:
+- **"If this is showing, handle it"** — check for something (like a cookie banner), and only if
+  it's actually there, run a small set of steps to deal with it (like clicking "Accept").
+- **"Try to dismiss this, but don't worry if it's not there"** — for the classic "there might be a
+  popup, there might not" case. No popup, no problem, keep going.
+- **"Wait to see which of these shows up"** — for cases where the same point in a workflow can
+  branch two different ways (e.g., sometimes a security-code prompt appears, sometimes it doesn't),
+  wait briefly to see which one actually happened, then continue down the matching path.
+
+None of these ever trigger the expensive AI-assisted recovery path on their own — if the
+"handle it" step itself doesn't work perfectly, it's treated as best-effort and the skill moves
+on, rather than escalating.
+
+This is the foundation only: a skill can already be built to use these (there's a working example
+in the automated tests, including one that proves it against a real cookie-banner overlay in a
+real browser), but there's no button in the Build Studio yet to add one of these to a recording by
+hand, and the recorder doesn't yet notice these situations on its own while capturing a workflow —
+both of those are tracked as the next pieces of work this unblocks.
+
+**Verified with:** 13 new runtime tests plus all 78 existing ones (no regressions), 11 new
+build-pipeline tests, and a real headless-browser run that confirmed the "if it's showing, handle
+it" check actually dismissed a real on-page cookie banner before the next click.
+
+---
+
+## Fixed the re-target wizard's new Validation step showing nothing at all for the common case — 2026-07-09
+
+Right after moving check-editing into the re-target wizard's dedicated Validation step (previous
+entry below), a screenshot showed that step landing on a near-blank screen — just "Selectors look
+strong and how this step is checked hasn't changed" with a Back and an Apply button, no checks
+visible anywhere. That's the normal case (good element match, nothing about the check changed), so
+most steps hit it. The screen had an old shortcut left over from when this step was a read-only
+before/after comparison: if nothing needed reviewing, skip straight past it. That made sense when
+there was nothing to look at either way — but now that this step is the actual place to view and
+edit a step's checks, the shortcut was hiding the one thing it exists to show. The checks now always
+show, with the reassuring message kept as a small note above them instead of replacing them.
+
+**Verified with:** renderer type-check, clean.
+
+---
+
+## Stopped the "review selectors" step of re-targeting from also showing a second, conflicting Validation section — 2026-07-09
+
+While building out the re-target wizard's "Validation" step to let someone actually edit a step's
+checks there (instead of just previewing them), noticed the step immediately before it — "Review
+selectors" — was also showing a full Validation section with its own independent save button. That
+second copy came from the general step editor panel added earlier today, which was meant to show up
+whenever a step is open in the Human Edit screen; it just wasn't aware the re-target wizard now has
+its own dedicated Validation step. Having both meant a person could save their checks two different
+ways on two different screens — one saving immediately, the other only once they hit Apply on the
+final step — which could quietly overwrite each other. Now the general panel stays out of the way
+while a step's element is being re-targeted, and its own dedicated Validation step is the one place
+checks get edited during that flow.
+
+**Verified with:** renderer type-check, clean.
+
+---
+
+## Kept a cookie banner from ever being "the" check, let people review checks by hand, and put the whole fleet's check-health on the dashboard — 2026-07-09
+
+Continued today's earlier work on post-action checks with the three follow-on pieces from the same
+research: make the checks the compiler picks smarter, let a person in the Human Edit screen see and
+adjust them, and make the results visible across every customer's runs, not just one.
+
+**What changed:**
+- **A cookie banner or a "toast" popup can no longer become the one check that matters.** When the
+  compiler is deciding what proves a step worked, it used to be able to pick a newly-appeared
+  cookie-consent banner or a temporary notification as the required proof — but those elements are
+  usually gone by the time anyone checks. Now those are recognized and automatically downgraded to
+  a "nice to have" check, with a real, durable signal picked as the required one instead.
+- **A new "Validation" section on each step in the Human Edit screen.** Previously the only place to
+  see or adjust a step's checks was buried inside the re-target flow. Now every step has its own
+  Validation panel showing what proves it worked, with the same editable checklist used there,
+  saved independently of the rest of the step's fields.
+- **A manual edit can no longer secretly break a step's safety net.** If someone hand-edits a
+  step in the editor in a way that would leave a "this must actually happen" action (like clicking
+  Submit, or typing an email) with no enforced check at all, the edit is now rejected outright
+  instead of silently saved.
+- **The company dashboard now shows which checks are starting to fail.** A new "Assertion health"
+  section lists, worst first, which steps across the whole customer fleet are seeing their checks
+  fail more often — the earliest warning that something is drifting, before it turns into an
+  outright broken workflow.
+- Looked into binding a check to one *specific* row or record (e.g., "the row for Invoice #12345,"
+  not just "a row") for delete/destructive actions, but the underlying detection this would need
+  (recognizing repeating lists/tables at all) doesn't exist anywhere yet — building it properly is
+  its own sizable project, tracked separately, rather than a quick add-on here.
+
+**Verified with tests, not just by reading the code:** added automated tests for the cookie-banner
+downgrade, the manual-edit rejection (both rejecting a bad edit and confirming a good edit still
+saves), the dashboard aggregation math, and the new data reaching the Human Edit screen. Ran the
+full Python test suite (unchanged pre-existing failures only, all unrelated), the renderer's type
+checker/linter/production build, and the cloud frontend's linter/production build — all clean.
+
+---
+
+## Made the runtime's post-action checks patient, and made them report everything they saw — 2026-07-09
+
+Researched how other browser-automation tools (Playwright, Stagehand, browser-use, and several
+academic benchmarks) handle "did this action actually work," then hardened Conxa's own version of
+that check. The check itself (added earlier today) was correct but impatient: most of its checks
+looked at the page exactly once, right after the action, and failed immediately if the expected
+change hadn't shown up yet. On a slower page — a save button whose confirmation banner takes half
+a second to render, a spinner that takes a moment to disappear — that read as "this step failed"
+even though it would have succeeded a beat later.
+
+**What changed:**
+- **Checks now keep looking instead of giving up after one glance.** A check that's waiting for
+  something to *appear* (a confirmation message, a changed page address, a field holding the right
+  value) now keeps re-checking for up to its allotted time instead of judging the page at a single
+  instant. A check that's waiting for something to *disappear* (a loading spinner, an error banner)
+  now also confirms it stays gone for a brief moment afterward, so a flicker — gone, back, gone
+  again — can't be mistaken for "gone for good."
+- **A failed step now reports on every check it ran, not just the first one that failed.** Previously,
+  the moment one required check failed the app stopped looking at the rest. Now it finishes checking
+  everything on that step — including the "nice to have" checks that aren't required to pass — and
+  keeps a full record of what held up and what didn't. That record is sent back as telemetry, which
+  means the fleet dashboard can eventually see a check starting to go flaky on a specific customer's
+  workflow before it turns into an outright failure.
+- Nothing about how a step ultimately passes or fails changed — a required check still has to hold
+  for the step to count as successful. This only fixes false failures caused by checking too early.
+
+**Verified with tests, not just by reading the code:** added new automated tests proving a slow
+render now gets picked up during the wait instead of failing instantly, that a flickering element
+doesn't fool the "stays gone" check, and that a failed step's report really does include every
+check that ran. Re-ran the full existing runtime test suite (verification, recovery, resolver) —
+everything that passed before still passes; the one pre-existing unrelated test failure (a stale
+mock missing a browser method, present before this change) is unaffected.
+
+---
+
+## Made the app actually check that a click or a typed value did what it was supposed to — 2026-07-09
+
+Until now, if a recorded skill clicked "Save" or typed an email address, the runtime considered
+the step done as soon as the click or the typing happened — it never checked whether the click
+actually saved anything, or whether the email really landed in the field. A button that silently
+did nothing, or a field that silently rejected the typed text, would be reported as a success.
+The user asked for a real "Validation" step that checks the actual result of an action, not just
+that the action was attempted — and for that check to keep trying to recover and re-check if it
+first comes back wrong, rather than quietly moving on.
+
+**What changed, end to end:**
+- **Typing and selecting now get checked.** Before, only clicks that changed the page's address
+  or made something new appear were checked — typing a value into a field was never verified at
+  all. Now, after typing or selecting something, the app confirms the field actually holds what
+  was typed (allowing for things like a phone number field that reformats what you type).
+- **A button that does nothing no longer passes.** For a "Save"/"Submit"-style click where the
+  recording didn't capture any obvious sign of success (no new page, no new element), the app now
+  checks that *something* on the page visibly changed. If nothing changed at all, the step is now
+  correctly treated as failed instead of silently succeeding.
+- **Recovery now double-checks its own work.** If a check fails and the app tries to recover (by
+  re-clicking, trying a backup selector, etc.), it used to consider that a win the moment the
+  retry didn't error out — even if the underlying problem was still there. Now it re-runs the same
+  check after every recovery attempt, so a "recovered" step can no longer quietly leave the
+  original problem unfixed.
+- **The Human Editor's "Confirm & apply" step is now "Validation."** It used to just show a
+  before/after summary of the technical wait condition. Now it also shows, in plain language,
+  exactly what confirms this step worked, lets a person edit that check by hand, and warns if a
+  step has no check confirming it actually worked at all.
+- Nothing about already-built skills changes — this only takes effect on steps that get
+  re-compiled or re-targeted going forward, so nothing existing breaks.
+
+**Verified with tests, not just by reading the code:** extended the runtime's and compiler's
+automated test suites with new cases proving each behavior above — including a dedicated test
+proving that a "successful" recovery which doesn't actually fix the underlying problem is now
+correctly reported as a failure. All pre-existing tests still pass; the handful that were already
+failing before this work (unrelated publish/installer/auth tests) are confirmed unrelated.
+
+---
+
 ## Made the Human Edit screen look and feel like a finished, professional product — 2026-07-09
 
 The user looked at a screenshot of the Human Edit screen and said it "isn't looking good" and
@@ -538,5 +830,10 @@ consistently describes this five-step flow instead of the old three-step one.
 
 **Where it lives.** Same file as yesterday: `conxa-builder-workflow-redesign.md`. Still just a
 written plan — nothing in the app has changed yet.
+
+---
+
+## Fixed the UI-TARS paper diagrams - 2026-07-09
+**What changed.** Added clear component and data-flow diagrams to `ui-tars.md` so the paper's vision-model loop, human pause path, and coordinate execution flow are easier to understand.
 
 ---
