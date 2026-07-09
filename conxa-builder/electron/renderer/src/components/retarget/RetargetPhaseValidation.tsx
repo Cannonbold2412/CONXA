@@ -1,48 +1,21 @@
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import type { RetargetPreviewResponse } from '@/api/workflowApi'
+import {
+  AssertionEditorRows,
+  describeWaitFor,
+  type AssertionDraft,
+} from '@/components/validation/AssertionEditor'
 
-function describeWaitFor(wf: Record<string, unknown>): string {
-  const type = String(wf.type ?? 'none')
-  switch (type) {
-    case 'none':
-      return 'No wait — the step completes immediately.'
-    case 'url_change':
-      return 'Wait for the page address to change.'
-    case 'element_appear': {
-      const target = String(wf.target ?? '')
-      return target ? `Wait for "${target}" to appear on the page.` : 'Wait for an element to appear on the page.'
-    }
-    case 'intent_outcome':
-      return "Wait for the step's outcome to be confirmed."
-    default:
-      return `Wait condition: ${type}.`
-  }
-}
-
-function describeAssertions(assertions: Record<string, unknown>[]): string[] {
-  return assertions.map((a) => {
-    const type = String(a.type ?? '')
-    const target = String(a.target ?? '')
-    const required = a.required !== false
-    const prefix = required ? '' : '(optional) '
-    switch (type) {
-      case 'url_changed':
-        return `${prefix}The page address changes.`
-      case 'selector_present':
-        return `${prefix}"${target}" is present on the page.`
-      case 'text_present':
-        return `${prefix}The text "${target}" appears on the page.`
-      default:
-        return `${prefix}${type}: ${target}`
-    }
-  })
-}
+export type { AssertionDraft } from '@/components/validation/AssertionEditor'
 
 type Props = {
   preview: RetargetPreviewResponse
   keepValidation: boolean
   onKeepValidationChange: (value: boolean) => void
+  /** Human edits to the assertion list, or null to use the current/proposed default. */
+  editedAssertions: AssertionDraft[] | null
+  onEditedAssertionsChange: (assertions: AssertionDraft[] | null) => void
   onBack: () => void
   onApply: () => void
   applying: boolean
@@ -52,65 +25,45 @@ export function RetargetPhaseValidation({
   preview,
   keepValidation,
   onKeepValidationChange,
+  editedAssertions,
+  onEditedAssertionsChange,
   onBack,
   onApply,
   applying,
 }: Props) {
-  if (preview.fast_finish) {
-    return (
-      <div className="space-y-4">
-        <p className="text-status-ok text-sm">
-          Selectors look strong and how this step is checked hasn&apos;t changed.
-        </p>
-        <div className="flex justify-between pt-2">
-          <Button variant="outline" onClick={onBack}>
-            ← Back
-          </Button>
-          <Button onClick={onApply} disabled={applying}>
-            {applying ? 'Applying…' : 'Apply'}
-          </Button>
-        </div>
-      </div>
-    )
-  }
+  const baseAssertions = (
+    editedAssertions ?? ((preview.validation_changed && !keepValidation ? preview.proposed_assertions : preview.current_assertions) as AssertionDraft[])
+  )
+  const effectiveWaitFor = preview.validation_changed && !keepValidation ? preview.proposed_wait_for : preview.current_wait_for
 
   return (
     <div className="space-y-4">
-      <p className="text-muted-foreground text-sm">
-        How this step confirms it worked may need to change for the new element.
-      </p>
+      {preview.fast_finish ? (
+        <p className="text-status-ok text-sm">
+          Selectors look strong and how this step is checked hasn&apos;t changed — no action needed, but
+          you can still adjust the checks below.
+        </p>
+      ) : (
+        <div>
+          <p className="text-foreground text-sm font-medium">This step is confirmed done when:</p>
+          <p className="text-muted-foreground mt-0.5 text-xs leading-snug">{describeWaitFor(effectiveWaitFor)}</p>
+        </div>
+      )}
+
+      <AssertionEditorRows assertions={baseAssertions} onChange={onEditedAssertionsChange} />
 
       {preview.validation_changed ? (
-        <div className="space-y-3">
-          <div className="border-border/60 bg-background/30 rounded-lg border p-3 text-sm">
-            <p className="font-medium text-zinc-300">Currently</p>
-            <p className="text-zinc-400">{describeWaitFor(preview.current_wait_for)}</p>
-            {describeAssertions(preview.current_assertions).map((line, i) => (
-              <p key={i} className="text-zinc-500">
-                – {line}
-              </p>
-            ))}
-          </div>
-          <div className="border-brand/30 bg-brand-subtle rounded-lg border p-3 text-sm">
-            <p className="text-brand font-medium">Proposed</p>
-            <p className="text-zinc-100/90">{describeWaitFor(preview.proposed_wait_for)}</p>
-            {describeAssertions(preview.proposed_assertions).map((line, i) => (
-              <p key={i} className="text-zinc-100/70">
-                + {line}
-              </p>
-            ))}
-          </div>
-          <label className="flex items-center gap-2 text-sm text-zinc-300">
-            <Checkbox
-              checked={keepValidation}
-              onCheckedChange={(checked) => onKeepValidationChange(Boolean(checked))}
-            />
-            Keep the existing check instead of the proposed one
-          </label>
-        </div>
-      ) : (
-        <p className="text-sm text-zinc-400">{describeWaitFor(preview.current_wait_for)}</p>
-      )}
+        <label className="flex items-center gap-2 text-sm text-zinc-300">
+          <Checkbox
+            checked={keepValidation}
+            onCheckedChange={(checked) => {
+              onKeepValidationChange(Boolean(checked))
+              onEditedAssertionsChange(null) // switching base list — drop in-progress edits
+            }}
+          />
+          Keep the existing wait condition instead of the proposed one
+        </label>
+      ) : null}
 
       <div className="flex justify-between pt-2">
         <Button variant="outline" onClick={onBack}>

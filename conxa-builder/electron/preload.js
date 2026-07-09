@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld("conxa", {
   /** True when running from the packaged installer; false in `npm run dev`. */
   isPackaged: process.env.CONXA_ELECTRON_IS_PACKAGED === "1",
 
+  /** True when dev deps download is force-enabled via CONXA_FORCE_DEPS=1. */
+  forceBootstrap: process.env.CONXA_ELECTRON_FORCE_BOOTSTRAP === "1",
+
   /** Invoke a backend command. Resolves to { ok, result } | { ok:false, code, message }. */
   cmd: (type, payload) => ipcRenderer.invoke("python:cmd", { type, payload }),
 

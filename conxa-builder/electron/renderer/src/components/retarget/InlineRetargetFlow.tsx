@@ -12,7 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useRetargetStore } from '@/store/retargetStore'
 import { cn } from '@/lib/utils'
 
-const PHASE_LABELS = ['Pick element', 'Review selectors', 'Confirm & apply'] as const
+const PHASE_LABELS = ['Pick element', 'Review selectors', 'Validation'] as const
 type Phase = 1 | 2 | 3
 
 type Props = {
@@ -60,6 +60,8 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
   const setManualSelector = useRetargetStore((s) => s.setManualSelector)
   const keepValidation = useRetargetStore((s) => s.keepValidation)
   const setKeepValidation = useRetargetStore((s) => s.setKeepValidation)
+  const editedAssertions = useRetargetStore((s) => s.editedAssertions)
+  const setEditedAssertions = useRetargetStore((s) => s.setEditedAssertions)
   const reset = useRetargetStore((s) => s.reset)
 
   useImperativeHandle(
@@ -82,6 +84,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
         setSelectedIndex(0)
         setManualSelector('')
         setKeepValidation(!result.validation_changed)
+        setEditedAssertions(null)
         setPhase(2)
       } catch (err) {
         if (err instanceof CmdError && err.code === 'session_artifacts_missing') {
@@ -93,7 +96,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
         setLoading(false)
       }
     },
-    [skillId, step, setBbox, setPreview, setSelectedIndex, setManualSelector, setKeepValidation],
+    [skillId, step, setBbox, setPreview, setSelectedIndex, setManualSelector, setKeepValidation, setEditedAssertions],
   )
 
   const handleApplyPositionOnly = useCallback(async () => {
@@ -152,6 +155,9 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
         keep_validation: keepValidation,
         proposed_wait_for: preview.proposed_wait_for,
         proposed_assertions: preview.proposed_assertions,
+        // Only sent when the human actually touched the Validation phase's assertion editor —
+        // otherwise the backend falls back to keep_validation/proposed_assertions as before.
+        edited_assertions: editedAssertions ?? undefined,
       })
       onWorkflowUpdated(res.workflow)
       if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
@@ -163,7 +169,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     } finally {
       setApplying(false)
     }
-  }, [skillId, step, bbox, preview, manualSelector, selectedIndex, keepValidation, onWorkflowUpdated, onHistoryUpdate, reset])
+  }, [skillId, step, bbox, preview, manualSelector, selectedIndex, keepValidation, editedAssertions, onWorkflowUpdated, onHistoryUpdate, reset])
 
   if (!step) {
     return (
@@ -229,6 +235,8 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               preview={preview}
               keepValidation={keepValidation}
               onKeepValidationChange={setKeepValidation}
+              editedAssertions={editedAssertions}
+              onEditedAssertionsChange={setEditedAssertions}
               onBack={() => setPhase(2)}
               onApply={() => void handleApply()}
               applying={applying}
@@ -236,7 +244,10 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
           ) : null}
           {/* Kept mounted (just hidden) across phases so in-progress edits and the ref survive
               phase changes instead of being lost on unmount. Visible during phase 2 only, per
-              the "review selectors doubles as the step editor" design. */}
+              the "review selectors doubles as the step editor" design. hideSelectorTools also
+              suppresses the form's own Validation panel — that's the job of phase 3
+              (RetargetPhaseValidation) here, and showing both would let a user save assertions
+              via two different, inconsistent paths (instant patchStep vs. staged retargetApply). */}
           <div className={phase === 2 ? '' : 'hidden'}>
             <StepConfigForm
               ref={formRef}

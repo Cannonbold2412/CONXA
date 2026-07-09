@@ -58,8 +58,10 @@ export function App() {
   const [depUpdateBanner, setDepUpdateBanner] = useState<DepUpdateBanner>({ phase: 'idle' })
 
   useEffect(() => {
-    // Skip the bootstrap gate entirely in dev (deps managed by the developer via scripts/setup.ps1).
-    if (!window.conxa.isPackaged) {
+    // Skip the bootstrap gate entirely in dev (deps managed by the developer via scripts/setup.ps1),
+    // unless CONXA_FORCE_DEPS=1 (set by conxa.ps1's dev lane) opts back into downloading the
+    // real host exe + app layer for a customer-faithful dev test run.
+    if (!window.conxa.isPackaged && !window.conxa.forceBootstrap) {
       setDepsState('ready')
       return
     }
@@ -98,7 +100,7 @@ export function App() {
 
   // When all deps are present, silently check for newer versions in the background.
   useEffect(() => {
-    if (depsState !== 'ready' || !window.conxa.isPackaged) return
+    if (depsState !== 'ready' || (!window.conxa.isPackaged && !window.conxa.forceBootstrap)) return
     const unsub = window.conxa.onEvent((ev) => {
       if (ev.phase !== 'bootstrap') return
       if (!ev.dep) {

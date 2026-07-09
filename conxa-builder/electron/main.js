@@ -38,6 +38,12 @@ const MAX_BACKEND_RESTARTS = 3;
 // explicitly so the renderer can skip packaged-only bootstrap in dev.
 process.env.CONXA_ELECTRON_IS_PACKAGED = app.isPackaged ? "1" : "0";
 
+// Opt-in dev override (set by scripts/conxa.ps1's dev lane): forces the
+// packaged-only bootstrap gate to run even under `npm run dev`, so a developer
+// can download and test against the real host exe + app layer. Normalized here
+// (rather than read directly in preload) to mirror CONXA_ELECTRON_IS_PACKAGED.
+process.env.CONXA_ELECTRON_FORCE_BOOTSTRAP = process.env.CONXA_FORCE_DEPS === "1" ? "1" : "0";
+
 // Enforce single instance so second-instance fires (required for Windows deep-link handling).
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {

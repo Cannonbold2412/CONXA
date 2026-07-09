@@ -292,7 +292,18 @@ def preview_retarget(
         policy = get_policy_bundle().data
         proposed_wait_for = infer_wait_for_shape(step, state_diff, policy)
         proposed_validation = ValidationBlock(wait_for=proposed_wait_for, success_conditions={})
-        proposed_assertions = [a.model_dump(mode="json") for a in _build_assertions(matching_event, proposed_validation)]
+        # The user hasn't picked a candidate yet at preview time — use the top-ranked candidate
+        # as the provisional primary_selector for the enforced value_equals/selector_present
+        # signal (falls back to the step's existing target if regeneration produced nothing).
+        preview_selector = (
+            candidates[0]["selector"] if candidates
+            else str((step.get("target") or {}).get("primary_selector") or "")
+        )
+        preview_target = {"primary_selector": preview_selector}
+        proposed_assertions = [
+            a.model_dump(mode="json")
+            for a in _build_assertions(matching_event, proposed_validation, policy, preview_target, step.get("value"))
+        ]
         validation_changed = proposed_wait_for != current_wait_for or proposed_assertions != current_assertions
     else:
         # Nothing changed — review the selectors the compiler already produced. No LLM call,
@@ -372,13 +383,18 @@ def apply_retarget(document: dict[str, Any], step_index: int, payload: dict[str,
     signals["compiled_selectors"] = [primary_selector, *fallback_selectors][:3]
     step["signals"] = signals
 
-    # 4. validation: keep current or adopt the previewed proposal.
-    if not keep_validation:
-        proposed_wait_for = payload.get("proposed_wait_for") or {}
-        proposed_assertions = payload.get("proposed_assertions") or []
+    # 4. validation: keep current, adopt the previewed proposal, or apply a human edit made in
+    # the Validation phase. edited_assertions takes precedence over proposed_assertions when
+    # present; it round-trips independently of keep_validation, which only governs wait_for —
+    # a human can keep the existing wait condition but still hand-edit the assertion list.
+    edited_assertions = payload.get("edited_assertions")
+    if edited_assertions is not None or not keep_validation:
         validation = dict(step.get("validation") or {})
-        validation["wait_for"] = proposed_wait_for
-        validation["assertions"] = proposed_assertions
+        if not keep_validation:
+            validation["wait_for"] = payload.get("proposed_wait_for") or {}
+        validation["assertions"] = (
+            edited_assertions if edited_assertions is not None else payload.get("proposed_assertions") or []
+        )
         step["validation"] = validation
         step = _sync_recovery_deterministic(step)
 

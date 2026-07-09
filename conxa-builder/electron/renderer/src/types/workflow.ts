@@ -43,6 +43,7 @@ export type StepEditorDTO = {
   validation: {
     wait_for: Record<string, unknown>
     success_conditions: Record<string, unknown>
+    assertions: Record<string, unknown>[]
   }
   recovery: Record<string, unknown>
   value: unknown

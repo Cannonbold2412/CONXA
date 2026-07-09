@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Bbox, RetargetPreviewResponse } from '@/api/workflowApi'
+import type { AssertionDraft } from '@/components/retarget/RetargetPhaseValidation'
 
 // The re-target wizard is split across three routes (pick → selectors → confirm). React Router
 // unmounts each page on navigation, so the cross-phase state that used to live inside the
@@ -12,6 +13,8 @@ type RetargetState = {
   selectedIndex: number
   manualSelector: string
   keepValidation: boolean
+  /** Human edits made in the Validation phase; null means "use the current/proposed default". */
+  editedAssertions: AssertionDraft[] | null
   /**
    * Clear the wizard state when a re-target starts on a different skill/step; no-op for the
    * same one so navigating back and forth between the three pages keeps what was picked.
@@ -22,6 +25,7 @@ type RetargetState = {
   setSelectedIndex: (index: number) => void
   setManualSelector: (value: string) => void
   setKeepValidation: (value: boolean) => void
+  setEditedAssertions: (value: AssertionDraft[] | null) => void
   reset: () => void
 }
 
@@ -31,6 +35,7 @@ const EMPTY = {
   selectedIndex: 0,
   manualSelector: '',
   keepValidation: true,
+  editedAssertions: null,
 } as const
 
 export const useRetargetStore = create<RetargetState>((set, get) => ({
@@ -47,5 +52,6 @@ export const useRetargetStore = create<RetargetState>((set, get) => ({
   setSelectedIndex: (selectedIndex) => set({ selectedIndex }),
   setManualSelector: (manualSelector) => set({ manualSelector }),
   setKeepValidation: (keepValidation) => set({ keepValidation }),
+  setEditedAssertions: (editedAssertions) => set({ editedAssertions }),
   reset: () => set({ skillId: null, stepIndex: null, ...EMPTY }),
 }))

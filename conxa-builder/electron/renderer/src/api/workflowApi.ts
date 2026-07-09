@@ -232,6 +232,9 @@ export function retargetApply(
     keep_validation: boolean
     proposed_wait_for?: Record<string, unknown>
     proposed_assertions?: Record<string, unknown>[]
+    /** Human-edited assertion list from the Validation phase — takes precedence over
+     *  proposed_assertions/current assertions when present. */
+    edited_assertions?: Record<string, unknown>[]
   },
 ): Promise<WorkflowRevalidationResponse> {
   return cmd('retarget_apply', { skill_id: skillId, step_index: stepIndex, ...body })

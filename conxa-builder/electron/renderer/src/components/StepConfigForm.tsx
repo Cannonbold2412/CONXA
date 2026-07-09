@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react'
 import { FormProvider, useForm, useFormState, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 import type { StepEditorDTO, WorkflowResponse } from '../types/workflow'
@@ -14,6 +14,7 @@ import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
 import { Trash2 } from 'lucide-react'
+import { AssertionEditorRows, describeWaitFor, type AssertionDraft } from '@/components/validation/AssertionEditor'
 
 // Same gradient-fill + ring depth treatment as PanelChrome (components/ui/panel-chrome.tsx),
 // layered onto Card's className rather than swapping the component itself — Card's
@@ -147,9 +148,9 @@ type Props = {
   skillId: string
   onWorkflowUpdated: (wf: WorkflowResponse) => void
   onHistoryUpdate?: (canUndo: boolean, canRedo: boolean) => void
-  /** Hide the free-text selector list / CSS-ARIA-XPath channel cards / anchors — used when the
-   *  step's element is instead being picked visually by the re-target flow, which owns the
-   *  selector at that point. */
+  /** Hide the free-text selector list / CSS-ARIA-XPath channel cards / anchors, and the
+   *  Validation panel — used when the re-target flow's own phases own selector picking and
+   *  validation editing instead. */
   hideSelectorTools?: boolean
 }
 
@@ -193,6 +194,69 @@ function DirtySync({ stepIndex }: { stepIndex: number }) {
     else clearDirty(stepIndex)
   }, [isDirty, stepIndex, markDirty, clearDirty])
   return null
+}
+
+type StepValidationPanelProps = {
+  step: StepEditorDTO
+  skillId: string
+  onWorkflowUpdated: (wf: WorkflowResponse) => void
+  onHistoryUpdate?: (canUndo: boolean, canRedo: boolean) => void
+  disabled: boolean
+}
+
+/** Shows what confirms this step actually worked, and lets a human edit that check by hand
+ *  (`docs/TRD.md` §10.2a VERIFY). Saves independently of the rest of the step form — the
+ *  assertion list isn't coupled to the action-specific fields above it. */
+function StepValidationPanel({ step, skillId, onWorkflowUpdated, onHistoryUpdate, disabled }: StepValidationPanelProps) {
+  const initialAssertions = (step.validation.assertions || []) as AssertionDraft[]
+  const [assertions, setAssertions] = useState<AssertionDraft[]>(initialAssertions)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setAssertions((step.validation.assertions || []) as AssertionDraft[])
+    setDirty(false)
+  }, [step.step_index, step.validation.assertions])
+
+  const handleChange = (next: AssertionDraft[]) => {
+    setAssertions(next)
+    setDirty(true)
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const res = await patchStep(skillId, step.step_index, { validation: { assertions } }, false)
+      onWorkflowUpdated(res.workflow)
+      if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
+      setDirty(false)
+      toast.success('Validation saved')
+    } catch (e) {
+      toast.error(errorMessage(e, 'Save failed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card className={cn('gap-2 py-3', PANEL_CARD_CLASS)}>
+      <CardHeader className="p-2.5 pb-1">
+        <CardTitle className="flex items-center gap-2 text-base font-semibold">
+          Validation
+          <InfoHint {...editorHelp.toolValidation} size="md" side="bottom" align="start" />
+        </CardTitle>
+        <CardDescription className="text-xs">{describeWaitFor(step.validation.wait_for || {})}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 p-2.5 pt-0">
+        <AssertionEditorRows assertions={assertions} onChange={handleChange} />
+        <div className="flex justify-end pt-1">
+          <Button type="button" size="sm" disabled={disabled || !dirty || saving} onClick={handleSave}>
+            {saving ? 'Saving…' : 'Save validation'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
@@ -707,6 +771,16 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
           ) : null}
       </CardContent>
       </Card>
+
+      {!hideSelectorTools && canEdit('validation') ? (
+        <StepValidationPanel
+          step={step}
+          skillId={skillId}
+          onWorkflowUpdated={onWorkflowUpdated}
+          onHistoryUpdate={onHistoryUpdate}
+          disabled={methods.formState.isSubmitting}
+        />
+      ) : null}
 
       {showSelectorAndAnchorTools ? (
       <>
