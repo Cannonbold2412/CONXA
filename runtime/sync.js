@@ -124,72 +124,86 @@ async function _syncCompany(skillPacksDir, company, log) {
     }
   }
 
+  // The delta response is authoritative for "what skills does this company have
+  // right now" — every server-side skill gets an entry (no_change or update), so
+  // this is always the full current skill list, independent of what this client's
+  // sinceMap knew about beforehand. Applying it unconditionally below (even when
+  // nothing changed) is what makes a skill added to a company post-install ever
+  // reach skill_loader.js's registry, which reads pack.skills off disk rather than
+  // scanning the directory tree itself — a thin installer starts with pack.skills
+  // empty, so without this, no skill would ever become visible after install.
+  const serverSkillNames = (delta.skills || []).map((s) => s.name).filter(Boolean);
   const changed = (delta.skills || []).filter((s) => s.action === "update");
-  if (changed.length === 0) {
-    log(`[sync:status] ${company} up-to-date`);
-    return;
-  }
-
-  // Download all files for all changed skills in parallel first — nothing touches
-  // disk until every buffer is in hand, so a mid-batch network failure never leaves
-  // a skill half-written.
-  let downloaded;
-  try {
-    downloaded = await Promise.all(changed.map(async (skillEntry) => {
-      const files = await Promise.all((skillEntry.files || []).map(async (fileEntry) => {
-        let content;
-        if (fileEntry.content_base64) {
-          content = Buffer.from(fileEntry.content_base64, "base64");
-        } else if (fileEntry.content_url) {
-          content = await _downloadBuffer(fileEntry.content_url, 8000);
-        } else {
-          throw new Error(`no content source for ${skillEntry.name}/${fileEntry.path}`);
-        }
-        return { fileEntry, content };
-      }));
-      return { skillEntry, files };
-    }));
-  } catch (e) {
-    log(`[sync:error] ${company} download failed — ${e.message}`);
-    return;
-  }
 
   const activated = [];
-  for (const { skillEntry, files } of downloaded) {
-    const slug = skillEntry.name;
-    const rawVersion = String(skillEntry.version || "0");
-    const versionDirName = /^v/.test(rawVersion) ? rawVersion : `v${rawVersion}`;
-    const skillRoot  = path.join(skillPacksDir, company, slug);
-    const versionDir = path.join(skillRoot, versionDirName);
+  if (changed.length > 0) {
+    // Download all files for all changed skills in parallel first — nothing touches
+    // disk until every buffer is in hand, so a mid-batch network failure never leaves
+    // a skill half-written.
+    let downloaded = null;
     try {
-      // Clear any stale partial staging from a previously interrupted attempt at
-      // this exact version before writing fresh files into it.
-      try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
-      for (const { fileEntry, content } of files) {
-        atomicWrite(path.join(versionDir, fileEntry.path), content, fileEntry.sha256);
-      }
-      if (!fs.existsSync(path.join(versionDir, "version.json"))) {
-        fs.writeFileSync(path.join(versionDir, "version.json"), JSON.stringify({
-          skill_version: skillEntry.version,
-          released_at: new Date().toISOString(),
+      downloaded = await Promise.all(changed.map(async (skillEntry) => {
+        const files = await Promise.all((skillEntry.files || []).map(async (fileEntry) => {
+          let content;
+          if (fileEntry.content_base64) {
+            content = Buffer.from(fileEntry.content_base64, "base64");
+          } else if (fileEntry.content_url) {
+            content = await _downloadBuffer(fileEntry.content_url, 8000);
+          } else {
+            throw new Error(`no content source for ${skillEntry.name}/${fileEntry.path}`);
+          }
+          return { fileEntry, content };
         }));
-      }
-      versionManager.activate(skillRoot, versionDir, { keep: 3, requiredFiles: ["manifest.json"] });
-      activated.push(`${slug}@${skillEntry.version}`);
+        return { skillEntry, files };
+      }));
     } catch (e) {
-      log(`[sync:error] ${company}/${slug}: activation failed — ${e.message}`);
-      try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
+      log(`[sync:error] ${company} download failed — ${e.message}`);
+    }
+
+    for (const { skillEntry, files } of downloaded || []) {
+      const slug = skillEntry.name;
+      const rawVersion = String(skillEntry.version || "0");
+      const versionDirName = /^v/.test(rawVersion) ? rawVersion : `v${rawVersion}`;
+      const skillRoot  = path.join(skillPacksDir, company, slug);
+      const versionDir = path.join(skillRoot, versionDirName);
+      try {
+        // Clear any stale partial staging from a previously interrupted attempt at
+        // this exact version before writing fresh files into it.
+        try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
+        for (const { fileEntry, content } of files) {
+          atomicWrite(path.join(versionDir, fileEntry.path), content, fileEntry.sha256);
+        }
+        if (!fs.existsSync(path.join(versionDir, "version.json"))) {
+          fs.writeFileSync(path.join(versionDir, "version.json"), JSON.stringify({
+            skill_version: skillEntry.version,
+            released_at: new Date().toISOString(),
+          }));
+        }
+        versionManager.activate(skillRoot, versionDir, { keep: 3, requiredFiles: ["manifest.json"] });
+        activated.push(`${slug}@${skillEntry.version}`);
+      } catch (e) {
+        log(`[sync:error] ${company}/${slug}: activation failed — ${e.message}`);
+        try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
+      }
     }
   }
 
-  if (activated.length === 0) return;
-
+  // Written unconditionally on any successful delta fetch — this is also what makes
+  // the 5-minute recency-skip above actually engage on a no-op sync; previously the
+  // write only happened when something was newly activated.
+  pack.skills = serverSkillNames;
   pack.last_synced = new Date().toISOString();
   const packTmp = packPath + ".tmp";
   fs.writeFileSync(packTmp, JSON.stringify(pack, null, 2));
   fs.renameSync(packTmp, packPath);
 
-  log(`[sync:status] ${company} updated (${activated.length} skill${activated.length !== 1 ? "s" : ""}: ${activated.join(", ")})`);
+  if (activated.length > 0) {
+    log(`[sync:status] ${company} updated (${activated.length} skill${activated.length !== 1 ? "s" : ""}: ${activated.join(", ")})`);
+  } else if (changed.length === 0) {
+    log(`[sync:status] ${company} up-to-date`);
+  } else {
+    log(`[sync:status] ${company} sync completed with no successful activations`);
+  }
 }
 
 async function _doSync(skillPacksDir, log) {
