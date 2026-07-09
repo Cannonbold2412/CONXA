@@ -4,6 +4,429 @@
 
 ---
 
+## Made the Human Edit screen look and feel like a finished, professional product — 2026-07-09
+
+The user looked at a screenshot of the Human Edit screen and said it "isn't looking good" and
+asked for it to be made "enterprise level." Looking closely, the screen wasn't badly designed —
+it was inconsistent: different sections used different-looking cards, colors for "this is good" /
+"this needs attention" were picked ad hoc in each spot instead of matching everywhere, and buttons
+that mattered (like Approve) looked the same as ordinary ones.
+
+**Visual consistency, applied everywhere on the screen:**
+- Every panel (the step list, the wizard, the tools sidebar) now shares one consistent "raised,
+  slightly glossy" background instead of three different flat looks.
+- Green/amber/red now always mean the same thing everywhere they appear — a shared color system
+  replaces colors that used to be picked separately, and sometimes differently, in each component.
+- The app's signature clay-orange brand color is now a proper, reusable button style instead of a
+  copy-pasted style string.
+- Section titles got a clearer size difference from body text so the page reads with a real
+  hierarchy instead of everything looking the same weight.
+
+**Three new things added, all pulling from information the app already had — nothing new to
+compute or fetch:**
+- A **confidence banner** now sits right at the top of the screen: "Looks solid" in green when
+  there's nothing to worry about, an amber "Review N flagged steps" when there's something worth
+  a look, or a red "Fix N blocking issues" when something must be fixed before approving. This was
+  already being tracked one tab deep in "Suggestions" — now it's the first thing anyone sees.
+- A new **"How Claude sees this"** tab shows, in plain language, what a customer's Claude Desktop
+  will understand about this skill — its name, a summary of what it does, and what inputs it needs
+  — so a person editing the workflow can see it through the AI's eyes, not just their own.
+- The **"Finish editing"** button is now **"Approve"** — a more deliberate, confirming action with
+  its own icon, matching a rename that was already planned on the roadmap but hadn't been built
+  yet. Nothing about what it actually does changed — it still signs off and builds the same way.
+
+**Verified for real, not just by reading the code:** launched the actual Build Studio app, opened
+a real saved skill, walked through Pick element → Review selectors, and opened the new tab —
+screenshotted every step to confirm it looks and works as intended before calling this done.
+
+---
+
+## Merged in a big cloud-built change: Publish Skill Package is now the real release button — 2026-07-09
+
+**What happened:** A large set of changes was prepared separately (in a cloud session) and handed to us as a patch file to apply — the same "Publish Skill Package becomes the real release button" work already summarized a few entries down ("Made 'Publish Skill Package' the real, primary way to ship updates"). Applying it on top of everything else that had changed locally in the meantime wasn't a clean drop-in: about a third of the patch's files had since been touched by other work here too, so each overlapping file had to be checked by hand and reconciled rather than blindly overwritten.
+
+**What we found and fixed:**
+- Several files (`BuildInstallerPage.tsx`, `handlers/plugins.py`, this Fix Log, `TODO.md`, and a few docs) had already been independently updated locally to basically the same end state the patch wanted — those just needed a quick side-by-side check, not a real merge.
+- One page, `BuildInstallerPage.tsx`, was left in a half-cleaned-up state from that overlap: it still had a leftover "open the release dialog" button wired to release-notes fields that no longer existed anywhere in the file. That would have broken the app the next time someone tried to open Build Installer. Removed the dead code so the page matches its new, simpler job — packaging a release that was already published elsewhere, instead of collecting version/notes itself.
+- The bigger catch: our merge tool reported most of the patch's other ~20 files (the cloud backend's publish/entitlements/tracking routes, the Build Studio Python backend, two brand-new shared UI components, and the new Publish Skill Package page itself) as "applied cleanly" — but they actually hadn't been written to disk at all, because one failed file in the same batch silently cancelled the whole group. Caught this by checking that the promised changes were actually present, then reapplied that whole group properly. Without catching this, the app would have shipped with Build Installer pointing at UI components (`BuildLogUi.tsx`, `PluginListSidebar.tsx`) that didn't exist yet.
+- Docs (`docs/UI-UX-Brief.md`, `docs/Implementation-Plan.md`) still described Publish Skill Package as an unfinished placeholder in a couple of sections; updated those to say it's the real, shipped release action now.
+
+**How we checked it was safe:** ran the full TypeScript typecheck (clean, zero errors) and the relevant Python test suites (67 passing). Four unrelated tests failed both before and after this work, confirming they're pre-existing issues, not something this merge broke.
+
+**Also cleaned up:** this Fix Log itself had accidentally ended up with the same 177 lines of entries duplicated twice in a row, left over from an earlier step of this same merge. Removed the duplicate copy and rotated the older (2026-07-04 through 2026-07-06) entries into the monthly archive to keep this file a reasonable length.
+
+---
+
+## Closed a gap where drawing a new box could offer non-unique selectors again — 2026-07-09
+
+Right after adding the "hide junk selectors" rule (matches-more-than-one and under-30%-durability
+get hidden), the user asked: "well selectors can all pass if they are not unique" — a good catch.
+The new rule had only been wired into the path where you continue *without* redrawing. The other
+path — where you actually draw a *new* region and the AI proposes fresh selectors — never got the
+same filter, so a selector matching several elements, or one far too fragile to rely on, could
+still slip through and be offered there.
+
+**What changed:** the exact same rule — no non-unique matches, nothing under 30% durability — now
+applies whether you're just reviewing or you drew a brand-new region. Re-picking the element no
+longer gets a weaker bar than reviewing it. Added a dedicated test proving a freshly-redrawn pick
+still gets a non-unique candidate and a too-fragile-but-technically-unique candidate both hidden,
+keeping only the strong option; adjusted two older tests that had been asserting the old, looser
+behavior. Full suite: 20/20 passing.
+
+---
+
+## Hid the junk options from "Review selectors" — 2026-07-09
+
+The user asked why two clearly-bad options were still listed on "Review selectors": one that
+matched more than one thing on the page ("Not unique"), and an extremely fragile one (an exact
+address-in-the-page path rated 1% durable). Their point: don't offer these, and don't let them
+reach the running skill.
+
+**First, the reassurance:** at run time those weak options were never dangerous — the runtime
+has a hard rule that it won't act on a selector unless it clearly, uniquely identifies one
+element, so a "not unique" option can't make it click the wrong thing, and the fragile path
+simply misses harmlessly if the page changed. They were gated last-resort backups, not risks.
+
+**What changed:** the review list now hides those two kinds of options — anything that matched
+more than one element, and anything below a **30% durability** cutoff (per the user's follow-up:
+anything under 30% doesn't move forward). If nothing clears the bar, the list is left empty and
+the wizard asks the user to re-pick, rather than offering a too-weak selector. And since applying
+the wizard rewrites the skill's backup selectors from whatever's shown, applying after a review
+now also removes those junk backups from the skill, so they no longer reach the runtime — exactly
+what the user wanted. On the user's real skill the screen went from 5 options (2 of them junk)
+to the 3 strong, unique ones (Test ID, Role, Visible text).
+
+**Follow-up (same day):** raised the cutoff from an initial 10% to a hard **30%** and removed the
+"always keep the strongest" safety net, so a sub-30% selector never moves forward even if it's
+the only one left.
+
+---
+
+## Stopped "Review selectors" from calling verified options "Unverified" — 2026-07-09
+
+The user noticed that several options on the "Review selectors" step were labelled "Unverified"
+and asked, reasonably, whether they had to record again to get them verified. They don't — and
+the label was misleading.
+
+**What was going on:** when a workflow is compiled, the app already checks each way of finding
+the element against the recorded page — including the browser's accessibility information — and
+records whether each one uniquely finds the element. But the wizard was ignoring that and
+re-checking with a much simpler tool that only understands plain website structure, not the
+smarter "find by role/label/visible-text" options. So those perfectly-good options came back as
+"Unverified" even though they'd already been confirmed at record time.
+
+**What changed:** the review step now reuses the verification the app already did at compile
+time. Options that were confirmed to uniquely find the element now show "Unique match" (with the
+correct type label — e.g. a "find by role" option no longer gets mislabelled as "find by name"),
+options that genuinely matched more than one thing stay flagged, and the rare option that truly
+can't be checked ahead of time now says the clearer "Checked at run time" instead of the scary
+"Unverified". No re-recording needed, and still no AI call on this path. Verified against a real
+saved skill: its role/label/text options now read as verified instead of unverified.
+
+**Bottom line for the user's question:** no, you never have to record again just to verify —
+the verification happens at compile time (and again for real in the browser when the skill runs).
+
+---
+
+## Made the "Review selectors" step actually show the selectors — 2026-07-09
+
+On the wizard's "Review selectors" step, every option looked the same — each row just said
+`button "New"` with some badges and a bar — because the thing that actually tells them apart, the
+selector text itself, was tucked away behind a "Show raw selectors" toggle that was closed by
+default. So the user was being asked to *review selectors* without being shown any selectors.
+
+**What changed:** each option now displays its real selector text right on the row (in a
+monospace font), always visible. The bar underneath now has a plain "X% durable" label next to
+it so it's clear what it means. The old toggle no longer duplicates the selector list — it now
+only holds the "type your own selector" box for advanced users. Nothing about how a selector is
+chosen or applied changed; this is purely making the already-computed information visible.
+
+---
+
+## Stopped the re-target wizard from re-running the AI when nothing changed — 2026-07-09
+
+The user pointed out that clicking "Continue" on the first step of the re-target wizard was
+asking the AI to work out the element's selectors all over again — even when they hadn't changed
+anything and were only reviewing. Those selectors were already worked out when the workflow was
+compiled, so redoing it was wasted time and wasted paid AI usage.
+
+**What changed:** the wizard now only asks the AI to regenerate selectors when you actually draw
+a **new** region for the element. If you just continue without redrawing — the common "let me
+look at what's there" case — it shows the selectors that were already produced at compile time,
+instantly, with no AI call and without spending any of your Human Edit allowance. As a bonus,
+that review path no longer needs the original recording to still be on disk, so it works for
+older skills too. Redrawing the box still triggers a fresh AI regeneration exactly as before.
+
+**Also fixed a hidden test gap:** the existing tests for this feature were checking against the
+*wrong* internal shape (the same wrong spot behind the earlier "Continue did nothing" bug), which
+is why that bug slipped through green. The test fixtures now match what the compiler actually
+produces, and new tests confirm the review path never calls the AI (and still works with no
+recording session). Full re-target test suite green (15 tests); renderer typecheck and lint pass.
+
+---
+
+## Split the re-target wizard into three real pages — 2026-07-09
+
+The re-target flow used to be one page that swapped its contents between the three steps ("Pick
+element" → "Review selectors" → "Confirm & apply") without the web address ever changing. The
+user wanted each step to be its own page, so clicking "Continue" actually moves to a new page.
+
+**What changed:** each step is now its own page with its own address:
+- Pick element — `.../retarget/<step>`
+- Review selectors — `.../retarget/<step>/selectors`
+- Confirm & apply — `.../retarget/<step>/confirm`
+
+Clicking "Continue" now navigates to the next page (and the browser Back/Forward buttons walk
+between the steps). Because moving between pages normally wipes what you were doing, the choices
+you make along the way (the region you drew, the selector list, the selector you picked, the
+keep-the-existing-check option) are now remembered in a small shared place so they carry across
+the pages. If you jump straight to the "selectors" or "confirm" page without having done the
+earlier step first — for example by reloading or opening a saved link — it sends you back to the
+first step so you always start from a valid point. Nothing about *what* the wizard does changed;
+only that it's now three pages instead of one. Applying still saves everything in one go and
+returns you to the editor.
+
+**Under the hood:** new `RetargetPickPage`/`RetargetSelectorsPage`/`RetargetConfirmPage` pages
+and a shared `retargetStore` replace the old single `RetargetWizard` component; the three phase
+UIs (`RetargetPhasePick`/`Selectors`/`Validation`) are reused unchanged. Renderer typecheck and
+lint pass.
+
+---
+
+## Fixed the real reason "Continue" on re-target step 1 went nowhere — 2026-07-09
+
+The user reported that clicking "Continue" on the re-target wizard's first step still didn't
+take them to the "Review selectors" step. The two earlier fixes today changed the *screen*
+behaviour, but the button was actually failing before it could move on — for a reason none of
+the earlier fixes touched.
+
+**What was wrong:** to build the list of selectors to review, the wizard has to find the
+original recording moment the step came from. It was looking for that reference in the wrong
+place inside the saved step, so it always came up empty and decided "the original recording is
+gone" — quietly refusing to continue, every single time, for every step. (The 1-click-fix
+feature was looking in the same wrong place and silently doing nothing too.)
+
+**What changed:** `conxa-builder/python/conxa_compile/editor/retarget.py` and
+`conxa-builder/python/conxa_compile/compiler/patch.py` now read that recording reference from
+where it's actually stored on the step. Verified against a real saved skill on disk: all of its
+steps now correctly match back to their recording, so "Continue" advances to "Review selectors"
+as expected.
+
+---
+
+## Stopped the re-target wizard from skipping past "Review selectors" — 2026-07-09
+
+The user asked why clicking "Continue" on the re-target wizard's first step wasn't taking them
+to the "Review selectors" step.
+
+**What was wrong:** the wizard had a shortcut — if the element it found already had a strong,
+unique selector and nothing about how the step is checked needed to change, it would jump
+straight from step 1 to step 3 ("Confirm & apply"), skipping step 2 entirely. This was meant
+as a convenience for the clearly-nothing-to-review case, but after yesterday's change made step
+1 default to the step's existing (already-good) target, this shortcut fired on almost every
+"just continue" click — so the review step most people expect to see was silently disappearing
+nearly every time.
+
+**What changed:** `conxa-builder/electron/renderer/src/components/retarget/RetargetWizard.tsx`
+now always goes to "Review selectors" after step 1, no exceptions. Step 3 still shows a
+condensed "looks good, nothing to change" view when nothing about the validation check needs
+updating — that part was unrelated and stays.
+
+---
+
+## Let re-target step 1 be reviewed and continued without forcing a redraw — 2026-07-09
+
+Yesterday's fix made step 1 of the re-target wizard require drawing a new box before
+"Continue" would enable, and labelled the existing box "Current target" on the screenshot.
+The user pointed out this was wrong for the common case: often the step's current target is
+already correct and you're just reviewing it — there's no reason to force a redraw, and the
+label text sitting on top of the screenshot wasn't wanted.
+
+**What changed:** `conxa-builder/electron/renderer/src/components/retarget/RetargetPhasePick.tsx`
+now starts step 1 with the step's existing target already selected, so "Continue" is enabled
+right away — drawing a new box is optional, only needed if you actually want to change the
+target. The "Current target" / "New selection" text labels on the screenshot are gone;
+`conxa-builder/electron/renderer/src/components/ScreenshotViewer.tsx`'s label/colour-variant
+overlay code was removed along with them since nothing else used it.
+
+---
+
+## Made every step-save error in Human Edit show plain language, not raw technical text — 2026-07-09
+
+The app has a dictionary of plain-English explanations for backend error codes (e.g. "Choose
+one of the generated selectors before applying" instead of a raw code like
+`primary_selector_required`), used almost everywhere errors are shown. But the step editor
+panel's own "save this step" logic wasn't using it — six separate save paths (navigate, wait,
+screenshot, check/assert, scroll, and the general selector/target save) built their error
+message straight from the raw backend exception text instead, so any failure while saving a
+step — even a small, common one — showed a technical message instead of a helpful one.
+
+**What changed:** `conxa-builder/electron/renderer/src/components/StepEditorPanel.tsx` now
+routes every one of those six save-error messages through the same plain-language dictionary
+as the rest of the app. Also added a missing entry to that dictionary
+(`conxa-builder/electron/renderer/src/lib/errorMessages.ts`) for a re-target wizard edge case
+("that selection isn't a valid region") that had no friendly text yet.
+
+---
+
+## Made the re-target wizard's "Continue" button always visible on step 1 — 2026-07-09
+
+The previous fix made the "Continue" button appear only after successfully drawing a box, but
+that turned out to be fragile — several things could make the drawing silently not register
+(too small a drag, or a step type the drawing tool quietly refused to work on), and each one
+looked identical from the outside: no button, ever, with no explanation why.
+
+**What changed:** the "Continue" button on step 1 of the re-target wizard is now always on
+screen — grayed out with a hint ("Draw a box on the screenshot above") until you've drawn one,
+then it lights up. Drawing a box that's too small now tells you so with a small message instead
+of silently doing nothing. And steps that scroll the page (which have no single element to
+re-target) now show a clear explanation and a fallback button, instead of a screenshot that
+looks drawable but isn't. The box you draw is also now labelled "New selection" in a different
+colour than the step's original recorded target ("Current target"), so the two are never
+mistaken for each other.
+
+---
+
+## Fixed the real reason "Review" was still slow to load — 2026-07-09
+
+The user reported (again) that clicking "Review" to open a workflow in Human Edit took too long. A previous fix this same day removed one cause of slowness, but a bigger one was still there.
+
+**What was wrong:** every time a workflow opened for review — and after every single edit you made inside it — the app read every screenshot image for every step off disk and converted each one into a giant block of text (base64) to embed directly in the response, before it would show you anything. A workflow with, say, 15 steps and a handful of screenshots per step meant well over a hundred image files being read and re-encoded synchronously, one after another, on every load and every save. This was a workaround for an Electron quirk (the app window can't normally load raw local files as images), but it meant every screen refresh paid the full cost of every image in the whole workflow, whether you were looking at it or not.
+
+**What changed:** the desktop app now has a dedicated, safe channel (`conxa-asset://`) for loading local screenshots directly, the same way a normal image would load from the internet — on demand, only when actually shown, and cached by the browser so it doesn't reload the same picture twice. `conxa-builder/electron/main.js` serves images through this channel; `conxa-builder/python/conxa_compile/editor/assets.py` now just points to an image instead of reading and re-encoding it. Opening or editing a workflow no longer waits on every screenshot in it — screenshots simply load in as they're needed, like images on any web page.
+
+---
+
+## Added a visible "Continue" step after drawing the box on the re-target page — 2026-07-09
+
+Drawing a box on the first step of the re-target wizard used to kick off the element search
+immediately on mouse-release, and the box itself disappeared the instant you let go — so there
+was nothing on screen confirming what you'd drawn, and no button to press next. Now the box you
+drew stays visible after you release the mouse, and a "Continue →" button appears so you can
+review it (or redraw) before the search runs.
+
+## Fixed a crash on the re-target page: "Tooltip must be used within TooltipProvider" — 2026-07-09
+
+The user hit an error screen with this exact message when using the app.
+
+**What was wrong:** several components (the screenshot viewer, the suggestions panel, the step list) show little hover tooltips, and that only works if something further up the screen sets up a "tooltip provider" first. Two screens did that setup themselves, but nothing did it app-wide — so any screen that showed a screenshot with tooltips *without* being one of those two specific screens would crash outright. The new "Re-target element" page (added yesterday) hit exactly this gap, since it shows the same screenshot component but is its own separate page.
+
+**What changed:** `conxa-builder/electron/renderer/src/components/layout/AppChrome.tsx` — the wrapper that every single screen in the app renders inside of — now sets up the tooltip provider once, for the whole app. This closes the gap for the Re-target page and makes the same crash impossible on any future screen, not just this one.
+
+---
+
+## Stopped the Human Edit screen from scanning every saved skill every time you open one — 2026-07-09
+
+The user reported that clicking "Review" to open a workflow in Human Edit was slow to load.
+
+**What was wrong:** the Human Edit screen loads two things whenever it opens: the one workflow you actually asked for, and — unconditionally, every single time, even when you already picked a workflow — a full list of every skill ever saved on disk (used only by the "resume a saved skill" dropdown shown when *no* workflow is selected yet). That second list requires reading and parsing every saved skill file one by one, so the more workflows you've built up over time, the slower every "Review" click got, even though that list is never shown or used once a specific workflow is already open.
+
+**What changed:** `conxa-builder/electron/renderer/src/pages/HumanEditPage.tsx` now only fetches that saved-skills list when you're on the empty "no workflow open yet" screen where it's actually shown. Opening a specific workflow via Review skips it entirely.
+
+---
+
+## Merged the Dashboard and Record pages into one — 2026-07-08
+
+The user pointed out that the Build Studio had two screens doing overlapping jobs: "Dashboard" listed all your plugins and let you create or delete one, while "Record" was a separate screen where you actually recorded a login or a workflow — and it had its own, second plugin list you had to pick from all over again. That meant picking the same plugin twice just to start recording, and two different "home" screens competing for the same job.
+
+**What changed:** Dashboard is gone. Everything it did — the "New Plugin" button, deleting a plugin, and the search/filter bar — now lives inside Record's left-hand plugin list, which was already the nicer of the two screens (it showed live status, wasn't just a static grid of cards). Record is now the single home screen: open the app and you land there, pick or create a plugin on the left, and record its login or a new workflow on the right, all in one place. Old links and bookmarks to the Dashboard page still work — they just take you straight to Record now. Nothing on the backend changed; every button reuses the exact same save/delete/record actions that already existed.
+
+---
+
+## Turned the re-target wizard from a small popup into its own full page — 2026-07-08
+
+Yesterday's 3-step "Re-target element" wizard opened as a small popup box floating over the still-visible, dimmed step editor behind it. The user pointed out this was wrong: drawing an accurate box around an element needs real room, reviewing several candidate selectors with scores needs room, and seeing the old screen dimly visible behind a "guided flow" popup is confusing rather than focused.
+
+**What changed:** clicking "Re-target element" now takes you to its own dedicated page (its own web address inside the app, `/edit/<skill>/retarget/<step>`) instead of opening a popup. It has a normal page header with a "Back to editor" button, and going back returns you to exactly where you were in the step editor with everything up to date. Nothing about the 3 steps themselves changed — Pick element → Review selectors → Confirm & apply still work the same way — only the container around them changed from a small floating box to a full page.
+
+---
+
+## Filled the empty strip at the top of every Build Studio screen with a breadcrumb — 2026-07-08
+
+The user shared a screenshot with an arrow pointing at a big blank gap sitting between the window's title bar and the start of each page's content, asking for it to be filled in so the app reads as more "enterprise level" everywhere, not just on one screen.
+
+**What changed:** `conxa-builder/electron/renderer/src/components/layout/AppChrome.tsx` — the top bar that wraps every page (Dashboard, Record, Compile, Human Edit, Test Skill, Publish, Build Installer, Settings, and any plugin/skill sub-page) now shows a breadcrumb on the left: a small icon chip plus "Operate / Human Edit" style text that tells you where you are, instead of empty space. It's driven off the current URL automatically, so no individual page had to be touched — every screen gets it for free since they all render inside this shared chrome.
+
+**Not yet verified visually** — this app requires the Electron shell (native `window.conxa` bridge) to run, which isn't available in this sandboxed environment, so this was checked with TypeScript and ESLint only, not a live screenshot.
+
+---
+
+## Wrote the target-customer list: 50 named companies and a plan for landing the first ten — 2026-07-07
+
+No code changed — this is the third planning artifact from today's strategy discussions, turning the "who would actually buy this" question into a concrete, named list.
+
+**What was created:** a new document, `research-analysis/07-go-to-market/TARGET_CUSTOMERS.md`, with 50 real companies across four rings: global giants (Deloitte, Constellation Software, Pfizer and the like — all explicitly marked "don't approach yet"), big Indian enterprises (banks, pharma, the large IT firms, plus Zoho and Freshworks as marketplace partners), Pune enterprises (Persistent, Bajaj Finserv, KPIT and others — the warm-intro home turf), and Pune startups/small SaaS companies — the section that matters most, because small SaaS vendors are the customers the whole business thesis is built on.
+
+**The headline recommendations it lands on:** the first ten customers are almost all Pune companies, led by small SaaS vendors like Sell.Do (real-estate CRM) whose non-technical customers are exactly who "ask Claude to do it" serves; the best first *enterprise* customer is Persistent Systems (local, tech-savvy, no compliance gate, and a door into hundreds of their clients); and the outreach order is strict — local small vendors first, partner firms second, regulated Indian enterprises only after the security certifications land, global giants last and preferably through consulting-firm channels. The document is deliberately blunt that every company entry is a hypothesis to verify before anyone sends an email, not researched intelligence.
+
+---
+
+## Round two of the enterprise-strategy discussion: found the places where clicking beats APIs even for giants — 2026-07-07
+
+No code changed — this is the second planning pass of the day, recorded in the backlog like the first.
+
+**The new insight.** The earlier entry answered "how do giants pay us *eventually*." This pass asked a sharper question: is there anywhere a giant with unlimited engineers would *still* choose browser automation over their own APIs? Turns out yes, in exactly two situations: when building an integration would never pay for itself (because the system being automated is temporary), and when the *screen itself* is the thing being checked (so an API answer is worthless by definition).
+
+**What was added to the backlog (`TODO.md`):**
+- **PROD-14 — Audit evidence packs.** Companies pay teams of analysts every audit season to log into dozens of systems and screenshot proof for auditors — and auditors *require* screenshots of what a human sees; a data export doesn't count. Conxa already produces exactly that: same steps every time, no AI improvising, a screenshot before and after every step. This turns existing machinery into a product big enterprises would buy without it competing with a single API.
+- **PROD-15 — "Bridge automation" for mergers and dying systems.** When a company acquires another or retires an old system, nobody builds integrations for software that will be gone in a year — so people do the work by hand for the whole transition. Recording a workflow in an afternoon and running it until switch-off is a use case where "just build the API" never makes sense, even for a giant. Includes a future "shadow-run" feature: run the same task on the old and new system side by side and compare results before cutover.
+- **PROD-16 — A decision the founders must make on purpose.** Several enterprise ideas need one rule change: today a company can only automate websites whose *domain* it owns; enterprises don't own salesforce.com, but they do own *their account* (tenant) inside it. Extending verification to "prove you're the admin of your own tenant" would unlock evidence packs across SaaS tools, retesting customized SaaS after vendor updates, and IT chores like offboarding. The original strategy review explicitly warned this kind of loosening must be a deliberate decision, never a drift — so it's now written down as exactly that: a decision, with either answer acceptable.
+- The existing partner-strategy item (PROD-13) got the two remaining ideas folded in: pitching internal-tool automation as "make your legacy systems AI-agent-ready" (a budget every CIO has right now), and recordings doubling as living, executable process documentation.
+
+**What still didn't change:** the near-term plan and the "only automate what you own" rule — PROD-16 is the *question* of whether to extend that rule, not an extension of it.
+
+---
+
+## Wrote down the "how do the giants ever pay us" strategy as real backlog items — 2026-07-07
+
+No code changed in this update — this is planning, recorded so it doesn't evaporate after a conversation.
+
+**The question it answers.** During a founder discussion, the question came up: our own analysis says big companies like Salesforce will always prefer their own APIs over Conxa — so how do we ever get a giant to pay us, partner with us, or buy us? The answer that got recorded: you don't win a giant by trying to automate *their* product (they'll always build that themselves). You win them one of four other ways — become the tool that makes their *marketplace of small partner apps* work with AI agents; automate their own *internal* tools that have no APIs; own a *dataset* about UI durability that nobody can copy without a fleet of runners; or own the *format* that governed AI workflows are written in, so it stays valuable no matter which execution technology wins. All four are reached by winning small vendors first — there's no shortcut.
+
+**What was added to the backlog (`TODO.md`):**
+- **ARCH-3 (do soon):** draw a clear line inside the skill file format between "what the workflow *means*" (steps, checks, safety rules) and "how the browser *replays* it." Cheap to do now while the format is still changing; very expensive to untangle later. This is the foundation of the "own the format" play.
+- **EXEC-9 (do soon):** upgrade the usage-reporting events so every run records *which* backup identification method actually found each button. That's the raw material for the "uncopyable dataset" — and every run that happens before this exists is training data lost forever, which is why it's marked urgent even though the learning system that will use it comes later.
+- **PROD-13 (later, needs a founder decision):** the partner-program play itself — when to approach a platform giant and which one first. Explicitly waits until we have paying small vendors and good cross-account numbers to show.
+- Two existing items got a sentence added: domain verification (PROD-6) should be designed so a platform or IT department can one day vouch for many domains at once, and the "works with any AI app, not just Claude" work (PROD-5) is flagged as a hard prerequisite for any partner conversation.
+
+**What deliberately did *not* change:** the near-term plan. Small and mid-sized vendors remain the target; nothing was added that automates other companies' products, because that would break our own "only automate what you own" rule and compete with native APIs exactly where they always win.
+
+---
+
+## Started building the redesigned Build Studio: new sidebar, auto-build on approve, and a package inspector — 2026-07-07
+
+**What this is.** The design proposal from earlier today (see the entries below) is now actually being built, not just written down. This is the first working slice of it.
+
+**What changed for someone using Build Studio:**
+- **The left sidebar now matches the six-step flow instead of the compiler's internal stages.** It used to say "Dashboard, Build Plugin, Packages, Test Plugin, Build Installer" — four of those names meant nothing to a non-engineer. It now says **Dashboard, Record, Compile, Human Edit, Test Skill, Publish Skill Package, Build Installer** — one button per real step in teaching Conxa a task.
+- **You pick your automation once, and every page remembers it.** Previously, Build, Test, and Build Installer each made you re-pick the same plugin from a separate list. Now there's one shared "current automation" picker at the top of every page.
+- **Approving a workflow now finishes the job automatically.** Before, after reviewing and approving a workflow in Human Edit, you had to separately go find the "Build Plugin" page and click Build. Now, the moment every workflow in an automation has been approved, the package builds itself — no extra page, no extra click. If something else still needs approving first, you're told exactly what's pending. If the automatic build fails for some reason, you're told that too — the earlier version of this button silently ignored failures.
+- **A new "Inspector" panel replaces the old "Packages" page.** The raw list of compiled files (execution.json, recovery.json, folder paths — engineer-only stuff) used to be its own permanent item in the sidebar. It's now tucked behind an "Inspector" button on each automation's overview page, open only when you actually want to look under the hood. It also has a "Rebuild package" button for the rare case you need to force a rebuild by hand.
+- **The installer version suggestion is now actually useful.** It used to always suggest "0.1.0" as the next version, even after you'd already shipped version 1.2.0. It now suggests the next real version after whatever you last shipped.
+- Two small bugs got fixed along the way: clicking "Compile" right after finishing a recording used to quietly run the compile twice and then fail; and approving a workflow used to silently swallow errors instead of telling you something went wrong.
+
+**What's still the same:** compiling still costs a credit and still runs on the older, single-at-a-time screen for now (making it a proper background job with live progress is the next phase); Publish Skill Package is a placeholder page for now — publishing still actually happens from Build Installer until that gets split out.
+
+**Where it lives.** `conxa-builder/electron/` (the app itself) and `conxa-builder/python/` (the backend). A full gap analysis and step-by-step plan for the rest of this work lives in `conxa-builder-workflow-redesign.md` and `docs/Implementation-Plan.md` §1.9.
+
+---
+
+## Made "Publish Skill Package" the real, primary way to ship updates — and installers now travel light — 2026-07-09
+
+Until today, shipping any update to customers meant clicking "Build Installer," which secretly did three things at once: published your skill pack to the cloud, built a whole new Windows installer with every skill's files baked inside it, and uploaded that installer back to the cloud — and if that last upload step failed for any reason (file too big, a network blip), the *entire* operation was reported as failed, even though your skill pack had already published successfully and a perfectly good installer was already sitting on disk.
+
+**What changed, in plain terms:**
+- There's now a real **Publish Skill Package** page. This is the button you click for almost every update — it uploads your changed skill pack to Conxa Cloud, keeps a running history of every version you've ever released (with your release notes and the date), and customers who already have Conxa installed get the update automatically the next time their app checks in. No installer rebuild needed.
+- **Build Installer** is now a separate, secondary page for the rarer case where you actually need a new installer (e.g. a brand-new customer). It requires you to have already published a skill pack release first, and it now packages a much smaller installer — one that carries only the company's connection settings, not a copy of every skill's files. Everything else gets fetched automatically after install.
+- Uploading the installer file to the cloud is now optional. If that upload fails or is skipped, Build Installer still reports success — your local installer file and your published skill pack are both fine either way. Uploading the *skill pack* itself, on the other hand, is mandatory: if that fails, publishing fails, since that's the whole point of the action.
+- Behind the scenes, every network address the installer/runtime uses now carries a small version tag (like "v2") so Conxa can eventually retire an old address scheme for brand-new installers without breaking anyone already running an older one. Nothing currently installed changes behavior from this — it's forward-looking plumbing.
+- Fixed a real bug found while building this: a customer's Conxa installer previously wouldn't reliably pick up a brand-new skill added to their company well after installation — the local record of "which skills do I have" only ever updated when something changed, so a no-op check-in silently never refreshed it. Every check-in now refreshes that list unconditionally.
+- Also fixed a subtler bug introduced (and caught) during this same work: the very first version of the "how many skill packs has this workspace published" counter would have let a workspace exceed its plan's limit, because the accounting briefly claimed a brand-new product slug *before* checking whether there was room for it. Caught by a test before it ever shipped.
+
+**Where:** the cloud backend gained several new versioned API routes alongside the old ones (which keep working forever, unchanged, so nothing currently installed anywhere breaks); Build Studio's publish/installer-build logic was split into two independent actions; the installer's internal NSIS packaging script now leaves out skill files entirely; and the runtime's background sync logic got the "always refresh what skills I have" fix described above.
+
+---
+
 ## Redrew the left-hand navigation in the Build Studio design proposal — 2026-07-07
 
 **What changed.** The sidebar sketch in the design proposal (below) was too bare — just two real
@@ -117,385 +540,3 @@ consistently describes this five-step flow instead of the old three-step one.
 written plan — nothing in the app has changed yet.
 
 ---
-
-## New design proposal: a simpler, 3-step Build Studio workflow — 2026-07-06
-
-**What this is.** A written design proposal (not a code change yet) that rethinks how people use
-the Build Studio from scratch. Today, making one automation walks you through seven named steps —
-Record, Compile, Human Edit, Build Plugin, View Package, Test Skill, Build Installer — and four of
-those are really just the app showing you its own internal machinery.
-
-**The idea.** Shrink those seven steps down to three things a person actually decides:
-
-1. **Record** — show the task once in a real browser.
-2. **Review** — check that Conxa understood it, click "Try it" to watch it run, and approve.
-3. **Publish** — ship it to your customers.
-
-Everything in between (compiling, packaging, building the plugin folder) happens quietly in the
-background, the same way you don't watch Vercel compile your website — you just push and get a
-link. All the technical detail is still there for engineers who want it, tucked into an "Inspect"
-panel that's off by default. The proposal also reorganizes the app around the *automation* you're
-building, so you stop having to re-pick the same plugin on four different pages.
-
-**Where it lives.** The full write-up is in a new file at the repo root:
-`conxa-builder-workflow-redesign.md`. It includes the reasoning, wireframe sketches, a step-by-step
-migration plan, and the risks — enough detail to actually build from later. Nothing in the app has
-changed yet; this is the blueprint.
-
----
-
-## Fixed (the real cause this time): "Build failed" right after a successful publish, in Dev mode — 2026-07-04
-
-**What you saw.** Publishing to the local Dev cloud worked (tokens embedded in pack.json,
-exactly as expected), then building the installer failed immediately with "Something went
-wrong inside the app" and no further detail in the visible log.
-
-**What was really happening.** This took two earlier fixes (below) plus one more real bug to
-fully explain. The actual cause: your local Dev cloud has a settings file, `.env.dev`, that
-correctly lists which versions of the runtime and app files it should hand out
-(`host-v1.2.3`, `app-v1.3.4`) — but nothing in the app was ever wired up to actually *read*
-that file into the running program. So the Dev cloud silently fell back to a placeholder
-example value baked into the code (`host-v1.0.0`), which was never a real release, and told
-Build Studio to download a file that doesn't exist. That download failed instantly with a
-"file not found" error from GitHub, which is what crashed the installer build.
-
-**How this was found.** Rather than guessing, I ran the exact same build request Build Studio
-sends, directly, outside the app, so I could see the real underlying error (Build Studio's UI
-only ever shows a generic "something went wrong" and throws away the details). That surfaced
-the true error: `conxa-runtime: HTTP Error 404: Not Found`. Tracing that back showed the local
-Dev cloud was quoting `host-v1.0.0` — a version that was never actually published — instead of
-the `host-v1.2.3` your own `.env.dev` file already correctly specifies.
-
-**The fix.** Taught the shared settings code (used by both the Dev cloud and Build Studio) to
-actually load `.env.dev` / `.env.prod` into the program's real environment on startup, not
-just into its own internal settings object — so every part of the app that checks these
-values (not just the ones that go through the formal settings system) sees the same, correct
-answer. Verified directly: after this fix, the Dev cloud correctly advertises `host-v1.2.3`
-and `app-v1.3.4`, and downloading from those addresses succeeds (confirmed a real, in-progress
-download with no errors), where before it failed instantly.
-
-**One more small, related fix found along the way.** While reproducing this, a dependency
-check (Chromium) run during installer build could hang forever in rare cases, because it
-was started in a way that could accidentally wait for input from a channel that never
-sends any (a Windows-specific plumbing detail). Closed that off so the check can only ever
-succeed or fail — never hang.
-
-**What you need to do.** Restart your local Dev cloud server (the one you start with
-`conxa.ps1 dev backend`, or however you normally run it) so it picks up this fix — it only
-takes effect on a fresh start. After that, Build Studio's first "Build Installer" click will
-do a one-time real download of the runtime files (a couple of minutes, depending on your
-connection) and then succeed — every build after that will be instant since the files stay
-cached.
-
----
-
-## Fixed: building an installer crashed right after publishing, in Dev mode — 2026-07-04
-
-**What you saw.** Publishing a skill pack to the local Dev cloud worked fine (the log showed
-the pack.json tokens getting embedded), but the very next step — building the actual
-installer — failed instantly with a generic "Something went wrong inside the app" message and
-no further progress in the log.
-
-**What was really happening.** Right before packaging the installer, the Studio checks that its
-NSIS/runtime dependencies are up to date by asking a cloud server for the latest versions. Every
-other step in this flow (publishing, the sync address, the tracking address) correctly asks the
-**local Dev cloud** you're running on your own machine when no cloud address is explicitly
-configured. This one dependency check, though, had its own separate, hardcoded fallback that
-always pointed at the **live production cloud** instead — a leftover from before the Dev/Prod
-separation work. So a Dev build would quietly try to reach the real production servers for this
-one check, which isn't guaranteed to be reachable or consistent with what a local Dev session is
-doing, and the resulting failure wasn't given a friendly message.
-
-**The fix.** Made that dependency check resolve the cloud address the same env-aware way as
-everywhere else: Dev sessions ask the local Dev cloud, Production sessions ask the real one.
-Building an installer in Dev now stays entirely within Dev, matching the golden rule described in
-`SHIP-GUIDE.md` — Dev and Prod should never cross paths.
-
----
-
-## Fixed: installer builder wrongly rejected a perfectly good NSIS install — 2026-07-04
-
-**What was really happening.** Build Studio uses a free tool called NSIS to actually package the
-customer installer `.exe`. Three places in the code checked for NSIS by requiring *two* specific
-files to sit side by side — a rule left over from a much older version of NSIS where one of those
-files was a tiny "stub" that couldn't work alone. The version actually being downloaded today
-(NSIS 3.10) doesn't work that way at all — its main file is fully complete and self-sufficient on
-its own. Confirmed this directly by compiling a real test installer with just that one file: it
-worked perfectly. The outdated check meant a perfectly good NSIS installation could be quietly
-rejected as "not found."
-
-**The fix.** Removed the unnecessary "second file must also be present" requirement in all three
-places, so a real, working NSIS install is recognized as such. This also fixes the very first
-time NSIS gets downloaded automatically (for anyone, dev or production) — previously, that
-automatic download step could reject its own freshly-downloaded copy for the same reason.
-
-*(Note: this specific check turned out not to be the actual cause of a later "Build failed" error
-in this investigation — that one turned out to be about locally-run Conxa Cloud not being told
-which runtime versions actually exist to download, an environment/config matter rather than a
-code bug, and was left for the developer to resolve on their own machine.)*
-
----
-
-## Changed: publishing to a local dev cloud now actually publishes — 2026-07-04
-
-**What prompted this.** The previous fix made "Build Installer" work in dev mode by no longer
-requiring a cloud sync token when publishing was skipped. But if you actually *do* have the cloud
-backend running on your own machine during development, skipping publish was pure friction — you
-have a working local cloud right there, so there's no reason not to use it.
-
-**The change.** Build Studio now always tries to publish, whether the cloud address it's pointed
-at is local or the real one. If a local cloud responds, publishing goes through for real — you get
-a genuine sync token, matching exactly what a real customer's install would experience, so local
-testing is more faithful to production. If a local cloud isn't running, it falls back to skipping
-publish (a friendly log message, not a crash) so the build can still proceed. The one thing that
-did **not** change: if the *real* Conxa Cloud fails to respond (whether it's genuinely down or
-you're not signed in), that's still treated as a real failure and stops the build, exactly as
-before — this "just skip it" leniency only ever applies to a local development address.
-
----
-
-## Fixed: "Build failed" when clicking Build Installer in dev mode — 2026-07-04
-
-**What you saw.** Clicking "Build Installer" failed immediately with a generic "Something went
-wrong inside the app" message, and the build log showed only one line: `Cloud publish skipped for
-local API base`.
-
-**What was really happening.** Building an installer normally publishes the skill pack to Conxa
-Cloud first, which hands back a special "sync token" — a credential baked into the installer so a
-customer's copy can quietly check for updates without ever asking them to log in. In dev mode,
-publishing to the cloud is intentionally skipped when Build Studio is pointed at a local
-development server instead of the real one (that's the "Cloud publish skipped..." line — it's
-informational, not an error). But the installer-building step right after it didn't know
-publishing had been skipped on purpose — it always demanded that sync token, and since one was
-never issued, it failed every single time in dev mode, with no way to build an installer locally
-at all.
-
-**The fix.** The installer builder now only demands the sync token when the pack is actually
-meant to talk to the real Conxa Cloud. If it's built against a local development server (which is
-only ever useful for testing on your own machine anyway, token or not), it skips that requirement
-and builds normally. Any installer meant for a real customer still goes through the full publish
-step and still requires a valid token exactly as before — nothing changes there.
-
----
-
-## Fixed: "requires runtime >=1.0.3, installed: 0.0.0-dev" when testing a plugin — 2026-07-04
-
-**What you saw.** With the "Skill not found" bug fixed, testing "Create a Service from github"
-got one step further and then failed with `Skill create-a-service-from-github requires runtime
->=1.0.3, installed: 0.0.0-dev. Please update the Conxa runtime.` — this is progress, not the same
-bug coming back.
-
-**What was really happening.** When running via `npm run dev`, Build Studio deliberately runs the
-runtime engine straight from its source code in the repo (instead of a separately downloaded,
-versioned copy) so that any edits to the runtime take effect immediately without a rebuild. That's
-the right behavior for someone actively working on the runtime itself — but that in-repo copy has
-never been given a real version number; it just carries a placeholder, `"0.0.0-dev"`. The runtime
-has a safety check that refuses to run a skill if its own version is too old for what the skill
-asks for — sensible for a real customer's installed copy, but the placeholder number always fails
-that check, no matter what.
-
-**The fix.** Taught the runtime to accept an optional "pretend your version is this" signal, and
-had Build Studio's local test-runner supply a very high version number through that signal —
-*only* when it's running the in-repo source copy for a local test. A real customer's installed
-copy determines its version a completely different way (from its own signed install record) that
-always takes priority over this signal and was never touched — so this change has no way to
-reach, let alone affect, a real installation. It only removes friction for testing an unpublished
-workflow locally.
-
----
-
-## Fixed (for real this time): "Skill not found" when testing a plugin — 2026-07-04
-
-**What you saw.** After the dev/prod folder fix below, testing "Create a Service from github"
-still failed with the exact same `Skill not found: create-a-service-from-github. Call
-list_skills.` error.
-
-**What was really happening.** This turned out to be a second, deeper bug, unrelated to the
-dev/prod folder mix-up. When Build Studio stages a skill for local testing, it copies the built
-files into a "sandbox" folder that pretends to be a real customer's machine. But the program that
-actually runs the skill (the runtime) expects every skill to sit inside a specially-named
-`current` folder — that folder is normally created automatically the first time a *real,
-published* skill talks to the Conxa Cloud and downloads itself properly. A skill you're testing
-locally, before it's ever been published, has no way to trigger that — so the `current` folder
-never got created, and the runtime looked for the skill, didn't find that folder, and reported it
-missing, even though all the actual skill files were sitting right there one level up.
-
-**The fix.** Taught Build Studio's local test-staging step to build that `current` folder itself,
-directly, without needing to talk to the cloud at all — matching exactly what a real publish
-would have produced, just done locally and instantly. Also fixed a related bug this uncovered:
-the code that checks "does this shortcut folder already point to the right place" wasn't able to
-recognize Windows' particular kind of folder-shortcut (a "junction"), so once a skill was tested
-once, retesting it after any change kept quietly serving the *old* version of the skill forever.
-Both are now fixed, and testing an unpublished workflow works fully offline, as it was always
-meant to. Nothing about publishing or a real customer's installed copy was touched.
-
----
-
-## Fixed: testing a plugin in dev mode said "Skill not found" — 2026-07-04
-
-**What you saw.** Running the Build Studio via `npm run dev` and testing a freshly built
-workflow failed with `Skill not found: create-a-service-from-github. Call list_skills.`, even
-though the skill had just been built successfully.
-
-**What was really happening.** Build Studio keeps two completely separate homes for its files
-so a developer's local test setup never mixes with a real company's production setup: a "dev"
-folder (`.conxa-build-studio-dev`) and a "production" folder (`.conxa-build-studio`). The app
-that starts the Python backend correctly says "we're in dev mode, use the dev folder" — but five
-separate spots in the Python code that decide where to put the test sandbox, downloaded
-dependencies, and installer-building files never learned about that signal. They kept defaulting
-to the production folder no matter what. So the newly built skill pack landed in the dev folder
-(correctly), while the test sandbox that tries to run it was quietly looking in the production
-folder instead — two different folders that never talk to each other, hence "skill not found."
-
-**The fix.** Taught all five of those spots to check for the dev/production signal first, the
-same way the one place that was already doing it correctly does. Now testing a workflow in dev
-mode stages everything — sandbox, downloaded dependencies, and the skill pack — under the same
-dev folder, matching what the rest of the app already expected. No changes needed on the
-production side; that path was never affected.
-
----
-
-## Added shipping instructions for the runtime "host" program — 2026-07-04
-
-The shipping guide (`SHIP-GUIDE.md`) explained how to ship the app layer (`conxa-app`, the part
-that changes often) but was thin on the "host" program (`conxa-runtime.exe`, the small program
-Claude Desktop actually starts up). Added a full walkthrough for it: what it is, when you'd
-actually need to release a new one (rarely — only for very specific low-level changes), and the
-same tag-test-promote steps used for everything else, plus two things that make it behave
-differently from the app layer in practice (new installs always get the latest host
-automatically; a bad host release is riskier since everything else depends on it starting up
-correctly).
-
----
-
-## Fixed: the "Add" dropdown in the Human Edit tab did nothing when clicked — 2026-07-04
-
-**What you saw.** In the Build Studio's Human Edit tab, the **Add** button at the top of the
-left-hand workflow list (the one that should drop down a menu of actions to insert) didn't
-respond when clicked. Other little "i" help popovers on the same screen worked fine, which made
-it look random.
-
-**What was really happening.** All these popups are anchored to the button you click. The shared
-`Button` component had been written in a newer React style that this app doesn't use yet — the
-result was that the button never handed the popup system a reference to itself. The help popovers
-worked because they're built on a plain HTML button (which doesn't need that hand-off), but
-anything anchored to our shared `Button` — including the Add dropdown — had no anchor to attach
-to, so the menu couldn't open in the right place.
-
-**The fix.** Updated the shared `Button` so it properly forwards that reference, matching the
-React version the app actually runs. This fixes the Add dropdown and, as a bonus, every other
-tooltip/menu across the studio that was quietly anchored to a `Button` (e.g. the Undo/Redo
-tooltips). No visual or behavioral change anywhere else.
-
----
-
-## Created the local dev config file (.env.dev) — 2026-07-04
-
-To run the Conxa Cloud locally in "dev" mode, the app needs a settings file called `.env.dev`.
-I built it by starting from the dev template (`.env.dev.example`) and filling in the AI provider
-keys pulled from a separate API keys file you had in Downloads.
-
-The important bit: that Downloads file was actually the *production* settings — it pointed at the
-live website, the live payment system, and the real database. Copying all of that into dev would
-be dangerous (dev work could accidentally touch real customer data or take real payments). So I
-only carried over the pieces that are safe to share: the AI provider keys (Groq, Google, NVIDIA,
-plus four extra providers). Everything else was kept in safe "local only" mode — talking to your
-own machine, no login required, and payments left in test mode. None of the live/production
-secrets were copied in.
-
----
-
-## Fixed Record Login hanging forever after closing the browser — 2026-07-04
-
-This one was caused by an earlier fix in this log (the flicker fix, below). Here's the chain:
-
-To stop the login window from flickering, we made it stop repeatedly saving your login session
-every 2 seconds while you were typing, and instead only save it once, right at the moment you
-close the browser. That part worked. But it introduced a new problem: saving the session
-requires briefly talking to the browser, and if the browser has *just* closed, that
-conversation can have nobody on the other end to answer — and the save attempt would then wait
-forever for a reply that was never coming. Since the app was waiting on that save to finish
-before it could mark the recording as "browser closed," everything downstream got stuck: the
-Studio just sat there, forever thinking the browser window was still open.
-
-Fixed by two changes working together:
-1. Bringing back a periodic save while you're logging in, but much less often (every 6 seconds
-   instead of every 2) — frequent enough to almost always have a very recent save ready, rare
-   enough to not cause the original flicker.
-2. Before attempting to save at the moment of closing, the app now checks whether the browser
-   connection is already gone. If it is, it skips that attempt entirely instead of waiting
-   forever — it just relies on the last periodic save from a few seconds earlier.
-
-Net effect: no more flicker while typing, and no more indefinite hang after closing the browser.
-
----
-
-## Fixed "Failed to save auth session: Cannot switch to a different thread" — 2026-07-04
-
-After finishing a login recording and closing the browser, some logins were failing to save
-with a confusing technical error mentioning "greenlet" and "threads." Here's what was actually
-happening: when you close the login browser, the app tries to save your session in two places
-at once — once safely (in the background process that was actually running the browser) and
-once again, redundantly, from a different internal process that isn't allowed to touch that
-browser at all. The browser-automation library we use (Playwright) is strict about this: only
-the process that opened a browser window is allowed to interact with it. The second, redundant
-save attempt was breaking that rule, and depending on timing, it could either fail silently or
-surface this confusing error and block the save entirely.
-
-The fix removes that redundant, unsafe second attempt entirely. The app now properly waits for
-the background recording process to fully finish (which includes its own, correct save) before
-checking whether the login was saved — instead of racing against it. This also means the app no
-longer needs to reach into the live browser a second time to figure out the final login page
-URL; it uses the URL it already tracked safely throughout the recording.
-
-If you saw this error before applying this fix, the login itself likely still completed —
-it's the save step immediately after closing the browser that was failing. Try recording login
-again after this update.
-
----
-
-## Fixed "A recording is already active" getting permanently stuck — 2026-07-04
-
-If you clicked "Record Login" or "Start Recording" and got the error *"A recording is already
-active"* even though no browser window was actually open, this is why: the app remembers "a
-recording is in progress" using a single flag that only gets cleared when a recording finishes
-the normal way. If that normal finish never happened — the app reloaded mid-recording, the
-browser crashed, or you closed the whole Studio app while a recording was still open — that
-flag stayed stuck "on" forever, and every future attempt to record got blocked by a recording
-that no longer actually existed.
-
-Now, before blocking a new recording, the app double-checks whether that old recording's
-browser window is actually still open. If it's not, it clears the stale flag automatically and
-lets you start recording right away. If a recording genuinely is still open, you'll now see a
-clearer message: "You already have a recording in progress. Finish or close that browser window
-before starting a new one" — telling you what to actually do, instead of just stating a fact.
-
-(If you hit this error before applying this fix, restarting the Build Studio app also would
-have cleared it immediately, since this flag was only ever held in memory, never saved to
-disk.)
-
----
-
-## Fixed the flickering login recording window — 2026-07-04
-
-When you click "Record Login" in the Build Studio, a real Chrome window opens for you to log
-into the target app. Two things about that window were annoying:
-
-1. **It blinked while you were typing your login details.** This was happening because, only
-   during login recording, the app was quietly saving your login session to disk every 2
-   seconds in the background — and that save operation was visibly flickering the window while
-   you typed. It now only saves once you finish (either by reaching the end of login or by
-   closing the window), so there's no more repeated flicker while you're actively logging in.
-2. **Two extra browser windows flashed open and closed right after you closed the login
-   window.** This wasn't a hidden "verification" step — we checked and there's no such step in
-   the code. It's most likely Chrome's own behavior when it shuts down (things like its "did
-   Chrome crash last time?" popup or restore-session logic trying to kick in for a split
-   second). We added the standard Chrome startup flags that suppress that behavior. If this
-   still shows up after testing, it means the real cause is a lower-level Chrome/Windows quirk
-   we'll need to dig into further with more targeted logging.
-
-Regular workflow recording (recording the actual steps of a task, after you're logged in) was
-not affected by this change — it never had the 2-second autosave running in the first place.
-
----
-
