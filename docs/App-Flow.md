@@ -34,7 +34,7 @@ flowchart TD
     A[Company signs up at app.conxa.in] --> B[Clerk sign-up flow]
     B --> C{First-time login?}
     C -->|Yes| D[Download Build Studio installer]
-    C -->|No| E[Dashboard]
+    C -->|No| E[Record]
     D --> F[Run conxa-build-studio-setup.exe]
     F --> G[Build Studio launches]
     G --> H[First-run bootstrap starts]
@@ -53,7 +53,7 @@ flowchart TD
     O --> P[Browser opens to Clerk]
     P --> Q[User authenticates]
     Q --> R[Token stored in OS keyring]
-    R --> S[Build Studio shows Dashboard]
+    R --> S[Build Studio shows Record]
 ```
 
 **Notes:**
@@ -61,7 +61,8 @@ flowchart TD
 - All downloads are SHA-256 verified against values from the cloud manifest.
 - If on a corporate network, the bootstrap surfaces the exact URLs for IT whitelisting.
 - The update check (step U) is fail-open: if GitHub Releases is unreachable, the app proceeds normally. Updates are mandatory — the app cannot advance past the Update Required screen without installing.
-- On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or dashboard.
+- On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or Record.
+- The standalone Dashboard page was merged into Record (2026-07): Record's left rail now owns plugin create/delete/search, so `/dashboard` and `/` redirect straight to `/record` (see `docs/UI-UX-Brief.md` §2.3, §2.5).
 
 ---
 
@@ -87,7 +88,7 @@ sequenceDiagram
     Clerk-->>Backend: {sub, email, name, org_id}
     Backend->>Backend: store in OS keyring
     Backend-->>Renderer: {type: "result", result: {user_id, org_id, name, email}}
-    Renderer->>Renderer: set auth state → show Dashboard
+    Renderer->>Renderer: set auth state → show Record
 ```
 
 **Refresh:** `auth_service.get_token()` checks expiry on every outbound API call. If within 60s of expiry, uses `refresh_token` to get a new `access_token` transparently.
@@ -98,7 +99,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    A[User on Dashboard] --> B[Click 'New Plugin']
+    A[User on Record] --> B[Click 'New Plugin']
     B --> C[Enter plugin name + target URL]
     C --> D[Backend: cmd_create_plugin]
     D --> E[Create Plugin record in plugin_store]
@@ -216,22 +217,29 @@ flowchart TD
     E --> P[Replace literal with variable] --> Q[cmd_replace_literals]
     E --> R[Apply recording screenshot to step] --> S[cmd_apply_recording_visual]
     E --> T[Re-target element wizard] --> T1[Phase 1: draw region] --> T2[cmd_retarget_preview: candidates + validation diff] --> T3[Phase 3: Apply] --> T4[cmd_retarget_apply → bbox + target + identity_bundle + validation, one undo entry]
-    E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true]
+    E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true, edited_at=now]
+    W --> X{Every workflow in the plugin now compiled + signed off?}
+    X -->|No| Y[Return waiting_on: names of remaining workflows]
+    X -->|Yes| Z[Auto-invoke plugin_builder.build_plugin — see §8] --> AA[Return built=true; editor navigates to Test Skill]
 ```
 
 **Patch gate:** Each edit increments the skill version. `revalidate_step()` checks that selector and intent remain coherent after the patch.
 
-**Re-target wizard (replaces the old direct "update visual bbox" flow):** `cmd_update_visual_bbox` still exists (bbox + vision-anchor regeneration only, no selector change) but the primary re-target entry point is the 3-phase wizard — Pick element → Review selectors → Confirm & apply. `cmd_retarget_preview` is read-only (generates and scores candidates + a validation diff without persisting); `cmd_retarget_apply` is the only command that writes, composing bbox + `target.primary_selector`/`fallback_selectors` + rebuilt `identity_bundle` + (optionally) regenerated `validation.wait_for`/`assertions` into a single document mutation and a single undo entry. See `docs/UI-UX-Brief.md` §2.7 for the UI.
+**Auto-build on sign-off (2026-07 workflow redesign, Phase 1):** sign-off no longer just flips a flag. `cmd_sign_off_workflow` re-checks, after persisting `signed_off`/`edited_at`, whether every workflow belonging to the plugin is compiled and signed off — the same condition `plugin_builder.build_plugin` already gates on (§8). If so, it calls `build_plugin` itself, so the package exists the moment the gate is satisfied instead of requiring a separate visit to a build page (there is no such page anymore — see §8). The gate itself is unchanged; this only moves *when* the already-existing build call happens to fire.
 
-Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, and sign-off. LLM-assisted actions such as selector regeneration (including the re-target wizard's Phase 2 candidate generation), visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
+**Re-target wizard (replaces the old direct "update visual bbox" flow):** `cmd_update_visual_bbox` still exists (bbox + vision-anchor regeneration only, no selector change) but the primary re-target entry point is the 3-phase wizard — Pick element → Review selectors → Confirm & apply. `cmd_retarget_preview` is read-only (generates and scores candidates + a validation diff without persisting); `cmd_retarget_apply` is the only command that writes, composing bbox + `target.primary_selector`/`fallback_selectors` + rebuilt `identity_bundle` + (optionally) regenerated `validation.wait_for`/`assertions` into a single document mutation and a single undo entry. See `docs/UI-UX-Brief.md` §2.8 for the UI.
+
+Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, sign-off, and reviewing a step's already-compiled selectors in the re-target wizard (continuing without re-picking the element). LLM-assisted actions such as selector regeneration (including the re-target wizard's Phase 2 candidate generation **when the element is re-picked**), visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
 
 ---
 
 ## 8. Build Plugin
 
+**Trigger (revised 2026-07):** there is no longer a "Build Plugin" page or button. `cmd_build_plugin` (and the `plugin_builder.build_plugin` call it wraps) fires automatically the moment sign-off's gate check passes (§7), or manually via the Inspector drawer's "Rebuild package" action (`docs/UI-UX-Brief.md` §2.13) — both call the exact same handler shown below.
+
 ```mermaid
 flowchart TD
-    A[User clicks Build Plugin] --> B[Backend: cmd_build_plugin]
+    A[Sign-off completes the gate, or user clicks Rebuild package in the Inspector] --> B[Backend: cmd_build_plugin]
     B --> C[Read all compiled skills for plugin]
     C --> D[plugin_builder.build_plugin]
     D --> E["Create output/{company}-plugin/ folder"]

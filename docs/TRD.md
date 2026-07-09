@@ -95,6 +95,8 @@ not in the execution hot path. The cloud is a coordination + telemetry layer.
 └──────────────────────────────────────────────┘
 ```
 
+Screenshots and step frames referenced by the workflow editor (`get_workflow`, and every editor mutation response) are **not** embedded in the JSON-RPC payload. `conxa_compile/editor/assets.py::asset_url()` returns a `conxa-asset://local/<relative-path>` URL (validated against `settings.data_dir`, no disk read); `electron/main.js` registers `conxa-asset` as a privileged scheme via `protocol.handle()` and streams the file from `<CONXA_STUDIO_HOME>/data` on demand when the renderer's `<img>` actually requests it. This keeps editor load/save round-trips independent of workflow size — previously every asset was read and base64-inlined synchronously on every response.
+
 ### 2.2 Python Backend Commands
 
 The backend dispatches on `type` field. All commands are in `backend.py`:
@@ -201,11 +203,17 @@ All under `/api/v1/` except health endpoints:
 | `POST /api/v1/usage/compile/reserve` | Reserve 1 fresh compile credit | Clerk JWT |
 | `POST /api/v1/usage/compile/commit` | Commit a reserved compile credit | Clerk JWT |
 | `POST /api/v1/usage/compile/release` | Release an uncommitted compile reservation | Clerk JWT |
-| `POST /api/v1/plugins/publish` | Skill pack publish | Clerk JWT |
-| `POST /api/v1/plugins/{slug}/installer/upload` | Upload .exe | Clerk JWT |
+| `POST /api/v1/plugins/publish` | Skill pack publish (legacy, permanent) — **mandatory**, fails the whole publish on cloud error | Clerk JWT |
+| `POST /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/upload` | Skill pack publish (versioned equivalent, §17 row) — same contract/mandatory semantics | Clerk JWT |
+| `GET /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions` | Skill-pack release history (version, release notes, `is_latest`) — the Skill Pack Publishing page's changelog | Clerk JWT |
+| `POST /api/v1/plugins/{slug}/installer/upload` | Upload .exe (legacy, permanent) — **optional**, failure never fails the build (only surfaced as a `cloud_upload_error` field) | Clerk JWT |
+| `POST /api/v1/plugins/{installer_version}/{company_slug}/installer/upload` | Upload .exe (versioned equivalent) — same optional semantics | Clerk JWT |
+| `GET /api/v1/plugins/generations` | `{current, supported, deprecated}` installer generations — Build Studio stamps `current` into new publishes/builds | Public |
+| `POST /api/v1/admin/plugins/generations` | Flip the default generation stamped into new builds (never affects already-installed runtimes) | Bearer: `CONXA_ADMIN_TOKEN` |
 | `GET /api/v1/installers/{slug}` | Installer download | Public if `SKILL_INSTALLER_SIGNING_KEY` unset (dev); otherwise requires `ts`+`sig` query params, HMAC-SHA256 signed, 10-min default window (SG-07) |
-| `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync — per-skill delta (see below) | Rate-limited; token optional |
-| `POST /api/tracking/{co}/events` | Telemetry ingest | Package tracking token |
+| `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync — per-skill delta (see below), legacy permanent route | Rate-limited; token optional |
+| `GET /api/v1/plugins/{installer_version}/{company}/skill-packs/delta` | Runtime skill sync, versioned equivalent — identical contract | Rate-limited; token optional |
+| `POST /api/tracking/{co}/events` | Telemetry ingest — permanent back-compat alias (also served at `/api/v1/tracking/...` and the versioned `/api/v1/plugins/{installer_version}/{co}/tracking/events`) | Package tracking token |
 | `GET /api/v1/tracking/companies` | Company list | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs` | Run summaries | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline | Clerk JWT |
@@ -453,17 +461,19 @@ The sync token is a `secrets.token_urlsafe(32)` string minted **at publish time*
 **Publish → installer flow:**
 
 ```
-Build Studio publishes skill pack
-  → POST /api/v1/plugins/publish
+Build Studio publishes skill pack (Publish Skill Package — mandatory, primary action)
+  → POST /api/v1/plugins/publish (legacy) or /api/v1/plugins/{installer_version}/{slug}/skill-packs/upload (versioned)
   → cloud mints sync_token (publish_routes._sync_token())
-  → sync_token written into cloud-side pack.json
+  → sync_token + installer_version written into cloud-side pack.json
   → publish response returns sync_token
   → Build Studio writes sync_token into local pack.json (backend.py)
-  → installer_builder stages pack.json verbatim into NSIS
-  → installer ships pack.json to $PROFILE\.conxa\skill-packs\{company}\
+  → installer_builder stages pack.json verbatim into NSIS — no skill file trees
+  → installer ships ONLY pack.json to $PROFILE\.conxa\skill-packs\{company}\
+  → runtime's first delta-sync (sync.js) downloads every skill and creates each
+    skill's `current` junction — exactly as it does for every later update
 ```
 
-`installer_builder.py` guards that `pack.json` has `sync_token` before staging — build fails fast if the pack was never published.
+`installer_builder.py` guards that `pack.json` has `sync_token` before staging — build fails fast if the pack was never published. Build Installer (§UI-UX-Brief.md §2.10) is now a secondary, advanced action layered on top of this — it enforces the same guard (`skill_pack_not_published`) before packaging.
 
 #### 5.4.2 Runtime sync
 
@@ -1057,14 +1067,16 @@ Build Studio's LLM calls go through `services/llm_proxy_client.py`:
 
 The cloud exposes four customer-visible meters:
 - `seats`
-- `installer_slots`
+- `skill_pack_slots` (renamed from `installer_slots` 2026-07-09 — a slot is consumed by
+  the first skill-pack publish *or* installer upload for a slug, not installer upload alone;
+  see §17 versioned-installer-architecture row and `docs/Backend-Schema.md` §5.3)
 - `compile_credits`
 - `human_edit_tokens`
 
 Plan defaults:
-- `free`: 1 seat, 1 installer slot, 50 compile credits/month, 1M Human Edit tokens/month.
-- `starter`: 3 seats, 3 installer slots, 300 compile credits/month, 10M Human Edit tokens/month.
-- `pro`: 10 seats, 10 installer slots, 1000 compile credits/month, 50M Human Edit tokens/month.
+- `free`: 1 seat, 1 skill pack slot, 50 compile credits/month, 1M Human Edit tokens/month.
+- `starter`: 3 seats, 3 skill pack slots, 300 compile credits/month, 10M Human Edit tokens/month.
+- `pro`: 10 seats, 10 skill pack slots, 1000 compile credits/month, 50M Human Edit tokens/month.
 - `enterprise`: explicit workspace overrides.
 - `development`: unlimited.
 
@@ -1290,6 +1302,6 @@ MCP registration is done by the NSIS installer itself: a generated PowerShell sc
 | ~~`research/frontend/` is a dead prototype~~ **N/A** | — | — | Directory does not exist in the repo |
 | ~~Aptfile has Playwright deps~~ **N/A** | — | — | `conxa-cloud/backend/Aptfile` does not exist in the current repo — removed at some point after this gap was first logged, not merely unused |
 | ~~`worker.py` scaffold~~ **N/A** | — | — | `app/worker.py` does not exist in the current repo — the job-queue scaffold described here was never committed (or was removed); see `TODO.md` for the actual durable-queue gap |
-| `tracking_routes.py` public ingest endpoint bypasses `/api/v1` | `app/api/tracking_routes.py`, `main.py` | Medium | The public telemetry-ingest route is mounted at `/api/tracking/{company}/events`, not `/api/v1/tracking/...`, violating the documented all-routes-under-`/api/v1` invariant. Found during the 2026-07 documentation audit; tracked as a bug in `TODO.md`, not accepted as permanent — needs a fix with compat handling for already-deployed runtimes. |
+| ~~`tracking_routes.py` public ingest endpoint bypasses `/api/v1`~~ **RESOLVED (reframed) 2026-07-09** | `app/api/tracking_routes.py`, `main.py` | — | The public telemetry-ingest route at `/api/tracking/{company}/events` is now a documented, **permanent** back-compat alias (installer-baked `pack.json.tracking.tracking_url` for already-deployed runtimes points at it and can never be migrated remotely — see the versioned-installer-architecture's `{installer_version}`-frozen-at-build-time rule). `/api/v1/tracking/...` and the new versioned `/api/v1/plugins/{installer_version}/{company}/tracking/events` both exist alongside it, all three calling the same `_ingest_events_impl()`. See `TODO.md` ARCH-1 and `CLAUDE.md` Key Invariants. |
 | No CDN/multi-region blob storage | `blob_read_write_token` config | Low | Config field still unwired, but durability gap is closed: installer versions and skill-pack files now persist to Postgres (`installer_versions__{slug}`, `skillpack_files__{slug}` KV namespaces), surviving Render disk wipes. Base64-in-Postgres doesn't scale indefinitely — revisit if installers approach `build_artifact_upload_max_bytes` (250 MB) regularly or DB storage cost/limits become an issue. |
 | `selector_cache_ttl_days` | Config | Low | Cache exists but no GC scheduler wired |

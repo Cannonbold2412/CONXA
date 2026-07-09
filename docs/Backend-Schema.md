@@ -509,6 +509,55 @@ Response (201):
 }
 ```
 
+Duplicate-version publish → **409** `skill_pack_version_exists` (a given `skill_pack_version` is an immutable release, same as installer uploads — bump the version and republish).
+
+### 5.1a Versioned Endpoint Scheme (`{installer_version}`)
+
+Skill Pack Publishing is the primary, version-controlled release surface; installers are a stable, Conxa-owned platform artifact. To let Conxa evolve the installer/runtime wire contract without ever requiring vendors to rebuild for routine skill-pack updates, every per-company endpoint has a versioned equivalent nested under a Conxa-owned `{installer_version}` path segment (`publish_routes.SUPPORTED_INSTALLER_GENERATIONS`, currently `("v1", "v2")`):
+
+```
+POST /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/upload      # same body/response as §5.1
+GET  /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions   # release history — see §5.1a below
+GET  /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/delta      # same as §5.9
+POST /api/v1/plugins/{installer_version}/{company_slug}/installer/upload       # same as §5.1b below
+GET  /api/v1/plugins/{installer_version}/{company_slug}/installer/versions     # same as §5.1b below
+POST /api/v1/plugins/{installer_version}/{company_slug}/tracking/events        # same as §5.6
+GET  /api/v1/plugins/generations                                              # {current, supported, deprecated}
+POST /api/v1/admin/plugins/generations                                        # admin flip (Bearer CONXA_ADMIN_TOKEN)
+```
+
+Every versioned route validates `{installer_version}` against the allow-list (400 `unsupported_installer_version` otherwise) and delegates to the exact same shared implementation function as its legacy, unversioned counterpart — behavior is identical across generations. **`{installer_version}` is frozen into an installer at build time** (stamped into `pack.json.installer_version` at publish time by Build Studio, read from `GET /api/v1/plugins/generations`'s `current` field) and is never reassigned remotely for an already-installed runtime. "Migrating customers to a new generation" means Conxa flips the *default* generation that **new** installer builds stamp (`POST /api/v1/admin/plugins/generations`) — it does not, and cannot, change the URLs already baked into a customer's machine. The legacy, unversioned routes (`/api/v1/plugins/publish`, `/api/v1/plugins/{slug}/installer/upload`, `/api/v1/skill-packs/{company}/delta`, `/api/tracking/{company}/events`) are kept mounted **permanently** as the implicit "v1" behavior for every already-deployed installer — never removed.
+
+**GET /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions** — release history for the Skill Pack Publishing page (version, release notes, publish timestamp, `is_latest`), the version/release-comment/publishing-limit surface that moved here from Build Installer:
+```json
+{
+  "slug": "acme",
+  "versions": [
+    {"slug": "acme", "version": "0.3.0", "release_notes": "Fixed export bug", "skills": ["submit_expense"],
+     "workspace_id": "org_clerk123", "owner_user_id": "user_123", "published_at": 1717000100.0,
+     "files_written": 6, "is_latest": true},
+    {"slug": "acme", "version": "0.2.0", "release_notes": "Initial release", "skills": ["submit_expense"],
+     "workspace_id": "org_clerk123", "owner_user_id": "user_123", "published_at": 1717000000.0,
+     "files_written": 5, "is_latest": false}
+  ]
+}
+```
+**KV namespace:** `skillpack_versions__{slug}` — one row per version (mirrors `installer_versions__{slug}`, §5.1b below). Duplicate-version publish → 409 `skill_pack_version_exists` (see §5.1).
+
+### 5.1b Installer Upload + History (installer becomes a secondary, advanced artifact)
+
+**POST /api/v1/plugins/{slug}/installer/upload?filename=...&version=...&release_notes=...** (raw octet-stream body) — uploads a built installer `.exe`. No product/skill-pack-slot entitlement check here (that gate lives on skill-pack publish only, §5.1/§5.3 — installer upload is optional and unmetered, matching the requirement that a failed/skipped installer upload never fails a Build Installer run). Duplicate-version upload → 409 `installer_version_exists`. Response:
+```json
+{
+  "slug": "acme", "version": "1.2.0", "sha256": "abc123...", "size": 20480000,
+  "download_url": "/api/v1/installers/acme", "version_download_url": "/api/v1/installers/acme/versions/1.2.0"
+}
+```
+
+**GET /api/v1/plugins/{slug}/installer/versions** — authenticated installer release history for the dashboard (version, release notes, sha256, size, `is_latest`, signed `download_url`).
+
+**KV namespace:** `installer_versions__{slug}` — one row per version, binary mirrored separately in Postgres (`installer_storage.load_installer_from_db`) since Render's disk is ephemeral.
+
 ### 5.2 Skill Pack Delta
 
 See §5.9 (Skill-Pack Delta Sync) — the sole current contract for this endpoint. An earlier revision of this document described a single shared pack-wide version here; that has been superseded by §5.9's per-skill version map and removed to avoid two contradictory contracts for the same endpoint.
@@ -526,7 +575,7 @@ Response:
   "reset_at": "2026-06-29T00:00:00Z",
   "meters": {
     "seats": {"used": 2, "limit": 3, "remaining": 1, "unlimited": false},
-    "installer_slots": {"used": 1, "limit": 3, "remaining": 2, "unlimited": false},
+    "skill_pack_slots": {"used": 1, "limit": 3, "remaining": 2, "unlimited": false},
     "compile_credits": {"used": 42, "limit": 300, "remaining": 258, "unlimited": false},
     "human_edit_tokens": {"used": 230000, "limit": 10000000, "remaining": 9770000, "unlimited": false}
   }
@@ -574,16 +623,26 @@ Stable entitlement error details (returned as HTTP `402` for quota-exhausted, `4
 config/availability):
 - `compile_credit_limit_exceeded` — 402, compile-credit reservation at limit (checked at `/usage/compile/reserve`)
 - `human_edit_pool_exceeded` — 402, monthly Human-Edit token pool exhausted (checked at the LLM proxy)
-- `installer_limit_exceeded` — 402, plan installer/product-slot limit reached (checked at **publish** and installer upload)
+- `installer_limit_exceeded` — 402, plan skill-pack-slot limit reached (checked at **skill-pack publish only** — installer upload is unmetered; error code kept unchanged for back-compat with Build Studio's existing error-message map)
 - `seat_limit_exceeded` — 402, workspace seat limit reached
 - `entitlements_unavailable` — 503, cloud could not evaluate entitlements (quota-gated actions blocked)
 - `invalid_usage_class` — 400
 
 **Enforcement is on by default** (`entitlements_enforce_compile|_human_edit|_installers = True` in
 `config.py`). Workspaces on the `development` plan, or any plan whose limit resolves to `None`
-(e.g. an `enterprise` override), are never blocked. Enforcement points: publish
-(`publish_routes.post_publish`), installer upload, the compile-credit reserve/commit protocol
-(driven by Build Studio around each compile), and the Human-Edit pool at `llm_proxy_routes`.
+(e.g. an `enterprise` override), are never blocked. Enforcement points: skill-pack publish
+(`publish_routes._publish_skill_pack_impl`, both the legacy and versioned routes — **not** installer
+upload, which is optional and unmetered), the compile-credit reserve/commit protocol (driven by
+Build Studio around each compile), and the Human-Edit pool at `llm_proxy_routes`.
+
+**`skill_pack_slots` accounting** (`services/entitlements.py`): a slot is consumed the first time a
+workspace publishes a skill pack *or* uploads an installer for a given slug, tracked in the
+`publish_owners` KV namespace (one row per slug, `{slug, workspace_id, claimed_at}` — same store
+`_assert_owner`/`_assert_not_owned_by_other` use for the 403 ownership-conflict check).
+`ensure_skill_pack_slot_available` checks the *conflict* (`_assert_not_owned_by_other`) and the
+*limit* before the slug is claimed (`_claim_owner`) — claiming first would make a brand-new slug
+look pre-owned by the time the limit check ran, making the limit unenforceable. The old
+`installer_slots` override key is still accepted as an alias in billing metadata.
 
 ### 5.4 Billing
 
@@ -654,7 +713,7 @@ Response when up-to-date:
 
 ### 5.6 Telemetry Ingest
 
-**POST /api/tracking/{company}/events**
+**POST /api/tracking/{company}/events** (also served at `/api/v1/tracking/{company}/events` — both are permanent back-compat aliases, see CLAUDE.md Key Invariants) and its versioned equivalent **POST /api/v1/plugins/{installer_version}/{company}/tracking/events** (§5.1a).
 **Header: X-Tracking-Token: {token}**
 
 Request: See §4.1 above.
@@ -744,9 +803,11 @@ Response (`packages/conxa-core/conxa_core/models/manifest.py:UnifiedManifest`):
 
 ### 5.9 Skill-Pack Delta Sync
 
-**GET /api/v1/skill-packs/{company}/delta?since={json-map}**
+**GET /api/v1/skill-packs/{company}/delta?since={json-map}** (legacy, permanent) and **GET /api/v1/plugins/{installer_version}/{company}/skill-packs/delta?since={json-map}** (versioned, §5.1a) — identical contract, both delegate to `_delta_impl()`/`_build_delta()`. `{installer_version}` is validated but not yet branched on — reserved for a future skill-pack wire-format generation, not dead code.
 
 `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (URL-encoded), letting each skill be compared and shipped independently instead of one shared pack-wide version — republishing one skill never triggers a redownload of the others (see `_skill_version()`/`_build_delta()` in `skillpack_update_routes.py`).
+
+The delta response's `skills` array is the **authoritative full skill list** for the company — `runtime/sync.js` writes it back into local `pack.json.skills` on every successful fetch (whether or not anything changed), which is what makes a thin installer (shipping with `pack.skills` empty) and a skill added to a company post-install both eventually reach `skill_loader.js`'s registry.
 
 Authentication: `Authorization: Bearer <sync_token>` where `sync_token` is the per-company token minted at publish time (`publish_routes._sync_token()`) and stored in the `sync_tokens` KV namespace. The token is embedded in `pack.json` at publish and ships inside the installer — the runtime reads it directly with zero user interaction.
 

@@ -154,7 +154,70 @@ was already deleted or never committed). No action needed. The authoritative UIs
 
 ---
 
-**Phase 1 status: COMPLETE.** All items are done, superseded, or moot. The remaining
+### 🚧 1.9 Build Studio Workflow Redesign — Phase 0/1 DONE 2026-07-07, Phases 2-6 open
+
+Full gap analysis and phased plan: `conxa-builder-workflow-redesign.md` (repo root). Overlaps
+and supersedes the UI-layer half of `TODO.md` BUILD-2. Reorganizes the Build Studio around a
+stage-shaped sidebar (Record → Compile → Human Edit → Test Skill → Publish Skill Package →
+Build Installer) instead of the compiler-pipeline-shaped one it replaced, with one shared
+plugin selection instead of four independent per-page rails.
+
+**Done (Phase 0 — prerequisites, and Phase 1 — IA consolidation):**
+- Single derived workflow lifecycle stage (`handlers/status.py::derive_workflow_stage`)
+  replacing three inconsistent status fields; `signed_off` and a compile-confidence summary
+  exposed through the workflow DTO.
+- Stage-shaped sidebar + persisted shared plugin selection (`store/selectionStore.ts`,
+  `PluginSwitcher.tsx`); new Record/Compile/Human-Edit-list/Publish stage pages; Test Skill
+  rescoped off its own rail.
+- Sign-off auto-builds the plugin package the moment every workflow is compiled + signed off
+  (`cmd_sign_off_workflow`), superseding the standalone Build Plugin page; "Finish editing"
+  now awaits the RPC and surfaces failure instead of swallowing it.
+- Package-file browser demoted from a top-level Packages page into an on-demand Inspector
+  drawer, which also hosts the manual "Rebuild package" escape hatch.
+- Installer release-version prefill suggests the next patch after the last real release
+  instead of a hardcoded `0.1.0`.
+
+**Open (Phases 2-6, see the redesign doc's §12 for the full breakdown):**
+- Phase 2 — explicit, asynchronous, concurrent Compile with a background job model (today's
+  `cmd_compile` is synchronous; a process-global LLM router (`conxa_core.llm.set_router`)
+  must be made concurrency-safe first — see the redesign doc's T0.2).
+- Phase 3 — Human Edit/Test Skill polish (confidence banner, "How Claude sees this skill"
+  panel, Tier-2 recovery caveat, Approve rename + ceremony).
+- ✅ **Phase 4 — DONE 2026-07-09** (delivered as part of the broader Skill-Pack-Centric
+  Publishing & Versioned Installer Architecture redesign, not standalone): Publish Skill
+  Package split fully out of Build Installer. `Backend._publish_skill_pack_for_installer`
+  renamed to `_publish_skill_pack` and moved behind a new mandatory `cmd_publish_skill_pack`
+  RPC; `PublishPage.tsx` is now the real implementation (version/release-notes entry, release
+  history, skill-pack-slot meter) instead of the Phase-1 stub; `BuildInstallerPage.tsx` is
+  slimmed to a secondary/advanced action gated on a release already existing, with installer
+  cloud-upload now optional/non-fatal. Distribution status beyond release history/sync+tracking
+  endpoints (e.g. per-customer rollout tracking) was not built — still open if wanted.
+  See `docs/Backend-Schema.md` §5.1/§5.1a/§5.1b and `docs/UI-UX-Brief.md` §2.10/§2.12.
+- Phase 5 — move the installer NSIS build to Conxa Cloud (deferred; needs `CLOUD-2`'s durable
+  job queue first). The versioned `{installer_version}` endpoint scheme and thin-installer
+  architecture landed in the Phase-4 work above specifically to make this drop-in later
+  without any vendor-facing change — see `docs/Backend-Schema.md` §5.1a.
+- Phase 6 — headless `conxa` CLI over the same RPC handlers.
+
+**Files (Phase 0/1):** `conxa-builder/python/handlers/status.py` (new),
+`handlers/compile.py`, `handlers/workflow_editor.py`, `handlers/plugins.py`,
+`packages/conxa-core/conxa_core/models/plugin.py`,
+`conxa-builder/electron/renderer/src/components/layout/AppChrome.tsx`,
+`store/selectionStore.ts` (new), `components/PluginSwitcher.tsx` (new),
+`components/StagePath.tsx` (new), `components/inspector/InspectorDrawer.tsx` (new),
+`pages/CompilePage.tsx`/`HumanEditListPage.tsx`/`PublishPage.tsx` (new),
+`pages/PluginDetailPage.tsx`, `pages/TestPluginPage.tsx`, `pages/BuildInstallerPage.tsx`;
+deleted `pages/SkillPackagesPage.tsx`; `pages/PluginsPage.tsx` renamed to `pages/Dashboard.tsx`
+(component renamed `PluginsPage` -> `Dashboard` to match); `pages/BuildPage.tsx` was briefly
+deleted then restored and repurposed as `pages/RecordPage.tsx`'s left-rail-plus-workspace shell
+(its build-pipeline content replaced with the Record Login/Create Workflow actions previously
+inline on `PluginDetailPage.tsx`) — Build Plugin itself has no page; the file just lent its
+layout to a different page.
+
+---
+
+**Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
+phase's original closure.** The rest of Phase 1 (1.1-1.8) is done, superseded, or moot; other
 open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
 billing enforcement, error-message UX).
 
