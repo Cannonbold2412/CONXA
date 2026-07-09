@@ -281,6 +281,90 @@ def _saved_check_like_step(step: dict[str, Any], action: str) -> dict[str, Any] 
     return _copy_saved_common(step, out)
 
 
+def _dedup_str_list(*groups: Any) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for group in groups:
+        for item in group if isinstance(group, list) else []:
+            text = str(item or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
+    return out
+
+
+def _saved_branch_steps_list(raw: Any) -> list[dict[str, Any]]:
+    """Recursively serialize a branch's nested saved-step dicts into runtime step shape."""
+    out: list[dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        serialized = _saved_step_to_execution_step(item)
+        if serialized is not None:
+            out.append(serialized)
+    return out
+
+
+def _saved_branch_step(step: dict[str, Any], action: str) -> dict[str, Any] | None:
+    """EXEC-1 conditional/branch primitives — probe(s) + nested best-effort body.
+
+    Reads SkillStep.branch (steps/candidates/options/timeout_ms/required) and recursively
+    serializes any nested steps so a conditional survives the build into execution.json —
+    the format runtime/run.js's if_present/try_dismiss/wait_for_one_of handlers consume.
+    """
+    branch = step.get("branch") if isinstance(step.get("branch"), dict) else {}
+    timeout_ms: int | None
+    try:
+        timeout_ms = int(branch.get("timeout_ms")) if branch.get("timeout_ms") is not None else None
+    except (TypeError, ValueError):
+        timeout_ms = None
+
+    if action == "if_present":
+        selector = _step_selector(step)
+        nested = _saved_branch_steps_list(branch.get("steps"))
+        if not selector or not nested:
+            return None
+        out: dict[str, Any] = {"type": "if_present", "selector": selector, "steps": nested}
+        if timeout_ms is not None:
+            out["timeout_ms"] = timeout_ms
+        return _copy_saved_common(step, out)
+
+    if action == "try_dismiss":
+        candidates = _dedup_str_list([_step_selector(step)], branch.get("candidates"))
+        if not candidates:
+            return None
+        out = {"type": "try_dismiss", "candidates": candidates}
+        if timeout_ms is not None:
+            out["timeout_ms"] = timeout_ms
+        if branch.get("fallback_escape") is False:
+            out["fallback_escape"] = False
+        return _copy_saved_common(step, out)
+
+    if action == "wait_for_one_of":
+        options: list[dict[str, Any]] = []
+        for raw_option in branch.get("options") or []:
+            if not isinstance(raw_option, dict):
+                continue
+            option_selector = str(raw_option.get("selector") or "").strip()
+            if not option_selector:
+                continue
+            option_out: dict[str, Any] = {"selector": option_selector}
+            nested = _saved_branch_steps_list(raw_option.get("steps"))
+            if nested:
+                option_out["steps"] = nested
+            options.append(option_out)
+        if not options:
+            return None
+        out = {"type": "wait_for_one_of", "options": options}
+        if timeout_ms is not None:
+            out["timeout_ms"] = timeout_ms
+        if branch.get("required"):
+            out["required"] = True
+        return _copy_saved_common(step, out)
+
+    return None
+
+
 def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None:
     action = normalize_action_kind(_step_action_name(step))
     if not is_supported_action(action):
@@ -372,6 +456,9 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
         if selector:
             out["selector"] = selector
         return _copy_saved_common(step, out)
+
+    if action in {"if_present", "try_dismiss", "wait_for_one_of"}:
+        return _saved_branch_step(step, action)
 
     return None
 

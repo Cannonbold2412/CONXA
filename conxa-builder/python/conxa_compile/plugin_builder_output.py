@@ -149,6 +149,13 @@ def _write_skill_packs_format(
             "name":             skill_name,
             "description":      description,
             "version":          version,
+            # NOTE(branch-steps): if_present/try_dismiss/wait_for_one_of (EXEC-1) require a
+            # runtime that recognizes those step types — an older runtime silently no-ops an
+            # unknown step type (see runtime/run.js executeStep), which for a branch step means
+            # skipping its entire nested body. When the app layer shipping these handlers is
+            # tagged (see MIN_HOST precedent in .github/workflows/build-runtime-app.yml), bump
+            # this floor to that version so packs using branch steps refuse on older runtimes
+            # instead of silently skipping them.
             "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3"),
             "company":          company,
             "target_url":       target_url,
