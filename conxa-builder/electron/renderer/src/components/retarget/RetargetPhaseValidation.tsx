@@ -59,7 +59,7 @@ export function RetargetPhaseValidation({
   if (preview.fast_finish) {
     return (
       <div className="space-y-4">
-        <p className="text-sm text-emerald-300">
+        <p className="text-status-ok text-sm">
           Selectors look strong and how this step is checked hasn&apos;t changed.
         </p>
         <div className="flex justify-between pt-2">
@@ -91,11 +91,11 @@ export function RetargetPhaseValidation({
               </p>
             ))}
           </div>
-          <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm">
-            <p className="font-medium text-sky-200">Proposed</p>
-            <p className="text-sky-100/90">{describeWaitFor(preview.proposed_wait_for)}</p>
+          <div className="border-brand/30 bg-brand-subtle rounded-lg border p-3 text-sm">
+            <p className="text-brand font-medium">Proposed</p>
+            <p className="text-zinc-100/90">{describeWaitFor(preview.proposed_wait_for)}</p>
             {describeAssertions(preview.proposed_assertions).map((line, i) => (
-              <p key={i} className="text-sky-100/70">
+              <p key={i} className="text-zinc-100/70">
                 + {line}
               </p>
             ))}

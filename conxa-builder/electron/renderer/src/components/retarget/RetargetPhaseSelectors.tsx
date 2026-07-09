@@ -14,26 +14,25 @@ const ENGINE_LABELS: Record<string, string> = {
   'css-id': 'CSS ID',
   text_based: 'Visible text',
   'css-structural': 'Structural CSS',
+  xpath: 'XPath',
 }
 
 function UniquenessBadge({ candidate }: { candidate: RetargetCandidate }) {
-  if (candidate.match_count === 1) {
-    return (
-      <Badge variant="outline" className="border-emerald-500/40 text-emerald-300">
-        Unique match
-      </Badge>
-    )
+  // Prefer the explicit verified status (set from the compile-time uniqueness check); fall back
+  // to inferring it from match_count for any candidate that predates that field.
+  const verified =
+    candidate.verified ??
+    (candidate.match_count === 1 ? 'unique' : candidate.match_count < 0 ? 'unverified' : 'not_unique')
+
+  if (verified === 'unique') {
+    return <Badge variant="success">Unique match</Badge>
   }
-  if (candidate.match_count < 0) {
-    return (
-      <Badge variant="outline" className="border-zinc-500/40 text-zinc-400">
-        Unverified
-      </Badge>
-    )
+  if (verified === 'unverified') {
+    return <Badge variant="secondary">Checked at run time</Badge>
   }
   return (
-    <Badge variant="outline" className="border-red-500/40 text-red-300">
-      Matches {candidate.match_count} elements
+    <Badge variant="destructive">
+      {candidate.match_count > 1 ? `Matches ${candidate.match_count} elements` : 'Not unique'}
     </Badge>
   )
 }
@@ -64,7 +63,7 @@ export function RetargetPhaseSelectors({
   return (
     <div className="space-y-3">
       {preview.pick_quality === 'ambiguous' ? (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+        <div className="border-status-warn/30 bg-status-warn/10 text-status-warn rounded-lg border p-3 text-sm">
           None of the generated selectors look durable for this element. You can pick one anyway, try a
           different region, or enter a selector manually below.
           <div className="mt-2">
@@ -75,7 +74,7 @@ export function RetargetPhaseSelectors({
         </div>
       ) : null}
       {preview.pick_quality === 'none' ? (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+        <div className="border-status-error/30 bg-status-error/10 text-status-error rounded-lg border p-3 text-sm">
           No usable selector could be generated for this region.
           <div className="mt-2">
             <Button size="sm" variant="outline" onClick={onBack}>
@@ -92,7 +91,7 @@ export function RetargetPhaseSelectors({
             className={cn(
               'flex cursor-pointer flex-col gap-1.5 rounded-lg border px-3 py-2 text-sm',
               selectedIndex === i && !hasManual
-                ? 'border-sky-500/50 bg-sky-500/10'
+                ? 'border-brand/40 bg-brand-subtle'
                 : 'border-border/60 bg-background/30 hover:bg-background/50',
             )}
           >
@@ -110,11 +109,15 @@ export function RetargetPhaseSelectors({
               <Badge variant="secondary">{ENGINE_LABELS[c.engine] ?? c.engine}</Badge>
               <UniquenessBadge candidate={c} />
             </div>
-            <div className="ml-6 h-1.5 w-32 overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full bg-sky-400"
-                style={{ width: `${Math.round(c.durability * 100)}%` }}
-              />
+            <code className="ml-6 block break-all font-mono text-xs text-zinc-300">{c.selector}</code>
+            <div className="ml-6 flex items-center gap-2">
+              <div className="h-1.5 w-32 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="bg-brand h-full rounded-full"
+                  style={{ width: `${Math.round(c.durability * 100)}%` }}
+                />
+              </div>
+              <span className="text-[0.65rem] text-zinc-500">{Math.round(c.durability * 100)}% durable</span>
             </div>
           </label>
         ))}
@@ -123,15 +126,10 @@ export function RetargetPhaseSelectors({
       <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
         <CollapsibleTrigger asChild>
           <Button variant="ghost" size="sm">
-            {showAdvanced ? 'Hide' : 'Show'} raw selectors / manual override
+            {showAdvanced ? 'Hide' : 'Show'} manual selector override
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="space-y-2 pt-2">
-          {preview.candidates.map((c, i) => (
-            <p key={`raw-${i}`} className="font-mono text-xs break-all text-zinc-400">
-              {c.selector}
-            </p>
-          ))}
           <div className="grid gap-1">
             <label className="text-muted-foreground text-xs">Manual selector override</label>
             <Input

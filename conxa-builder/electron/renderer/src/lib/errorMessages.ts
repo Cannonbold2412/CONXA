@@ -57,6 +57,7 @@ export const errorMessages: Record<string, string> = {
   workflow_test_failed: "The workflow test didn't pass. Review the steps and try again.",
   invalid_plugin: "This plugin is missing required information and can't be used.",
   invalid_document: "This skill file is missing its skills and can't be opened.",
+  invalid_bbox: "That selection isn't a valid region. Try drawing the box again.",
   invalid_selector:
     "One of the recorded elements can't be targeted reliably. Re-record that step.",
   session_artifacts_missing:

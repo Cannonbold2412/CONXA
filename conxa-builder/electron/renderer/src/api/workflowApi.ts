@@ -191,6 +191,9 @@ export type RetargetCandidate = {
   durability: number
   match_count: number
   unique: boolean
+  /** unique = uniquely matched the recorded page; not_unique = matched 0 or many; unverified =
+   *  couldn't be checked offline (validated by the browser at run time). */
+  verified?: 'unique' | 'not_unique' | 'unverified'
   descriptor: string
 }
 
@@ -208,8 +211,15 @@ export type RetargetPreviewResponse = {
   fast_finish: boolean
 }
 
-export function retargetPreview(skillId: string, stepIndex: number, bbox: Bbox): Promise<RetargetPreviewResponse> {
-  return cmd('retarget_preview', { skill_id: skillId, step_index: stepIndex, ...bbox })
+// regenerate=false reviews the already-compiled selectors (no LLM); pass true only when the
+// user re-picked the element and the selectors must be regenerated for the new target.
+export function retargetPreview(
+  skillId: string,
+  stepIndex: number,
+  bbox: Bbox,
+  regenerate = true,
+): Promise<RetargetPreviewResponse> {
+  return cmd('retarget_preview', { skill_id: skillId, step_index: stepIndex, ...bbox, regenerate })
 }
 
 export function retargetApply(

@@ -79,6 +79,8 @@ type InnerProps = {
   bboxDrawMode?: boolean
   bboxDrawSaving?: boolean
   onCommitDrawnBbox?: (bbox: { x: number; y: number; w: number; h: number }) => void | Promise<void>
+  /** Called when a drag finishes but is too small to count as an intentional box. */
+  onDrawTooSmall?: () => void
   /** When set, show toolbar control to enter/exit draw mode. */
   bboxToolUi?: { active: boolean; onToggle: () => void; saving: boolean } | null
 }
@@ -90,6 +92,7 @@ function ScreenshotViewInner({
   bboxDrawMode,
   bboxDrawSaving,
   onCommitDrawnBbox,
+  onDrawTooSmall,
   bboxToolUi,
 }: InnerProps) {
   const { x = 0, y = 0, w = 0, h = 0 } = bbox as Record<string, number>
@@ -147,10 +150,13 @@ function ScreenshotViewInner({
       const pt = clientPointToNatural(e.clientX, e.clientY, imgRef.current)
       const r = clampRectToImage(live.ax, live.ay, pt.nx, pt.ny, natural.w, natural.h)
       const minPx = 4
-      if (r.w < minPx || r.h < minPx) return
+      if (r.w < minPx || r.h < minPx) {
+        onDrawTooSmall?.()
+        return
+      }
       void onCommitDrawnBbox(r)
     },
-    [natural.w, natural.h, onCommitDrawnBbox],
+    [natural.w, natural.h, onCommitDrawnBbox, onDrawTooSmall],
   )
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -395,6 +401,8 @@ type Props = {
   label: string
   /** Non-scroll steps: allow drawing a bbox and PATCH ``signals.visual.bbox``. */
   onSaveVisualBbox?: (bbox: { x: number; y: number; w: number; h: number }) => void | Promise<void>
+  /** Called when a drag finishes but is too small to register as a box. */
+  onDrawTooSmall?: () => void
   isScrollStep?: boolean
   /** Start already in draw mode (e.g. the re-target wizard's Phase 1, where drawing
    * the element is the phase's whole purpose — no separate toggle click needed). */
@@ -416,6 +424,7 @@ export function ScreenshotViewer({
   onClearStepVisual,
   onApplyStepFrame,
   onSaveVisualBbox,
+  onDrawTooSmall,
   isScrollStep = false,
   autoActivateDraw = false,
 }: Props) {
@@ -603,6 +612,7 @@ export function ScreenshotViewer({
         bboxDrawMode={bboxDrawActive}
         bboxDrawSaving={bboxDrawSaving}
         onCommitDrawnBbox={bboxToolAllowed ? handleCommitBbox : undefined}
+        onDrawTooSmall={onDrawTooSmall}
         bboxToolUi={
           bboxToolAllowed
             ? {
