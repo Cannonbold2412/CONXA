@@ -219,12 +219,16 @@ class WorkflowEditorMixin:
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
         bbox = {k: payload.get(k) for k in ("x", "y", "w", "h")}
+        # regenerate=False means the user is only reviewing an unchanged element, so the
+        # already-compiled selectors are read back — no LLM call, no router needed.
+        regenerate = bool(payload.get("regenerate", True))
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
-        self._install_proxy_router(usage_class="human_edit")
+        if regenerate:
+            self._install_proxy_router(usage_class="human_edit")
         try:
-            return preview_retarget(doc, step_index, bbox)
+            return preview_retarget(doc, step_index, bbox, regenerate=regenerate)
         except RetargetError as exc:
             raise _CommandError(exc.code, exc.message) from exc
         except EntitlementBlocked as exc:

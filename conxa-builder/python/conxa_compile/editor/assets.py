@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import mimetypes
 import urllib.parse
 from pathlib import Path
 
@@ -24,19 +22,17 @@ def resolve_skill_asset(relative_path: str) -> Path:
     return candidate
 
 
-def _asset_data_url(path: Path) -> str:
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
-
-
 def asset_url(relative_path: str, *, asset_base_url: str, skill_id: str) -> str:
-    """Return a renderer-loadable URL for a persisted visual asset."""
+    """Return a renderer-loadable URL for a persisted visual asset.
+
+    Local (Studio) assets resolve through the ``conxa-asset://`` protocol the
+    Electron main process registers, which streams the file from disk on
+    demand. This is validation-only (no disk read) so it stays cheap even
+    when a workflow response fans out over hundreds of assets.
+    """
     if asset_base_url.strip().lower().startswith("file://"):
-        path = resolve_skill_asset(relative_path)
-        if path.is_file():
-            return _asset_data_url(path)
-        return path.as_uri()
+        relative_path = resolve_skill_asset(relative_path).relative_to(settings.data_dir.resolve()).as_posix()
+        return f"conxa-asset://local/{urllib.parse.quote(relative_path)}"
     q = urllib.parse.urlencode({"path": relative_path})
     base = asset_base_url.rstrip("/")
     sid_q = urllib.parse.quote(skill_id, safe="")

@@ -55,13 +55,17 @@ RECORDED_EVENT = {
 
 
 def _base_step() -> dict:
+    # snapshot_ref / snapshot_dom_hash are top-level Step fields (see conxa_core Step schema and
+    # compiler/build.py) — the recorded-event lookup keys off the step's top-level snapshot_ref,
+    # not anything under `signals`.
     return {
         "intent": "click_submit",
         "action": {"action": "click"},
         "target": {"primary_selector": "#old-selector", "fallback_selectors": []},
         "identity_bundle": {"signals": []},
+        "snapshot_ref": "ref-1",
+        "snapshot_dom_hash": DOM_HASH,
         "signals": {
-            "snapshot": {"ref": "ref-1", "dom_hash": DOM_HASH},
             "visual": dict(RECORDED_EVENT["visual"]),
             "dom": {"tag": "button", "inner_text": "Submit"},
         },
@@ -138,10 +142,10 @@ def _patch_validation_planner(monkeypatch, *, wait_for=None, assertions=None):
 
 
 def test_preview_returns_ranked_candidates_with_match_counts(session_fixture, monkeypatch):
-    """Exercises retarget.py's own candidate classification directly — raw
-    candidates come straight from the mock, bypassing compile_selectors_for_task's
-    internal uniqueness filter, so an ambiguous (2-match) candidate can survive
-    to be classified here."""
+    """Exercises retarget.py's own candidate classification + pruning directly — raw candidates
+    come straight from the mock, bypassing compile_selectors_for_task's internal uniqueness
+    filter, so a non-unique (2-match) candidate reaches retarget.py's own prune and must be
+    dropped there (regenerate path must apply the same "no non-unique" rule as the review path)."""
     from conxa_compile.editor.retarget import preview_retarget
 
     _patch_raw_candidates(
@@ -159,8 +163,8 @@ def test_preview_returns_ranked_candidates_with_match_counts(session_fixture, mo
 
     selectors = {c["selector"]: c for c in result["candidates"]}
     assert '[data-testid="submit-btn"]' in selectors
-    assert ".dup" in selectors
-    # zero-match candidate is dropped entirely
+    # non-unique (2-match) and zero-match candidates are both dropped — never offered
+    assert ".dup" not in selectors
     assert "#not-there" not in selectors
 
     testid_cand = selectors['[data-testid="submit-btn"]']
@@ -168,10 +172,6 @@ def test_preview_returns_ranked_candidates_with_match_counts(session_fixture, mo
     assert testid_cand["match_count"] == 1
     assert testid_cand["unique"] is True
     assert testid_cand["descriptor"] == "Submit the form"
-
-    dup_cand = selectors[".dup"]
-    assert dup_cand["match_count"] == 2
-    assert dup_cand["unique"] is False
 
     assert result["pick_quality"] == "good"  # testid candidate is unique + durable
     # preview never persists — original doc argument is untouched
@@ -202,7 +202,34 @@ def test_preview_end_to_end_llm_wiring_filters_to_unique_candidates(session_fixt
     assert result["pick_quality"] == "good"
 
 
-def test_preview_pick_quality_ambiguous_when_no_unique_durable_candidate(session_fixture, monkeypatch):
+def test_preview_regenerate_path_prunes_same_as_review_path(session_fixture, monkeypatch):
+    """Regression: the regenerate path (user redraws the bbox, LLM proposes fresh candidates)
+    must enforce the same "no non-unique, nothing below 30% durability" rule as the no-repick
+    review path — a freshly re-picked element doesn't get a weaker bar than a reviewed one."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _patch_raw_candidates(
+        monkeypatch,
+        [
+            _candidate('[data-testid="submit-btn"]', rank=0),  # unique, 99% — survives
+            _candidate(".dup", rank=1),  # matches 2 elements — must be pruned
+            # unique (matches the first .dup div) but positional → durability 0.30*0.1=0.03,
+            # well under the 30% floor — must be pruned despite being unique.
+            _candidate("div:nth-of-type(1)", rank=2),
+        ],
+    )
+    _patch_validation_planner(monkeypatch)
+
+    doc = _base_document()
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20})
+
+    selectors = {c["selector"] for c in result["candidates"]}
+    assert selectors == {'[data-testid="submit-btn"]'}
+
+
+def test_preview_pick_quality_none_when_only_candidate_is_not_unique(session_fixture, monkeypatch):
+    """A non-unique candidate doesn't just fail to be "good" — it's pruned outright, so with
+    nothing else offered the result is "none" (nothing to pick), not "ambiguous"."""
     from conxa_compile.editor.retarget import preview_retarget
 
     _patch_raw_candidates(monkeypatch, [_candidate(".dup", rank=0)])
@@ -211,7 +238,25 @@ def test_preview_pick_quality_ambiguous_when_no_unique_durable_candidate(session
     doc = _base_document()
     result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20})
 
+    assert result["candidates"] == []
+    assert result["pick_quality"] == "none"
+
+
+def test_preview_pick_quality_ambiguous_when_unique_but_below_good_bar(session_fixture, monkeypatch):
+    """A unique candidate with durability between the prune floor (30%) and the "good" bar (50%)
+    survives pruning (it's offered) but doesn't clear "good" — ambiguous, not none."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    # "#new-btn" matches the DOM_HTML's <button id="new-btn" ...> exactly once; css-id engine
+    # scores 0.45 durability — above the 0.3 prune floor, below the 0.5 "good" bar.
+    _patch_raw_candidates(monkeypatch, [_candidate("#new-btn", rank=0)])
+    _patch_validation_planner(monkeypatch)
+
+    doc = _base_document()
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20})
+
     assert result["candidates"]
+    assert result["candidates"][0]["unique"] is True
     assert result["pick_quality"] == "ambiguous"
 
 
@@ -257,6 +302,159 @@ def test_preview_fast_finish_when_good_pick_and_validation_unchanged(session_fix
 
     assert result["validation_changed"] is False
     assert result["fast_finish"] is True
+
+
+def _fail_if_llm_called(monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("compile_selectors_for_task must not run on the review path")
+
+    monkeypatch.setattr("conxa_compile.llm.selector_regeneration.compile_selectors_for_task", _boom)
+
+
+def test_preview_review_path_uses_compiled_selectors_without_llm(session_fixture, monkeypatch):
+    """regenerate=False (user continues without re-picking) must reuse the selectors compiled
+    earlier and never call the LLM."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _fail_if_llm_called(monkeypatch)
+
+    doc = _base_document()
+    doc["skills"][0]["steps"][0]["target"] = {
+        "primary_selector": '[data-testid="submit-btn"]',
+        "fallback_selectors": [".dup"],
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    selectors = {c["selector"]: c for c in result["candidates"]}
+    # .dup matches 2 elements → pruned as non-unique; the unique testid selector remains.
+    assert set(selectors) == {'[data-testid="submit-btn"]'}
+    assert selectors['[data-testid="submit-btn"]']["match_count"] == 1  # validated against the DOM snapshot
+    assert result["pick_quality"] == "good"
+    assert result["validation_changed"] is False  # nothing changed → no proposed diff
+    assert doc["meta"]["version"] == 1  # never persists
+
+
+def test_preview_review_path_surfaces_compile_time_uniqueness(session_fixture, monkeypatch):
+    """The review path reuses the compiler's own per-signal `unique_at_compile` verdict, so
+    role=/text= selectors it can't re-check offline still show as verified (not "unverified"),
+    using the compiled engine + durability — and it never calls the LLM."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _fail_if_llm_called(monkeypatch)
+
+    doc = _base_document()
+    step = doc["skills"][0]["steps"][0]
+    step["target"] = {
+        "primary_selector": '[data-testid="submit-btn"]',
+        "fallback_selectors": [
+            'role=button[name="Submit"]',
+            'text="Submit"',
+            ".dup",
+            "/html[1]/body[1]/div[1]/button[1]",
+        ],
+    }
+    step["identity_bundle"] = {
+        "signals": [
+            {"engine": "testid", "selector": 'internal:testid=[data-testid="submit-btn"]', "durability": 0.99, "unique_at_compile": True},
+            {"engine": "role", "selector": 'internal:role=button[name="Submit"]', "durability": 0.9, "unique_at_compile": True},
+            {"engine": "text_based", "selector": 'internal:text="Submit"', "durability": 0.8, "unique_at_compile": True},
+            {"engine": "css-structural", "selector": ".dup", "durability": 0.3, "unique_at_compile": False},
+            {"engine": "xpath", "selector": "/html[1]/body[1]/div[1]/button[1]", "durability": 0.01, "unique_at_compile": True},
+        ]
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    by_sel = {c["selector"]: c for c in result["candidates"]}
+    # role / text selectors are verified from the compile — NOT "unverified"
+    assert by_sel['role=button[name="Submit"]']["verified"] == "unique"
+    assert by_sel['role=button[name="Submit"]']["engine"] == "role"  # compiled engine, not misclassified as "name"
+    assert by_sel['text="Submit"']["verified"] == "unique"
+    assert by_sel['text="Submit"']["engine"] == "text_based"
+    # the non-unique selector is pruned (could resolve to the wrong element at runtime)
+    assert ".dup" not in by_sel
+    # the near-zero-durability absolute XPath is pruned as categorically brittle, even though unique
+    assert "/html[1]/body[1]/div[1]/button[1]" not in by_sel
+    assert not any(c["verified"] == "unverified" for c in result["candidates"])
+    assert result["pick_quality"] == "good"
+
+
+def test_preview_review_path_prunes_below_30pct_durability(session_fixture, monkeypatch):
+    """Hard floor: a unique selector still gets pruned if its durability is under 30%; one at
+    exactly 30% is kept."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _fail_if_llm_called(monkeypatch)
+
+    doc = _base_document()
+    step = doc["skills"][0]["steps"][0]
+    step["target"] = {
+        "primary_selector": '[data-testid="submit-btn"]',
+        "fallback_selectors": ["div.at-floor", "div.below-floor"],
+    }
+    step["identity_bundle"] = {
+        "signals": [
+            {"engine": "testid", "selector": 'internal:testid=[data-testid="submit-btn"]', "durability": 0.99, "unique_at_compile": True},
+            {"engine": "css-structural", "selector": "div.at-floor", "durability": 0.30, "unique_at_compile": True},
+            {"engine": "css-structural", "selector": "div.below-floor", "durability": 0.29, "unique_at_compile": True},
+        ]
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    shown = {c["selector"] for c in result["candidates"]}
+    assert "div.at-floor" in shown  # exactly 30% is kept
+    assert "div.below-floor" not in shown  # under 30% does not move forward, even though unique
+
+
+def test_preview_review_path_all_below_floor_yields_no_candidates(session_fixture, monkeypatch):
+    """If every option is under the durability floor, none move forward — the list is empty and
+    the wizard falls to its "re-pick" prompt rather than offering a too-weak selector."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _fail_if_llm_called(monkeypatch)
+
+    doc = _base_document()
+    step = doc["skills"][0]["steps"][0]
+    step["target"] = {"primary_selector": "div.weak", "fallback_selectors": ["span.weaker"]}
+    step["identity_bundle"] = {
+        "signals": [
+            {"engine": "css-structural", "selector": "div.weak", "durability": 0.2, "unique_at_compile": True},
+            {"engine": "css-structural", "selector": "span.weaker", "durability": 0.1, "unique_at_compile": True},
+        ]
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    assert result["candidates"] == []
+    assert result["pick_quality"] == "none"
+
+
+def test_preview_review_path_works_without_recording_session(tmp_path, monkeypatch):
+    """The review path doesn't need the recording session — no session_artifacts_missing, and
+    selectors it can't DOM-verify come back as unverified (match_count -1) but still trusted."""
+    from conxa_core import db
+    from conxa_core.config import settings
+    from conxa_compile.editor.retarget import preview_retarget
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(db, "_engine", None)
+    _fail_if_llm_called(monkeypatch)  # no session, and still no LLM
+
+    doc = _base_document()
+    doc["skills"][0]["steps"][0]["target"] = {
+        "primary_selector": '[data-testid="submit-btn"]',
+        "fallback_selectors": [],
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    cand = result["candidates"][0]
+    assert cand["selector"] == '[data-testid="submit-btn"]'
+    assert cand["match_count"] == -1  # unverifiable without the DOM snapshot
+    assert result["pick_quality"] == "good"  # durable testid selector is trusted from compile
 
 
 def test_preview_raises_session_artifacts_missing(tmp_path, monkeypatch):

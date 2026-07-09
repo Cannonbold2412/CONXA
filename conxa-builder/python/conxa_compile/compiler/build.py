@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from conxa_compile.compiler.action_policy import no_recovery_block, recovery_enabled_for_action
 from conxa_compile.editor.action_registry import MARKER_ACTIONS
@@ -35,7 +35,12 @@ from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to
 from conxa_compile.compiler.state_validation import capture_state_snapshot, compare_state, optimize_scroll, scroll_payload, validation_from_diff
 from conxa_compile.compiler.step_anchors import clean_anchors, clean_steps, fix_step_order, generate_stable_selector
 from conxa_core.config import settings
-from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError, generate_anchors_for_step_or_raise
+# anchor_vision_llm pulls in PIL -> numpy, whose native-extension import is slow on some
+# machines (multi-second to tens of seconds the first time a process touches it). Deferred
+# to the two call sites below (both compile-only) so read paths like the workflow editor
+# (which import this package for lightweight helpers, never compile) don't pay that cost.
+if TYPE_CHECKING:
+    from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
 from conxa_compile.llm.intent_llm import generate_intent_with_llm
 from conxa_core.models.events import RecordedEvent
 from conxa_core.models.skill_spec import (
@@ -862,6 +867,8 @@ def _build_step(
     semantic["llm_intent"] = intent
     semantic["intent_specificity_score"] = intent_specificity_score(intent, policy)
     ev_with_intent["semantic"] = semantic
+    from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError, generate_anchors_for_step_or_raise
+
     vision_anchor_warning: dict[str, Any] | None = None
     try:
         _compile_log(
@@ -1084,6 +1091,8 @@ def compile_skill_package(
     policy_bundle: PolicyBundle | None = None,
 ) -> SkillPackage:
     """Build a package from already pipeline-normalized event dicts."""
+    from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
+
     bundle = policy_bundle or get_policy_bundle()
     pol = bundle.data
     for e in events:

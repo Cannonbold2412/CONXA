@@ -54,8 +54,8 @@ def _regenerate_compiled_selectors(step: dict[str, Any], document: dict[str, Any
     On failure (missing snapshot, missing event, LLM disabled): leaves fields empty.
     """
     out = dict(step)
-    snapshot_ref = ((step.get("signals") or {}).get("snapshot") or {}).get("ref")
-    snapshot_hash = ((step.get("signals") or {}).get("snapshot") or {}).get("dom_hash")
+    snapshot_ref = step.get("snapshot_ref")
+    snapshot_hash = step.get("snapshot_dom_hash")
 
     if not snapshot_ref or not snapshot_hash:
         return out
