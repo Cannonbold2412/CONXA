@@ -34,7 +34,7 @@ def _debug_log(message: str) -> None:
 
 def _is_vision_task(task: str) -> bool:
     """True for multimodal vision tasks."""
-    return task in {"anchor_vision", "vision_reasoning"}
+    return task in {"anchor_vision", "vision_reasoning", "region_selector"}
 
 
 def _safe_error_snippet(text: str, limit: int = 280) -> str:
@@ -224,6 +224,53 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
                 ],
             },
         ]
+    if task == "region_selector":
+        # Re-target wizard: user drew a fresh bbox with no stored per-element geometry to
+        # resolve it against. The image (highlighted region) + DOM snippet together let the
+        # model see which element the box points to and read the DOM to select it.
+        image_b64 = str(payload.get("image_base64") or "")
+        mime = str(payload.get("image_mime") or "image/jpeg")
+        user_text = str(payload.get("user_text") or "")
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You generate Playwright locator strings for web automation. The user "
+                    "message contains a screenshot with a red highlighted region marking the "
+                    "target element, followed by a snippet of the page's DOM HTML. Find the "
+                    "element the highlighted region points to in the DOM, then return strict "
+                    "JSON with key 'candidates' (array of objects: selector (string), rank "
+                    "(1=best), rationale (short string), intent (snake_case action description)). "
+                    "Selector priority — use the first that applies:\n"
+                    "1. [data-testid=\"x\"] — most stable\n"
+                    "2. [aria-label=\"x\"] — when element has an explicit aria-label attribute\n"
+                    "3. button:has-text(\"x\"), a:has-text(\"x\") — tag + visible text for buttons and links\n"
+                    "4. input[name=\"x\"], select[name=\"x\"], textarea[name=\"x\"] — name attr for form controls only\n"
+                    "5. [placeholder=\"x\"] — for text inputs with placeholder\n"
+                    "6. #stable-id — non-hashed, non-generated IDs\n"
+                    "7. text=\"x\" — Playwright text locator (exact, case-sensitive) as last text-based resort\n"
+                    "Critical rules:\n"
+                    "- NEVER write [role=\"button\"] or [role=\"x\"] — CSS [role] only matches the raw HTML "
+                    "attribute, not the ARIA role; plain <button> and <a> elements do NOT have a role "
+                    "attribute in HTML\n"
+                    "- NEVER write [name=\"x\"] on buttons, divs, spans, or links — the name attribute only "
+                    "exists on form controls (input/select/textarea) and form elements\n"
+                    "- Selectors MUST match exactly one element in the provided DOM snippet\n"
+                    "- Avoid: hashed classes, auto-generated IDs, nth-of-type chains, XPath\n"
+                    "No markdown, no extra keys."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{image_b64}"},
+                    },
+                    {"type": "text", "text": user_text},
+                ],
+            },
+        ]
     return [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
 
@@ -238,6 +285,9 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
     if task == "anchor_vision":
         # Short JSON anchors; VLMs often expect an explicit ceiling (see NVIDIA Gemma chat examples).
         body["max_tokens"] = 1024
+    if task == "region_selector":
+        # A handful of selector candidates with rationale — a bit more room than anchor_vision.
+        body["max_tokens"] = 1536
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     return body

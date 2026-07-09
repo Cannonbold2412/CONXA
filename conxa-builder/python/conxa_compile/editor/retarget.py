@@ -5,10 +5,15 @@ Phase 2 (review generated selectors) and Phase 3 (confirm validation): both are
 previewed here without persisting so the whole wizard lands as a single mutation
 when the user finally clicks Apply — see ``apply_retarget``.
 
-Selector regeneration reuses the same LLM path as the 1-click-fix API
-(``compiler/patch.py::_regenerate_compiled_selectors``) — the sanctioned
-exception to "LLM does not write selector strings on the primary compile path"
-(see CLAUDE.md Key Invariants). ``find_source_event`` is shared with that path.
+A redrawn region has no stored per-element geometry to resolve against — only the
+originally-recorded element carries a bbox, and the DOM snapshot is plain HTML with no inline
+coordinates. Selector regeneration therefore uses a vision LLM
+(``llm/region_selector_vision.py``) that is shown the screenshot with the drawn region
+highlighted alongside the recorded DOM, so it can identify the element visually and read the DOM
+to select it. This is a second, narrow exception to "LLM does not write selector strings on the
+primary compile path" (see CLAUDE.md Key Invariants), alongside the 1-click-fix API's
+(``compiler/patch.py::_regenerate_compiled_selectors``) — both are user-initiated re-compile
+paths, not part of the primary compiler. ``find_source_event`` is shared with that path.
 """
 
 from __future__ import annotations
@@ -144,18 +149,22 @@ def _pick_quality(candidates: list[dict[str, Any]]) -> str:
     return "ambiguous" if candidates else "none"
 
 
-def _candidate_row(step: dict[str, Any], selector: str, match_count: int, intent: str = "") -> dict[str, Any]:
-    from conxa_compile.compiler.selector_score import durability_score
+def _candidate_row(
+    step: dict[str, Any], selector: str, match_count: int, intent: str = "", source: str = "compiler"
+) -> dict[str, Any]:
+    from conxa_compile.compiler.selector_score import durability_score, tag_orthogonality_class
 
     engine = _classify_engine(selector)
     return {
         "selector": selector,
         "engine": engine,
         "durability": durability_score(engine, selector),
+        "orthogonality_class": tag_orthogonality_class(engine),
         "match_count": match_count,
         "unique": match_count == 1,
         "verified": _verified_from_count(match_count),
         "descriptor": _descriptor_for(step, intent),
+        "source": source,
     }
 
 
@@ -170,6 +179,8 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
     durability. Falls back to an offline CSS re-check of the raw target selectors for older
     skills that predate the identity_bundle.
     """
+    from conxa_compile.compiler.selector_score import tag_orthogonality_class
+
     target = step.get("target") if isinstance(step.get("target"), dict) else {}
     primary = str(target.get("primary_selector") or "").strip()
     fallbacks = [str(s).strip() for s in (target.get("fallback_selectors") or []) if str(s).strip()]
@@ -189,17 +200,20 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
             if not sel:
                 continue
             unique = bool(sig.get("unique_at_compile"))
+            engine = str(sig.get("engine") or _classify_engine(sel))
             rows.append(
                 {
                     "selector": sel,
-                    "engine": str(sig.get("engine") or _classify_engine(sel)),
+                    "engine": engine,
                     "durability": float(sig.get("durability") or 0.0),
+                    "orthogonality_class": str(sig.get("orthogonality_class") or tag_orthogonality_class(engine)),
                     # exact count isn't stored — only the unique-or-not verdict; -1 keeps the UI
                     # from claiming a specific number for the non-unique case.
                     "match_count": 1 if unique else -1,
                     "unique": unique,
                     "verified": "unique" if unique else "not_unique",
                     "descriptor": _descriptor_for(step, ""),
+                    "source": str(sig.get("source") or "compiler"),
                 }
             )
             if len(rows) >= 5:
@@ -254,13 +268,12 @@ def preview_retarget(
     current_assertions = current_validation.get("assertions") or []
 
     if regenerate:
-        # The element changed, so its selectors must be regenerated for the new target — the
-        # single LLM-assisted step in this flow. Requires the recorded DOM snapshot to run.
-        from conxa_compile.llm.selector_regeneration import (
-            compile_selectors_for_task,
-            task_from_recorded_event,
-            validate_selector,
-        )
+        # The element changed, so its selectors must be regenerated for the new target. A drawn
+        # region has no stored per-element geometry to resolve against (see module docstring) —
+        # the vision LLM identifies the element from the highlighted screenshot + DOM snippet.
+        # Requires the recorded screenshot and DOM snapshot to run.
+        from conxa_compile.llm.region_selector_vision import compile_selectors_for_region
+        from conxa_compile.llm.selector_regeneration import validate_selector
 
         if not source_session_id or not matching_event:
             raise RetargetError(
@@ -268,22 +281,23 @@ def preview_retarget(
                 "The original recording session is no longer available for this step",
             )
 
-        task = task_from_recorded_event(matching_event, step_index)
-        task.element_bbox = next_bbox
-        task.target_dom = step.get("target") if isinstance(step.get("target"), dict) else {}
-
-        # compile_selectors_for_task already discards candidates that don't uniquely match
-        # the stored DOM snapshot (see selector_regeneration.py::validate_selector), so what
-        # comes back here is normally all-unique. The re-validation below is mostly for the
-        # match_count/durability data to show in the UI; it also protects against the rare
-        # case of a cache hit predating a stricter validation rule.
-        raw_candidates = compile_selectors_for_task(task, session_id=source_session_id)
+        action_type = str((matching_event.get("action") or {}).get("action") or "")
+        # compile_selectors_for_region discards nothing itself — the re-validation below is
+        # what enforces uniqueness against the stored DOM snapshot, plus gives the
+        # match_count/durability data shown in the UI.
+        raw_candidates = compile_selectors_for_region(
+            matching_event=matching_event,
+            session_id=source_session_id,
+            bbox=next_bbox,
+            dom_snapshot=dom_snapshot,
+            action_type=action_type,
+        )
         candidates: list[dict[str, Any]] = []
         for cand in raw_candidates[:5]:
             _passes, match_count = validate_selector(cand.selector, dom_snapshot)
             if match_count == 0:
                 continue
-            candidates.append(_candidate_row(step, cand.selector, match_count, cand.intent))
+            candidates.append(_candidate_row(step, cand.selector, match_count, cand.intent, source="llm"))
         # Same rule as the review path: no non-unique matches, nothing below the durability
         # floor — a freshly re-picked element deserves the same bar as a reviewed one.
         candidates = _prune_review_candidates(candidates)
@@ -315,10 +329,23 @@ def preview_retarget(
 
     pick_quality = _pick_quality(candidates)
 
+    from conxa_compile.compiler.selector_score import confidence_from_signal_rows
+
+    bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
+    bundle_signals = bundle.get("signals") if isinstance(bundle.get("signals"), list) else []
+    stored_confidence = (step.get("target") or {}).get("selector_confidence")
+    if isinstance(stored_confidence, (int, float)):
+        compile_confidence: float | None = float(stored_confidence)
+    elif bundle_signals:
+        compile_confidence = confidence_from_signal_rows(bundle_signals)
+    else:
+        compile_confidence = None
+
     return {
         "bbox": next_bbox,
         "pick_quality": pick_quality,
         "candidates": candidates,
+        "compile_confidence": compile_confidence,
         "current_wait_for": current_wait_for,
         "proposed_wait_for": proposed_wait_for,
         "current_assertions": current_assertions,

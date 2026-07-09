@@ -16,6 +16,8 @@ from conxa_compile.policy.bundle import PolicyBundle, get_policy_bundle
 
 _STRIP_VISUAL_IMAGE_KEYS = ("full_screenshot", "element_snapshot", "scroll_screenshot", "bbox")
 
+_FRAME_LABEL_ORDER = {"before_far": 0, "before_near": 1, "at": 2, "after_near": 3, "after_far": 4}
+
 
 def screenshot_items_for_skill(
     skill_id: str,
@@ -23,7 +25,12 @@ def screenshot_items_for_skill(
     *,
     asset_base_url: str,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Return (session_id_or_none, items) for GET recording-screenshots."""
+    """Return (session_id_or_none, items) for GET recording-screenshots.
+
+    Each item carries the event's representative screenshot plus, when available, every
+    timed frame captured around that event (``frames``: before_far/before_near/at/after_near/
+    after_far) — so a caller can offer all frames per step, not just one per event.
+    """
     meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
     session_id = str(meta.get("source_session_id") or "").strip() or None
     if not session_id:
@@ -55,6 +62,26 @@ def screenshot_items_for_skill(
 
         preview_url = asset_url(persisted_full, asset_base_url=asset_base_url, skill_id=skill_id)
 
+        frames_raw = vis.get("frames") if isinstance(vis.get("frames"), dict) else {}
+        frame_items: list[dict[str, Any]] = []
+        for label, frame_rel in frames_raw.items():
+            if not isinstance(frame_rel, str) or not frame_rel.strip():
+                continue
+            persisted_frame = _persisted_visual_asset_path(
+                dict(ev),
+                frame_rel,
+                session_id_fallback=session_id,
+            )
+            if not persisted_frame:
+                continue
+            frame_items.append(
+                {
+                    "label": label,
+                    "url": asset_url(persisted_frame, asset_base_url=asset_base_url, skill_id=skill_id),
+                }
+            )
+        frame_items.sort(key=lambda f: _FRAME_LABEL_ORDER.get(f["label"], 99))
+
         out.append(
             {
                 "event_index": idx,
@@ -66,6 +93,7 @@ def screenshot_items_for_skill(
                     isinstance(vis.get("element_snapshot"), str) and str(vis.get("element_snapshot") or "").strip()
                 ),
                 "frame": dict(ev.get("frame") or {}) if isinstance(ev.get("frame"), dict) else {},
+                "frames": frame_items,
             }
         )
 
@@ -87,9 +115,15 @@ def apply_recording_event_visual_to_step_or_raise(
     step_index: int,
     event_index: int,
     *,
+    frame_label: str | None = None,
     policy_bundle: PolicyBundle | None = None,
 ) -> dict[str, Any]:
-    """Return a **new** document dict with swapped ``signals.visual``, fresh vision anchors, and bumped meta.version."""
+    """Return a **new** document dict with swapped ``signals.visual``, fresh vision anchors, and bumped meta.version.
+
+    By default picks the event's representative screenshot. Pass ``frame_label`` (one of
+    before_far/before_near/at/after_near/after_far) to instead pick one of that event's 5
+    timed frames — e.g. when browsing every frame of every step, not just one per step.
+    """
     bundle = policy_bundle or get_policy_bundle()
     policy = bundle.data
 
@@ -106,9 +140,18 @@ def apply_recording_event_visual_to_step_or_raise(
 
     ev_pick = dict(events[event_index])
     visual = dict(ev_pick.get("visual")) if isinstance(ev_pick.get("visual"), dict) else {}
-    raw_full = visual.get("full_screenshot")
-    if not isinstance(raw_full, str) or not raw_full.strip():
-        raise ValueError("event_missing_full_screenshot")
+
+    if frame_label is not None:
+        if frame_label not in _FRAME_LABEL_ORDER:
+            raise ValueError(f"invalid_frame_label: {frame_label!r}")
+        frames = visual.get("frames") if isinstance(visual.get("frames"), dict) else {}
+        raw_full = frames.get(frame_label)
+        if not isinstance(raw_full, str) or not raw_full.strip():
+            raise ValueError(f"event_frame_not_available: {frame_label!r}")
+    else:
+        raw_full = visual.get("full_screenshot")
+        if not isinstance(raw_full, str) or not raw_full.strip():
+            raise ValueError("event_missing_full_screenshot")
 
     persisted_visual: dict[str, Any] = {
         "bbox": visual.get("bbox") if isinstance(visual.get("bbox"), dict) else {},
@@ -120,17 +163,39 @@ def apply_recording_event_visual_to_step_or_raise(
             session_id_fallback=session_id,
         ),
     }
-    el_snap = visual.get("element_snapshot")
-    if isinstance(el_snap, str) and el_snap.strip():
-        persisted_visual["element_snapshot"] = _persisted_visual_asset_path(
-            ev_pick,
-            el_snap,
-            session_id_fallback=session_id,
-        )
 
     abs_check = resolve_skill_asset(persisted_visual["full_screenshot"])
     if not abs_check.is_file():
         raise ValueError("screenshot_file_missing_on_disk")
+
+    if frame_label is not None:
+        # A specific frame's element crop hasn't been pre-computed (only the event's
+        # representative frame has) — crop it fresh from this frame's bbox.
+        from conxa_compile.recorder.visual import crop_element_from_frame
+
+        images_dir = abs_check.parent.parent / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        el_out = images_dir / f"evt_{event_index + 1:04d}_{frame_label}_element.jpg"
+        cropped = crop_element_from_frame(
+            abs_check,
+            persisted_visual["bbox"],
+            el_out,
+            jpeg_quality=settings.screenshot_jpeg_quality,
+        )
+        if cropped is not None:
+            try:
+                el_rel = str(el_out.relative_to(settings.data_dir.resolve())).replace("\\", "/")
+                persisted_visual["element_snapshot"] = el_rel
+            except ValueError:
+                pass
+    else:
+        el_snap = visual.get("element_snapshot")
+        if isinstance(el_snap, str) and el_snap.strip():
+            persisted_visual["element_snapshot"] = _persisted_visual_asset_path(
+                ev_pick,
+                el_snap,
+                session_id_fallback=session_id,
+            )
 
     doc = dict(document)
     skills = list(doc.get("skills") or [])

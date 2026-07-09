@@ -278,7 +278,7 @@ class LLMRouter:
         # Use provider-specific model, falling back to payload model
         model = payload.get("model")
         if not model:
-            if task in {"anchor_vision", "vision_reasoning"}:
+            if task in {"anchor_vision", "vision_reasoning", "region_selector"}:
                 model = entry.vision_model
             else:
                 model = entry.text_model

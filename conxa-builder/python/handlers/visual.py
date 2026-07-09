@@ -49,13 +49,14 @@ class VisualMixin:
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
         event_index = int(payload.get("event_index") or 0)
+        frame_label = str(payload.get("frame_label") or "").strip() or None
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         snapshot = copy.deepcopy(doc)
         self._install_proxy_router(usage_class="human_edit")
         try:
-            doc = apply_recording_event_visual_to_step_or_raise(doc, step_index, event_index)
+            doc = apply_recording_event_visual_to_step_or_raise(doc, step_index, event_index, frame_label=frame_label)
         except EntitlementBlocked as exc:
             raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
         except QuotaExceeded as exc:
