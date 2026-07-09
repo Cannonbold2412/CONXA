@@ -15,52 +15,82 @@
 
 ```mermaid
 graph TD
-    subgraph "Entry — playwright-mcp-main/"
-        A[index.js\ncreateConnection re-export]
-        B[cli.js\nstdio / HTTP server bootstrap]
+    subgraph entry["Entry: playwright-mcp-main/"]
+        A["index.js<br/>createConnection re-export"]
+        B["cli.js<br/>stdio / HTTP server bootstrap"]
     end
 
-    subgraph "Protocol Harness — playwright-core/src/tools/mcp/"
-        C[index.ts\ncreateConnection\nwires config→tools→backend→server]
-        D[program.ts\ncli arg parse → createServer]
-        E[config.ts\nServerConfig defaults]
+    subgraph wiring["Wiring: playwright-core/src/tools/mcp/"]
+        C["index.ts<br/>resolve config, filter tools, build backend factory"]
+        D["program.ts<br/>CLI args and createServer"]
+        E["config.ts<br/>ServerConfig defaults"]
     end
 
-    subgraph "Tool Registry — mcp/backend/"
-        F[tools.ts\nfilteredTools: Tool[]\ncapability flag gating]
-        G[browserBackend.ts\nBrowserBackend per connection\nlazy browser init]
-        H[ServerBackend interface\nhandleToolCall / screencast / etc.]
+    subgraph harness["MCP harness: playwright-core/src/tools/utils/mcp/"]
+        F["server.ts<br/>ListTools and CallTool handlers"]
+        G["tool.ts<br/>zod schema to MCP tool schema"]
+        H["http.ts<br/>Streamable HTTP and SSE transports"]
     end
 
-    subgraph "Tools — src/tools/"
-        I[snapshot.ts\npage_snapshot: ARIA tree text]
-        J[screenshot.ts\nbrowser_screenshot]
-        K[navigate.ts\nbrowser_navigate]
-        L[click.ts / type.ts / hover.ts …\naction tools]
-        M[pdf.ts / files.ts\ncontent tools]
+    subgraph registry["Tool registry: playwright-core/src/tools/backend/"]
+        I["tools.ts<br/>filteredTools with capability gating"]
+        J["tool.ts<br/>Tool and TabTool contracts"]
+        K["snapshot.ts<br/>page_snapshot ARIA tree text"]
+        L["screenshot.ts<br/>browser_screenshot"]
+        M["navigate.ts<br/>browser_navigate"]
+        N["click.ts / type.ts / hover.ts<br/>action tools"]
+        O["pdf.ts / files.ts<br/>content tools"]
     end
 
-    subgraph "State Gating"
-        N[ModalState tracker\npage.waitForURL / dialog detection]
-        O[Post-action snapshot\nauto-snapshot after every mutating tool]
+    subgraph backend["Execution backend"]
+        P["ServerBackendFactory<br/>tool schemas plus lazy backend creation"]
+        Q["BrowserBackend<br/>per connection browser state"]
+        R["Context<br/>tabs, cwd, session log, modal states"]
+        S["Response<br/>text, image, errors, generated code"]
     end
 
-    subgraph "Browser"
-        P[Playwright BrowserContext\nvia BrowserFactory]
-        Q[CDPRelayServer\n/cdp/{guid} ↔ /extension/{guid}]
+    subgraph state["State gating and observation"]
+        T["ModalState tracker<br/>dialog and file chooser gates"]
+        U["Post-action ARIA snapshot<br/>after mutating tools"]
+    end
+
+    subgraph browser["Browser"]
+        V["Playwright BrowserContext<br/>via BrowserFactory"]
+        W["CDPRelayServer<br/>/cdp/{guid} to /extension/{guid}"]
     end
 
     A --> C
     B --> D
     D --> C
+    C --> E
     C --> F
+    H --> F
+    C --> I
+    C --> P
     F --> G
-    G --> H
-    H --> I & J & K & L & M
-    I & K & L --> N
-    N --> O
-    G --> P
-    P -.-> Q
+    F --> P
+    P --> Q
+    I --> J
+    J --> K
+    J --> L
+    J --> M
+    J --> N
+    J --> O
+    Q --> R
+    Q --> K
+    Q --> L
+    Q --> M
+    Q --> N
+    Q --> O
+    K --> S
+    L --> S
+    M --> T
+    N --> T
+    O --> S
+    T --> U
+    U --> S
+    Q --> V
+    V -.-> W
 ```
 
 ---
@@ -99,38 +129,56 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph "Tool Schema"
-        A[Tool.schema\nJSON Schema inputSchema\nzod validator]
+    subgraph schema["Tool schema path"]
+        A["Tool.schema<br/>zod input validator"]
+        B["toMcpTool<br/>JSON Schema plus annotations"]
+        C["tools/list response<br/>tool schemas only"]
     end
 
-    subgraph "Dispatch"
-        B[MCP tools/call\n{name, arguments}]
-        C[filteredTools lookup\nby tool name]
-        D[Tool.handle\nchecks modal state]
+    subgraph dispatch["Call dispatch path"]
+        D["MCP tools/call<br/>name and arguments"]
+        E["filteredTools lookup<br/>by tool name"]
+        F["inputSchema.parse<br/>runtime argument validation"]
+        G["Tool.handle<br/>modal-state gate for tab tools"]
     end
 
-    subgraph "BrowserBackend"
-        E[BrowserBackend\nensureBrowser on first call]
-        F[ServerBackendFactory\nconfig → BrowserBackend | SSHBackend]
+    subgraph backend["BrowserBackend"]
+        H["ServerBackendFactory<br/>config selects backend"]
+        I["BrowserBackend<br/>ensure browser on first call"]
+        J["Context<br/>page, tabs, cwd, session log"]
     end
 
-    subgraph "Playwright Execution"
-        G[page action\ngoto / click / fill / evaluate]
-        H[page.accessibility.snapshot\nor page.screenshot]
+    subgraph browser["Playwright execution"]
+        K["Page operation<br/>goto / click / fill / evaluate"]
+        L["Observation<br/>ARIA snapshot or screenshot"]
     end
 
-    subgraph "Response Assembly"
-        I[CallToolResult\ncontent: TextContent | ImageContent[]]
-        J[Auto ARIA snapshot\nappended after mutating actions]
+    subgraph response["Response assembly"]
+        M["Response accumulator<br/>text, image, error, and code parts"]
+        N["Auto ARIA snapshot<br/>appended after mutating actions"]
+        O["CallToolResult<br/>content or in-band error"]
     end
 
-    A --> B --> C --> D --> E
-    F --> E
-    E --> G --> H
-    H --> J --> I
+    A --> B
+    B --> C
+    H --> C
+    D --> E
+    E --> F
+    F --> G
+    F --> O
+    H --> I
+    G --> I
+    I --> J
+    J --> K
+    K --> L
+    K --> N
+    L --> M
+    N --> M
+    M --> O
 
     style A fill:#cff4fc,stroke:#055160
-    style I fill:#d1e7dd,stroke:#0a3622
+    style C fill:#cff4fc,stroke:#055160
+    style O fill:#d1e7dd,stroke:#0a3622
 ```
 
 ---

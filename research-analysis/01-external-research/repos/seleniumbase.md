@@ -106,46 +106,59 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph "Selector Input"
-        A[selector: string\ncss / xpath / text / name / id]
+    subgraph "Test Input"
+        A["BaseCase call\nselector + action + value"]
+        B["Driver settings\nbrowser + UC/CDP mode"]
     end
 
-    subgraph "Resolution"
-        B[sb_driver.find_element\nWebDriver.find_element]
-        C{Exception?}
-        D[StaleElement → re-find]
-        E[Intercepted → JS click]
-        F[JS fail → jQuery click]
+    subgraph "Selector Resolution"
+        C["Normalize selector\ncss / xpath / text / name / id"]
+        D["sb_driver.find_element\nsmart wait + readiness check"]
+        E["Native WebDriver action\nclick / type / hover / assert"]
+        F{"Exception?"}
+        G["Re-find / re-scroll\nstale or not interactable"]
+        H["JavaScript click fallback"]
+        I["jQuery click fallback"]
     end
 
     subgraph "CDP Path"
-        G[CDPMethods\n__convert_to_css_if_xpath]
-        H[cdp_use async client\nRuntime.evaluate]
-        I[dispatchMouseEvent / Input.dispatchKeyEvent]
+        J["CDPMethods\nconvert XPath to CSS when needed"]
+        K["cdp_use async client\nRuntime.evaluate"]
+        L["Input events\ndispatchMouseEvent / dispatchKeyEvent"]
+    end
+
+    subgraph "Browser State"
+        M["Live browser DOM\nChrome / Firefox / Edge / Safari"]
+        N["Action result\nsuccess / timeout / typed error"]
     end
 
     subgraph "Recording"
-        J[injected JS\ndocument event listeners]
-        K[action tuple\n{selector, action, value}]
-        L[recorder_helper\nPython / pytest codegen]
+        O["Injected JS\ndocument event listeners"]
+        P["Action tuple\nselector + action + value"]
+        Q["recorder_helper\nPython / pytest codegen"]
     end
 
     subgraph "Deferred Assertions"
-        M[deferred_assert_element\ncollect failures]
-        N[assert_all\nraise combined AssertionError]
+        R["deferred_assert_*\ncollect failures"]
+        S["assert_all\ncombined AssertionError"]
     end
 
-    A --> B --> C
-    C -->|clean| B
-    C -->|StaleElement| D --> B
-    C -->|Intercepted| E
-    E -->|fail| F
-    A --> G --> H --> I
-    J --> K --> L
-    M --> N
+    A --> C
+    B --> C
+    C -->|WebDriver path| D --> E --> F
+    F -->|none| N
+    F -->|stale / not ready| G --> D
+    F -->|click intercepted| H --> M
+    H -->|still fails| I --> M
+    H -->|success| N
+    I --> N
+    C -->|CDP mode / swapped driver| J --> K --> L --> M --> N
+    M -->|DOM events| O --> P --> Q
+    A -->|deferred assert call| R --> S --> N
 
-    style G fill:#fff3cd,stroke:#856404
-    style B fill:#d1e7dd,stroke:#0a3622
+    style D fill:#d1e7dd,stroke:#0a3622
+    style J fill:#fff3cd,stroke:#856404
+    style F fill:#f8d7da,stroke:#842029
 ```
 
 ---

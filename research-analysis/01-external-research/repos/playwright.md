@@ -14,64 +14,67 @@
 ### Component Diagram
 
 ```mermaid
-graph TD
-    subgraph "User / Test Author"
-        A[Test Script / Claude Desktop]
+flowchart TD
+    subgraph USER["User / Test Author"]
+        A["Test Script / Claude Desktop"]
     end
 
-    subgraph "Client Layer — packages/playwright-core/src/client/"
-        B[Page]
-        C[Locator]
-        D[Frame]
-        E[BrowserContext]
-        F[connection.ts / channelOwner.ts]
+    subgraph CLIENT["Client Layer: packages/playwright-core/src/client"]
+        B["Page"]
+        C["Locator"]
+        D["Frame"]
+        E["BrowserContext"]
+        F["connection.ts / channelOwner.ts"]
     end
 
-    subgraph "MCP Layer — src/tools/"
-        G[createConnection — mcp/index.ts]
-        H[filteredTools — backend/tools.ts]
-        I[BrowserBackend — backend/browserBackend.ts]
-        J[CDPRelayServer — mcp/cdpRelay.ts]
+    subgraph MCP["MCP Layer: src/tools"]
+        G["createConnection - mcp/index.ts"]
+        H["filteredTools - backend/tools.ts"]
+        I["BrowserBackend - backend/browserBackend.ts"]
+        J["CDPRelayServer - mcp/cdpRelay.ts"]
     end
 
-    subgraph "Protocol Layer — src/protocol/"
-        K[Serializer / Validator]
+    subgraph PROTOCOL["Protocol Layer: src/protocol"]
+        K["Serializer / Validator"]
     end
 
-    subgraph "Server Layer — src/server/"
-        L[BrowserType / Browser Process]
-        M[Recorder / Codegen]
-        N[Network Interceptor]
-        O[Tracer]
+    subgraph SERVER["Server Layer: src/server"]
+        L["BrowserType / Browser Process"]
+        M["Recorder / Codegen"]
+        N["Network Interceptor"]
+        O["Tracer"]
     end
 
-    subgraph "Injected Layer — packages/injected/src/"
-        P[selectorGenerator.ts]
-        Q[injectedScript.ts — actionability]
-        R[ariaSnapshot.ts]
-        S[roleUtils.ts]
+    subgraph INJECTED["Injected Layer: packages/injected/src"]
+        P["selectorGenerator.ts"]
+        Q["injectedScript.ts - actionability"]
+        R["ariaSnapshot.ts"]
+        S["roleUtils.ts"]
     end
 
-    subgraph "Browser"
-        T[Chromium / Firefox / WebKit via CDP]
+    subgraph BROWSER["Browser"]
+        T["Chromium / Firefox / WebKit"]
     end
 
-    A -->|MCP stdio/HTTP| G
-    A -->|Node.js API| B
+    A -->|"MCP stdio or HTTP"| G
+    A -->|"Node.js API"| B
     G --> H
     H --> I
     I --> E
     B --> C
     B --> D
-    B & C & D & E --> F
+    B --> F
+    C --> F
+    D --> F
+    E --> F
     F --> K
     K --> L
-    L -->|CDP / BiDi| T
-    T -->|page.evaluate| P
-    T -->|page.evaluate| Q
-    T -->|page.evaluate| R
+    L -->|"CDP or BiDi"| T
+    T -->|"page.evaluate"| P
+    T -->|"page.evaluate"| Q
+    T -->|"page.evaluate"| R
     M --> P
-    J -.->|WebSocket bridge| T
+    J -.->|"WebSocket bridge"| T
 ```
 
 ---
@@ -112,29 +115,44 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph "Record (Codegen)"
-        A1[User clicks in browser]
-        A2[Recorder captures DOM event]
-        A3[selectorGenerator.generateSelector\nScores candidates by cost:\nrole+name < label < text < testid < css-id < css-path]
-        A4[Codegen serializes:\npage.getByRole('button',{name:'Submit'})]
+    subgraph REC["Record"]
+        direction TB
+        A1["User clicks in browser"]
+        A2["Recorder captures DOM event"]
+        A3["selectorGenerator scores candidates"]
+        A4["Best selector plus alternatives"]
     end
 
-    subgraph "Selector String — serializable text"
-        B['"role=button[name=Submit]"\nor\n"css=button#submit"']
+    subgraph COMP["Compile / Serialize (Codegen)"]
+        direction TB
+        B1["Codegen emits locator API call"]
+        B2["Serialized selector text"]
+        B3["Examples: role button named Submit, css button submit"]
     end
 
-    subgraph "Execute (runtime)"
-        C1[Locator holds selector string\n— NOT a DOM node]
-        C2[On each action:\nselectorEvaluator.querySelectorAll re-runs]
-        C3[injectedScript.waitForStates\nattached→visible→stable→enabled]
-        C4[action dispatches]
-        C5[ActionResult → response]
+    subgraph EXEC["Execute (runtime)"]
+        direction TB
+        C1["Locator stores selector text<br/>not a DOM node"]
+        C2["Each action re-resolves selector text"]
+        C3["Actionability gates: attached, visible, stable, enabled"]
+        C4["Dispatch click, fill, or another action"]
+        C5["ActionResult response"]
     end
 
-    A1 --> A2 --> A3 --> A4 --> B
-    B --> C1 --> C2 --> C3 --> C4 --> C5
+    A1 --> A2
+    A2 --> A3
+    A3 --> A4
+    A4 --> B1
+    B1 --> B2
+    B2 --> B3
+    B3 --> C1
+    C1 --> C2
+    C2 --> C3
+    C3 --> C4
+    C4 --> C5
 
-    style B fill:#f0f4ff,stroke:#4a6fa5
+    style COMP fill:#f0f4ff,stroke:#4a6fa5
+    style B2 fill:#f8fbff,stroke:#4a6fa5
 ```
 
 ---

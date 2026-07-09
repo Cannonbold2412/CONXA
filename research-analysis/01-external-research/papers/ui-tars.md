@@ -37,6 +37,93 @@ UI-TARS is a VLM (Vision-Language Model) specifically trained for GUI interactio
 
 ---
 
+## Architecture Diagrams
+
+### Component Diagram
+
+```mermaid
+flowchart TD
+    subgraph "Task Context"
+        A["User goal / instruction"]
+        B["Conversation history\nprevious actions + observations"]
+        C["Screenshot observation\nweb / desktop / mobile UI"]
+        D["Set-of-Marks overlay\nnumbered visual targets"]
+    end
+
+    subgraph "UI-TARS VLM"
+        E["Perception\nscreen understanding"]
+        F["Grounding\nvisual target -> coordinates"]
+        G["Reflection\nreason about prior failures"]
+        H["Action generation\n13 unified primitives"]
+    end
+
+    subgraph "Action Contract"
+        I["Parsed action\nclick / type / scroll / hotkey"]
+        J["Special actions\nCALL_USER / FINISHED"]
+        K["Normalized coordinates\nlogical pixels from 0 to 1"]
+    end
+
+    subgraph "Execution Operators"
+        L["LocalComputer\nOS mouse + keyboard"]
+        M["LocalBrowser\nPlaywright browser control"]
+        N["RemoteComputer\nremote desktop control"]
+        O["RemoteBrowser\nremote browser control"]
+    end
+
+    subgraph "Live GUI Surface"
+        P["Application state changes"]
+        Q["Next screenshot"]
+    end
+
+    A --> B
+    C --> D
+    B --> E
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+    H --> J
+    I --> K
+    K --> L
+    K --> M
+    K --> N
+    K --> O
+    L --> P
+    M --> P
+    N --> P
+    O --> P
+    P --> Q
+    Q --> C
+    J -->|ask human or stop| B
+```
+
+### Data Flow Diagram
+
+```mermaid
+flowchart LR
+    A["User task"] --> B["Capture screenshot"]
+    B --> C["Apply Set-of-Marks\nand scale metadata"]
+    C --> D["Prompt UI-TARS\ninstruction + history + image"]
+    D --> E["Model predicts next action"]
+    E --> F["Parse action primitive"]
+
+    F --> G{"Action type"}
+    G -->|coordinate action| H["Scale normalized coordinate\nlogical -> physical pixels"]
+    H --> I["Operator executes UI event"]
+    I --> J["UI state changes"]
+    J --> K["New screenshot + action result"]
+    K --> L["Append observation to history"]
+    L --> D
+
+    G -->|CALL_USER| M["Pause and request clarification"]
+    M --> L
+
+    G -->|FINISHED| N["Return final result"]
+```
+
+---
+
 ## Benchmark Results
 
 | Benchmark | UI-TARS Score | Prior SOTA |
