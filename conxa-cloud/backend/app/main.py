@@ -23,13 +23,15 @@ from app.api.job_routes import router as job_router
 from app.api.llm_proxy_routes import router as llm_proxy_router
 from app.api.plugin_routes import router as plugin_router
 from app.api.product_routes import router as product_router
-from app.api.publish_routes import installers_router, router as publish_router
+from app.api.publish_routes import admin_router as publish_admin_router, installers_router, router as publish_router
 from app.api.cashfree_routes import router as cashfree_router
 from app.api.security import ProductionRequestMiddleware
 from app.api.skillpack_update_routes import router as skillpack_update_router
 from app.api.skillpack_update_routes import telemetry_router as skillpack_telemetry_router
+from app.api.skillpack_update_routes import versioned_router as skillpack_update_versioned_router
 from app.api.tracking_routes import public_router as public_tracking_router
 from app.api.tracking_routes import router as tracking_router
+from app.api.tracking_routes import versioned_router as tracking_versioned_router
 from app.api.updates_routes import router as updates_router
 
 
@@ -125,11 +127,14 @@ app.include_router(product_router, prefix="/api/v1")
 app.include_router(plugin_router, prefix="/api/v1")
 app.include_router(llm_proxy_router, prefix="/api/v1")
 app.include_router(publish_router, prefix="/api/v1")
+app.include_router(publish_admin_router, prefix="/api/v1")
 app.include_router(installers_router, prefix="/api/v1")
 app.include_router(cashfree_router, prefix="/api/v1")
 app.include_router(skillpack_update_router, prefix="/api/v1")
+app.include_router(skillpack_update_versioned_router, prefix="/api/v1")
 app.include_router(skillpack_telemetry_router, prefix="/api/v1")
 app.include_router(tracking_router, prefix="/api/v1")
+app.include_router(tracking_versioned_router, prefix="/api/v1")
 app.include_router(public_tracking_router)  # package-token ingest endpoint for runtimes
 app.include_router(updates_router, prefix="/api/v1")
 

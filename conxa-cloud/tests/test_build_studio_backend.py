@@ -196,7 +196,7 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     logs: list[dict] = []
 
-    publish_info = b._publish_skill_pack_for_installer(
+    publish_info = b._publish_skill_pack(
         company_slug="render",
         plugin=SimpleNamespace(name="Render", target_url="https://dashboard.render.com", protected_url="https://dashboard.render.com/"),
         version="1.2.3",
@@ -205,19 +205,30 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
     )
 
     rewritten = json.loads((packs_dir / "pack.json").read_text(encoding="utf-8"))
-    assert seen["url"] == "https://apis.conxa.in/api/v1/plugins/publish"
+    # _installer_generation() probes GET /api/v1/plugins/generations first (via the
+    # same mocked urlopen); its GET has no body, so fake_urlopen's req.data.decode()
+    # raises inside itself, which _cloud_json converts to _CommandError and
+    # _installer_generation() catches, falling back to "v2" — the actual publish
+    # POST happens second and is what `seen` reflects by the time we assert.
+    assert seen["url"] == "https://apis.conxa.in/api/v1/plugins/v2/render/skill-packs/upload"
     assert seen["auth"] == "Bearer studio-token"
     assert seen["body"]["skill_pack_version"] == "1.2.3"
     assert seen["body"]["release_notes"] == "Release message"
     assert rewritten["skill_pack_version"] == "1.2.3"
     assert rewritten["release_notes"] == "Release message"
-    assert rewritten["tracking"]["tracking_url"] == "https://apis.conxa.in/api/tracking/render/events"
+    assert rewritten["installer_version"] == "v2"
+    # tracking_url/sync_endpoint are now trusted verbatim from the cloud's response
+    # (already correctly versioned server-side) rather than reconstructed locally.
+    assert rewritten["tracking"]["tracking_url"] == "https://internal.example/api/tracking/render/events"
     assert rewritten["tracking"]["tracking_token"] == "cloud-token"
-    assert rewritten["sync_endpoint"] == "https://apis.conxa.in/api/v1/skill-packs/render/delta"
+    assert rewritten["sync_endpoint"] == "https://apis.conxa.in/api/v1/plugins/v2/render/skill-packs/delta"
     assert rewritten["sync_token"] == "sync-token"
+    assert publish_info["slug"] == "render"
+    assert publish_info["version"] == "1.2.3"
     assert publish_info["workspace_id"] == "wrk_123"
-    assert publish_info["tracking_url"] == "https://apis.conxa.in/api/tracking/render/events"
+    assert publish_info["tracking_url"] == "https://internal.example/api/tracking/render/events"
     assert publish_info["tracking_token_present"] is True
+    assert publish_info["sync_endpoint"] == rewritten["sync_endpoint"]
     assert any("workspace wrk_123" in entry["message"] for entry in logs)
 
 
@@ -246,7 +257,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
     # Local API base: skip gracefully.
     b._cloud_api = "http://127.0.0.1:8000"
     logs: list[dict] = []
-    result = b._publish_skill_pack_for_installer(
+    result = b._publish_skill_pack(
         company_slug="render",
         plugin=SimpleNamespace(name="Render", target_url="", protected_url=""),
         version="1.0.0",
@@ -259,7 +270,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
     # Real, non-local cloud: the same unreachability must still fail the build.
     b._cloud_api = "https://apis.conxa.in"
     with pytest.raises(Exception, match="Cloud publish failed"):
-        b._publish_skill_pack_for_installer(
+        b._publish_skill_pack(
             company_slug="render",
             plugin=SimpleNamespace(name="Render", target_url="", protected_url=""),
             version="1.0.0",
@@ -269,6 +280,9 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
 
 
 def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp_path):
+    """Build Installer no longer publishes as a side effect — it requires a
+    skill pack already published (sync_token present in pack.json) and just
+    packages + optionally uploads it."""
     b, _out = backend
 
     from conxa_core.config import settings
@@ -278,11 +292,14 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     plugin = create_plugin("Render", "https://dashboard.render.com")
-    seen: dict[str, object] = {}
 
-    def fake_publish(**kwargs):
-        seen["publish"] = kwargs
-        return {}
+    packs_dir = tmp_path / "skill-packs" / "render"
+    packs_dir.mkdir(parents=True)
+    (packs_dir / "pack.json").write_text(
+        json.dumps({"company": "render", "skills": [], "sync_token": "sync-token"}), encoding="utf-8"
+    )
+
+    seen: dict[str, object] = {}
 
     def fake_build(plugin_id, **kwargs):
         seen["build_plugin_id"] = plugin_id
@@ -301,7 +318,6 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
         seen["upload"] = kwargs
         return dict(kwargs["result"], cloud_download_url="https://apis.conxa.in/api/v1/installers/render")
 
-    monkeypatch.setattr(b, "_publish_skill_pack_for_installer", fake_publish)
     monkeypatch.setattr(installer_builder, "build_installer", fake_build)
     monkeypatch.setattr(b, "_upload_installer_for_download", fake_upload)
 
@@ -316,13 +332,77 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
         "rid",
     )
 
-    assert seen["publish"]["version"] == "2.0.0"
-    assert seen["publish"]["release_notes"] == "Ship it"
     assert seen["build"]["version"] == "2.0.0"
     assert seen["build"]["release_notes"] == "Ship it"
     assert seen["upload"]["release_notes"] == "Ship it"
     assert result["version"] == "2.0.0"
     assert result["release_notes"] == "Ship it"
+
+
+def test_cmd_build_installer_requires_published_skill_pack(backend, monkeypatch, tmp_path):
+    """Build Installer is a secondary, advanced action — it must refuse to run
+    until Publish Skill Package has actually shipped a release."""
+    b, _out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.plugin_store import create_plugin
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    plugin = create_plugin("Render", "https://dashboard.render.com")
+
+    with pytest.raises(Exception, match="Publish a skill pack release"):
+        b.cmd_build_installer(
+            {"plugin_id": plugin.id, "company_slug": "render", "version": "1.0.0", "release_notes": "notes"},
+            "rid",
+        )
+
+
+def test_cmd_build_installer_non_fatal_when_upload_fails(backend, monkeypatch, tmp_path):
+    """Installer upload to the cloud is optional — a failure there must not
+    fail the build, only surface as a warning field on the result."""
+    b, _out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.plugin_store import create_plugin
+    from handlers.protocol import _CommandError
+    from services import installer_builder
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    plugin = create_plugin("Render", "https://dashboard.render.com")
+
+    packs_dir = tmp_path / "skill-packs" / "render"
+    packs_dir.mkdir(parents=True)
+    (packs_dir / "pack.json").write_text(
+        json.dumps({"company": "render", "skills": [], "sync_token": "sync-token"}), encoding="utf-8"
+    )
+
+    def fake_build(plugin_id, **kwargs):
+        return {
+            "installer_path": str(tmp_path / "Render-Agent-Setup.exe"),
+            "filename": "Render-Agent-Setup.exe",
+            "company": kwargs["company_slug"],
+            "plugin_id": plugin_id,
+            "version": kwargs["version"],
+            "runtime_version": "v1.0.0",
+            "release_notes": kwargs["release_notes"],
+        }
+
+    def fake_upload_fails(**_kwargs):
+        raise _CommandError("installer_upload_failed", "Installer upload failed: connection refused")
+
+    monkeypatch.setattr(installer_builder, "build_installer", fake_build)
+    monkeypatch.setattr(b, "_upload_installer_for_download", fake_upload_fails)
+
+    result = b.cmd_build_installer(
+        {"plugin_id": plugin.id, "company_slug": "render", "version": "1.0.0", "release_notes": "notes"},
+        "rid",
+    )
+
+    assert result["cloud_upload_error"] == "installer_upload_failed"
+    assert "connection refused" in result["cloud_upload_error_message"]
+    assert result["installer_path"] == str(tmp_path / "Render-Agent-Setup.exe")
 
 
 def test_auth_stop_recording_marks_plugin_ready(backend, monkeypatch, tmp_path):
@@ -532,6 +612,7 @@ def test_compile_derives_title_from_plugin_workflow_and_marks_compiled(
         )
         return SimpleNamespace(
             skills=[SimpleNamespace(steps=[{"kind": "click"}])],
+            compile_report={"status": "ok", "min_confidence": 1.0, "steps_with_warnings": 0},
             model_dump=lambda mode="json": {
                 "meta": {
                     "id": skill_id,
@@ -551,15 +632,129 @@ def test_compile_derives_title_from_plugin_workflow_and_marks_compiled(
     )
 
     assert result["skill_id"] == "skill_sess-compile"
+    assert result["compile_status"] == "ok"
     assert captured["title"] == "Submit Invoice"
     updated = get_plugin(plugin.id)
     assert updated is not None
     workflow = updated.workflows[0]
     assert workflow.status == "compiled"
     assert workflow.skill_id == "skill_sess-compile"
+    assert workflow.compile_status == "ok"
+    assert workflow.compile_min_confidence == 1.0
     assert any(
         event.get("type") == "event"
         and event.get("id") == "compile-request"
         and event.get("phase") == "compile_done"
         for event in out
     )
+
+
+def test_sign_off_auto_builds_when_all_workflows_ready(backend, monkeypatch, tmp_path):
+    """Sign-off should trigger build_plugin the moment its own gate (every workflow
+    compiled + edited) is satisfied, without a separate Build Plugin page visit."""
+    b, out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.plugin_store import add_workflow, create_plugin, get_plugin, save_plugin
+    import conxa_compile.plugin_builder as plugin_builder
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    build_calls: list[str] = []
+    monkeypatch.setattr(
+        plugin_builder, "build_plugin", lambda plugin_id, **kwargs: build_calls.append(plugin_id)
+    )
+
+    plugin = create_plugin("Acme", "https://acme.test")
+    added = add_workflow(plugin.id, "Send Invoice", "sess-1")
+    assert added is not None
+
+    p = get_plugin(plugin.id)
+    p.workflows[0].skill_id = "skill_sess-1"
+    p.workflows[0].status = "compiled"
+    save_plugin(p)
+
+    result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-1")
+
+    assert result == {"skill_id": "skill_sess-1", "signed_off": True, "built": True, "waiting_on": []}
+    assert build_calls == [plugin.id]
+
+    updated = get_plugin(plugin.id)
+    assert updated.workflows[0].signed_off is True
+    assert updated.workflows[0].edited_at is not None
+
+
+def test_sign_off_reports_waiting_on_other_workflows_without_building(backend, monkeypatch, tmp_path):
+    """Approving one workflow in a multi-workflow plugin must not build until every
+    workflow in the plugin is compiled and signed off."""
+    b, out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.plugin_store import add_workflow, create_plugin, get_plugin, save_plugin
+    import conxa_compile.plugin_builder as plugin_builder
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    build_calls: list[str] = []
+    monkeypatch.setattr(
+        plugin_builder, "build_plugin", lambda plugin_id, **kwargs: build_calls.append(plugin_id)
+    )
+
+    plugin = create_plugin("Acme", "https://acme.test")
+    add_workflow(plugin.id, "Send Invoice", "sess-1")
+    add_workflow(plugin.id, "Cancel Invoice", "sess-2")
+
+    p = get_plugin(plugin.id)
+    p.workflows[0].skill_id = "skill_sess-1"
+    p.workflows[0].status = "compiled"
+    # Second workflow recorded but never compiled — no skill_id, no edited_at.
+    save_plugin(p)
+
+    result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-2")
+
+    assert result["signed_off"] is True
+    assert result["built"] is False
+    assert result["waiting_on"] == ["Cancel Invoice"]
+    assert build_calls == []
+
+    # The workflow being signed off still gets its own fields set even though the
+    # plugin as a whole isn't ready to build yet.
+    updated = get_plugin(plugin.id)
+    assert updated.workflows[0].signed_off is True
+    assert updated.workflows[0].edited_at is not None
+
+
+def test_sign_off_surfaces_build_failure_without_failing_the_sign_off(backend, monkeypatch, tmp_path):
+    """A build failure after a successful sign-off must not make sign-off itself
+    look like it failed — the fields are already persisted; only `built` is false."""
+    b, out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.plugin_store import add_workflow, create_plugin, get_plugin, save_plugin
+    import conxa_compile.plugin_builder as plugin_builder
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    def _boom(plugin_id, **kwargs):
+        raise ValueError("disk full")
+
+    monkeypatch.setattr(plugin_builder, "build_plugin", _boom)
+
+    plugin = create_plugin("Acme", "https://acme.test")
+    add_workflow(plugin.id, "Send Invoice", "sess-1")
+    p = get_plugin(plugin.id)
+    p.workflows[0].skill_id = "skill_sess-1"
+    p.workflows[0].status = "compiled"
+    save_plugin(p)
+
+    result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-3")
+
+    assert result["signed_off"] is True
+    assert result["built"] is False
+    assert "disk full" in result["build_error"]
+
+    updated = get_plugin(plugin.id)
+    assert updated.workflows[0].signed_off is True

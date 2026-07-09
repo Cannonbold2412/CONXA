@@ -638,7 +638,7 @@ def test_publish_rejects_path_traversal():
     files = [{"path": "../escape.json", "content_base64": base64.b64encode(b"x").decode()}]
     r = client.post(
         "/api/v1/plugins/publish",
-        json={"slug": "trav-test", "skill_pack_version": "1", "skills": [], "files": files},
+        json={"slug": "trav-test", "skill_pack_version": "1.0.0", "skills": [], "files": files},
     )
     assert r.status_code == 400
     assert "invalid_file_path" in r.json()["detail"]

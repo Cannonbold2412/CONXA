@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from conxa_core.db import db_append, db_get, db_list_kv
 from app.api.deps import current_principal
+from app.api.product_ownership import validate_installer_version
 from app.services.saas import Principal
 from app.services.tracking import (
     _batches_for_principal,
@@ -33,11 +34,12 @@ from app.services.tracking import (
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
 public_router = APIRouter(prefix="/api/tracking", tags=["tracking"])
+# Versioned equivalent of the ingest route below, nested under /plugins — see
+# publish_routes.py for the sibling publish/installer-upload/delta endpoints.
+versioned_router = APIRouter(prefix="/plugins", tags=["tracking"])
 
 
-@public_router.post("/{company}/events", status_code=202)
-@router.post("/{company}/events", status_code=202)
-async def ingest_events(company: str, request: Request) -> dict[str, Any]:
+async def _ingest_events_impl(company: str, request: Request) -> dict[str, Any]:
     """Accept a compact event batch from the runtime. Fast 202 — never blocks execution."""
     token = request.headers.get("x-tracking-token", "")
     token_record = _verify_token(company, token)
@@ -71,6 +73,22 @@ async def ingest_events(company: str, request: Request) -> dict[str, Any]:
     }
     db_append(f"tracking/{company}", run_id, [enriched])
     return {"ok": True}
+
+
+@public_router.post("/{company}/events", status_code=202)
+@router.post("/{company}/events", status_code=202)
+async def ingest_events(company: str, request: Request) -> dict[str, Any]:
+    """Legacy ingest route, served at both the bare ``/api/tracking/...`` path
+    (permanent back-compat alias, not a bug — see CLAUDE.md Key Invariants) and
+    ``/api/v1/tracking/...``. See ``ingest_events_v2`` for the versioned,
+    company-scoped-by-installer-generation equivalent."""
+    return await _ingest_events_impl(company, request)
+
+
+@versioned_router.post("/{installer_version}/{company}/tracking/events", status_code=202)
+async def ingest_events_v2(installer_version: str, company: str, request: Request) -> dict[str, Any]:
+    validate_installer_version(installer_version)
+    return await _ingest_events_impl(company, request)
 
 
 

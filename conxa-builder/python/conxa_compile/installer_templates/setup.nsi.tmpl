@@ -14,9 +14,18 @@
 ;   ${INSTALL_DIR}\conxa-runtime\current            <- directory junction to the above
 ;   ${INSTALL_DIR}\conxa-app\<version>\server.js ...
 ;   ${INSTALL_DIR}\conxa-app\current                 <- directory junction
-;   ${INSTALL_DIR}\skill-packs\<company>\pack.json    (flat, company-level metadata)
-;   ${INSTALL_DIR}\skill-packs\<company>\<skill>\<version>\...
-;   ${INSTALL_DIR}\skill-packs\<company>\<skill>\current  <- directory junction, one per skill
+;   ${INSTALL_DIR}\skill-packs\<company>\pack.json    (flat, company-level metadata —
+;                                                       the ONLY skill-pack content the
+;                                                       installer itself ships)
+;   ${INSTALL_DIR}\skill-packs\<company>\<skill>\<version>\...   <- created by the
+;   ${INSTALL_DIR}\skill-packs\<company>\<skill>\current           runtime's first
+;                                                                   delta-sync (sync.js),
+;                                                                   not by this installer
+; The installer is a thin, static-config-only artifact: it ships pack.json (company
+; identity, installer_version, sync/tracking endpoints and tokens) and nothing else for
+; skill packs. Every skill is downloaded — and every `current` junction created — by the
+; runtime's own delta-sync on first run, exactly as it does for every later update, so
+; there is no separate "initial install" skill layout to keep in sync with updates.
 ; Junctions are created via PowerShell `New-Item -ItemType Junction` — this does NOT
 ; require admin rights or Developer Mode (unlike true NTFS symlinks), matching the
 ; same mechanism the runtime's self-updater uses post-install.
@@ -26,11 +35,6 @@
 !define VERSION        "{{VERSION}}"
 !define RUNTIME_VER    "{{RUNTIME_VERSION}}"
 !define APP_VER        "{{APP_VERSION}}"
-; v-prefixed directory name for each skill's initial version dir — must match
-; version_manager.js's VERSION_DIR_RE (/^v\d+\.\d+\.\d+/) or the runtime's own
-; sync-driven updates (which do normalize this way) would silently stop recognizing
-; the installer's own initial version once updates start arriving.
-!define SKILL_VER_DIR  "{{SKILL_VERSION_DIR}}"
 !define STAGING_DIR    "{{STAGING_DIR}}"
 ; Per-user install: no UAC, correct user profile
 ; Install tree is environment-scoped ({{INSTALL_SUBDIR}} = .conxa | .conxa-dev) so a
@@ -170,28 +174,14 @@ SectionEnd
 
 ; ── Skill packs section ───────────────────────────────────────────────────────
 Section "SkillPacks" SEC_SKILLS
-  ; installer_builder.py stages each skill pre-nested under its own version directory
-  ; (skill-packs/<company>/<skill>/<version>/…, pack.json flat at the company root),
-  ; so this recursive copy already lands files exactly where the versioned layout
-  ; expects — no per-file restructuring needed here.
+  ; Thin installer: ship only the static pack.json (company identity, installer
+  ; generation, sync/tracking endpoints and tokens) — no skill file trees and no
+  ; `current` junctions. The runtime's own delta-sync (runtime/sync.js) downloads
+  ; every skill and creates each skill's `current` junction on its first run,
+  ; the same way it does for every later update — so there is nothing left for
+  ; this installer to stage beyond pack.json itself.
   SetOutPath "${SKILL_DIR}"
-  File /r "${STAGING_DIR}\skill-packs\${COMPANY_SLUG}\*.*"
-
-  ; One `current` junction per skill, read dynamically from pack.json — a company can
-  ; have any number of skills and this must not require per-skill NSIS code.
-  FileOpen $0 "$TEMP\conxa_skill_junctions.ps1" w
-  FileWrite $0 "$$pack = Get-Content $\"${SKILL_DIR}\pack.json$\" | ConvertFrom-Json$\r$\n"
-  FileWrite $0 "foreach ($$slug in $$pack.skills) {$\r$\n"
-  FileWrite $0 "  $$versionDir = Join-Path $\"${SKILL_DIR}$\" (Join-Path $$slug '${SKILL_VER_DIR}')$\r$\n"
-  FileWrite $0 "  if (-not (Test-Path $$versionDir)) { continue }$\r$\n"
-  FileWrite $0 "  $$link = Join-Path $\"${SKILL_DIR}$\" (Join-Path $$slug 'current')$\r$\n"
-  FileWrite $0 "  if (Test-Path $$link) { (Get-Item $$link).Delete() }$\r$\n"
-  FileWrite $0 "  New-Item -ItemType Junction -Path $$link -Target $$versionDir -Force | Out-Null$\r$\n"
-  FileWrite $0 "}$\r$\n"
-  FileClose $0
-  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"$TEMP\conxa_skill_junctions.ps1$\""
-  Pop $0
-  Delete "$TEMP\conxa_skill_junctions.ps1"
+  File "${STAGING_DIR}\skill-packs\${COMPANY_SLUG}\pack.json"
 
   ; Force conxa-runtime.exe to rescan the newly installed pack instead of using stale cache.
   Delete "${INSTALL_DIR}\cache\manifests.json"

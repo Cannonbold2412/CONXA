@@ -87,9 +87,9 @@ const METER_CONFIGS: UsageMeterConfig[] = [
     icon: Users,
   },
   {
-    key: 'installer_slots',
-    label: 'Installer Slots',
-    description: 'Hosted plugin installers',
+    key: 'skill_pack_slots',
+    label: 'Skill Pack Slots',
+    description: 'Published skill pack products',
     icon: PackageCheck,
   },
   {

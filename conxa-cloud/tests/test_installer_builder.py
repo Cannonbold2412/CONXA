@@ -6,22 +6,28 @@ def test_rendered_nsis_uses_skill_packs_paths(tmp_path):
     rendered = nsi_path.read_text(encoding="utf-8")
 
     assert r"${INSTALL_DIR}\skill-packs\${COMPANY_SLUG}" in rendered
-    assert r"${STAGING_DIR}\skill-packs\${COMPANY_SLUG}\*.*" in rendered
+    # Thin installer: only pack.json is staged, not a recursive copy of the
+    # whole skill-packs tree — the runtime's own delta-sync fetches every skill.
+    assert r"${STAGING_DIR}\skill-packs\${COMPANY_SLUG}\pack.json" in rendered
+    assert r"${STAGING_DIR}\skill-packs\${COMPANY_SLUG}\*.*" not in rendered
     assert r"${INSTALL_DIR}\plugins\*.*" not in rendered
     assert r"${STAGING_DIR}\plugins\${COMPANY_SLUG}\*.*" not in rendered
 
 
-def test_rendered_nsis_creates_junctions_and_normalizes_skill_version(tmp_path):
-    # No skill_version_dir_name passed -> falls back to a "v"-prefixed version,
-    # matching runtime/version_manager.js's VERSION_DIR_RE.
+def test_rendered_nsis_creates_runtime_and_app_junctions_but_not_skill_junctions(tmp_path):
+    # Runtime/app-layer junctions are unrelated to skill packs and still exist.
+    # Per-skill junctions are no longer created by the installer at all — the
+    # runtime's own delta-sync creates each skill's `current` junction on its
+    # first run (see runtime/sync.js), exactly as it does for every later update.
     nsi_path = _render_nsis_script(tmp_path, "render", "Render", "0.3.0")
     rendered = nsi_path.read_text(encoding="utf-8")
 
-    assert '!define SKILL_VER_DIR  "v0.3.0"' in rendered
     assert "New-Item -ItemType Junction" in rendered
     assert r"${RUNTIME_ROOT}\current" in rendered
     assert r"${APP_ROOT}\current" in rendered
     assert r"${RUNTIME_ROOT}\current\conxa-runtime.exe" in rendered  # MCP command target
+    assert "conxa_skill_junctions.ps1" not in rendered
+    assert "SKILL_VER_DIR" not in rendered
 
 
 def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, monkeypatch):
@@ -190,11 +196,11 @@ def test_build_installer_still_requires_sync_token_for_real_cloud_endpoint(tmp_p
         installer_builder.build_installer(plugin.id, company_slug="render")
 
 
-def test_build_installer_stages_each_skill_under_its_own_version_directory(tmp_path, monkeypatch):
-    """Each skill must land at skill-packs/<company>/<skill>/<v-version>/ with pack.json
-    flat at the company root — matching the layout runtime/sync.js writes into on later
-    updates (see runtime/version_manager.js's VERSION_DIR_RE)."""
-    import json
+def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeypatch):
+    """Thin installer: only pack.json is staged into the NSIS payload — no skill
+    file trees. The runtime's own delta-sync downloads every skill and creates
+    each skill's `current` junction on its first run (see runtime/sync.js),
+    exactly as it does for every later update."""
     import subprocess
 
     from conxa_core.config import settings
@@ -206,7 +212,7 @@ def test_build_installer_stages_each_skill_under_its_own_version_directory(tmp_p
     skill_pack = tmp_path / "skill-packs" / "render"
     (skill_pack / "deploy").mkdir(parents=True)
     (skill_pack / "pack.json").write_text(
-        '{"skill_pack_version":"0.3.0","skills":["deploy"],"sync_token":"sync-token"}',
+        '{"skill_pack_version":"0.3.0","skills":["deploy"],"sync_token":"sync-token","installer_version":"v2"}',
         encoding="utf-8",
     )
     (skill_pack / "deploy" / "manifest.json").write_text('{"name":"deploy"}', encoding="utf-8")
@@ -233,15 +239,10 @@ def test_build_installer_stages_each_skill_under_its_own_version_directory(tmp_p
         # Assert here, not after build_installer() returns — its `with
         # tempfile.TemporaryDirectory()` block deletes `tmp` before this function's
         # caller sees control again.
-        captured["skill_version_dir_name"] = kwargs.get("skill_version_dir_name")
         staged = tmp / "skill-packs" / "render"
         assert (staged / "pack.json").is_file(), "pack.json must stay flat at the company root"
-        assert not (staged / "deploy" / "manifest.json").exists(), "skill files must NOT sit flat under the skill slug"
-        versioned = staged / "deploy" / "v0.3.0"
-        assert (versioned / "manifest.json").is_file()
-        assert (versioned / "execution.json").is_file()
-        assert (versioned / "version.json").is_file()
-        assert json.loads((versioned / "version.json").read_text())["skill_version"] == "v0.3.0"
+        assert not (staged / "deploy").exists(), "thin installer must not stage any skill file tree"
+        captured["staged_entries"] = sorted(p.name for p in staged.iterdir())
         return real_render(tmp, *args, **kwargs)
 
     def fake_run(args, **kwargs):
@@ -263,4 +264,4 @@ def test_build_installer_stages_each_skill_under_its_own_version_directory(tmp_p
 
     installer_builder.build_installer(plugin.id, company_slug="render")
 
-    assert captured["skill_version_dir_name"] == "v0.3.0"
+    assert captured["staged_entries"] == ["pack.json"]

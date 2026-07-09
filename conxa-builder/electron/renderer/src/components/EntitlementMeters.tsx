@@ -5,12 +5,12 @@ import { cn } from '@/lib/utils'
 
 const LABELS: Record<EntitlementMeterKey, string> = {
   seats: 'Seats',
-  installer_slots: 'Installer slots',
+  skill_pack_slots: 'Skill pack slots',
   compile_credits: 'Compile credits',
   human_edit_tokens: 'Human Edit pool',
 }
 
-const DEFAULT_METERS: EntitlementMeterKey[] = ['seats', 'installer_slots', 'compile_credits', 'human_edit_tokens']
+const DEFAULT_METERS: EntitlementMeterKey[] = ['seats', 'skill_pack_slots', 'compile_credits', 'human_edit_tokens']
 
 function formatCount(value: number | null | undefined, key: EntitlementMeterKey) {
   if (value == null) return 'Unlimited'

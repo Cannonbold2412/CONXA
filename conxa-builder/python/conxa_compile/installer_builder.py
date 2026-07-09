@@ -18,7 +18,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -185,6 +184,12 @@ def build_installer(
 
     skills = [str(skill) for skill in pack.get("skills", []) if skill]
     installer_version = str(version or pack.get("skill_pack_version") or plugin.build.version or runtime_version)
+    # backend.py's _publish_skill_pack already stamps installer_version and the
+    # correctly versioned sync_endpoint/tracking.tracking_url into pack.json at
+    # publish time — this module has no cloud access of its own (conxa_compile
+    # is local-only), so it just ships pack.json through as-is.
+    if not pack.get("installer_version"):
+        _log("Warning: pack.json has no installer_version — this pack was published before the versioned installer scheme, or against a local dev cloud.")
     _log(f"Using existing skill pack ({len(skills)} skill(s): {', '.join(skills) if skills else 'none'})")
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -200,40 +205,20 @@ def build_installer(
         app_version = app_dir.name if app_dir else None
         _log("Runtime staged")
 
-        # ── 3. Stage skill pack ────────────────────────────────────────────────
-        # Each skill is nested under its own version directory (matching the versioned
-        # skill-packs/<company>/<skill>/<version>/ layout the runtime maintains after
-        # cloud sync — see runtime/version_manager.js) so the installer's initial install
-        # already speaks the same on-disk convention updates will later write into.
-        # pack.json itself stays flat at the company root (company-level metadata).
-        #
-        # version_manager.js only recognizes version directories matching /^v\d+\.\d+\.\d+/
-        # (see VERSION_DIR_RE) — sync.js already normalizes bare version strings this way
-        # for subsequent updates, so the initial install must match or its version dir
-        # would be silently invisible to listVersions()/retention once updates start.
-        skill_version_dir_name = installer_version if installer_version.startswith("v") else f"v{installer_version}"
-
+        # ── 3. Stage static skill-pack config ──────────────────────────────────
+        # Thin installer: ship only pack.json (company identity, installer
+        # generation, sync/tracking endpoints and tokens) — no skill file trees.
+        # The runtime's own delta-sync (runtime/sync.js) downloads every skill and
+        # creates each skill's `current` junction on first run, exactly as it does
+        # for every later update, so there is no separate initial-install layout
+        # to keep in sync with the versioned skill-packs/<company>/<skill>/<version>/
+        # scheme (see runtime/version_manager.js) — sync.js already produces it.
         staged_packs = tmp / "skill-packs" / company_slug
-        _log(f"Staging skill pack from {skill_pack_dir}…")
+        _log(f"Staging pack.json from {skill_pack_dir}…")
         staged_packs.mkdir(parents=True)
         pack_json_src = skill_pack_dir / "pack.json"
         shutil.copy2(pack_json_src, staged_packs / "pack.json")
-        staged_files = 1
-        for slug in skills:
-            skill_src = skill_pack_dir / slug
-            if not skill_src.is_dir():
-                continue
-            skill_version_dir = staged_packs / slug / skill_version_dir_name
-            shutil.copytree(skill_src, skill_version_dir)
-            (skill_version_dir / "version.json").write_text(
-                json.dumps({
-                    "skill_version": skill_version_dir_name,
-                    "released_at": datetime.now(timezone.utc).isoformat(),
-                }),
-                encoding="utf-8",
-            )
-            staged_files += len(list(skill_version_dir.rglob("*")))
-        _log(f"Skill packs staged ({staged_files} file(s), {len(skills)} skill(s) at {skill_version_dir_name})")
+        _log(f"pack.json staged ({len(skills)} skill(s) will be fetched by the runtime's first sync)")
 
         # ── 3b. Stage logo icon ───────────────────────────────────────────────
         staged_icon: Path | None = None
@@ -253,7 +238,6 @@ def build_installer(
             installer_version,
             runtime_version=runtime_version,
             app_version=app_version,
-            skill_version_dir_name=skill_version_dir_name,
             icon_path=staged_icon,
         )
         _log(f"NSIS script written to {nsi_path}")
@@ -407,7 +391,6 @@ def _render_nsis_script(
     version: str,
     runtime_version: str | None = None,
     app_version: str | None = None,
-    skill_version_dir_name: str | None = None,
     icon_path: Path | None = None,
 ) -> Path:
     template_path = Path(__file__).parent / "installer_templates" / "setup.nsi.tmpl"
@@ -433,7 +416,6 @@ def _render_nsis_script(
         .replace("{{VERSION}}", version)
         .replace("{{RUNTIME_VERSION}}", runtime_version or "runtime-v0.0.0")
         .replace("{{APP_VERSION}}", app_version or "app-v0.0.0")
-        .replace("{{SKILL_VERSION_DIR}}", skill_version_dir_name or (version if version.startswith("v") else f"v{version}"))
         .replace("{{STAGING_DIR}}", str(tmp))
         .replace("{{ICON_DIRECTIVE}}", icon_directive)
         .replace("{{INSTALL_SUBDIR}}", install_subdir)

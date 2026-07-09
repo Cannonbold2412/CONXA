@@ -42,7 +42,7 @@ def _plan_features(tier: str) -> list[str]:
         return "Unlimited seats" if n is None else f"{n} seat" + ("s" if n != 1 else "")
 
     def _slot(n: int | None) -> str:
-        return "Unlimited installer slots" if n is None else f"{n} installer slot" + ("s" if n != 1 else "")
+        return "Unlimited skill pack slots" if n is None else f"{n} skill pack slot" + ("s" if n != 1 else "")
 
     def _credits(n: int | None) -> str:
         return "Unlimited compile credits/month" if n is None else f"{n} compile credits/month"
@@ -54,7 +54,7 @@ def _plan_features(tier: str) -> list[str]:
 
     return [
         _seat(limits.get("seats")),
-        _slot(limits.get("installer_slots")),
+        _slot(limits.get("skill_pack_slots")),
         _credits(limits.get("compile_credits")),
         _tokens(limits.get("human_edit_tokens")),
     ]

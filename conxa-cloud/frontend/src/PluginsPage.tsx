@@ -34,9 +34,9 @@ function statusBadge(status: Plugin['status']) {
   )
 }
 
-function InstallerSlotSummary() {
+function SkillPackSlotSummary() {
   const q = useQuery({ queryKey: queryKeys.entitlements, queryFn: fetchEntitlements, staleTime: 30_000, retry: 1 })
-  const meter = q.data?.meters?.installer_slots
+  const meter = q.data?.meters?.skill_pack_slots
 
   if (q.isLoading) {
     return (
@@ -53,7 +53,7 @@ function InstallerSlotSummary() {
     return (
       <div className="flex h-9 min-w-56 items-center justify-between gap-4 border-l border-white/10 pl-4">
         <div className="leading-none">
-          <p className="text-[11px] font-medium text-zinc-500">Installer slots</p>
+          <p className="text-[11px] font-medium text-zinc-500">Skill pack slots</p>
           <p className="mt-1 text-[11px] text-amber-300">Usage unavailable</p>
         </div>
       </div>
@@ -66,7 +66,7 @@ function InstallerSlotSummary() {
   return (
     <div className="flex h-9 min-w-56 items-center justify-between gap-4 border-l border-white/10 pl-4">
       <div className="leading-none">
-        <p className="text-[11px] font-medium text-zinc-500">Installer slots</p>
+        <p className="text-[11px] font-medium text-zinc-500">Skill pack slots</p>
         <p className="mt-1 text-[11px] text-zinc-600">{capacity}</p>
       </div>
       <div className="whitespace-nowrap text-right">
@@ -90,7 +90,7 @@ export function PluginsPage() {
         actions={
           <>
             <OpenInStudioButton label="Create a Plugin" primary />
-            <InstallerSlotSummary />
+            <SkillPackSlotSummary />
           </>
         }
       />

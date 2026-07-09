@@ -9,7 +9,6 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
@@ -17,7 +16,7 @@ from sqlalchemy import text
 
 from conxa_core.config import settings
 from conxa_core.db import _get_engine, db_get, db_list, db_set  # type: ignore[attr-defined]
-from conxa_core.storage.plugin_store import list_plugins
+from app.api.product_ownership import owned_slugs_for_workspace, _owner_of
 from app.services.saas import Principal, billing_for, membership_count_for
 
 USAGE_NS = "entitlement_usage"
@@ -25,35 +24,39 @@ RESERVATION_NS = "compile_reservations"
 
 ALLOWED_USAGE_CLASSES = {"compile", "human_edit"}
 
+# "skill_pack_slots" = the plan's product limit: how many distinct company
+# slugs a workspace may own. A slot is consumed the first time a workspace
+# publishes a skill pack OR uploads an installer for a given slug (whichever
+# comes first) — see product_ownership.owned_slugs_for_workspace.
 PLAN_LIMITS: dict[str, dict[str, int | None]] = {
     "free": {
         "seats": 1,
-        "installer_slots": 1,
+        "skill_pack_slots": 1,
         "compile_credits": 50,
         "human_edit_tokens": 1_000_000,
     },
     "starter": {
         "seats": 3,
-        "installer_slots": 3,
+        "skill_pack_slots": 3,
         "compile_credits": 300,
         "human_edit_tokens": 10_000_000,
     },
     "pro": {
         "seats": 10,
-        "installer_slots": 10,
+        "skill_pack_slots": 10,
         "compile_credits": 1_000,
         "human_edit_tokens": 50_000_000,
     },
     # Enterprise workspaces must carry explicit overrides in billing metadata.
     "enterprise": {
         "seats": 0,
-        "installer_slots": 0,
+        "skill_pack_slots": 0,
         "compile_credits": 0,
         "human_edit_tokens": 0,
     },
     "development": {
         "seats": None,
-        "installer_slots": None,
+        "skill_pack_slots": None,
         "compile_credits": None,
         "human_edit_tokens": None,
     },
@@ -182,8 +185,11 @@ def _limits_from_billing(billing: dict[str, Any]) -> dict[str, int | None]:
         aliases = {
             "seats": "seats",
             "seat_limit": "seats",
-            "installer_slots": "installer_slots",
-            "installer_limit": "installer_slots",
+            "skill_pack_slots": "skill_pack_slots",
+            # Pre-rename override keys — still accepted so already-configured
+            # Cashfree/billing metadata keeps working unchanged.
+            "installer_slots": "skill_pack_slots",
+            "installer_limit": "skill_pack_slots",
             "compile_credits": "compile_credits",
             "monthly_compile_credits": "compile_credits",
             "human_edit_tokens": "human_edit_tokens",
@@ -306,40 +312,20 @@ def _active_reserved_amount(store: _FileKvStore | _SqlKvStore, workspace_id: str
     return total
 
 
-def _installer_meta_paths() -> list[Path]:
-    installers_dir = settings.data_dir / "installers"
-    if not installers_dir.is_dir():
-        return []
-    return list(installers_dir.glob("*/meta.json"))
+def skill_pack_slot_count(workspace_id: str) -> int:
+    """Number of distinct slugs this workspace owns — the single source of
+    truth is publish_owners (product_ownership), set the first time a
+    workspace publishes a skill pack OR uploads an installer for a slug.
+
+    Replaces the old plugin.installer/disk-meta.json-based counting, which
+    never counted a slug for a publish-only workspace — the latent bug this
+    rename also fixes.
+    """
+    return len(owned_slugs_for_workspace(workspace_id))
 
 
-def installer_slot_count(workspace_id: str) -> int:
-    slugs: set[str] = set()
-    for plugin in list_plugins(workspace_id=workspace_id):
-        if plugin.installer:
-            slugs.add(plugin.slug)
-    for meta_path in _installer_meta_paths():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if meta.get("workspace_id") == workspace_id and meta.get("slug"):
-            slugs.add(str(meta["slug"]))
-    return len(slugs)
-
-
-def installer_slug_has_release(workspace_id: str, slug: str) -> bool:
-    for plugin in list_plugins(workspace_id=workspace_id):
-        if plugin.slug == slug and plugin.installer:
-            return True
-    meta_path = settings.data_dir / "installers" / slug / "meta.json"
-    if not meta_path.is_file():
-        return False
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    return meta.get("workspace_id") == workspace_id
+def skill_pack_slug_has_slot(workspace_id: str, slug: str) -> bool:
+    return _owner_of(slug) == workspace_id
 
 
 def _meter(used: int, limit: int | None, *, reserved: int = 0) -> dict[str, Any]:
@@ -398,7 +384,7 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
                 _clerk_org_member_count(principal) or membership_count_for(workspace_id),
                 limits["seats"],
             ),
-            "installer_slots": _meter(installer_slot_count(workspace_id), limits["installer_slots"]),
+            "skill_pack_slots": _meter(skill_pack_slot_count(workspace_id), limits["skill_pack_slots"]),
             "compile_credits": _meter(
                 int(usage.get("compile_credits_used") or 0),
                 limits["compile_credits"],
@@ -575,13 +561,13 @@ def ensure_human_edit_available(principal: Principal, *, estimated_tokens: int =
         raise EntitlementError("human_edit_pool_exceeded", 402)
 
 
-def ensure_installer_slot_available(principal: Principal, slug: str) -> dict[str, Any]:
+def ensure_skill_pack_slot_available(principal: Principal, slug: str) -> dict[str, Any]:
     billing = billing_for(principal)
     limits = _limits_from_billing(billing)
-    limit = limits["installer_slots"]
+    limit = limits["skill_pack_slots"]
     workspace_id = principal.workspace_id
-    existing_slot = installer_slug_has_release(workspace_id, slug)
-    used = installer_slot_count(workspace_id)
+    existing_slot = skill_pack_slug_has_slot(workspace_id, slug)
+    used = skill_pack_slot_count(workspace_id)
     if (
         settings.entitlements_enforce_installers
         and not existing_slot
@@ -596,3 +582,8 @@ def ensure_installer_slot_available(principal: Principal, slug: str) -> dict[str
         "limit": limit,
         "remaining": None if limit is None else max(0, int(limit) - used),
     }
+
+
+# Deprecated alias kept for one release cycle in case anything external still
+# imports the old name. Remove in a follow-up once nothing references it.
+ensure_installer_slot_available = ensure_skill_pack_slot_available

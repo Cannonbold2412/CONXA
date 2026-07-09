@@ -31,7 +31,7 @@ def test_basic_plan_maps_to_starter(monkeypatch, tmp_path):
     body = r.json()
     assert body["plan"] == "starter"
     assert body["meters"]["seats"]["limit"] == 3
-    assert body["meters"]["installer_slots"]["limit"] == 3
+    assert body["meters"]["skill_pack_slots"]["limit"] == 3
     assert body["meters"]["compile_credits"]["limit"] == 300
     assert body["meters"]["human_edit_tokens"]["limit"] == 10_000_000
 
@@ -187,11 +187,14 @@ def test_compile_llm_usage_does_not_consume_human_edit_pool(monkeypatch, tmp_pat
     assert entitlements["meters"]["human_edit_tokens"]["used"] == 0
 
 
-def test_installer_slots_block_new_slug_but_allow_same_slug_update(monkeypatch, tmp_path):
+def test_installer_upload_duplicate_version_rejected_but_new_version_allowed(monkeypatch, tmp_path):
+    """Installer upload is no longer slot-gated (that moved to skill-pack publish,
+    see test_skill_pack_slots_block_new_slug_but_allow_same_slug_update below) —
+    only the per-version duplicate-upload guard remains here."""
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "entitlements_enforce_installers", True)
-    _set_plan("free", installer_slots=1)
+    _set_plan("free", skill_pack_slots=1)
 
     first = client.post(
         "/api/v1/plugins/slot-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
@@ -205,7 +208,10 @@ def test_installer_slots_block_new_slug_but_allow_same_slug_update(monkeypatch, 
         "/api/v1/plugins/slot-one/installer/upload?filename=Setup.exe&version=1.0.1&release_notes=Second",
         content=b"MZsecond",
     )
-    blocked = client.post(
+    # Installer upload alone never consumed a slot even before this rename — but now
+    # it doesn't check the limit at all, so a second company's installer upload
+    # succeeds even at the plan's 1-slot limit (skill-pack publish is what's gated).
+    unblocked = client.post(
         "/api/v1/plugins/slot-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
         content=b"MZother",
     )
@@ -213,6 +219,30 @@ def test_installer_slots_block_new_slug_but_allow_same_slug_update(monkeypatch, 
     assert first.status_code == 200, first.text
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "installer_version_exists"
+    assert update.status_code == 200, update.text
+    assert unblocked.status_code == 200, unblocked.text
+
+
+def test_skill_pack_slots_block_new_slug_but_allow_same_slug_update(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_installers", True)
+    _set_plan("free", skill_pack_slots=1)
+
+    def _publish(slug: str, version: str) -> object:
+        return client.post(
+            "/api/v1/plugins/publish",
+            json={"slug": slug, "skill_pack_version": version, "release_notes": "notes", "skills": [], "files": []},
+        )
+
+    first = _publish("slot-one", "1.0.0")
+    duplicate = _publish("slot-one", "1.0.0")
+    update = _publish("slot-one", "1.0.1")
+    blocked = _publish("slot-two", "1.0.0")
+
+    assert first.status_code == 200, first.text
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "skill_pack_version_exists"
     assert update.status_code == 200, update.text
     assert blocked.status_code == 402
     assert blocked.json()["detail"] == "installer_limit_exceeded"
@@ -230,6 +260,6 @@ def test_development_plan_is_unlimited(monkeypatch, tmp_path):
 
     assert entitlements.status_code == 200, entitlements.text
     assert entitlements.json()["meters"]["compile_credits"]["unlimited"] is True
-    assert entitlements.json()["meters"]["installer_slots"]["unlimited"] is True
+    assert entitlements.json()["meters"]["skill_pack_slots"]["unlimited"] is True
     assert reserve.status_code == 200, reserve.text
     assert reserve.json()["remaining_compile_credits"] is None

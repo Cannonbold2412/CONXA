@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from services import bootstrap as _bootstrap_pkg
 from conxa_compile.recorder.session import registry as _recorder_registry
@@ -92,7 +93,77 @@ class PluginsMixin:
         version = str(payload.get("version") or "0.1.0")
         return build_plugin(plugin_id, version=version, realtime_sink=_event_sink(rid))
 
+    def cmd_publish_skill_pack(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
+        """Publish a skill-pack release to Conxa Cloud — the primary, mandatory
+        release-management action. Skill Pack Publishing owns version history,
+        release notes, and publishing limits; Build Installer (below) becomes a
+        secondary, advanced action that requires a release to already exist."""
+        plugin_id = _safe_id(payload.get("plugin_id"), "plugin_id")
+        plugin = _get_plugin(plugin_id)
+        if plugin is None:
+            raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
+        company_slug = str(payload.get("company_slug") or "").strip()
+        if company_slug:
+            company_slug = _safe_id(company_slug, "company_slug")
+        else:
+            company_slug = _plugin_company_slug(plugin)
+            if not company_slug:
+                raise _CommandError("invalid_plugin", "Built plugin is missing a runtime company slug.")
+        version = _validate_release_version(payload.get("version"))
+        release_notes = _validate_release_notes(payload.get("release_notes"))
+
+        # Invariant: auth.json must never leave the machine, including via publish.
+        from conxa_core.config import settings as _settings
+        skill_pack_dir = Path(_settings.data_dir) / "skill-packs" / company_slug
+        if skill_pack_dir.exists() and any(skill_pack_dir.rglob("auth.json")):
+            raise _CommandError(
+                "auth_file_in_build_input",
+                "Refusing to publish: auth.json found under the built skill pack.",
+            )
+
+        sink = _event_sink(rid)
+        publish_info = self._publish_skill_pack(
+            company_slug=company_slug,
+            plugin=plugin,
+            version=version,
+            release_notes=release_notes,
+            sink=sink,
+        )
+        if not publish_info:
+            raise _CommandError(
+                "cloud_publish_failed",
+                "Skill pack publish did not complete. Check your Conxa Cloud connection and sign-in.",
+            )
+        return publish_info
+
+    def cmd_list_skill_pack_versions(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Release history for the Skill Pack Publishing page — version, release
+        notes, and publish timestamp per prior release of this company's slug.
+
+        Takes plugin_id (like cmd_publish_skill_pack/cmd_build_installer) rather
+        than requiring the caller to already know the runtime company_slug, which
+        differs from Plugin.slug (an auto-generated, ID-suffixed value) and isn't
+        otherwise available client-side.
+        """
+        plugin_id = _safe_id(payload.get("plugin_id"), "plugin_id")
+        plugin = _get_plugin(plugin_id)
+        if plugin is None:
+            raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
+        company_slug = str(payload.get("company_slug") or "").strip()
+        if company_slug:
+            company_slug = _safe_id(company_slug, "company_slug")
+        else:
+            company_slug = _plugin_company_slug(plugin)
+            if not company_slug:
+                raise _CommandError("invalid_plugin", "Built plugin is missing a runtime company slug.")
+        generation = self._installer_generation()
+        return self._cloud_json(f"/api/v1/plugins/{generation}/{quote(company_slug)}/skill-packs/versions")
+
     def cmd_build_installer(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
+        """Package the already-published skill pack into a distributable NSIS
+        installer. Advanced/secondary action — routine skill-pack updates never
+        need this; see cmd_publish_skill_pack. Installer upload to the cloud is
+        optional: a failure there is reported as a warning, not a build failure."""
         from pathlib import Path
         from services.installer_builder import build_installer
 
@@ -121,15 +192,16 @@ class PluginsMixin:
                 "Refusing to build: auth.json found under the built skill pack.",
             )
 
+        pack_path = skill_pack_dir / "pack.json"
+        published = pack_path.is_file() and bool(json.loads(pack_path.read_text(encoding="utf-8")).get("sync_token"))
+        if not published:
+            raise _CommandError(
+                "skill_pack_not_published",
+                "Publish a skill pack release before building an installer.",
+            )
+
         logo_path = str(payload.get("logo_path") or "").strip() or None
         sink = _event_sink(rid)
-        publish_info = self._publish_skill_pack_for_installer(
-            company_slug=company_slug,
-            plugin=plugin,
-            version=version,
-            release_notes=release_notes,
-            sink=sink,
-        )
         result = build_installer(
             plugin_id,
             company_slug=company_slug,
@@ -138,32 +210,40 @@ class PluginsMixin:
             release_notes=release_notes,
             realtime_sink=sink,
         )
-        if publish_info:
-            result = dict(result)
-            result["cloud_workspace_id"] = publish_info.get("workspace_id", "")
-            result["cloud_tracking_url"] = publish_info.get("tracking_url", "")
-            result["cloud_tracking_token_present"] = bool(publish_info.get("tracking_token_present"))
-            result["cloud_sync_endpoint"] = publish_info.get("sync_endpoint", "")
-            result["installed_runtime_path"] = (
-                r"C:\Program Files\Conxa\runtime\conxa-runtime.exe"
-                if sys.platform == "win32"
-                else str(Path.home() / ".conxa" / "runtime" / "runtime")
-            )
-            sink(
-                {
-                    "kind": "installer_build",
-                    "message": (
-                        f"Post-install check: restart Claude, confirm Conxa MCP tools are available, "
-                        f"run list_skills, then execute a skill. Runtime path: {result['installed_runtime_path']}"
-                    ),
-                }
-            )
-        return self._upload_installer_for_download(
-            company_slug=company_slug,
-            result=result,
-            release_notes=release_notes,
-            sink=sink,
+        result["installed_runtime_path"] = (
+            r"C:\Program Files\Conxa\runtime\conxa-runtime.exe"
+            if sys.platform == "win32"
+            else str(Path.home() / ".conxa" / "runtime" / "runtime")
         )
+        sink(
+            {
+                "kind": "installer_build",
+                "message": (
+                    f"Post-install check: restart Claude, confirm Conxa MCP tools are available, "
+                    f"run list_skills, then execute a skill. Runtime path: {result['installed_runtime_path']}"
+                ),
+            }
+        )
+        try:
+            result = self._upload_installer_for_download(
+                company_slug=company_slug,
+                result=result,
+                release_notes=release_notes,
+                sink=sink,
+            )
+        except _CommandError as exc:
+            # Installer upload is optional (requirement: Conxa will host/build installers
+            # centrally). A failed or skipped upload never fails the build — the local
+            # installer and the already-published skill pack are unaffected either way.
+            result = dict(result)
+            result["cloud_upload_error"] = exc.code
+            result["cloud_upload_error_message"] = exc.message
+            sink({
+                "kind": "installer_build",
+                "message": f"Installer upload skipped: {exc.message}",
+                "warning": True,
+            })
+        return result
 
     def cmd_test_workflow(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         """Run a built workflow end-to-end against the local Conxa runtime.
@@ -276,49 +356,6 @@ class PluginsMixin:
         set_workflow_test_result(plugin_id, workflow_id, status="passed", inputs=inputs)
         sink({"kind": "workflow_test", "message": message})
         return {"status": "passed", "message": message, "company": company, "skill": workflow.slug}
-
-    def cmd_publish(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        import base64
-        import urllib.request
-        from pathlib import Path
-        from conxa_core.config import settings as _settings
-
-        slug = _safe_id(payload.get("slug"), "slug")
-        packs_dir = Path(_settings.data_dir) / "skill-packs" / slug
-        pack_path = packs_dir / "pack.json"
-        if not pack_path.is_file():
-            raise _CommandError("pack_not_built", f"No built skill pack for {slug}")
-        pack = json.loads(pack_path.read_text(encoding="utf-8"))
-
-        files: list[dict[str, str]] = []
-        for fpath in sorted(packs_dir.rglob("*")):
-            if fpath.is_file():
-                rel = fpath.relative_to(packs_dir).as_posix()
-                files.append({
-                    "path": rel,
-                    "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
-                })
-
-        body = json.dumps({
-            "slug": slug,
-            "skill_pack_version": str(pack.get("skill_pack_version") or "0.1.0"),
-            "skills": list(pack.get("skills") or []),
-            "files": files,
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self._cloud_api}/api/v1/plugins/publish", data=body, method="POST"
-        )
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self._auth_service().get_token()}")
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            try:
-                body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                body = ""
-            raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body}") from exc
 
     def cmd_get_usage(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         import urllib.request

@@ -20,3 +20,12 @@ def skill_packs_dir(slug: str) -> Path:
 def skillpack_files_ns(slug: str) -> str:
     """KV namespace holding the durable (Postgres) copy of a pack's files."""
     return f"skillpack_files__{slug}"
+
+
+def skillpack_versions_ns(slug: str) -> str:
+    """KV namespace holding skill-pack release history, one row per version.
+
+    Mirrors ``installer_versions_ns`` in ``installer_storage.py`` — no ``:``
+    separator, for the same Windows-path-safety reasoning documented there.
+    """
+    return f"skillpack_versions__{slug}"

@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -40,24 +40,39 @@ from app.api.installer_storage import (
     sign_installer,
     verify_installer_signature,
 )
-from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
-from app.services.entitlements import ensure_installer_slot_available
+from app.api.product_ownership import (
+    SUPPORTED_INSTALLER_GENERATIONS,
+    _assert_not_owned_by_other,
+    _assert_owner,
+    _claim_owner,
+    _owner_of,
+    validate_installer_version,
+)
+from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns, skillpack_versions_ns
+from app.services.entitlements import ensure_skill_pack_slot_available
 from app.services.rbac import require_admin
 from app.services.saas import add_audit_event
 from app.api.updates_routes import (
     _COMPONENT_VERSIONS_NS,
     _MANIFEST_NS,
     _compose_manifest,
+    _require_admin,
 )
 
 router = APIRouter(prefix="/plugins", tags=["publish"])
 installers_router = APIRouter(prefix="/installers", tags=["installers"])
+admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
-_OWNERS_NS = "publish_owners"
 _SAFE_SLUG = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 _SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+
+# Settings KV singleton holding the "current" installer generation stamped
+# into newly built installers. Falls back to the last entry in
+# SUPPORTED_INSTALLER_GENERATIONS when unset.
+_PLATFORM_SETTINGS_NS = "platform"
+_INSTALLER_GENERATIONS_KEY = "installer_generations"
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +120,13 @@ def _validate_version(version: str) -> str:
     return value
 
 
+def _validate_skill_pack_version(version: str) -> str:
+    value = str(version or "").strip()
+    if not _SEMVER_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail="invalid_skill_pack_version")
+    return value
+
+
 def _validate_release_notes(notes: str | None) -> str:
     value = str(notes or "").strip()
     if not value:
@@ -112,21 +134,6 @@ def _validate_release_notes(notes: str | None) -> str:
     if len(value) > 2000:
         raise HTTPException(status_code=400, detail="release_notes_too_long")
     return value
-
-
-def _owner_of(slug: str) -> str | None:
-    row = db_get(_OWNERS_NS, slug)
-    if isinstance(row, dict):
-        return str(row.get("workspace_id") or "") or None
-    return None
-
-
-def _assert_owner(slug: str, workspace_id: str) -> None:
-    owner = _owner_of(slug)
-    if owner and owner != workspace_id:
-        raise HTTPException(status_code=403, detail="slug_owned_by_another_workspace")
-    if not owner:
-        db_set(_OWNERS_NS, slug, {"workspace_id": workspace_id, "claimed_at": time.time()})
 
 
 def _mint_pack_token(
@@ -179,20 +186,22 @@ def _api_base(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _upsert_published_plugin(body: PublishBody, workspace_id: str, owner_user_id: str) -> None:
-    name = body.display_name.strip() or body.slug
+def _upsert_published_plugin(
+    body: PublishBody, slug: str, skill_pack_version: str, workspace_id: str, owner_user_id: str
+) -> None:
+    name = body.display_name.strip() or slug
     target_url = body.target_url.strip() or "https://example.com"
     protected_url = body.protected_url.strip()
     existing = next(
         (
             plugin
             for plugin in list_plugins(workspace_id=workspace_id)
-            if plugin.slug == body.slug or plugin.name.lower() == name.lower()
+            if plugin.slug == slug or plugin.name.lower() == name.lower()
         ),
         None,
     )
     now = time.time()
-    build = PluginBuild(last_built_at=now, output_path="", version=body.skill_pack_version)
+    build = PluginBuild(last_built_at=now, output_path="", version=skill_pack_version)
     workflows = [
         PluginWorkflow(
             id=str(uuid.uuid4()),
@@ -214,7 +223,7 @@ def _upsert_published_plugin(body: PublishBody, workspace_id: str, owner_user_id
             owner_user_id=owner_user_id,
         )
         plugin = plugin.model_copy(update={
-            "slug": body.slug,
+            "slug": slug,
             "status": "ready",
             "build": build,
             "workflows": workflows,
@@ -222,7 +231,7 @@ def _upsert_published_plugin(body: PublishBody, workspace_id: str, owner_user_id
     else:
         plugin = existing.model_copy(
             update={
-                "slug": body.slug,
+                "slug": slug,
                 "name": name,
                 "workspace_id": workspace_id,
                 "owner_user_id": owner_user_id,
@@ -240,20 +249,35 @@ def _upsert_published_plugin(body: PublishBody, workspace_id: str, owner_user_id
 # Publish skill pack data
 # ---------------------------------------------------------------------------
 
-@router.post("/publish")
-def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
-    principal = current_principal(request)
-    require_admin(principal)
-    slug = _validate_slug(body.slug)
-    _assert_owner(slug, principal.workspace_id)
+def _publish_skill_pack_impl(
+    slug: str, body: PublishBody, principal: Any, request: Request, installer_version: str | None
+) -> dict[str, Any]:
+    """Shared by the legacy ``/publish`` route and the versioned
+    ``/{installer_version}/{slug}/skill-packs/upload`` route. ``installer_version``
+    is ``None`` for the legacy route (unversioned URLs are minted into pack.json,
+    matching every runtime already deployed against them).
+    """
+    # Conflict-check before the slot-limit check, and claim only after it passes —
+    # claiming first would make every brand-new slug look pre-owned by the time
+    # the "is this actually a new slot" check ran, making the limit unenforceable.
+    _assert_not_owned_by_other(slug, principal.workspace_id)
 
-    # Enforce the plan's product/installer-slot limit. Publishing to a slug that
+    # Enforce the plan's product/skill-pack-slot limit. Publishing to a slug that
     # already has a release is always allowed (updates), so only creating a brand
     # new product beyond the plan's slot count is blocked.
     try:
-        ensure_installer_slot_available(principal, slug)
+        ensure_skill_pack_slot_available(principal, slug)
     except Exception as exc:  # noqa: BLE001
         raise entitlement_http_error(exc) from exc
+
+    _claim_owner(slug, principal.workspace_id)
+
+    skill_pack_version = _validate_skill_pack_version(body.skill_pack_version)
+
+    # A given semver is an immutable release, same as installer uploads — forces
+    # a version bump rather than silently overwriting a prior release's history row.
+    if db_get(skillpack_versions_ns(slug), skill_pack_version) is not None:
+        raise HTTPException(status_code=409, detail="skill_pack_version_exists")
 
     packs_dir = skill_packs_dir(slug)
     packs_dir.mkdir(parents=True, exist_ok=True)
@@ -275,15 +299,22 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         written += 1
 
     published_at = time.time()
+    api_base = _api_base(request)
+    if installer_version:
+        sync_url_path = f"/api/v1/plugins/{installer_version}/{slug}/skill-packs/delta"
+        tracking_url_path = f"/api/v1/plugins/{installer_version}/{slug}/tracking/events"
+    else:
+        sync_url_path = f"/api/v1/skill-packs/{slug}/delta"
+        tracking_url_path = f"/api/tracking/{slug}/events"
     tracking = {
         "enabled": True,
-        "tracking_url": f"{_api_base(request)}/api/tracking/{slug}/events",
-        "tracking_token": _tracking_token(slug, principal.workspace_id, body.skill_pack_version, principal.user_id),
+        "tracking_url": f"{api_base}{tracking_url_path}",
+        "tracking_token": _tracking_token(slug, principal.workspace_id, skill_pack_version, principal.user_id),
         "company_id": slug,
         "schema_version": 1,
         "protocol_version": 1,
     }
-    sync_token = _sync_token(slug, principal.workspace_id, body.skill_pack_version, principal.user_id)
+    sync_token = _sync_token(slug, principal.workspace_id, skill_pack_version, principal.user_id)
     if pack_path.is_file():
         try:
             pack = json.loads(pack_path.read_text(encoding="utf-8"))
@@ -305,16 +336,18 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         {
             "company": pack.get("company") or slug,
             "company_display": body.display_name.strip() or pack.get("company_display") or slug,
-            "skill_pack_version": body.skill_pack_version,
+            "skill_pack_version": skill_pack_version,
             "release_notes": body.release_notes.strip(),
             "skills": list(body.skills),
             "workspace_id": principal.workspace_id,
             "published_at": published_at,
-            "sync_endpoint": f"{_api_base(request)}/api/v1/skill-packs/{slug}/delta",
+            "sync_endpoint": f"{api_base}{sync_url_path}",
             "sync_token": sync_token,
             "tracking": tracking,
         }
     )
+    if installer_version:
+        pack["installer_version"] = installer_version
     pack_bytes = json.dumps(pack, ensure_ascii=False, indent=2).encode("utf-8")
     tmp = pack_path.with_suffix(".json.tmp")
     tmp.write_bytes(pack_bytes)
@@ -324,7 +357,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         "pack.json",
         {"path": "pack.json", "content_base64": base64.b64encode(pack_bytes).decode("ascii")},
     )
-    _upsert_published_plugin(body, principal.workspace_id, principal.user_id)
+    _upsert_published_plugin(body, slug, skill_pack_version, principal.workspace_id, principal.user_id)
 
     # Record each skill's version in the unified signed manifest so runtimes can
     # compare against it before pulling a delta. `files` is intentionally left empty
@@ -339,7 +372,7 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
         db_set(
             _COMPONENT_VERSIONS_NS,
             f"skill_packs:{slug}:{skill_slug}",
-            {"version": body.skill_pack_version, "released_at": published_at_iso, "files": []},
+            {"version": skill_pack_version, "released_at": published_at_iso, "files": []},
         )
         if identifier not in index:
             index.append(identifier)
@@ -349,19 +382,43 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     if body.skills:
         _compose_manifest()
 
+    # Skill-pack release history — mirrors installer_versions_ns exactly (one KV
+    # row per version, is_latest flip on every other row for this slug).
+    history_row = {
+        "slug": slug,
+        "version": skill_pack_version,
+        "release_notes": body.release_notes.strip(),
+        "skills": list(body.skills),
+        "workspace_id": principal.workspace_id,
+        "owner_user_id": principal.user_id,
+        "published_at": published_at,
+        "files_written": written,
+        "is_latest": True,
+    }
+    db_set(skillpack_versions_ns(slug), skill_pack_version, history_row)
+    for _other_key, other_row in db_list_kv(skillpack_versions_ns(slug)):
+        if not isinstance(other_row, dict):
+            continue
+        other_version = other_row.get("version")
+        if other_version == skill_pack_version:
+            continue
+        if other_row.get("is_latest"):
+            other_row["is_latest"] = False
+            db_set(skillpack_versions_ns(slug), other_version, other_row)
+
     add_audit_event(
         principal,
         "publish",
         resource_type="skill_pack",
         resource_id=slug,
-        metadata={"version": body.skill_pack_version, "files_written": written},
+        metadata={"version": skill_pack_version, "files_written": written},
     )
 
     return {
         "slug": slug,
-        "version": body.skill_pack_version,
+        "version": skill_pack_version,
         "files_written": written,
-        "sync_url": f"/api/v1/skill-packs/{slug}/delta",
+        "sync_url": sync_url_path,
         "sync_token": sync_token,
         "tracking": tracking,
         "workspace_id": principal.workspace_id,
@@ -369,24 +426,70 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     }
 
 
+@router.post("/publish")
+def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
+    """Legacy, unversioned publish route. Kept permanently for already-deployed
+    installers/tooling — see ``post_publish_v2`` for the versioned equivalent."""
+    principal = current_principal(request)
+    require_admin(principal)
+    slug = _validate_slug(body.slug)
+    return _publish_skill_pack_impl(slug, body, principal, request, installer_version=None)
+
+
+@router.post("/{installer_version}/{company_slug}/skill-packs/upload")
+def post_publish_v2(
+    installer_version: str, company_slug: str, body: PublishBody, request: Request
+) -> dict[str, Any]:
+    principal = current_principal(request)
+    require_admin(principal)
+    installer_version = validate_installer_version(installer_version)
+    slug = _validate_slug(company_slug)
+    if body.slug and body.slug != slug:
+        raise HTTPException(status_code=400, detail="slug_mismatch")
+    return _publish_skill_pack_impl(slug, body, principal, request, installer_version=installer_version)
+
+
+@router.get("/{installer_version}/{company_slug}/skill-packs/versions")
+def get_skill_pack_versions_v2(installer_version: str, company_slug: str, request: Request) -> dict[str, Any]:
+    return _skill_pack_versions_impl(company_slug, request)
+
+
+def _skill_pack_versions_impl(slug: str, request: Request) -> dict[str, Any]:
+    """Authenticated skill-pack release history for the dashboard — the
+    version/release-comment/publishing-limit surface for Skill Pack Publishing."""
+    principal = current_principal(request)
+    require_admin(principal)
+    slug = _validate_slug(slug)
+    owner = _owner_of(slug)
+    if owner and owner != principal.workspace_id:
+        raise HTTPException(status_code=403, detail="slug_owned_by_another_workspace")
+
+    versions = [
+        row
+        for _key, row in db_list_kv(skillpack_versions_ns(slug))
+        if isinstance(row, dict) and row.get("workspace_id") == principal.workspace_id
+    ]
+    versions.sort(key=lambda item: float(item.get("published_at") or 0), reverse=True)
+    return {"slug": slug, "versions": versions}
+
+
 # ---------------------------------------------------------------------------
 # Installer upload (authed) + download (public)
 # ---------------------------------------------------------------------------
 
-@router.post("/{slug}/installer/upload")
-async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
+async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
     """Upload the built installer .exe as a raw octet-stream body.
 
     Query params: ``filename`` (display name), ``version``, ``release_notes``.
+
+    No product/skill-pack-slot entitlement check here — that gate lives on
+    skill-pack publish only (installer upload is optional and unmetered; see
+    ``_publish_skill_pack_impl``).
     """
     principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(slug)
     _assert_owner(slug, principal.workspace_id)
-    try:
-        ensure_installer_slot_available(principal, slug)
-    except Exception as exc:  # noqa: BLE001
-        raise entitlement_http_error(exc) from exc
 
     max_bytes = settings.build_artifact_upload_max_bytes
     cl = request.headers.get("content-length")
@@ -503,8 +606,20 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("/{slug}/installer/versions")
-def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
+@router.post("/{slug}/installer/upload")
+async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
+    """Legacy, unversioned installer-upload route. Kept permanently — see
+    ``post_installer_upload_v2`` for the versioned equivalent."""
+    return await _upload_installer_impl(slug, request)
+
+
+@router.post("/{installer_version}/{company_slug}/installer/upload")
+async def post_installer_upload_v2(installer_version: str, company_slug: str, request: Request) -> dict[str, Any]:
+    validate_installer_version(installer_version)
+    return await _upload_installer_impl(company_slug, request)
+
+
+def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
     """Authenticated installer release history for the dashboard."""
     principal = current_principal(request)
     require_admin(principal)
@@ -559,6 +674,55 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     versions = list(versions_by_key.values())
     versions.sort(key=lambda item: float(item.get("uploaded_at") or 0), reverse=True)
     return {"slug": slug, "versions": versions}
+
+
+@router.get("/{slug}/installer/versions")
+def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
+    """Legacy, unversioned route. Kept permanently — see
+    ``get_installer_versions_v2`` for the versioned equivalent."""
+    return _installer_versions_impl(slug, request)
+
+
+@router.get("/{installer_version}/{company_slug}/installer/versions")
+def get_installer_versions_v2(installer_version: str, company_slug: str, request: Request) -> dict[str, Any]:
+    validate_installer_version(installer_version)
+    return _installer_versions_impl(company_slug, request)
+
+
+@router.get("/generations")
+def get_installer_generations() -> dict[str, Any]:
+    """Public. Returns the current default installer generation that Build
+    Studio/CI should stamp into newly built installers, plus the full
+    supported/deprecated sets. `{installer_version}` is frozen into each
+    installer at build time — this endpoint only ever affects *new* builds,
+    never already-installed runtimes."""
+    row = db_get(_PLATFORM_SETTINGS_NS, _INSTALLER_GENERATIONS_KEY)
+    if isinstance(row, dict) and row.get("current") in SUPPORTED_INSTALLER_GENERATIONS:
+        return {
+            "current": row["current"],
+            "supported": list(SUPPORTED_INSTALLER_GENERATIONS),
+            "deprecated": list(row.get("deprecated") or []),
+        }
+    return {
+        "current": SUPPORTED_INSTALLER_GENERATIONS[-1],
+        "supported": list(SUPPORTED_INSTALLER_GENERATIONS),
+        "deprecated": [],
+    }
+
+
+@admin_router.post("/plugins/generations")
+def post_installer_generations(body: dict[str, Any], authorization: str = Header(default="")) -> dict[str, Any]:
+    """Admin-only (Bearer CONXA_ADMIN_TOKEN). Flips the default generation
+    stamped into new installer builds. Never affects already-installed
+    runtimes — see ``get_installer_generations`` docstring above."""
+    _require_admin(authorization)
+    current = str(body.get("current") or "").strip()
+    if current not in SUPPORTED_INSTALLER_GENERATIONS:
+        raise HTTPException(status_code=400, detail="unsupported_installer_version")
+    deprecated = [v for v in (body.get("deprecated") or []) if v in SUPPORTED_INSTALLER_GENERATIONS]
+    row = {"current": current, "deprecated": deprecated, "updated_at": time.time()}
+    db_set(_PLATFORM_SETTINGS_NS, _INSTALLER_GENERATIONS_KEY, row)
+    return row
 
 
 def _stream_installer(

@@ -98,6 +98,7 @@ class Backend(
         self._cloud_api = os.environ.get("CONXA_CLOUD_API", "http://127.0.0.1:8000")
         self._undo_stacks: dict[str, list] = {}
         self._redo_stacks: dict[str, list] = {}
+        self._installer_generation_cache: str | None = None
 
     # -- undo / redo helpers -------------------------------------------------
 
@@ -160,6 +161,21 @@ class Backend(
             return False
         parsed = urlparse(self._cloud_api_base())
         return parsed.hostname not in {"127.0.0.1", "localhost", ""}
+
+    def _installer_generation(self) -> str:
+        """The Conxa-owned installer platform generation ("v1"/"v2"/...) that
+        Build Studio should stamp into new skill-pack publishes and installer
+        builds. Cached for the process lifetime. Never blocks the build —
+        falls back to "v2" if the cloud is unreachable."""
+        if self._installer_generation_cache is not None:
+            return self._installer_generation_cache
+        try:
+            payload = self._cloud_json("/api/v1/plugins/generations")
+            generation = str(payload.get("current") or "").strip() or "v2"
+        except Exception:
+            generation = "v2"
+        self._installer_generation_cache = generation
+        return generation
 
     def _cloud_token(self) -> str:
         try:
@@ -252,7 +268,7 @@ class Backend(
         except Exception:
             pass
 
-    def _publish_skill_pack_for_installer(
+    def _publish_skill_pack(
         self,
         *,
         company_slug: str,
@@ -261,7 +277,12 @@ class Backend(
         release_notes: str,
         sink: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
-        """Publish the built skill pack and rewrite local pack.json with cloud tracking."""
+        """Publish the built skill pack and rewrite local pack.json with cloud tracking.
+
+        Mandatory operation: any real-cloud failure raises _CommandError (see
+        cmd_publish_skill_pack). Only a local dev cloud that's simply unreachable
+        is swallowed — see _auto_publish_enabled.
+        """
         from conxa_core.config import settings as _settings
         import base64
         import urllib.request
@@ -288,6 +309,7 @@ class Backend(
                 )
 
         cloud_api = self._cloud_api_base()
+        generation = self._installer_generation()
         body = json.dumps(
             {
                 "slug": company_slug,
@@ -300,9 +322,13 @@ class Backend(
                 "files": files,
             }
         ).encode("utf-8")
-        sink({"kind": "installer_build", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
+        sink({"kind": "skill_pack_publish", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
         try:
-            req = urllib.request.Request(f"{cloud_api}/api/v1/plugins/publish", data=body, method="POST")
+            req = urllib.request.Request(
+                f"{cloud_api}/api/v1/plugins/{generation}/{quote(company_slug)}/skill-packs/upload",
+                data=body,
+                method="POST",
+            )
             req.add_header("Content-Type", "application/json")
             # _cloud_token() also belongs inside this try: not being signed in is just as
             # much a reason a local dev cloud attempt can't proceed as it being unreachable.
@@ -311,28 +337,32 @@ class Backend(
                 published = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             # The cloud responded — it's reachable but rejected the request (bad auth,
-            # bad payload, etc). Always a real failure, local cloud or not.
+            # bad payload, duplicate version, etc). Always a real failure, local cloud or not.
             try:
-                body = exc.read().decode("utf-8", errors="replace")
+                body_text = exc.read().decode("utf-8", errors="replace")
             except Exception:
-                body = ""
-            raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body}") from exc
+                body_text = ""
+            if exc.code == 409:
+                raise _CommandError(
+                    "skill_pack_version_exists",
+                    f"Skill pack version {version} already exists in Conxa Cloud. Bump the version and republish.",
+                ) from exc
+            raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body_text}") from exc
         except Exception as exc:
             # Nothing responded at all (connection refused, DNS failure, timeout, or not
             # signed in). For a local API base this just means there's no usable dev cloud
             # to publish to right now — skip publishing gracefully rather than blocking the
-            # build (installer_builder.py only requires a sync_token once the pack is bound
-            # to a real, non-local cloud). A real, non-local cloud failing is still fatal.
+            # build. A real, non-local cloud failing is still fatal — skill-pack publish is
+            # mandatory once a real cloud is configured (see cmd_publish_skill_pack).
             if not self._auto_publish_enabled():
                 sink({
-                    "kind": "installer_build",
+                    "kind": "skill_pack_publish",
                     "message": f"Cloud publish skipped — {cloud_api} is not reachable ({exc})",
                 })
                 return {}
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc}") from exc
 
         tracking = dict(published.get("tracking") or {})
-        tracking["tracking_url"] = f"{cloud_api}/api/tracking/{company_slug}/events"
         if not tracking.get("tracking_token"):
             raise _CommandError("cloud_publish_failed", "Cloud publish did not return a tracking token.")
 
@@ -345,9 +375,13 @@ class Backend(
                 "Ensure the cloud backend is up-to-date.",
             )
 
+        # sync_url/tracking_url are already correctly versioned by the cloud (see
+        # publish_routes._publish_skill_pack_impl) — just qualify the relative sync_url.
+        sync_url = str(published.get("sync_url") or f"/api/v1/plugins/{generation}/{company_slug}/skill-packs/delta")
         pack["tracking"] = tracking
-        pack["sync_endpoint"] = f"{cloud_api}/api/v1/skill-packs/{company_slug}/delta"
+        pack["sync_endpoint"] = f"{cloud_api}{sync_url}"
         pack["sync_token"] = sync_token
+        pack["installer_version"] = generation
         pack["published"] = {
             "cloud_api": cloud_api,
             "workspace_id": str(published.get("workspace_id") or ""),
@@ -357,21 +391,24 @@ class Backend(
         workspace_id = str(published.get("workspace_id") or "")
         sink(
             {
-                "kind": "installer_build",
+                "kind": "skill_pack_publish",
                 "message": (
                     "Cloud tokens embedded in pack.json "
                     f"(workspace {workspace_id or 'unknown'}, sync_token present, "
-                    f"tracking_token present, url {tracking['tracking_url']})"
+                    f"tracking_token present, url {tracking.get('tracking_url', '')})"
                 ),
             }
         )
         return {
+            "slug": company_slug,
+            "version": version,
             "cloud_api": cloud_api,
             "workspace_id": workspace_id,
-            "tracking_url": tracking["tracking_url"],
+            "tracking_url": tracking.get("tracking_url", ""),
             "tracking_token_present": True,
             "sync_token_present": True,
             "sync_endpoint": pack["sync_endpoint"],
+            "published_at": published.get("published_at"),
         }
 
     def _upload_installer_for_download(
@@ -392,6 +429,7 @@ class Backend(
             raise _CommandError("installer_upload_failed", f"Installer not found: {installer_path}")
 
         cloud_api = self._cloud_api_base()
+        generation = self._installer_generation()
         params = urlencode(
             {
                 "filename": str(result.get("filename") or installer_path.name),
@@ -399,7 +437,7 @@ class Backend(
                 "release_notes": release_notes,
             }
         )
-        url = f"{cloud_api}/api/v1/plugins/{quote(company_slug)}/installer/upload?{params}"
+        url = f"{cloud_api}/api/v1/plugins/{generation}/{quote(company_slug)}/installer/upload?{params}"
         req = urllib.request.Request(url, data=installer_path.read_bytes(), method="POST")
         req.add_header("Content-Type", "application/octet-stream")
         req.add_header("Authorization", f"Bearer {self._cloud_token()}")

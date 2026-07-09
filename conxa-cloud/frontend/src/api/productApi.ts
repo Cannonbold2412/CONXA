@@ -56,7 +56,7 @@ export type UsageResponse = {
   limits: Record<string, number | null>
 }
 
-export type EntitlementMeterKey = 'seats' | 'installer_slots' | 'compile_credits' | 'human_edit_tokens'
+export type EntitlementMeterKey = 'seats' | 'skill_pack_slots' | 'compile_credits' | 'human_edit_tokens'
 
 export type EntitlementMeter = {
   used: number

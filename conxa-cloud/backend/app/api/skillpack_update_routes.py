@@ -15,10 +15,15 @@ from pydantic import BaseModel
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_list, db_list_kv, using_database
+from app.api.product_ownership import validate_installer_version
 from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
 from app.services.saas import principal_from_request, ensure_principal
 
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
+# Versioned equivalent of the delta route below, nested under /plugins so it
+# shares one mental model with the other three per-company endpoints
+# (publish, installer upload, tracking) — see publish_routes.py.
+versioned_router = APIRouter(prefix="/plugins", tags=["skill-packs"])
 
 _STALE_RUNTIME_DAYS = 30
 
@@ -182,13 +187,12 @@ def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
     return {"skills": skills_out}
 
 
-@router.get("/{company}/delta")
-def get_skill_pack_delta(company: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
-    """Return per-skill deltas for skills whose version differs from the client's
-    last-known version for that specific skill.
-
-    `since` is a JSON-encoded map of {skill_slug: last_known_version}, letting each
-    skill be compared and shipped independently instead of one shared pack version.
+def _delta_impl(company: str, since: str, request: Request) -> dict[str, Any]:
+    """Shared by the legacy ``/skill-packs/{company}/delta`` route and the
+    versioned ``/plugins/{installer_version}/{company}/skill-packs/delta``
+    route. `since` is a JSON-encoded map of {skill_slug: last_known_version},
+    letting each skill be compared and shipped independently instead of one
+    shared pack version.
 
     Authentication: Bearer token must match the per-company sync_token minted
     at publish time and embedded in the installer's pack.json.
@@ -205,6 +209,25 @@ def get_skill_pack_delta(company: str, since: str = "{}", request: Request = Non
     except (json.JSONDecodeError, TypeError):
         since_map = {}
     return _build_delta(company, {str(k): str(v) for k, v in since_map.items()})
+
+
+@router.get("/{company}/delta")
+def get_skill_pack_delta(company: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
+    """Legacy, unversioned delta route. Kept permanently for already-deployed
+    runtimes — see ``get_skill_pack_delta_v2`` for the versioned equivalent."""
+    return _delta_impl(company, since, request)
+
+
+@versioned_router.get("/{installer_version}/{company}/skill-packs/delta")
+def get_skill_pack_delta_v2(
+    installer_version: str, company: str, since: str = "{}", request: Request = None
+) -> dict[str, Any]:
+    """Versioned delta route. ``installer_version`` is validated but not yet
+    branched on — reserved for a future skill-pack wire-format generation, not
+    dead code to remove. The wire contract today is identical across
+    generations; see ``_delta_impl``/``_build_delta``."""
+    validate_installer_version(installer_version)
+    return _delta_impl(company, since, request)
 
 
 # ─── Telemetry ────────────────────────────────────────────────────────────────
