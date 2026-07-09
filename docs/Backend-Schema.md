@@ -255,6 +255,7 @@ class SkillStep(BaseModel):
     semantic_description: str      # "First Name input in Add Person dialog"
     snapshot_ref: str              # DOM snapshot blob reference
     snapshot_dom_hash: str         # For cross-compilation cache lookup
+    branch: dict                   # Conditional/branch payload — empty for ordinary steps (§3.4c)
 ```
 
 > **Single identity object (cutover):** `element_fingerprint` is no longer a top-level
@@ -327,6 +328,44 @@ class HandlerHints(BaseModel):
     allow_forced_action: bool
 ```
 
+### 3.4c Conditional / Branch Steps (EXEC-1)
+
+`SkillStep.branch` (`dict`, empty for ordinary linear steps) holds the payload for the three
+conditional/branch action kinds — `if_present`, `try_dismiss`, `wait_for_one_of`. See
+`docs/TRD.md` §10.7 for runtime execution semantics (best-effort, never enters recovery).
+
+| `action` | `branch` keys | Probe target |
+|---|---|---|
+| `if_present` | `steps` (nested SkillStep dicts), `timeout_ms` | `SkillStep.target`/`identity_bundle` (the step's own) |
+| `try_dismiss` | `candidates` (selector strings), `timeout_ms`, `fallback_escape` | each candidate, in order |
+| `wait_for_one_of` | `options` (`[{selector, steps?}]`), `timeout_ms`, `required` | each option's `selector` |
+
+Nested `steps` entries are raw dicts in the same shape as a saved `SkillStep`
+(`action`/`target`/`identity_bundle`/`branch`/...) — `plugin_builder_saved_skill.py`'s
+`_saved_step_to_execution_step` recursively serializes each one into the flat runtime step
+shape below.
+
+**On-disk `execution.json` shape** (what `runtime/run.js` actually consumes — flat, `type` not
+`action`):
+
+```json
+{ "type": "if_present", "selector": ".cookie-banner", "timeout_ms": 1500,
+  "steps": [ { "type": "click", "selector": "#accept-cookies" } ] }
+
+{ "type": "try_dismiss", "timeout_ms": 1000,
+  "candidates": [ "#accept-cookies", ".cookie .accept", "[aria-label='Close']" ] }
+
+{ "type": "wait_for_one_of", "timeout_ms": 8000, "required": true,
+  "options": [
+    { "selector": "#mfa-code", "steps": [ { "type": "fill", "selector": "#mfa-code", "value": "{{otp}}" } ] },
+    { "selector": "#dashboard" }
+  ] }
+```
+
+A probe may carry `identity_bundle` instead of a bare `selector`; the runtime's `probePresent`
+resolves either. See `runtime/test/gate-skill/skill-pack/gate/gate-skill/execution.json` for a
+working `if_present` fixture exercised by the CI execution gate.
+
 ### 3.5 RecoveryBlock
 
 ```python
@@ -342,14 +381,36 @@ class RecoveryBlock(BaseModel):
 
 ### 3.6 Assertion
 
+A verifiable post-action condition, checked independently of whether the action itself threw.
+Every consequential action (submit click, destructive confirm, text entry/select) compiles with
+exactly one **required** (enforced) assertion — the compiler's deterministic "primary signal
+picker" in `build.py:_build_assertions` — plus zero or more advisory ones. `required=False`
+assertions only log a warning on failure; a `required=True` failure halts the step and descends
+into recovery (`runtime/run.js` `verifyStep`).
+
 ```python
 class Assertion(BaseModel):
-    type: str          # "url_pattern" | "selector_present" | "selector_absent"
-                       # | "text_present" | "text_absent"
-    target: str        # URL pattern or CSS selector or text string
+    type: str          # "url_changed" | "url_pattern" | "selector_present" | "selector_absent"
+                       # | "text_present" | "text_absent" | "value_equals" | "state_changed"
+    target: str        # URL prefix, regex pattern, CSS selector, or text string (empty for state_changed)
+    expected: str       # value_equals only — expected field value (interpolated against runtime inputs)
     timeout_ms: int    # 5000 default
-    required: bool     # True = halt on failure; False = warning only
+    required: bool     # True = halt on failure (and descend into recovery); False = warning only
 ```
+
+- `url_changed` — the page address must differ from its value before the action (target = the
+  before-URL). `url_pattern`/`url` is a regex-matching alias.
+- `selector_present` / `selector_absent` — a selector must (not) be present.
+- `text_present` / `text_absent` — visible text must (not) appear.
+- `value_equals` — the target field's actual value must match `expected`. Compared normalized
+  (trim/collapse-whitespace/lowercase); if the normalized-exact match fails, a "field contains
+  expected" fallback is accepted, so masked/formatted fields (phone, currency) still validate.
+  Compiled for `fill`/`type`/`select`/`select_option` steps that have a resolvable target
+  selector and a recorded value.
+- `state_changed` — no `target`; confirms the page shows *some* observable effect (URL,
+  interactive-element count, or a body-text-length delta beyond a small noise tolerance) relative
+  to a pre-action baseline captured by the runtime. Synthesized only for commit/destructive clicks
+  that have no recorded URL/DOM evidence — the "no silent no-op" guard for evidence-less commits.
 
 ### 3.7 ValidationBlock
 
@@ -408,6 +469,7 @@ class WorkflowIntentGraph(BaseModel):
 | `recovery_tier{N}` | Recovery tier N attempted | `si` |
 | `tier_ok` | A resolution/recovery tier succeeded | `si`, `tier`, `sel` |
 | `verify_fail` | Post-action VERIFY failed | `si`, `ch` (assertion channel) |
+| `verify_result` | Full post-action assertion audit for a step that carries assertions (emitted on the primary execution path, pass or fail — not on recovery re-verification) | `si`, `ok` (overall pass/fail), `n` (assertion count), `advFail` (count of failed advisory/non-required assertions) |
 | `repair_event` | A step was recovered — drift signal for the admin flywheel queue | `step_id`, `tier` (L1/L2), `method`, `score`, `margin`, `stable_hash_match`, `stable_hash`, `drift_hint`, `app_version_fingerprint` |
 | `drift_detected` | Pre-execution structural drift warning (advisory; emitted at run start, never blocks) | `total` (landmarks), `missing`, `drift_ratio`, `missing_intents` (≤5), `url` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
@@ -975,6 +1037,7 @@ erDiagram
     Assertion {
         string type
         string target
+        string expected
         int timeout_ms
         bool required
     }

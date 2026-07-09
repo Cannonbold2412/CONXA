@@ -40,18 +40,22 @@ Based on the answer, the workflow jumps to a different section of steps.
 
 **How a company would record it:** They record the normal path once, like today. Then in the editor, they mark a spot — "here's where things can differ" — and record the alternate path. Our compiler compares the two recordings and *suggests* the rule that tells them apart ("popup visible → take path B"). The AI helps **write the rule at build time**, but at run time on the customer's machine, no AI is needed.
 
-## Level B — Ask AI a Multiple-Choice Question (small cost, for fuzzy cases)
+## Level B — Ask AI a Multiple-Choice Question (free via the MCP client, for fuzzy cases)
 
 **What it is:** Some decisions can't be answered by simple page facts. For example:
 
 - "Did the order go through, or did it show a duplicate warning?"
 - "Which of these 3 search results is the right customer?"
 
-For these, we add a **decide** step. It grabs a small snippet of what's on screen (just the relevant text, not a screenshot), sends it to the AI with a **multiple-choice question**, and gets one answer back from a fixed list of options.
+For these, we add a **decide** step. It grabs a small snippet of what's on screen (just the relevant text, not a screenshot) and asks a **multiple-choice question**.
+
+**Who answers it:** The runtime is already talking to an AI the moment it's running — Claude Desktop, the MCP client that invoked the skill in the first place, over the same connection. So a decide step asks *that* AI directly using MCP's built-in "sampling" feature (`sampling/createMessage`), instead of placing a separate call to our cloud. Same insight as Level C ("the brain is already in the loop"), just used synchronously mid-skill instead of by ending the skill and handing off.
 
 **The critical safety rule:** The AI only *picks from choices we wrote in advance*. It never invents new actions, never writes its own instructions for finding elements. It's an exam with A/B/C answers, not a blank sheet of paper.
 
-**Cost control:** These calls go through our existing cloud proxy, so they're metered and billed the same way our Tier 3 recovery already is, and they can be switched off with the same kind of ceiling setting.
+**Known friction:** Many MCP hosts treat a sampling request like a tool call and show the user an approval prompt before answering it. For a decide step meant to be instant and invisible, that's a real UX cost — we need to confirm Claude Desktop's actual behavior here before betting on this path for every customer, since spec-level "sampling support" doesn't guarantee there's no confirmation dialog in the way.
+
+**Fallback:** For any MCP host that doesn't support sampling at all, decide steps fall back to our existing cloud proxy — metered and billed the same way our Tier 3 recovery already is, with the same kind of ceiling setting. This keeps Level B working everywhere; it just isn't free everywhere.
 
 ## Level C — Let Claude Itself Decide (smartest, costs us nothing)
 
@@ -74,7 +78,7 @@ Same ladder as our self-healing recovery: **free and simple first, smart and cos
 | Level | Who decides | Cost | Predictability | Best for |
 |---|---|---|---|---|
 | A — Branch | A simple rule | Free | Total | "Popup appeared?" "Logged in?" |
-| B — Decide | AI, multiple-choice | Small, metered | High | "Success or error message?" |
+| B — Decide | The MCP client (Claude Desktop), via sampling — cloud proxy as fallback | Free (metered only on fallback) | High | "Success or error message?" |
 | C — Orchestrate | Claude Desktop | Free to us | Lower | "Which workflow should run next?" |
 
 A decision point should *prefer* Level A, *fall back* to Level B, and *hand up* to Level C only if it can't resolve things itself.
@@ -82,7 +86,7 @@ A decision point should *prefer* Level A, *fall back* to Level B, and *hand up* 
 ## What We'd Recommend Building, In Order
 
 1. **Level A first.** Biggest payoff, zero AI cost, and we already have all the ingredients (our element-finding and page-checking machinery can answer "is this visible?" today).
-2. **Level B second.** It's a small addition to plumbing we already have (the cloud AI proxy and its billing).
+2. **Level B second.** Primary path asks the MCP client over the connection we already hold (no new plumbing); fallback reuses the cloud AI proxy and billing we already have for hosts without sampling support. Worth a spike first to confirm whether Claude Desktop's sampling flow requires a per-call approval prompt.
 3. **Level C third.** Mostly packaging work — teaching the compiler where to split workflows and how skills report what they saw.
 
 ## The One Decision We Must Make Early

@@ -216,7 +216,7 @@ flowchart TD
     E --> N[Update input variables] --> O[cmd_update_workflow_inputs]
     E --> P[Replace literal with variable] --> Q[cmd_replace_literals]
     E --> R[Apply recording screenshot to step] --> S[cmd_apply_recording_visual]
-    E --> T[Re-target element wizard] --> T1[Phase 1: draw region] --> T2[cmd_retarget_preview: candidates + validation diff] --> T3[Phase 3: Apply] --> T4[cmd_retarget_apply → bbox + target + identity_bundle + validation, one undo entry]
+    E --> T[Re-target element wizard] --> T1[Phase 1: draw region] --> T2[cmd_retarget_preview: candidates + validation diff] --> T3[Phase 3: Validation — review/edit the enforced post-condition] --> T4[cmd_retarget_apply → bbox + target + identity_bundle + validation, one undo entry]
     E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true, edited_at=now]
     W --> X{Every workflow in the plugin now compiled + signed off?}
     X -->|No| Y[Return waiting_on: names of remaining workflows]
@@ -227,7 +227,17 @@ flowchart TD
 
 **Auto-build on sign-off (2026-07 workflow redesign, Phase 1):** sign-off no longer just flips a flag. `cmd_sign_off_workflow` re-checks, after persisting `signed_off`/`edited_at`, whether every workflow belonging to the plugin is compiled and signed off — the same condition `plugin_builder.build_plugin` already gates on (§8). If so, it calls `build_plugin` itself, so the package exists the moment the gate is satisfied instead of requiring a separate visit to a build page (there is no such page anymore — see §8). The gate itself is unchanged; this only moves *when* the already-existing build call happens to fire.
 
-**Re-target wizard (replaces the old direct "update visual bbox" flow):** `cmd_update_visual_bbox` still exists (bbox + vision-anchor regeneration only, no selector change) but the primary re-target entry point is the 3-phase wizard — Pick element → Review selectors → Confirm & apply. `cmd_retarget_preview` is read-only (generates and scores candidates + a validation diff without persisting); `cmd_retarget_apply` is the only command that writes, composing bbox + `target.primary_selector`/`fallback_selectors` + rebuilt `identity_bundle` + (optionally) regenerated `validation.wait_for`/`assertions` into a single document mutation and a single undo entry. See `docs/UI-UX-Brief.md` §2.8 for the UI.
+**Re-target wizard (replaces the old direct "update visual bbox" flow):** `cmd_update_visual_bbox` still exists (bbox + vision-anchor regeneration only, no selector change) but the primary re-target entry point is the 3-phase wizard — Pick element → Review selectors → **Validation**. `cmd_retarget_preview` is read-only (generates and scores candidates + a validation diff without persisting); `cmd_retarget_apply` is the only command that writes, composing bbox + `target.primary_selector`/`fallback_selectors` + rebuilt `identity_bundle` + (optionally) regenerated `validation.wait_for`/`assertions` into a single document mutation and a single undo entry. See `docs/UI-UX-Brief.md` §2.8 for the UI.
+
+**Validation phase (was "Confirm & apply"):** Phase 3 is a true post-condition review, not just a
+confirm-and-go screen. It surfaces the step's enforced (`required=True`) assertion — the single
+deterministic post-condition the compiler picked for this action (`docs/Backend-Schema.md` §3.6)
+— alongside any advisory checks, and lets the user edit the flat assertion list (type, target,
+expected value, timeout, required) before applying. An edit sends `edited_assertions` in the
+`cmd_retarget_apply` payload, which takes precedence over the previewed `proposed_assertions`;
+omitting any edit falls back to today's keep/replace behavior unchanged. A step with no enforced
+assertion is flagged in the UI ("this step will pass even if the action had no effect") rather
+than silently accepted.
 
 Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, sign-off, and reviewing a step's already-compiled selectors in the re-target wizard (continuing without re-picking the element). LLM-assisted actions such as selector regeneration (including the re-target wizard's Phase 2 candidate generation **when the element is re-picked**), visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
 
@@ -423,10 +433,17 @@ flowchart TD
     I --> J
     J --> K[Adopt parked page; apply override via _explicit_selector]
     K --> D
-    D --> L[verifyAssertions]
-    L -->|All pass| M[tracker.emit tier_ok + continue]
+    D --> L[verifyStep: check the step's post-condition assertions]
+    L -->|All required pass| M[tracker.emit tier_ok + continue]
     L -->|Required fails| F
 ```
+
+**Re-verified recovery:** a "resolved" in Tier 1/2 above isn't the end of the story for a
+consequential step — every remedy that re-runs the action re-checks the post-condition
+(`verifyStep`) before being counted as recovered (`runtime/run.js` `recoverWithSelector`). A
+verify-fail also skips straight past the Tier 1 single-remedy retry (re-running the same action
+against the same, already-checked DOM can't fix it) into Tier 2's resolution-changing mechanisms.
+See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify wiring.
 
 ---
 

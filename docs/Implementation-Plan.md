@@ -216,9 +216,52 @@ layout to a different page.
 
 ---
 
+### ✅ 1.10 Enforced Post-Condition Validation — DONE 2026-07-09
+
+**What was missing:** A step was considered "done" once its action executed without throwing.
+The existing post-condition mechanism (`verifyStep`, `runtime/run.js`) was under-powered: text
+entry (`fill`/`type`) compiled zero assertions at all; most compiled assertions were advisory
+(`required=False`) and so never failed a step; commit/submit clicks with no recorded URL/DOM
+evidence got no enforced check at all (a silently no-op button would pass); and recovery re-ran
+the failed action without ever re-checking the post-condition, so a "recovered" step could still
+leave the intended result unmet.
+
+**What was built:**
+- **Data model** (`packages/conxa-core/conxa_core/models/skill_spec.py`): `Assertion` gained an
+  `expected` field; vocabulary extended to `value_equals` (field-value check, normalized +
+  contains fallback) and `state_changed` (no-op guard for evidence-less commits).
+- **Compiler** (`conxa_compile/compiler/build.py:_build_assertions`): a deterministic "primary
+  signal picker" — every consequential action (text entry/select, commit/submit/destructive
+  click) compiles with exactly one `required=True` assertion; everything else stays advisory.
+  Evidence-less commit clicks synthesize a required `state_changed` check rather than going
+  unenforced. `conxa_compile/editor/patch_gate.py` gained a matching invariant (a human edit
+  can't silently drop the last required assertion on a consequential step).
+- **Runtime** (`runtime/run.js`): new `value_equals`/`state_changed` handlers in `verifyStep`;
+  the recovery cascade (`recoverWithSelector` and everything that funnels through it) now
+  re-invokes `verifyStep` after re-running the action and only reports success if the
+  post-condition re-holds; a verify-fail (`recovery.js` `descend-layer2`) skips the Tier 1
+  single-remedy retry and falls straight to Tier 2's resolution-changing mechanisms.
+- **Human Editor:** the retarget wizard's Phase 3, "Confirm & apply," is now "Validation" —
+  `RetargetPhaseValidation.tsx` shows the enforced post-condition plus advisory checks as an
+  editable flat list, round-tripped through `cmd_retarget_apply`'s new `edited_assertions`
+  payload field.
+- No forced recompile — packs compiled before this change carry no new assertions and behave
+  exactly as before; enforcement only strengthens on steps that are recompiled or retargeted.
+- Tests: `runtime/test/test_verify.js` (value_equals/state_changed), new
+  `runtime/test/test_recovery_verify.js` (proves the recovered-but-unverified gap is closed),
+  `conxa-cloud/tests/test_element_fingerprint.py` (compiler assertion emission), new
+  `conxa-cloud/tests/test_patch_gate.py`.
+
+**Deferred (not part of this item):** a compound AND/OR `wait_tree` validation editor
+(`ValidationEditor.tsx` remains orphaned/unused — its leaf-field UI idioms were reused, not its
+tree model); wiring `validate_editor_patch` into `cmd_patch_step` (it was already unwired/unused
+before this change — see `TODO.md`).
+
+---
+
 **Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
-phase's original closure.** The rest of Phase 1 (1.1-1.8) is done, superseded, or moot; other
-open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
+phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10) is done, superseded, or moot;
+other open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
 billing enforcement, error-message UX).
 
 ---

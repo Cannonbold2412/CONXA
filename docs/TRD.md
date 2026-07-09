@@ -711,7 +711,9 @@ events.jsonl (raw RecordedEvents)
            │   │   generate_deterministic_signals() produces Playwright-native signals
            │   │   ranked by durability. LLM is never asked to write a selector string.
            │   ├── anchor_vision_llm.py → relational anchor phrases (optional)
-           │   ├── validation_planner.py → Assertion[]
+           │   ├── validation_planner.py → wait_for + success_conditions (deterministic)
+           │   ├── build.py:_build_assertions() → Assertion[] (one required per consequential
+           │   │   action, rest advisory — see §10.2a VERIFY)
            │   ├── recovery_policy.py → RecoveryBlock
            │   └── confidence/layered.py → confidence score
            │
@@ -747,7 +749,8 @@ SkillPackage:
             position_hint
           compiled_selectors: list[str] # ranked CSS/XPath selectors
           validation: ValidationBlock
-            assertions: list[Assertion] # url_pattern, selector_present, etc.
+            assertions: list[Assertion] # url_changed, url_pattern, selector_present/absent,
+                                         # text_present/absent, value_equals, state_changed
           recovery: RecoveryBlock
             intent, anchors, strategies, confidence_threshold
           semantic_description: str
@@ -797,7 +800,7 @@ For each step in `execution.json`:
 
 ```
 1. Poll pause signal (control file: allow pause/resume via API)
-2. waitForPageLoadAndPace() — adaptive timing, human-like pacing
+2. waitForPageLoad() — waits for domcontentloaded (+ networkidle if CONXA_WAIT_NETWORKIDLE=1) after a navigation-triggering step
 3. waitForUrlState() — pre-step URL gate (if step.url defined)
 4. executeStep() — primary action
    ├── interpolate input variables ({{variable}} substitution)
@@ -807,27 +810,25 @@ For each step in `execution.json`:
    │   ├── Tier 3: LLM semantic recovery — intent + DOM inventory → Claude (agent-mediated; ceiling ≥ 3)
    │   └── Tier 4: Vision recovery — screenshot → Claude (agent-mediated; ceiling ≥ 3)
    └── withLocator() — perform the action
-5. verifyAssertions() — check Assertion[]
-   ├── required assertions → halt on failure
-   └── advisory assertions → log warning
+5. verifyStep() — check Assertion[] (§10.2a) independently of the action's own success
+   ├── required (enforced) assertion → verify-fail descends into recovery, re-verified on
+   │   every re-run; unrecovered → step (and run) fails, never silently continues
+   └── advisory assertions → log warning only
 6. writeCheckpoint() — step-level recovery point
 7. tracker.emit() — telemetry event
 ```
 
-### 9.2 Human-Like Pacing
+### 9.2 Page-Load Waiting
 
-`CONXA_HUMAN_PACING` (default: enabled) adds randomized delays:
+There is no artificial per-action pacing — steps execute back-to-back as fast as resolution and
+the target page allow. The only wait between steps is `waitForPageLoad()`, and only when the
+*previous* step's type is in `NAVIGATION_STEP_TYPES` (i.e. could have triggered navigation): it
+waits for `domcontentloaded` (and `networkidle` too, if `CONXA_WAIT_NETWORKIDLE=1`) before the
+next step resolves against the new page. Non-navigation steps have no inter-step wait at all.
 
-| Action | Delay range |
-|---|---|
-| click | 180–300ms |
-| fill | 100–200ms |
-| type | 100–200ms |
-| select | 160–260ms |
-| focus | 80–160ms |
-| scroll | 120–220ms |
-
-After navigation steps: waits for `domcontentloaded` + 600ms observer pause.
+(Earlier revisions added randomized human-like delays per action type and a minimum
+"observer pause" after navigation, gated by `CONXA_HUMAN_PACING` and a per-company
+`pack.pacing.observer_ms` — both were removed to make execution as fast as the page allows.)
 
 ---
 
@@ -905,8 +906,48 @@ fail fast (recompile required).
   (bounding box unchanged across two frames) → enabled (`disabled`/`aria-disabled`). Budget is
   confidence-adaptive. Zero LLM.
 - **VERIFY (`run.js` `verifyStep`):** after every action — independent post-condition check of
-  the step's compiled assertions (`url_pattern`, `selector_present/absent`, `text_present/absent`).
-  A failed *required* assertion descends into recovery; advisory failures are recorded only.
+  the step's compiled assertions (`url_changed`/`url_pattern`, `selector_present/absent`,
+  `text_present/absent`, `value_equals`, `state_changed`). Every consequential action (submit
+  click, destructive confirm, text entry/select) compiles with exactly one **required**
+  (enforced) assertion — the compiler's deterministic "primary signal picker" in
+  `build.py:_build_assertions`; everything else stays advisory. `value_equals` compares the
+  field's actual value to the expected one (normalized, with a contains fallback for
+  masked/formatted fields). `state_changed` is synthesized for commit/destructive clicks with no
+  recorded URL/DOM evidence — it confirms the page shows *some* observable effect (URL,
+  interactive-element count, or body-text delta beyond a small noise tolerance), catching a
+  button that silently no-ops. A failed *required* assertion descends into recovery; advisory
+  failures are recorded only.
+  - **Web-first polling, not a single sample:** positive checks (`url_*`, `text_present`,
+    `value_equals`, `state_changed`) retry their predicate every `VERIFY_POLL_INTERVAL_MS` (250ms)
+    until it holds or the assertion's `timeout_ms` elapses — a slow render or an optimistic-UI
+    update landing after the action no longer reads as a false failure. `selector_present` rides
+    Playwright's own `waitFor`, which already polls. Negative checks (`selector_absent`,
+    `text_absent`) additionally require the absence to still hold after a `NEGATIVE_STABILIZE_MS`
+    (500ms) recheck, so a flicker (gone → back → gone) can't false-pass a check taken mid-load.
+  - **Full assertion audit:** `verifyStep` evaluates every assertion on the step — not just up to
+    the first required failure — and returns `results: [{type, target, required, ok,
+    elapsed_ms}]` alongside `{pass, channel, evidence}`. On the primary execution path (not
+    recovery re-verification), the runner emits one `verify_result` telemetry event per step that
+    carries assertions (`{si, ok, n, advFail}`), giving the fleet dashboard visibility into
+    advisory-assertion decay before it becomes a hard failure. A required verify-fail also attaches
+    the full `results` array to the thrown error as `verifyResults`, alongside the existing
+    `earlyDomSnapshot` (interactive-element inventory at the moment of failure).
+  - **Ephemeral filtering at compile time:** `validation_planner.py::infer_success_conditions`
+    runs `required_elements` candidates through `selector_filters.py::is_ephemeral_anchor` before
+    handing them to `build.py::_build_assertions`'s primary-signal picker — a cookie-banner/toast/
+    notification-shaped element can never land in the REQUIRED promotion slot; it's demoted to an
+    advisory `text_present` token instead of dropped.
+  - **Fleet dashboard:** `app.services.tracking._assertion_health_by_step` aggregates
+    `verify_result` events per (company, workflow, step) into a pass-rate view, exposed on
+    `GET /api/v1/tracking/dashboard` as `assertion_health_by_step` and rendered by the Cloud
+    Dashboard's Assertion health card (§3.2 `docs/UI-UX-Brief.md`) — worst-pass-rate steps surface
+    first.
+  - **Human Edit UI + patch gate:** `StepConfigForm.tsx` carries a self-contained Validation card
+    (shared `components/validation/AssertionEditor.tsx`, also used by the re-target wizard's
+    Validation phase) that saves independently via `patch_step`'s `validation.assertions`.
+    `conxa_compile/editor/patch_gate.py::validate_editor_patch` is now called from
+    `cmd_patch_step` before any patch is merged/persisted — a manual edit that would drop a
+    consequential step's only required assertion is rejected outright, not just flagged.
 
 ### 10.2b Layer 1 / Layer 2 zero-token recovery
 
@@ -918,6 +959,14 @@ fail fast (recompile required).
   retries the primary selector once.
 - **Layer 2:** a11y re-probe, transient retry, **re-hover-then-retry** (walks the precompiled
   `handler_hints.hover_chain` for menu reveals), fallback selectors, dialog scope, fuzzy text.
+- **Re-verify on recovery:** every Layer 1/2 remedy that re-runs the action funnels through
+  `recoverWithSelector`, which — when the step carries a required assertion — re-invokes
+  `verifyStep` after the re-run and only reports the remedy successful if the post-condition
+  re-holds. A recovered action that doesn't re-establish its post-condition still fails the step.
+  A verify-fail (`classifyException` → `CLASS.VERIFY_FAIL` → `remedyFor` → `"descend-layer2"`)
+  skips the Layer 1 single-remedy retry entirely — retrying the same action against the same,
+  already-checked DOM can't fix a failed post-condition — and falls straight through to Layer 2's
+  resolution-changing mechanisms.
 
 On any recovery success the runner emits a structured **`repair_event`** (step id, tier, method,
 score/margin, `stable_hash`, app-version fingerprint, drift hint). This is **ephemeral per-run
@@ -950,7 +999,58 @@ If the element is expected inside a dialog, recovery first restricts the search 
 
 ### 10.4 No-Recovery Steps
 
-`frame_enter` and `frame_exit` actions carry `no_recovery_block`. These are structural markers, not interactive steps, and are never retried.
+`frame_enter` and `frame_exit` actions carry `no_recovery_block`. These are structural markers, not interactive steps, and are never retried. `if_present`, `try_dismiss`, and `wait_for_one_of` (§10.7) carry `no_recovery_block` for the same reason — they are best-effort by design, not because they lack a target.
+
+### 10.7 Conditional / Branch Steps (EXEC-1)
+
+Optional interstitials — cookie/consent banners, session-expired screens, optional MFA, A/B-tested
+variants — used to be indistinguishable from a genuine selector failure: every such case escalated
+through the full recovery cascade, including paid Tier 3/4 LLM recovery billed to the customer's
+own Claude usage. Three step types give the compiled skill a way to express "this element sometimes
+appears" directly, so the runtime handles it without ever touching recovery:
+
+| Type | Shape | Behavior |
+|---|---|---|
+| `if_present` | `{ type, selector\|identity_bundle, timeout_ms, steps: [...] }` | Probes for the target up to `timeout_ms`; if present, runs the nested `steps` body. |
+| `try_dismiss` | `{ type, candidates: [...], timeout_ms, fallback_escape? }` | Probes each candidate selector in order; clicks the first present one (best-effort). Falls back to `Escape` unless `fallback_escape: false`. |
+| `wait_for_one_of` | `{ type, options: [{selector\|identity_bundle, steps?}], timeout_ms, required? }` | Polls all options up to `timeout_ms`; the first to appear wins and its `steps` (if any) run. On timeout: no-op unless `required: true`, in which case the step fails normally (and *can* enter recovery, since a `required` miss is a real failure). |
+
+**Runtime** (`runtime/run.js`): `probePresent(page, spec, inputs, timeoutMs)` is a non-throwing
+presence probe (selector-count or `identity_bundle.signals` resolution, polled via the existing
+`pollPositive`). `runBranchBody` executes each nested step through the same `executeStep`/`HANDLERS`
+dispatch as top-level steps, wrapping each in try/catch so a failed nested action (e.g. the accept
+button moved) is swallowed rather than propagated — the branch body never escalates to Tier 1-4
+recovery, since `recoverStep` only fires on a throw escaping `runPlan`'s per-step try. Nested steps
+that carry only a plain `selector` (no `identity_bundle`) are normalized via `resolvableBranchStep`
+into string mode (`_explicit_selector`, the same mechanism recovery uses) — interactive handlers
+like `click` otherwise resolve exclusively through `identity_bundle.signals` and throw immediately
+if none exist.
+
+**Version gate**: an older runtime silently no-ops an unrecognized step `type` (see `executeStep`),
+which for a branch step means skipping its entire nested body — for `wait_for_one_of` gating an
+MFA step, that's a correctness bug, not a graceful degrade. `SkillMeta.required_runtime` (enforced
+at execute time via `semver.satisfies`) is the existing guard; `plugin_builder_output.py`'s
+`CONXA_REQUIRED_RUNTIME` floor (default `>=1.0.3`, applied pack-wide — see the `NOTE(branch-steps)`
+comment there) must be bumped to the app-layer version that first ships these handlers once that
+version is tagged (same manual-coordination pattern as `MIN_HOST` in `build-runtime-app.yml`).
+
+**Compiler / schema** (`packages/conxa-core/conxa_core/models/skill_spec.py`): `SkillStep.branch`
+(`dict`) holds `steps` (`if_present`), `candidates` (`try_dismiss`), `options` (`wait_for_one_of`),
+`timeout_ms`, `required`. Nested step entries are raw dicts in the same shape as a saved `SkillStep`
+(`action`/`target`/`identity_bundle`/`branch`/...) — `plugin_builder_saved_skill.py`'s
+`_saved_step_to_execution_step` recursively serializes each one (and each `wait_for_one_of` option's
+`steps`) into the flat runtime step shape above. `action_policy.NO_RECOVERY_ACTION_TYPES` and
+`action_registry.SELECTOR_ACTIONS` register the three kinds; they are **not** in `MARKER_ACTIONS`
+(they carry a real probe target, unlike `frame_enter`/`tab_open`) and **not** in `INSERTABLE_ACTIONS`
+(no Build Studio editor authoring path yet — see Foundation scope below).
+
+**Foundation scope**: this covers the schema, the runtime executor, and the build-serializer
+passthrough only. A conditional branch can be authored directly as `execution.json`/saved-skill
+JSON today (see `runtime/test/gate-skill/` for a worked example — an `if_present` step dismisses a
+fixture cookie banner before the gate click). There is no Build Studio editor UI to author one yet,
+and the recorder does not emit these step types from a live recording — recorder-time conditional
+capture and a curated dismiss-pattern library are tracked separately in `TODO.md` (RT-2, EXEC-5),
+both of which depend on this primitive existing.
 
 ---
 
