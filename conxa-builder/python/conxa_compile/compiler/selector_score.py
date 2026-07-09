@@ -153,6 +153,25 @@ def tag_orthogonality_class(engine: str) -> str:
     return _ENGINE_ORTHOGONALITY.get(engine, "structural")
 
 
+def confidence_from_signal_rows(signals: list[dict[str, Any]]) -> float:
+    """Dict-based twin of ``compiler.build._confidence_from_identity_bundle``.
+
+    Same formula (strongest signal's durability, discounted when signals don't span >=2
+    orthogonality classes or when none matched uniquely at compile time), but works off the
+    persisted/serialized signal dicts the editor DTOs carry instead of the in-memory
+    IdentityBundle/IdentitySignal pydantic objects used during compile.
+    """
+    if not signals:
+        return 0.0
+    base = max((float(s.get("durability") or 0.0) for s in signals if isinstance(s, dict)), default=0.0)
+    classes = {str(s.get("orthogonality_class") or "") for s in signals if isinstance(s, dict)}
+    classes.discard("")
+    ortho_factor = 1.0 if len(classes) >= 2 else 0.7
+    has_unique = any(bool(s.get("unique_at_compile")) for s in signals if isinstance(s, dict))
+    unique_factor = 1.0 if has_unique else 0.6
+    return round(min(1.0, base * ortho_factor * unique_factor), 3)
+
+
 def rank_by_durability(
     candidates: list[tuple[str, str]],
     survival_prior: float = 1.0,

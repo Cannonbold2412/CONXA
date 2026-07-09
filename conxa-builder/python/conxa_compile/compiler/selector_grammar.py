@@ -291,8 +291,11 @@ def to_playwright_grammar(engine: str, value: str, name: str = "") -> str:
 def signals_to_display_list(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert IdentityBundle signals to the form used by the editor.
 
-    Returns list of {selector (display string), engine, durability} dicts,
-    durability-ordered (signals already come in durability order from the bundle).
+    Returns list of {selector (display string), engine, durability, orthogonality_class,
+    unique_at_compile, source} dicts, durability-ordered (signals already come in durability
+    order from the bundle). The last three fields are the identity metadata the runtime resolver
+    actually keys off — surfaced here (rather than dropped) so the Human Edit review UI can show
+    it instead of just the selector text.
     """
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -311,5 +314,8 @@ def signals_to_display_list(signals: list[dict[str, Any]]) -> list[dict[str, Any
             "selector": display,
             "engine": engine,
             "durability": float(sig.get("durability") or 0.0),
+            "orthogonality_class": str(sig.get("orthogonality_class") or ""),
+            "unique_at_compile": bool(sig.get("unique_at_compile")),
+            "source": str(sig.get("source") or "compiler"),
         })
     return result

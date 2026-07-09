@@ -77,10 +77,14 @@ class StepEditorDTO(BaseModel):
     check_selector: str | None = None
     check_text: str | None = None
     # Going-forward selector signals from identity_bundle — drives the runtime hot path.
-    # Each entry: {selector (public display string), engine, durability}.
-    # The editor's selector list is authoritative; this field provides engine/durability metadata
-    # for display badges. Absent on steps with no identity_bundle (e.g. frame markers).
+    # Each entry: {selector (public display string), engine, durability, orthogonality_class,
+    # unique_at_compile, source}. The editor's selector list is authoritative; this field
+    # provides identity metadata for display badges — the same signal quality the runtime
+    # resolver relies on. Absent on steps with no identity_bundle (e.g. frame markers).
     identity_engines: list[dict[str, Any]] = Field(default_factory=list)
+    # Step-level rollup of identity_bundle signal quality (see
+    # compiler.selector_score.confidence_from_signal_rows) — None on steps with no bundle.
+    compile_confidence: float | None = None
 
 
 class SuggestionItem(BaseModel):

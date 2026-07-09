@@ -25,6 +25,7 @@ from conxa_compile.compiler.wait_for_shape import (
 from conxa_compile.confidence.uncertainty import audit_reference
 from conxa_compile.editor.action_registry import action_spec, action_spec_dict
 from conxa_compile.compiler.selector_grammar import signals_to_display_list
+from conxa_compile.compiler.selector_score import confidence_from_signal_rows
 from conxa_compile.editor.assets import asset_url
 from conxa_compile.editor.describe import describe_step
 from conxa_compile.editor.dto import FrameDTO, StepEditorDTO, StepFlags, StepScreenshotDTO, SuggestionItem, WorkflowResponse, _FRAME_OFFSETS
@@ -344,8 +345,18 @@ def step_to_dto(
     raw_target = dict(step.get("target") or {})
     bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
     bundle_signals_raw = bundle.get("signals") if isinstance(bundle.get("signals"), list) else []
-    identity_display = signals_to_display_list(bundle_signals_raw)  # [{selector, engine, durability}]
+    identity_display = signals_to_display_list(bundle_signals_raw)  # [{selector, engine, durability, ...}]
     identity_sel_set = {e["selector"] for e in identity_display}
+
+    # Step-level confidence rollup: prefer whatever was persisted at last (re)compile/retarget
+    # (target.selector_confidence), else derive it fresh from the bundle's raw signals.
+    stored_confidence = raw_target.get("selector_confidence")
+    if isinstance(stored_confidence, (int, float)):
+        compile_confidence: float | None = float(stored_confidence)
+    elif bundle_signals_raw:
+        compile_confidence = confidence_from_signal_rows(bundle_signals_raw)
+    else:
+        compile_confidence = None
 
     # Merge: signals first (hot-path, ordered by durability), then any target selectors
     # not already represented (recovery-only / legacy compiled selectors).
@@ -376,6 +387,7 @@ def step_to_dto(
         selectors=dict(signals.get("selectors") or {}),
         compiled_selectors=_compiled_selectors(step),
         identity_engines=identity_display,
+        compile_confidence=compile_confidence,
         anchors_signals=[] if is_url_check else normalize_anchor_list(signals.get("anchors") or []),
         anchors_recovery=[] if is_url_check else normalize_anchor_list(recovery.get("anchors") or []),
         validation={
