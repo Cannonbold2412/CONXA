@@ -124,46 +124,68 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
         </p>
       ) : null}
 
-      <ul className="space-y-2">
+      <ul className="space-y-2.5">
         {assertions.map((a, i) => (
-          <li key={i} className="border-border/50 bg-muted/15 rounded-md border p-2.5">
+          <li key={i} className="border-border/50 bg-muted/15 hover:border-border rounded-lg border p-3 transition-colors">
             <div className="flex items-start justify-between gap-2">
-              <p className={cn('text-sm', isAssertionRequired(a) ? 'text-zinc-100' : 'text-zinc-400')}>
-                {isAssertionRequired(a) ? '' : '(optional) '}
-                {describeAssertion(a as Record<string, unknown>)}
-              </p>
-              <Button type="button" size="sm" variant="ghost" className="text-muted-foreground h-6 shrink-0 px-2" onClick={() => removeRow(i)}>
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="bg-muted text-muted-foreground mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-medium">
+                  {i + 1}
+                </span>
+                <p className={cn('text-sm', isAssertionRequired(a) ? 'text-zinc-100' : 'text-zinc-400')}>
+                  {isAssertionRequired(a) ? '' : '(optional) '}
+                  {describeAssertion(a as Record<string, unknown>)}
+                </p>
+              </div>
+              <Button type="button" size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive h-6 shrink-0 px-2" onClick={() => removeRow(i)}>
                 Remove
               </Button>
             </div>
-            <div className="mt-2 grid gap-2 sm:grid-cols-4 sm:items-end">
-              <div className="space-y-1 sm:col-span-1">
-                <Label className="text-foreground text-xs">Check</Label>
-                <select
-                  className={cn(fieldSelectClass, 'h-8 px-2 text-xs')}
-                  value={a.type}
-                  title={ASSERTION_TYPE_HELP[a.type] ?? ''}
-                  onChange={(e) => updateRow(i, { type: e.target.value })}
-                >
-                  {ASSERTION_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {a.type !== 'state_changed' ? (
-                <div className="space-y-1 sm:col-span-1">
-                  <Label className="text-foreground text-xs">{TARGET_LABEL[a.type] ?? 'Target'}</Label>
+            <div className="mt-2.5 space-y-2.5 pl-7">
+              <div className="flex flex-wrap items-end gap-2.5">
+                <div className="w-full space-y-1 sm:w-44">
+                  <Label className="text-foreground text-xs">Check</Label>
+                  <select
+                    className={cn(fieldSelectClass, 'h-8 px-2 text-xs')}
+                    value={a.type}
+                    title={ASSERTION_TYPE_HELP[a.type] ?? ''}
+                    onChange={(e) => updateRow(i, { type: e.target.value })}
+                  >
+                    {ASSERTION_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {a.type !== 'state_changed' ? (
+                  <div className="min-w-40 flex-1 space-y-1">
+                    <Label className="text-foreground text-xs">{TARGET_LABEL[a.type] ?? 'Target'}</Label>
+                    <Input
+                      className="h-8 text-xs"
+                      value={a.target ?? ''}
+                      onChange={(e) => updateRow(i, { target: e.target.value })}
+                    />
+                  </div>
+                ) : null}
+                <div className="w-32 shrink-0 space-y-1">
+                  <Label className="text-foreground text-xs">Timeout (ms)</Label>
                   <Input
-                    className="h-8 text-xs"
-                    value={a.target ?? ''}
-                    onChange={(e) => updateRow(i, { target: e.target.value })}
+                    type="number"
+                    className="h-8 tabular-nums text-xs"
+                    min={0}
+                    step={100}
+                    value={a.timeout_ms ?? 5000}
+                    onChange={(e) => updateRow(i, { timeout_ms: Number(e.target.value) || 0 })}
                   />
                 </div>
-              ) : null}
+                <label className="flex shrink-0 items-center gap-1.5 pb-1.5 text-xs text-zinc-300">
+                  <Checkbox checked={isAssertionRequired(a)} onCheckedChange={(checked) => updateRow(i, { required: Boolean(checked) })} />
+                  Required
+                </label>
+              </div>
               {a.type === 'value_equals' ? (
-                <div className="space-y-1 sm:col-span-1">
+                <div className="max-w-xs space-y-1">
                   <Label className="text-foreground text-xs">Expected value</Label>
                   <Input
                     className="h-8 text-xs"
@@ -172,27 +194,18 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
                   />
                 </div>
               ) : null}
-              <div className="space-y-1 sm:col-span-1">
-                <Label className="text-foreground text-xs">Timeout (ms)</Label>
-                <Input
-                  type="number"
-                  className="h-8 tabular-nums text-xs"
-                  min={0}
-                  step={100}
-                  value={a.timeout_ms ?? 5000}
-                  onChange={(e) => updateRow(i, { timeout_ms: Number(e.target.value) || 0 })}
-                />
-              </div>
-              <label className="flex items-center gap-1.5 text-xs text-zinc-300 sm:col-span-1 sm:justify-self-end">
-                <Checkbox checked={isAssertionRequired(a)} onCheckedChange={(checked) => updateRow(i, { required: Boolean(checked) })} />
-                Required
-              </label>
             </div>
           </li>
         ))}
       </ul>
 
-      <Button type="button" size="sm" variant="secondary" onClick={addRow}>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="w-full border-dashed border-white/15 bg-transparent text-zinc-300 hover:border-white/25 hover:bg-white/[0.04]"
+        onClick={addRow}
+      >
         + Add check
       </Button>
     </div>

@@ -9,6 +9,7 @@ import {
   deleteStep,
   errorMessage,
   fetchMetrics,
+  fetchRecordingScreenshots,
   fetchSkillList,
   fetchWorkflow,
   postApplyRecordingVisual,
@@ -21,7 +22,6 @@ import {
   undoWorkflow,
 } from '@/api/workflowApi'
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
-import { ConfidenceBanner } from '@/components/ConfidenceBanner'
 import { HowClaudeSeesThisPanel } from '@/components/HowClaudeSeesThisPanel'
 import { WorkflowViewer } from '@/components/WorkflowViewer'
 import { InlineRetargetFlow, type InlineRetargetFlowHandle } from '@/components/retarget/InlineRetargetFlow'
@@ -38,10 +38,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { InfoHint } from '@/components/ui/info-hint'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
   BadgeCheck,
@@ -94,9 +94,6 @@ export function HumanEditPage() {
   const EDITOR_SIDEBAR_WIDTH_KEY = 'ai-native-editor-sidebar-width'
   const EDITOR_SIDEBAR_MIN = 280
   const EDITOR_SIDEBAR_MAX = 560
-  const TOOLS_PANE_WIDTH_KEY = 'ai-native-editor-tools-pane-width'
-  const TOOLS_PANE_MIN = 320
-  const TOOLS_PANE_MAX = 640
   const { skillId } = useParams<{ skillId: string }>()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -107,10 +104,8 @@ export function HumanEditPage() {
   const [manualSkillId, setManualSkillId] = useState('')
   const [workflowPaneWidth, setWorkflowPaneWidth] = useState(340)
   const [isResizingPane, setIsResizingPane] = useState(false)
-  const [toolsPaneWidth, setToolsPaneWidth] = useState(384)
-  const [isResizingToolsPane, setIsResizingToolsPane] = useState(false)
-  const [activeToolsPane, setActiveToolsPane] = useState<string | null>('suggestions')
-  const [recordingShotDragActive, setRecordingShotDragActive] = useState(false)
+  const [openTool, setOpenTool] = useState<ToolPaneKey | null>(null)
+  const [showAllScreenshots, setShowAllScreenshots] = useState(false)
   const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const splitPaneRef = useRef<HTMLDivElement | null>(null)
@@ -123,7 +118,6 @@ export function HumanEditPage() {
   const dirtyCount = useEditorStore((s) => s.dirtySteps.size)
   const setHistoryState = useEditorStore((s) => s.setHistoryState)
   const resetHistory = useEditorStore((s) => s.resetHistory)
-  const prefersReducedMotion = useReducedMotion()
 
   // Only used by the "Resume a skill" picker on the no-skill-selected landing state
   // below — skip the full skills-directory scan entirely when a skill is already
@@ -194,18 +188,6 @@ export function HumanEditPage() {
   }, [workflowPaneWidth])
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(TOOLS_PANE_WIDTH_KEY)
-    if (!stored) return
-    const parsed = Number.parseInt(stored, 10)
-    if (Number.isNaN(parsed)) return
-    setToolsPaneWidth(Math.max(TOOLS_PANE_MIN, Math.min(TOOLS_PANE_MAX, parsed)))
-  }, [])
-
-  useEffect(() => {
-    window.localStorage.setItem(TOOLS_PANE_WIDTH_KEY, String(toolsPaneWidth))
-  }, [toolsPaneWidth])
-
-  useEffect(() => {
     if (!isResizingPane) return
     const onMouseMove = (event: MouseEvent) => {
       const rect = splitPaneRef.current?.getBoundingClientRect()
@@ -230,32 +212,6 @@ export function HumanEditPage() {
       document.body.style.userSelect = ''
     }
   }, [isResizingPane])
-
-  useEffect(() => {
-    if (!isResizingToolsPane) return
-    const onMouseMove = (event: MouseEvent) => {
-      const rect = splitPaneRef.current?.getBoundingClientRect()
-      if (!rect) return
-      const proposed = rect.right - event.clientX
-      const nextWidth = Math.max(TOOLS_PANE_MIN, Math.min(TOOLS_PANE_MAX, proposed))
-      setToolsPaneWidth(nextWidth)
-    }
-    const onMouseUp = () => {
-      setIsResizingToolsPane(false)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-  }, [isResizingToolsPane])
 
   const handleUndo = useCallback(async () => {
     if (!skillId || !canUndo) return
@@ -421,19 +377,14 @@ export function HumanEditPage() {
     navigate(fromPath ?? '/edit')
   }
 
-  const toggleToolsPane = (pane: ToolPaneKey) => {
-    setActiveToolsPane((current) => (current === pane ? null : pane))
-  }
-
-  // Always opens (never toggle-closes) — used by the confidence banner's "Review" action, which
-  // should reliably land on the Suggestions tab regardless of what's currently open.
-  const jumpToSuggestions = () => setActiveToolsPane('suggestions')
-
   const onDroppedRecordingScreenshot = useCallback(
-    async (stepIndex: number, eventIndex: number) => {
+    async (stepIndex: number, eventIndex: number, frameLabel?: string) => {
       if (!skillId) return
       try {
-        const res = await postApplyRecordingVisual(skillId, stepIndex, { event_index: eventIndex })
+        const res = await postApplyRecordingVisual(skillId, stepIndex, {
+          event_index: eventIndex,
+          frame_label: frameLabel,
+        })
         onWorkflowUpdated(res.workflow)
         if (res.can_undo !== undefined) setHistoryState(res.can_undo, res.can_redo ?? false)
         useEditorStore.getState().clearStepDirty(stepIndex)
@@ -444,6 +395,20 @@ export function HumanEditPage() {
       }
     },
     [onWorkflowUpdated, qc, setHistoryState, skillId],
+  )
+
+  const allScreenshotsQ = useQuery({
+    queryKey: ['recordingScreenshots', skillId],
+    queryFn: () => fetchRecordingScreenshots(skillId as string),
+    enabled: !!skillId && openTool === 'screenshots' && showAllScreenshots,
+  })
+
+  const onSelectAllScreenshot = useCallback(
+    (eventIndex: number, frameLabel: string) => {
+      if (selected === null) return
+      void onDroppedRecordingScreenshot(selected, eventIndex, frameLabel)
+    },
+    [onDroppedRecordingScreenshot, selected],
   )
 
   const onClearStepVisual = useCallback(
@@ -752,7 +717,6 @@ export function HumanEditPage() {
   const suggestionCount = wf.suggestions.length
   const splitPaneStyle = {
     ['--workflow-pane-width' as string]: `${workflowPaneWidth}px`,
-    ['--tools-pane-width' as string]: `${toolsPaneWidth}px`,
   } as CSSProperties
 
   const toolPanes: {
@@ -764,11 +728,12 @@ export function HumanEditPage() {
     controls: string
     count?: number | string
   }[] = [
-    { key: 'suggestions', label: 'Suggestions', icon: Lightbulb, iconClass: 'text-amber-300', help: editorHelp.toolSuggestions, controls: 'suggestions-pane', count: suggestionCount },
-    { key: 'variables', label: 'Input variables', icon: SlidersHorizontal, iconClass: 'text-sky-300', help: editorHelp.toolVariables, controls: 'variables-pane' },
-    { key: 'screenshots', label: 'Recording screenshots', icon: ImageIcon, iconClass: 'text-fuchsia-300', help: editorHelp.toolScreenshots, controls: 'recording-screenshots-pane', count: currentStep?.screenshot?.frames?.length ?? '—' },
-    { key: 'agentView', label: 'How Claude sees this', icon: Bot, iconClass: 'text-emerald-300', help: editorHelp.toolAgentView, controls: 'agent-view-pane' },
+    { key: 'suggestions', label: 'Suggestions', icon: Lightbulb, iconClass: 'text-amber-300', help: editorHelp.toolSuggestions, controls: 'suggestions-modal', count: suggestionCount },
+    { key: 'variables', label: 'Input variables', icon: SlidersHorizontal, iconClass: 'text-sky-300', help: editorHelp.toolVariables, controls: 'variables-modal' },
+    { key: 'screenshots', label: 'Recording screenshots', icon: ImageIcon, iconClass: 'text-fuchsia-300', help: editorHelp.toolScreenshots, controls: 'recording-screenshots-modal', count: currentStep?.screenshot?.frames?.length ?? '—' },
+    { key: 'agentView', label: 'How Claude sees this', icon: Bot, iconClass: 'text-emerald-300', help: editorHelp.toolAgentView, controls: 'agent-view-modal' },
   ]
+  const activeTool = toolPanes.find((t) => t.key === openTool) ?? null
 
   return (
     <TooltipProvider>
@@ -815,11 +780,28 @@ export function HumanEditPage() {
         ) : null
       }
       actions={
-        <div className="flex items-center gap-2">
-          <HumanEditPoolBadge />
+        <div className="flex w-full items-center gap-2.5">
+          {fromPath && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 border-white/12 bg-white/[0.045] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                  onClick={() => navigate(fromPath)}
+                >
+                  <ChevronLeft className="size-3.5" />
+                  <span className="hidden sm:inline">Back</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Back to plugin</TooltipContent>
+            </Tooltip>
+          )}
+          <div className="ml-auto flex items-center gap-2.5">
+          <HumanEditPoolBadge className="h-9" />
           {dirtyCount > 0 && (
             <span
-              className="hidden items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[0.7rem] font-medium text-amber-200 sm:inline-flex"
+              className="hidden h-9 items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2.5 text-[0.7rem] font-medium text-amber-200 sm:inline-flex"
               role="status"
               aria-live="polite"
             >
@@ -827,14 +809,56 @@ export function HumanEditPage() {
               {dirtyCount} unsaved
             </span>
           )}
-          <div className="flex items-center overflow-hidden rounded-md border border-white/10 bg-white/[0.03]">
+          <div className="flex h-9 items-center overflow-hidden rounded-md border border-white/12 bg-white/[0.045] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            {toolPanes.map((tool, i) => {
+              const Icon = tool.icon
+              const active = openTool === tool.key
+              return (
+                <div key={tool.key} className="flex h-full items-center">
+                  {i > 0 && <div className="h-5 w-px bg-white/12" />}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-pressed={active}
+                        aria-controls={tool.controls}
+                        className={cn(
+                          'h-full gap-1.5 rounded-none px-3 text-zinc-300 hover:bg-white/[0.07] hover:text-white',
+                          active && 'bg-brand/14 text-brand hover:bg-brand/18 hover:text-brand',
+                        )}
+                        onClick={() => setOpenTool(tool.key)}
+                      >
+                        <Icon className={cn('size-3.5 shrink-0', !active && tool.iconClass)} />
+                        <span className="hidden text-xs font-medium lg:inline">{tool.label}</span>
+                        {tool.count !== undefined && (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'shrink-0 px-1.5 text-[0.65rem] font-semibold',
+                              active ? 'border-brand/40 text-brand' : 'border-white/15 text-zinc-400',
+                            )}
+                          >
+                            {tool.count}
+                          </Badge>
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{tool.label}</TooltipContent>
+                  </Tooltip>
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex h-9 items-center overflow-hidden rounded-md border border-white/12 bg-white/[0.045]">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="h-8 rounded-none px-2.5 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100 disabled:opacity-30"
+                  className="h-full rounded-none px-3 text-zinc-300 hover:bg-white/[0.07] hover:text-white disabled:opacity-30"
                   onClick={() => void handleUndo()}
                   disabled={!canUndo}
                   aria-label="Undo"
@@ -844,14 +868,14 @@ export function HumanEditPage() {
               </TooltipTrigger>
               <TooltipContent>Undo · Ctrl+Z</TooltipContent>
             </Tooltip>
-            <div className="h-4 w-px bg-white/10" />
+            <div className="h-5 w-px bg-white/12" />
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="h-8 rounded-none px-2.5 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100 disabled:opacity-30"
+                  className="h-full rounded-none px-3 text-zinc-300 hover:bg-white/[0.07] hover:text-white disabled:opacity-30"
                   onClick={() => void handleRedo()}
                   disabled={!canRedo}
                   aria-label="Redo"
@@ -862,29 +886,14 @@ export function HumanEditPage() {
               <TooltipContent>Redo · Ctrl+Y</TooltipContent>
             </Tooltip>
           </div>
-          {fromPath && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
-                  onClick={() => navigate(fromPath)}
-                >
-                  <ChevronLeft className="size-3.5" />
-                  <span className="hidden sm:inline">Back</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Back to plugin</TooltipContent>
-            </Tooltip>
-          )}
+          <div className="hidden h-7 w-px bg-white/15 sm:block" aria-hidden />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 type="button"
                 variant="brand"
                 size="sm"
-                className="ring-brand-ring/50 h-8 gap-1.5 px-4 text-sm font-semibold ring-1"
+                className="ring-brand-ring/50 h-9 gap-1.5 px-4 text-sm font-semibold ring-1"
                 onClick={() => void approveWorkflow()}
               >
                 <BadgeCheck className="size-4" aria-hidden />
@@ -893,22 +902,21 @@ export function HumanEditPage() {
             </TooltipTrigger>
             <TooltipContent>Sign off this workflow — builds the package and moves to Test Skill</TooltipContent>
           </Tooltip>
+          </div>
         </div>
       }
+      className="py-3.5"
     />
-    <ConfidenceBanner suggestions={wf.suggestions} totalSteps={wf.steps.length} onReviewFlagged={jumpToSuggestions} />
     <div
       ref={splitPaneRef}
-        className="relative grid flex-1 min-h-0 w-full min-w-0 grid-cols-1 overflow-hidden border-t border-white/8 md:min-h-0 md:[grid-template-columns:var(--workflow-pane-width)_minmax(0,1fr)_var(--tools-pane-width)] md:items-stretch"
+        className="relative grid flex-1 min-h-0 w-full min-w-0 grid-cols-1 overflow-hidden border-t border-white/8 md:min-h-0 md:[grid-template-columns:var(--workflow-pane-width)_minmax(0,1fr)] md:items-stretch"
         style={splitPaneStyle}
       >
         <WorkflowViewer
           steps={wf.steps}
-          version={version}
           onReorder={onReorder}
           onDelete={onDelete}
           onAddAction={(actionKind) => void onAddAction(actionKind)}
-          recordingShotDragActive={recordingShotDragActive}
           onDroppedRecordingScreenshot={(stepIndex, eventIndex) =>
             void onDroppedRecordingScreenshot(stepIndex, eventIndex)
           }
@@ -935,103 +943,91 @@ export function HumanEditPage() {
           onWorkflowUpdated={onWorkflowUpdated}
           onHistoryUpdate={onHistoryUpdate}
         />
-        <div
-          className="group absolute inset-y-0 z-20 hidden w-3 -translate-x-1/2 cursor-col-resize md:block"
-          style={{ left: `calc(100% - ${toolsPaneWidth}px)` }}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            setIsResizingToolsPane(true)
-          }}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize tools sidebar"
-        >
-          <div className="mx-auto h-full w-px bg-white/10 transition-colors group-hover:bg-white/35 group-active:bg-white/45" />
-        </div>
-        {/* Same gradient-fill depth treatment as the workflow list / wizard columns (flush grid
-            columns, not floating panels — see WorkflowViewer.tsx / InlineRetargetFlow.tsx). */}
-        <aside className="border-border/60 hidden min-h-0 overflow-hidden border-l bg-[linear-gradient(180deg,rgba(17,24,39,0.9),rgba(7,10,16,0.95))] p-2 ring-1 ring-inset ring-white/[0.03] md:flex md:flex-col md:gap-2">
-          <section className="shrink-0 space-y-2 px-1 py-1">
-            <h2 className="px-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">Tools</h2>
-            <div className="flex flex-col gap-1">
-              {toolPanes.map((tool) => {
-                const active = activeToolsPane === tool.key
-                const Icon = tool.icon
-                return (
-                  <div key={tool.key} className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => toggleToolsPane(tool.key)}
-                      aria-pressed={active}
-                      aria-controls={tool.controls}
-                      className={cn(
-                        'relative flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg border px-3 text-left outline-none transition-colors',
-                        'focus-visible:ring-2 focus-visible:ring-brand-ring',
-                        active
-                          ? 'border-brand/40 text-white'
-                          : 'border-white/12 bg-white/[0.02] text-zinc-200 hover:bg-white/[0.07]',
-                      )}
-                    >
-                      {active && (
-                        <motion.span
-                          layoutId="tool-active-bg"
-                          className="absolute inset-0 -z-0 rounded-lg bg-brand/12"
-                          transition={prefersReducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 40 }}
-                          aria-hidden
-                        />
-                      )}
-                      <span className="relative z-10 flex min-w-0 flex-1 items-center gap-2">
-                        <Icon className={cn('size-4 shrink-0', tool.iconClass)} />
-                        <span className="truncate text-sm font-medium">{tool.label}</span>
-                      </span>
-                      {tool.count !== undefined && (
-                        <Badge
-                          variant="outline"
-                          className={cn(
-                            'relative z-10 shrink-0 text-[0.65rem]',
-                            active ? 'border-brand/40 text-brand' : 'border-white/15 text-zinc-300',
-                          )}
-                        >
-                          {tool.count}
-                        </Badge>
-                      )}
-                    </button>
-                    <InfoHint {...tool.help} side="left" align="start" triggerLabel={`About ${tool.label}`} className="p-1.5" />
-                  </div>
-                )
-              })}
-            </div>
-          </section>
-          <ScrollArea className="min-h-0 flex-1">
-            <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={activeToolsPane ?? 'none'}
-              initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-              transition={{ duration: prefersReducedMotion ? 0 : 0.15, ease: 'easeOut' }}
-            >
-            <div id="suggestions-pane">{activeToolsPane === 'suggestions' ? <SuggestionsInlinePanel suggestions={wf.suggestions} /> : null}</div>
-            <div id="variables-pane">{activeToolsPane === 'variables' ? <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} /> : null}</div>
-            <div id="recording-screenshots-pane" className="h-full min-h-0 px-1 py-2">
-              {activeToolsPane === 'screenshots' ? (
-                <RecordingScreenshotsPanel
-                  frames={currentStep?.screenshot?.frames ?? []}
-                  activeFrameLabel={currentStep?.screenshot?.default_frame_label ?? null}
-                  clearVisualDragEnabled={!!currentStep && !currentStep.flags.is_scroll}
-                  onApplyFrame={currentStep && !currentStep.flags.is_scroll ? onApplyStepFrame : undefined}
-                  onDragShotStart={() => setRecordingShotDragActive(true)}
-                  onDragShotEnd={() => setRecordingShotDragActive(false)}
-                />
-              ) : null}
-            </div>
-            <div id="agent-view-pane">{activeToolsPane === 'agentView' ? <HowClaudeSeesThisPanel workflow={wf} /> : null}</div>
-            </motion.div>
-            </AnimatePresence>
-          </ScrollArea>
-        </aside>
       </div>
     </div>
+    <Dialog
+      open={activeTool !== null}
+      onOpenChange={(open) => {
+        if (!open) {
+          setOpenTool(null)
+          setShowAllScreenshots(false)
+        }
+      }}
+    >
+      <DialogContent
+        className={cn(
+          'anim-pop flex h-[min(85vh,880px)] max-w-none flex-col gap-0 overflow-hidden p-0',
+          activeTool?.key === 'screenshots'
+            ? 'w-[min(1500px,96vw)]'
+            : activeTool?.key === 'variables'
+              ? 'w-[min(1400px,96vw)]'
+              : 'w-[min(1200px,95vw)]',
+        )}
+        id={activeTool?.controls}
+      >
+        {activeTool && (
+          <>
+            <DialogHeader className="flex-col gap-3 border-b border-white/8 py-4 pl-5 pr-12">
+              <div className="flex items-start gap-3">
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
+                  <activeTool.icon className={cn('size-4.5', activeTool.iconClass)} />
+                </span>
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <DialogTitle className="flex items-center gap-2 text-base leading-none">
+                    <span className="truncate">{activeTool.label}</span>
+                    {activeTool.count !== undefined && (
+                      <Badge variant="outline" className="shrink-0 border-brand/40 text-[0.65rem] text-brand">
+                        {activeTool.count}
+                      </Badge>
+                    )}
+                  </DialogTitle>
+                  <DialogDescription className="mt-1.5 max-w-2xl">{activeTool.help.summary}</DialogDescription>
+                </div>
+                <InfoHint {...activeTool.help} side="bottom" align="end" triggerLabel={`About ${activeTool.label}`} />
+              </div>
+              {activeTool.key === 'screenshots' && (
+                <div className="flex justify-end pl-12">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 whitespace-nowrap"
+                    onClick={() => setShowAllScreenshots((v) => !v)}
+                  >
+                    <ImageIcon className="size-3.5 shrink-0" aria-hidden />
+                    {showAllScreenshots ? 'Show 5 frames for this step' : 'Show all recording screenshots'}
+                  </Button>
+                </div>
+              )}
+            </DialogHeader>
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="p-5">
+                {activeTool.key === 'suggestions' && <SuggestionsInlinePanel suggestions={wf.suggestions} />}
+                {activeTool.key === 'variables' && (
+                  <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} />
+                )}
+                {activeTool.key === 'screenshots' && (
+                  <RecordingScreenshotsPanel
+                    frames={currentStep?.screenshot?.frames ?? []}
+                    activeFrameLabel={currentStep?.screenshot?.default_frame_label ?? null}
+                    canClearVisual={!!currentStep && !currentStep.flags.is_scroll}
+                    onApplyFrame={currentStep && !currentStep.flags.is_scroll ? onApplyStepFrame : undefined}
+                    onClearVisual={selected !== null ? () => void onClearStepVisual(selected) : undefined}
+                    showAllFrames={showAllScreenshots}
+                    allItems={allScreenshotsQ.data?.items}
+                    isLoadingAllFrames={allScreenshotsQ.isLoading}
+                    onSelectAllFrame={
+                      currentStep && !currentStep.flags.is_scroll ? onSelectAllScreenshot : undefined
+                    }
+                  />
+                )}
+                {activeTool.key === 'agentView' && <HowClaudeSeesThisPanel workflow={wf} />}
+              </div>
+            </ScrollArea>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
     </TooltipProvider>
   )
 }

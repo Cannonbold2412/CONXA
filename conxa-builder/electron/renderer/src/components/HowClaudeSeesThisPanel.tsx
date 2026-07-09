@@ -39,12 +39,7 @@ export function HowClaudeSeesThisPanel({ workflow }: Props) {
   const inputRows = rowsFromServerInputs(workflow.inputs)
 
   return (
-    <div className="space-y-4 p-3">
-      <p className="text-muted-foreground text-xs leading-relaxed">
-        A preview of what a customer&apos;s Claude Desktop understands about this skill — a
-        readable summary, not the exact generated text.
-      </p>
-
+    <div className="space-y-4">
       <div className="space-y-1">
         <p className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase">Name</p>
         <p className="text-sm font-medium text-white">{title}</p>

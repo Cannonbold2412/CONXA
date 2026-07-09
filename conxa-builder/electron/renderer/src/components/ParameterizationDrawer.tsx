@@ -57,49 +57,47 @@ function VariableRow({
 }) {
   return (
     <div
-      className="border-border/70 bg-card/20 grid gap-2.5 rounded-lg border p-2.5 sm:grid-cols-2"
+      className="border-border/70 bg-card/20 grid gap-2.5 rounded-lg border p-2.5 sm:grid-cols-2 lg:grid-cols-12"
       data-slot="var-row"
     >
-      <div className="space-y-1.5 sm:col-span-2 sm:grid sm:grid-cols-2 sm:gap-2.5">
-        <div className="space-y-1.5">
-          <Label className="text-xs" htmlFor={`var-id-${row.key}`}>
-            Variable name (in steps)
-          </Label>
-          <Input
-            id={`var-id-${row.key}`}
-            className="h-8 font-mono text-sm"
-            placeholder="email"
-            value={row.id}
-            onChange={(e) => {
-              const id = e.target.value
-              const next: VariableFormRow = { ...row, id }
-              if (!row.label.trim() || row.label === labelFromId(row.id) || !row.id) {
-                next.label = labelFromId(id)
-              }
-              onChange(next)
-            }}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs" htmlFor={`var-label-${row.key}`}>
-            Label (shown to people)
-          </Label>
-          <Input
-            id={`var-label-${row.key}`}
-            className="h-8 text-sm"
-            placeholder="Work email"
-            value={row.label}
-            onChange={(e) => onChange({ ...row, label: e.target.value })}
-          />
-        </div>
-        <p className="text-muted-foreground sm:col-span-2 overflow-hidden text-[0.65rem] leading-none whitespace-nowrap text-ellipsis">
-          Use in steps as <code className="bg-muted/80 rounded px-0.5">{'{{' + (row.id || 'id') + '}}'}</code>
+      <div className="space-y-1.5 lg:col-span-4">
+        <Label className="text-xs" htmlFor={`var-id-${row.key}`}>
+          Variable name
+        </Label>
+        <Input
+          id={`var-id-${row.key}`}
+          className="h-8 font-mono text-sm"
+          placeholder="email"
+          value={row.id}
+          onChange={(e) => {
+            const id = e.target.value
+            const next: VariableFormRow = { ...row, id }
+            if (!row.label.trim() || row.label === labelFromId(row.id) || !row.id) {
+              next.label = labelFromId(id)
+            }
+            onChange(next)
+          }}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+        />
+        <p className="text-muted-foreground overflow-hidden text-[0.65rem] leading-none whitespace-nowrap text-ellipsis">
+          <code className="bg-muted/80 rounded px-0.5">{'{{' + (row.id || 'id') + '}}'}</code>
         </p>
       </div>
-      <div className="space-y-1.5 sm:col-span-2">
+      <div className="space-y-1.5 lg:col-span-4">
+        <Label className="text-xs" htmlFor={`var-label-${row.key}`}>
+          Display label
+        </Label>
+        <Input
+          id={`var-label-${row.key}`}
+          className="h-8 text-sm"
+          placeholder="Work email"
+          value={row.label}
+          onChange={(e) => onChange({ ...row, label: e.target.value })}
+        />
+      </div>
+      <div className="space-y-1.5 lg:col-span-4">
         <Label className="text-xs" htmlFor={`var-type-${row.key}`}>
           Type
         </Label>
@@ -117,7 +115,7 @@ function VariableRow({
         </select>
       </div>
       {row.varType === 'select' ? (
-        <div className="space-y-1.5 sm:col-span-2">
+        <div className="space-y-1.5 sm:col-span-2 lg:col-span-12">
           <Label className="text-xs" htmlFor={`var-opt-${row.key}`}>
             Options (comma-separated)
           </Label>
@@ -130,7 +128,7 @@ function VariableRow({
           />
         </div>
       ) : null}
-      <div className="flex items-end justify-end sm:col-span-2">
+      <div className="flex items-end justify-end sm:col-span-2 lg:col-span-12">
         <Button
           type="button"
           variant="ghost"
@@ -279,7 +277,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
             : 'max-h-[min(480px,calc(100dvh-11rem))] sm:max-h-[min(560px,calc(100dvh-10rem))]',
         )}
       >
-        <div className={cn('px-4 pb-3', inline ? 'space-y-3 pt-2' : 'space-y-4')}>
+        <div className={cn('pb-3', inline ? 'space-y-3 pt-2' : 'space-y-4 px-4')}>
           {spottedIds.length > 0 ? (
             <div
               className={cn(
@@ -293,7 +291,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
                 <p className="text-foreground/90 text-sm font-medium">Found in your workflow</p>
                 {missing.length > 0 ? (
                   <Badge variant="secondary" className="text-xs font-normal">
-                    {missing.length} not in the list below
+                    {missing.length} new
                   </Badge>
                 ) : (
                   <Badge variant="outline" className="text-xs font-normal">
@@ -301,9 +299,6 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
                   </Badge>
                 )}
               </div>
-              <p className="text-muted-foreground mb-2 text-xs leading-relaxed">
-                We scan steps for <code className="bg-muted/60 rounded px-0.5">{'{{name}}'}</code> and list matches here.
-              </p>
               <div className="flex flex-wrap gap-1.5">
                 {spottedIds.map((id) => {
                   const has = rows.some((r) => r.id.trim() === id)
@@ -327,29 +322,27 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
                     onClick={() => setRows((r) => addSpottedToRows(r, missing))}
                   >
                     <Plus className="size-3.5" />
-                    Add {missing.length === 1 ? `{{${missing[0]}}}` : `${missing.length} missing`} to
-                    list
+                    Add {missing.length === 1 ? `{{${missing[0]}}}` : `${missing.length} variables`}
                   </Button>
                 </div>
               ) : null}
             </div>
           ) : (
             <p className="text-muted-foreground text-xs leading-relaxed">
-              To use a variable, type something like <code className="bg-muted/60 rounded px-0.5">{'{{email}}'}</code> in
-              a step field (for example the value to type). This panel will then offer to add that name here.
+              Type <code className="bg-muted/60 rounded px-0.5">{'{{name}}'}</code> in any step field to create a
+              variable.
             </p>
           )}
 
           <div className={cn('border-border/70 space-y-2.5 rounded-lg border p-3', inline ? 'bg-white/[0.02]' : '')}>
-            <h3 className="text-foreground/95 text-sm font-medium">Replace in whole workflow JSON</h3>
+            <h3 className="text-foreground/95 text-sm font-medium">Find &amp; replace</h3>
             <p className="text-muted-foreground text-xs leading-relaxed">
-              Swap a recorded literal everywhere it appears under this skill document (every step field, selectors,
-              URLs, inputs, etc.) with a placeholder.
+              Replace a recorded value everywhere it appears in this skill.
             </p>
             <div className="grid gap-2.5 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label className="text-xs" htmlFor="param-replace-find">
-                  Find literal
+                  Find
                 </Label>
                 <Input
                   id="param-replace-find"
@@ -367,7 +360,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs" htmlFor="param-replace-var">
-                  Replace with variable
+                  Replace with
                 </Label>
                 <Input
                   id="param-replace-var"
@@ -385,15 +378,17 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
               </div>
             </div>
             {replaceErr ? <p className="text-destructive text-sm">{replaceErr}</p> : null}
-            <Button
-              type="button"
-              size="sm"
-              className="h-8"
-              disabled={replaceBusy}
-              onClick={() => void replaceLiteralInWorkflow()}
-            >
-              {replaceBusy ? 'Replacing…' : 'Replace everywhere'}
-            </Button>
+            <div className="flex justify-start">
+              <Button
+                type="button"
+                size="sm"
+                className="h-8"
+                disabled={replaceBusy}
+                onClick={() => void replaceLiteralInWorkflow()}
+              >
+                {replaceBusy ? 'Replacing…' : 'Replace everywhere'}
+              </Button>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -412,7 +407,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
             </div>
             {rows.length === 0 ? (
               <p className="text-muted-foreground border-border/50 rounded-lg border border-dashed p-3 text-center text-sm">
-                No variables yet. Use {'{{id}}'} in a step, then add it here.
+                No variables yet.
               </p>
             ) : (
               <div className={cn(inline ? 'space-y-2.5' : 'space-y-3')}>
@@ -479,8 +474,8 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
           </Collapsible>
         </div>
       </ScrollArea>
-      {err ? <p className="text-destructive border-border/50 mx-4 shrink-0 text-sm">{err}</p> : null}
-      <div className="border-border/50 mt-2 flex shrink-0 flex-col-reverse gap-2 border-t px-4 pb-3 pt-3 sm:flex-row sm:justify-end">
+      {err ? <p className={cn('text-destructive border-border/50 shrink-0 text-sm', !inline && 'mx-4')}>{err}</p> : null}
+      <div className={cn('border-border/50 mt-2 flex shrink-0 flex-col-reverse gap-2 border-t pb-3 pt-3 sm:flex-row sm:justify-end', !inline && 'px-4')}>
         {!inline ? (
           <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
             Cancel
@@ -527,23 +522,13 @@ export function ParameterizationDrawer({ open, onClose, workflow, onSaved }: Pro
 export function ParameterizationInlinePanel({ workflow, onSaved }: Omit<Props, 'open' | 'onClose'>) {
   const version = Number((workflow.package_meta as { version?: number } | undefined)?.version ?? 0)
   return (
-    <div className="border-white/8 bg-white/[0.02] flex min-h-0 flex-1 flex-col rounded-lg border">
-      <div className="border-white/8 border-b px-3 py-2 text-left">
-        <h3 className="text-sm font-medium text-zinc-100">Input variables</h3>
-        <p className="text-xs text-zinc-400">
-          Map values referenced as <code className="bg-muted rounded px-1">{'{{id}}'}</code> in steps.
-        </p>
-      </div>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ParameterizationForm
-          key={`${workflow.skill_id}-v${version}-inline`}
-          open
-          workflow={workflow}
-          onClose={() => {}}
-          onSaved={onSaved}
-          inline
-        />
-      </div>
-    </div>
+    <ParameterizationForm
+      key={`${workflow.skill_id}-v${version}-inline`}
+      open
+      workflow={workflow}
+      onClose={() => {}}
+      onSaved={onSaved}
+      inline
+    />
   )
 }

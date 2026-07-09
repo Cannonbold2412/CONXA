@@ -2,7 +2,6 @@ import type { SuggestionItem } from '../types/workflow'
 import { useEditorStore } from '../store/editorStore'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -34,11 +33,11 @@ function severityBadgeVariant(sev: SuggestionItem['severity']): 'destructive' | 
   return 'outline'
 }
 
-function SuggestionsList({ suggestions }: { suggestions: SuggestionItem[] }) {
+function SuggestionsList({ suggestions, className }: { suggestions: SuggestionItem[]; className?: string }) {
   const setSel = useEditorStore((s) => s.setSelectedStepIndex)
 
   return (
-    <ul className="space-y-2 p-3" role="list">
+    <ul className={cn('space-y-2', className)} role="list">
       {suggestions.length === 0 ? (
         <li className="rounded-lg border border-white/8 bg-black/20 p-3 text-sm text-zinc-500">
           No issues for this view.
@@ -84,19 +83,7 @@ function SuggestionsList({ suggestions }: { suggestions: SuggestionItem[] }) {
 }
 
 export function SuggestionsInlinePanel({ suggestions }: { suggestions: SuggestionItem[] }) {
-  return (
-    <Card className="border-white/8 bg-white/[0.02] flex min-h-0 flex-1 flex-col shadow-none">
-      <CardHeader className="p-3 pb-2">
-        <CardTitle className="text-base font-semibold text-white">Suggestions</CardTitle>
-        <CardDescription className="text-xs text-zinc-500">All steps</CardDescription>
-      </CardHeader>
-      <CardContent className="min-h-0 flex-1 p-0">
-        <ScrollArea className="min-h-0 h-full">
-          <SuggestionsList suggestions={suggestions} />
-        </ScrollArea>
-      </CardContent>
-    </Card>
-  )
+  return <SuggestionsList suggestions={suggestions} />
 }
 
 export function SuggestionsPanel({ suggestions, open, onOpenChange }: Props) {
@@ -113,7 +100,7 @@ export function SuggestionsPanel({ suggestions, open, onOpenChange }: Props) {
           </div>
         </SheetHeader>
         <ScrollArea className="min-h-0 flex-1 p-0">
-          <SuggestionsList suggestions={suggestions} />
+          <SuggestionsList suggestions={suggestions} className="p-3" />
         </ScrollArea>
       </SheetContent>
     </Sheet>
