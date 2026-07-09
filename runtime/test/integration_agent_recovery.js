@@ -18,8 +18,7 @@ const assert = require("node:assert");
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(os.homedir(), ".conxa", "chromium");
 }
-// Deterministic + fast: no human pacing, short action/recovery budgets.
-process.env.CONXA_HUMAN_PACING = "0";
+// Deterministic + fast: short action/recovery budgets.
 process.env.CONXA_ACTION_TIMEOUT_MS = "600";
 process.env.CONXA_SECONDARY_ACTION_TIMEOUT_MS = "600";
 process.env.CONXA_RECOVERY_LOCATOR_TIMEOUT_MS = "600";
@@ -67,7 +66,7 @@ async function main() {
       await page.goto(url, { waitUntil: "domcontentloaded" });
       let threw = null;
       try {
-        await runPlan(page, [brokenStep()], {}, 0, "itest", { tracker: quietTracker, observerMs: 0 });
+        await runPlan(page, [brokenStep()], {}, 0, "itest", { tracker: quietTracker });
       } catch (e) { threw = e; }
       try {
         assert.ok(threw, "expected the broken step to fail");
@@ -85,7 +84,7 @@ async function main() {
       const healed = applyStepOverrides([brokenStep()], { "0": { selector: "[data-testid='go']" } });
       let threw = null;
       try {
-        await runPlan(page, healed, {}, 0, "itest", { tracker: quietTracker, observerMs: 0 });
+        await runPlan(page, healed, {}, 0, "itest", { tracker: quietTracker });
       } catch (e) { threw = e; }
       try {
         assert.ok(!threw, threw ? `unexpected failure: ${threw.message}` : "");

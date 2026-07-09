@@ -4,6 +4,14 @@
     "url": "{{fixture_url}}"
   },
   {
+    "type": "if_present",
+    "selector": "#cookie-banner",
+    "timeout_ms": 1500,
+    "steps": [
+      { "type": "click", "selector": "#accept-cookies" }
+    ]
+  },
+  {
     "type": "click",
     "selector": "[data-testid=\"gate-btn\"]",
     "identity_bundle": {

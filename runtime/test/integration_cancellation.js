@@ -17,7 +17,6 @@ const assert = require("node:assert");
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(os.homedir(), ".conxa", "chromium");
 }
-process.env.CONXA_HUMAN_PACING = "0";
 process.env.CONXA_ACTION_TIMEOUT_MS = "600";
 process.env.CONXA_SECONDARY_ACTION_TIMEOUT_MS = "600";
 process.env.CONXA_RECOVERY_LOCATOR_TIMEOUT_MS = "600";
@@ -61,7 +60,7 @@ async function main() {
       let threw = null;
       try {
         await runPlan(page, [brokenStep()], {}, 0, "ctest", {
-          tracker: quietTracker, observerMs: 0, cancelCheck: () => true,
+          tracker: quietTracker, cancelCheck: () => true,
         });
       } catch (e) { threw = e; }
       try {
@@ -84,7 +83,7 @@ async function main() {
       let threw = null;
       try {
         await runPlan(page, [brokenStep()], {}, 0, "ctest", {
-          tracker: quietTracker, observerMs: 0, cancelCheck,
+          tracker: quietTracker, cancelCheck,
         });
       } catch (e) { threw = e; }
       try {
@@ -109,7 +108,7 @@ async function main() {
       let threw = null;
       try {
         await runPlan(page, [brokenStep()], {}, 0, "ctest", {
-          tracker: quietTracker, observerMs: 0, cancelCheck,
+          tracker: quietTracker, cancelCheck,
         });
       } catch (e) { threw = e; }
       try {

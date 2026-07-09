@@ -2,6 +2,13 @@
 <html lang="en">
 <head><meta charset="utf-8"><title>Conxa Gate Fixture</title></head>
 <body>
+  <!-- Optional interstitial (EXEC-1): present on load, covers the whole page. Only the
+       gate skill's if_present branch (see execution.json) can dismiss it — if branch-step
+       dispatch regresses, this overlay keeps intercepting pointer events and the gate
+       button click below fails, failing the build. -->
+  <div id="cookie-banner" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;">
+    <button id="accept-cookies" onclick="document.getElementById('cookie-banner').remove()">Accept cookies</button>
+  </div>
   <header>
     <h1>Conxa CI Gate</h1>
     <!-- Single, unambiguous interactive element. The gate skill clicks this via a

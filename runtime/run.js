@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const { mapErrorToCode } = require("./tracker");
-const { classifyException, remedyFor, buildRepairEvent, CLASS } = require("./recovery");
+const { classifyException, remedyFor, buildRepairEvent, CLASS, STALE_RE } = require("./recovery");
 const { resolve: resolveSignals } = require("./resolver");
 const { signalToLocator, gatherCandidates, bundleFingerprint } = require("./resolve_adapter");
 const { detectPreExecDrift } = require("./drift");
@@ -17,7 +17,6 @@ function envNumber(name, fallback) {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
-const HUMAN_PACING_ENABLED = process.env.CONXA_HUMAN_PACING !== "0";
 const CAPTURE_PRESTEP      = process.env.CONXA_CAPTURE_PRESTEP !== "0";
 const ACTION_TIMEOUT_MS = envNumber("CONXA_ACTION_TIMEOUT_MS", 2500);
 const SECONDARY_ACTION_TIMEOUT_MS = envNumber("CONXA_SECONDARY_ACTION_TIMEOUT_MS", 2500);
@@ -28,15 +27,6 @@ const RETRY_BUDGET_MAX = 3;
 const DOWNLOAD_WAIT_TIMEOUT_MS = envNumber("CONXA_DOWNLOAD_WAIT_MS", 120000);
 const RECOVERY_LOG = path.join(CONXA_DIR, "logs", "recovery.log");
 const RECOVERY_LOG_MAX = 10 * 1024 * 1024;
-
-const HUMAN_DELAYS = {
-  click: [180, 300],
-  fill:  [100, 200],
-  type:  [100, 200],
-  select:[160, 260],
-  focus: [ 80, 160],
-  scroll:[120, 220],
-};
 
 const INTERACTIVE_STEP_TYPES = new Set([
   "click", "dblclick", "right_click",
@@ -52,7 +42,10 @@ const NOOP_STEP_TYPES = [
 ];
 
 // Step types that may trigger a real page navigation and need waitForLoadState after them
-const NAVIGATION_STEP_TYPES = new Set(["navigate", "click", "dblclick", "right_click", "keyboard_shortcut"]);
+const NAVIGATION_STEP_TYPES = new Set([
+  "navigate", "click", "dblclick", "right_click", "keyboard_shortcut",
+  "if_present", "try_dismiss", "wait_for_one_of",
+]);
 
 const DIALOG_CONTAINERS = ['[role="dialog"]', '[role="alertdialog"]', '[aria-modal="true"]', ".modal"];
 const TEXT_MATCH_TAG_RE = /^(button|a|input|select|textarea)/i;
@@ -90,49 +83,14 @@ function appendRecoveryEvent(event) {
   } catch (_) {}
 }
 
-// Human-like pacing
+// Only wait for page load when the previous step could have triggered navigation.
+async function waitForPageLoad(page, prevType) {
+  if (!prevType || !NAVIGATION_STEP_TYPES.has(prevType)) return;
 
-function randomDelayMs(type) {
-  const range = HUMAN_DELAYS[type];
-  if (!range) return 0;
-  return range[0] + Math.random() * (range[1] - range[0]);
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function humanDelay(type) {
-  if (!HUMAN_PACING_ENABLED) return;
-
-  const ms = randomDelayMs(type);
-  if (ms > 0) await sleep(ms);
-}
-
-async function waitForPageLoadAndPace(page, nextType, prevType, opts = {}) {
-  // Only wait for page load when the previous step could have triggered navigation.
-  if (prevType && NAVIGATION_STEP_TYPES.has(prevType)) {
-    const start = Date.now();
-    await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
-    if (process.env.CONXA_WAIT_NETWORKIDLE === "1") {
-      await page.waitForLoadState("networkidle", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
-    }
-    // Guarantee the viewer sees the new page for at least observerMs total.
-    // If the page was already slow to load, the viewer already saw it — skip the pad.
-    if (HUMAN_PACING_ENABLED) {
-      const observerMs = opts.observerMs ?? 600;
-      const remaining = observerMs - (Date.now() - start);
-      if (remaining > 0) await sleep(remaining);
-    }
-    // The observer pause already covers "thinking time" before the next action —
-    // don't also fire a per-type human delay after a navigation step.
-    return;
+  await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
+  if (process.env.CONXA_WAIT_NETWORKIDLE === "1") {
+    await page.waitForLoadState("networkidle", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
   }
-
-  if (!HUMAN_PACING_ENABLED) return;
-
-  const ms = randomDelayMs(nextType);
-  if (ms > 0) await page.waitForTimeout(ms);
 }
 
 // Selector helpers
@@ -251,7 +209,10 @@ async function gateLocator(loc, step) {
       el.disabled === true || el.getAttribute("aria-disabled") === "true");
     if (disabled) throw new Error("Element is disabled");
   } catch (err) {
-    if (err && /disabled/i.test(String(err.message))) throw err;
+    const msg = String((err && err.message) || "");
+    // A detach here means the element vanished between the RAF-stability check and
+    // this one — the caller must see that, not proceed to act on a stale locator.
+    if (err && (/disabled/i.test(msg) || STALE_RE.test(msg.toLowerCase()))) throw err;
   }
 }
 
@@ -441,9 +402,8 @@ function applyStepOverrides(steps, overrides) {
 
 // Step executor
 
-async function runLocatorStep(page, step, inputs, action, paceType, selector = PRIMARY) {
+async function runLocatorStep(page, step, inputs, action, selector = PRIMARY) {
   await withLocator(page, step, inputs, selector, 0, async locator => action(locator.first(), locator));
-  await humanDelay(paceType);
 }
 
 // True when the step has a resolvable primary target (identity_bundle signals or an explicit
@@ -483,7 +443,6 @@ async function walkHoverChain(page, step, inputs) {
         await loc.first().hover({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
         break;
       }
-      await humanDelay("focus");
     } catch (err) {
       // Hover is best-effort — if the reveal element is gone the target may already be visible.
     }
@@ -521,6 +480,60 @@ function parseKeyboardShortcut(value) {
   return keyStr;
 }
 
+// Branch primitives (if_present, try_dismiss, wait_for_one_of): probe an element's presence
+// without ever throwing, so callers stay outside the recovery cascade (recoverStep only fires
+// on a throw escaping runPlan's per-step try — see Key Invariants). probeSpec is a step-shaped
+// object: identity_bundle.signals take priority (resolved like a real target), else a plain
+// selector/css_selector/target.css string. Polls up to timeoutMs via the existing pollPositive.
+async function probePresent(page, probeSpec, inputs, timeoutMs) {
+  const spec = asObject(probeSpec);
+  const budget = Math.max(0, Number(timeoutMs) || 0);
+  const bundle = asObject(spec.identity_bundle);
+  if (asArray(bundle.signals).some(s => s && s.selector)) {
+    return pollPositive(async () => {
+      try { await resolveStep(page, spec, inputs); return true; } catch (_) { return false; }
+    }, budget);
+  }
+  const selector = baseSelector(spec, inputs);
+  if (!selector) return false;
+  const candidates = locatorCandidates(page, spec, inputs, selector);
+  if (!candidates.length) return false;
+  return pollPositive(async () => {
+    for (const locator of candidates) {
+      try {
+        if ((await locator.count()) > 0) return true;
+      } catch (_) {}
+    }
+    return false;
+  }, budget);
+}
+
+// Interactive handlers (click/fill/...) always resolve PRIMARY via identity_bundle.signals and
+// throw immediately if none exist (withLocator never falls back to a bare selector unless
+// _explicit_selector is set — see withLocator). Branch bodies are hand-authored/foundation-scope
+// steps that typically carry only a plain selector, so force string mode exactly like recovery's
+// stepWithSelector does, or the nested action would always fail with "pack must be recompiled".
+function resolvableBranchStep(step, inputs) {
+  if (!step || step._explicit_selector) return step;
+  if (asArray(asObject(step.identity_bundle).signals).some(s => s && s.selector)) return step;
+  const selector = baseSelector(step, inputs);
+  return selector ? stepWithSelector(step, selector) : step;
+}
+
+// Runs a branch body best-effort: each nested step's own failure is swallowed so the branch
+// never escalates to recovery — a failed cookie-banner dismissal should not burn a paid Tier
+// 3/4 recovery cycle. Nested steps use the same flat runtime step shape as top-level steps.
+async function runBranchBody(page, steps, inputs, ctx) {
+  for (const nested of asArray(steps)) {
+    if (!nested || typeof nested !== "object") continue;
+    try {
+      await executeStep(page, resolvableBranchStep(nested, inputs), inputs, ctx);
+    } catch (_) {
+      // best-effort — do not propagate; branch bodies never enter Tier 1-4 recovery.
+    }
+  }
+}
+
 const HANDLERS = {
   wait: async (page, step) => {
     await page.waitForTimeout(Math.min(Number(step.ms) || 250, 1000));
@@ -540,19 +553,18 @@ const HANDLERS = {
       const deltaY = Number(step.delta_y) || 0;
       await page.evaluate(([x, y]) => window.scrollBy(x, y), [deltaX, deltaY]);
     }
-    await humanDelay("scroll");
   },
 
   fill: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.fill(interpolate(step.value || "", inputs), { timeout: ACTION_TIMEOUT_MS });
-    }, "fill");
+    });
   },
 
   type: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.fill(interpolate(step.value || "", inputs), { timeout: ACTION_TIMEOUT_MS });
-    }, "type");
+    });
   },
 
   click: async (page, step, inputs) => {
@@ -560,31 +572,30 @@ const HANDLERS = {
     await withLocator(page, step, inputs, PRIMARY, 0, async locator => {
       await clickFirst(locator, { timeout: ACTION_TIMEOUT_MS });
     });
-    await humanDelay("click");
   },
 
   dblclick: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.dblclick({ timeout: ACTION_TIMEOUT_MS });
-    }, "click");
+    });
   },
 
   right_click: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.click({ button: "right", timeout: ACTION_TIMEOUT_MS });
-    }, "click");
+    });
   },
 
   hover: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.hover({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
-    }, "focus");
+    });
   },
 
   select: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.selectOption(interpolate(step.value || "", inputs), { timeout: ACTION_TIMEOUT_MS });
-    }, "select");
+    });
   },
 
   select_option: async (page, step, inputs) => {
@@ -602,19 +613,18 @@ const HANDLERS = {
         }
       });
     }
-    await humanDelay("focus");
   },
 
   set_checkbox: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.setChecked(checkboxValue(step, inputs), { timeout: ACTION_TIMEOUT_MS });
-    }, "click");
+    });
   },
 
   set_radio: async (page, step, inputs) => {
     await runLocatorStep(page, step, inputs, locator => {
       return locator.click({ timeout: ACTION_TIMEOUT_MS });
-    }, "click");
+    });
   },
 
   date_pick: async (page, step, inputs) => {
@@ -625,7 +635,7 @@ const HANDLERS = {
       } catch (_) {
         await locator.click({ timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => {});
       }
-    }, "fill");
+    });
   },
 
   drag_drop: async (page, step, inputs) => {
@@ -635,7 +645,6 @@ const HANDLERS = {
         return srcLoc.first().dragTo(dstLoc.first(), { timeout: ACTION_TIMEOUT_MS });
       });
     }
-    await humanDelay("click");
   },
 
   keyboard_shortcut: async (page, step, inputs) => {
@@ -691,6 +700,59 @@ const HANDLERS = {
       return locator.setInputFiles(filePath, { timeout: ACTION_TIMEOUT_MS });
     });
   },
+
+  // Optional interstitial handling (cookie/consent banners, session-expired screens, optional
+  // MFA, A/B variants) — see Key Invariants: branch bodies are best-effort and never enter the
+  // Tier 1-4 recovery cascade, since neither this handler nor runBranchBody ever throws.
+  if_present: async (page, step, inputs, ctx) => {
+    const timeout = Number(step.timeout_ms) || 1500;
+    if (await probePresent(page, step, inputs, timeout)) {
+      await runBranchBody(page, step.steps, inputs, ctx);
+    }
+  },
+
+  try_dismiss: async (page, step, inputs) => {
+    const timeout = Number(step.timeout_ms) || 800;
+    const candidates = unique([...asArray(step.candidates), baseSelector(step, inputs)]);
+    for (const selector of candidates) {
+      if (!selector) continue;
+      try {
+        const probeSpec = { selector };
+        if (!(await probePresent(page, probeSpec, inputs, timeout))) continue;
+        const locator = locatorCandidates(page, probeSpec, inputs, selector)[0];
+        if (!locator) continue;
+        await locator.first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+        return;
+      } catch (_) {
+        // best-effort — try the next candidate
+      }
+    }
+    if (step.fallback_escape !== false) {
+      await page.keyboard.press("Escape").catch(() => {});
+    }
+  },
+
+  wait_for_one_of: async (page, step, inputs, ctx) => {
+    const timeout = Number(step.timeout_ms) || 5000;
+    const options = asArray(step.options);
+    let matched = null;
+    const found = await pollPositive(async () => {
+      for (const option of options) {
+        if (option && (await probePresent(page, option, inputs, 0))) {
+          matched = option;
+          return true;
+        }
+      }
+      return false;
+    }, timeout);
+    if (found && matched) {
+      await runBranchBody(page, matched.steps, inputs, ctx);
+      return;
+    }
+    if (step.required) {
+      throw new Error("wait_for_one_of: none of the candidate selectors appeared before timeout");
+    }
+  },
 };
 
 for (const type of NOOP_STEP_TYPES) {
@@ -721,48 +783,175 @@ function stepAssertions(step) {
   return [...fromValidation, ...direct].filter(a => a && typeof a === "object");
 }
 
-async function verifyStep(page, step, inputs) {
-  const assertions = stepAssertions(step);
-  if (!assertions.length) return { pass: true, channel: "none", evidence: "no-assertions" };
+// Normalize for value_equals comparison: trim, collapse internal whitespace, lowercase.
+// Tolerates recorded values that differ only in incidental whitespace/case.
+function normText(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
 
-  for (const a of assertions) {
-    const type = String(a.type || "").toLowerCase();
-    const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
-    const required = a.required !== false;
-    const timeout = Number(a.timeout_ms) || 3000;
-    let ok = true;
-    try {
-      if (type === "url_changed" || type === "url_exact") {
-        ok = page.url() === target || (!!target && page.url().startsWith(target));
-      } else if (type === "url_pattern" || type === "url") {
-        ok = !target || new RegExp(target).test(page.url());
-      } else if (type === "selector_present") {
-        await page.locator(target).first().waitFor({ state: "attached", timeout });
-        ok = true;
-      } else if (type === "selector_absent") {
-        ok = (await page.locator(target).count()) === 0;
-      } else if (type === "text_present") {
-        ok = (await page.locator(`text=${JSON.stringify(target)}`).count()) > 0;
-      } else if (type === "text_absent") {
-        ok = (await page.locator(`text=${JSON.stringify(target)}`).count()) === 0;
-      }
-    } catch (err) {
-      ok = false;
-    }
-    if (!ok && required) {
-      return { pass: false, channel: type, evidence: target };
-    }
+const STATE_CHANGED_SELECTOR =
+  'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]';
+// Tolerance on body-text length delta so timestamp/clock-driven page noise (e.g. a live "2s ago"
+// widget) doesn't register as a state change on its own.
+const STATE_CHANGED_TEXT_LEN_TOLERANCE = 20;
+
+// Cheap, deterministic snapshot of page shape used only to answer "did anything happen" for the
+// state_changed assertion. No LLM, no DOM diffing — three counters compared before vs. after.
+async function capturePreStepSignature(page) {
+  try {
+    const url = page.url();
+    const { textLen, interactiveCount } = await page.evaluate((sel) => ({
+      textLen: (document.body && document.body.innerText || "").length,
+      interactiveCount: document.querySelectorAll(sel).length,
+    }), STATE_CHANGED_SELECTOR);
+    return { url, textLen, interactiveCount };
+  } catch (_) {
+    return null;
   }
-  return { pass: true, channel: "all", evidence: `${assertions.length} assertion(s)` };
+}
+
+// Web-first polling for assertions that don't already poll internally (selector_present rides
+// Playwright's own waitFor). Positive checks retry the predicate until it holds or the timeout
+// elapses instead of sampling once — a slow render or an optimistic-UI update that lands 400ms
+// after the action no longer reads as a required-assertion failure.
+const VERIFY_POLL_INTERVAL_MS = 250;
+// Negative checks (selector_absent, text_absent) can be trivially true while the page is still
+// mid-load (nothing has rendered yet). Requiring the absence to hold through a short stabilization
+// window after the first "absent" reading avoids a false pass that a moment later would flip back.
+const NEGATIVE_STABILIZE_MS = 500;
+
+async function pollPositive(checkFn, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let result = false;
+    try { result = await checkFn(); } catch (_) { result = false; }
+    if (result) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise(r => setTimeout(r, Math.min(VERIFY_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()))));
+  }
+}
+
+async function pollNegative(checkAbsentFn, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let absentNow = false;
+    try { absentNow = await checkAbsentFn(); } catch (_) { absentNow = false; }
+    if (absentNow) {
+      await new Promise(r => setTimeout(r, NEGATIVE_STABILIZE_MS));
+      let stillAbsent = false;
+      try { stillAbsent = await checkAbsentFn(); } catch (_) { stillAbsent = false; }
+      if (stillAbsent) return true;
+      // Reappeared during the stabilization window — keep polling if time remains.
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise(r => setTimeout(r, Math.min(VERIFY_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()))));
+  }
+}
+
+async function evaluateAssertion(page, a, inputs, baseline) {
+  const type = String(a.type || "").toLowerCase();
+  const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
+  const required = a.required !== false;
+  const timeout = Number(a.timeout_ms) || 3000;
+  const startedAt = Date.now();
+  let ok = true;
+
+  try {
+    if (type === "url_changed" || type === "url_exact") {
+      ok = await pollPositive(() => page.url() === target || (!!target && page.url().startsWith(target)), timeout);
+    } else if (type === "url_pattern" || type === "url") {
+      ok = !target || await pollPositive(() => new RegExp(target).test(page.url()), timeout);
+    } else if (type === "selector_present") {
+      // Playwright's own waitFor is already a web-first poll — no extra wrapping needed.
+      await page.locator(target).first().waitFor({ state: "attached", timeout });
+      ok = true;
+    } else if (type === "selector_absent") {
+      ok = await pollNegative(async () => (await page.locator(target).count()) === 0, timeout);
+    } else if (type === "text_present") {
+      ok = await pollPositive(async () => (await page.locator(`text=${JSON.stringify(target)}`).count()) > 0, timeout);
+    } else if (type === "text_absent") {
+      ok = await pollNegative(async () => (await page.locator(`text=${JSON.stringify(target)}`).count()) === 0, timeout);
+    } else if (type === "value_equals") {
+      const expected = interpolate(String(a.expected ?? ""), inputs);
+      const normExpected = normText(expected);
+      ok = await pollPositive(async () => {
+        const actual = await page.locator(target).first().inputValue({ timeout: VERIFY_POLL_INTERVAL_MS });
+        const normActual = normText(actual);
+        // Normalized-exact match, else fall back to "field contains expected" — tolerates
+        // masked/formatted fields (phone, currency) whose raw value never equals the typed text.
+        return normActual === normExpected || (!!normExpected && normActual.includes(normExpected));
+      }, timeout);
+    } else if (type === "state_changed") {
+      // No compile-time target — confirms the action produced SOME observable effect (URL,
+      // interactive-element count, or a non-trivial body-text delta) rather than silently
+      // no-opping. Only meaningful when a pre-action baseline was captured.
+      if (!baseline) {
+        ok = true; // no baseline captured (e.g. resumed mid-run) — don't fail on a technicality
+      } else {
+        ok = await pollPositive(async () => {
+          const after = await capturePreStepSignature(page);
+          return !after
+            ? true
+            : after.url !== baseline.url ||
+              after.interactiveCount !== baseline.interactiveCount ||
+              Math.abs(after.textLen - baseline.textLen) > STATE_CHANGED_TEXT_LEN_TOLERANCE;
+        }, timeout);
+      }
+    }
+  } catch (err) {
+    ok = false;
+  }
+
+  return { type, target, required, ok, elapsed_ms: Date.now() - startedAt };
+}
+
+async function verifyStep(page, step, inputs, baseline = null) {
+  const assertions = stepAssertions(step);
+  if (!assertions.length) return { pass: true, channel: "none", evidence: "no-assertions", results: [] };
+
+  // Every assertion is evaluated — not just up to the first required failure — so a failed step
+  // carries a full audit of what held and what didn't (advisory included). This is the dataset the
+  // fleet dashboard needs to see an assertion decaying before it becomes a hard failure.
+  const results = [];
+  let failing = null;
+  for (const a of assertions) {
+    const result = await evaluateAssertion(page, a, inputs, baseline);
+    results.push(result);
+    if (!result.ok && result.required && !failing) failing = result;
+  }
+
+  if (failing) {
+    return { pass: false, channel: failing.type, evidence: failing.target, results };
+  }
+  return { pass: true, channel: "all", evidence: `${assertions.length} assertion(s)`, results };
+}
+
+// Whether any assertion on this step is required (enforced) — gates the extra cost of capturing
+// a pre-action baseline and of re-verifying after a recovery remedy.
+function hasRequiredAssertion(step) {
+  return stepAssertions(step).some(a => a && a.required !== false);
+}
+
+function needsStateChangedBaseline(step) {
+  return stepAssertions(step).some(a => a && String(a.type || "").toLowerCase() === "state_changed" && a.required !== false);
 }
 
 // Recovery cascade
 
-async function recoverWithSelector(page, step, inputs, selector, onSuccess) {
+// The single choke point where recovery re-runs a step's action. Closing the "recovered but
+// unverified" gap lives here: when the step carries a required (enforced) post-condition, a
+// successful action re-run is not enough — the post-condition must re-hold before recovery is
+// allowed to report success. Steps with no required assertion are unaffected (no new false
+// failures on non-consequential steps).
+async function recoverWithSelector(page, step, inputs, selector, onSuccess, baseline = null) {
   if (!selector) return false;
 
   try {
     await executeStep(page, stepWithSelector(step, selector), inputs);
+    if (hasRequiredAssertion(step)) {
+      const verdict = await verifyStep(page, step, inputs, baseline);
+      if (!verdict.pass) return false;
+    }
     if (onSuccess) onSuccess();
     return true;
   } catch (_) {
@@ -783,7 +972,7 @@ function a11yRecoveryName(fingerprint) {
   return String(fp.aria_label || fp.name || fp.inner_text || fp.label_text || "").trim();
 }
 
-async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker) {
+async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline = null) {
   const bundle = asObject(step.identity_bundle);
   const fingerprint = asObject(bundle.fingerprint);
   const role = String(fingerprint.role || "").trim();
@@ -806,6 +995,10 @@ async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker) {
 
   try {
     await executeStep(page, a11yStep, inputs);
+    if (hasRequiredAssertion(step)) {
+      const verdict = await verifyStep(page, step, inputs, baseline);
+      if (!verdict.pass) return false;
+    }
     appendRecoveryEvent({ event: "tier2_a11y", slug, step_index: stepIndex, recovery_method: method });
     tracker.emit("tier_ok", { si: stepIndex, tier: "tier2_a11y", sel: method });
     return true;
@@ -814,20 +1007,20 @@ async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker) {
   }
 }
 
-async function recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, skipSelector, tracker) {
+async function recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, skipSelector, tracker, baseline = null) {
   for (const selector of fallbackSelectors(step)) {
     if (skipSelector && selector === skipSelector) continue;
     const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
       appendRecoveryEvent({ event: "layer_recovered", layer: 2, slug, step_index: stepIndex, recovery_selector: selector });
       tracker.emit("rec_ok", { si: stepIndex, sc: "selector" });
-    });
+    }, baseline);
     if (recovered) return true;
   }
 
   return false;
 }
 
-async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker) {
+async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null) {
   if (step.type !== "click" || !primarySelector) return false;
 
   for (const container of DIALOG_CONTAINERS) {
@@ -835,14 +1028,14 @@ async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, prima
     const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
       appendRecoveryEvent({ event: "layer_recovered", layer: 3, slug, step_index: stepIndex, mode: "dialog" });
       tracker.emit("rec_ok", { si: stepIndex, sc: "selector" });
-    });
+    }, baseline);
     if (recovered) return true;
   }
 
   return false;
 }
 
-async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker) {
+async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null) {
   const intent = [step.value, step.label, step.aria_label, step._intent]
     .filter(value => typeof value === "string" && value.trim())
     .map(value => value.trim())[0];
@@ -872,7 +1065,7 @@ async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primary
     return await recoverWithSelector(page, step, inputs, selector, () => {
       appendRecoveryEvent({ event: "layer_recovered", layer: 3, slug, step_index: stepIndex, mode: "fuzzy" });
       tracker.emit("rec_ok", { si: stepIndex, sc: "text_variant" });
-    });
+    }, baseline);
   } catch (_) {
     return false;
   }
@@ -880,9 +1073,18 @@ async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primary
 
 // Layer 1 deterministic ladder: apply a single targeted remedy keyed off the exception class,
 // then retry the primary selector once. Zero-token. Returns true if the retry succeeded.
-async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr) {
+async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline = null) {
   const klass = classifyException(primaryErr);
   const remedy = remedyFor(klass);
+  if (remedy === "descend-layer2") {
+    // A verify-fail means the action itself already ran without throwing — the DOM is exactly
+    // as it was when the post-condition check failed. Retrying the same primary selector here
+    // would just re-run the identical action and re-fail the same check. Skip the single-remedy
+    // L1 retry entirely and let the cascade fall through to L2's resolution-changing mechanisms
+    // (a11y re-probe, fallback selectors, dialog scope, fuzzy text) below, each of which
+    // re-verifies the post-condition via recoverWithSelector before reporting success.
+    return false;
+  }
   try {
     if (remedy === "scroll-into-view" && primarySelector) {
       await page.locator(primarySelector).first().scrollIntoViewIfNeeded({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
@@ -890,6 +1092,10 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
       await page.keyboard.press("Escape").catch(() => {});
     } else if (remedy === "wait-stable" || remedy === "wait-enabled") {
       await page.waitForTimeout(300);
+    } else if (remedy === "wait-navigation") {
+      // The timeout carried Playwright's in-flight-navigation signature — give the page a
+      // real chance to finish loading before retrying, instead of L2's fixed 250ms wait.
+      await page.waitForLoadState("domcontentloaded", { timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => {});
     } else {
       return false; // re-resolve / retry-cascade handled by the broader cascade below
     }
@@ -898,11 +1104,11 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
   }
   const ok = await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "layer1_ladder", slug, step_index: stepIndex, remedy });
-  });
+  }, baseline);
   return ok ? remedy : false;
 }
 
-async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null) {
+async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null, baseline = null) {
   // Each Tier 1/2 stage is individually time-bounded, but the cascade as a whole can run for tens
   // of seconds. If the MCP client cancels mid-recovery (e.g. its request timed out), bail at the
   // next stage boundary instead of grinding through every remaining stage on a doomed run.
@@ -911,20 +1117,20 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
   // Layer 1 — deterministic exception ladder (targeted single remedy).
   // (Alternate-signal recovery is inherent: resolveStep already walks all bundle signals in
   // durability order, so there is no separate legacy compiled-selector tier.)
-  const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr);
+  const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline);
   if (l1) {
     tracker.emit("tier_ok", { si: stepIndex, tier: "layer1", sel: l1 });
     return { tier: "L1", method: l1 };
   }
 
   bail();
-  if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker)) return { tier: "L2", method: "a11y" };
+  if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline)) return { tier: "L2", method: "a11y" };
 
   bail();
   await page.waitForTimeout(250);
   if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "transient_recovered", slug, step_index: stepIndex });
-  })) return { tier: "L2", method: "transient" };
+  }, baseline)) return { tier: "L2", method: "transient" };
 
   // Layer 2 — re-hover-then-retry (menu reveals), then the existing fallback mechanisms.
   if (asArray(asObject(step.handler_hints).hover_chain).length) {
@@ -932,15 +1138,15 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
     await walkHoverChain(page, step, inputs);
     if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
       appendRecoveryEvent({ event: "layer2_rehover", slug, step_index: stepIndex });
-    })) return { tier: "L2", method: "rehover" };
+    }, baseline)) return { tier: "L2", method: "rehover" };
   }
 
   bail();
-  if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return { tier: "L2", method: "fallback" };
+  if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline)) return { tier: "L2", method: "fallback" };
   bail();
-  if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker)) return { tier: "L2", method: "dialog" };
+  if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline)) return { tier: "L2", method: "dialog" };
   bail();
-  return (await recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker)) ? { tier: "L2", method: "fuzzy" } : false;
+  return (await recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline)) ? { tier: "L2", method: "fuzzy" } : false;
 }
 
 async function maybeCapturePreStep(page, step) {
@@ -983,9 +1189,8 @@ function stepFailure(step, stepIndex, cause, preShot) {
   return err;
 }
 
-async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, observerMs, downloadQueue, structuralFingerprint } = {}) {
+async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, downloadQueue, structuralFingerprint } = {}) {
   const t = tracker || { emit: () => {} };
-  const paceOpts = { observerMs: observerMs ?? 600 };
   let recoveredSteps = 0;
   let hasExecutedStep = false;
   let prevStepType = null;
@@ -1020,19 +1225,35 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
 
     const step = steps[i];
     if (onStep) onStep(i);
-    if (hasExecutedStep) await waitForPageLoadAndPace(page, step.type, prevStepType, paceOpts);
+    if (hasExecutedStep) await waitForPageLoad(page, prevStepType);
 
     const preShot = await maybeCapturePreStep(page, step);
     const primarySelector = baseSelector(step, inputs);
+    // Pre-action baseline for the state_changed assertion (only captured when the step actually
+    // carries one — cheap, but no reason to pay it on every step).
+    const stateBaseline = needsStateChangedBaseline(step) ? await capturePreStepSignature(page) : null;
 
     let primaryErr = null;
     try {
       await executeStep(page, step, inputs, { downloadQueue });
       // Phase 8: independent post-condition verification.
-      const verdict = await verifyStep(page, step, inputs);
+      const verdict = await verifyStep(page, step, inputs, stateBaseline);
+      // Fleet-visible audit: one event per step that actually carries assertions, pass or fail,
+      // so advisory-assertion decay shows up as a drift signal before it becomes a hard failure.
+      if (verdict.results.length) {
+        t.emit("verify_result", {
+          si: i,
+          ok: verdict.pass,
+          n: verdict.results.length,
+          advFail: verdict.results.filter(r => !r.ok && !r.required).length,
+        });
+      }
       if (!verdict.pass) {
         t.emit("verify_fail", { si: i, ch: verdict.channel });
-        throw Object.assign(new Error(`Verification failed: ${verdict.channel}`), { verifyFail: true });
+        throw Object.assign(new Error(`Verification failed: ${verdict.channel}`), {
+          verifyFail: true,
+          verifyResults: verdict.results,
+        });
       }
       t.emit("tier_ok", { si: i, tier: "tier1_compiled" });
       hasExecutedStep = true;
@@ -1043,7 +1264,7 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page);
     }
 
-    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck);
+    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline);
     if (!recovered) {
       t.emit("step_fail", { si: i, fc: mapErrorToCode(primaryErr) });
       throw stepFailure(step, i, primaryErr, preShot);
@@ -1096,4 +1317,11 @@ module.exports = {
   verifyStep,
   gateLocator,
   a11yRecoveryName,
+  capturePreStepSignature,
+  hasRequiredAssertion,
+  needsStateChangedBaseline,
+  recoverWithSelector,
+  recoverStep,
+  layer1Ladder,
+  probePresent,
 };

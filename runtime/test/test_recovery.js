@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const { CLASS, classifyException, remedyFor, buildRepairEvent } = require("../recovery");
-const { a11yRecoveryName } = require("../run");
+const { a11yRecoveryName, gateLocator } = require("../run");
 
 test("a11y recovery name prefers the element's own accessible name over label_text", () => {
   // Regression: the render 'create-a-service-from-github' blueprint link had its label_text
@@ -48,8 +48,19 @@ test("classifies verify-fail via flag", () => {
   assert.strictEqual(classifyException(err), CLASS.VERIFY_FAIL);
 });
 
-test("timeouts map to stale (re-resolve)", () => {
-  assert.strictEqual(classifyException(new Error("Timeout 700ms exceeded waiting for locator")), CLASS.STALE);
+test("plain locator timeout → timeout-element (skip straight to L2)", () => {
+  assert.strictEqual(classifyException(new Error("Timeout 700ms exceeded waiting for locator")), CLASS.TIMEOUT_ELEMENT);
+});
+
+test("timeout carrying a navigation signature → timeout-navigation", () => {
+  assert.strictEqual(
+    classifyException(new Error("Timeout 700ms exceeded waiting for navigation")),
+    CLASS.TIMEOUT_NAVIGATION,
+  );
+  assert.strictEqual(
+    classifyException(new Error("Timeout 700ms exceeded waiting for locator: execution context was destroyed")),
+    CLASS.TIMEOUT_NAVIGATION,
+  );
 });
 
 test("unknown error → unknown", () => {
@@ -62,6 +73,8 @@ test("remedyFor maps classes to remedies", () => {
   assert.strictEqual(remedyFor(CLASS.OUT_OF_BOUNDS), "scroll-into-view");
   assert.strictEqual(remedyFor(CLASS.NOT_STABLE), "wait-stable");
   assert.strictEqual(remedyFor(CLASS.NOT_ENABLED), "wait-enabled");
+  assert.strictEqual(remedyFor(CLASS.TIMEOUT_NAVIGATION), "wait-navigation");
+  assert.strictEqual(remedyFor(CLASS.TIMEOUT_ELEMENT), "descend-layer2");
   assert.strictEqual(remedyFor(CLASS.VERIFY_FAIL), "descend-layer2");
 });
 
@@ -81,4 +94,30 @@ test("buildRepairEvent tolerates missing identity_bundle", () => {
   const evt = buildRepairEvent({ type: "click" }, 0, {});
   assert.strictEqual(evt.stable_hash, "");
   assert.strictEqual(evt.tier, "L2");
+});
+
+test("gateLocator lets a detach error during the disabled-check escape instead of swallowing it", async () => {
+  let calls = 0;
+  const loc = {
+    waitFor: async () => {},
+    evaluate: async () => {
+      calls += 1;
+      if (calls === 1) return true; // RAF-stable check: element reports stable
+      throw new Error("Element is not attached to the DOM"); // disabled-check: detached mid-flight
+    },
+  };
+  await assert.rejects(() => gateLocator(loc, { confidence: 0.9 }), /not attached/);
+});
+
+test("gateLocator still swallows unrelated evaluate glitches on the disabled-check (best-effort)", async () => {
+  let calls = 0;
+  const loc = {
+    waitFor: async () => {},
+    evaluate: async () => {
+      calls += 1;
+      if (calls === 1) return true;
+      throw new Error("some unrelated evaluate glitch");
+    },
+  };
+  await assert.doesNotReject(() => gateLocator(loc, { confidence: 0.9 }));
 });

@@ -899,9 +899,6 @@ async function _handleTool(name, args, extra) {
       else _abortSignal.addEventListener("abort", _onAbort, { once: true });
     }
 
-    // Per-company observer pace (ms of minimum viewing time per page transition)
-    const _observerMs = primary.entry.pack?.pacing?.observer_ms ?? 600;
-
     log("info", "execute_start", {
       tool: name,
       run_count: resolved.length,
@@ -1012,7 +1009,6 @@ async function _handleTool(name, args, extra) {
               onStep:        (i) => { if (activeExecution) activeExecution.step = i; },
               cancelCheck:   _execCancelled,
               tracker:       _runTracker,
-              observerMs:    _observerMs,
               downloadQueue: _downloadQueue,
               structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
             });
