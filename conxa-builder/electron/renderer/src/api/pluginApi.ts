@@ -108,12 +108,39 @@ export type InstallerBuildResult = {
   cloud_version_download_url?: string
   cloud_sha256?: string
   cloud_upload_error?: string
+  cloud_upload_error_message?: string
   cloud_workspace_id?: string
   cloud_tracking_url?: string
   cloud_tracking_token_present?: boolean
   cloud_sync_endpoint?: string
   installed_runtime_path?: string
 }
+
+export type SkillPackReleaseResult = {
+  slug: string
+  version: string
+  cloud_api?: string
+  workspace_id: string
+  tracking_url: string
+  tracking_token_present: boolean
+  sync_token_present: boolean
+  sync_endpoint: string
+  published_at?: number
+}
+
+export type SkillPackVersion = {
+  slug: string
+  version: string
+  release_notes: string
+  skills: string[]
+  workspace_id: string
+  owner_user_id?: string
+  published_at: number
+  files_written?: number
+  is_latest: boolean
+}
+
+export type SkillPackVersionsResponse = { slug: string; versions: SkillPackVersion[] }
 
 export type TrackingEvent = {
   e: string
@@ -309,6 +336,29 @@ export function buildInstaller(
       release_notes: releaseNotes,
     }),
   )
+}
+
+/** The primary, mandatory release-management action — publishes a skill-pack
+ * release (version + release notes + built skill files) to Conxa Cloud. This
+ * is the central Skill Pack Publishing action; Build Installer (above) is now
+ * a secondary, advanced action that requires a release to already exist. */
+export function publishSkillPack(
+  pluginId: string,
+  version: string,
+  releaseNotes: string,
+  onLog: (message: string) => void = () => {},
+): Promise<SkillPackReleaseResult> {
+  return withKindLog('skill_pack_publish', onLog, () =>
+    cmd<SkillPackReleaseResult>('publish_skill_pack', {
+      plugin_id: pluginId,
+      version,
+      release_notes: releaseNotes,
+    }),
+  )
+}
+
+export function fetchSkillPackVersions(pluginId: string): Promise<SkillPackVersionsResponse> {
+  return cmd<SkillPackVersionsResponse>('list_skill_pack_versions', { plugin_id: pluginId })
 }
 
 export function getCompiledSkill(
