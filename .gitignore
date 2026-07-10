@@ -113,3 +113,5 @@ output/
 **/data/executions/
 **/data/runs/
 data/
+
+.impeccable/
