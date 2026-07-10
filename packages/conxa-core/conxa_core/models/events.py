@@ -134,6 +134,29 @@ class PageContext(BaseModel):
 class StateChange(BaseModel):
     before: str
     after: str
+    # Elements added/removed in the interactive-element signature since the action fired
+    # ({"added": [...], "removed": [...]}). Emitted by bridge.js's _computeDomDiff on every
+    # action; optional so recordings from before this field existed still validate.
+    dom_diff: dict[str, Any] | None = None
+
+
+class PostCondition(BaseModel):
+    """Post-condition distillation (recording-next-steps.md Priority 1): a small structured
+    classification of the before/after delta already captured for this event, computed by plain
+    DOM checks in bridge.js::buildPostCondition. Lets the compiler emit a *specific* assertion
+    (dialog opened / value committed / navigated) instead of a generic state-change check. All
+    fields optional — absent on recordings made before this existed."""
+
+    classified_effect: Literal[
+        "navigation", "dialog_opened", "dialog_closed", "expansion", "value_set",
+        "content_change", "none",
+    ] | None = None
+    # Committed field value read back from the DOM at finalize time; "{{REDACTED}}" for
+    # password/sensitive fields (same redaction rule bridge.js applies elsewhere).
+    value_readback: str | None = None
+    url_delta: dict[str, str] | None = None
+    # Selector for the dialog/interstitial container, when classified_effect == "dialog_opened".
+    dialog_signal: str | None = None
 
 
 class Timing(BaseModel):
@@ -180,6 +203,18 @@ class RecordedEvent(BaseModel):
     timing: Timing
     extras: dict[str, Any] = Field(default_factory=dict)
     frame: FrameContext = Field(default_factory=FrameContext)
+
+    # Optional — absent on recordings made before these existed (read-new-fallback-old).
+    post_condition: PostCondition | None = None
+
+    # Conditional-state observation (recording-next-steps.md Priority 2): set when this event's
+    # target sat inside an optional interstitial (dialog / cookie-consent banner) — observed by
+    # bridge.js::detectOptionalContainer, never probed for. Purely advisory: the compiler leaves
+    # the step a normal required linear step regardless; only a human confirming in Human Edit
+    # converts it to a try_dismiss branch (see Key Invariants: "branch steps compile only from
+    # observed states + human confirmation").
+    optionality: Literal["stochastic"] | None = None
+    branch_hint: dict[str, Any] | None = None
 
     # Phase 2: compile-time signals for LLM-based selector generation (REQUIRED).
     # Recordings without these cannot validate; must be re-recorded.

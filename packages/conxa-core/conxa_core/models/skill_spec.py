@@ -171,6 +171,15 @@ class SkillStep(BaseModel):
     # Branch bodies run best-effort and never enter Tier 1-4 recovery — CLAUDE.md Key Invariants.
     branch: dict[str, Any] = Field(default_factory=dict)
 
+    # Conditional-state observation (recording-next-steps.md Priority 2): carried verbatim from
+    # the recorded event's optionality/branch_hint (see conxa_core.models.events.RecordedEvent)
+    # when the step's target sat inside an optional interstitial. Advisory only — this step still
+    # compiles and executes as a normal required linear step; it exists so the editor can surface
+    # a "treat as optional?" suggestion. Never read by the compiler's own assertion/branch logic
+    # and never populates `branch` on its own — only editor/workflow_mutations.py's
+    # confirm_optional_interstitial (human-initiated) does that. None for ordinary steps.
+    optional_hint: dict[str, Any] | None = None
+
 
 class WorkflowIntentStep(BaseModel):
     index: int
