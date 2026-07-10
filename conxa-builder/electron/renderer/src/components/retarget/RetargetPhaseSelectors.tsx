@@ -1,14 +1,26 @@
 import { useState, type DragEvent, type KeyboardEvent } from 'react'
-import { Check, GripVertical, Plus, Trash2, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  Crosshair,
+  GripVertical,
+  Plus,
+  Trash2,
+  X,
+  XCircle,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { InfoHint } from '@/components/ui/info-hint'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { editorHelp } from '@/lib/editorHelp'
 import { cn } from '@/lib/utils'
 import { makeCandidateId } from '@/store/retargetStore'
 import type { EditableCandidate, PickQuality } from '@/api/workflowApi'
-import { BADGE_LABEL_CLASS, ConfidenceReadout, EngineBadge, OrthogonalityBadge, SourceBadge } from './identityBadges'
+import { BADGE_LABEL_CLASS, ConfidenceReadout, SourceBadge } from './identityBadges'
 
 // Same gradient-fill + ring depth treatment as StepConfigForm's PANEL_CARD_CLASS, so the
 // selector list reads as one continuous panel chrome with the "Action" card above it.
@@ -55,7 +67,6 @@ type Props = {
   candidates: EditableCandidate[]
   onCandidatesChange: (next: EditableCandidate[]) => void
   onBack: () => void
-  onContinue: () => void
   /** Step-level identity-signal-quality rollup (0-1); null when there's no identity_bundle. */
   compileConfidence?: number | null
 }
@@ -65,14 +76,15 @@ export function RetargetPhaseSelectors({
   candidates,
   onCandidatesChange,
   onBack,
-  onContinue,
   compileConfidence,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftValue, setDraftValue] = useState('')
   const [draggingId, setDraggingId] = useState<string | null>(null)
 
-  const canContinue = Boolean(candidates[0]?.selector.trim())
+  // Every candidate targets the same recorded element, so its descriptor is identical across
+  // rows — show it once here instead of repeating it on every row.
+  const targetDescriptor = candidates.find((c) => c.descriptor?.trim())?.descriptor?.trim()
 
   const startEdit = (c: EditableCandidate) => {
     setEditingId(c.id)
@@ -144,172 +156,225 @@ export function RetargetPhaseSelectors({
   return (
     <div className="space-y-3">
       {pickQuality === 'ambiguous' ? (
-        <div className="border-status-warn/30 bg-status-warn/10 text-status-warn rounded-lg border p-3 text-sm">
-          None of the generated selectors look durable for this element. You can pick one anyway, edit it,
-          try a different region, or add one manually below.
-          <div className="mt-2">
-            <Button size="sm" variant="outline" onClick={onBack}>
-              ← Re-pick element
-            </Button>
+        <div className="border-status-warn/25 bg-status-warn/[0.06] rounded-xl border p-3.5">
+          <div className="flex gap-2.5">
+            <AlertTriangle className="text-status-warn mt-0.5 size-4 shrink-0" aria-hidden />
+            <div className="min-w-0 space-y-2">
+              <p className="text-status-warn text-sm font-medium leading-snug">
+                None of the generated selectors look durable for this element
+              </p>
+              <p className="text-muted-foreground text-sm leading-snug">
+                You can pick one anyway, edit it below, try a different region, or add one manually.
+              </p>
+              <Button size="sm" variant="outline" onClick={onBack} className="gap-1.5">
+                <ArrowLeft className="size-3.5" aria-hidden />
+                Re-pick element
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}
       {pickQuality === 'none' ? (
-        <div className="border-status-error/30 bg-status-error/10 text-status-error rounded-lg border p-3 text-sm">
-          No usable selector could be generated for this region.
-          <div className="mt-2">
-            <Button size="sm" variant="outline" onClick={onBack}>
-              ← Re-pick element
-            </Button>
+        <div className="border-status-error/25 bg-status-error/[0.06] rounded-xl border p-3.5">
+          <div className="flex gap-2.5">
+            <XCircle className="text-status-error mt-0.5 size-4 shrink-0" aria-hidden />
+            <div className="min-w-0 space-y-2">
+              <p className="text-status-error text-sm font-medium leading-snug">
+                No usable selector could be generated for this region
+              </p>
+              <Button size="sm" variant="outline" onClick={onBack} className="gap-1.5">
+                <ArrowLeft className="size-3.5" aria-hidden />
+                Re-pick element
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}
 
-      <Card className={cn('gap-2 py-3', PANEL_CARD_CLASS)}>
-        <CardHeader className="flex flex-wrap items-center justify-between gap-2 p-2.5 pb-1">
+      <Card className={cn('gap-0 py-0', PANEL_CARD_CLASS)}>
+        <CardHeader className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-3.5 py-3">
           <div className="flex items-center gap-2">
-            <CardTitle className="text-base font-semibold">Selectors</CardTitle>
-            <CardDescription className="text-xs">Drag to reorder — top is primary</CardDescription>
+            <span className="text-muted-foreground flex size-6 shrink-0 items-center justify-center rounded-md bg-white/[0.06]">
+              <Crosshair className="size-3.5" aria-hidden />
+            </span>
+            <div>
+              <CardTitle className="text-foreground flex items-center gap-1.5 text-sm font-semibold">
+                Selector candidates
+                <Badge variant="outline" className="text-muted-foreground border-white/10 px-1.5 text-[0.65rem] font-normal">
+                  {candidates.length}
+                </Badge>
+                <InfoHint {...editorHelp.reviewSelectors} size="md" side="bottom" align="start" />
+              </CardTitle>
+              <CardDescription className="text-xs">
+                {targetDescriptor ? `Targeting ${targetDescriptor} — top row is primary` : 'Top row is primary — the rest are fallbacks'}
+              </CardDescription>
+            </div>
           </div>
           <ConfidenceReadout confidence={compileConfidence} />
         </CardHeader>
-        <CardContent className="space-y-2.5 p-2.5 pt-0">
-          <ol className="divide-border/60 overflow-hidden rounded-lg border border-border/60 divide-y">
-            {candidates.map((c, i) => {
-              const isPrimary = i === 0
-              const isEditing = editingId === c.id
-              return (
-                <li
-                  key={c.id}
-                  draggable
-                  onDragStart={() => setDraggingId(c.id)}
-                  onDragOver={onRowDragOver}
-                  onDrop={(e) => onRowDrop(e, c.id)}
-                  onDragEnd={() => setDraggingId(null)}
-                  className={cn(
-                    'border-l-2 border-l-transparent px-3 py-2.5 text-sm transition-colors',
-                    isPrimary ? 'border-l-brand bg-brand-subtle/60' : 'hover:bg-white/[0.03]',
-                    draggingId === c.id && 'opacity-60',
-                  )}
-                >
-                  <div className="flex items-start gap-2.5">
-                    <span
-                      className="mt-0.5 flex shrink-0 cursor-grab items-center gap-1.5 text-zinc-600 opacity-60 transition-opacity hover:opacity-100"
-                      aria-hidden
-                    >
-                      <GripVertical className="size-4" />
-                    </span>
-                    <span
-                      className={cn(
-                        'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold tabular-nums',
-                        isPrimary ? 'bg-brand/15 text-brand' : 'bg-muted text-muted-foreground',
-                      )}
-                      aria-hidden
-                    >
-                      {i + 1}
-                    </span>
+        <CardContent className="space-y-2.5 p-3.5">
+          {candidates.length === 0 ? (
+            <div className="text-muted-foreground rounded-lg border border-dashed border-white/10 px-3 py-6 text-center text-sm">
+              No selectors yet — add one manually below.
+            </div>
+          ) : (
+            <ol className="divide-border/60 overflow-hidden rounded-lg border border-border/60 divide-y">
+              {candidates.map((c, i) => {
+                const isPrimary = i === 0
+                const isEditing = editingId === c.id
+                return (
+                  <li
+                    key={c.id}
+                    draggable
+                    tabIndex={0}
+                    aria-label={`${isPrimary ? 'Primary' : `Fallback ${i}`} selector, position ${i + 1} of ${candidates.length}. Press Arrow Up or Arrow Down to reorder.`}
+                    onDragStart={() => setDraggingId(c.id)}
+                    onDragOver={onRowDragOver}
+                    onDrop={(e) => onRowDrop(e, c.id)}
+                    onDragEnd={() => setDraggingId(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowUp' && i > 0) {
+                        e.preventDefault()
+                        moveCandidate(c.id, candidates[i - 1].id)
+                      } else if (e.key === 'ArrowDown' && i < candidates.length - 1) {
+                        e.preventDefault()
+                        moveCandidate(c.id, candidates[i + 1].id)
+                      }
+                    }}
+                    className={cn(
+                      'px-3 py-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-ring',
+                      isPrimary ? 'bg-brand-subtle/60' : 'hover:bg-white/[0.03]',
+                      draggingId === c.id && 'opacity-60',
+                    )}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span
+                        className="text-muted-foreground mt-0.5 flex shrink-0 cursor-grab items-center gap-1.5 opacity-60 transition-opacity hover:opacity-100"
+                        aria-hidden
+                      >
+                        <GripVertical className="size-4" />
+                      </span>
+                      <span
+                        className={cn(
+                          'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold tabular-nums',
+                          isPrimary ? 'bg-brand/15 text-brand' : 'bg-muted text-muted-foreground',
+                        )}
+                        aria-hidden
+                      >
+                        {i + 1}
+                      </span>
 
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {isPrimary ? (
-                          <Badge variant="outline" className={cn(BADGE_LABEL_CLASS, 'border-brand/50 bg-brand/15 text-brand')}>
-                            Primary
-                          </Badge>
-                        ) : null}
-                        <EngineBadge engine={c.engine} />
-                        <UniquenessBadge candidate={c} />
-                        {c.orthogonality_class ? <OrthogonalityBadge orthogonalityClass={c.orthogonality_class} /> : null}
-                        {c.source ? <SourceBadge source={c.source} /> : null}
-                        <span className="truncate text-xs font-medium text-zinc-400">{c.descriptor}</span>
-                      </div>
-
-                      {isEditing ? (
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            autoFocus
-                            value={draftValue}
-                            onChange={(e) => setDraftValue(e.target.value)}
-                            onKeyDown={onEditKeyDown}
-                            onBlur={commitEdit}
-                            placeholder='e.g. [data-testid="submit-btn"]'
-                            className="h-7 font-mono text-xs"
-                          />
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                type="button"
-                                size="icon-sm"
-                                variant="ghost"
-                                className="shrink-0 text-status-ok"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={commitEdit}
-                              >
-                                <Check className="size-3.5" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Save</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                type="button"
-                                size="icon-sm"
-                                variant="ghost"
-                                className="shrink-0 text-muted-foreground"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={cancelEdit}
-                              >
-                                <X className="size-3.5" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Cancel</TooltipContent>
-                          </Tooltip>
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {isPrimary ? (
+                            <Badge variant="outline" className={cn(BADGE_LABEL_CLASS, 'border-brand/50 bg-brand/15 text-brand')}>
+                              Primary
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground text-[10px] font-semibold tracking-wide uppercase">Fallback {i}</span>
+                          )}
+                          <UniquenessBadge candidate={c} />
+                          {c.source ? <SourceBadge source={c.source} /> : null}
                         </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => startEdit(c)}
-                          className="block w-full break-all rounded-md border border-border/40 bg-black/20 px-2 py-1.5 text-left font-mono text-[11px] text-zinc-300 transition-colors hover:border-white/15 hover:bg-black/30"
-                          title="Click to edit this selector"
-                        >
-                          {c.selector || <span className="text-muted-foreground italic">Empty — click to enter a selector</span>}
-                        </button>
-                      )}
-                    </div>
 
-                    <div className="flex shrink-0 flex-col items-end gap-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <div className="h-1 w-16 overflow-hidden rounded-full bg-white/10">
-                          <div
-                            className="bg-brand h-full rounded-full"
-                            style={{ width: `${Math.round(c.durability * 100)}%` }}
-                          />
-                        </div>
-                        <span className="w-8 shrink-0 text-right text-[0.65rem] whitespace-nowrap text-zinc-500 tabular-nums">
-                          {Math.round(c.durability * 100)}%
-                        </span>
-                      </div>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
+                        {isEditing ? (
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              autoFocus
+                              value={draftValue}
+                              onChange={(e) => setDraftValue(e.target.value)}
+                              onKeyDown={onEditKeyDown}
+                              onBlur={commitEdit}
+                              placeholder='e.g. [data-testid="submit-btn"]'
+                              className="h-7 font-mono text-xs"
+                            />
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  size="icon-sm"
+                                  variant="ghost"
+                                  className="shrink-0 text-status-ok"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={commitEdit}
+                                  aria-label="Save selector"
+                                >
+                                  <Check className="size-3.5" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Save</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  size="icon-sm"
+                                  variant="ghost"
+                                  className="shrink-0 text-muted-foreground"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={cancelEdit}
+                                  aria-label="Cancel edit"
+                                >
+                                  <X className="size-3.5" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Cancel</TooltipContent>
+                            </Tooltip>
+                          </div>
+                        ) : (
+                          <button
                             type="button"
-                            size="icon-xs"
-                            variant="ghost"
-                            className="text-status-error hover:text-status-error"
-                            onClick={() => removeCandidate(c.id)}
-                            aria-label="Remove this selector"
+                            onClick={() => startEdit(c)}
+                            className="text-foreground block w-full break-all rounded-md border border-border/40 bg-black/20 px-2 py-1.5 text-left font-mono text-[11px] transition-colors hover:border-white/15 hover:bg-black/30 focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:outline-none"
+                            title="Click to edit this selector"
                           >
-                            <Trash2 className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="left">Remove</TooltipContent>
-                      </Tooltip>
+                            {c.selector || <span className="text-muted-foreground italic">Empty — click to enter a selector</span>}
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex shrink-0 flex-col items-end gap-1.5">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div
+                              tabIndex={0}
+                              className="flex items-center gap-1.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+                            >
+                              <div className="h-1 w-16 overflow-hidden rounded-full bg-white/10">
+                                <div
+                                  className="bg-brand h-full rounded-full"
+                                  style={{ width: `${Math.round(c.durability * 100)}%` }}
+                                />
+                              </div>
+                              <span className="text-muted-foreground w-8 shrink-0 text-right text-[0.65rem] whitespace-nowrap tabular-nums">
+                                {Math.round(c.durability * 100)}%
+                              </span>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="left">Durability — how likely this selector survives a UI change</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              size="icon-sm"
+                              variant="ghost"
+                              className="text-status-error hover:text-status-error"
+                              onClick={() => removeCandidate(c.id)}
+                              aria-label="Remove this selector"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="left">Remove</TooltipContent>
+                        </Tooltip>
+                      </div>
                     </div>
-                  </div>
-                </li>
-              )
-            })}
-          </ol>
+                  </li>
+                )
+              })}
+            </ol>
+          )}
 
           <Button type="button" variant="outline" size="sm" className="w-full gap-1.5 border-dashed text-muted-foreground" onClick={addCandidate}>
             <Plus className="size-3.5" />
@@ -317,15 +382,6 @@ export function RetargetPhaseSelectors({
           </Button>
         </CardContent>
       </Card>
-
-      <div className="flex justify-between pt-1">
-        <Button variant="outline" onClick={onBack}>
-          ← Re-pick element
-        </Button>
-        <Button onClick={onContinue} disabled={!canContinue}>
-          Continue →
-        </Button>
-      </div>
     </div>
   )
 }

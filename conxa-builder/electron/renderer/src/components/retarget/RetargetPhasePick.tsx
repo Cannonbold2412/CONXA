@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
-import { BoxSelect } from 'lucide-react'
+import { BoxSelect, Image as ImageIcon } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { Bbox } from '@/api/workflowApi'
@@ -16,6 +17,8 @@ type Props = {
   onDrawn: (bbox: Bbox, regenerate: boolean) => void | Promise<void>
   onApplyPositionOnly: () => void
   onCancel: () => void
+  onOpenScreenshots?: () => void
+  screenshotCount?: number | string
 }
 
 function currentBboxOf(step: StepEditorDTO): Bbox | null {
@@ -24,7 +27,16 @@ function currentBboxOf(step: StepEditorDTO): Bbox | null {
   return { x: Number(raw.x ?? 0), y: Number(raw.y ?? 0), w: Number(raw.w ?? 0), h: Number(raw.h ?? 0) }
 }
 
-export function RetargetPhasePick({ step, loading, sessionMissing, onDrawn, onApplyPositionOnly, onCancel }: Props) {
+export function RetargetPhasePick({
+  step,
+  loading,
+  sessionMissing,
+  onDrawn,
+  onApplyPositionOnly,
+  onCancel,
+  onOpenScreenshots,
+  screenshotCount,
+}: Props) {
   // Default to the step's existing target so a user who's just reviewing (and doesn't need
   // to change anything) can click Continue immediately, without being forced to redraw.
   const [pendingBbox, setPendingBbox] = useState<Bbox | null>(() => currentBboxOf(step))
@@ -74,6 +86,23 @@ export function RetargetPhasePick({ step, loading, sessionMissing, onDrawn, onAp
           This is the element the step currently targets. Draw a new box only if you want to
           change it — otherwise just continue.
         </p>
+        {onOpenScreenshots ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="shrink-0 gap-1.5"
+            onClick={onOpenScreenshots}
+          >
+            <ImageIcon className="size-3.5 shrink-0" aria-hidden />
+            Recording screenshots
+            {screenshotCount !== undefined && (
+              <Badge variant="outline" className="shrink-0 px-1.5 text-[0.65rem] font-semibold">
+                {screenshotCount}
+              </Badge>
+            )}
+          </Button>
+        ) : null}
         {toolbarUi ? (
           <Tooltip>
             <TooltipTrigger asChild>

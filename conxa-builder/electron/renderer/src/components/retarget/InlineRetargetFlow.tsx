@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { CmdError } from '@/lib/ipc'
 import { errorMessage, retargetApply, retargetPreview, type Bbox } from '@/api/workflowApi'
 import type { StepEditorDTO, WorkflowResponse } from '@/types/workflow'
@@ -7,7 +8,10 @@ import { StepConfigForm, type StepConfigFormHandle } from '../StepConfigForm'
 import { RetargetPhasePick } from './RetargetPhasePick'
 import { RetargetPhaseSelectors } from './RetargetPhaseSelectors'
 import { RetargetPhaseValidation } from './RetargetPhaseValidation'
+import { BranchBodyEditor } from '@/components/branch/BranchBodyEditor'
+import { RecoveryAnchorsCard } from '@/components/RecoveryAnchorsCard'
 import { BuildPipelineStepper, type PipelineStep } from '@/components/build/BuildPipelineStepper'
+import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { makeCandidateId, useRetargetStore } from '@/store/retargetStore'
 import { cn } from '@/lib/utils'
@@ -20,6 +24,11 @@ type Props = {
   skillId: string
   onWorkflowUpdated: (wf: WorkflowResponse) => void
   onHistoryUpdate?: (canUndo: boolean, canRedo: boolean) => void
+  /** Opens the Recording Screenshots dialog (lives in HumanEditPage — reused from there so its
+   *  fetch/apply/clear state doesn't need duplicating here). Surfaced as a button in the Pick
+   *  Element phase rather than the page's top bar, since it's a per-step "borrow a frame" tool. */
+  onOpenScreenshots?: () => void
+  screenshotCount?: number | string
 }
 
 export type InlineRetargetFlowHandle = {
@@ -41,7 +50,7 @@ const PANEL_CLASS =
  * steps have no single element to re-target, so they just get the config form.
  */
 export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(function InlineRetargetFlow(
-  { step, skillId, onWorkflowUpdated, onHistoryUpdate },
+  { step, skillId, onWorkflowUpdated, onHistoryUpdate, onOpenScreenshots, screenshotCount },
   ref,
 ) {
   const formRef = useRef<StepConfigFormHandle>(null)
@@ -194,6 +203,53 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               onWorkflowUpdated={onWorkflowUpdated}
               onHistoryUpdate={onHistoryUpdate}
             />
+            <RecoveryAnchorsCard
+              stepIndex={step.step_index}
+              skillId={skillId}
+              anchors={step.anchors_recovery}
+              onWorkflowUpdated={onWorkflowUpdated}
+              onHistoryUpdate={onHistoryUpdate}
+            />
+          </div>
+        </ScrollArea>
+      </div>
+    )
+  }
+
+  // Branch steps (if_present/try_dismiss/wait_for_one_of — EXEC-1) skip the 3-phase re-target
+  // wizard: its bbox-driven "one primary + fallbacks" model doesn't map onto try_dismiss's
+  // ordered candidate list or wait_for_one_of's set of alternative options, and if_present's own
+  // probe selector is still editable through the normal selector fields in StepConfigForm below.
+  // Only if_present gets a dedicated nested-body editor this pass — try_dismiss's `candidates`
+  // and wait_for_one_of's `options` are readable (see BranchSummaryBadge in WorkflowStepItem.tsx)
+  // but have no authoring UI yet; see TODO.md follow-up.
+  if (step.branch_summary) {
+    return (
+      <div className={PANEL_CLASS}>
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="space-y-2 p-3">
+            <StepConfigForm
+              ref={formRef}
+              step={step}
+              skillId={skillId}
+              onWorkflowUpdated={onWorkflowUpdated}
+              onHistoryUpdate={onHistoryUpdate}
+            />
+            {step.branch_summary.kind === 'if_present' ? (
+              <BranchBodyEditor
+                step={step}
+                skillId={skillId}
+                onWorkflowUpdated={onWorkflowUpdated}
+                onHistoryUpdate={onHistoryUpdate}
+              />
+            ) : null}
+            <RecoveryAnchorsCard
+              stepIndex={step.step_index}
+              skillId={skillId}
+              anchors={step.anchors_recovery}
+              onWorkflowUpdated={onWorkflowUpdated}
+              onHistoryUpdate={onHistoryUpdate}
+            />
           </div>
         </ScrollArea>
       </div>
@@ -224,6 +280,8 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               onDrawn={handleDrawn}
               onApplyPositionOnly={handleApplyPositionOnly}
               onCancel={handleCancelPick}
+              onOpenScreenshots={onOpenScreenshots}
+              screenshotCount={screenshotCount}
             />
           ) : null}
           {/* Kept mounted (just hidden) across phases so in-progress edits and the ref survive
@@ -233,8 +291,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               (RetargetPhaseValidation) here, and showing both would let a user save assertions
               via two different, inconsistent paths (instant patchStep vs. staged retargetApply).
               hideSubmitButton: the wizard's own Continue button already calls submitIfDirty(),
-              so a second manual "Save step" button here would be redundant. Rendered above
-              RetargetPhaseSelectors so "Action: <type>" sits above the selector list. */}
+              so a second manual "Save step" button here would be redundant. */}
           <div className={phase === 2 ? '' : 'hidden'}>
             <StepConfigForm
               ref={formRef}
@@ -252,9 +309,38 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               candidates={candidates}
               onCandidatesChange={setCandidates}
               onBack={() => setPhase(1)}
-              onContinue={() => void handleContinueToConfirm()}
               compileConfidence={preview.compile_confidence}
             />
+          ) : null}
+          {phase === 2 ? (
+            <>
+              <RecoveryAnchorsCard
+                stepIndex={step.step_index}
+                skillId={skillId}
+                anchors={step.anchors_recovery}
+                onWorkflowUpdated={onWorkflowUpdated}
+                onHistoryUpdate={onHistoryUpdate}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <Button variant="outline" onClick={() => setPhase(1)} className="gap-1.5">
+                  <ArrowLeft className="size-3.5" aria-hidden />
+                  Re-pick element
+                </Button>
+                <div className="flex items-center gap-2.5">
+                  {!candidates[0]?.selector.trim() ? (
+                    <span className="text-muted-foreground text-xs">Add a primary selector to continue</span>
+                  ) : null}
+                  <Button
+                    onClick={() => void handleContinueToConfirm()}
+                    disabled={!candidates[0]?.selector.trim()}
+                    className="gap-1.5"
+                  >
+                    Continue
+                    <ArrowRight className="size-3.5" aria-hidden />
+                  </Button>
+                </div>
+              </div>
+            </>
           ) : null}
           {phase === 3 && preview ? (
             <RetargetPhaseValidation

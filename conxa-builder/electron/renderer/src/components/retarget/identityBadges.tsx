@@ -14,9 +14,8 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 /** Shared badge styling + label/icon maps for the identity metadata surfaced from
- * identity_bundle signals (engine, orthogonality_class, source) — used by both the Review
- * Selectors phase (RetargetPhaseSelectors) and the read-only current-identity summary
- * (StepIdentitySummary) so the two views speak the same visual language. */
+ * identity_bundle signals (engine, orthogonality_class, source) — used by the Review Selectors
+ * phase (RetargetPhaseSelectors). */
 
 export const BADGE_LABEL_CLASS = 'text-[10px] font-semibold tracking-wide uppercase'
 
