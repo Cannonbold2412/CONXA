@@ -181,8 +181,12 @@ plugin selection instead of four independent per-page rails.
 - Phase 2 — explicit, asynchronous, concurrent Compile with a background job model (today's
   `cmd_compile` is synchronous; a process-global LLM router (`conxa_core.llm.set_router`)
   must be made concurrency-safe first — see the redesign doc's T0.2).
-- Phase 3 — Human Edit/Test Skill polish (confidence banner, "How Claude sees this skill"
-  panel, Tier-2 recovery caveat, Approve rename + ceremony).
+- Phase 3 — Human Edit/Test Skill polish. ✅ **Confidence banner DONE 2026-07-10** (delivered as
+  part of the broader Human Edit vs. Skill Package redesign, not standalone — see §1.11 below):
+  `CompileHealthBanner.tsx`, mounted under the page header, shows `compile_report.status`/
+  `min_confidence`/steps-below-threshold. "How Claude sees this skill" panel already existed
+  pre-Phase-3 (`HowClaudeSeesThisPanel.tsx`). Still open: Tier-2 recovery caveat, Approve rename
+  + ceremony.
 - ✅ **Phase 4 — DONE 2026-07-09** (delivered as part of the broader Skill-Pack-Centric
   Publishing & Versioned Installer Architecture redesign, not standalone): Publish Skill
   Package split fully out of Build Installer. `Backend._publish_skill_pack_for_installer`
@@ -213,6 +217,79 @@ deleted then restored and repurposed as `pages/RecordPage.tsx`'s left-rail-plus-
 (its build-pipeline content replaced with the Record Login/Create Workflow actions previously
 inline on `PluginDetailPage.tsx`) — Build Plugin itself has no page; the file just lent its
 layout to a different page.
+
+---
+
+### ✅ 1.11 Human Edit vs. Skill Package Redesign (three-tier IA + branch-step authoring) — DONE 2026-07-10
+
+**Source:** `research-analysis/Human-Edit-vs-Skill-Package.md` (the audit) and `TODO.md` BUILD-5
+(now resolved) / EXEC-1 (editor-authoring half now resolved).
+
+**What was missing:** Human Edit hid several skill-package components the runtime actually acts
+on — an approver could hit "Approve" without ever seeing a step's conditional sub-body, the
+compiled workflow "plan" (`intent_graph`), the recovery ladder that fires on failure, the element
+fingerprint the resolver scores against, or a workflow-level compile-health summary. Separately,
+EXEC-1's branch primitives (`if_present`/`try_dismiss`/`wait_for_one_of`, shipped 2026-07-09) had
+no Build Studio authoring path — they could only be produced by hand-editing a skill JSON.
+
+**What was built:**
+- **Read-only visibility (backend, `conxa_compile/editor/dto.py` + `workflow_dto.py`):**
+  `StepEditorDTO` gained `recovery_view`, `fingerprint` (incl. diagnostics-only `stable_hash`/
+  `compat_fingerprint`), `handler_hints_view`, `safety`, `branch_summary`, `branch_steps`
+  (path-addressed, e.g. `skill_x:2.branch.steps[0]`); `WorkflowResponse` gained `intent_graph`
+  (verbatim `WorkflowIntentGraph`) and `compile_health` (derived from `compile_report` + `meta`,
+  incl. `llm_router_stats`). All additive projections through the existing `build_workflow_response`
+  chokepoint — every editor response (`cmd_get_workflow` and the shared `_skill_response` helper)
+  picks them up automatically; none of it is writable.
+- **Branch-step authoring (backend, closes EXEC-1's remaining gap):** `if_present`/`try_dismiss`/
+  `wait_for_one_of` are now `INSERTABLE_ACTIONS` (`editor/action_registry.py`); `_new_manual_step`
+  scaffolds an empty `branch` block per kind (`editor/workflow_mutations.py`). `if_present`'s
+  nested body is fully editable: new `insert_branch_step`/`delete_branch_step`/
+  `reorder_branch_steps` mutation functions + `cmd_insert_branch_step`/`cmd_delete_branch_step`/
+  `cmd_reorder_branch_steps` RPCs (`handlers/workflow_editor.py`) for structural edits, and
+  `cmd_patch_step` gained an optional `path` parameter (`"branch.steps[N]"`) for per-field edits
+  on a nested step, routed through a new shared `_apply_step_patch` helper so both the top-level
+  and nested flows go through the same selector-quality-gate + `identity_bundle` rebuild logic.
+  `patch_gate.py::validate_editor_patch` gained `_validate_branch_patch` (selector-quality-gates
+  `try_dismiss` candidates and `wait_for_one_of` option selectors, rejects nested-body content
+  smuggled through the parent's own patch) and an `in_branch_body` flag that rejects
+  `recovery`/`validation` patches on nested steps (branch bodies are best-effort and never enter
+  Tier 1-4 recovery — CLAUDE.md invariant).
+- **Frontend — Tier 1 (Review, default view):** `CompileHealthBanner.tsx` (workflow-level status
+  banner under the page header), `WorkflowPlanPanel.tsx` (new "Workflow plan" tool pane), safety
+  badges + `BranchSummaryBadge` on `WorkflowStepItem.tsx`, `BranchSubList.tsx` (indented
+  collapsible branch-body preview in the step list — selecting a nested row sets a new
+  `editorStore.focusedBranchIndex`), conditional action kinds added to the Add-action menu.
+- **Frontend — Tier 2 (Reliability, per-step):** `RecoveryBehaviorCard.tsx`,
+  `ElementFingerprintCard.tsx`, and the previously-unmounted `StepIdentitySummary.tsx` (see
+  `TODO.md` BUILD-4) all mounted behind a new "Reliability" collapsible in `StepConfigForm.tsx`.
+  `BranchBodyEditor.tsx` — a standalone, path-aware add/remove/reorder/edit surface for
+  `if_present` nested bodies, mounted in `InlineRetargetFlow.tsx` (deliberately not built on
+  `StepConfigForm` itself, whose `patchStep` calls are hardcoded to the top-level `step_index`
+  across ~7 call sites — reusing it would have risked the primary editing surface for a
+  secondary flow).
+- **Frontend — Tier 3 (Diagnostics):** new `DiagnosticsPanel.tsx` tool pane — compile report,
+  LLM router stats, compiler policy version, required runtime, and the selected step's integrity
+  hashes.
+- **Scope trims (tracked as follow-ups):** `try_dismiss`/`wait_for_one_of` got read-only summary
+  badges only, no authoring UI for their candidate/option lists (`TODO.md` BUILD-6);
+  `validation.success_conditions` was left as-is per explicit user direction (`TODO.md` BUILD-7).
+  `plugin_builder_output.py`'s `CONXA_REQUIRED_RUNTIME` floor was **not** bumped — confirmed the
+  branch-executor commit isn't in any tagged `app-vX.Y.Z` release yet; the code comment now names
+  the exact commit for a future release to act on.
+- Tests: `conxa-cloud/tests/test_patch_gate.py` (`TestBranchStepPatches`,
+  `TestBranchBodyStepValidation` — 16 new cases), `test_workflow_dto.py` (15 new projection
+  cases), `test_plugin_builder.py` (editor-authored `if_present` step round-trips through the
+  same saved-skill → execution-step serialization as a hand-built fixture).
+
+**Files:** `conxa_compile/editor/dto.py`, `workflow_dto.py`, `action_registry.py`,
+`workflow_mutations.py`, `patch_gate.py`; `handlers/workflow_editor.py`;
+`plugin_builder_output.py` (comment only); `conxa-builder/electron/renderer/src/types/workflow.ts`;
+`components/CompileHealthBanner.tsx`, `WorkflowPlanPanel.tsx`, `DiagnosticsPanel.tsx`,
+`RecoveryBehaviorCard.tsx`, `ElementFingerprintCard.tsx`, `branch/BranchBodyEditor.tsx` (all new);
+`components/workflowViewer/BranchSubList.tsx` (new), `WorkflowStepItem.tsx`, `WorkflowViewer.tsx`;
+`components/StepConfigForm.tsx`, `components/retarget/InlineRetargetFlow.tsx`; `pages/HumanEditPage.tsx`;
+`api/workflowApi.ts`; `store/editorStore.ts`; `lib/editorHelp.tsx`, `lib/workflowViewerHelpers.ts`.
 
 ---
 

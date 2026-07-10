@@ -158,6 +158,50 @@ Releases flow Dev → Prod by **promotion, never rebuild**: dev prerelease tags
 `promote-release.yml` workflow re-publishes the *exact signed artifact* to `stable`.
 Full design: `docs/TRD.md` → "Dev/Prod Environment Isolation".
 
+### Local Runtime workflow for Build Studio's "Test Skill" (Dev vs Prod)
+
+Dev uses the **exact same code path** as Production for resolving and staging the runtime
+(`resolve_runtime_dir()` + `ensure_test_sandbox()` in
+`conxa-builder/python/conxa_compile/conxa_runtime.py` don't branch on Dev vs Prod at all) — the
+only difference is where the bits under `deps/conxa-runtime/` and `deps/conxa-app/` came from: a
+real download in Production, or a local build in Dev. One-time setup, then a rebuild after every
+Runtime/App edit:
+
+```powershell
+.\scripts\conxa.ps1 dev env               # or any `dev` target — sets up path roots (see above)
+.\scripts\build-runtime-local.ps1          # builds the host exe (mirrors build-runtime-host.yml)
+.\scripts\build-app-local.ps1              # builds the obfuscated app layer (mirrors build-runtime-app.yml)
+.\scripts\dev-studio.ps1                   # launch Build Studio Dev — Test Skill uses both immediately
+```
+
+Both scripts write straight into `<CONXA_STUDIO_HOME>\deps\conxa-runtime\<version>\` and
+`...\deps\conxa-app\<version>\` — the identical location and shape a real download lands in. Test
+Skill then stages that into `sandbox\.conxa\` exactly as it would for a customer, same code,
+same `current` junction. Dev/Prod isolation comes entirely from `CONXA_STUDIO_HOME` pointing at
+separate trees (`~/.conxa-build-studio-dev` vs `~/.conxa-build-studio`), not from any special-casing.
+Each build script deletes any other version already in its `deps/` folder first, so there's always
+exactly one — deterministic, and it won't quietly compete with a real download that also lands
+there (e.g. from clicking "Build Installer" in the same session).
+
+- Edited `bootstrap.js`, `version_manager.js`, `env.js` (statically bundled into the exe)? Run
+  `build-runtime-local.ps1`.
+- Edited `server.js`, `run.js`, `resolver.js`, `recovery.js`, or any other file loaded from disk
+  at runtime? Run `build-app-local.ps1`. (It also ships an obfuscated copy of `bootstrap.js`,
+  matching `build-runtime-app.yml`'s file list exactly, but that copy is never actually loaded —
+  the pkg-baked one inside the exe is what runs.)
+
+Either script alone is enough — Test Skill immediately uses the newly built piece, with the other
+piece unchanged, no full rebuild needed. **Prod is completely separate**: a packaged Build Studio
+install never runs these scripts — its `deps/` folders are only ever populated by real downloads.
+
+### Dev convenience scripts
+
+| Script | Does |
+|---|---|
+| `.\scripts\dev-studio.ps1` | Launch Build Studio in Dev mode (thin wrapper for `conxa.ps1 dev studio`). |
+| `.\scripts\build-runtime-local.ps1` | Build the host exe locally (mirrors `build-runtime-host.yml`) and write it to `dev-runtime\`. Run after editing `bootstrap.js` or anything else statically bundled into the exe. |
+| `.\scripts\build-app-local.ps1` | Build the obfuscated app layer locally (mirrors `build-runtime-app.yml`) and write it to `dev-runtime\conxa-app\<version>\` + flip `current`. Run after editing `server.js`, `run.js`, or any other disk-loaded file. |
+
 ---
 
 ## Architecture

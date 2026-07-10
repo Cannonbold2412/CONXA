@@ -256,6 +256,7 @@ class SkillStep(BaseModel):
     snapshot_ref: str              # DOM snapshot blob reference
     snapshot_dom_hash: str         # For cross-compilation cache lookup
     branch: dict                   # Conditional/branch payload — empty for ordinary steps (§3.4c)
+    optional_hint: dict | None     # Recorder-observed "might be optional" flag, advisory only (§3.4d)
 ```
 
 > **Single identity object (cutover):** `element_fingerprint` is no longer a top-level
@@ -366,6 +367,42 @@ A probe may carry `identity_bundle` instead of a bare `selector`; the runtime's 
 resolves either. See `runtime/test/gate-skill/skill-pack/gate/gate-skill/execution.json` for a
 working `if_present` fixture exercised by the CI execution gate.
 
+**Editor authoring (2026-07-10):** `if_present`/`try_dismiss`/`wait_for_one_of` are now
+insertable from Human Edit. `if_present`'s nested `steps` body is fully editable — structural
+edits (add/remove/reorder) go through `insert_branch_step`/`delete_branch_step`/
+`reorder_branch_steps` (`conxa_compile/editor/workflow_mutations.py`), while per-field edits on a
+nested step reuse `cmd_patch_step` with an optional `path` parameter (e.g. `"branch.steps[1]"`)
+that addresses the nested dict inside `branch.steps` instead of a top-level step. Nested steps
+cannot patch `recovery`/`validation` (branch bodies never enter Tier 1-4 recovery, so those
+blocks are meaningless there — enforced by `patch_gate.py::validate_editor_patch`'s
+`in_branch_body` flag). `try_dismiss`/`wait_for_one_of` accept a normal `branch` key patch
+(candidates/options, quality-gated the same way as any selector) but have no dedicated authoring
+UI yet — see `TODO.md` BUILD-6.
+
+### 3.4d Optional-interstitial observation (recording-next-steps.md Priority 2, 2026-07-10)
+
+`SkillStep.optional_hint` (`dict | None`) is the recorder's advisory flag that this step's target
+sat inside what looked like an optional interstitial (dialog or cookie/consent banner) during
+recording — carried verbatim from the recorded event's `optionality`/`branch_hint` fields
+(`RecordedEvent`, `packages/conxa-core/conxa_core/models/events.py`; see `docs/TRD.md` §10.7 for
+the detection heuristic). It never changes compiled behavior on its own: the step still compiles and executes as a normal
+required linear step. Only a human confirming in Human Edit converts it into a real `try_dismiss`
+branch (§3.4c) — the compiler never does this automatically, honoring the invariant that branch
+steps compile only from observed states + human confirmation.
+
+```python
+optional_hint: dict | None   # {"kind": "try_dismiss", "container_signal": "<selector>"} or None
+```
+
+- **Set by:** `build.py` carries `RecordedEvent.optionality == "stochastic"`'s `branch_hint` onto
+  the compiled step unchanged.
+- **Surfaced by:** `StepEditorDTO.optional_hint` (same shape), read-only — Human Edit renders a
+  "treat as optional?" affordance when present.
+- **Consumed by:** `POST confirm_optional_interstitial` (`skill_id`, `step_index`) — a structural
+  mutation (same shape as `insert_branch_step`, bypasses `patch_gate.py`) that rewrites the step's
+  `action` to `try_dismiss`, seeds `branch.candidates` from the step's own recorded selector plus
+  the hint's `container_signal`, and clears `optional_hint`.
+
 ### 3.5 RecoveryBlock
 
 ```python
@@ -411,6 +448,16 @@ class Assertion(BaseModel):
   interactive-element count, or a body-text-length delta beyond a small noise tolerance) relative
   to a pre-action baseline captured by the runtime. Synthesized only for commit/destructive clicks
   that have no recorded URL/DOM evidence — the "no silent no-op" guard for evidence-less commits.
+
+**Post-condition preference (recording-next-steps.md Priority 1, 2026-07-10):** before falling
+back to the generic wait_for/success_conditions inference above, `_build_assertions` checks the
+recorded event's `post_condition` (`RecordedEvent.post_condition`, optional) — a small structured
+classification bridge.js computes live against the running page at action time. When
+`classified_effect == "dialog_opened"`, its `dialog_signal` claims the enforced slot as a
+`selector_present`. When `classified_effect == "value_set"`, a non-redacted `value_readback`
+becomes `value_equals`'s `expected` instead of the recorded intent value. This live evidence is
+strictly preferred because it's captured against the running page rather than reconstructed
+after the fact; the runtime evaluation path is unchanged either way.
 
 ### 3.7 ValidationBlock
 

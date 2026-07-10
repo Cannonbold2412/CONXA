@@ -939,6 +939,22 @@ fail fast (recompile required).
     advisory-assertion decay before it becomes a hard failure. A required verify-fail also attaches
     the full `results` array to the thrown error as `verifyResults`, alongside the existing
     `earlyDomSnapshot` (interactive-element inventory at the moment of failure).
+  - **Post-condition distillation (recording-next-steps.md Priority 1, 2026-07-10):** the recorder
+    (`bridge.js::finalizeStateWithAfter` → `buildPostCondition`) classifies the same before/after
+    evidence it already captures into a small structured `post_condition` on the event —
+    `classified_effect` (`navigation`/`dialog_opened`/`dialog_closed`/`expansion`/`value_set`/
+    `content_change`/`none`), a redaction-safe `value_readback` (never populated for password/
+    sensitive fields — same `isSensitiveEditable` rule bridge.js applies elsewhere), and a
+    `dialog_signal` selector for the opened container. `build.py::_build_assertions` prefers this
+    live evidence over the generic wait_for/success_conditions inference when present: a
+    `dialog_opened` classification claims the enforced slot as a `selector_present` on
+    `dialog_signal`; a `value_set` classification's `value_readback` (if non-redacted) becomes the
+    `value_equals` assertion's `expected`, catching framework normalization/combobox commits the
+    recorded intent value wouldn't show. `StateChange.dom_diff` — computed by bridge.js on every
+    action but previously dropped by the model — is now carried through as the `content_change`
+    fallback signal. `RecordedEvent.post_condition` and `StateChange.dom_diff` are both optional;
+    old recordings validate unchanged. No runtime change — `run.js`'s `evaluateAssertion` already
+    handles every assertion type this preference pass can produce.
   - **Ephemeral filtering at compile time:** `validation_planner.py::infer_success_conditions`
     runs `required_elements` candidates through `selector_filters.py::is_ephemeral_anchor` before
     handing them to `build.py::_build_assertions`'s primary-signal picker — a cookie-banner/toast/
@@ -1040,6 +1056,9 @@ at execute time via `semver.satisfies`) is the existing guard; `plugin_builder_o
 `CONXA_REQUIRED_RUNTIME` floor (default `>=1.0.3`, applied pack-wide — see the `NOTE(branch-steps)`
 comment there) must be bumped to the app-layer version that first ships these handlers once that
 version is tagged (same manual-coordination pattern as `MIN_HOST` in `build-runtime-app.yml`).
+**Confirmed 2026-07-10 still not tagged**: `git merge-base --is-ancestor 45896e7 app-v1.3.4` fails
+(the branch-executor commit is on `main` but not in any tagged app-layer release) — do not bump
+the floor until it lands in one, or every pack (branch steps or not) would refuse to run.
 
 **Compiler / schema** (`packages/conxa-core/conxa_core/models/skill_spec.py`): `SkillStep.branch`
 (`dict`) holds `steps` (`if_present`), `candidates` (`try_dismiss`), `options` (`wait_for_one_of`),
@@ -1048,16 +1067,56 @@ version is tagged (same manual-coordination pattern as `MIN_HOST` in `build-runt
 `_saved_step_to_execution_step` recursively serializes each one (and each `wait_for_one_of` option's
 `steps`) into the flat runtime step shape above. `action_policy.NO_RECOVERY_ACTION_TYPES` and
 `action_registry.SELECTOR_ACTIONS` register the three kinds; they are **not** in `MARKER_ACTIONS`
-(they carry a real probe target, unlike `frame_enter`/`tab_open`) and **not** in `INSERTABLE_ACTIONS`
-(no Build Studio editor authoring path yet — see Foundation scope below).
+(they carry a real probe target, unlike `frame_enter`/`tab_open`) and, as of 2026-07-10, **are**
+in `INSERTABLE_ACTIONS` (see Editor authoring below).
 
-**Foundation scope**: this covers the schema, the runtime executor, and the build-serializer
-passthrough only. A conditional branch can be authored directly as `execution.json`/saved-skill
-JSON today (see `runtime/test/gate-skill/` for a worked example — an `if_present` step dismisses a
-fixture cookie banner before the gate click). There is no Build Studio editor UI to author one yet,
-and the recorder does not emit these step types from a live recording — recorder-time conditional
-capture and a curated dismiss-pattern library are tracked separately in `TODO.md` (RT-2, EXEC-5),
-both of which depend on this primitive existing.
+**Foundation scope**: schema, runtime executor, and build-serializer passthrough — shipped
+2026-07-09. A conditional branch could initially only be authored directly as
+`execution.json`/saved-skill JSON (see `runtime/test/gate-skill/` for a worked example — an
+`if_present` step dismisses a fixture cookie banner before the gate click). A curated
+dismiss-pattern library is tracked separately in `TODO.md` (EXEC-5).
+
+**Recorder observation + human-gated confirmation (recording-next-steps.md Priority 2,
+2026-07-10)**: the recorder itself still never emits `if_present`/`try_dismiss`/`wait_for_one_of`
+directly from a live recording — it only *observes* and flags. `bridge.js::detectOptionalContainer`
+walks up from each action's target (bounded, 10 levels) looking for `[role=dialog]`/
+`[aria-modal="true"]`, or an id/class token match against a small consent/banner heuristic list
+(`cookie`, `consent`, `gdpr`, `onetrust`, `truste`, `banner`). A `role=dialog`/`aria-modal` match is
+stamped unconditionally; a banner-token match is checked against a small ring buffer of recent
+`dom_diff.added` signatures (`_containerAppearedRecently`, fed by Priority 1's `dom_diff` — a
+second consumer of the same signal) to distinguish "this banner just appeared" from "this banner
+was always on the page," but an unconfirmable check (empty buffer, e.g. first action of the
+session) still stamps — false positives are harmless. A match sets
+`RecordedEvent.optionality = "stochastic"` and `branch_hint = {kind: "try_dismiss",
+container_signal}`. `build.py` carries this onto `SkillStep.optional_hint` **verbatim, advisory
+only** — it does not change compiled behavior; the step still compiles as a normal required linear
+step, honoring the invariant that branch steps compile only from observed states + human
+confirmation. `StepEditorDTO.optional_hint` surfaces it read-only; Human Edit
+(`WorkflowStepItem.tsx`'s `StepBadges`) renders a "treat as optional?" affordance that calls
+`cmd_confirm_optional_interstitial` →
+`workflow_mutations.confirm_optional_interstitial`, which rewrites the step's `action` to
+`try_dismiss` and scaffolds `branch.candidates` from the step's own recorded selector plus the
+observed `container_signal`, then clears `optional_hint`. This is a structural mutation (same shape
+as `insert_branch_step`/`delete_branch_step`) — it bypasses `patch_gate.py` entirely rather than
+going through `cmd_patch_step`.
+
+**Editor authoring (2026-07-10, closes the remaining EXEC-1 gap)**: `if_present`/`try_dismiss`/
+`wait_for_one_of` are now insertable from Human Edit's Add-action menu. `if_present`'s nested
+`steps` body is fully editable: `insert_branch_step`/`delete_branch_step`/`reorder_branch_steps`
+(`conxa_compile/editor/workflow_mutations.py`) handle structural add/remove/reorder via matching
+`cmd_*` RPCs (`handlers/workflow_editor.py`); per-field edits on a nested step reuse
+`cmd_patch_step` with a new optional `path` parameter (`"branch.steps[N]"`) that resolves the
+nested dict inside `steps[step_index]["branch"]["steps"]` instead of a top-level step, then
+routes through the same `_apply_step_patch` helper (selector-quality gates + `identity_bundle`
+rebuild) the top-level flow uses. `patch_gate.py::validate_editor_patch` gained an
+`in_branch_body` flag: when true, `recovery`/`validation` patch keys are rejected outright, since
+branch bodies are best-effort and never enter Tier 1-4 recovery (this section, above) — a nested
+step's recovery/validation blocks would be dead configuration if editable. `try_dismiss`'s
+`candidates` and `wait_for_one_of`'s `options` accept a normal `branch` key patch (each selector
+quality-gated the same way as `target.primary_selector`) but have no dedicated authoring UI yet —
+`BranchBodyEditor.tsx` only covers `if_present`; see `TODO.md` BUILD-6. Human Edit's DTO
+(`StepEditorDTO.branch_summary`/`.branch_steps`) surfaces the same data read-only for review — see
+`research-analysis/Human-Edit-vs-Skill-Package.md` and `docs/Implementation-Plan.md` §1.11.
 
 ---
 

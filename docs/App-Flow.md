@@ -217,6 +217,9 @@ flowchart TD
     E --> P[Replace literal with variable] --> Q[cmd_replace_literals]
     E --> R[Apply recording screenshot to step] --> S[cmd_apply_recording_visual]
     E --> T[Re-target element wizard] --> T1[Phase 1: draw region] --> T2[cmd_retarget_preview: candidates + validation diff] --> T3[Phase 3: Validation — review/edit the enforced post-condition] --> T4[cmd_retarget_apply → bbox + target + identity_bundle + validation, one undo entry]
+    E --> U1[Add/remove/reorder if_present body step] --> U2[cmd_insert_branch_step / cmd_delete_branch_step / cmd_reorder_branch_steps]
+    E --> U3[Edit nested branch-body step field] --> U4[cmd_patch_step with path='branch.steps N ']
+    E --> U5["Confirm 'treat as optional?' suggestion"] --> U6[cmd_confirm_optional_interstitial → step becomes try_dismiss branch]
     E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true, edited_at=now]
     W --> X{Every workflow in the plugin now compiled + signed off?}
     X -->|No| Y[Return waiting_on: names of remaining workflows]
@@ -224,6 +227,34 @@ flowchart TD
 ```
 
 **Patch gate:** Each edit increments the skill version. `revalidate_step()` checks that selector and intent remain coherent after the patch.
+
+**Three-tier review surface (2026-07-10 redesign):** the workflow list, per-step panel, and a new
+Diagnostics dialog now separate what an *approver* needs to see (branch-body sub-steps, safety
+badges, a workflow-level compile-health banner, the compiled "Workflow plan" tool pane showing
+`intent_graph`) from what a *skill engineer* needs (a per-step "Reliability" section: recovery
+behavior, element fingerprint, current identity signals) from what *support* needs (integrity
+hashes, LLM router stats). All of it is read-only projection through the existing
+`cmd_get_workflow`/`_skill_response` chokepoint — see `docs/Implementation-Plan.md` §1.11 and
+`research-analysis/Human-Edit-vs-Skill-Package.md` for the full audit and design rationale.
+
+**Branch-step authoring:** `if_present`/`try_dismiss`/`wait_for_one_of` (§10.7 of `docs/TRD.md`)
+are now insertable from the Add-action menu. `if_present`'s nested body gets a dedicated editor
+(add/remove/reorder + per-step field edits via the new `path`-addressed `cmd_patch_step`); nested
+steps cannot patch `recovery`/`validation` since branch bodies are best-effort and never enter
+recovery. `try_dismiss`/`wait_for_one_of` show read-only summary badges only — no authoring UI
+for their candidate/option lists yet (`TODO.md` BUILD-6).
+
+**"Treat as optional?" suggestion (recording-next-steps.md Priority 2, 2026-07-10):** the recorder
+now observes (never probes) whether a step's target sat inside what looked like an optional
+interstitial — a dialog or cookie/consent banner — during recording, and flags it advisory-only;
+the step still compiles and executes as a normal required step regardless. When flagged, the step
+row in Human Edit shows a small "treat as optional?" badge (`WorkflowStepItem.tsx`). Confirming it
+calls `cmd_confirm_optional_interstitial`, which rewrites the step into a real `try_dismiss` branch
+(candidates seeded from the step's own recorded selector plus the recorder's observed container) —
+the same executor path `try_dismiss` steps already use (§10.7 of `docs/TRD.md`). This is the only
+way a branch step gets created from a live recording without hand-editing JSON: the compiler never
+converts a flagged step on its own, honoring "branch steps compile only from observed states +
+human confirmation."
 
 **Auto-build on sign-off (2026-07 workflow redesign, Phase 1):** sign-off no longer just flips a flag. `cmd_sign_off_workflow` re-checks, after persisting `signed_off`/`edited_at`, whether every workflow belonging to the plugin is compiled and signed off — the same condition `plugin_builder.build_plugin` already gates on (§8). If so, it calls `build_plugin` itself, so the package exists the moment the gate is satisfied instead of requiring a separate visit to a build page (there is no such page anymore — see §8). The gate itself is unchanged; this only moves *when* the already-existing build call happens to fire.
 
