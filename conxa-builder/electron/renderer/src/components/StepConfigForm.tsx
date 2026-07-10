@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle } from 'react'
 import { FormProvider, useForm, useFormState, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 import type { StepEditorDTO, WorkflowResponse } from '../types/workflow'
@@ -14,7 +14,9 @@ import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
 import { Trash2 } from 'lucide-react'
-import { AssertionEditorRows, describeWaitFor, type AssertionDraft } from '@/components/validation/AssertionEditor'
+import { AssertionEditorRows, describeWaitFor, hasInvalidAssertions, type AssertionDraft } from '@/components/validation/AssertionEditor'
+import { ElementFingerprintCard } from '@/components/ElementFingerprintCard'
+import { anchorRowsFromObjects, parseAnchorRows } from '@/lib/anchors'
 
 // Same gradient-fill + ring depth treatment as PanelChrome (components/ui/panel-chrome.tsx),
 // layered onto Card's className rather than swapping the component itself — Card's
@@ -41,6 +43,7 @@ type FormValues = {
   check_threshold: string
   check_selector: string
   check_text: string
+  assertions: AssertionDraft[]
 }
 
 const emptyForm: FormValues = {
@@ -61,9 +64,9 @@ const emptyForm: FormValues = {
   check_threshold: '0.9',
   check_selector: '',
   check_text: '',
+  assertions: [],
 }
 
-const ANCHOR_RELATIONS = new Set(['target', 'inside', 'above', 'below', 'near'])
 const URL_CHECK_KINDS = new Set(['url', 'url_exact', 'url_must_be'])
 const EXACT_URL_CHECK_KINDS = new Set(['url_exact', 'url_must_be'])
 
@@ -83,15 +86,7 @@ function defaultsFromStep(step: StepEditorDTO): FormValues {
     (selector, index, arr) => index === 0 || Boolean(selector) || arr.length === 1,
   )
   const actionPayload = step.action_payload || {}
-  const anc = (step.anchors_signals || [])
-    .map((a) => {
-      const o = a as Record<string, string>
-      const element = String(o.element || o.value || o.text || '').trim()
-      if (!element) return ''
-      const relation = String(o.relation || '').trim().toLowerCase()
-      return `${ANCHOR_RELATIONS.has(relation) ? relation : 'near'}:${element}`
-    })
-    .filter(Boolean)
+  const anc = anchorRowsFromObjects(step.anchors_signals || [])
   return {
     intent: step.intent || step.final_intent,
     url: step.url || '',
@@ -119,28 +114,8 @@ function defaultsFromStep(step: StepEditorDTO): FormValues {
     check_threshold: String(step.check_threshold ?? 0.9),
     check_selector: String(step.check_selector || ''),
     check_text: String(step.check_text || ''),
+    assertions: (step.validation.assertions || []) as AssertionDraft[],
   }
-}
-
-function parseAnchorRows(rows: string[]): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = []
-  for (const line of rows) {
-    const t = line.trim()
-    if (!t) continue
-    const idx = t.indexOf(':')
-    if (idx === -1) {
-      out.push({ element: t, relation: 'near' })
-    } else {
-      const left = t.slice(0, idx).trim().toLowerCase()
-      const right = t.slice(idx + 1).trim()
-      if (!right) continue
-      out.push({
-        element: right,
-        relation: ANCHOR_RELATIONS.has(left) ? left : 'near',
-      })
-    }
-  }
-  return out
 }
 
 type Props = {
@@ -202,46 +177,14 @@ function DirtySync({ stepIndex }: { stepIndex: number }) {
 
 type StepValidationPanelProps = {
   step: StepEditorDTO
-  skillId: string
-  onWorkflowUpdated: (wf: WorkflowResponse) => void
-  onHistoryUpdate?: (canUndo: boolean, canRedo: boolean) => void
-  disabled: boolean
+  assertions: AssertionDraft[]
+  onChange: (next: AssertionDraft[]) => void
 }
 
 /** Shows what confirms this step actually worked, and lets a human edit that check by hand
- *  (`docs/TRD.md` §10.2a VERIFY). Saves independently of the rest of the step form — the
- *  assertion list isn't coupled to the action-specific fields above it. */
-function StepValidationPanel({ step, skillId, onWorkflowUpdated, onHistoryUpdate, disabled }: StepValidationPanelProps) {
-  const initialAssertions = (step.validation.assertions || []) as AssertionDraft[]
-  const [assertions, setAssertions] = useState<AssertionDraft[]>(initialAssertions)
-  const [dirty, setDirty] = useState(false)
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    setAssertions((step.validation.assertions || []) as AssertionDraft[])
-    setDirty(false)
-  }, [step.step_index, step.validation.assertions])
-
-  const handleChange = (next: AssertionDraft[]) => {
-    setAssertions(next)
-    setDirty(true)
-  }
-
-  const handleSave = async () => {
-    setSaving(true)
-    try {
-      const res = await patchStep(skillId, step.step_index, { validation: { assertions } }, false)
-      onWorkflowUpdated(res.workflow)
-      if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-      setDirty(false)
-      toast.success('Validation saved')
-    } catch (e) {
-      toast.error(errorMessage(e, 'Save failed'))
-    } finally {
-      setSaving(false)
-    }
-  }
-
+ *  (`docs/TRD.md` §10.2a VERIFY). Edits live in the same form state as the rest of the step —
+ *  one "Save step" action saves both, instead of a second independent save control. */
+function StepValidationPanel({ step, assertions, onChange }: StepValidationPanelProps) {
   return (
     <Card className={cn('gap-2 py-3', PANEL_CARD_CLASS)}>
       <CardHeader className="p-2.5 pb-1">
@@ -252,18 +195,17 @@ function StepValidationPanel({ step, skillId, onWorkflowUpdated, onHistoryUpdate
         <CardDescription className="text-xs">{describeWaitFor(step.validation.wait_for || {})}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 p-2.5 pt-0">
-        <AssertionEditorRows assertions={assertions} onChange={handleChange} />
-        <div className="flex justify-end pt-1">
-          <Button type="button" size="sm" disabled={disabled || !dirty || saving} onClick={handleSave}>
-            {saving ? 'Saving…' : 'Save validation'}
-          </Button>
-        </div>
+        <AssertionEditorRows assertions={assertions} onChange={onChange} />
       </CardContent>
     </Card>
   )
 }
 
-export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
+// memo: this stays mounted across all three re-target wizard phases (see InlineRetargetFlow's
+// "kept mounted" comment) and that parent re-renders on every candidate edit/reorder in the
+// Review Selectors phase — memo stops this form (react-hook-form + several child cards) from
+// re-rendering on candidate changes that don't touch any of its own props.
+export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
   function StepConfigForm({ step, skillId, onWorkflowUpdated, onHistoryUpdate, hideSelectorTools, hideSubmitButton }, ref) {
   const methods = useForm<FormValues>({ defaultValues: step ? defaultsFromStep(step) : emptyForm })
 
@@ -304,6 +246,9 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
             success_conditions: { url },
           },
         }
+        if (canEditField('validation')) {
+          patch.validation = { ...(patch.validation as Record<string, unknown>), assertions: values.assertions }
+        }
         try {
           const res = await patchStep(skillId, step.step_index, patch, false)
           onWorkflowUpdated(res.workflow)
@@ -337,6 +282,7 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
             value: String(ms),
           },
         }
+        if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
           const res = await patchStep(skillId, step.step_index, patch, false)
           onWorkflowUpdated(res.workflow)
@@ -359,6 +305,7 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
             action: 'screenshot',
           },
         }
+        if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
           const res = await patchStep(skillId, step.step_index, patch, false)
           onWorkflowUpdated(res.workflow)
@@ -390,6 +337,7 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
         else if (values.check_kind === 'snapshot') patch.check_threshold = Number(values.check_threshold)
         else if (values.check_kind === 'selector') patch.check_selector = values.check_selector
         else if (values.check_kind === 'text') patch.check_text = values.check_text
+        if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
           const res = await patchStep(skillId, step.step_index, patch, false)
           onWorkflowUpdated(res.workflow)
@@ -431,6 +379,7 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
             delta: scrollAmount,
           }
         }
+        if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
           const res = await patchStep(skillId, step.step_index, patch, false)
           onWorkflowUpdated(res.workflow)
@@ -478,6 +427,7 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
           value: values.value,
         }
       }
+      if (canEditField('validation')) patch.validation = { assertions: values.assertions }
       try {
         const res = await patchStep(skillId, step.step_index, patch, false)
         onWorkflowUpdated(res.workflow)
@@ -523,6 +473,7 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
   const anchors = useWatch({ control: methods.control, name: 'anchors' }) || ['']
   const checkKind = useWatch({ control: methods.control, name: 'check_kind' }) || 'url'
   const scrollMode = useWatch({ control: methods.control, name: 'scroll_mode' }) || 'scroll_only'
+  const assertions = useWatch({ control: methods.control, name: 'assertions' }) || []
 
   if (!step) {
     return (
@@ -547,6 +498,7 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
     !hideSelectorTools &&
     actionHasSelectors && !isScrollStep && !isNavigateStep && !isMarkerStep && !(isCheckStep && URL_CHECK_KINDS.has(checkKind))
   const frameChain = frameChainFromStep(step)
+  const assertionsInvalid = !hideSelectorTools && canEdit('validation') && hasInvalidAssertions(assertions)
 
   const onSubmit = methods.handleSubmit(async (values) => {
     try {
@@ -779,10 +731,8 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
       {!hideSelectorTools && canEdit('validation') ? (
         <StepValidationPanel
           step={step}
-          skillId={skillId}
-          onWorkflowUpdated={onWorkflowUpdated}
-          onHistoryUpdate={onHistoryUpdate}
-          disabled={methods.formState.isSubmitting}
+          assertions={assertions}
+          onChange={(next) => methods.setValue('assertions', next, { shouldDirty: true })}
         />
       ) : null}
 
@@ -902,11 +852,16 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
       </>
       ) : null}
 
+      {!isMarkerStep ? <ElementFingerprintCard fingerprint={step.fingerprint} /> : null}
+
       {!hideSubmitButton ? (
         <>
           <Separator />
-          <div className="flex items-center justify-end">
-            <Button type="submit" size="default" disabled={methods.formState.isSubmitting || isMarkerStep}>
+          <div className="flex items-center justify-end gap-2.5">
+            {assertionsInvalid ? (
+              <p className="text-destructive text-xs">Fill in the missing checks above before saving.</p>
+            ) : null}
+            <Button type="submit" size="default" disabled={methods.formState.isSubmitting || isMarkerStep || assertionsInvalid}>
               {methods.formState.isSubmitting ? 'Saving…' : 'Save step'}
             </Button>
           </div>
@@ -918,4 +873,4 @@ export const StepConfigForm = forwardRef<StepConfigFormHandle, Props>(
         </form>
       </FormProvider>
   )
-})
+}))

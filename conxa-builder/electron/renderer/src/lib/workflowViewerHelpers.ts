@@ -23,6 +23,9 @@ export const ADD_ACTION_OPTIONS = [
   { value: 'drag_drop', label: 'Drag and drop', category: 'Advanced' },
   { value: 'keyboard_shortcut', label: 'Keyboard shortcut', category: 'Advanced' },
   { value: 'upload', label: 'Upload', category: 'Advanced' },
+  { value: 'if_present', label: 'If present…', category: 'Conditional' },
+  { value: 'try_dismiss', label: 'Try dismiss', category: 'Conditional' },
+  { value: 'wait_for_one_of', label: 'Wait for one of…', category: 'Conditional' },
 ] as const
 
 export type AddActionKind = (typeof ADD_ACTION_OPTIONS)[number]['value']

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { StepEditorDTO } from '../types/workflow'
@@ -8,11 +8,15 @@ import type { AddActionKind } from '@/lib/workflowViewerHelpers'
 import { WorkflowHeader } from '@/components/workflowViewer/WorkflowHeader'
 import { WorkflowStepItem } from '@/components/workflowViewer/WorkflowStepItem'
 import { DeleteStepDialog } from '@/components/workflowViewer/DeleteStepDialog'
+import { BranchSubList } from '@/components/workflowViewer/BranchSubList'
 
 type Props = {
   steps: StepEditorDTO[]
   onReorder: (newOrder: number[]) => void
   onDelete: (index: number) => void
+  /** Human confirms a recorder-flagged optional interstitial should become a real try_dismiss
+   * branch (recording-next-steps.md Priority 2). See StepEditorDTO.optional_hint. */
+  onConfirmOptionalHint: (index: number) => void
   onAddAction: (actionKind: AddActionKind) => void
   /** Drop a recording screenshot (custom drag payload) onto a step to swap visuals and refresh anchors. */
   onDroppedRecordingScreenshot?: (stepIndex: number, eventIndex: number) => void
@@ -25,6 +29,7 @@ export function WorkflowViewer({
   steps,
   onReorder,
   onDelete,
+  onConfirmOptionalHint,
   onAddAction,
   onDroppedRecordingScreenshot,
   onClearStepVisual,
@@ -75,22 +80,25 @@ export function WorkflowViewer({
           ) : (
           <ol className="w-full space-y-1.5 p-2">
             {steps.map((step) => (
-              <WorkflowStepItem
-                key={step.id}
-                step={step}
-                isSelected={selected === step.step_index}
-                isDirty={dirty.has(step.step_index)}
-                isDragging={draggingIndex === step.step_index}
-                recordingShotDragActive={recordingShotDragActive}
-                draggingIndex={draggingIndex}
-                onSelect={setSel}
-                onDeleteRequest={setDeleteIndex}
-                onDragStart={setDraggingIndex}
-                onDragEnd={() => setDraggingIndex(null)}
-                onMove={move}
-                onDroppedRecordingScreenshot={onDroppedRecordingScreenshot}
-                onClearStepVisual={onClearStepVisual}
-              />
+              <Fragment key={step.id}>
+                <WorkflowStepItem
+                  step={step}
+                  isSelected={selected === step.step_index}
+                  isDirty={dirty.has(step.step_index)}
+                  isDragging={draggingIndex === step.step_index}
+                  recordingShotDragActive={recordingShotDragActive}
+                  draggingIndex={draggingIndex}
+                  onSelect={setSel}
+                  onDeleteRequest={setDeleteIndex}
+                  onConfirmOptionalHint={onConfirmOptionalHint}
+                  onDragStart={setDraggingIndex}
+                  onDragEnd={() => setDraggingIndex(null)}
+                  onMove={move}
+                  onDroppedRecordingScreenshot={onDroppedRecordingScreenshot}
+                  onClearStepVisual={onClearStepVisual}
+                />
+                <BranchSubList parentStepIndex={step.step_index} branchSteps={step.branch_steps} />
+              </Fragment>
             ))}
           </ol>
           )}

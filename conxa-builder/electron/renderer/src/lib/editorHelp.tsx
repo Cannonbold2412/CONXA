@@ -67,7 +67,9 @@ export const editorHelp = {
     details: (
       <p>
         Reports the outcome checks the compiler planned for this workflow (the assertions a run must
-        satisfy) plus any failures captured during a test run.
+        satisfy) plus any failures captured during a test run. Turn on &quot;Blocks step&quot; for a
+        check that must pass — the step fails if it doesn&apos;t. Checks left off are informational
+        only and never fail the step.
       </p>
     ),
   },
@@ -128,6 +130,66 @@ export const editorHelp = {
       </p>
     ),
   },
+  toolWorkflowPlan: {
+    label: "Workflow plan",
+    summary:
+      "The overall plan this skill was compiled from: its goal, what each step is meant to accomplish, and how the runtime knows the whole thing succeeded.",
+    details: (
+      <p>
+        This is read-only — it's what the compiler understood at build time, not something you
+        edit directly here. If a step's intent looks wrong, fix that step; re-approving recompiles
+        the plan alongside it.
+      </p>
+    ),
+  },
+  recoverySearchHints: {
+    label: "Search hints for recovery",
+    summary:
+      "Extra landmarks the AI fallback uses to relocate this element if every selector stops matching.",
+    details: (
+      <p>
+        Only used at the last recovery tier (describe-and-match), after every selector has
+        already failed. Format each hint as <Mono>near:Sign in</Mono> — the relation words are{" "}
+        <Mono>target</Mono>, <Mono>inside</Mono>, <Mono>above</Mono>, <Mono>below</Mono>, and{" "}
+        <Mono>near</Mono>.
+      </p>
+    ),
+  },
+  elementFingerprint: {
+    label: "Element fingerprint",
+    summary:
+      "What was actually recorded for this element — its role, visible text, labels, and position — the same data the runtime's resolver scores candidates against.",
+    details: (
+      <p>
+        Useful for debugging "why did it click the wrong thing": if the fingerprint doesn't match
+        what you'd expect for this step, the recording likely captured the wrong element.
+      </p>
+    ),
+  },
+  branchBody: {
+    label: "If present",
+    summary:
+      "The steps that run only when this condition's target is found on the page — e.g. dismissing a cookie banner that doesn't always appear.",
+    details: (
+      <p>
+        These steps run best-effort: if one of them fails, the run keeps going as if the
+        condition had never been met — it never triggers paid AI recovery and never stops the
+        skill. Keep bodies short and low-risk.
+      </p>
+    ),
+  },
+  toolDiagnostics: {
+    label: "Diagnostics",
+    summary:
+      "Technical detail meant for support and engineering, not day-to-day editing: compile telemetry and the integrity hashes behind the currently selected step.",
+    details: (
+      <p>
+        Nothing here is editable — these are internal fingerprints the compiler and runtime use to
+        detect a site redesign, not values you'd ever type in by hand. Useful when reporting an
+        issue.
+      </p>
+    ),
+  },
 
   // ── Workflow list / step editor ───────────────────────────────────────
   workflowTips: {
@@ -149,6 +211,18 @@ export const editorHelp = {
       <p>
         Each step carries a human description, the element it targets, compiled selectors, optional
         visual anchors, and any outcome checks. Edits are saved per step.
+      </p>
+    ),
+  },
+  reviewSelectors: {
+    label: "Selector candidates",
+    summary:
+      "Every way the runtime can find this element, ranked top to bottom. The top row is tried first; the rest are fallbacks if it stops matching.",
+    details: (
+      <p>
+        Drag a row (or use the up/down arrows) to reorder, click a selector to edit it by hand, or
+        add one manually. Badges show the engine that produced each selector, whether it uniquely
+        matched at compile time, and its durability — how likely it is to survive a UI change.
       </p>
     ),
   },

@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import type { StepEditorDTO } from '@/types/workflow'
 import { RECORDING_SCREENSHOT_DRAG_MIME } from '@/api/workflowApi'
-import { BoxSelect, GripVertical, Trash2 } from 'lucide-react'
+import { BoxSelect, GitBranch, GripVertical, MousePointer2, ShieldAlert, Sparkles, Trash2 } from 'lucide-react'
 import { compactStepLabel, handleRecordingScreenshotDrop, visualBboxState, type BboxState } from '@/lib/workflowViewerHelpers'
 
 type WorkflowStepItemProps = {
@@ -17,6 +17,9 @@ type WorkflowStepItemProps = {
   draggingIndex: number | null
   onSelect: (index: number) => void
   onDeleteRequest: (index: number) => void
+  /** Human confirms a recorder-flagged optional interstitial should become a real try_dismiss
+   * branch (recording-next-steps.md Priority 2). See StepEditorDTO.optional_hint. */
+  onConfirmOptionalHint: (index: number) => void
   onDragStart: (index: number) => void
   onDragEnd: () => void
   onMove: (from: number, to: number) => void
@@ -33,6 +36,7 @@ export function WorkflowStepItem({
   draggingIndex,
   onSelect,
   onDeleteRequest,
+  onConfirmOptionalHint,
   onDragStart,
   onDragEnd,
   onMove,
@@ -103,10 +107,45 @@ export function WorkflowStepItem({
         <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">
           <span className="block">{compactStepLabel(step.human_readable_description)}</span>
           {bboxState ? <VisualBboxBadge state={bboxState} /> : null}
+          {step.branch_summary ? <BranchSummaryBadge summary={step.branch_summary} /> : null}
         </span>
-        <StepBadges step={step} isDirty={isDirty} onDeleteRequest={onDeleteRequest} />
+        <StepBadges
+          step={step}
+          isDirty={isDirty}
+          onDeleteRequest={onDeleteRequest}
+          onConfirmOptionalHint={onConfirmOptionalHint}
+        />
       </div>
     </li>
+  )
+}
+
+/** "N conditional steps" badge for if_present/try_dismiss/wait_for_one_of steps — makes the
+ * (previously invisible) branch body's existence visible on the step row itself, even before
+ * expanding the nested sub-list (see BranchSubList.tsx). */
+function BranchSummaryBadge({ summary }: { summary: NonNullable<import('@/types/workflow').StepEditorDTO['branch_summary']> }) {
+  const label =
+    summary.kind === 'if_present'
+      ? `${summary.step_count} conditional step${summary.step_count === 1 ? '' : 's'}`
+      : summary.kind === 'try_dismiss'
+        ? `try dismiss · ${summary.candidates?.length ?? 0} candidate${(summary.candidates?.length ?? 0) === 1 ? '' : 's'}`
+        : `wait for one of · ${summary.options?.length ?? 0} option${(summary.options?.length ?? 0) === 1 ? '' : 's'}`
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="mt-1 inline-flex max-w-full items-center gap-1 rounded border border-violet-400/20 bg-violet-400/[0.06] px-1.5 py-0.5 text-[0.65rem] leading-none text-violet-300/90">
+          <GitBranch className="size-3 shrink-0" aria-hidden />
+          <span className="min-w-0 truncate">{label}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {summary.kind === 'if_present'
+          ? `Runs its body only if "${summary.probe}" is present on the page. Best-effort — never enters recovery.`
+          : summary.kind === 'try_dismiss'
+            ? 'Tries each candidate selector in order and dismisses the first one found.'
+            : 'Waits for one of several alternative states before continuing.'}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -133,13 +172,38 @@ function StepBadges({
   step,
   isDirty,
   onDeleteRequest,
+  onConfirmOptionalHint,
 }: {
   step: StepEditorDTO
   isDirty: boolean
   onDeleteRequest: (index: number) => void
+  onConfirmOptionalHint: (index: number) => void
 }) {
   return (
     <span className="flex shrink-0 items-start gap-1">
+      {step.optional_hint ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 gap-1 border-amber-400/25 bg-amber-400/[0.06] px-2 text-[0.65rem] leading-none text-amber-300/90 hover:bg-amber-400/[0.12]"
+              onClick={(event) => {
+                event.stopPropagation()
+                onConfirmOptionalHint(step.step_index)
+              }}
+            >
+              <Sparkles className="size-3" aria-hidden />
+              treat as optional?
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            This looked like an optional pop-up (cookie banner / dialog) during recording. Confirm
+            to convert this step into a try-dismiss branch instead of a required step.
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
       {isDirty ? (
         <Badge variant="secondary" className="text-[0.65rem]">
           edited
@@ -154,6 +218,32 @@ function StepBadges({
         <Badge variant="outline" className="text-[0.65rem]">
           intent
         </Badge>
+      ) : null}
+      {step.safety.allow_forced_action ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="destructive" className="gap-1 text-[0.65rem]">
+              <ShieldAlert className="size-3" aria-hidden />
+              forced
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            This step is allowed to force the action even when the target looks non-interactable.
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+      {step.safety.has_hover_chain ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="gap-1 text-[0.65rem]">
+              <MousePointer2 className="size-3" aria-hidden />
+              hover chain
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            This step depends on hovering other elements first before it can act.
+          </TooltipContent>
+        </Tooltip>
       ) : null}
       <Tooltip>
         <TooltipTrigger asChild>

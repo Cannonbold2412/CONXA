@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { HumanEditPoolBadge } from '@/components/EntitlementMeters'
 import type { WorkflowResponse } from '@/types/workflow'
 import {
+  confirmOptionalInterstitial,
   deleteStep,
   errorMessage,
   fetchMetrics,
@@ -22,7 +23,9 @@ import {
   undoWorkflow,
 } from '@/api/workflowApi'
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
-import { HowClaudeSeesThisPanel } from '@/components/HowClaudeSeesThisPanel'
+import { WorkflowPlanPanel } from '@/components/WorkflowPlanPanel'
+import { CompileHealthBanner } from '@/components/CompileHealthBanner'
+import { DiagnosticsPanel } from '@/components/DiagnosticsPanel'
 import { WorkflowViewer } from '@/components/WorkflowViewer'
 import { InlineRetargetFlow, type InlineRetargetFlowHandle } from '@/components/retarget/InlineRetargetFlow'
 import { SuggestionsInlinePanel } from '@/components/SuggestionsPanel'
@@ -45,7 +48,6 @@ import { cn } from '@/lib/utils'
 import {
   AlertCircle,
   BadgeCheck,
-  Bot,
   ChevronDown,
   ChevronLeft,
   Copy,
@@ -53,14 +55,16 @@ import {
   Image as ImageIcon,
   Lightbulb,
   type LucideIcon,
+  Map as MapIcon,
   Redo2,
   RefreshCw,
   SlidersHorizontal,
   Undo2,
+  Wrench,
 } from 'lucide-react'
 import type { HelpEntry } from '@/lib/editorHelp'
 
-type ToolPaneKey = 'suggestions' | 'variables' | 'screenshots' | 'agentView'
+type ToolPaneKey = 'suggestions' | 'variables' | 'screenshots' | 'workflowPlan' | 'diagnostics'
 
 const SKILL_ID_CAPTION_CLASS =
   'max-w-[12rem] truncate font-mono text-[10px] leading-none text-zinc-500 sm:max-w-[16rem]'
@@ -307,6 +311,20 @@ export function HumanEditPage() {
       })
       .catch((err: Error) => {
         toast.error(errorMessage(err, 'Could not delete step'))
+        void q.refetch()
+      })
+  }
+
+  const onConfirmOptionalHint = (index: number) => {
+    if (!skillId) return
+    confirmOptionalInterstitial(skillId, index)
+      .then((r) => {
+        onWorkflowUpdated(r.workflow)
+        if (r.can_undo !== undefined) setHistoryState(r.can_undo, r.can_redo ?? false)
+        toast.success('Step converted to an optional try-dismiss branch')
+      })
+      .catch((err) => {
+        toast.error(errorMessage(err, 'Could not confirm this step as optional'))
         void q.refetch()
       })
   }
@@ -730,10 +748,21 @@ export function HumanEditPage() {
   }[] = [
     { key: 'suggestions', label: 'Suggestions', icon: Lightbulb, iconClass: 'text-amber-300', help: editorHelp.toolSuggestions, controls: 'suggestions-modal', count: suggestionCount },
     { key: 'variables', label: 'Input variables', icon: SlidersHorizontal, iconClass: 'text-sky-300', help: editorHelp.toolVariables, controls: 'variables-modal' },
-    { key: 'screenshots', label: 'Recording screenshots', icon: ImageIcon, iconClass: 'text-fuchsia-300', help: editorHelp.toolScreenshots, controls: 'recording-screenshots-modal', count: currentStep?.screenshot?.frames?.length ?? '—' },
-    { key: 'agentView', label: 'How Claude sees this', icon: Bot, iconClass: 'text-emerald-300', help: editorHelp.toolAgentView, controls: 'agent-view-modal' },
+    { key: 'workflowPlan', label: 'Workflow plan', icon: MapIcon, iconClass: 'text-violet-300', help: editorHelp.toolWorkflowPlan, controls: 'workflow-plan-modal' },
+    { key: 'diagnostics', label: 'Diagnostics', icon: Wrench, iconClass: 'text-zinc-400', help: editorHelp.toolDiagnostics, controls: 'diagnostics-modal' },
   ]
-  const activeTool = toolPanes.find((t) => t.key === openTool) ?? null
+  // Not a top-bar tab — opened from the "Recording screenshots" button inside the Pick
+  // Element phase of the re-target wizard, but reuses the same dialog/state machinery.
+  const screenshotsTool = {
+    key: 'screenshots' as const,
+    label: 'Recording screenshots',
+    icon: ImageIcon,
+    iconClass: 'text-fuchsia-300',
+    help: editorHelp.toolScreenshots,
+    controls: 'recording-screenshots-modal',
+    count: currentStep?.screenshot?.frames?.length ?? '—',
+  }
+  const activeTool = openTool === 'screenshots' ? screenshotsTool : (toolPanes.find((t) => t.key === openTool) ?? null)
 
   return (
     <TooltipProvider>
@@ -780,14 +809,14 @@ export function HumanEditPage() {
         ) : null
       }
       actions={
-        <div className="flex w-full items-center gap-2.5">
+        <div className="flex w-full items-center gap-3">
           {fromPath && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-9 border-white/12 bg-white/[0.045] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                  className="h-9 shrink-0 border-white/12 bg-white/[0.045] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                   onClick={() => navigate(fromPath)}
                 >
                   <ChevronLeft className="size-3.5" />
@@ -797,18 +826,10 @@ export function HumanEditPage() {
               <TooltipContent>Back to plugin</TooltipContent>
             </Tooltip>
           )}
-          <div className="ml-auto flex items-center gap-2.5">
-          <HumanEditPoolBadge className="h-9" />
-          {dirtyCount > 0 && (
-            <span
-              className="hidden h-9 items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2.5 text-[0.7rem] font-medium text-amber-200 sm:inline-flex"
-              role="status"
-              aria-live="polite"
-            >
-              <span className="size-1.5 rounded-full bg-amber-300" aria-hidden />
-              {dirtyCount} unsaved
-            </span>
-          )}
+          {/* Inspector tool-launchers live on the LEFT (secondary "views"); the primary
+              commit cluster (pool / unsaved / undo-redo / Approve) is pinned RIGHT via
+              ml-auto. This spreads the row across its full width instead of jamming
+              everything right, so the tools sit at their natural width with no scroll. */}
           <div className="flex h-9 items-center overflow-hidden rounded-md border border-white/12 bg-white/[0.045] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
             {toolPanes.map((tool, i) => {
               const Icon = tool.icon
@@ -851,6 +872,18 @@ export function HumanEditPage() {
               )
             })}
           </div>
+          <div className="ml-auto flex shrink-0 items-center gap-2.5">
+          <HumanEditPoolBadge className="h-9" />
+          {dirtyCount > 0 && (
+            <span
+              className="hidden h-9 items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2.5 text-[0.7rem] font-medium text-amber-200 sm:inline-flex"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="size-1.5 rounded-full bg-amber-300" aria-hidden />
+              {dirtyCount} unsaved
+            </span>
+          )}
           <div className="flex h-9 items-center overflow-hidden rounded-md border border-white/12 bg-white/[0.045]">
             <Tooltip>
               <TooltipTrigger asChild>
@@ -907,6 +940,7 @@ export function HumanEditPage() {
       }
       className="py-3.5"
     />
+    <CompileHealthBanner compileHealth={wf.compile_health} onOpenDiagnostics={() => setOpenTool('diagnostics')} />
     <div
       ref={splitPaneRef}
         className="relative grid flex-1 min-h-0 w-full min-w-0 grid-cols-1 overflow-hidden border-t border-white/8 md:min-h-0 md:[grid-template-columns:var(--workflow-pane-width)_minmax(0,1fr)] md:items-stretch"
@@ -916,6 +950,7 @@ export function HumanEditPage() {
           steps={wf.steps}
           onReorder={onReorder}
           onDelete={onDelete}
+          onConfirmOptionalHint={onConfirmOptionalHint}
           onAddAction={(actionKind) => void onAddAction(actionKind)}
           onDroppedRecordingScreenshot={(stepIndex, eventIndex) =>
             void onDroppedRecordingScreenshot(stepIndex, eventIndex)
@@ -942,6 +977,8 @@ export function HumanEditPage() {
           skillId={skillId}
           onWorkflowUpdated={onWorkflowUpdated}
           onHistoryUpdate={onHistoryUpdate}
+          onOpenScreenshots={() => setOpenTool('screenshots')}
+          screenshotCount={screenshotsTool.count}
         />
       </div>
     </div>
@@ -956,12 +993,16 @@ export function HumanEditPage() {
     >
       <DialogContent
         className={cn(
-          'anim-pop flex h-[min(85vh,880px)] max-w-none flex-col gap-0 overflow-hidden p-0',
+          // sm:max-w-none is required: the base DialogContent sets sm:max-w-sm (384px),
+          // and an unprefixed max-w-none does NOT override a sm:-prefixed class (different
+          // tailwind-merge scope), so without this every tool dialog was silently clamped
+          // to 384px and its content overflowed/clipped instead of using the width below.
+          'anim-pop flex h-[min(85vh,880px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none',
           activeTool?.key === 'screenshots'
             ? 'w-[min(1500px,96vw)]'
             : activeTool?.key === 'variables'
               ? 'w-[min(1400px,96vw)]'
-              : 'w-[min(1200px,95vw)]',
+              : 'w-[min(1100px,94vw)]',
         )}
         id={activeTool?.controls}
       >
@@ -1021,7 +1062,8 @@ export function HumanEditPage() {
                     }
                   />
                 )}
-                {activeTool.key === 'agentView' && <HowClaudeSeesThisPanel workflow={wf} />}
+                {activeTool.key === 'workflowPlan' && <WorkflowPlanPanel workflow={wf} />}
+                {activeTool.key === 'diagnostics' && <DiagnosticsPanel workflow={wf} currentStep={currentStep} />}
               </div>
             </ScrollArea>
           </>

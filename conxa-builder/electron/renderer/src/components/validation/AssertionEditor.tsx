@@ -5,17 +5,41 @@ import { Label } from '@/components/ui/label'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
 
-/** Runtime-recognized assertion types (see runtime/run.js verifyStep). */
-export const ASSERTION_TYPES = [
-  { value: 'url_changed', label: 'URL changes' },
-  { value: 'url_pattern', label: 'URL matches pattern' },
-  { value: 'selector_present', label: 'Element appears' },
-  { value: 'selector_absent', label: 'Element disappears' },
-  { value: 'text_present', label: 'Text appears' },
-  { value: 'text_absent', label: 'Text disappears' },
-  { value: 'value_equals', label: 'Field holds value' },
-  { value: 'state_changed', label: 'Page changed (no-op guard)' },
-] as const
+/** Runtime-recognized assertion types (see runtime/run.js verifyStep), grouped by what they
+ *  observe. Groups are rendered as <optgroup>s in the order declared here. */
+export const ASSERTION_TYPE_GROUPS: { label: string; options: { value: string; label: string }[] }[] = [
+  {
+    label: 'URL',
+    options: [
+      { value: 'url_changed', label: 'URL changes' },
+      { value: 'url_pattern', label: 'URL matches pattern' },
+    ],
+  },
+  {
+    label: 'Element on page',
+    options: [
+      { value: 'selector_present', label: 'Element appears' },
+      { value: 'selector_absent', label: 'Element disappears' },
+    ],
+  },
+  {
+    label: 'Text on page',
+    options: [
+      { value: 'text_present', label: 'Text appears' },
+      { value: 'text_absent', label: 'Text disappears' },
+    ],
+  },
+  {
+    label: 'Field value',
+    options: [{ value: 'value_equals', label: 'Field holds value' }],
+  },
+  {
+    label: 'Page state',
+    options: [{ value: 'state_changed', label: 'Page changed (no-op guard)' }],
+  },
+]
+
+export const ASSERTION_TYPES = ASSERTION_TYPE_GROUPS.flatMap((g) => g.options)
 
 export const ASSERTION_TYPE_HELP: Record<string, string> = {
   url_changed: 'The page address must differ from what it was before the action.',
@@ -95,6 +119,18 @@ export function isAssertionRequired(a: Record<string, unknown>): boolean {
   return a.required !== false
 }
 
+/** A check with a blank target (or blank expected value, for value_equals) never verifies
+ *  anything at runtime — it silently no-ops. state_changed is the only type with no target. */
+export function isAssertionValid(a: AssertionDraft): boolean {
+  if (a.type !== 'state_changed' && !(a.target ?? '').trim()) return false
+  if (a.type === 'value_equals' && !(a.expected ?? '').trim()) return false
+  return true
+}
+
+export function hasInvalidAssertions(assertions: AssertionDraft[]): boolean {
+  return assertions.some((a) => !isAssertionValid(a))
+}
+
 type RowsProps = {
   assertions: AssertionDraft[]
   onChange: (next: AssertionDraft[]) => void
@@ -117,15 +153,24 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
 
   return (
     <div className="space-y-2">
+      <p className="text-muted-foreground text-xs leading-snug">
+        Turn on <span className="text-foreground font-medium">Blocks step</span> for a check that must
+        pass — the step fails if it doesn&apos;t. Checks left off are informational only and never fail
+        the step.
+      </p>
+
       {!hasRequired ? (
         <p className="border-status-warn/30 bg-status-warn/10 text-status-warn rounded-md border px-2.5 py-1.5 text-xs">
-          No enforced check — this step will pass even if the action had no effect. Mark one check
-          &quot;Required&quot; or add one below.
+          No check is set to block — this step will pass even if the action had no effect. Turn on
+          &quot;Blocks step&quot; for one check, or add one below.
         </p>
       ) : null}
 
       <ul className="space-y-2.5">
-        {assertions.map((a, i) => (
+        {assertions.map((a, i) => {
+          const missingTarget = a.type !== 'state_changed' && !(a.target ?? '').trim()
+          const missingExpected = a.type === 'value_equals' && !(a.expected ?? '').trim()
+          return (
           <li key={i} className="border-border/50 bg-muted/15 hover:border-border rounded-lg border p-3 transition-colors">
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-start gap-2">
@@ -133,7 +178,7 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
                   {i + 1}
                 </span>
                 <p className={cn('text-sm', isAssertionRequired(a) ? 'text-zinc-100' : 'text-zinc-400')}>
-                  {isAssertionRequired(a) ? '' : '(optional) '}
+                  {isAssertionRequired(a) ? '' : '(informational) '}
                   {describeAssertion(a as Record<string, unknown>)}
                 </p>
               </div>
@@ -144,17 +189,24 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
             <div className="mt-2.5 space-y-2.5 pl-7">
               <div className="flex flex-wrap items-end gap-2.5">
                 <div className="w-full space-y-1 sm:w-44">
-                  <Label className="text-foreground text-xs">Check</Label>
+                  <Label className="text-foreground text-xs" htmlFor={`assertion-type-${i}`}>
+                    Check
+                  </Label>
                   <select
+                    id={`assertion-type-${i}`}
                     className={cn(fieldSelectClass, 'h-8 px-2 text-xs')}
                     value={a.type}
-                    title={ASSERTION_TYPE_HELP[a.type] ?? ''}
+                    aria-describedby={`assertion-type-help-${i}`}
                     onChange={(e) => updateRow(i, { type: e.target.value })}
                   >
-                    {ASSERTION_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}
-                      </option>
+                    {ASSERTION_TYPE_GROUPS.map((g) => (
+                      <optgroup key={g.label} label={g.label}>
+                        {g.options.map((t) => (
+                          <option key={t.value} value={t.value}>
+                            {t.label}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 </div>
@@ -162,8 +214,9 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
                   <div className="min-w-40 flex-1 space-y-1">
                     <Label className="text-foreground text-xs">{TARGET_LABEL[a.type] ?? 'Target'}</Label>
                     <Input
-                      className="h-8 text-xs"
+                      className={cn('h-8 text-xs', missingTarget && 'border-destructive focus-visible:ring-destructive/40')}
                       value={a.target ?? ''}
+                      aria-invalid={missingTarget}
                       onChange={(e) => updateRow(i, { target: e.target.value })}
                     />
                   </div>
@@ -181,22 +234,36 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
                 </div>
                 <label className="flex shrink-0 items-center gap-1.5 pb-1.5 text-xs text-zinc-300">
                   <Checkbox checked={isAssertionRequired(a)} onCheckedChange={(checked) => updateRow(i, { required: Boolean(checked) })} />
-                  Required
+                  Blocks step
                 </label>
               </div>
+              <p id={`assertion-type-help-${i}`} className="text-muted-foreground text-xs leading-snug">
+                {ASSERTION_TYPE_HELP[a.type] ?? ''}
+              </p>
               {a.type === 'value_equals' ? (
                 <div className="max-w-xs space-y-1">
                   <Label className="text-foreground text-xs">Expected value</Label>
                   <Input
-                    className="h-8 text-xs"
+                    className={cn('h-8 text-xs', missingExpected && 'border-destructive focus-visible:ring-destructive/40')}
                     value={a.expected ?? ''}
+                    aria-invalid={missingExpected}
                     onChange={(e) => updateRow(i, { expected: e.target.value })}
                   />
                 </div>
               ) : null}
+              {missingTarget || missingExpected ? (
+                <p className="text-destructive text-xs">
+                  {missingTarget && missingExpected
+                    ? 'Add a target and an expected value — an empty check never verifies anything.'
+                    : missingTarget
+                      ? 'Add a target for this check — an empty check never verifies anything.'
+                      : 'Add an expected value — this check needs something to compare against.'}
+                </p>
+              ) : null}
             </div>
           </li>
-        ))}
+          )
+        })}
       </ul>
 
       <Button

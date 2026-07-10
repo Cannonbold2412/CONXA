@@ -265,8 +265,12 @@ export function patchStep(
   stepIndex: number,
   patch: Record<string, unknown>,
   assistLlm = false,
+  /** Addresses a nested branch-body step (e.g. "branch.steps[1]") instead of the top-level step
+   * at stepIndex — see cmd_patch_step's `path` parameter (handlers/workflow_editor.py). Omit for
+   * ordinary top-level step patches. */
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('patch_step', { skill_id: skillId, step_index: stepIndex, patch, assist_llm: assistLlm })
+  return cmd('patch_step', { skill_id: skillId, step_index: stepIndex, patch, assist_llm: assistLlm, path })
 }
 
 export function patchSkillInputs(
@@ -308,6 +312,43 @@ export function postInsertStep(
 
 export function deleteStep(skillId: string, stepIndex: number): Promise<WorkflowStepMutationResponse> {
   return cmd('delete_step', { skill_id: skillId, step_index: stepIndex })
+}
+
+/** Structural mutations scoped to an if_present step's nested body
+ * (`steps[stepIndex]["branch"]["steps"]`) — mirror postInsertStep/deleteStep/postReorder but
+ * addressed by the parent step's index. See BranchBodyEditor.tsx. */
+export function postInsertBranchStep(
+  skillId: string,
+  stepIndex: number,
+  body: { action_kind: string; insert_after?: number | null },
+): Promise<WorkflowStepMutationResponse> {
+  return cmd('insert_branch_step', { skill_id: skillId, step_index: stepIndex, ...body })
+}
+
+export function deleteBranchStep(
+  skillId: string,
+  stepIndex: number,
+  nestedIndex: number,
+): Promise<WorkflowStepMutationResponse> {
+  return cmd('delete_branch_step', { skill_id: skillId, step_index: stepIndex, nested_index: nestedIndex })
+}
+
+export function postReorderBranchSteps(
+  skillId: string,
+  stepIndex: number,
+  newOrder: number[],
+): Promise<WorkflowStepMutationResponse> {
+  return cmd('reorder_branch_steps', { skill_id: skillId, step_index: stepIndex, new_order: newOrder })
+}
+
+/** Human confirms a recorder-flagged optional interstitial (recording-next-steps.md Priority 2)
+ * should be treated as one — converts the step into a real try_dismiss branch. See
+ * StepEditorDTO.optional_hint and cmd_confirm_optional_interstitial. */
+export function confirmOptionalInterstitial(
+  skillId: string,
+  stepIndex: number,
+): Promise<WorkflowStepMutationResponse> {
+  return cmd('confirm_optional_interstitial', { skill_id: skillId, step_index: stepIndex })
 }
 
 export function undoWorkflow(skillId: string): Promise<WorkflowUndoRedoResponse> {
