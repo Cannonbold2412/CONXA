@@ -480,20 +480,53 @@ def _build_assertions(
     wf_timeout = int(wf.get("timeout") or 5000)
     primary_selector = str(target.get("primary_selector") or "")
 
-    # Text entry / selection: the enforced post-condition is that the field actually holds the
-    # value we typed/selected — this is the action's own direct effect, independent of wait_for.
-    raw_value = (ev.get("action") or {}).get("value")
-    is_key_event = isinstance(raw_value, str) and raw_value.strip().startswith("{")
-    if action in {"fill", "type", "select", "select_option"} and primary_selector and value and not is_key_event:
+    # Post-condition distillation (recording-next-steps.md Priority 1): the recorder already
+    # classified the observed delta in-page (bridge.js::buildPostCondition). Prefer that specific
+    # evidence for the enforced assertion over the generic wait_for/success_conditions inference
+    # below — it is captured live against the running page, not reconstructed after the fact.
+    post_condition = ev.get("post_condition") if isinstance(ev.get("post_condition"), dict) else {}
+    classified_effect = str(post_condition.get("classified_effect") or "")
+    value_readback = post_condition.get("value_readback")
+    dialog_signal = post_condition.get("dialog_signal")
+
+    if classified_effect == "dialog_opened" and dialog_signal:
         assertions.append(Assertion(
-            type="value_equals",
-            target=primary_selector,
-            expected=str(value),
+            type="selector_present",
+            target=str(dialog_signal),
             timeout_ms=wf_timeout,
             required=True,
         ))
 
-    required_assigned = bool(assertions)  # value_equals already claimed the enforced slot
+    # Text entry / selection: the enforced post-condition is that the field actually holds the
+    # value we typed/selected — this is the action's own direct effect, independent of wait_for.
+    # Prefer the live readback (catches framework normalization/combobox commits the recorded
+    # intent value wouldn't show) over the recorded value; redacted/absent readback falls back.
+    raw_value = (ev.get("action") or {}).get("value")
+    is_key_event = isinstance(raw_value, str) and raw_value.strip().startswith("{")
+    effective_value = value
+    if (
+        classified_effect == "value_set"
+        and isinstance(value_readback, str)
+        and value_readback
+        and value_readback != "{{REDACTED}}"
+    ):
+        effective_value = value_readback
+    if (
+        not assertions
+        and action in {"fill", "type", "select", "select_option"}
+        and primary_selector
+        and effective_value
+        and not is_key_event
+    ):
+        assertions.append(Assertion(
+            type="value_equals",
+            target=primary_selector,
+            expected=str(effective_value),
+            timeout_ms=wf_timeout,
+            required=True,
+        ))
+
+    required_assigned = bool(assertions)  # dialog/value_equals already claimed the enforced slot
 
     # Primary wait_for assertion — becomes the enforced post-condition for actions that didn't
     # already claim one above (navigation / commit / destructive clicks with DOM evidence).
@@ -1020,6 +1053,14 @@ def _build_step(
             assertions=assertions,
         )
     snapshot = ev.get("snapshot") or {}
+    # Conditional-state observation (Priority 2): carry the recorder's optional-interstitial hint
+    # onto the step verbatim, advisory only — it does not change compiled behavior (the step
+    # stays a normal required linear step; see _build_assertions above, which never reads this).
+    # Only a human confirming in Human Edit (workflow_mutations.confirm_optional_interstitial)
+    # turns it into an actual `branch` — see CLAUDE.md Key Invariants.
+    optional_hint = None
+    if ev.get("optionality") == "stochastic" and isinstance(ev.get("branch_hint"), dict):
+        optional_hint = ev["branch_hint"]
     step = SkillStep(
         action=action_payload,
         intent=intent,
@@ -1036,6 +1077,7 @@ def _build_step(
         decision_policy=DecisionPolicy(),
         snapshot_ref=str(snapshot.get("ref") or ""),
         snapshot_dom_hash=str(snapshot.get("dom_hash") or ""),
+        optional_hint=optional_hint,
     )
     _compile_log(
         "compile_step",

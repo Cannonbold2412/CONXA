@@ -683,10 +683,13 @@
     return "interact";
   }
 
-  // DOM diff: lightweight snapshot of interactive element signatures for post-action comparison
-  function interactiveSignature() {
+  // DOM diff: lightweight snapshot of interactive element signatures for post-action comparison.
+  // `root` scopes the query (defaults to the whole document) — used by conditional-state
+  // detection below to fingerprint just the descendants of one container.
+  function interactiveSignature(root) {
     const sels = 'button,a[href],input:not([type="hidden"]),select,textarea,[role="button"],[role="link"],[data-testid],[data-test-id]';
-    const els = Array.from(document.querySelectorAll(sels)).slice(0, 120);
+    const scope = root || document;
+    const els = Array.from(scope.querySelectorAll(sels)).slice(0, 120);
     return els.map(el => {
       const tag = el.tagName.toLowerCase();
       const tid = el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "";
@@ -738,6 +741,12 @@
     const anchors = pickAnchors(el);
     const page = { url: location.href, title: document.title || "" };
     const before = pageFingerprint();
+    // Conditional-state observation (recording-next-steps.md Priority 2): does this action's
+    // target sit inside an optional interstitial (dialog / cookie-consent banner)? Observed only
+    // — the recorder never probes for these, it just flags what it saw. Human-gated in Studio:
+    // this never changes compiled behavior on its own (see build.py), only surfaces a suggestion.
+    let branchHint = null;
+    try { branchHint = buildBranchHint(el); } catch (_e) {}
     // Phase 2 signals (compile-time LLM input). Failures fall back to empty defaults.
     let ancestorsChain = [];
     let surroundingText = "";
@@ -772,7 +781,17 @@
         scroll_position,
       },
       page,
-      state_probe: { before, dom_before: interactiveSignature() },
+      optionality: branchHint ? "stochastic" : null,
+      branch_hint: branchHint,
+      // Evidence for post-condition classification at finalize (finalizeStateWithAfter) — never
+      // serialized: state_probe (including the raw `el` ref) is deleted before report().
+      state_probe: {
+        before,
+        dom_before: interactiveSignature(),
+        el,
+        dialog_before: !!_queryOpenDialog(),
+        expanded_before: el.getAttribute ? el.getAttribute("aria-expanded") : null,
+      },
       // Phase 2: compile-time signals for LLM selector generation.
       ancestors: ancestorsChain,
       surrounding_text: surroundingText,
@@ -807,6 +826,19 @@
       // DOM diff: elements added/removed since the action fired
       dom_diff: _computeDomDiff(domBefore, domAfter),
     };
+    // Feed the recent-appearance ring buffer (Priority 2) — a second consumer of this same
+    // dom_diff, used by the *next* action's detectOptionalContainer to tell "just appeared" from
+    // "was always there".
+    _rememberDomDiffAdded(payload.state_change.dom_diff);
+    // Post-condition distillation (recording-next-steps.md Priority 1): classify the delta we
+    // already captured above into a small structured signal the compiler can turn into a
+    // *specific* assertion (dialog opened / value committed / navigated) instead of a generic
+    // state-change check. Plain DOM reads only — no LLM, no new capture pass.
+    try {
+      payload.post_condition = buildPostCondition(payload, payload.state_probe);
+    } catch (_e) {
+      payload.post_condition = null;
+    }
     delete payload.state_probe;
     return report(payload);
   }
@@ -819,6 +851,150 @@
     const removed = Array.from(beforeSet).filter(l => !afterSet.has(l)).slice(0, 20);
     if (!added.length && !removed.length) return null;
     return { added, removed };
+  }
+
+  function _queryOpenDialog() {
+    try {
+      return document.querySelector('[role="dialog"],[aria-modal="true"]');
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  // Action kinds whose direct effect is "the field now holds a committed value" — the enforced
+  // post-condition for these is what the field reads back as, not the generic DOM delta.
+  const _VALUE_SET_ACTIONS = ["type", "fill", "select", "select_option", "set_checkbox", "set_radio", "date_pick"];
+
+  /** Stable, Playwright-usable selector for a dialog/interstitial container (id > stable attrs >
+   * role > full CSS path) — feeds the compiler's selector_present assertion. */
+  function buildDialogSignal(dialogEl) {
+    if (!dialogEl || dialogEl.nodeType !== 1) return null;
+    if (dialogEl.id) return "#" + cssEscapeIdent(dialogEl.id);
+    const stable = buildStableSelector(dialogEl);
+    if (stable) return stable;
+    const role = dialogEl.getAttribute("role") || (dialogEl.getAttribute("aria-modal") === "true" ? "dialog" : null);
+    if (role) return `[role="${role}"]`;
+    return buildCssPath(dialogEl) || null;
+  }
+
+  /** Classify the already-captured before/after evidence into one small structured signal.
+   * Priority order (single classified_effect per event, most specific first): navigation >
+   * dialog open/close > aria-expanded flip > value commit > generic content change > none. */
+  function buildPostCondition(payload, probe) {
+    const actionKind = payload.action && payload.action.action;
+    const el = probe && probe.el;
+    const beforeUrl = (payload.page && payload.page.url) || "";
+    const afterUrl = location.href;
+
+    let classified_effect = "none";
+    let value_readback = null;
+    let url_delta = null;
+    let dialog_signal = null;
+
+    if (afterUrl !== beforeUrl) {
+      classified_effect = "navigation";
+      url_delta = { before: beforeUrl, after: afterUrl };
+    } else {
+      const dialogNow = _queryOpenDialog();
+      const dialogWasOpen = !!(probe && probe.dialog_before);
+      if (!!dialogNow !== dialogWasOpen) {
+        classified_effect = dialogNow ? "dialog_opened" : "dialog_closed";
+        if (dialogNow) {
+          try { dialog_signal = buildDialogSignal(dialogNow); } catch (_e) {}
+        }
+      } else if (
+        el && el.getAttribute && probe &&
+        probe.expanded_before !== el.getAttribute("aria-expanded")
+      ) {
+        classified_effect = "expansion";
+      } else if (_VALUE_SET_ACTIONS.indexOf(actionKind) >= 0) {
+        classified_effect = "value_set";
+        if (el) {
+          try {
+            value_readback = isSensitiveEditable(el) ? "{{REDACTED}}" : readEditableValue(el);
+          } catch (_e) {}
+        }
+      } else if (payload.state_change && payload.state_change.dom_diff) {
+        classified_effect = "content_change";
+      }
+    }
+
+    return { classified_effect, value_readback, url_delta, dialog_signal };
+  }
+
+  // ─── Conditional-state observation (recording-next-steps.md Priority 2) ───────────────────
+  // Ring buffer of recently-added interactive-element signatures (fed by P1's dom_diff.added,
+  // one entry per finalized action) — lets a later action's container detection distinguish
+  // "this banner just appeared" from "this banner was always on the page".
+  const _RECENT_ADDED_MAX = 5;
+  let _recentAddedSets = [];
+
+  function _rememberDomDiffAdded(domDiff) {
+    if (!domDiff || !domDiff.added || !domDiff.added.length) return;
+    _recentAddedSets.push(new Set(domDiff.added));
+    if (_recentAddedSets.length > _RECENT_ADDED_MAX) _recentAddedSets.shift();
+  }
+
+  // true = confirmed recently added; false = ring buffer had data but no overlap; null =
+  // unconfirmable (empty buffer, e.g. first action of the session, or container has no
+  // interactive descendants to fingerprint) — callers treat null like true (harmless to stamp).
+  function _containerAppearedRecently(containerEl) {
+    if (!_recentAddedSets.length) return null;
+    let sig = "";
+    try { sig = interactiveSignature(containerEl); } catch (_e) { return null; }
+    const lines = sig.split("\n").filter(Boolean);
+    if (!lines.length) return null;
+    for (const set of _recentAddedSets) {
+      for (const line of lines) {
+        if (set.has(line)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Small, legible heuristic list — real-world consent/banner tooling id/class tokens.
+  const _OPTIONAL_BANNER_TOKENS = /\b(cookie|consent|gdpr|onetrust|truste|banner)\b/i;
+
+  function _optionalContainerStrength(node) {
+    if (!node || node.nodeType !== 1 || !node.getAttribute) return null;
+    const role = (node.getAttribute("role") || "").toLowerCase();
+    const ariaModal = (node.getAttribute("aria-modal") || "").toLowerCase();
+    if (role === "dialog" || ariaModal === "true") return "dialog";
+    const haystack = `${node.id || ""} ${node.className || ""}`.toLowerCase();
+    if (_OPTIONAL_BANNER_TOKENS.test(haystack)) return "banner";
+    return null;
+  }
+
+  /** Walk up from el (bounded) looking for a dialog/consent-banner container. Returns
+   * {containerEl, container_signal, strength} or null. Observation only — never probes,
+   * never clicks anything; just reports what the human's own action happened to be inside of. */
+  function detectOptionalContainer(el) {
+    let cur = el;
+    for (let depth = 0; depth < 10 && cur; depth++) {
+      const strength = _optionalContainerStrength(cur);
+      if (strength) {
+        return { containerEl: cur, container_signal: buildDialogSignal(cur), strength };
+      }
+      const tag = cur.tagName ? cur.tagName.toLowerCase() : "";
+      if (tag === "body" || tag === "html") break;
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  /** {kind: "try_dismiss", container_signal} when the target sits inside an optional
+   * interstitial, else null. `role=dialog`/`aria-modal` is high-confidence on its own; a plain
+   * id/class banner-token match is confirmed against the recent-appearance ring buffer when
+   * there's data to check against — unconfirmable or confirmed cases still stamp (false
+   * positives are harmless: an unconfirmed hint compiles to a required step, exactly as today,
+   * until a human confirms it in Human Edit — see build.py). */
+  function buildBranchHint(el) {
+    const found = detectOptionalContainer(el);
+    if (!found) return null;
+    if (found.strength === "banner" && _containerAppearedRecently(found.containerEl) === false) {
+      return null;
+    }
+    return { kind: "try_dismiss", container_signal: found.container_signal };
   }
 
   let inputTimer = null;

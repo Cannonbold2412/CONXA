@@ -102,3 +102,54 @@ def test_recorded_event_with_valid_aria_validates():
     from conxa_core.models.events import RecordedEvent
     event = RecordedEvent.model_validate(_make_payload(aria_value='[aria-label="Submit"]'))
     assert event.selectors.aria == '[aria-label="Submit"]'
+
+
+# ---------------------------------------------------------------------------
+# recording-next-steps.md Priority 1 (post_condition) / Priority 2 (optionality/branch_hint) —
+# both are optional, bridge.js-emitted fields. A recording made before either existed must still
+# validate (read-new-fallback-old), and a recording carrying them must round-trip untouched.
+# ---------------------------------------------------------------------------
+
+def test_recorded_event_without_post_condition_or_optionality_still_validates():
+    """Old recordings (made before bridge.js emitted these fields) have neither key at all."""
+    from conxa_core.models.events import RecordedEvent
+    event = RecordedEvent.model_validate(_make_payload())
+    assert event.post_condition is None
+    assert event.optionality is None
+    assert event.branch_hint is None
+
+
+def test_recorded_event_post_condition_survives_validation():
+    from conxa_core.models.events import RecordedEvent
+    payload = _make_payload()
+    payload["post_condition"] = {
+        "classified_effect": "dialog_opened",
+        "value_readback": None,
+        "url_delta": None,
+        "dialog_signal": '[role="dialog"]',
+    }
+    event = RecordedEvent.model_validate(payload)
+    assert event.post_condition.classified_effect == "dialog_opened"
+    assert event.post_condition.dialog_signal == '[role="dialog"]'
+
+
+def test_recorded_event_optionality_and_branch_hint_survive_validation():
+    """The recorder-observed hint that later drives Human Edit's "treat as optional?" affordance
+    (see StepEditorDTO.optional_hint / confirm_optional_interstitial) must round-trip verbatim."""
+    from conxa_core.models.events import RecordedEvent
+    payload = _make_payload()
+    payload["optionality"] = "stochastic"
+    payload["branch_hint"] = {"kind": "try_dismiss", "container_signal": ".cookie-banner"}
+    event = RecordedEvent.model_validate(payload)
+    assert event.optionality == "stochastic"
+    assert event.branch_hint == {"kind": "try_dismiss", "container_signal": ".cookie-banner"}
+
+
+def test_recorded_event_state_change_dom_diff_survives_validation():
+    """dom_diff was computed by bridge.js on every action but silently dropped by the model —
+    Priority 1 stops dropping it so the compiler can use it as a content-change fallback."""
+    from conxa_core.models.events import RecordedEvent
+    payload = _make_payload()
+    payload["state_change"] = {"before": "a", "after": "b", "dom_diff": {"added": ["x"], "removed": []}}
+    event = RecordedEvent.model_validate(payload)
+    assert event.state_change.dom_diff == {"added": ["x"], "removed": []}

@@ -234,6 +234,50 @@ def test_assertions_value_equals_skipped_for_keyboard_event():
     assert not any(a.type == "value_equals" for a in assertions)
 
 
+def test_assertions_dialog_opened_from_post_condition():
+    # Recorder classified the click's effect as a dialog opening (Priority 1 distillation) — the
+    # enforced assertion should target the recorded dialog_signal, not a generic state_changed.
+    ev = _make_ev(inner_text="Add to cart")
+    ev["action"]["action"] = "click"
+    ev["post_condition"] = {"classified_effect": "dialog_opened", "dialog_signal": '[role="dialog"]'}
+    validation = _make_validation(wait_for={"type": "none"})
+    assertions = _build_assertions(ev, validation, {}, {})
+    assert len(assertions) == 1
+    assertion = assertions[0]
+    assert assertion.type == "selector_present"
+    assert assertion.target == '[role="dialog"]'
+    assert assertion.required is True
+
+
+def test_assertions_value_equals_prefers_readback_over_recorded_value():
+    # The committed value read back from the DOM (post-normalization by the page's own JS) wins
+    # over the recorded intent value when both are present.
+    ev = _make_ev()
+    ev["action"]["action"] = "fill"
+    ev["action"]["value"] = "alice"
+    ev["post_condition"] = {"classified_effect": "value_set", "value_readback": "alice@example.com"}
+    target = {"primary_selector": "#email"}
+    assertions = _build_assertions(ev, _make_validation(), {}, target, "alice")
+    assertion = next(a for a in assertions if a.type == "value_equals")
+    assert assertion.expected == "alice@example.com"
+
+
+def test_assertions_value_equals_ignores_redacted_readback():
+    # A password field's readback is always "{{REDACTED}}" — never trust it as the expected
+    # value. In practice the recorded value is redacted the same way, which the existing
+    # keyboard-event guard already catches (both forms start with "{"), so no value_equals is
+    # synthesized for a redacted field at all — asserting against a literal "{{REDACTED}}" string
+    # would never verify anything real. This is the redaction guarantee: no readback leak either
+    # way.
+    ev = _make_ev()
+    ev["action"]["action"] = "fill"
+    ev["action"]["value"] = "{{REDACTED}}"
+    ev["post_condition"] = {"classified_effect": "value_set", "value_readback": "{{REDACTED}}"}
+    target = {"primary_selector": "#password"}
+    assertions = _build_assertions(ev, _make_validation(), {}, target, "{{REDACTED}}")
+    assert not any(a.type == "value_equals" for a in assertions)
+
+
 def test_assertions_advisory_from_success_conditions():
     # A generic (non-commit, non-destructive) click with incidental DOM evidence — success
     # conditions stay advisory since the click isn't classified as consequential.
