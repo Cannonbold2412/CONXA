@@ -42,6 +42,17 @@ The `docs/` folder is the authoritative source of truth for this codebase. Befor
 
 ---
 
+## Design Context
+
+Two UI surfaces each carry their own `PRODUCT.md` (strategic: register, users, positioning, brand personality) and `DESIGN.md` (visual: colors, typography, components) for the `/impeccable` design skill. Read the relevant pair before any non-trivial UI change in that app.
+
+| Surface | Register / Platform | Files |
+|---|---|---|
+| Cloud dashboard + marketing site | brand / web | [`conxa-cloud/frontend/PRODUCT.md`](conxa-cloud/frontend/PRODUCT.md), [`conxa-cloud/frontend/DESIGN.md`](conxa-cloud/frontend/DESIGN.md) |
+| Build Studio (Electron renderer) | product / web | [`conxa-builder/electron/renderer/PRODUCT.md`](conxa-builder/electron/renderer/PRODUCT.md), [`conxa-builder/electron/renderer/DESIGN.md`](conxa-builder/electron/renderer/DESIGN.md) |
+
+---
+
 ## Working Principles
 
 1. **Think before coding.** State assumptions. If multiple interpretations exist, surface them — don't silently pick one. If a simpler approach exists, call it out. If something is unclear, stop and ask.
@@ -349,7 +360,7 @@ When in doubt, update the doc. A stale sentence in the TRD costs future engineer
 
 ### FIX.md rotation
 
-Keep appending to `FIX.md` after every prompt as usual. When `FIX.md` crosses a calendar-month boundary, or exceeds ~800 lines before one does, rotate the completed portion into `docs/archive/fix-log/FIX-<YYYY-MM>.md`, add a row to `docs/archive/fix-log/INDEX.md`, and leave only the current entries live in `FIX.md`.
+Keep appending to `FIX.md` after every prompt as usual. When `FIX.md` crosses a calendar-day boundary, rotate the completed portion into `docs/archive/fix-log/FIX-<YYYY-MM-DD>.md` (one file per day, split by each entry's own trailing `— YYYY-MM-DD` date, not a blind line-number cut — entries aren't always strictly chronological top-to-bottom), add a row to `docs/archive/fix-log/INDEX.md`, and leave only the current entries live in `FIX.md`.
 
 ### TODO.md
 
