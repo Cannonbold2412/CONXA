@@ -11,7 +11,12 @@ import pytest
 # ─── resolve_runtime_dir ───────────────────────────────────────────────────────
 
 class TestResolveRuntimeDir:
-    def test_runtime_local_dir_is_priority(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """resolve_runtime_dir() is identical for Dev and Production — no sys.frozen
+    branching at all. Dev/Production isolation comes entirely from CONXA_STUDIO_HOME
+    pointing at separate trees; scripts/build-runtime-local.ps1 writes into
+    deps/conxa-runtime/ in Dev, exactly where a real download lands in Production."""
+
+    def test_runtime_local_dir_used_when_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runtime_dir = tmp_path / "runtime-v1.2.3"
         runtime_dir.mkdir()
         (runtime_dir / "conxa-runtime.exe").touch()
@@ -20,49 +25,37 @@ class TestResolveRuntimeDir:
 
         from conxa_compile.conxa_runtime import resolve_runtime_dir
 
-        result = resolve_runtime_dir()
-
-        assert result == runtime_dir
+        assert resolve_runtime_dir() == runtime_dir
 
     def test_runtime_local_dir_ignored_if_invalid(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CONXA_RUNTIME_LOCAL_DIR", str(tmp_path / "nonexistent"))
         monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path / "data"))
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import resolve_runtime_dir
 
-        with patch.object(_sys, "frozen", True, create=True):
-            result = resolve_runtime_dir()
-
         # Falls through to deps scan, which also finds nothing.
-        assert result is None
+        assert resolve_runtime_dir() is None
 
     def test_deps_managed_runtime_is_used(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Covers both a real download (Production) and scripts/build-runtime-local.ps1
+        writing directly here (Dev) — same directory, same lookup, same code."""
         monkeypatch.delenv("CONXA_RUNTIME_LOCAL_DIR", raising=False)
         monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path / "data"))
         runtime_dir = tmp_path / "data" / "deps" / "conxa-runtime" / "runtime-v1.0.0"
         runtime_dir.mkdir(parents=True)
         (runtime_dir / "conxa-runtime.exe").touch()
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import resolve_runtime_dir
 
-        with patch.object(_sys, "frozen", True, create=True):
-            result = resolve_runtime_dir()
-
-        assert result == runtime_dir
+        assert resolve_runtime_dir() == runtime_dir
 
     def test_returns_none_when_nothing_found(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CONXA_RUNTIME_LOCAL_DIR", raising=False)
         monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path / "data"))
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import resolve_runtime_dir
 
-        with patch.object(_sys, "frozen", True, create=True):
-            result = resolve_runtime_dir()
-
-        assert result is None
+        assert resolve_runtime_dir() is None
 
     def test_conxa_dir_env_is_not_checked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """$CONXA_DIR is no longer part of runtime resolution — only the runtime process gets it."""
@@ -72,14 +65,10 @@ class TestResolveRuntimeDir:
         monkeypatch.delenv("CONXA_RUNTIME_LOCAL_DIR", raising=False)
         monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path / "data"))
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import resolve_runtime_dir
 
-        with patch.object(_sys, "frozen", True, create=True):
-            result = resolve_runtime_dir()
-
         # CONXA_DIR is passed to the runtime process env, not used for discovery.
-        assert result is None
+        assert resolve_runtime_dir() is None
 
 
 # ─── _bootstrap_app_dir ───────────────────────────────────────────────────────
@@ -262,7 +251,11 @@ class TestStageRuntimePayload:
         assert (dest / "conxa-runtime.exe").is_file()
         assert (dest / "keytar.node").is_file()
         assert (dest / "version.json").is_file()
-        assert (dest / "conxa-app" / "server.jsc").is_file()
+        version_dest = dest / "conxa-app" / app_dir.name
+        assert (version_dest / "server.jsc").is_file()
+        current = dest / "conxa-app" / "current"
+        assert current.is_dir()
+        assert current.resolve() == version_dest.resolve()
 
     def test_version_json_records_both_versions(self, tmp_path: Path) -> None:
         import json as _json
@@ -321,10 +314,8 @@ class TestEnsureTestSandbox:
         runtime_dir = self._make_runtime_dir(tmp_path)
         app_dir = self._make_app_dir(tmp_path)
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
-        with patch.object(_sys, "frozen", True, create=True):
-            conxa_dir, data_dir = ensure_test_sandbox(runtime_dir, app_dir)
+        conxa_dir, data_dir = ensure_test_sandbox(runtime_dir, app_dir)
 
         assert conxa_dir == tmp_path / "sandbox" / ".conxa"
         assert data_dir == tmp_path / "sandbox" / "data"
@@ -332,21 +323,24 @@ class TestEnsureTestSandbox:
         assert (data_dir / "cache").is_dir()
         assert (data_dir / "logs").is_dir()
 
-    def test_stages_payload_in_frozen_mode(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_stages_payload(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Covers both Production (runtime_dir/app_dir came from a real download) and
+        Dev (they came from scripts/build-runtime-local.ps1 / build-app-local.ps1
+        writing into deps/ directly) — identical staging either way."""
         monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path))
         runtime_dir = self._make_runtime_dir(tmp_path)
         app_dir = self._make_app_dir(tmp_path)
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
-        with patch.object(_sys, "frozen", True, create=True):
-            # Patch out junction creation (not relevant to this assertion)
-            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
-                conxa_dir, _ = ensure_test_sandbox(runtime_dir, app_dir)
+        conxa_dir, _ = ensure_test_sandbox(runtime_dir, app_dir)
 
         assert (conxa_dir / "conxa-runtime.exe").is_file()
         assert (conxa_dir / "keytar.node").is_file()
-        assert (conxa_dir / "conxa-app" / "server.jsc").is_file()
+        version_dest = conxa_dir / "conxa-app" / app_dir.name
+        assert (version_dest / "server.jsc").is_file()
+        current = conxa_dir / "conxa-app" / "current"
+        assert current.is_dir()
+        assert current.resolve() == version_dest.resolve()
 
     def test_skips_restage_when_versions_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Re-running with the same deps versions must NOT re-copy the exe."""
@@ -363,11 +357,9 @@ class TestEnsureTestSandbox:
             encoding="utf-8",
         )
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
-        with patch.object(_sys, "frozen", True, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
-                ensure_test_sandbox(runtime_dir, app_dir)
+        with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
+            ensure_test_sandbox(runtime_dir, app_dir)
 
         # Original bytes preserved — no re-copy happened
         assert (conxa_dir / "conxa-runtime.exe").read_bytes() == b"original"
@@ -387,11 +379,9 @@ class TestEnsureTestSandbox:
             encoding="utf-8",
         )
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
-        with patch.object(_sys, "frozen", True, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
-                ensure_test_sandbox(runtime_dir, app_dir)
+        with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
+            ensure_test_sandbox(runtime_dir, app_dir)
 
         # Exe should have been replaced with the new v2 content
         assert (conxa_dir / "conxa-runtime.exe").read_bytes() == b"exe"
@@ -410,28 +400,12 @@ class TestEnsureTestSandbox:
             encoding="utf-8",
         )
 
-        import sys as _sys
         from conxa_compile.conxa_runtime import ensure_test_sandbox
-        with patch.object(_sys, "frozen", True, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
-                ensure_test_sandbox(runtime_dir, app_dir)
+        with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
+            ensure_test_sandbox(runtime_dir, app_dir)
 
         # Re-staged due to app version change
         assert (conxa_dir / "conxa-runtime.exe").read_bytes() == b"exe"
-
-    def test_no_staging_in_dev_mode(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """In dev (not frozen), no exe staging — just creates dirs and junction."""
-        monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path))
-        runtime_dir = self._make_runtime_dir(tmp_path)
-        app_dir = self._make_app_dir(tmp_path)
-
-        import sys as _sys
-        from conxa_compile.conxa_runtime import ensure_test_sandbox
-        with patch.object(_sys, "frozen", False, create=True):
-            with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
-                conxa_dir, _ = ensure_test_sandbox(runtime_dir, app_dir)
-
-        assert not (conxa_dir / "conxa-runtime.exe").exists()
 
 
 # ─── call_runtime_tool env injection ──────────────────────────────────────────
@@ -467,35 +441,14 @@ class TestCallRuntimeToolEnv:
         assert "CONXA_APP_DIR" not in captured_env
         assert "PLAYWRIGHT_BROWSERS_PATH" not in captured_env
 
-    def test_dev_source_tree_runs_node_not_stale_sandbox_exe(self, tmp_path: Path) -> None:
-        # In a dev checkout, runtime_dir is the repo source tree (server.js + package.json).
-        # A stale conxa-runtime.exe staged in the sandbox (conxa_dir) must NOT shadow it —
-        # the developer's runtime edits are authoritative, so we run `node server.js`.
-        sandbox_conxa = tmp_path / "sandbox" / ".conxa"
-        sandbox_conxa.mkdir(parents=True)
-        (sandbox_conxa / "conxa-runtime.exe").write_bytes(b"stale exe")
-
+    def test_raises_when_no_exe_found(self, tmp_path: Path) -> None:
+        """Both Dev and Production always resolve to a real packed exe now — no more
+        `node server.js` source-tree fallback."""
         runtime_dir = tmp_path / "runtime-src"
         runtime_dir.mkdir()
-        (runtime_dir / "server.js").write_text("// dev source", encoding="utf-8")
-        (runtime_dir / "package.json").write_text("{}", encoding="utf-8")
 
-        captured_cmd: list = []
-
-        def fake_popen(cmd, cwd, env, **kwargs):
-            captured_cmd.extend(cmd)
-            raise OSError("stopped for test")
-
-        import shutil as _shutil
-        import subprocess as _subprocess
+        from conxa_compile.conxa_runtime import RuntimeToolError
         from conxa_compile.runtime_tool import call_runtime_tool
 
-        with patch.object(_shutil, "which", lambda _: "node"), \
-             patch.object(_subprocess, "Popen", fake_popen):
-            try:
-                call_runtime_tool(runtime_dir, "test_tool", {}, conxa_dir=sandbox_conxa)
-            except Exception:
-                pass  # expected — fake_popen raises
-
-        assert captured_cmd[:2] == ["node", "server.js"]
-        assert all("conxa-runtime.exe" not in str(part) for part in captured_cmd)
+        with pytest.raises(RuntimeToolError, match="No packed runtime executable"):
+            call_runtime_tool(runtime_dir, "test_tool", {})

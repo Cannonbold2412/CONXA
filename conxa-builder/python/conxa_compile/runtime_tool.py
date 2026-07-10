@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import queue
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -33,48 +32,29 @@ def call_runtime_tool(
 ) -> dict:
     """Call a tool on the local MCP stdio runtime and return its JSON-RPC result.
 
-    ``conxa_dir`` is the customer-faithful sandbox directory (CONXA_DIR for the
-    spawned process).  When provided, the exe is resolved from there first (frozen:
-    the sandbox holds the staged copy); otherwise ``runtime_dir`` is used (dev:
-    no exe, falls back to ``node server.js``).
+    ``conxa_dir`` is CONXA_DIR for the spawned process — in Dev this is the same
+    locally-built dev-runtime/ folder as ``runtime_dir`` (resolve_dev_runtime_dir());
+    in Production it's the customer-faithful staged sandbox.
 
-    ``CONXA_APP_DIR`` is intentionally NOT injected: the sandbox provides
-    CONXA_DIR/conxa-app, which the runtime resolves exactly as on a customer machine.
+    ``CONXA_APP_DIR`` is intentionally NOT injected: ``conxa_dir`` already provides
+    CONXA_DIR/conxa-app (built locally in Dev, staged from deps in Production), which
+    the runtime resolves exactly the same way in both cases.
     """
-    # Resolve exe vs node source.
-    #
-    # In a dev checkout, resolve_runtime_dir() returns the repo runtime/ source tree so
-    # that JS edits take effect immediately. Honour that here: when runtime_dir IS a
-    # source tree, run it via `node server.js` and never fall back to a staged exe in the
-    # sandbox (conxa_dir). The sandbox can hold a stale conxa-runtime.exe left by a prior
-    # frozen run; preferring it would silently shadow the developer's runtime edits.
-    #
-    # In a frozen/customer install, runtime_dir is the deps-managed exe dir (no server.js),
-    # so we resolve the staged exe — sandbox copy first, then runtime_dir.
-    runtime_is_source = (runtime_dir / "server.js").is_file() and (runtime_dir / "package.json").is_file()
-
+    # Both Dev and Production always resolve to a real packed exe now (Dev: built
+    # locally by scripts/build-runtime-local.ps1; Production: deps-managed).
     exe: str | None = None
-    if not runtime_is_source:
-        if conxa_dir is not None:
-            _exe = _runtime_exe(conxa_dir)
-            if _exe is not None:
-                exe = str(_exe)
-        if exe is None:
-            _exe = _runtime_exe(runtime_dir)
-            if _exe is not None:
-                exe = str(_exe)
+    if conxa_dir is not None:
+        _exe = _runtime_exe(conxa_dir)
+        if _exe is not None:
+            exe = str(_exe)
+    if exe is None:
+        _exe = _runtime_exe(runtime_dir)
+        if _exe is not None:
+            exe = str(_exe)
+    if exe is None:
+        raise RuntimeToolError(f"No packed runtime executable found at {runtime_dir}.")
 
-    if exe is not None:
-        cmd: list[str] = [exe]
-    else:
-        node = shutil.which("node")
-        if not node:
-            raise RuntimeToolError("Node.js not found. Install Node.js to test workflows.")
-        if not (runtime_dir / "server.js").is_file():
-            raise RuntimeToolError(
-                f"No runnable runtime at {runtime_dir} (neither a packed executable nor server.js)."
-            )
-        cmd = [node, "server.js"]
+    cmd = [exe]
 
     effective_conxa_dir = conxa_dir if conxa_dir is not None else runtime_dir
     proc_env = {
@@ -90,12 +70,6 @@ def call_runtime_tool(
         "CONXA_MAX_RECOVERY_TIER": (env or {}).get("CONXA_MAX_RECOVERY_TIER")
             or os.environ.get("CONXA_MAX_RECOVERY_TIER", "2"),
     }
-    if runtime_is_source:
-        # `node server.js` run directly (no bootstrap.js, so no real baked-in version) reports
-        # package.json's placeholder "0.0.0-dev", which fails every skill's required_runtime
-        # floor. Only server.js's dev-source fallback reads this — a real packed install always
-        # has global.__runtimeVersion set first, so this can never affect a customer runtime.
-        proc_env.setdefault("CONXA_DEV_RUNTIME_VERSION", "999.999.999")
     # CONXA_APP_DIR is NOT set: the sandbox/customer install provides conxa-app/ under
     # CONXA_DIR so the runtime resolves it via its own default logic (bootstrap.js:9).
 

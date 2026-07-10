@@ -74,16 +74,6 @@ def _bootstrap_app_dir() -> Path | None:
     return candidates[-1]
 
 
-def _force_deps() -> bool:
-    """True when CONXA_FORCE_DEPS=1 (set by scripts/conxa.ps1's dev lane).
-
-    Opts a dev checkout back into the customer-faithful path: run the
-    downloaded host exe + app layer instead of the repo-local runtime/
-    source tree, and stage them into the test sandbox as a frozen build would.
-    """
-    return os.environ.get("CONXA_FORCE_DEPS", "").strip() == "1"
-
-
 def _studio_base() -> Path:
     """Root of all Build Studio user state (~/.conxa-build-studio by default).
 
@@ -207,13 +197,28 @@ def stage_runtime_payload(
     _info("version.json written")
 
     # ── app layer ─────────────────────────────────────────────────────────────
+    # bootstrap.js's version_manager.resolveCurrent() requires conxa-app/current to be
+    # a junction pointing at a versioned subdir (conxa-app/<version>/server.js) — the
+    # same shape installer_templates/setup.nsi.tmpl produces for a real customer
+    # install. A flat copy leaves no `current` junction, so bootstrap.js can't resolve
+    # the app layer and exits FATAL. Mirror the NSIS pattern here.
     if app_dir and app_dir.is_dir():
-        app_dest = dest / "conxa-app"
-        if app_dest.exists():
-            shutil.rmtree(app_dest)
-        shutil.copytree(str(app_dir), str(app_dest))
-        kb = sum(f.stat().st_size for f in app_dest.rglob("*") if f.is_file()) // 1024
-        _info(f"conxa-app/ staged ({kb} KB, from {app_dir})")
+        app_root = dest / "conxa-app"
+        app_root.mkdir(parents=True, exist_ok=True)
+        version_dest = app_root / app_dir.name
+        if version_dest.exists():
+            shutil.rmtree(version_dest)
+        shutil.copytree(str(app_dir), str(version_dest))
+        _ensure_junction(app_root / "current", version_dest)
+
+        # The sandbox only ever needs one active version — drop any other (mirrors
+        # sync_skill_pack's same cleanup for skill versions).
+        for entry in app_root.iterdir():
+            if entry.is_dir() and entry != version_dest and not _is_link(entry):
+                shutil.rmtree(str(entry), ignore_errors=True)
+
+        kb = sum(f.stat().st_size for f in version_dest.rglob("*") if f.is_file()) // 1024
+        _info(f"conxa-app/ staged ({kb} KB, version={app_dir.name}, from {app_dir})")
     else:
         _info("WARNING: conxa-app not found in deps — app layer will not be pre-installed")
 
@@ -227,14 +232,20 @@ def ensure_test_sandbox(
     runtime_dir: Path,
     app_dir: Path | None,
 ) -> tuple[Path, Path]:
-    """Assemble or refresh the customer-faithful test sandbox.
+    """Assemble or refresh the test sandbox — identical code path for Dev and
+    Production, deliberately: Dev isolation comes from CONXA_STUDIO_HOME pointing
+    at a separate tree (~/.conxa-build-studio-dev), not from branching this
+    function. The only difference between the two is WHERE runtime_dir/app_dir's
+    content came from — a download (Production) or scripts/build-runtime-local.ps1
+    + build-app-local.ps1 writing into deps/ instead of a download landing there
+    (Dev) — see resolve_runtime_dir()/_bootstrap_app_dir().
 
     Returns ``(conxa_dir, data_dir)`` where:
       conxa_dir = sandbox/.conxa/   mirrors the customer's ~/.conxa
       data_dir  = sandbox/data/     mirrors the customer's ~/AppData/Roaming/Conxa
 
     The sandbox is persistent: payload is re-staged only when runtime_version or
-    app_version changes (i.e. when bootstrap.ensure_all() downloaded a new dep).
+    app_version changes (a new local build, in Dev; a new download, in Production).
     Skill-packs are NOT staged here — callers do that via sync_skill_pack().
     """
     sandbox = resolve_test_sandbox_dir()
@@ -245,22 +256,20 @@ def ensure_test_sandbox(
     (data_dir / "cache").mkdir(parents=True, exist_ok=True)
     (data_dir / "logs").mkdir(parents=True, exist_ok=True)
 
-    # ── re-stage runtime payload when version changed (frozen, or forced in dev) ──
-    if getattr(sys, "frozen", False) or _force_deps():
-        need_stage = True
-        version_file = conxa_dir / "version.json"
-        if version_file.is_file() and _runtime_exe(conxa_dir) is not None:
-            try:
-                meta = json.loads(version_file.read_text(encoding="utf-8"))
-                if (
-                    meta.get("runtime_version") == runtime_dir.name
-                    and meta.get("app_version") == (app_dir.name if app_dir else None)
-                ):
-                    need_stage = False
-            except Exception:
-                pass
-        if need_stage:
-            stage_runtime_payload(conxa_dir, runtime_dir, app_dir)
+    need_stage = True
+    version_file = conxa_dir / "version.json"
+    if version_file.is_file() and _runtime_exe(conxa_dir) is not None:
+        try:
+            meta = json.loads(version_file.read_text(encoding="utf-8"))
+            if (
+                meta.get("runtime_version") == runtime_dir.name
+                and meta.get("app_version") == (app_dir.name if app_dir else None)
+            ):
+                need_stage = False
+        except Exception:
+            pass
+    if need_stage:
+        stage_runtime_payload(conxa_dir, runtime_dir, app_dir)
 
     # ── chromium: junction/symlink → deps/chromium (no per-test copy) ────────
     chromium_source = _deps_chromium_dir()
@@ -270,15 +279,19 @@ def ensure_test_sandbox(
 
 
 def resolve_runtime_dir() -> Path | None:
-    """Find a runnable Conxa runtime directory (packed exe or server.js tree).
+    """Find a runnable Conxa runtime directory (packed exe).
 
-    Two environments, in priority order:
-      1. $CONXA_RUNTIME_LOCAL_DIR — explicit override. Set manually in a dev checkout,
-         or by the deps bootstrap (services.bootstrap) to the active version dir in prod.
-      2. Dev checkout (not frozen, and CONXA_FORCE_DEPS not set): the repo-local runtime/
-         source tree, so JS edits take effect immediately without a binary rebuild.
-      3. Production, or a dev checkout with CONXA_FORCE_DEPS=1: the deps-managed runtime
-         (~/.conxa-build-studio/deps/runtime/<version>/).
+    Identical for Dev and Production, deliberately — this is a mirror of the real
+    pipeline, not a parallel one:
+      1. $CONXA_RUNTIME_LOCAL_DIR — explicit override, set by the deps bootstrap
+         after a download (services.bootstrap._configure_dep_env).
+      2. The highest-versioned dir under
+         <CONXA_STUDIO_HOME>/deps/conxa-runtime/. In Production this is populated
+         by a real download; in Dev, scripts/build-runtime-local.ps1 writes
+         straight into this same location instead — same shape, same lookup, same
+         code path. Dev/Production isolation comes entirely from CONXA_STUDIO_HOME
+         pointing at separate trees (~/.conxa-build-studio-dev vs
+         ~/.conxa-build-studio), not from any branching here.
 
     Returns None if no valid runtime is found.
     """
@@ -287,15 +300,6 @@ def resolve_runtime_dir() -> Path | None:
         p = Path(local_dir)
         if _is_runtime_dir(p):
             return p
-
-    # In a dev checkout prefer the source tree so JS edits are reflected immediately,
-    # unless CONXA_FORCE_DEPS=1 opts back into the downloaded, customer-faithful runtime
-    # (e.g. on a fresh backend restart where this session never called ensure_all(), so
-    # CONXA_RUNTIME_LOCAL_DIR above was never (re-)set).
-    if not getattr(sys, "frozen", False) and not _force_deps():
-        local_source = _find_local_runtime_source()
-        if local_source is not None:
-            return local_source
 
     return _bootstrap_runtime_dir()
 

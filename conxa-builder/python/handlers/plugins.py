@@ -286,12 +286,17 @@ class PluginsMixin:
         sink = _event_sink(rid)
         sink({"kind": "workflow_test", "message": f"Preparing test for {workflow.name!r}…"})
 
+        is_frozen = getattr(sys, "frozen", False)
+
         runtime_dir = resolve_runtime_dir()
         if runtime_dir is None:
-            raise _CommandError(
-                "runtime_not_found",
-                "Conxa runtime not found. Run dependency bootstrap so Build Studio downloads the cloud runtime, or set CONXA_DIR explicitly.",
+            message = (
+                "Conxa runtime not found. Run dependency bootstrap so Build Studio downloads it."
+                if is_frozen
+                else "Local dev runtime not built yet. Run scripts\\build-runtime-local.ps1 first "
+                "(writes into deps\\conxa-runtime\\, same place a download would)."
             )
+            raise _CommandError("runtime_not_found", message)
 
         company = _plugin_company_slug(plugin)
         if not company:
@@ -309,10 +314,21 @@ class PluginsMixin:
             # ── Assemble (or refresh) the customer-faithful sandbox ───────────
             # sandbox/.conxa/ mirrors ~/.conxa/ on a real install; sandbox/data/
             # mirrors ~/AppData/Roaming/Conxa. The sandbox is persistent: the exe
-            # and conxa-app are only re-staged when a new dep version was downloaded.
+            # and conxa-app are only re-staged when a new version appears in deps/
+            # (a download in Production; scripts/build-runtime-local.ps1 /
+            # build-app-local.ps1 writing there directly in Dev).
             sink({"kind": "workflow_test", "message": "Preparing test sandbox…"})
             app_dir = _bootstrap_app_dir()
             conxa_dir, test_data_dir = ensure_test_sandbox(runtime_dir, app_dir)
+
+            if not (conxa_dir / "conxa-app" / "current" / "server.js").is_file():
+                message = (
+                    "Conxa app layer not found. Run dependency bootstrap so Build Studio downloads it."
+                    if is_frozen
+                    else "Local dev app layer not built yet. Run scripts\\build-app-local.ps1 first "
+                    "(writes into deps\\conxa-app\\, same place a download would)."
+                )
+                raise _CommandError("runtime_app_not_built", message)
 
             sink({"kind": "workflow_test", "message": "Staging skill pack for the runtime…"})
             sync_skill_pack(company, source_dir, conxa_dir, data_dir=test_data_dir)
