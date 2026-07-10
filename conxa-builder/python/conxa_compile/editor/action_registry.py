@@ -50,7 +50,8 @@ ACTION_KIND_ORDER = (
     "clipboard_paste",
     # Conditional/branch primitives (EXEC-1). Not markers: they carry a real probe
     # target/candidates/options (in SkillStep.branch), unlike tab_open/frame_enter/etc.
-    # Not insertable — no Build Studio editor authoring path yet (foundation scope).
+    # Insertable since the 2026-07-10 Human Edit redesign — see BranchBodyEditor.tsx for the
+    # nested-body authoring UI and workflow_mutations.py::_new_manual_step for the scaffold.
     "if_present",
     "try_dismiss",
     "wait_for_one_of",
@@ -96,6 +97,9 @@ INSERTABLE_ACTIONS = frozenset(
         "wait",
         "screenshot",
         "upload",
+        "if_present",
+        "try_dismiss",
+        "wait_for_one_of",
     }
 )
 

@@ -255,6 +255,104 @@ class TestBranchStepSerialization:
     def test_unsupported_action_still_drops_to_none(self):
         assert _saved_step_to_execution_step({"action": "not_a_real_action"}) is None
 
+    def test_editor_authored_if_present_step_serializes_correctly(self):
+        """An if_present step scaffolded via the Human Edit editor (workflow_mutations.py::
+        _new_manual_step + insert_branch_step — the 2026-07-10 branch-authoring work closing
+        EXEC-1's remaining editor gap) must survive the same saved-skill -> execution-step path
+        as a hand-built fixture. Exercises the real scaffold + insert functions, not a fixture
+        dict, so a shape mismatch between authoring and serialization would be caught here."""
+        import sys
+
+        sys.path.insert(0, "../conxa-builder/python")
+        from conxa_compile.editor.workflow_mutations import insert_branch_step, insert_step_after
+
+        doc = {"meta": {"version": 1}, "inputs": [], "skills": [{"name": "default", "steps": []}]}
+        doc = insert_step_after(doc, "if_present", None)
+        doc = insert_branch_step(doc, 0, "click", None)
+        scaffolded_step = doc["skills"][0]["steps"][0]
+
+        # The scaffold starts with empty selectors (nothing is a real target until a human picks
+        # one) — set them the way the editor's re-target flow would before this step is usable,
+        # so serialization has something real to carry.
+        scaffolded_step["target"]["primary_selector"] = ".cookie-banner"
+        scaffolded_step["branch"]["steps"][0]["target"]["primary_selector"] = "#accept-cookies"
+
+        # _saved_step_to_execution_step expects action as a plain string (the saved-skill shape
+        # plugin_builder_saved_skill.py normalizes to) rather than the editor's {"action": ...}
+        # dict — normalize the same way the real save path does before asserting.
+        saved_step = dict(scaffolded_step)
+        saved_step["action"] = scaffolded_step["action"]["action"]
+        nested = saved_step["branch"]["steps"]
+        saved_step["branch"] = dict(saved_step["branch"])
+        saved_step["branch"]["steps"] = [
+            {**n, "action": n["action"]["action"]} for n in nested
+        ]
+
+        out = _saved_step_to_execution_step(saved_step)
+        assert out["type"] == "if_present"
+        assert out["selector"] == ".cookie-banner"
+        assert len(out["steps"]) == 1
+        assert out["steps"][0] == {"type": "click", "selector": "#accept-cookies"}
+
+    def test_confirmed_optional_interstitial_serializes_to_try_dismiss(self):
+        """recording-next-steps.md Priority 2: a recorder-flagged optional_hint, once a human
+        confirms it via workflow_mutations.confirm_optional_interstitial, must produce a real
+        try_dismiss branch that survives into the runtime step shape — the whole point of the
+        human-gated conversion (CLAUDE.md Key Invariants: branch steps compile only from
+        observed states + human confirmation)."""
+        import sys
+
+        sys.path.insert(0, "../conxa-builder/python")
+        from conxa_compile.editor.workflow_mutations import confirm_optional_interstitial
+
+        doc = {
+            "meta": {"version": 1},
+            "inputs": [],
+            "skills": [
+                {
+                    "name": "default",
+                    "steps": [
+                        {
+                            "action": {"action": "click"},
+                            "intent": "close_dialog",
+                            "target": {"primary_selector": ".gdpr-consent button", "fallback_selectors": []},
+                            "signals": {},
+                            "validation": {"wait_for": {"type": "none"}, "success_conditions": {}},
+                            "optional_hint": {"kind": "try_dismiss", "container_signal": '[role="dialog"]'},
+                        },
+                    ],
+                }
+            ],
+        }
+        doc = confirm_optional_interstitial(doc, 0)
+        step = doc["skills"][0]["steps"][0]
+        assert step["action"]["action"] == "try_dismiss"
+        assert step["branch"]["candidates"] == [".gdpr-consent button", '[role="dialog"]']
+        assert step["optional_hint"] is None  # consumed by confirmation
+
+        saved_step = dict(step)
+        saved_step["action"] = step["action"]["action"]
+        out = _saved_step_to_execution_step(saved_step)
+        assert out["type"] == "try_dismiss"
+        assert out["candidates"] == [".gdpr-consent button", '[role="dialog"]']
+
+    def test_confirm_optional_interstitial_rejects_step_without_hint(self):
+        import sys
+
+        sys.path.insert(0, "../conxa-builder/python")
+        from conxa_compile.editor.workflow_mutations import confirm_optional_interstitial
+
+        doc = {
+            "meta": {"version": 1},
+            "inputs": [],
+            "skills": [{"name": "default", "steps": [{"action": {"action": "click"}, "target": {}}]}],
+        }
+        try:
+            confirm_optional_interstitial(doc, 0)
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert str(exc) == "step_has_no_optional_hint"
+
 
 # ─────────────────────────────────────────────────
 # plugin.json structure (integration-level)

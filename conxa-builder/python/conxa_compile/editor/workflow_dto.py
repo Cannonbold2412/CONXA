@@ -23,7 +23,7 @@ from conxa_compile.compiler.wait_for_shape import (
     scan_wait_for_binding_targets,
 )
 from conxa_compile.confidence.uncertainty import audit_reference
-from conxa_compile.editor.action_registry import action_spec, action_spec_dict
+from conxa_compile.editor.action_registry import action_spec, action_spec_dict, normalize_action_kind
 from conxa_compile.compiler.selector_grammar import signals_to_display_list
 from conxa_compile.compiler.selector_score import confidence_from_signal_rows
 from conxa_compile.editor.assets import asset_url
@@ -308,6 +308,151 @@ def _issue_message(code: str) -> str:
     }.get(code, code.replace("_", " ").title())
 
 
+# Conditional/branch action kinds (EXEC-1). Kept local to this module (rather than imported
+# from action_registry's CATEGORIES) since only the "does this step carry a branch body"
+# question matters here.
+_BRANCH_KINDS = frozenset({"if_present", "try_dismiss", "wait_for_one_of"})
+
+
+def _recovery_view(recovery: dict[str, Any], is_marker: bool) -> dict[str, Any]:
+    """Plain-display projection of the persisted RecoveryBlock. Read-only: recovery tunables
+    are policy-owned (predictable recovery, not per-step drift) — see patch_gate.py, which never
+    accepts a `recovery_view` patch key."""
+    if is_marker or not isinstance(recovery, dict):
+        return {}
+    return {
+        "strategies": list(recovery.get("strategies") or ["semantic match", "position match", "visual match"]),
+        "max_attempts": int(recovery.get("max_attempts") or 2),
+        "confidence_threshold": float(recovery.get("confidence_threshold") or 0.85),
+        "require_diverse_attempts": bool(recovery.get("require_diverse_attempts", True)),
+        "anchors": normalize_anchor_list(recovery.get("anchors") or []),
+    }
+
+
+def _fingerprint_view(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Read-only "what was recorded" subset of identity_bundle.fingerprint + frame/shadow depth —
+    the resolver's scoring oracle, previously invisible outside the compiler/runtime."""
+    fp = bundle.get("fingerprint") if isinstance(bundle.get("fingerprint"), dict) else {}
+    frame_chain = bundle.get("frame_chain") if isinstance(bundle.get("frame_chain"), list) else []
+    shadow_path = bundle.get("shadow_path") if isinstance(bundle.get("shadow_path"), list) else []
+    if not fp and not frame_chain and not shadow_path:
+        return {}
+    return {
+        "role": str(fp.get("role") or ""),
+        "tag": str(fp.get("tag") or ""),
+        "inner_text": str(fp.get("inner_text") or ""),
+        "aria_label": str(fp.get("aria_label") or ""),
+        "name": str(fp.get("name") or ""),
+        "placeholder": str(fp.get("placeholder") or ""),
+        "label_text": str(fp.get("label_text") or ""),
+        "data_testid": str(fp.get("data_testid") or ""),
+        "input_type": str(fp.get("input_type") or ""),
+        "position_hint": dict(fp.get("position_hint") or {}),
+        "frame_depth": len(frame_chain),
+        "shadow_depth": len(shadow_path),
+        "destructive": bool(bundle.get("destructive") or False),
+        # Diagnostics-tier only (support/Conxa engineer) — integrity hashes, never editable and
+        # not meaningful to a Review-tier approver. See DiagnosticsPanel.tsx.
+        "stable_hash": str(bundle.get("stable_hash") or ""),
+        "compat_fingerprint": str(bundle.get("compat_fingerprint") or ""),
+    }
+
+
+def _handler_hints_view(handler_hints: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(handler_hints, dict):
+        return {}
+    hover_chain = handler_hints.get("hover_chain") if isinstance(handler_hints.get("hover_chain"), list) else []
+    virtualized = str(handler_hints.get("virtualized_container") or "")
+    allow_forced = bool(handler_hints.get("allow_forced_action") or False)
+    if not hover_chain and not virtualized and not allow_forced:
+        return {}
+    return {
+        "has_hover_chain": bool(hover_chain),
+        "hover_chain_len": len(hover_chain),
+        "virtualized_container": virtualized,
+        "allow_forced_action": allow_forced,
+    }
+
+
+def _safety_view(bundle: dict[str, Any], handler_hints_view: dict[str, Any], is_destructive: bool) -> dict[str, bool]:
+    """Drives step-row safety badges — surfaces flags that were previously computed but never
+    shown, most importantly handler_hints.allow_forced_action."""
+    return {
+        "destructive": bool(is_destructive or bundle.get("destructive") or False),
+        "allow_forced_action": bool(handler_hints_view.get("allow_forced_action") or False),
+        "has_hover_chain": bool(handler_hints_view.get("has_hover_chain") or False),
+    }
+
+
+def _branch_info(
+    skill_id: str,
+    step: dict[str, Any],
+    step_index: int,
+    policy: dict[str, Any],
+    asset_base_url: str,
+    source_session_id: str,
+) -> tuple[dict[str, Any] | None, list[StepEditorDTO]]:
+    """Read-only projection of step["branch"] (if_present/try_dismiss/wait_for_one_of — EXEC-1).
+
+    if_present's nested `steps` body is projected the same way as top-level steps, addressed by
+    a path-based id (`{skill_id}:{step_index}.branch.steps[{j}]`) so patch_gate can re-validate
+    edits against the same nested dict. try_dismiss has no nested body (it dismisses via its own
+    candidate selectors). wait_for_one_of is an OR of alternative selectors, each with its own
+    nested body — full per-option step editing is intentionally out of scope for this pass (see
+    TODO BUILD-5 follow-up); its summary surfaces each option's selector + nested step count for
+    read-only review only.
+    """
+    kind = normalize_action_kind(action_name(step))
+    if kind not in _BRANCH_KINDS:
+        return None, []
+    branch = step.get("branch") if isinstance(step.get("branch"), dict) else {}
+
+    if kind == "if_present":
+        nested_raw = [s for s in (branch.get("steps") or []) if isinstance(s, dict)]
+        branch_steps = [
+            step_to_dto(
+                skill_id,
+                dict(nested),
+                j,
+                policy,
+                asset_base_url,
+                source_session_id,
+                dto_id=f"{skill_id}:{step_index}.branch.steps[{j}]",
+            )
+            for j, nested in enumerate(nested_raw)
+        ]
+        target = step.get("target") if isinstance(step.get("target"), dict) else {}
+        probe = str(target.get("primary_selector") or "").strip() or "(uses step's own selector)"
+        return {"kind": kind, "probe": probe, "step_count": len(branch_steps)}, branch_steps
+
+    if kind == "try_dismiss":
+        candidates = [str(c).strip() for c in (branch.get("candidates") or []) if str(c).strip()]
+        summary = {
+            "kind": kind,
+            "probe": f"{len(candidates)} candidate selector(s)" if candidates else "(uses step's own selector)",
+            "step_count": 0,
+            "candidates": candidates,
+        }
+        return summary, []
+
+    # wait_for_one_of
+    options_raw = [o for o in (branch.get("options") or []) if isinstance(o, dict)]
+    option_summaries = [
+        {
+            "selector": str(o.get("selector") or "").strip(),
+            "step_count": len([s for s in (o.get("steps") or []) if isinstance(s, dict)]),
+        }
+        for o in options_raw
+    ]
+    summary = {
+        "kind": kind,
+        "probe": f"{len(option_summaries)} option(s)",
+        "step_count": sum(o["step_count"] for o in option_summaries),
+        "options": option_summaries,
+    }
+    return summary, []
+
+
 def step_to_dto(
     skill_id: str,
     step: dict[str, Any],
@@ -315,6 +460,8 @@ def step_to_dto(
     policy: dict[str, Any],
     asset_base_url: str,
     source_session_id: str = "",
+    *,
+    dto_id: str | None = None,
 ) -> StepEditorDTO:
     signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
     semantic = signals.get("semantic") if isinstance(signals.get("semantic"), dict) else {}
@@ -371,8 +518,13 @@ def step_to_dto(
         merged_target["primary_selector"] = merged_selector_strings[0]
         merged_target["fallback_selectors"] = merged_selector_strings[1:]
 
+    handler_hints_view = _handler_hints_view(step.get("handler_hints") if isinstance(step.get("handler_hints"), dict) else {})
+    branch_summary, branch_steps = _branch_info(
+        skill_id, step, step_index, policy, asset_base_url, source_session_id
+    )
+
     return StepEditorDTO(
-        id=f"{skill_id}:{step_index}",
+        id=dto_id or f"{skill_id}:{step_index}",
         step_index=step_index,
         human_readable_description=describe_step(step, step_index),
         action_type=str(action_name(step)),
@@ -410,7 +562,41 @@ def step_to_dto(
         check_threshold=step.get("check_threshold") if isinstance(step.get("check_threshold"), (int, float)) else None,
         check_selector=str(step.get("check_selector") or "") or None,
         check_text=str(step.get("check_text") or "") or None,
+        recovery_view=_recovery_view(recovery, action_spec(action_name(step)).marker),
+        fingerprint=_fingerprint_view(bundle),
+        handler_hints_view=handler_hints_view,
+        safety=_safety_view(bundle, handler_hints_view, flags.is_destructive),
+        branch_summary=branch_summary,
+        branch_steps=branch_steps,
+        optional_hint=step.get("optional_hint") if isinstance(step.get("optional_hint"), dict) else None,
     )
+
+
+def _compile_health(document: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Workflow-level compile-health summary — derived from compile_report + meta, both computed
+    at compile time (compiler/build.py::_build_compile_report) but never surfaced to Human Edit
+    before this redesign."""
+    report = document.get("compile_report") if isinstance(document.get("compile_report"), dict) else {}
+    if not report:
+        return {}
+    steps_below_threshold = [
+        sr.get("index")
+        for sr in (report.get("steps") or [])
+        if isinstance(sr, dict) and sr.get("warnings")
+    ]
+    return {
+        "status": str(report.get("status") or ""),
+        "steps_total": report.get("steps_total"),
+        "min_confidence": report.get("min_confidence"),
+        "steps_with_warnings": report.get("steps_with_warnings"),
+        "steps_below_threshold": steps_below_threshold,
+        "required_runtime": str(meta.get("required_runtime") or ""),
+        "compiler_policy_version": str(meta.get("compiler_policy_version") or ""),
+        "structural_fingerprint_present": bool(meta.get("structural_fingerprint")),
+        # Diagnostics-tier only — provider/router telemetry from compile time, not a
+        # Review-tier concern. See DiagnosticsPanel.tsx.
+        "llm_router_stats": report.get("llm_router_stats") or {},
+    }
 
 
 def build_workflow_response(skill_id: str, document: dict[str, Any], *, asset_base_url: str) -> WorkflowResponse:
@@ -425,6 +611,7 @@ def build_workflow_response(skill_id: str, document: dict[str, Any], *, asset_ba
         for i, s in enumerate(steps_raw)
     ]
     suggestions = collect_suggestions([dict(s) for s in steps_raw], policy)
+    intent_graph = document.get("intent_graph") if isinstance(document.get("intent_graph"), dict) else {}
     return WorkflowResponse(
         skill_id=skill_id,
         package_meta=meta,
@@ -432,6 +619,8 @@ def build_workflow_response(skill_id: str, document: dict[str, Any], *, asset_ba
         steps=steps,
         suggestions=suggestions,
         asset_base_url=asset_base_url,
+        intent_graph=intent_graph,
+        compile_health=_compile_health(document, meta),
     )
 
 

@@ -74,6 +74,136 @@ def delete_step_at(document: dict[str, Any], step_index: int) -> dict[str, Any]:
     return doc
 
 
+def _branch_body_steps(document: dict[str, Any], step_index: int) -> tuple[dict[str, Any], list[Any]]:
+    """Resolve `steps[step_index]["branch"]["steps"]` — the only branch body currently editable
+    (if_present's nested body; try_dismiss/wait_for_one_of have no editable nested body — see
+    patch_gate.py::_validate_branch_patch). Returns (parent_step_dict, nested_steps_list)."""
+    skills = list(document.get("skills") or [])
+    if not skills:
+        raise ValueError("no_skills_block")
+    block = dict(skills[0])
+    steps = list(block.get("steps") or [])
+    if step_index < 0 or step_index >= len(steps):
+        raise ValueError("step_index_out_of_range")
+    parent = dict(steps[step_index])
+    action = parent.get("action") if isinstance(parent.get("action"), dict) else {}
+    kind = str(action.get("action") or "").strip().lower()
+    if kind != "if_present":
+        raise ValueError("branch_body_only_editable_for_if_present")
+    branch = dict(parent.get("branch") or {})
+    nested = list(branch.get("steps") or [])
+    return parent, nested
+
+
+def _save_branch_body_steps(
+    document: dict[str, Any], step_index: int, nested: list[Any]
+) -> dict[str, Any]:
+    doc = dict(document)
+    skills = list(doc.get("skills") or [])
+    block = dict(skills[0])
+    steps = list(block.get("steps") or [])
+    parent = dict(steps[step_index])
+    branch = dict(parent.get("branch") or {})
+    branch["steps"] = nested
+    parent["branch"] = branch
+    steps[step_index] = parent
+    block["steps"] = steps
+    skills[0] = block
+    doc["skills"] = skills
+    meta = dict(doc.get("meta") or {})
+    meta["version"] = int(meta.get("version", 1)) + 1
+    doc["meta"] = meta
+    return doc
+
+
+def insert_branch_step(
+    document: dict[str, Any], step_index: int, action_kind: str, insert_after: int | None = None
+) -> dict[str, Any]:
+    """Insert a new leaf step into an if_present step's nested body — mirrors insert_step_after
+    but scoped to `steps[step_index]["branch"]["steps"]`. Branch bodies are best-effort (never
+    enter Tier 1-4 recovery), but the scaffolded step itself is an ordinary leaf step shape —
+    only its own recovery/validation are meaningless there (enforced at patch time, not here)."""
+    _, nested = _branch_body_steps(document, step_index)
+    if insert_after is None:
+        insert_at = len(nested)
+        anchor_index = len(nested) - 1
+    else:
+        if insert_after < -1 or insert_after >= len(nested):
+            raise ValueError("branch_step_index_out_of_range")
+        insert_at = insert_after + 1
+        anchor_index = insert_after
+    nested.insert(insert_at, _new_manual_step(action_kind, _last_known_page_url(nested, anchor_index)))
+    return _save_branch_body_steps(document, step_index, nested)
+
+
+def delete_branch_step(document: dict[str, Any], step_index: int, nested_index: int) -> dict[str, Any]:
+    _, nested = _branch_body_steps(document, step_index)
+    if nested_index < 0 or nested_index >= len(nested):
+        raise ValueError("branch_step_index_out_of_range")
+    del nested[nested_index]
+    return _save_branch_body_steps(document, step_index, nested)
+
+
+def reorder_branch_steps(document: dict[str, Any], step_index: int, new_order: list[int]) -> dict[str, Any]:
+    _, nested = _branch_body_steps(document, step_index)
+    n = len(nested)
+    if sorted(new_order) != list(range(n)):
+        raise ValueError("invalid_reorder_permutation")
+    reordered = [dict(nested[i]) for i in new_order]
+    return _save_branch_body_steps(document, step_index, reordered)
+
+
+def confirm_optional_interstitial(document: dict[str, Any], step_index: int) -> dict[str, Any]:
+    """Human-gated conversion of a recorder-flagged optional interstitial (recording-next-steps.md
+    Priority 2; SkillStep.optional_hint) into a real try_dismiss branch step.
+
+    The compiler never does this on its own — a stochastic hint compiles to a normal required
+    step until a human confirms it here (CLAUDE.md Key Invariants: "branch steps compile only
+    from observed states + human confirmation"). Seeds the branch's candidates with the step's
+    own recorded selector plus the recorder's observed container_signal, mirroring the
+    try_dismiss scaffold _new_manual_step builds for a manually-inserted branch step.
+    """
+    doc = dict(document)
+    skills = list(doc.get("skills") or [])
+    if not skills:
+        raise ValueError("no_skills_block")
+    block = dict(skills[0])
+    steps = list(block.get("steps") or [])
+    if step_index < 0 or step_index >= len(steps):
+        raise ValueError("step_index_out_of_range")
+    step = dict(steps[step_index])
+    hint = step.get("optional_hint") if isinstance(step.get("optional_hint"), dict) else None
+    if not hint:
+        raise ValueError("step_has_no_optional_hint")
+
+    target = step.get("target") if isinstance(step.get("target"), dict) else {}
+    primary_selector = str(target.get("primary_selector") or "").strip()
+    container_signal = str(hint.get("container_signal") or "").strip()
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for c in (primary_selector, container_signal):
+        if c and c not in seen:
+            seen.add(c)
+            candidates.append(c)
+
+    action = dict(step.get("action") if isinstance(step.get("action"), dict) else {})
+    action["action"] = "try_dismiss"
+    step["action"] = action
+    step["intent"] = "try_dismiss_interstitial"
+    step["branch"] = {"candidates": candidates, "timeout_ms": 3000, "fallback_escape": True}
+    step["recovery"] = no_recovery_block("try_dismiss_interstitial")
+    step["optional_hint"] = None  # consumed by this confirmation
+
+    steps[step_index] = step
+    block["steps"] = steps
+    skills[0] = block
+    doc["skills"] = skills
+    meta = dict(doc.get("meta") or {})
+    meta["version"] = int(meta.get("version", 1)) + 1
+    doc["meta"] = meta
+    return doc
+
+
 def _last_known_page_url(steps: list[Any], insert_after: int) -> str:
     for raw in reversed(steps[: insert_after + 1]):
         step = dict(raw) if isinstance(raw, dict) else {}
@@ -116,6 +246,9 @@ def _new_manual_step(action_kind: str, page_url: str) -> dict[str, Any]:
         "wait": "wait_for_page",
         "screenshot": "capture_screenshot",
         "upload": "upload_file",
+        "if_present": "dismiss_if_present",
+        "try_dismiss": "try_dismiss_interstitial",
+        "wait_for_one_of": "wait_for_one_of_states",
     }.get(kind, f"{kind}_target")
     url = page_url if page_url.startswith(("http://", "https://")) else ""
     action: dict[str, Any] = {"action": kind}
@@ -165,6 +298,17 @@ def _new_manual_step(action_kind: str, page_url: str) -> dict[str, Any]:
     if kind in {"check", "assert"}:
         step["check_kind"] = "url"
         step["check_pattern"] = url
+    if kind in {"if_present", "try_dismiss", "wait_for_one_of"}:
+        # Branch bodies are best-effort and never enter the Tier 1-4 recovery cascade — see
+        # CLAUDE.md Key Invariants. Scaffold an empty body per kind; authored via
+        # BranchBodyEditor.tsx (nested steps for if_present) or the probe/candidate/option
+        # selector fields directly (try_dismiss/wait_for_one_of) — see patch_gate.py.
+        if kind == "if_present":
+            step["branch"] = {"steps": [], "timeout_ms": 3000}
+        elif kind == "try_dismiss":
+            step["branch"] = {"candidates": [], "timeout_ms": 3000, "fallback_escape": True}
+        else:  # wait_for_one_of
+            step["branch"] = {"options": [], "timeout_ms": 5000, "required": True}
     return step
 
 

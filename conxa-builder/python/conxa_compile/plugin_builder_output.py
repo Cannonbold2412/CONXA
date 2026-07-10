@@ -152,10 +152,17 @@ def _write_skill_packs_format(
             # NOTE(branch-steps): if_present/try_dismiss/wait_for_one_of (EXEC-1) require a
             # runtime that recognizes those step types — an older runtime silently no-ops an
             # unknown step type (see runtime/run.js executeStep), which for a branch step means
-            # skipping its entire nested body. When the app layer shipping these handlers is
-            # tagged (see MIN_HOST precedent in .github/workflows/build-runtime-app.yml), bump
-            # this floor to that version so packs using branch steps refuse on older runtimes
-            # instead of silently skipping them.
+            # skipping its entire nested body. The branch executor (probePresent/runBranchBody/
+            # HANDLERS.if_present|try_dismiss|wait_for_one_of, commit 45896e7) is on `main` but,
+            # as of the 2026-07-10 Human Edit branch-authoring work, is NOT YET in any tagged
+            # app-vX.Y.Z release (confirmed: `git merge-base --is-ancestor 45896e7 app-v1.3.4`
+            # fails). Do NOT hardcode a bump here until that changes — a fabricated version floor
+            # would make every pack (branch steps or not) refuse to run on the current app layer.
+            # Once the app layer containing 45896e7 is tagged (see MIN_HOST precedent in
+            # .github/workflows/build-runtime-app.yml), bump the default below to that tag so
+            # packs using branch steps refuse on older runtimes instead of silently skipping
+            # their body. Until then, set CONXA_REQUIRED_RUNTIME explicitly for any pack that
+            # uses branch steps.
             "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3"),
             "company":          company,
             "target_url":       target_url,

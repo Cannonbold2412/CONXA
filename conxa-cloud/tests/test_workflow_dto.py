@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conxa_compile.editor.workflow_dto import step_to_dto
+from conxa_compile.editor.workflow_dto import build_workflow_response, step_to_dto
 
 
 def _fill_step() -> dict:
@@ -98,3 +98,210 @@ def test_step_to_dto_prefers_persisted_selector_confidence_over_bundle_derivatio
 def test_step_to_dto_compile_confidence_none_without_identity_bundle():
     dto = step_to_dto("skill_1", _fill_step(), 0, {}, "")
     assert dto.compile_confidence is None
+
+
+# ─────────────────────────────────────────────────
+# 2026-07-10 Human Edit vs. Skill Package redesign — read-only visibility additions.
+# ─────────────────────────────────────────────────
+
+def test_step_to_dto_recovery_view_projects_recovery_block():
+    step = _fill_step()
+    step["recovery"] = {
+        "strategies": ["semantic match"],
+        "max_attempts": 2,
+        "confidence_threshold": 0.85,
+        "require_diverse_attempts": True,
+        "anchors": [{"kind": "near", "value": "email"}],
+    }
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.recovery_view["strategies"] == ["semantic match"]
+    assert dto.recovery_view["max_attempts"] == 2
+    assert dto.recovery_view["confidence_threshold"] == 0.85
+
+
+def test_step_to_dto_recovery_view_empty_for_marker_step():
+    step = {"action": {"action": "frame_enter"}, "target": {}, "signals": {}, "recovery": {"max_attempts": 2}}
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.recovery_view == {}
+
+
+def test_step_to_dto_fingerprint_view_projects_identity_bundle_fingerprint():
+    step = _fill_step()
+    step["identity_bundle"] = {
+        "fingerprint": {"role": "textbox", "inner_text": "", "data_testid": "email-input"},
+        "destructive": False,
+    }
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.fingerprint["role"] == "textbox"
+    assert dto.fingerprint["data_testid"] == "email-input"
+    assert dto.fingerprint["destructive"] is False
+
+
+def test_step_to_dto_fingerprint_view_includes_diagnostics_only_hashes():
+    step = _fill_step()
+    step["identity_bundle"] = {
+        "fingerprint": {"role": "textbox"},
+        "stable_hash": "abc123",
+        "compat_fingerprint": "def456",
+    }
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.fingerprint["stable_hash"] == "abc123"
+    assert dto.fingerprint["compat_fingerprint"] == "def456"
+
+
+def test_step_to_dto_fingerprint_view_empty_without_identity_bundle():
+    dto = step_to_dto("skill_1", _fill_step(), 0, {}, "")
+    assert dto.fingerprint == {}
+
+
+def test_step_to_dto_safety_view_reflects_handler_hints_allow_forced_action():
+    step = _fill_step()
+    step["handler_hints"] = {"allow_forced_action": True, "hover_chain": [{"selector": ".menu"}]}
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.safety["allow_forced_action"] is True
+    assert dto.safety["has_hover_chain"] is True
+    assert dto.handler_hints_view["hover_chain_len"] == 1
+
+
+def test_step_to_dto_safety_view_defaults_false_without_handler_hints():
+    dto = step_to_dto("skill_1", _fill_step(), 0, {}, "")
+    assert dto.safety == {"destructive": False, "allow_forced_action": False, "has_hover_chain": False}
+
+
+def test_step_to_dto_branch_summary_none_for_ordinary_step():
+    dto = step_to_dto("skill_1", _fill_step(), 0, {}, "")
+    assert dto.branch_summary is None
+    assert dto.branch_steps == []
+
+
+def test_step_to_dto_if_present_projects_nested_branch_steps_with_path_addressed_ids():
+    step = {
+        "action": {"action": "if_present"},
+        "intent": "dismiss_if_present",
+        "target": {"primary_selector": ".cookie-banner", "fallback_selectors": []},
+        "signals": {},
+        "branch": {
+            "timeout_ms": 1500,
+            "steps": [
+                {"action": {"action": "click"}, "intent": "click_accept", "target": {"primary_selector": "#accept"}},
+            ],
+        },
+    }
+    dto = step_to_dto("skill_1", step, 3, {}, "")
+    assert dto.branch_summary == {"kind": "if_present", "probe": ".cookie-banner", "step_count": 1}
+    assert len(dto.branch_steps) == 1
+    assert dto.branch_steps[0].id == "skill_1:3.branch.steps[0]"
+    assert dto.branch_steps[0].intent == "click_accept"
+
+
+def test_step_to_dto_try_dismiss_summary_includes_candidates():
+    step = {
+        "action": {"action": "try_dismiss"},
+        "intent": "try_dismiss_interstitial",
+        "target": {"primary_selector": "", "fallback_selectors": []},
+        "signals": {},
+        "branch": {"candidates": ["#accept-cookies", ".cookie .accept"], "timeout_ms": 800},
+    }
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.branch_summary["kind"] == "try_dismiss"
+    assert dto.branch_summary["step_count"] == 0
+    assert dto.branch_summary["candidates"] == ["#accept-cookies", ".cookie .accept"]
+    assert dto.branch_steps == []
+
+
+def test_step_to_dto_wait_for_one_of_summary_includes_options():
+    step = {
+        "action": {"action": "wait_for_one_of"},
+        "intent": "wait_for_one_of_states",
+        "target": {"primary_selector": "", "fallback_selectors": []},
+        "signals": {},
+        "branch": {
+            "options": [
+                {"selector": "#mfa-code", "steps": [{"action": {"action": "fill"}}]},
+                {"selector": "#dashboard"},
+            ],
+            "timeout_ms": 8000,
+        },
+    }
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.branch_summary["kind"] == "wait_for_one_of"
+    assert dto.branch_summary["options"] == [
+        {"selector": "#mfa-code", "step_count": 1},
+        {"selector": "#dashboard", "step_count": 0},
+    ]
+    assert dto.branch_summary["step_count"] == 1
+    # Per-option nested bodies are read-only this pass — branch_steps stays empty.
+    assert dto.branch_steps == []
+
+
+# ─────────────────────────────────────────────────
+# recording-next-steps.md Priority 2 — conditional-state observation (optional_hint).
+# ─────────────────────────────────────────────────
+
+def test_step_to_dto_surfaces_optional_hint_when_flagged():
+    step = _fill_step()
+    step["action"] = {"action": "click"}
+    step["optional_hint"] = {"kind": "try_dismiss", "container_signal": '[role="dialog"]'}
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.optional_hint == {"kind": "try_dismiss", "container_signal": '[role="dialog"]'}
+
+
+def test_step_to_dto_optional_hint_none_for_ordinary_step():
+    dto = step_to_dto("skill_1", _fill_step(), 0, {}, "")
+    assert dto.optional_hint is None
+
+
+def _document_with_intent_graph_and_compile_report() -> dict:
+    return {
+        "meta": {
+            "version": 1,
+            "required_runtime": ">=1.0.3",
+            "compiler_policy_version": "v3",
+            "structural_fingerprint": {"h": "abc"},
+        },
+        "inputs": [],
+        "intent_graph": {
+            "goal": "Dismiss the cookie banner then submit the form",
+            "steps": [{"index": 0, "intent": "dismiss_if_present", "verification_anchor": "banner gone"}],
+            "decision_points": [],
+            "expected_end_state": {"url_contains": "/done"},
+        },
+        "compile_report": {
+            "status": "review_needed",
+            "steps_total": 2,
+            "min_confidence": 0.62,
+            "steps_with_warnings": 1,
+            "llm_router_stats": {"provider": "groq"},
+            "steps": [
+                {"index": 0, "warnings": []},
+                {"index": 1, "warnings": [{"code": "low_selector_confidence", "message": "low"}]},
+            ],
+        },
+        "skills": [{"name": "default", "steps": [_fill_step(), _fill_step()]}],
+    }
+
+
+def test_build_workflow_response_surfaces_intent_graph_verbatim():
+    doc = _document_with_intent_graph_and_compile_report()
+    wf = build_workflow_response("skill_1", doc, asset_base_url="file:///tmp")
+    assert wf.intent_graph["goal"] == "Dismiss the cookie banner then submit the form"
+    assert wf.intent_graph["steps"][0]["verification_anchor"] == "banner gone"
+
+
+def test_build_workflow_response_derives_compile_health_from_report_and_meta():
+    doc = _document_with_intent_graph_and_compile_report()
+    wf = build_workflow_response("skill_1", doc, asset_base_url="file:///tmp")
+    assert wf.compile_health["status"] == "review_needed"
+    assert wf.compile_health["min_confidence"] == 0.62
+    assert wf.compile_health["steps_below_threshold"] == [1]
+    assert wf.compile_health["required_runtime"] == ">=1.0.3"
+    assert wf.compile_health["compiler_policy_version"] == "v3"
+    assert wf.compile_health["structural_fingerprint_present"] is True
+    assert wf.compile_health["llm_router_stats"] == {"provider": "groq"}
+
+
+def test_build_workflow_response_empty_intent_graph_and_compile_health_when_absent():
+    doc = {"meta": {"version": 1}, "inputs": [], "skills": [{"name": "default", "steps": []}]}
+    wf = build_workflow_response("skill_1", doc, asset_base_url="file:///tmp")
+    assert wf.intent_graph == {}
+    assert wf.compile_health == {}

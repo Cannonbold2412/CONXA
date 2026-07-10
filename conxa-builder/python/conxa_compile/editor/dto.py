@@ -86,6 +86,34 @@ class StepEditorDTO(BaseModel):
     # compiler.selector_score.confidence_from_signal_rows) — None on steps with no bundle.
     compile_confidence: float | None = None
 
+    # --- Read-only "Human Edit vs. Skill Package" visibility additions (2026-07-10 redesign) ---
+    # All of the below are display-only projections of data already persisted on the step; none
+    # of them accept edits — see conxa_compile/editor/patch_gate.py for the sole write path.
+
+    # {strategies, max_attempts, confidence_threshold, require_diverse_attempts, anchors} —
+    # plain-language recovery ladder from the persisted RecoveryBlock. Tunables are policy-owned
+    # (predictable recovery, not per-step drift) so this is display-only, never patchable.
+    recovery_view: dict[str, Any] = Field(default_factory=dict)
+    # Subset of identity_bundle.fingerprint (ElementFingerprint) plus frame_chain/shadow_path
+    # summaries and the destructive flag — "what was recorded" for debugging a misfire.
+    fingerprint: dict[str, Any] = Field(default_factory=dict)
+    # {has_hover_chain, hover_chain_len, virtualized_container, allow_forced_action} from
+    # handler_hints — precompiled runtime hints previously invisible to the editor.
+    handler_hints_view: dict[str, Any] = Field(default_factory=dict)
+    # {destructive, allow_forced_action, has_hover_chain} — drives step-row safety badges.
+    safety: dict[str, bool] = Field(default_factory=dict)
+    # {kind, probe, step_count} when this step is a branch action (if_present/try_dismiss/
+    # wait_for_one_of); None for ordinary steps.
+    branch_summary: dict[str, Any] | None = None
+    # {kind: "try_dismiss", container_signal} when the recorder flagged this step's target as
+    # sitting inside an optional interstitial (recording-next-steps.md Priority 2) and a human
+    # hasn't confirmed it yet — drives the "treat as optional?" suggestion in Human Edit. None
+    # once confirmed (confirm_optional_interstitial clears it) or for ordinary steps.
+    optional_hint: dict[str, Any] | None = None
+    # Nested body steps projected the same way as top-level steps, addressed by a path-based id
+    # (e.g. "{skill_id}:{step_index}.branch.steps[1]") for patch_gate path-addressed edits.
+    branch_steps: list["StepEditorDTO"] = Field(default_factory=list)
+
 
 class SuggestionItem(BaseModel):
     step_index: int
@@ -112,3 +140,16 @@ class WorkflowResponse(BaseModel):
     steps: list[StepEditorDTO] = Field(default_factory=list)
     suggestions: list[SuggestionItem] = Field(default_factory=list)
     asset_base_url: str = ""
+    # Verbatim WorkflowIntentGraph (goal, per-step intent + verification_anchor, decision_points,
+    # expected_end_state) — the compiled workflow "plan", computed at compile time but never
+    # surfaced to Human Edit before this redesign. Empty dict when the document has none.
+    intent_graph: dict[str, Any] = Field(default_factory=dict)
+    # {status, steps_total, min_confidence, steps_with_warnings, steps_below_threshold,
+    # required_runtime, compiler_policy_version, structural_fingerprint_present} — a
+    # workflow-level compile-health summary derived from document["compile_report"] + meta.
+    compile_health: dict[str, Any] = Field(default_factory=dict)
+
+
+# StepEditorDTO.branch_steps is a self-reference; resolve the forward ref now that the class
+# body (and its own name) are fully defined.
+StepEditorDTO.model_rebuild()

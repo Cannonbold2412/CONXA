@@ -2,24 +2,78 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from handlers.protocol import _CommandError, _deep_merge, _event_sink, _safe_id, _skill_response
 
+# Matches the only nested-step path this pass supports: an if_present step's own body
+# (`branch.steps[N]`) — see conxa_compile/editor/patch_gate.py::_validate_branch_patch and
+# workflow_mutations.py::_branch_body_steps for why try_dismiss/wait_for_one_of have no
+# editable nested body yet.
+_BRANCH_STEP_PATH_RE = re.compile(r"^branch\.steps\[(\d+)\]$")
+
+
 class WorkflowEditorMixin:
-    def cmd_patch_step(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        import copy
-        from conxa_core.storage.json_store import read_skill, write_skill
-        from conxa_compile.compiler.patch import revalidate_step
+    def _apply_step_patch(
+        self,
+        step: dict[str, Any],
+        patch: dict[str, Any],
+        *,
+        in_branch_body: bool = False,
+    ) -> dict[str, Any]:
+        """Validate + deep-merge a patch into a single (possibly nested) step dict, rebuilding
+        identity_bundle.signals when the target selector list changed. Shared by cmd_patch_step's
+        top-level and path-addressed (branch-body) flows so both go through the same gate."""
         from conxa_compile.compiler.selector_filters import selector_passes_filters
         from conxa_compile.compiler.selector_grammar import rebuild_identity_signals_from_target
         from conxa_compile.compiler.build import _confidence_from_identity_bundle
         from conxa_compile.editor.patch_gate import validate_editor_patch
         from conxa_compile.policy.bundle import get_policy_bundle
 
+        try:
+            validate_editor_patch(step, patch, get_policy_bundle().data, in_branch_body=in_branch_body)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Patch rejected: {exc}") from exc
+
+        merged = _deep_merge(dict(step), patch)
+
+        if "target" in patch and isinstance(patch.get("target"), dict):
+            tgt = merged.get("target") if isinstance(merged.get("target"), dict) else {}
+            primary = str(tgt.get("primary_selector") or "").strip()
+            if primary and not selector_passes_filters(primary):
+                raise _CommandError("invalid_selector", f"primary_selector failed quality gates: {primary!r}")
+            for fb in (tgt.get("fallback_selectors") or []):
+                fb_s = str(fb).strip()
+                if fb_s and not selector_passes_filters(fb_s):
+                    raise _CommandError("invalid_selector", f"fallback_selector failed quality gates: {fb_s!r}")
+
+            # Rebuild identity_bundle.signals from the edited target selector list so the
+            # runtime hot path reflects exactly what the editor shows. Editor order = priority.
+            new_signals = rebuild_identity_signals_from_target(merged)
+            if new_signals:
+                bundle = dict(merged.get("identity_bundle") or {})
+                bundle["signals"] = new_signals
+                merged["identity_bundle"] = bundle
+                try:
+                    merged.setdefault("target", {})
+                    merged["target"]["selector_confidence"] = _confidence_from_identity_bundle(bundle)
+                except Exception:
+                    pass  # Non-critical — confidence will be recomputed on next compile.
+
+        return merged
+
+    def cmd_patch_step(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        import copy
+        from conxa_core.storage.json_store import read_skill, write_skill
+        from conxa_compile.compiler.patch import revalidate_step
+
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
         patch = dict(payload.get("patch") or {})
+        # Optional path addressing a nested branch-body step (e.g. "branch.steps[1]") — see
+        # _BRANCH_STEP_PATH_RE. Absent for ordinary top-level step patches (unchanged behavior).
+        path = payload.get("path")
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
@@ -32,42 +86,27 @@ class WorkflowEditorMixin:
         steps = list(block.get("steps") or [])
         if step_index < 0 or step_index >= len(steps):
             raise _CommandError("step_not_found", f"Step {step_index} out of range")
-        original_step = dict(steps[step_index])
+        parent_step = dict(steps[step_index])
 
-        # Reject patches that would silently drop a required post-condition assertion, an
-        # unsupported action kind, or other invariant violations before anything is merged
-        # or persisted (`conxa_compile/editor/patch_gate.py`).
-        try:
-            validate_editor_patch(original_step, patch, get_policy_bundle().data)
-        except ValueError as exc:
-            raise _CommandError(str(exc), f"Patch rejected: {exc}") from exc
-
-        step = _deep_merge(dict(steps[step_index]), patch)
-
-        # Quality-gate edited selectors before persisting.
-        if "target" in patch and isinstance(patch.get("target"), dict):
-            tgt = step.get("target") if isinstance(step.get("target"), dict) else {}
-            primary = str(tgt.get("primary_selector") or "").strip()
-            if primary and not selector_passes_filters(primary):
-                raise _CommandError("invalid_selector", f"primary_selector failed quality gates: {primary!r}")
-            for fb in (tgt.get("fallback_selectors") or []):
-                fb_s = str(fb).strip()
-                if fb_s and not selector_passes_filters(fb_s):
-                    raise _CommandError("invalid_selector", f"fallback_selector failed quality gates: {fb_s!r}")
-
-            # Rebuild identity_bundle.signals from the edited target selector list so the
-            # runtime hot path reflects exactly what the editor shows. Editor order = priority.
-            new_signals = rebuild_identity_signals_from_target(step)
-            if new_signals:
-                bundle = dict(step.get("identity_bundle") or {})
-                bundle["signals"] = new_signals
-                step["identity_bundle"] = bundle
-                # Re-derive selector_confidence from the rebuilt bundle.
-                try:
-                    step.setdefault("target", {})
-                    step["target"]["selector_confidence"] = _confidence_from_identity_bundle(bundle)
-                except Exception:
-                    pass  # Non-critical — confidence will be recomputed on next compile.
+        if path:
+            match = _BRANCH_STEP_PATH_RE.match(str(path))
+            if not match:
+                raise _CommandError("invalid_step_path", f"Unsupported step path: {path!r}")
+            nested_index = int(match.group(1))
+            branch = dict(parent_step.get("branch") or {})
+            nested_steps = list(branch.get("steps") or [])
+            if nested_index < 0 or nested_index >= len(nested_steps):
+                raise _CommandError("step_not_found", f"Branch step {nested_index} out of range")
+            nested_step = dict(nested_steps[nested_index])
+            merged_nested = self._apply_step_patch(nested_step, patch, in_branch_body=True)
+            nested_steps[nested_index] = merged_nested
+            branch["steps"] = nested_steps
+            parent_step["branch"] = branch
+            step = parent_step
+            revalidation_target = merged_nested
+        else:
+            step = self._apply_step_patch(parent_step, patch, in_branch_body=False)
+            revalidation_target = step
 
         steps[step_index] = step
         block["steps"] = steps
@@ -76,10 +115,100 @@ class WorkflowEditorMixin:
         meta = dict(doc.get("meta") or {})
         meta["version"] = int(meta.get("version", 1)) + 1
         doc["meta"] = meta
-        revalidation = revalidate_step(step)
+        revalidation = revalidate_step(revalidation_target)
         self._push_undo(skill_id, snapshot)
         write_skill(skill_id, doc)
         result = _skill_response(skill_id, doc, revalidation)
+        result.update(self._history_flags(skill_id))
+        return result
+
+    def cmd_insert_branch_step(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Insert a leaf step into an if_present step's nested body (structural — mirrors
+        cmd_insert_step, scoped to `steps[step_index]["branch"]["steps"]`)."""
+        import copy
+        from conxa_core.storage.json_store import read_skill, write_skill
+        from conxa_compile.editor.workflow_mutations import insert_branch_step
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        step_index = int(payload.get("step_index") or 0)
+        action_kind = str(payload.get("action_kind") or "click")
+        insert_after = payload.get("insert_after")
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        self._push_undo(skill_id, copy.deepcopy(doc))
+        try:
+            doc = insert_branch_step(doc, step_index, action_kind, insert_after)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Could not insert branch step: {exc}") from exc
+        write_skill(skill_id, doc)
+        result = _skill_response(skill_id, doc)
+        result.update(self._history_flags(skill_id))
+        return result
+
+    def cmd_delete_branch_step(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        import copy
+        from conxa_core.storage.json_store import read_skill, write_skill
+        from conxa_compile.editor.workflow_mutations import delete_branch_step
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        step_index = int(payload.get("step_index") or 0)
+        nested_index = int(payload.get("nested_index") or 0)
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        self._push_undo(skill_id, copy.deepcopy(doc))
+        try:
+            doc = delete_branch_step(doc, step_index, nested_index)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Could not delete branch step: {exc}") from exc
+        write_skill(skill_id, doc)
+        result = _skill_response(skill_id, doc)
+        result.update(self._history_flags(skill_id))
+        return result
+
+    def cmd_reorder_branch_steps(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        import copy
+        from conxa_core.storage.json_store import read_skill, write_skill
+        from conxa_compile.editor.workflow_mutations import reorder_branch_steps
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        step_index = int(payload.get("step_index") or 0)
+        new_order = list(payload.get("new_order") or [])
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        self._push_undo(skill_id, copy.deepcopy(doc))
+        try:
+            doc = reorder_branch_steps(doc, step_index, new_order)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Could not reorder branch steps: {exc}") from exc
+        write_skill(skill_id, doc)
+        result = _skill_response(skill_id, doc)
+        result.update(self._history_flags(skill_id))
+        return result
+
+    def cmd_confirm_optional_interstitial(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Human confirms a recorder-flagged optional interstitial (recording-next-steps.md
+        Priority 2) should be treated as one — converts the step into a real try_dismiss branch.
+        Structural mutation, same shape as cmd_insert_branch_step: no patch_gate involved, the
+        step's action/branch are rewritten wholesale by workflow_mutations.py."""
+        import copy
+        from conxa_core.storage.json_store import read_skill, write_skill
+        from conxa_compile.editor.workflow_mutations import confirm_optional_interstitial
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        step_index = int(payload.get("step_index") or 0)
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        self._push_undo(skill_id, copy.deepcopy(doc))
+        try:
+            doc = confirm_optional_interstitial(doc, step_index)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Could not confirm optional interstitial: {exc}") from exc
+        write_skill(skill_id, doc)
+        result = _skill_response(skill_id, doc)
         result.update(self._history_flags(skill_id))
         return result
 

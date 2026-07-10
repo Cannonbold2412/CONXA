@@ -88,8 +88,91 @@ def _coerce_scroll_delta(raw: Any) -> int:
         raise ValueError("scroll_amount_must_be_integer") from exc
 
 
-def validate_editor_patch(step: dict[str, Any], patch: dict[str, Any], policy: dict[str, Any]) -> None:
-    """Raise ValueError with a human-readable message if the patch is not allowed."""
+def _coerce_branch_timeout_ms(raw: Any) -> None:
+    if raw is None:
+        return
+    try:
+        timeout = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("branch_timeout_ms_must_be_integer") from exc
+    if timeout < 0 or timeout > 60000:
+        raise ValueError("branch_timeout_ms_out_of_range")
+
+
+def _validate_branch_patch(kind: str, raw: Any) -> None:
+    """Validate a patch to step["branch"] (if_present/try_dismiss/wait_for_one_of — EXEC-1).
+
+    Nested `if_present` body steps are NOT edited through this key — they're structural
+    (insert/delete/reorder RPCs mirroring the top-level ones) plus per-nested-step patches
+    addressed by `path` (see cmd_patch_step), so any `steps` content here is rejected to avoid
+    a blind deep-merge clobbering edits made through that path-addressed flow. `wait_for_one_of`
+    option bodies are read-only this pass (see StepEditorDTO.branch_summary's `options` — full
+    per-option step editing is an explicit follow-up), so a `steps` key on any option is rejected
+    too, keeping that boundary honest rather than silently accepting content nothing renders.
+    """
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise ValueError("branch_must_be_object")
+    _coerce_branch_timeout_ms(raw.get("timeout_ms"))
+
+    if kind == "if_present":
+        if "steps" in raw:
+            raise ValueError("branch_if_present_steps_not_patchable_here")
+        return
+
+    if kind == "try_dismiss":
+        candidates = raw.get("candidates")
+        if candidates is not None:
+            if not isinstance(candidates, list):
+                raise ValueError("branch_candidates_must_be_array")
+            for i, c in enumerate(candidates):
+                text = str(c or "").strip()
+                if text and not selector_passes_filters(text):
+                    raise ValueError(f"branch_candidate_{i}_failed_quality_gates")
+        fallback_escape = raw.get("fallback_escape")
+        if fallback_escape is not None and not isinstance(fallback_escape, bool):
+            raise ValueError("branch_fallback_escape_must_be_boolean")
+        return
+
+    if kind == "wait_for_one_of":
+        options = raw.get("options")
+        if options is not None:
+            if not isinstance(options, list):
+                raise ValueError("branch_options_must_be_array")
+            for i, opt in enumerate(options):
+                if not isinstance(opt, dict):
+                    raise ValueError(f"branch_option_{i}_must_be_object")
+                if "steps" in opt:
+                    raise ValueError(f"branch_option_{i}_steps_not_patchable_here")
+                selector = str(opt.get("selector") or "").strip()
+                if not selector:
+                    raise ValueError(f"branch_option_{i}_selector_required")
+                if not selector_passes_filters(selector):
+                    raise ValueError(f"branch_option_{i}_selector_failed_quality_gates")
+        required = raw.get("required")
+        if required is not None and not isinstance(required, bool):
+            raise ValueError("branch_required_must_be_boolean")
+
+
+def validate_editor_patch(
+    step: dict[str, Any],
+    patch: dict[str, Any],
+    policy: dict[str, Any],
+    *,
+    in_branch_body: bool = False,
+) -> None:
+    """Raise ValueError with a human-readable message if the patch is not allowed.
+
+    `in_branch_body=True` marks a patch to a nested step inside another step's branch body
+    (if_present's `branch.steps[j]`, addressed via cmd_patch_step's `path` parameter). Branch
+    bodies run best-effort and never enter the Tier 1-4 recovery cascade (CLAUDE.md Key
+    Invariants), so a nested step's `recovery`/`validation` blocks are meaningless there and any
+    attempt to patch them is rejected rather than silently accepted.
+    """
+    if in_branch_body and ("recovery" in patch or "validation" in patch):
+        raise ValueError("branch_body_step_cannot_patch_recovery_or_validation")
+
     if "frame" in patch:
         _validate_frame_patch(patch.get("frame"))
 
@@ -163,6 +246,14 @@ def validate_editor_patch(step: dict[str, Any], patch: dict[str, Any], policy: d
         )
         if invalid_keys:
             raise ValueError("check_step_allows_only_check_fields")
+    if act in {"if_present", "try_dismiss", "wait_for_one_of"}:
+        invalid_keys = sorted(
+            set(patch) - {"intent", "action", "target", "frame", "branch", "validation", "recovery"}
+        )
+        if invalid_keys:
+            raise ValueError("branch_step_allows_only_target_branch_intent_validation_recovery_frame")
+        if "branch" in patch:
+            _validate_branch_patch(act, patch.get("branch"))
     if act != "scroll":
         eff = get_effective_intent_from_skill_step(merged) or str(merged.get("intent") or "").strip()
         if not eff.strip():
