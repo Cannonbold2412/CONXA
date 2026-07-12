@@ -266,6 +266,15 @@ def collect_suggestions(steps: list[dict[str, Any]], policy: dict[str, Any]) -> 
                     message="Vision anchors were unavailable during compile; deterministic anchors were used.",
                 )
             )
+        if isinstance(cw, dict) and cw.get("weak_evidence"):
+            items.append(
+                SuggestionItem(
+                    step_index=idx,
+                    severity="warn",
+                    code="weak_evidence",
+                    message="No observed page change backs this step's required check — it only confirms the click did something, not what.",
+                )
+            )
         if destructive_compiler_step(skill_step_for_destructive_check(step), policy):
             if isinstance(cw, dict) and cw.get("destructive_low_anchor_count"):
                 items.append(

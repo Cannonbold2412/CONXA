@@ -115,19 +115,42 @@ def intent_specificity_score(intent: str, policy: dict[str, Any]) -> float:
 
 
 def normalize_compiler_intent(ev: dict[str, Any], llm_intent: str, policy: dict[str, Any]) -> str:
-    """Prefer specific LLM intent; otherwise derive deterministic slug from element context."""
+    """Refine a real intent; never fabricate one when none exists.
+
+    Preference order, each step only running if the previous produced nothing usable:
+    1. The LLM's own intent, if specific (non-generic, non-empty, not a bare structural click).
+    2. A content-derived slug for icon-only / unlabeled-container elements (path/svg/g,
+       unlabeled div/span) — built from the element's intent_hint + visible text, not a guess.
+    3. For a plain form-control tag (button/input/...), a bare "click_<tag>"/"focus_<tag>" seed —
+       used ONLY to give _upgrade_tag_only_action_intent's visible-text lookup a shape to work
+       from, not as a naming scheme in its own right.
+    If none of that yields anything non-generic, returns "" — the step is flagged via the
+    existing flags.generic_intent / "intent" badge / generic_or_empty_intent suggestion rather
+    than silently shipping a plausible-looking template.
+    """
     action = str((ev.get("action") or {}).get("action") or "").lower()
     normalized = str(llm_intent or "").strip().lower().replace(" ", "_")
     if normalized in _STRUCTURE_CLICK_INTENTS:
         normalized = ""
     generics = generic_intents(policy)
-    if normalized and normalized not in generics and "_" in normalized:
-        base = sanitize_intent_token(normalized, _derive_fallback_intent_slug(ev, action, policy))
-        refined = _refine_intent_for_action_semantics(ev, base, policy)
-        return _upgrade_tag_only_action_intent(ev, refined, action, policy)
-    base = _derive_fallback_intent_slug(ev, action, policy)
+
+    base = normalized if (normalized and normalized not in generics and "_" in normalized) else ""
+
+    if not base:
+        base = _content_derived_intent_slug(ev, policy)
+
+    if not base:
+        tag = str((ev.get("target") or {}).get("tag") or "").lower()
+        if action in {"click", "focus"} and tag in _TAG_ONLY_HINTS:
+            base = f"{action}_{tag}"
+
+    if not base:
+        return ""
+
     refined = _refine_intent_for_action_semantics(ev, base, policy)
-    return _upgrade_tag_only_action_intent(ev, refined, action, policy)
+    upgraded = _upgrade_tag_only_action_intent(ev, refined, action, policy)
+    final = str(upgraded or "").strip().lower()
+    return "" if (not final or final in generics) else final
 
 
 def _target_is_editable_control(ev: dict[str, Any]) -> bool:
@@ -168,52 +191,41 @@ def _target_has_actionable_semantics(target: dict[str, Any], semantic: dict[str,
     return False
 
 
-def _derive_fallback_intent_slug(ev: dict[str, Any], action: str, policy: dict[str, Any]) -> str:
+def _content_derived_intent_slug(ev: dict[str, Any], policy: dict[str, Any]) -> str:
+    """Content-aware slug for icon-only / unlabeled-container elements (path/svg/g, or a div/span
+    with no actionable semantics of its own) — built from the element's detected intent_hint plus
+    its visible text via semantic_slug_from_text. Returns "" when the element doesn't match this
+    shape, or when there's no real signal to derive from — this is refinement of real page
+    content, not a naming template for elements this doesn't apply to (see normalize_compiler_intent).
+    """
     target = ev.get("target") or {}
     semantic = ev.get("semantic") or {}
     tag_l = str(target.get("tag") or "").lower()
-    if tag_l in {"path", "svg", "g"} or (tag_l in {"div", "span"} and not _target_has_actionable_semantics(target, semantic)):
-        ih = str(semantic.get("intent_hint") or "").strip().lower()
-        vis = _visible_text_for_intent(ev)
-        if ih == "commit_form":
-            return "submit_form_action"
-        if ih == "navigate" or tag_l == "a":
-            if len(vis) >= 2:
-                slug_t, _c = semantic_slug_from_text("link", vis, policy)
-                return sanitize_intent_token(slug_t, "navigate_link_target")
-            return "navigate_link_target"
-        if ih == "activate_control" and len(vis) >= 2:
-            slug_t, _c = semantic_slug_from_text("button", vis, policy)
-            return sanitize_intent_token(slug_t, "activate_control")
-        if ih == "provide_input" and len(vis) >= 2:
-            slug_t, _c = semantic_slug_from_text("input", vis, policy)
-            return sanitize_intent_token(slug_t, "provide_input")
-        if ih == "choose_option":
-            return "choose_option"
+    if tag_l not in {"path", "svg", "g"} and not (
+        tag_l in {"div", "span"} and not _target_has_actionable_semantics(target, semantic)
+    ):
+        return ""
+    ih = str(semantic.get("intent_hint") or "").strip().lower()
+    vis = _visible_text_for_intent(ev)
+    if ih == "commit_form":
+        return "submit_form_action"
+    if ih == "navigate" or tag_l == "a":
         if len(vis) >= 2:
-            slug_t, _c = semantic_slug_from_text(str(target.get("tag") or "element"), vis, policy)
-            return sanitize_intent_token(slug_t, "advance_ui_flow")
-        return "advance_ui_flow"
-    raw_hint = (
-        str(target.get("name") or "")
-        or str(target.get("aria_label") or "")
-        or str(target.get("placeholder") or "")
-        or str(target.get("tag") or "")
-        or str(semantic.get("role") or "")
-        or "target"
-    ).strip().lower()
-    hint = "".join(ch if ch.isalnum() else "_" for ch in raw_hint).strip("_") or "target"
-    if action == "focus":
-        return f"focus_{hint}"
-    if action in {"type", "fill"}:
-        return f"enter_{hint}_value"
-    if action == "click":
-        return f"click_{hint}"
-    if action == "scroll":
-        return "scroll_viewport"
-    if action in {"navigate", "open", "go_to"}:
-        return "navigate_to_page"
-    return "advance_ui_flow"
+            slug_t, _c = semantic_slug_from_text("link", vis, policy)
+            return sanitize_intent_token(slug_t, "navigate_link_target")
+        return "navigate_link_target"
+    if ih == "activate_control" and len(vis) >= 2:
+        slug_t, _c = semantic_slug_from_text("button", vis, policy)
+        return sanitize_intent_token(slug_t, "activate_control")
+    if ih == "provide_input" and len(vis) >= 2:
+        slug_t, _c = semantic_slug_from_text("input", vis, policy)
+        return sanitize_intent_token(slug_t, "provide_input")
+    if ih == "choose_option":
+        return "choose_option"
+    if len(vis) >= 2:
+        slug_t, _c = semantic_slug_from_text(str(target.get("tag") or "element"), vis, policy)
+        return sanitize_intent_token(slug_t, "advance_ui_flow")
+    return ""
 
 
 def semantic_slug_from_text(element_type: str, raw_text: str, policy: dict[str, Any]) -> tuple[str, float]:

@@ -10,7 +10,11 @@ from conxa_compile.compiler.action_semantics import (
     is_editable_field_click,
 )
 from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
-from conxa_compile.compiler.decision_layer import intent_outcome_tokens, intent_primary_validation_enabled
+from conxa_compile.compiler.decision_layer import (
+    intent_outcome_tokens,
+    intent_primary_validation_enabled,
+    intent_tokens_grounded_in_context,
+)
 from conxa_compile.compiler.intent_access import get_effective_intent
 from conxa_compile.compiler.intent_validation_rules import (
     selector_wait_target_from_step,
@@ -272,7 +276,14 @@ def infer_success_conditions(
     def _merge_tokens(base: list[str]) -> list[str]:
         out = list(base)
         if intent_primary and final_intent and add_intent_tokens and isinstance(policy, dict):
-            for t in intent_outcome_tokens(final_intent, policy):
+            candidates = intent_outcome_tokens(final_intent, policy)
+            # Only require grounding when we actually have real page/target context to check
+            # against (a live compile always passes source_step — see
+            # decision_layer.py::infer_compiled_validation). Without it there's nothing to verify
+            # against, so keep today's behavior rather than silently dropping every token.
+            if source_step:
+                candidates = intent_tokens_grounded_in_context(candidates, source_step)
+            for t in candidates:
                 if t and t not in out:
                     out.append(t)
         if isinstance(policy, dict) and source_step and destructive_compiler_step(source_step, policy):

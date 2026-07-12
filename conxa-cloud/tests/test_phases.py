@@ -400,6 +400,80 @@ class PhaseTests(unittest.TestCase):
         self.assertTrue(out.get("intent_validation_primary"))
         self.assertEqual(out.get("final_intent"), "submit_login_form")
 
+    def test_intent_tokens_grounded_in_context_drops_ungrounded_keeps_grounded(self) -> None:
+        # "new"/"button" describe the clicked element, not page content — neither appears in
+        # this step's own recorded context, so both must be dropped. "welcome" does appear (in
+        # inner_text) and must survive.
+        from conxa_compile.compiler.decision_layer import intent_tokens_grounded_in_context
+
+        ev = {
+            "page": {"title": "Dashboard"},
+            "target": {"inner_text": "Welcome back"},
+            "semantic": {"normalized_text": "welcome back"},
+            "context": {"siblings": []},
+        }
+        out = intent_tokens_grounded_in_context(["new", "button", "welcome"], ev)
+        self.assertEqual(out, ["welcome"])
+
+    def test_infer_success_conditions_drops_ungrounded_intent_tokens_for_plain_click(self) -> None:
+        # Regression: "click_new_button" used to add "new"/"button" as text_present checks
+        # regardless of whether either word actually appears anywhere near the clicked element —
+        # almost every page has the word "button" somewhere, making the check meaningless. With a
+        # real source_step whose context doesn't mention either word, both must be dropped.
+        from conxa_compile.compiler.validation_planner import infer_success_conditions
+
+        policy = {
+            "decision_layer": {"intent_primary_validation": True, "success_add_intent_tokens": True},
+            "validation": {"default_timeout_ms": 5000},
+        }
+        wait_for = {"type": "none", "timeout": 5000}
+        state_diff = {"new_elements": [], "removed_elements": [], "text_change": []}
+        source_step = {
+            "page": {"title": "Repositories"},
+            "target": {"inner_text": "New"},
+            "semantic": {"normalized_text": "new"},
+            "context": {"siblings": []},
+        }
+        out = infer_success_conditions(
+            wait_for, state_diff, "https://ex.test/repos", policy,
+            final_intent="click_new_button", source_step=source_step,
+        )
+        tokens = out.get("expected_text_tokens") or []
+        self.assertNotIn("button", tokens)
+
+    def test_merge_dom_diff_evidence_folds_recorded_added_elements(self) -> None:
+        # bridge.js already scans the whole page before/after an action and records which
+        # interactive elements appeared/disappeared (state_change.dom_diff) — this was validated
+        # onto the model but never read by the compiler. A testid-bearing added element should
+        # become a promotable selector; a plain-text one should become a text token; both should
+        # lift evidence_strength above zero even when the step's own before/after descriptors
+        # (compare_state) saw nothing.
+        from conxa_compile.compiler.state_validation import merge_dom_diff_evidence
+
+        ev = {
+            "state_change": {
+                "dom_diff": {
+                    "added": [
+                        'div|save-confirmation-banner|aria|Draft saved successfully',
+                        'span||aria|Untagged element',
+                    ],
+                }
+            }
+        }
+        state_diff = {"new_elements": [], "removed_elements": [], "text_change": [], "evidence_strength": 0.0}
+        out = merge_dom_diff_evidence(ev, state_diff)
+        self.assertIn('[data-testid="save-confirmation-banner"]', out["new_elements"])
+        self.assertIn("Draft saved successfully", out["text_change"])
+        self.assertIn("Untagged element", out["text_change"])
+        self.assertGreater(out["evidence_strength"], 0.0)
+
+    def test_merge_dom_diff_evidence_is_a_no_op_without_recorded_added_elements(self) -> None:
+        from conxa_compile.compiler.state_validation import merge_dom_diff_evidence
+
+        state_diff = {"new_elements": [], "removed_elements": [], "text_change": [], "evidence_strength": 0.0}
+        out = merge_dom_diff_evidence({}, state_diff)
+        self.assertEqual(out, state_diff)
+
     def test_infer_success_conditions_demotes_ephemeral_elements_from_required(self) -> None:
         # A cookie-consent banner and a toast happened to appear in the recorded diff alongside
         # a legitimate confirmation element — only the legitimate one may become the REQUIRED
@@ -665,6 +739,56 @@ class PhaseTests(unittest.TestCase):
         out = normalize_compiler_intent(ev, "click_password", policy)
         self.assertEqual(out, "focus_password")
 
+    def test_normalize_returns_blank_for_ordinary_element_with_no_llm_intent(self) -> None:
+        # No LLM intent, a plain named/labeled element (not the icon-only path/svg/g case, not a
+        # bare tag-only button/input) — there's nothing real to derive from, so this must come
+        # back blank rather than a synthesized "click_<name>" template.
+        from conxa_compile.policy.intent_ontology import normalize_compiler_intent
+
+        ev = {
+            "action": {"action": "click"},
+            "target": {"tag": "li", "name": "Acme Corp", "aria_label": "", "inner_text": ""},
+            "semantic": {"role": "option"},
+        }
+        policy = {"intent": {"generic_intents": ["interact"]}}
+        out = normalize_compiler_intent(ev, "", policy)
+        self.assertEqual(out, "")
+
+    def test_generate_intent_with_llm_returns_blank_when_provider_pool_exhausted(self) -> None:
+        # call_llm returning None on every attempt means the router already exhausted its own
+        # internal provider retries — a real outage. No template fallback: leave it blank.
+        from conxa_compile.llm import intent_llm
+
+        step = {
+            "action": {"action": "click"},
+            "target": {"tag": "button", "name": "unique_outage_probe_element"},
+        }
+        with patch.object(intent_llm, "_read_cache", return_value={}), \
+                patch.object(intent_llm, "_write_cache") as write_cache, \
+                patch("conxa_compile.llm.intent_llm.call_llm", return_value=None) as mock_call:
+            out = intent_llm.generate_intent_with_llm(step)
+        self.assertEqual(out, "")
+        self.assertEqual(mock_call.call_count, intent_llm.MAX_INTENT_ATTEMPTS)
+        write_cache.assert_not_called()  # an unresolved attempt must never be cached
+
+    def test_generate_intent_with_llm_retries_past_a_generic_first_answer(self) -> None:
+        # First attempt returns a generic word (present in generic_intents' default set);
+        # the corrective retry should get a second, specific answer instead of settling.
+        from conxa_compile.llm import intent_llm
+
+        step = {
+            "action": {"action": "click"},
+            "target": {"tag": "button", "name": "unique_retry_probe_element"},
+        }
+        responses = [{"intent": "interact"}, {"intent": "confirm_delete_account"}]
+        with patch.object(intent_llm, "_read_cache", return_value={}), \
+                patch.object(intent_llm, "_write_cache") as write_cache, \
+                patch("conxa_compile.llm.intent_llm.call_llm", side_effect=responses) as mock_call:
+            out = intent_llm.generate_intent_with_llm(step)
+        self.assertEqual(out, "confirm_delete_account")
+        self.assertEqual(mock_call.call_count, 2)
+        write_cache.assert_called_once()
+
     def test_static_audit_flags_weak_reference(self) -> None:
         from conxa_compile.confidence.uncertainty import audit_reference
 
@@ -875,6 +999,37 @@ class PhaseTests(unittest.TestCase):
                 self.assertEqual(warning.get("reason"), "vision_llm_empty_response")
                 self.assertEqual(warning.get("step_index"), 0)
                 self.assertEqual(warning.get("fallback"), "deterministic_anchors")
+        finally:
+            shutil.rmtree(data_dir, ignore_errors=True)
+
+    def test_consequential_click_with_zero_evidence_flags_weak_evidence(self) -> None:
+        # A commit-style click ("Submit") with no wait_for evidence and no recorded DOM/dom_diff
+        # change gets build.py's synthesized state_changed fallback ("something happened, but we
+        # don't know what") — this must be surfaced as a compile warning, not stay silent until
+        # the step's fake-pass check fails at runtime.
+        from conxa_compile.compiler.build import compile_skill_package
+        from conxa_compile.pipeline.run import run_pipeline
+
+        ev = _minimal_click_event()
+        ev["state_change"] = {"before": "aaa", "after": "aaa"}
+        evs = run_pipeline([ev])
+        data_dir, *patchers = _compile_with_vision_mocks("sess", evs, call_llm_return=_VISION_ANCHOR_OK)
+        try:
+            with ExitStack() as stack:
+                for p in patchers:
+                    stack.enter_context(p)
+                pkg = compile_skill_package(
+                    evs,
+                    skill_id="z",
+                    source_session_id="sess",
+                    title="t",
+                    version=1,
+                )
+                step = pkg.skills[0].steps[0].model_dump()
+                assertions = step.get("validation", {}).get("assertions") or []
+                self.assertTrue(any(a.get("type") == "state_changed" for a in assertions))
+                cw = (step.get("confidence_protocol") or {}).get("compile_warnings") or {}
+                self.assertTrue(cw.get("weak_evidence"))
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
 

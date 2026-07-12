@@ -4,6 +4,107 @@
 
 ---
 
+## Fixed nonsense "expected outcome" checks, and started actually using what gets recorded — 2026-07-13
+
+Yesterday's new "Expected outcome" box (see below) surfaced a step whose checks read "the text
+'new' appears on the page" and "the text 'button' appears on the page" — meaningless, since almost
+every page has the word "button" on it somewhere. Traced it down and fixed three things:
+
+1. **The actual bug:** when naming a step, the compiler sometimes reused the step's own name
+   ("click new button") as a guess at what text should show up on the page afterward — but those
+   words describe what was clicked, not what should happen next. Added a check that only lets a
+   guessed word through if it's genuinely already something on that page (its title, the clicked
+   thing's own text, or nearby content) — otherwise it's dropped instead of becoming a check.
+2. **Started using evidence we already had lying around.** While recording, we already scan the
+   whole page right before and right after every click to see what appeared or disappeared — real,
+   observed evidence. That scan was being thrown away and never used for building checks; the
+   checks were built from a much narrower, weaker comparison instead (and if that weaker
+   comparison found nothing, this is exactly when the vague-word-guessing above used to kick in).
+   Now the real recorded scan feeds the checks directly, so there's real evidence to check instead
+   of a guess more often.
+3. **Made a silent gap visible.** Some steps (an important button click, say) end up compiling
+   with a check that only confirms "something happened" without knowing exactly what — because
+   nothing more specific was ever recorded for that step. This used to be completely invisible
+   until the step failed for real. Now it shows up as a compile warning, the same way other
+   step-quality issues already do.
+
+## Human Edit now shows what "success" means for a step, and step names stop being vague — 2026-07-12
+
+Two problems found while looking at a screenshot of the Human Edit screen:
+
+1. **You could never see what actually confirms a step worked.** Every compiled step has a
+   built-in check (e.g. "the page address must change" or "this button must appear") baked in
+   behind the scenes, but nowhere on screen showed it in plain language. Added a small "Expected
+   outcome" recap to the re-target wizard's Validation step, right below the editable checks list
+   and above the Apply button, so it's visible alongside them instead of nowhere at all.
+2. **Step names were vague** ("Type with value", "enter_name_value") because whenever the AI
+   naming step failed, timed out, or gave a lazy one-word answer, the system quietly swapped in a
+   generic placeholder name instead — so a boring name looked exactly like a real one, with no way
+   to tell the difference. Removed that quiet swap-in entirely. Now, if the AI's first answer is
+   too generic, it's told so and asked to try again (up to a couple of extra tries) before giving
+   up. If it truly can't come up with anything specific, the name is left blank and clearly
+   flagged for a human to fill in — instead of pretending to have an answer it doesn't.
+
+## Made self-healing recovery safer — it now double-checks itself instead of guessing on outdated information — 2026-07-12
+
+When a recorded workflow hits a step that no longer works (a button moved, a page redesign, etc.),
+Claude gets asked to look at the page and figure out a fix. That already worked, but we found and
+closed four ways it could go wrong:
+
+1. **Claude's fix is now double-checked before it's used.** Before, if Claude's suggested fix
+   matched more than one thing on the page, the runtime just used the first match — which could be
+   the wrong element entirely. Now the runtime checks how confident it is in the match, and if
+   Claude's fix is genuinely unclear, it asks Claude to try again with a clearer answer instead of
+   guessing.
+2. **If too much time passes before Claude responds, the runtime now refuses to guess.** Recovery
+   keeps the broken browser page open for a few minutes so Claude's fix can be applied to the exact
+   same page it looked at. If that window closes (or the page changed while Claude was thinking),
+   the runtime used to quietly start over on a fresh page — which could make the fix land on the
+   wrong page entirely. Now it recognizes this situation and asks the user to restart the workflow
+   instead of pressing ahead blind.
+3. **Claude now sees the page as it actually looks right now**, not just a snapshot from the moment
+   things broke. The runtime tries several automatic quick-fixes first (closing pop-ups, scrolling,
+   etc.) before ever asking Claude for help — but Claude was still sometimes shown what the page
+   looked like *before* those quick-fixes ran, which could be misleading. It also now tells Claude
+   what already happened earlier in the workflow and what a successful fix should look like, so it
+   has the full picture instead of a single confusing snapshot.
+4. **Fixed a bug where useful debugging information was being silently thrown away** before it
+   ever reached Claude, meaning one of the safeguards above wasn't actually taking effect.
+
+## Two more follow-on bugs from yesterday's local runtime testing workflow, both fixed — 2026-07-12
+
+Testing a workflow through Build Studio's "Test Skill" button was failing with two different errors,
+one after the other, both caused by yesterday's new local build-and-replace workflow.
+
+First error: the runtime said it couldn't find its own app files, looking in the wrong folder
+entirely. Cause: when Build Studio itself is started through the dev launcher script, that script
+sets a folder location in the background for "where the app files live." The test-run code was
+supposed to point the runtime at its own private testing folder instead, and it did — partially. It
+correctly redirected the main folder, but forgot to redirect this one specific sub-folder, so the
+leftover background setting won out and sent the runtime looking in the wrong place. Fixed by making
+the test-run code redirect both consistently.
+
+Second error, right after fixing the first: the runtime refused to run the skill at all, saying it
+needed a newer runtime version than what was "installed" — even though the actual code was
+completely up to date. Cause: a locally-built runtime is deliberately labeled with a placeholder
+version number (since it's not an official numbered release), but every compiled skill separately
+demands a real minimum version number, and a placeholder can never satisfy a real requirement — so
+this would have blocked every single locally-built test, forever, regardless of what version number
+was chosen. Fixed by having the runtime recognize its own placeholder label and skip that version
+check when testing locally, the same way it already relaxes other checks in that situation.
+
+---
+
+## Explained why the Paxel upload command failed on Windows — 2026-07-11
+
+The Paxel upload command was copied in a Linux/macOS style (`curl ... | bash`), but PowerShell
+tried to run `bash` through Windows Subsystem for Linux. This computer has WSL installed without
+any Linux distribution, so the script never started. The upload script itself expects Bash and
+Docker, and it can also work from Git Bash on Windows, so the fix is to run it from a real Bash
+environment instead of plain PowerShell.
+
+---
+
 ## Local Runtime testing now works exactly the same way as a real customer's install, not a lookalike of it — 2026-07-11
 
 Follow-up to today's earlier local-build workflow. It worked, but it put the locally-built files in
@@ -474,6 +575,3 @@ aren't good enough. Clicking the button again switches back to the 5-frame view.
 screenshot to the step and re-runs the visual matching for it. The screen already had a working
 backend endpoint for listing every recording screenshot that nothing in the interface was calling;
 this wires it up to the new button instead of building anything new on the backend.
-
----
-

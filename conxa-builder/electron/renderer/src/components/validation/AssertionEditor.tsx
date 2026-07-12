@@ -2,8 +2,12 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+import { InfoHint } from '@/components/ui/info-hint'
+import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
+import type { StepEditorDTO } from '@/types/workflow'
 
 /** Runtime-recognized assertion types (see runtime/run.js verifyStep), grouped by what they
  *  observe. Groups are rendered as <optgroup>s in the order declared here. */
@@ -129,6 +133,48 @@ export function isAssertionValid(a: AssertionDraft): boolean {
 
 export function hasInvalidAssertions(assertions: AssertionDraft[]): boolean {
   return assertions.some((a) => !isAssertionValid(a))
+}
+
+// Same gradient-fill + ring depth treatment as StepConfigForm's PANEL_CARD_CLASS (each panel
+// file keeps its own copy of this small const rather than sharing one export — see
+// RetargetPhaseSelectors.tsx for the same convention).
+const PANEL_CARD_CLASS =
+  'bg-[linear-gradient(180deg,rgba(17,24,39,0.85),rgba(7,10,16,0.92))] ring-white/10'
+
+/** Read-only "what confirms this step worked" summary — shown regardless of which re-target
+ *  wizard phase is open (InlineRetargetFlow), so a user reviewing a step doesn't have to click
+ *  all the way to the Validation phase just to see whether a check exists at all. Editing stays
+ *  exclusively in that phase's own AssertionEditorRows / the Human Edit form's Validation panel
+ *  — this never writes anything, so there's no risk of it fighting either of those save paths. */
+export function ExpectedOutcomeSummary({ step }: { step: StepEditorDTO }) {
+  const assertions = (step.validation?.assertions ?? []) as Record<string, unknown>[]
+  return (
+    <Card className={cn('gap-2 py-3', PANEL_CARD_CLASS)}>
+      <CardHeader className="p-2.5 pb-1">
+        <CardTitle className="flex items-center gap-2 text-base font-semibold">
+          Expected outcome
+          <InfoHint {...editorHelp.toolValidation} size="md" side="bottom" align="start" />
+        </CardTitle>
+        <CardDescription className="text-xs">{describeWaitFor(step.validation?.wait_for || {})}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-1.5 p-2.5 pt-0">
+        {assertions.length ? (
+          <ul className="space-y-1">
+            {assertions.map((a, i) => (
+              <li key={i} className={cn('text-sm', isAssertionRequired(a) ? 'text-zinc-100' : 'text-zinc-400')}>
+                {isAssertionRequired(a) ? '' : '(informational) '}
+                {describeAssertion(a)}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="border-status-warn/30 bg-status-warn/10 text-status-warn rounded-md border px-2.5 py-1.5 text-xs">
+            No check configured for this step — its success isn&apos;t independently verified.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 type RowsProps = {

@@ -13,8 +13,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import { CheckCircle2, ListChecks } from 'lucide-react'
 import type { RetargetPreviewResponse } from '@/api/workflowApi'
+import type { StepEditorDTO } from '@/types/workflow'
 import {
   AssertionEditorRows,
+  ExpectedOutcomeSummary,
   describeWaitFor,
   hasInvalidAssertions,
   type AssertionDraft,
@@ -23,6 +25,7 @@ import {
 export type { AssertionDraft } from '@/components/validation/AssertionEditor'
 
 type Props = {
+  step: StepEditorDTO
   preview: RetargetPreviewResponse
   keepValidation: boolean
   onKeepValidationChange: (value: boolean) => void
@@ -35,6 +38,7 @@ type Props = {
 }
 
 export function RetargetPhaseValidation({
+  step,
   preview,
   keepValidation,
   onKeepValidationChange,
@@ -105,6 +109,12 @@ export function RetargetPhaseValidation({
           Keep the existing wait condition instead of the proposed one
         </label>
       ) : null}
+
+      {/* Read-only recap of the step's currently-COMPILED expected outcome (as it stands right
+          now, separate from whatever's being proposed/edited above) — so it's visible without
+          leaving this phase. Never writes anything, so it can't conflict with the editable
+          checks above it. */}
+      <ExpectedOutcomeSummary step={step} />
 
       <div className="border-border/60 flex items-center justify-between gap-3 border-t pt-3">
         <Button variant="outline" className="border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.08] hover:text-white" onClick={onBack}>

@@ -159,6 +159,40 @@ def intent_outcome_tokens(final_intent: str, policy: dict[str, Any]) -> list[str
     return out
 
 
+def _context_blob(ev: dict[str, Any]) -> str:
+    page = ev.get("page") or {}
+    tgt = ev.get("target") or {}
+    sem = ev.get("semantic") or {}
+    ctx = ev.get("context") or {}
+    return " ".join(
+        [
+            str(page.get("title") or ""),
+            str(tgt.get("inner_text") or ""),
+            str(sem.get("normalized_text") or ""),
+            " ".join(str(s) for s in (ctx.get("siblings") or [])[:4]),
+        ]
+    ).lower()
+
+
+def intent_tokens_grounded_in_context(tokens: list[str], ev: dict[str, Any]) -> list[str]:
+    """Keep only tokens that actually appear in the page/target/context text.
+
+    An intent-derived word ("new", "button" from "click_new_button") usually describes the
+    element that was clicked, not a resulting page state — treating it as a validation/anchor
+    signal without checking it's actually grounded in real page content produces meaningless
+    checks (e.g. "the text 'button' appears on the page", true on almost every page).
+    """
+    blob = _context_blob(ev)
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        if len(tok) < 4 or tok not in blob or tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
 def intent_tokens_as_anchor_candidates(
     ev: dict[str, Any],
     final_intent: str,
@@ -168,28 +202,8 @@ def intent_tokens_as_anchor_candidates(
     dl = _decision_section(policy)
     if not bool(dl.get("intent_tokens_as_anchors", True)):
         return []
-    page = ev.get("page") or {}
-    tgt = ev.get("target") or {}
-    sem = ev.get("semantic") or {}
-    ctx = ev.get("context") or {}
-    blob = " ".join(
-        [
-            str(page.get("title") or ""),
-            str(tgt.get("inner_text") or ""),
-            str(sem.get("normalized_text") or ""),
-            " ".join(str(s) for s in (ctx.get("siblings") or [])[:4]),
-        ]
-    ).lower()
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for tok in intent_outcome_tokens(final_intent, policy):
-        if len(tok) < 4 or tok not in blob:
-            continue
-        if tok in seen:
-            continue
-        seen.add(tok)
-        out.append({"element": tok, "relation": "near"})
-    return out
+    grounded = intent_tokens_grounded_in_context(intent_outcome_tokens(final_intent, policy), ev)
+    return [{"element": tok, "relation": "near"} for tok in grounded]
 
 
 def intent_recovery_extra_strategies(final_intent: str, policy: dict[str, Any]) -> list[str]:

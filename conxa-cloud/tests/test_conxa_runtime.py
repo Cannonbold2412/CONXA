@@ -438,8 +438,42 @@ class TestCallRuntimeToolEnv:
                 pass  # expected — fake_popen raises
 
         assert captured_env.get("CONXA_DIR") == str(sandbox_conxa)
-        assert "CONXA_APP_DIR" not in captured_env
+        # Explicit override, not left to env.js's fallback derivation — a parent
+        # process launched via scripts/conxa.ps1 already has CONXA_APP_DIR set
+        # (pointing at ~/.conxa-dev/conxa-app), and it would leak through via
+        # os.environ inheritance otherwise, beating the sandbox-derived path.
+        assert captured_env.get("CONXA_APP_DIR") == str(sandbox_conxa / "conxa-app")
         assert "PLAYWRIGHT_BROWSERS_PATH" not in captured_env
+
+    def test_conxa_app_dir_override_beats_stale_parent_env(self, tmp_path: Path, monkeypatch) -> None:
+        """A CONXA_APP_DIR inherited from the parent process (e.g. scripts/conxa.ps1) must
+        not leak into the spawned runtime's env — it has to be overridden to match the
+        sandbox conxa_dir, not the parent's ~/.conxa-dev/conxa-app."""
+        monkeypatch.setenv("CONXA_APP_DIR", str(tmp_path / "stale-parent" / "conxa-app"))
+
+        sandbox_conxa = tmp_path / "sandbox" / ".conxa"
+        sandbox_conxa.mkdir(parents=True)
+        (sandbox_conxa / "conxa-runtime.exe").write_bytes(b"exe")
+
+        runtime_dir = tmp_path / "runtime-src"
+        runtime_dir.mkdir()
+
+        captured_env: dict = {}
+
+        def fake_popen(cmd, cwd, env, **kwargs):
+            captured_env.update(env)
+            raise OSError("stopped for test")
+
+        import subprocess as _subprocess
+        from conxa_compile.runtime_tool import call_runtime_tool
+
+        with patch.object(_subprocess, "Popen", fake_popen):
+            try:
+                call_runtime_tool(runtime_dir, "test_tool", {}, conxa_dir=sandbox_conxa)
+            except Exception:
+                pass  # expected — fake_popen raises
+
+        assert captured_env.get("CONXA_APP_DIR") == str(sandbox_conxa / "conxa-app")
 
     def test_raises_when_no_exe_found(self, tmp_path: Path) -> None:
         """Both Dev and Production always resolve to a real packed exe now — no more

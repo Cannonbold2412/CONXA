@@ -4,6 +4,7 @@ const path   = require("path");
 const fs     = require("fs");
 const os     = require("os");
 const https  = require("https");
+const crypto = require("crypto");
 const semver = (global.__hostRequire || require)("semver");
 const { loadInstallId } = require("./install_identity");
 
@@ -21,6 +22,12 @@ const SESSIONS_DIR    = path.join(CACHE_DIR, "sessions");
 const LOG_FILE        = path.join(CONXA_DATA_DIR, "logs", "runtime.log");
 const RUNTIME_UPDATE_PENDING = path.join(CONXA_DATA_DIR, "update-pending.json");
 const RUNTIME_VERSION = global.__runtimeVersion || process.env.CONXA_DEV_RUNTIME_VERSION || require("./package.json").version;
+// scripts/build-runtime-local.ps1 and the checked-in package.json both stamp
+// unreleased builds as "0.0.0-local.<timestamp>" / "0.0.0-dev" — there is no
+// real release number to compare against, so required_runtime gates (which
+// assume a real semver floor like ">=1.0.3") are meaningless here and must
+// not block local testing.
+const IS_LOCAL_DEV_RUNTIME = RUNTIME_VERSION.startsWith("0.0.0-");
 const INSTALL_ID      = loadInstallId(CONXA_DATA_DIR);
 
 // ─── Recovery tier ceiling ────────────────────────────────────────────────────
@@ -62,6 +69,28 @@ const EXECUTION_DEADLINE_MS = Number(process.env.CONXA_EXECUTION_DEADLINE_MS) ||
 // TTL closes the park if the agent never resumes, so a browser is never leaked.
 const PARK_TTL_MS = Number(process.env.CONXA_RECOVERY_PARK_TTL_MS) || 180000;
 let _parkedRecovery = null;
+
+// Cheap page-state token (url + interactive-element count + a hash of visible body text) —
+// the same page-fingerprint concept used for pre-exec drift detection, reused here to answer
+// "has the parked page moved since the recovery request described it?" (SPA re-render, a
+// background timer, a websocket push can all mutate a parked page while the agent reasons).
+// Not a security/identity hash — collision tolerance is intentionally loose.
+async function capturePageFingerprint(page) {
+  try {
+    const url = page.url();
+    const { interactiveCount, text } = await page.evaluate(() => ({
+      interactiveCount: document.querySelectorAll(
+        'button, a[href], input, select, textarea, [role="button"], [role="link"]'
+      ).length,
+      text: (document.body && document.body.innerText || "").slice(0, 5000),
+    }));
+    return { url, interactiveCount, domHash: crypto.createHash("sha256").update(text).digest("hex") };
+  } catch (_) {
+    return null;
+  }
+}
+// Small headroom so incidental noise (a live clock, an ad slot) doesn't false-flag divergence.
+const PARK_DIVERGENCE_TOLERANCE = 3;
 
 async function _discardPark(reason) {
   const park = _parkedRecovery;
@@ -225,6 +254,7 @@ let appendRecoveryEvent;
 let clearRetryBudget;
 let checkRetryBudget;
 let isAuthFailure;
+let stepAssertions;
 let getCachedBrowser;
 let captureReAuth;
 let gracefulShutdown;
@@ -239,7 +269,7 @@ try {
   skillLoader  = require("./skill_loader");
   sync         = require("./sync");
   authManager  = require("./auth_manager");
-  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure } = require("./run"));
+  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions } = require("./run"));
   ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
 } catch (e) {
@@ -552,6 +582,46 @@ function _stepRecoveryContext(err) {
   return ctx;
 }
 
+// The compiled expected-post-condition for the failed step — lets the agent tell "element not
+// found" apart from "action ran but produced the wrong outcome", and know what success looks
+// like once its recovery attempt resumes. `stepAssertions` and `evaluateAssertion` iterate the
+// same array in the same order (run.js `verifyStep`), so `results[i]` pairs with `defs[i]`.
+function _expectedStateBlock(err) {
+  if (!err.failedStep) return null;
+  const defs = stepAssertions(err.failedStep);
+  if (!defs.length) return null;
+  const results = Array.isArray(err.verifyResults) ? err.verifyResults : null;
+  const lines = defs.map((a, i) => {
+    const r = results && results[i];
+    const parts = [
+      a.type || "?",
+      a.target ? `target=${a.target}` : null,
+      a.expected !== undefined ? `expected=${JSON.stringify(a.expected)}` : null,
+      a.required === false ? "advisory" : "required",
+      r ? (r.ok ? "held" : "FAILED") : null,
+    ];
+    return "  - " + parts.filter(Boolean).join(", ");
+  });
+  const verdict = err.verifyFail
+    ? "The action ran without throwing, but its expected post-condition did not hold:"
+    : "This step's expected post-condition (what should hold once recovery succeeds):";
+  return `${verdict}\n${lines.join("\n")}`;
+}
+
+// A compact trace of what already executed, so the agent can reason about how the current page
+// state was reached instead of guessing from a single frame.
+function _executedStepsBreadcrumb(steps, failedAt) {
+  if (!Array.isArray(steps) || typeof failedAt !== "number" || failedAt <= 0) return null;
+  const lines = [];
+  for (let i = 0; i < failedAt && i < steps.length; i++) {
+    const s = steps[i];
+    if (!s) continue;
+    const intent = String(s._intent || s.label || s.type || "").slice(0, 80);
+    lines.push(`  ${i}: ${s.type || "?"} — ${intent}`);
+  }
+  return lines.length ? `Executed steps (leading context):\n${lines.join("\n")}` : null;
+}
+
 // ─── Build failure response ───────────────────────────────────────────────────
 // Two shapes, decided by the recovery-tier ceiling (CONXA_MAX_RECOVERY_TIER):
 //   • ceiling ≥ 3 (Claude/MCP): a structured Tier 3 (semantic) + Tier 4 (vision) recovery
@@ -559,7 +629,7 @@ function _stepRecoveryContext(err) {
 //     resume — the closing edge of the four-tier cascade.
 //   • ceiling 2 (Build Studio): a concise, deterministic failure. No agent handoff, no
 //     screenshots — the compiled pack is judged on its T1/T2 merits alone.
-async function _buildFailureResponse(page, err, resolvedEntry, runTracker) {
+async function _buildFailureResponse(page, err, resolvedEntry, runTracker, steps = null) {
   const url      = page.url();
   const failedAt = typeof err.failedAt === "number" ? err.failedAt : null;
   const stepNo   = failedAt !== null ? failedAt + 1 : "?";
@@ -607,48 +677,69 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker) {
     }
   }
 
-  // P2: cap at 50 elements (was 250) — dominant text payload; nearby elements suffice for recovery.
-  // Prefer the snapshot taken at the exact moment of failure (before the T1/T2 cascade ran and
-  // potentially closed transient UI like dropdown menus). Fall back to a live query only when no
-  // early snapshot exists (e.g. the step was non-interactive or the evaluate threw).
   let viewport = null;
   try { viewport = page.viewportSize(); } catch (_) {}
   let scrollY = null;
   try { scrollY = await page.evaluate(() => window.scrollY); } catch (_) {}
 
-  let pageStructure = (Array.isArray(err.earlyDomSnapshot) && err.earlyDomSnapshot.length)
-    ? err.earlyDomSnapshot
-    : null;
+  // Ground truth: the live, post-cascade inventory — the state the agent's corrected selector
+  // will actually act on. T1/T2 remedies (dismiss-overlay, scroll, re-hover, ...) may already
+  // have changed the page since the moment of failure, so this is always captured fresh rather
+  // than only as a fallback. Cap at 50 elements — dominant text payload; nearby elements suffice.
+  let currentInventory = null;
+  try {
+    currentInventory = await page.evaluate(() => {
+      const seen = new Set();
+      return Array.from(document.querySelectorAll(
+        'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]'
+      )).map(el => {
+        const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
+        const tag  = el.tagName.toLowerCase();
+        const type = el.getAttribute("type")        || "";
+        const role = el.getAttribute("role")        || "";
+        const id   = el.id                          || undefined;
+        const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
+        const key  = `${tag}|${type}|${text}`;
+        if (!text && !type && !id && !dt) return null;
+        if (seen.has(key)) return null;
+        seen.add(key);
+        return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
+      }).filter(Boolean).slice(0, 50);
+    });
+  } catch (_) {}
 
-  if (!pageStructure) {
-    try {
-      pageStructure = await page.evaluate(() => {
-        const seen = new Set();
-        return Array.from(document.querySelectorAll(
-          'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]'
-        )).map(el => {
-          const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
-          const tag  = el.tagName.toLowerCase();
-          const type = el.getAttribute("type")        || "";
-          const role = el.getAttribute("role")        || "";
-          const id   = el.id                          || undefined;
-          const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
-          const key  = `${tag}|${type}|${text}`;
-          if (!text && !type && !id && !dt) return null;
-          if (seen.has(key)) return null;
-          seen.add(key);
-          return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
-        }).filter(Boolean).slice(0, 50);
-      });
-    } catch (_) {}
-  }
+  // Secondary, and only when it actually differs from the current one: the inventory at the
+  // exact moment of failure, before the T1/T2 cascade ran. A dropdown or dialog listed here may
+  // have since closed — it must never be mistaken for the state to act on now.
+  const earlyInventory = Array.isArray(err.earlyDomSnapshot) ? err.earlyDomSnapshot : null;
+  const earlyDiffers = earlyInventory
+    && JSON.stringify(earlyInventory) !== JSON.stringify(currentInventory);
 
   appendRecoveryEvent({ event: "agent_recovery_requested", tier: MAX_RECOVERY_TIER,
     slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
   if (runTracker) runTracker.emit("tier_escalated", { si: failedAt, l: MAX_RECOVERY_TIER });
 
+  if (err.overrideValidationFailed) {
+    appendRecoveryEvent({ event: "agent_override_rejected", slug: resolvedEntry && resolvedEntry.slug,
+      step_index: failedAt, reason: err.overrideReason });
+    if (runTracker) runTracker.emit("override_rejected", { si: failedAt, reason: err.overrideReason });
+  }
+
   const intent = _stepRecoveryContext(err);
   const resumeKey = failedAt !== null ? String(failedAt) : "0";
+
+  // When the previous resume's override selector failed our uniqueness gate (run.js
+  // validateOverrideSelector), tell the agent exactly why and what it actually matched, instead
+  // of just re-describing the original failure as if nothing had been tried.
+  const overrideNote = err.overrideValidationFailed
+    ? `\n\nYour previous recovery selector ${err.overrideReason === "no-match"
+        ? "matched no element on the current page"
+        : "matched multiple elements with no clear winner"}.` +
+      (Array.isArray(err.overrideCandidates) && err.overrideCandidates.length
+        ? ` Candidates it matched: ${JSON.stringify(err.overrideCandidates)}.`
+        : "") +
+      ` Pick a more specific selector using the current-state inventory below.`
+    : "";
 
   // Header + the exact closing-edge protocol so the agent can apply its finding and resume.
   const header =
@@ -659,17 +750,30 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker) {
     `  resume_from: ${failedAt ?? 0}\n` +
     `  step_overrides: { "${resumeKey}": { "selector": "<your selector>" } }\n` +
     `Selector preference: [data-testid="…"] > #id > internal:role=<role>[name="…"] > text="…". ` +
-    `Use the screenshot when the DOM inventory below is ambiguous. Do not guess — if no element ` +
-    `matches the intent, tell the user the page has changed and ask how to proceed.`;
+    `The "Interactive elements NOW" list and the "Current page at failure" screenshot below are ` +
+    `ground truth — trust them over the recording-time reference image, which only shows how the ` +
+    `target used to look and may be outdated. The screenshot is viewport-only; the target may be ` +
+    `off-screen (see scrollY), so check the DOM inventory for existence even if it isn't visible ` +
+    `in the image. Do not guess — if no element matches the intent, tell the user the page has ` +
+    `changed and ask how to proceed.${overrideNote}`;
 
-  // Tier 3 — semantic: the recorded intent + a live inventory of interactive elements.
+  // Tier 3 — semantic: the recorded intent, expected post-condition, execution trace, and the
+  // live (ground-truth) inventory of interactive elements.
   const t3 = ["── Tier 3 (semantic) ──"];
   if (intent) t3.push(`Failed step intent: ${JSON.stringify(intent)}`);
+  const expected = _expectedStateBlock(err);
+  if (expected) t3.push(expected);
+  const breadcrumb = _executedStepsBreadcrumb(steps, failedAt);
+  if (breadcrumb) t3.push(breadcrumb);
   if (viewport) t3.push(`viewport: ${JSON.stringify(viewport)}, scrollY: ${scrollY}`);
-  if (pageStructure && pageStructure.length > 0) {
-    t3.push(`Interactive elements now on the page (${pageStructure.length}):\n${JSON.stringify(pageStructure)}`);
+  if (currentInventory && currentInventory.length) {
+    t3.push(`Interactive elements NOW — ground truth (${currentInventory.length}):\n${JSON.stringify(currentInventory)}`);
   } else {
-    t3.push("No interactive elements were enumerable — rely on the Tier 4 screenshot.");
+    t3.push("No interactive elements were enumerable now — rely on the Tier 4 screenshot.");
+  }
+  if (earlyDiffers) {
+    t3.push(`Elements at the moment of failure, before Tier 1–2 remedies ran (may include ` +
+      `since-closed transient UI — do not treat as current):\n${JSON.stringify(earlyInventory)}`);
   }
 
   const content = [
@@ -679,8 +783,8 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker) {
   ];
 
   if (err.preShot)    content.push({ type: "text", text: "Pre-step screenshot (before the action):" }, { type: "image", data: err.preShot.toString("base64"), mimeType: "image/jpeg" });
-  if (visualRefData)  content.push({ type: "text", text: `Reference image of the target from recording (step ${stepNo}):` }, { type: "image", data: visualRefData, mimeType: visualRefMime });
-  if (failShot)       content.push({ type: "text", text: "Current page at failure:" }, { type: "image", data: failShot.toString("base64"), mimeType: "image/jpeg" });
+  if (visualRefData)  content.push({ type: "text", text: `Reference image of the target from recording (step ${stepNo}) — recording-time appearance, may be outdated:` }, { type: "image", data: visualRefData, mimeType: visualRefMime });
+  if (failShot)       content.push({ type: "text", text: "Current page at failure — ground truth:" }, { type: "image", data: failShot.toString("base64"), mimeType: "image/jpeg" });
 
   return { content };
 }
@@ -812,7 +916,7 @@ async function _handleTool(name, args, extra) {
 
       // Runtime compatibility
       const required = entry.manifest.required_runtime || ">=0.0.0";
-      if (!semver.satisfies(RUNTIME_VERSION, required))
+      if (!IS_LOCAL_DEV_RUNTIME && !semver.satisfies(RUNTIME_VERSION, required))
         return err(`Skill ${run.skill} requires runtime ${required}, installed: ${RUNTIME_VERSION}. Please update the Conxa runtime.`);
 
       const execPath = path.join(entry.skillDir, "execution.json");
@@ -940,12 +1044,49 @@ async function _handleTool(name, args, extra) {
     if (_resumeOverride && _parkedRecovery
         && _parkedRecovery.slug === primary.entry.slug
         && _parkedRecovery.company === primary.entry.company) {
-      try { _parkedRecovery.page.url(); _park = _parkedRecovery; } catch (_) { _park = null; }
+      try {
+        _parkedRecovery.page.url();
+        // The recovery request described the page as it stood at park time. If it has since
+        // navigated or its interactive-element count shifted materially (a timer, websocket
+        // push, or unrelated re-render), the agent's corrected selector would be acting on a
+        // page it never actually reasoned about — discard rather than silently trust it.
+        const currentFp = await capturePageFingerprint(_parkedRecovery.page);
+        const parkedFp  = _parkedRecovery.pageFingerprint;
+        const diverged = !currentFp || !parkedFp
+          || currentFp.url !== parkedFp.url
+          || Math.abs(currentFp.interactiveCount - parkedFp.interactiveCount) > PARK_DIVERGENCE_TOLERANCE;
+        if (diverged) {
+          appendRecoveryEvent({ event: "recovery_park_state_mismatch", slug: primary.entry.slug, step_index: primary.resumeFrom });
+        } else {
+          _park = _parkedRecovery;
+        }
+      } catch (_) { _park = null; }
       if (_park) { clearTimeout(_park.timer); _parkedRecovery = null; }
     }
-    // Any park we did not adopt is stale (different skill, dead page, or a non-resume run) —
-    // discard it so it can neither leak a browser nor interfere with this run.
+    // Any park we did not adopt is stale (different skill, dead page, diverged state, or a
+    // non-resume run) — discard it so it can neither leak a browser nor interfere with this run.
     if (_parkedRecovery) await _discardPark(_resumeOverride ? "replaced" : "superseded");
+
+    // An agent override with no live, state-matching park to resume on (TTL expired, page
+    // crashed, or state diverged) must never silently continue mid-plan on a fresh page — the
+    // override was chosen against a DOM state that no longer exists, so applying it to a
+    // blank/different page could act on the wrong element. Refuse and ask the agent to restart.
+    // This exits before the try/finally below that normally clears activeExecution and flushes
+    // the tracker, so both must be torn down by hand here — otherwise every execute_skill call
+    // after the first refused resume would see "Execution already running" forever.
+    if (_resumeOverride && !_park) {
+      appendRecoveryEvent({ event: "recovery_resume_refused", slug: primary.entry.slug, step_index: primary.resumeFrom });
+      _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: primary.resumeFrom, fc: "recovery_resume_refused" });
+      if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
+      activeExecution = null;
+      await _tracker.flush();
+      _tracker.destroy();
+      return err(
+        `The recovery window for step ${primary.resumeFrom + 1} has expired or the page state has changed ` +
+        `since the recovery request was issued. Call execute_skill again for "${primary.entry.slug}" without ` +
+        `resume_from to restart the skill from the beginning.`
+      );
+    }
 
     let page = null;
     let _browser, _context, _protectedUrl;
@@ -1144,7 +1285,9 @@ async function _handleTool(name, args, extra) {
         return err("Execution cancelled.");
       }
 
-      const failResp = page ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry, _runTracker) : err(runErr.message);
+      const failResp = page
+        ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null)
+        : err(runErr.message);
 
       // Park the live failed page for an agent-mediated (Tier 3/4) resume instead of tearing it
       // down — so the corrected selector lands on the same DOM the recovery request describes.
@@ -1156,7 +1299,8 @@ async function _handleTool(name, args, extra) {
         const timer = setTimeout(() => { _discardPark("ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
         _parkedRecovery = { slug: primary.entry.slug, company: primary.entry.company,
-          page, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer };
+          page, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
+          pageFingerprint: await capturePageFingerprint(page) };
         appendRecoveryEvent({ event: "recovery_park_created", slug: primary.entry.slug, step_index: runErr.failedAt, ttl_ms: PARK_TTL_MS });
         log("info", "recovery_park_created", { skill: primary.entry.slug, step_index: runErr.failedAt });
         _runTracker.emit("park_created", { si: runErr.failedAt });

@@ -50,11 +50,11 @@ Every time a company records workflows and compiles them into a new plugin versi
 
 | Call | Prompt size | When | Count/step |
 |------|-------------|------|------------|
-| **Intent detection** (`generate_intent_with_llm`) | ~200 input + ~50 output tokens | Every step — but **cached** by element hash | 1 (0 on cache hit) |
+| **Intent detection** (`generate_intent_with_llm`) | ~200 input + ~50 output tokens | Every step — but **cached** by element hash | 1 typical, up to 3 on a generic/malformed answer (0 on cache hit) |
 | **Vision anchor generation** (`generate_anchors_for_step_or_raise`) | ~15K input + ~500 output tokens (screenshot JPEG as base64 + prompt) | Every step — but **cached** by screenshot hash | 1 (0 on cache hit) |
 
-**All steps, all DOM conditions:** 2 LLM calls/step (intent + vision anchor)  
-**Recompilation (same DOM, cached):** 0–2 calls/step — caching absorbs most of the cost
+**All steps, all DOM conditions:** 2 LLM calls/step (intent + vision anchor) typical; a step whose element is genuinely hard to describe can cost up to 4 (3 intent retries + 1 vision anchor).
+**Recompilation (same DOM, cached):** 0–2 calls/step — caching absorbs most of the cost. Note: intent generation has **no template fallback** — a step that never resolves to a specific, non-generic intent is left with a blank `intent` (flagged in Human Edit) rather than a synthesized one, and an unresolved attempt is **not cached**, so it retries in full on every subsequent compile until it succeeds or the underlying page/LLM issue is fixed.
 
 Selector strings are generated deterministically by `IdentityBundle` + `selector_grammar.py`. No LLM calls are made for selector generation regardless of DOM quality or `data-testid` coverage.
 

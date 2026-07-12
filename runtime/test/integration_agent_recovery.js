@@ -28,6 +28,7 @@ const { runPlan, applyStepOverrides } = require("../run");
 
 const PAGE_HTML = `<!doctype html><html><head><title>start</title></head><body>
   <header><button data-testid="go" id="real-submit">Submit Order</button></header>
+  <button id="decoy">Also Button</button>
   <script>
     document.querySelector('[data-testid=go]').addEventListener('click', () => {
       document.title = 'CLICKED';
@@ -72,6 +73,10 @@ async function main() {
         assert.ok(threw, "expected the broken step to fail");
         assert.strictEqual(threw.failedAt, 0, "should fail at step 0");
         assert.notStrictEqual(await page.title(), "CLICKED", "button must NOT have been clicked");
+        // Regression: stepFailure() used to build a fresh Error and silently drop
+        // primaryErr.earlyDomSnapshot, so _buildFailureResponse's "prefer the failure-moment
+        // snapshot" fallback never actually fired. Must be forwarded onto the thrown error.
+        assert.ok(Array.isArray(threw.earlyDomSnapshot), "earlyDomSnapshot must be forwarded onto the thrown error");
         console.log("ok 1 - broken step fails deterministically through Tier 1/2");
       } catch (e) { failures++; console.log("not ok 1 -", e.message); }
       await page.close();
@@ -93,12 +98,35 @@ async function main() {
       } catch (e) { failures++; console.log("not ok 2 -", e.message); }
       await page.close();
     }
+
+    // ── Case 3: ambiguous override selector is rejected, not silently applied to candidate[0] ──
+    {
+      const page = await browser.newPage();
+      await page.goto(url, { waitUntil: "domcontentloaded" });
+      // "button" now matches both #real-submit and #decoy; brokenStep()'s fingerprint
+      // (aria_label "Totally Different Button", data_testid "vanished") agrees with neither on
+      // anything but role, so both candidates score identically — a genuine tie, margin 0.
+      const overridden = applyStepOverrides([brokenStep()], { "0": { selector: "button" } });
+      let threw = null;
+      try {
+        await runPlan(page, overridden, {}, 0, "itest", { tracker: quietTracker });
+      } catch (e) { threw = e; }
+      try {
+        assert.ok(threw, "expected the ambiguous override to be rejected");
+        assert.strictEqual(threw.overrideValidationFailed, true, "must be tagged as an override-validation rejection");
+        assert.strictEqual(threw.overrideReason, "ambiguous");
+        assert.ok(Array.isArray(threw.overrideCandidates) && threw.overrideCandidates.length >= 2);
+        assert.notStrictEqual(await page.title(), "CLICKED", "must NOT have silently clicked either candidate");
+        console.log("ok 3 - ambiguous override selector is rejected, not silently applied to candidate[0]");
+      } catch (e) { failures++; console.log("not ok 3 -", e.message); }
+      await page.close();
+    }
   } finally {
     await browser.close();
     server.close();
   }
 
-  console.log(`# tests 2\n# pass ${2 - failures}\n# fail ${failures}`);
+  console.log(`# tests 3\n# pass ${3 - failures}\n# fail ${failures}`);
   process.exit(failures ? 1 : 0);
 }
 

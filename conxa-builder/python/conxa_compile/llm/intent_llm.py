@@ -15,6 +15,11 @@ from conxa_compile.policy.intent_ontology import generic_intents
 
 INTENT_RE = re.compile(r"^[a-z][a-z0-9_]{2,80}$")
 
+# Bounded LLM attempts before leaving the intent blank. No template fallback exists any more —
+# a blank intent is flagged (flags.generic_intent / the "intent" badge / generic_or_empty_intent
+# suggestion, all already wired in workflow_dto.py) rather than silently disguised as a real one.
+MAX_INTENT_ATTEMPTS = 3
+
 
 def _cache_path() -> Path:
     p = settings.data_dir / "cache"
@@ -49,34 +54,23 @@ def _intent_key(payload: dict[str, str]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _sanitize_intent(value: str, fallback: str) -> str:
+def _sanitize_intent(value: str) -> str:
+    """Returns a valid snake_case intent, or "" if the value doesn't parse as one."""
     intent = "_".join(value.strip().lower().split())
     if intent == "perform_action":
-        return fallback
+        return ""
     if not INTENT_RE.match(intent):
-        return fallback
+        return ""
     return intent
 
 
-def _fallback(payload: dict[str, str], action: str) -> str:
-    name = payload.get("name", "").strip().lower().replace(" ", "_")
-    role = payload.get("role", "").strip().lower().replace(" ", "_")
-    tag = payload.get("tag", "").strip().lower().replace(" ", "_")
-    target_hint = name or role or tag or "target"
-    if action == "focus":
-        return f"focus_{target_hint}"
-    if action in {"type", "fill", "input"}:
-        return f"enter_{target_hint}_value"
-    if action == "click":
-        return f"click_{target_hint}"
-    if action == "scroll":
-        return "scroll_viewport"
-    if action in {"navigate", "open", "go_to"}:
-        return "navigate_to_page"
-    return f"{action or 'advance'}_ui_flow"
-
-
 def generate_intent_with_llm(step: dict[str, object]) -> str:
+    """Returns a specific, LLM-derived snake_case intent, or "" if one couldn't be resolved.
+
+    No template fallback: a malformed/generic answer gets a corrective retry (bounded by
+    MAX_INTENT_ATTEMPTS), not a silent substitution. Only a genuinely resolved intent is cached —
+    an unresolved step gets a fresh shot on the next compile instead of being stuck blank forever.
+    """
     policy = get_policy_bundle().data
     generics = generic_intents(policy)
     action = str((step.get("action") or {}).get("action") or "interact")
@@ -91,13 +85,12 @@ def generate_intent_with_llm(step: dict[str, object]) -> str:
         "placeholder": str(target.get("placeholder") or ""),
         "context": str(context.get("form_context") or ""),
     }
-    fallback = _fallback(payload, action)
     cache = _read_cache()
     key = _intent_key({"action": action, **payload})
     if key in cache:
-        return _sanitize_intent(cache[key], fallback)
+        return cache[key]
 
-    prompt = (
+    base_prompt = (
         "Given:\n"
         f"- element tag: {payload['tag']}\n"
         f"- attributes: name={payload['name']}, role={payload['role']}, placeholder={payload['placeholder']}\n"
@@ -107,25 +100,38 @@ def generate_intent_with_llm(step: dict[str, object]) -> str:
         "(verb + object, no spaces). Examples of shape: focus_<name>, enter_<name>_value, click_<name>, "
         "navigate_to_<place>, scroll_viewport. Return ONLY the intent."
     )
-    req_body = {
-        "task": "intent_generation",
-        "input": {"prompt": prompt},
-    }
-    data = call_llm("intent_generation", req_body, max(500, settings.llm_text_timeout_ms))
-    if data is not None:
+    feedback = ""
+    for _attempt in range(MAX_INTENT_ATTEMPTS):
+        req_body = {
+            "task": "intent_generation",
+            "input": {"prompt": base_prompt + feedback},
+        }
+        data = call_llm("intent_generation", req_body, max(500, settings.llm_text_timeout_ms))
+        if data is None:
+            # Provider pool already exhausted its own internal retries (router.route_text) —
+            # this is a real (if hopefully transient) outage. Try again with the same prompt.
+            continue
         raw_intent = str(data.get("intent") or data.get("output") or data.get("text") or "").strip()
-        intent = _sanitize_intent(raw_intent, fallback)
+        intent = _sanitize_intent(raw_intent)
+        if not intent:
+            feedback = (
+                f"\n\nYour previous answer '{raw_intent}' was not a valid snake_case intent "
+                "string (verb_object, lowercase, underscores only). Return ONLY a valid one."
+            )
+            continue
         if intent in generics:
-            intent = fallback
+            feedback = (
+                f"\n\nYour previous answer '{intent}' was too generic. Be more specific about "
+                "what this exact control does — mention its label, name, or visible text."
+            )
+            continue
         cache[key] = intent
         _write_cache(cache)
         return intent
-    cache[key] = fallback
-    _write_cache(cache)
-    return fallback
+
+    return ""
 
 
 def generate_intent(step: dict[str, object]) -> str:
     """Backwards-compatible alias for compiler callers."""
     return generate_intent_with_llm(step)
-

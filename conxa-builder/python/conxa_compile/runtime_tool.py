@@ -36,9 +36,13 @@ def call_runtime_tool(
     locally-built dev-runtime/ folder as ``runtime_dir`` (resolve_dev_runtime_dir());
     in Production it's the customer-faithful staged sandbox.
 
-    ``CONXA_APP_DIR`` is intentionally NOT injected: ``conxa_dir`` already provides
-    CONXA_DIR/conxa-app (built locally in Dev, staged from deps in Production), which
-    the runtime resolves exactly the same way in both cases.
+    ``CONXA_APP_DIR`` IS explicitly injected (derived from ``conxa_dir``), even
+    though runtime/env.js would derive the same value on its own when unset. It
+    can't be left unset here: when Build Studio itself was launched via
+    scripts/conxa.ps1, CONXA_APP_DIR is already present in os.environ (pointing
+    at ~/.conxa-dev/conxa-app), and proc_env inherits from os.environ — so an
+    omitted override lets that stale value leak through and beat env.js's
+    from-CONXA_DIR derivation, sending bootstrap.js looking in the wrong place.
     """
     # Both Dev and Production always resolve to a real packed exe now (Dev: built
     # locally by scripts/build-runtime-local.ps1; Production: deps-managed).
@@ -61,6 +65,7 @@ def call_runtime_tool(
         **os.environ,
         **(env or {}),
         "CONXA_DIR": str(effective_conxa_dir),
+        "CONXA_APP_DIR": str(effective_conxa_dir / "conxa-app"),
         "CONXA_SKIP_SELF_UPDATE": os.environ.get("CONXA_SKIP_SELF_UPDATE", "1"),
         # Build Studio tests the compiled pack on its deterministic merits: only the
         # zero-token Tier 1 (exception ladder) + Tier 2 (a11y / fallback) cascade. Tiers 3
@@ -70,8 +75,6 @@ def call_runtime_tool(
         "CONXA_MAX_RECOVERY_TIER": (env or {}).get("CONXA_MAX_RECOVERY_TIER")
             or os.environ.get("CONXA_MAX_RECOVERY_TIER", "2"),
     }
-    # CONXA_APP_DIR is NOT set: the sandbox/customer install provides conxa-app/ under
-    # CONXA_DIR so the runtime resolves it via its own default logic (bootstrap.js:9).
 
     proc = subprocess.Popen(
         cmd,

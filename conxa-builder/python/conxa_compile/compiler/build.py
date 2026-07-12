@@ -33,7 +33,7 @@ from conxa_compile.compiler.selector_score import (
 from conxa_compile.compiler.stable_hash import compute_stable_hash
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
 from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to_display
-from conxa_compile.compiler.state_validation import capture_state_snapshot, compare_state, optimize_scroll, scroll_payload, validation_from_diff
+from conxa_compile.compiler.state_validation import capture_state_snapshot, compare_state, merge_dom_diff_evidence, optimize_scroll, scroll_payload, validation_from_diff
 from conxa_compile.compiler.step_anchors import clean_anchors, clean_steps, fix_step_order, generate_stable_selector
 from conxa_core.config import settings
 # anchor_vision_llm pulls in PIL -> numpy, whose native-extension import is slow on some
@@ -964,6 +964,7 @@ def _build_step(
     state_before = capture_state_snapshot(ev, before=True)
     state_after = capture_state_snapshot(ev, before=False)
     state_diff = compare_state(state_before, state_after)
+    state_diff = merge_dom_diff_evidence(ev, state_diff)
     ev_with_intent = dict(ev)
     semantic = dict(ev_with_intent.get("semantic") or {})
     pipeline_candidate = str(semantic.get("llm_intent") or "").strip()
@@ -1046,6 +1047,15 @@ def _build_step(
         cw["selector_confidence"] = sel_conf
         confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
     assertions = _build_assertions(ev_with_intent, validation, policy, target, value)
+    # A synthesized state_changed assertion (build.py's own fallback for a consequential click
+    # with zero other evidence — no URL change, no post_condition, no recorded DOM diff) means the
+    # compiler had nothing real to verify against and fell back to "something happened". That was
+    # previously silent; surface it the same way weak_fingerprint/selector_confidence already are,
+    # so a human can see it in the compile report instead of only finding out at runtime.
+    if any(a.type == "state_changed" for a in assertions):
+        cw = dict(confidence_protocol.get("compile_warnings") or {})
+        cw["weak_evidence"] = True
+        confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
     if assertions:
         validation = ValidationBlock(
             wait_for=validation.wait_for,

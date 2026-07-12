@@ -459,17 +459,31 @@ flowchart TD
     E -->|Resolved| D
     E -->|Fail| F{Recovery ceiling ≥ 3?}
     F -->|No — Build Studio| N[Deterministic failure: report, no agent handoff]
-    F -->|Yes — Claude/MCP| G[Park live page + return Tier 3/4 recovery request]
-    G --> H[Tier 3 semantic: step intent + DOM inventory → Claude]
+    F -->|Yes — Claude/MCP| G[Park live page + fingerprint; return Tier 3/4 recovery request]
+    G --> H[Tier 3 semantic: intent + expected post-condition + executed-steps trace + live post-cascade DOM inventory → Claude]
     G --> I[Tier 4 vision: screenshots → Claude]
     H --> J[Claude resumes: execute_skill resume_from + step_overrides]
     I --> J
-    J --> K[Adopt parked page; apply override via _explicit_selector]
-    K --> D
+    J --> P{Park still live and fingerprint matches?}
+    P -->|No| Q[Refuse resume: ask agent to restart the skill]
+    P -->|Yes| K[Adopt parked page; validate override selector against fingerprint]
+    K --> R{Unique match above margin?}
+    R -->|No| G
+    R -->|Yes| D
     D --> L[verifyStep: check the step's post-condition assertions]
     L -->|All required pass| M[tracker.emit tier_ok + continue]
     L -->|Required fails| F
 ```
+
+**Validated closing edge:** the agent's `step_overrides` selector is never applied blind. It is
+resolved against the live page and scored against the step's recorded fingerprint the same way
+`resolver.js` scores a compiled signal — a unique match is accepted, a multi-match must clear the
+uniqueness margin, and a no-match/ambiguous selector is rejected back into a fresh recovery
+request (`R -->|No| G` above) rather than silently acting on the first match. Separately, the
+parked page itself is only trusted if a cheap page-state fingerprint (url + interactive-element
+count + a body-text hash) still matches what was captured at park time — a page that has drifted
+while the agent was reasoning is discarded, and the resume is refused outright rather than
+silently continuing mid-plan on a fresh, different page. See `docs/TRD.md` §10.1.
 
 **Re-verified recovery:** a "resolved" in Tier 1/2 above isn't the end of the story for a
 consequential step — every remedy that re-runs the action re-checks the post-condition

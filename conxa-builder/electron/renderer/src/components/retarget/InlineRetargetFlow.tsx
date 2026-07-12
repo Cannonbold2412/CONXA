@@ -344,6 +344,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
           ) : null}
           {phase === 3 && preview ? (
             <RetargetPhaseValidation
+              step={step}
               preview={preview}
               keepValidation={keepValidation}
               onKeepValidationChange={setKeepValidation}

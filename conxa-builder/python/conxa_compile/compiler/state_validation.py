@@ -82,6 +82,10 @@ def capture_state_snapshot(step: Step, *, before: bool) -> dict[str, Any]:
     return state
 
 
+def _evidence_strength(new_elements: list, removed_elements: list, text_change: list) -> float:
+    return min(1.0, (len(new_elements) + len(removed_elements) + len(text_change)) / 20.0)
+
+
 def compare_state(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     b_elements = set(before.get("visible_key_elements") or [])
     a_elements = set(after.get("visible_key_elements") or [])
@@ -90,15 +94,62 @@ def compare_state(before: dict[str, Any], after: dict[str, Any]) -> dict[str, An
     n_new = sorted(a_elements - b_elements)
     n_rem = sorted(b_elements - a_elements)
     n_txt = sorted(a_text - b_text)
-    strength = min(1.0, (len(n_new) + len(n_rem) + len(n_txt)) / 20.0)
     return {
         "url_changed": str(before.get("url") or "") != str(after.get("url") or ""),
         "dom_changed": str(before.get("dom_fingerprint") or "") != str(after.get("dom_fingerprint") or ""),
         "new_elements": n_new,
         "removed_elements": n_rem,
         "text_change": n_txt,
-        "evidence_strength": strength,
+        "evidence_strength": _evidence_strength(n_new, n_rem, n_txt),
     }
+
+
+def merge_dom_diff_evidence(ev: Step, state_diff: dict[str, Any]) -> dict[str, Any]:
+    """Fold bridge.js's already-recorded page-wide before/after element diff into state_diff.
+
+    `compare_state` above only compares the step's OWN recorded target/selectors/context — a
+    single element's own descriptors, not the page-wide interactive-element scan the recorder
+    already did (`bridge.js::_computeDomDiff`, stored as `state_change.dom_diff.added/removed`,
+    lines like "tag|testid|aria_label|text"). That real, already-computed evidence was validated
+    onto the model (Priority 1) but never consumed here — recompiling with it gives the
+    text_present/selector_present picker something real to work with instead of falling straight
+    to an intent-derived guess when the step's own before/after descriptors show no change.
+    """
+    dom_diff = ((ev.get("state_change") or {}).get("dom_diff")) or {}
+    added_lines = [str(x) for x in (dom_diff.get("added") or [])][:20]
+    if not added_lines:
+        return state_diff
+
+    extra_text: list[str] = []
+    extra_selectors: list[str] = []
+    for line in added_lines:
+        parts = line.split("|")
+        if len(parts) < 4:
+            continue
+        testid, text = parts[1].strip(), parts[3].strip()
+        if testid:
+            extra_selectors.append(f'[data-testid="{testid}"]')
+        if text and len(text) >= 3:
+            extra_text.append(text)
+
+    def _dedup(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+        return out
+
+    new_elements = _dedup(list(state_diff.get("new_elements") or []) + extra_selectors)[:24]
+    text_change = _dedup(list(state_diff.get("text_change") or []) + extra_text)[:8]
+    merged = dict(state_diff)
+    merged["new_elements"] = new_elements
+    merged["text_change"] = text_change
+    merged["evidence_strength"] = _evidence_strength(new_elements, state_diff.get("removed_elements") or [], text_change)
+    return merged
 
 
 def validation_from_diff(

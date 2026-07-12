@@ -6,8 +6,8 @@ const path = require("path");
 
 const { mapErrorToCode } = require("./tracker");
 const { classifyException, remedyFor, buildRepairEvent, CLASS, STALE_RE } = require("./recovery");
-const { resolve: resolveSignals } = require("./resolver");
-const { signalToLocator, gatherCandidates, bundleFingerprint } = require("./resolve_adapter");
+const { resolve: resolveSignals, scoreCandidate } = require("./resolver");
+const { signalToLocator, gatherCandidates, bundleFingerprint, _extractDescriptor } = require("./resolve_adapter");
 const { detectPreExecDrift } = require("./drift");
 
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
@@ -216,6 +216,51 @@ async function gateLocator(loc, step) {
   }
 }
 
+// Matches resolver.js's DEFAULT_UNIQUE_MARGIN/DEFAULT_CONFIDENCE_THRESHOLD (not imported —
+// those defaults are private to resolve()'s own control flow, which has different single-
+// candidate semantics than the ad-hoc single-selector check below).
+const OVERRIDE_UNIQUE_MARGIN = 0.15;
+const OVERRIDE_CONFIDENCE_THRESHOLD = 0.5;
+
+// Validates an agent-supplied recovery selector (`step._explicit_selector` + `_agent_override`)
+// against the step's recorded fingerprint before it is allowed to act. Extends the "resolver
+// never blindly picks candidate[0]" invariant (resolver.js) to the Tier 3/4 closing edge —
+// without this, a multi-match override selector silently acted on whatever `.first()` returned.
+async function validateOverrideSelector(page, step, inputs) {
+  const selector = interpolate(step._explicit_selector || "", inputs);
+  if (!selector) return { valid: false, reason: "missing-selector", candidates: [] };
+
+  const descriptors = [];
+  for (const root of rootCandidates(page, step, inputs)) {
+    let all;
+    try { all = await root.locator(selector).all(); } catch (_) { continue; }
+    for (const item of all) {
+      let d;
+      try { d = await item.evaluate(_extractDescriptor); } catch (_) { continue; }
+      if (!d) continue;
+      d._loc = item;
+      descriptors.push(d);
+    }
+  }
+
+  if (!descriptors.length) return { valid: false, reason: "no-match", candidates: [] };
+  if (descriptors.length === 1) return { valid: true, loc: descriptors[0]._loc };
+
+  const fp = bundleFingerprint(asObject(step.identity_bundle));
+  const scored = descriptors
+    .map(d => ({ d, s: scoreCandidate(d, fp) }))
+    .sort((a, b) => b.s - a.s);
+  const margin = scored[0].s - (scored[1] ? scored[1].s : 0);
+  if (margin >= OVERRIDE_UNIQUE_MARGIN && scored[0].s >= OVERRIDE_CONFIDENCE_THRESHOLD) {
+    return { valid: true, loc: scored[0].d._loc };
+  }
+  return {
+    valid: false,
+    reason: "ambiguous",
+    candidates: descriptors.slice(0, 20).map(d => ({ role: d.role, name: d.name, text: d.text, testid: d.testid })),
+  };
+}
+
 async function withLocator(page, step, inputs, selector, timeout, fn) {
   // PRIMARY identity-bundle path: late-bind resolve → gate → act, RE-TRIED within the action
   // budget. A transient state (target still hydrating, a menu still opening/animating) re-resolves
@@ -240,10 +285,27 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
     }
   }
 
-  // Explicit recovery selector (PRIMARY + _explicit_selector) or plain string mode.
-  const candidates = selector === PRIMARY
-    ? locatorCandidates(page, step, inputs, step._explicit_selector)
-    : locatorCandidates(page, step, inputs, selector);
+  let candidates;
+  if (selector === PRIMARY && step._agent_override) {
+    // Agent-supplied recovery selector (Tier 3/4 closing edge) — gate it the same way the
+    // primary path gates every compiled signal, instead of falling straight into plain
+    // string-mode's unguarded .first().
+    const validation = await validateOverrideSelector(page, step, inputs);
+    if (!validation.valid) {
+      throw Object.assign(
+        new Error(validation.reason === "no-match"
+          ? "Agent recovery selector matched no element on the page"
+          : "Agent recovery selector was ambiguous (no candidate cleared the uniqueness margin)"),
+        { overrideValidationFailed: true, overrideReason: validation.reason, overrideCandidates: validation.candidates },
+      );
+    }
+    candidates = [validation.loc];
+  } else {
+    // Explicit recovery selector (PRIMARY + _explicit_selector, non-agent) or plain string mode.
+    candidates = selector === PRIMARY
+      ? locatorCandidates(page, step, inputs, step._explicit_selector)
+      : locatorCandidates(page, step, inputs, selector);
+  }
   if (!candidates.length) throw new Error("Missing selector");
 
   let lastErr = null;
@@ -1186,6 +1248,22 @@ function stepFailure(step, stepIndex, cause, preShot) {
   err.failedAt = stepIndex;
   err.failedStep = step;
   err.preShot = preShot;
+  // `cause` (primaryErr) carries fields the caller needs but that this wrapper Error previously
+  // dropped — earlyDomSnapshot silently never reached _buildFailureResponse, so its "prefer the
+  // failure-moment snapshot" comment was dead code; verifyResults/override-validation details
+  // were similarly lost.
+  if (cause) {
+    if (Array.isArray(cause.earlyDomSnapshot)) err.earlyDomSnapshot = cause.earlyDomSnapshot;
+    if (cause.verifyFail) {
+      err.verifyFail = true;
+      err.verifyResults = cause.verifyResults;
+    }
+    if (cause.overrideValidationFailed) {
+      err.overrideValidationFailed = true;
+      err.overrideReason = cause.overrideReason;
+      err.overrideCandidates = cause.overrideCandidates;
+    }
+  }
   return err;
 }
 
@@ -1324,4 +1402,6 @@ module.exports = {
   recoverStep,
   layer1Ladder,
   probePresent,
+  validateOverrideSelector,
+  stepAssertions,
 };
