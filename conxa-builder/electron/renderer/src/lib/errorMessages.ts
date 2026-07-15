@@ -8,8 +8,14 @@
  * backend message only when a code is unmapped.
  *
  * Keep this in sync with the `_CommandError(...)` call sites in
- * `conxa-builder/python/backend.py` and the entitlement copy in
- * `backend.py:_entitlement_error_message`.
+ * `conxa-builder/python/backend.py`, the entitlement copy in
+ * `backend.py:_entitlement_error_message`, and the patch-validation codes raised as
+ * `ValueError`s from `conxa_compile/editor/patch_gate.py` (surfaced by `cmd_patch_step` as
+ * `_CommandError(str(exc), "Patch rejected: <exc>")` — the code IS the raw ValueError string).
+ * Codes with a dynamic index in their name (e.g. `frame_chain_0_selector_required`,
+ * `branch_option_2_must_be_object`) aren't enumerated here — those UI surfaces (frame chain
+ * editing, wait_for_one_of options) have no editor yet, so the raw code reaching a toast isn't
+ * reachable in practice today. Add a mapping if/when that gap is closed.
  */
 export const errorMessages: Record<string, string> = {
   // Cloud / connectivity
@@ -60,6 +66,8 @@ export const errorMessages: Record<string, string> = {
   invalid_bbox: "That selection isn't a valid region. Try drawing the box again.",
   invalid_selector:
     "One of the recorded elements can't be targeted reliably. Re-record that step.",
+  vision_anchors_failed:
+    "Couldn't re-derive this step's recovery anchors right now (vision LLM/cloud proxy issue). Try again in a moment.",
   session_artifacts_missing:
     "The original recording for this step is no longer available, so we can't re-find the element. You can still reposition it without changing the selector.",
   bbox_too_small: "Draw a larger region around the element — the selection is too small to identify.",
@@ -71,6 +79,52 @@ export const errorMessages: Record<string, string> = {
     "The installer version must look like 1.2.3 (optionally 1.2.3-beta.1).",
   invalid_release_notes: "A release message is required (up to 2000 characters).",
   invalid_frame_label: "A frame label is required for this step.",
+
+  // Step editor — patch validation (patch_gate.py)
+  intent_empty: "Describe what this step does before saving.",
+  invalid_intent_slug: "That description has characters that can't be used. Use plain words.",
+  intent_required_for_non_scroll_step: "Describe what this step does before saving.",
+  unsupported_action_kind: "This action type isn't editable here.",
+  recording_marker_steps_are_read_only: "This step is a recording marker and can't be edited.",
+  navigate_step_allows_only_url_intent_validation_recovery:
+    "Only the URL, description, outcome checks, and recovery can be edited for a navigate step.",
+  navigate_url_must_be_http_url: "Enter a full web address starting with http:// or https://.",
+  scroll_step_allows_only_intent_and_action: "Only the description can be edited for a scroll step.",
+  scroll_action_patch_required: "Something went wrong saving this scroll step. Please try again.",
+  scroll_action_kind_invalid: "Something went wrong saving this scroll step. Please try again.",
+  scroll_selector_failed_quality_gates:
+    "That scroll target can't be targeted reliably. Choose a different element or scroll by amount instead.",
+  scroll_amount_required: "Enter how far this step should scroll.",
+  scroll_amount_must_be_integer: "The scroll amount must be a whole number.",
+  scroll_amount_out_of_range: "That scroll amount is too large. Use a smaller value.",
+  check_step_allows_only_check_fields: "Only the check's own fields can be edited for a check step.",
+  wait_step_allows_only_action_intent_validation_recovery:
+    "Only the description, outcome checks, and recovery can be edited for a wait step.",
+  screenshot_step_allows_only_action_intent_validation_recovery:
+    "Only the description, outcome checks, and recovery can be edited for a screenshot step.",
+  branch_step_allows_only_target_branch_intent_validation_recovery_frame:
+    "Only the target, branch options, description, outcome checks, and recovery can be edited for this step.",
+  branch_body_step_cannot_patch_recovery_or_validation:
+    "Recovery and outcome checks can't be edited on a step nested inside a branch.",
+  branch_must_be_object: "Something went wrong saving this step's branch settings. Please try again.",
+  branch_timeout_ms_must_be_integer: "The branch timeout must be a whole number of milliseconds.",
+  branch_timeout_ms_out_of_range: "The branch timeout must be between 0 and 60,000 ms.",
+  branch_if_present_steps_not_patchable_here:
+    "Edit the steps inside this branch from the branch step list, not here.",
+  branch_candidates_must_be_array: "Something went wrong saving this branch's options. Please try again.",
+  branch_fallback_escape_must_be_boolean: "Something went wrong saving this branch's settings. Please try again.",
+  branch_options_must_be_array: "Something went wrong saving this branch's options. Please try again.",
+  branch_required_must_be_boolean: "Something went wrong saving this branch's settings. Please try again.",
+  primary_selector_failed_quality_gates:
+    "The main selector can't be targeted reliably. Choose a different element or selector.",
+  fallback_selector_failed_quality_gates:
+    "One of the fallback selectors can't be targeted reliably. Edit or remove it.",
+  destructive_step_requires_non_none_wait_for:
+    "This step performs an action that can't be undone, so it needs an outcome check that confirms it worked. Add one before saving.",
+  destructive_step_requires_signals_anchors:
+    "This step performs an action that can't be undone and needs recovery anchors. Re-pick the element to generate them.",
+  consequential_step_requires_required_assertion:
+    "This step's result should be confirmed. Keep at least one required outcome check before saving.",
 
   // Not found
   not_found: "We couldn't find what you were looking for.",

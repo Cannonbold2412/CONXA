@@ -20,12 +20,6 @@ const TONE_CLASSES: Record<PluginBadgeTone, { badge: string; bar: string }> = {
   },
 }
 
-function packageNameFromOutputPath(outputPath?: string | null): string {
-  if (!outputPath) return 'No package'
-  const leaf = outputPath.split(/[\\/]+/).filter(Boolean).pop() ?? outputPath
-  return leaf.endsWith('-plugin') ? leaf.slice(0, -'-plugin'.length) : leaf
-}
-
 /** Shared "Built Packages" list — used by both Publish Skill Package and Build
  * Installer, which both operate on the same set of built plugins but badge
  * them differently (publish status vs. installer status). Kept as one
@@ -90,10 +84,7 @@ export function PluginListSidebar({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-[13px] font-medium leading-snug">
-                        {packageNameFromOutputPath(plugin.build?.output_path)}
-                      </p>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-500">{plugin.name}</p>
+                      <p className="truncate text-[13px] font-medium leading-snug">{plugin.name}</p>
                     </div>
                     <Badge variant="outline" className={cn('shrink-0 text-[10px] font-medium', toneClasses.badge)}>
                       {label}
