@@ -9,6 +9,7 @@ const { classifyException, remedyFor, buildRepairEvent, CLASS, STALE_RE } = requ
 const { resolve: resolveSignals, scoreCandidate } = require("./resolver");
 const { signalToLocator, gatherCandidates, bundleFingerprint, _extractDescriptor } = require("./resolve_adapter");
 const { detectPreExecDrift } = require("./drift");
+const pageScripts = require("./page_scripts");
 
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 
@@ -188,14 +189,7 @@ async function gateLocator(loc, step) {
 
   // RAF-stable: bounding box must be unchanged across two animation frames.
   try {
-    const stable = await loc.evaluate(el => new Promise(resolve => {
-      const r1 = el.getBoundingClientRect();
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const r2 = el.getBoundingClientRect();
-        resolve(Math.abs(r1.x - r2.x) < 1 && Math.abs(r1.y - r2.y) < 1
-          && Math.abs(r1.width - r2.width) < 1 && Math.abs(r1.height - r2.height) < 1);
-      }));
-    }));
+    const stable = await loc.evaluate(pageScripts.rafStable);
     if (!stable) {
       await loc.waitFor({ state: "visible", timeout: budget }); // settle once more
     }
@@ -205,8 +199,7 @@ async function gateLocator(loc, step) {
 
   // Enabled: reject disabled / aria-disabled controls.
   try {
-    const disabled = await loc.evaluate(el =>
-      el.disabled === true || el.getAttribute("aria-disabled") === "true");
+    const disabled = await loc.evaluate(pageScripts.isDisabled);
     if (disabled) throw new Error("Element is disabled");
   } catch (err) {
     const msg = String((err && err.message) || "");
@@ -613,7 +606,7 @@ const HANDLERS = {
     } else {
       const deltaX = Number(step.delta_x) || 0;
       const deltaY = Number(step.delta_y) || 0;
-      await page.evaluate(([x, y]) => window.scrollBy(x, y), [deltaX, deltaY]);
+      await page.evaluate(pageScripts.scrollBy, [deltaX, deltaY]);
     }
   },
 
@@ -862,10 +855,7 @@ const STATE_CHANGED_TEXT_LEN_TOLERANCE = 20;
 async function capturePreStepSignature(page) {
   try {
     const url = page.url();
-    const { textLen, interactiveCount } = await page.evaluate((sel) => ({
-      textLen: (document.body && document.body.innerText || "").length,
-      interactiveCount: document.querySelectorAll(sel).length,
-    }), STATE_CHANGED_SELECTOR);
+    const { textLen, interactiveCount } = await page.evaluate(pageScripts.preStepSignature, STATE_CHANGED_SELECTOR);
     return { url, textLen, interactiveCount };
   } catch (_) {
     return null;
@@ -1222,24 +1212,7 @@ async function maybeCapturePreStep(page, step) {
 // on the error object lets _buildFailureResponse prefer it over a stale post-cascade query.
 async function captureEarlyDomSnapshot(page) {
   try {
-    return await page.evaluate(() => {
-      const seen = new Set();
-      return Array.from(document.querySelectorAll(
-        'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]'
-      )).map(el => {
-        const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
-        const tag  = el.tagName.toLowerCase();
-        const type = el.getAttribute("type")        || "";
-        const role = el.getAttribute("role")        || "";
-        const id   = el.id                          || undefined;
-        const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
-        const key  = `${tag}|${type}|${text}`;
-        if (!text && !type && !id && !dt) return null;
-        if (seen.has(key)) return null;
-        seen.add(key);
-        return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
-      }).filter(Boolean).slice(0, 50);
-    });
+    return await page.evaluate(pageScripts.domInventory);
   } catch (_) { return null; }
 }
 

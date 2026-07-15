@@ -7,6 +7,7 @@ const https  = require("https");
 const crypto = require("crypto");
 const semver = (global.__hostRequire || require)("semver");
 const { loadInstallId } = require("./install_identity");
+const pageScripts = require("./page_scripts");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
@@ -78,12 +79,7 @@ let _parkedRecovery = null;
 async function capturePageFingerprint(page) {
   try {
     const url = page.url();
-    const { interactiveCount, text } = await page.evaluate(() => ({
-      interactiveCount: document.querySelectorAll(
-        'button, a[href], input, select, textarea, [role="button"], [role="link"]'
-      ).length,
-      text: (document.body && document.body.innerText || "").slice(0, 5000),
-    }));
+    const { interactiveCount, text } = await page.evaluate(pageScripts.pageFingerprint);
     return { url, interactiveCount, domHash: crypto.createHash("sha256").update(text).digest("hex") };
   } catch (_) {
     return null;
@@ -680,7 +676,7 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker, steps
   let viewport = null;
   try { viewport = page.viewportSize(); } catch (_) {}
   let scrollY = null;
-  try { scrollY = await page.evaluate(() => window.scrollY); } catch (_) {}
+  try { scrollY = await page.evaluate(pageScripts.getScrollY); } catch (_) {}
 
   // Ground truth: the live, post-cascade inventory — the state the agent's corrected selector
   // will actually act on. T1/T2 remedies (dismiss-overlay, scroll, re-hover, ...) may already
@@ -688,24 +684,7 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker, steps
   // than only as a fallback. Cap at 50 elements — dominant text payload; nearby elements suffice.
   let currentInventory = null;
   try {
-    currentInventory = await page.evaluate(() => {
-      const seen = new Set();
-      return Array.from(document.querySelectorAll(
-        'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]'
-      )).map(el => {
-        const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
-        const tag  = el.tagName.toLowerCase();
-        const type = el.getAttribute("type")        || "";
-        const role = el.getAttribute("role")        || "";
-        const id   = el.id                          || undefined;
-        const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
-        const key  = `${tag}|${type}|${text}`;
-        if (!text && !type && !id && !dt) return null;
-        if (seen.has(key)) return null;
-        seen.add(key);
-        return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
-      }).filter(Boolean).slice(0, 50);
-    });
+    currentInventory = await page.evaluate(pageScripts.domInventory);
   } catch (_) {}
 
   // Secondary, and only when it actually differs from the current one: the inventory at the

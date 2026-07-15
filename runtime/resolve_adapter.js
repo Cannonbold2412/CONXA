@@ -5,6 +5,7 @@
 // pre-gather candidate descriptors per signal, then hand resolve() a synchronous map view.
 
 const crypto = require("crypto");
+const { extractDescriptor: _extractDescriptor } = require("./page_scripts");
 
 // Build a getByRole locator from an `internal:role=<role>[name="<name>"]` grammar string.
 // The name is QUOTED in the grammar, which in Playwright's own parser means an EXACT match
@@ -65,79 +66,8 @@ function signalToLocator(root, signal, interpolate, inputs) {
   return root.locator(raw);
 }
 
-// ── Page-side fingerprint extractor ─────────────────────────────────────────
-// Returns the comparable attributes for one candidate element plus the stable-hash payload
-// string. The payload mirrors compiler/stable_hash.py so the Node-side SHA256 (below) matches the
-// compiled stable_hash when the recorded attributes match.
-/* istanbul ignore next — runs in the browser context */
-function _extractDescriptor(el) {
-  const DYNAMIC_TOKENS = new Set([
-    "focus", "hover", "active", "focus-visible", "focus-within",
-    "loading", "animating", "transitioning", "selected", "disabled",
-    "expanded", "collapsed", "open", "closed", "checked", "pressed",
-    "dragging", "dragged", "dropping",
-  ]);
-  const DYNAMIC_PREFIXES = ["is-", "has-", "js-", "animate-", "transition-", "state-"];
-  const SKIP = new Set([
-    "class", "style", "tabindex",
-    "aria-expanded", "aria-selected", "aria-checked", "aria-disabled",
-    "aria-pressed", "aria-current", "aria-busy",
-    "data-state", "data-active", "data-focus", "data-open",
-  ]);
-
-  const tag = (el.tagName || "").toLowerCase();
-  const attrsObj = {};
-  for (const a of Array.from(el.attributes || [])) {
-    const k = a.name.toLowerCase();
-    if (SKIP.has(k)) continue;
-    if (k === "class") {
-      const stable = String(a.value || "").split(/\s+/).filter(c => {
-        const lc = c.toLowerCase();
-        if (!c || DYNAMIC_TOKENS.has(lc)) return false;
-        return !DYNAMIC_PREFIXES.some(p => lc.startsWith(p));
-      });
-      if (stable.length) attrsObj["class"] = stable.sort().join(" ");
-    } else {
-      attrsObj[k] = String(a.value || "");
-    }
-  }
-  const sortedAttrs = Object.keys(attrsObj).sort().map(k => `${k}=${attrsObj[k]}`).join("&");
-
-  const ariaLabel = el.getAttribute("aria-label") || "";
-  const nameAttr = el.getAttribute("name") || "";
-  const innerText = (el.textContent || "").trim().slice(0, 80);
-  const axName = (ariaLabel || nameAttr || innerText).trim();
-  const hashPayload = `${tag}|${sortedAttrs}|${axName}`;
-
-  // Implicit-role best effort (covers the common interactive tags).
-  let role = el.getAttribute("role") || "";
-  if (!role) {
-    if (tag === "a" && el.hasAttribute("href")) role = "link";
-    else if (tag === "button") role = "button";
-    else if (tag === "input") {
-      const t = (el.getAttribute("type") || "text").toLowerCase();
-      role = ({ checkbox: "checkbox", radio: "radio", button: "button", submit: "button" })[t] || "textbox";
-    }
-  }
-
-  const neighbors = [];
-  const pushText = (n) => {
-    const t = (n && n.textContent || "").trim();
-    if (t && t.length < 60) neighbors.push(t);
-  };
-  pushText(el.parentElement);
-  pushText(el.previousElementSibling);
-  pushText(el.nextElementSibling);
-
-  return {
-    role,
-    name: (ariaLabel || nameAttr || (el.textContent || "").trim()).slice(0, 120),
-    text: (el.textContent || "").trim().slice(0, 120),
-    testid: el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "",
-    anchorNeighbors: neighbors,
-    _hashPayload: hashPayload,
-  };
-}
+// _extractDescriptor is imported from page_scripts.js (runs in the browser context — see that
+// file's header for why it lives in its own, less-obfuscated module).
 
 function _sha256(s) {
   return crypto.createHash("sha256").update(s).digest("hex");

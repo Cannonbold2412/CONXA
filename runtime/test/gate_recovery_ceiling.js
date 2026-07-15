@@ -28,7 +28,7 @@ const RUNTIME_ROOT = path.join(__dirname, "..");
 const APP_FILES = [
   "server.js", "sync.js", "run.js", "browser.js", "skill_loader.js", "tracker.js",
   "install_identity.js", "bootstrap.js", "recovery.js", "resolve_adapter.js",
-  "resolver.js", "auth_manager.js",
+  "resolver.js", "auth_manager.js", "page_scripts.js",
 ];
 
 // A skill that navigates to the fixture (succeeds) then tries to click an element that does
