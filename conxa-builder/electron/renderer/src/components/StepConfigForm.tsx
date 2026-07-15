@@ -209,10 +209,21 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
   function StepConfigForm({ step, skillId, onWorkflowUpdated, onHistoryUpdate, hideSelectorTools, hideSubmitButton }, ref) {
   const methods = useForm<FormValues>({ defaultValues: step ? defaultsFromStep(step) : emptyForm })
 
+  // Re-sync from the server whenever `step` gets a new reference — but only when the form has
+  // no unsaved edits. `step` (HumanEditPage's currentStep) is re-derived from the workflow query
+  // cache and gets a fresh reference any time that cache is replaced for ANY reason, including
+  // ones unrelated to this step: a background refetch (window focus after staleTime), or a
+  // sibling save on the same page (e.g. RecoveryAnchorsCard, rendered alongside this form in the
+  // re-target wizard's Review Selectors phase). Resetting unconditionally on every reference
+  // change silently discarded whatever the user had just typed and cleared isDirty, so
+  // submitIfDirty()'s Continue-button save saw "nothing to save" and skipped the write entirely
+  // — no error, edit just vanished. Genuine step switches remount this component (see
+  // InlineRetargetFlow's key={currentStep?.id}), giving a fresh isDirty=false form regardless of
+  // this guard, so this only ever protects an in-progress edit on the step already open.
   useEffect(() => {
-    if (step) {
-      methods.reset(defaultsFromStep(step))
-    }
+    if (!step) return
+    if (methods.formState.isDirty) return
+    methods.reset(defaultsFromStep(step))
   }, [step, methods])
 
   const persistStepValues = useCallback(

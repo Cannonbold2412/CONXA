@@ -70,6 +70,9 @@ export class CmdError extends Error {
 /** Invoke a backend command, throwing CmdError on failure. */
 export async function cmd<T = unknown>(type: string, payload?: unknown): Promise<T> {
   const res = await window.conxa.cmd<T>(type, payload);
-  if (!res.ok) throw new CmdError(res.code, res.message);
+  if (!res.ok) {
+    if (res.trace) console.error(`[${type}] backend error:`, res.code, res.message, "\n", res.trace);
+    throw new CmdError(res.code, res.message);
+  }
   return res.result;
 }

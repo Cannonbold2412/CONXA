@@ -26,6 +26,10 @@ type RetargetState = {
   keepValidation: boolean
   /** Human edits made in the Validation phase; null means "use the current/proposed default". */
   editedAssertions: AssertionDraft[] | null
+  /** True once the human has actually touched candidates/validation past phase 1's programmatic
+   *  seed — i.e. there's something Apply hasn't persisted yet. Drives the discard-confirm guard
+   *  when navigating away mid-wizard (see WorkflowViewer's step-select handler). */
+  dirty: boolean
   /**
    * Clear the wizard state when a re-target starts on a different skill/step; no-op for the
    * same one so navigating back and forth between the three pages keeps what was picked.
@@ -36,6 +40,7 @@ type RetargetState = {
   setCandidates: (candidates: EditableCandidate[]) => void
   setKeepValidation: (value: boolean) => void
   setEditedAssertions: (value: AssertionDraft[] | null) => void
+  markDirty: () => void
   reset: () => void
 }
 
@@ -45,6 +50,7 @@ const EMPTY = {
   candidates: [] as EditableCandidate[],
   keepValidation: true,
   editedAssertions: null,
+  dirty: false,
 }
 
 export const useRetargetStore = create<RetargetState>((set, get) => ({
@@ -61,5 +67,6 @@ export const useRetargetStore = create<RetargetState>((set, get) => ({
   setCandidates: (candidates) => set({ candidates }),
   setKeepValidation: (keepValidation) => set({ keepValidation }),
   setEditedAssertions: (editedAssertions) => set({ editedAssertions }),
+  markDirty: () => set({ dirty: true }),
   reset: () => set({ skillId: null, stepIndex: null, ...EMPTY }),
 }))

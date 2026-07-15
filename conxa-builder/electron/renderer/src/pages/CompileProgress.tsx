@@ -60,9 +60,13 @@ export function CompileProgress() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [apiCalls, setApiCalls] = useState<ApiCallEntry[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
+  const firedFor = useRef<string | null>(null);
 
   useEffect(() => {
     if (!pluginId || !sessionId) return;
+    const key = `${pluginId}:${sessionId}:${mode}`;
+    if (firedFor.current === key) return;
+    firedFor.current = key;
     setOverallStatus("running");
     setSkillId(null);
     setError(null);

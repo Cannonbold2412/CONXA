@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { CmdError } from '@/lib/ipc'
@@ -14,6 +14,7 @@ import { BuildPipelineStepper, type PipelineStep } from '@/components/build/Buil
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { makeCandidateId, useRetargetStore } from '@/store/retargetStore'
+import { useEditorStore } from '@/store/editorStore'
 import { cn } from '@/lib/utils'
 
 const PHASE_LABELS = ['Pick element', 'Review selectors', 'Validation'] as const
@@ -69,7 +70,16 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
   const setKeepValidation = useRetargetStore((s) => s.setKeepValidation)
   const editedAssertions = useRetargetStore((s) => s.editedAssertions)
   const setEditedAssertions = useRetargetStore((s) => s.setEditedAssertions)
+  const markDirty = useRetargetStore((s) => s.markDirty)
+  const ensureFor = useRetargetStore((s) => s.ensureFor)
   const reset = useRetargetStore((s) => s.reset)
+
+  // Scope the wizard store to the open step. No-ops if it's already scoped there (e.g. a
+  // workflow refresh), so it never wipes an in-progress wizard out from under the user — only
+  // switching to a genuinely different step resets bbox/candidates/validation edits.
+  useEffect(() => {
+    if (step) ensureFor(skillId, step.step_index)
+  }, [skillId, step?.step_index, ensureFor])
 
   useImperativeHandle(
     ref,
@@ -120,6 +130,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
       })
       onWorkflowUpdated(res.workflow)
       if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
+      useEditorStore.getState().clearStepDirty(step.step_index)
       toast.success('Position updated')
       reset()
       setPhase(1)
@@ -173,6 +184,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
       })
       onWorkflowUpdated(res.workflow)
       if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
+      useEditorStore.getState().clearStepDirty(step.step_index)
       toast.success('Re-target applied')
       reset()
       setPhase(1)
@@ -307,7 +319,10 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
             <RetargetPhaseSelectors
               pickQuality={preview.pick_quality}
               candidates={candidates}
-              onCandidatesChange={setCandidates}
+              onCandidatesChange={(next) => {
+                setCandidates(next)
+                markDirty()
+              }}
               onBack={() => setPhase(1)}
               compileConfidence={preview.compile_confidence}
             />
@@ -347,9 +362,15 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               step={step}
               preview={preview}
               keepValidation={keepValidation}
-              onKeepValidationChange={setKeepValidation}
+              onKeepValidationChange={(v) => {
+                setKeepValidation(v)
+                markDirty()
+              }}
               editedAssertions={editedAssertions}
-              onEditedAssertionsChange={setEditedAssertions}
+              onEditedAssertionsChange={(a) => {
+                setEditedAssertions(a)
+                markDirty()
+              }}
               onBack={() => setPhase(2)}
               onApply={() => void handleApply()}
               applying={applying}

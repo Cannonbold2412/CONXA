@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -16,8 +16,8 @@ import { BuildLogPanel, ResultCard } from '@/components/BuildLogUi'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
-  Check,
   CheckCircle2,
+  ChevronDown,
   Download,
   HardDrive,
   ImagePlus,
@@ -53,16 +53,6 @@ function installerStatus(
   return 'Not built'
 }
 
-const PIPELINE_STAGES = ['Build Installer', 'Upload to Cloud'] as const
-
-function inferPipelineStage(logs: string[], done: boolean, hasError: boolean): number {
-  if (done && !hasError) return 2
-  const all = logs.join('\n').toLowerCase()
-  if (all.includes('upload') || all.includes('uploading')) return 1
-  if (logs.length > 0) return 0
-  return -1
-}
-
 export function BuildInstallerPage() {
   const pluginsQ = useQuery({
     queryKey: ['plugins'],
@@ -78,6 +68,7 @@ export function BuildInstallerPage() {
   const [installerDone, setInstallerDone] = useState(false)
   const [installerResult, setInstallerResult] = useState<InstallerBuildResult | null>(null)
   const [logoPath, setLogoPath] = useState<string | null>(null)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
 
   const plugins = useMemo(() => normalizePluginList(pluginsQ.data), [pluginsQ.data])
@@ -108,16 +99,17 @@ export function BuildInstallerPage() {
 
   const currentResult = installerResult?.plugin_id === selectedPlugin?.id ? installerResult : null
   const selectedStatus = installerStatus(selectedPlugin, currentResult, activePluginId, building)
-  const installerReady = Boolean(currentResult || selectedPlugin?.installer)
-  const installerOutputPath = currentResult?.installer_path ?? selectedPlugin?.installer?.installer_path
+  const installerInfo = currentResult ?? selectedPlugin?.installer ?? null
+  const installerReady = Boolean(installerInfo)
+  const installerOutputPath = installerInfo?.installer_path
+  const installerBuiltAt =
+    (installerInfo && 'built_at' in installerInfo ? installerInfo.built_at : undefined) ??
+    selectedPlugin?.installer?.built_at
   const activeLogs = activePluginId === selectedPlugin?.id ? logs : []
   const activeError = activePluginId === selectedPlugin?.id ? installerError : ''
   const activeDone = activePluginId === selectedPlugin?.id ? installerDone : false
   const buildingSelected = building && activePluginId === selectedPlugin?.id
   const canBuild = Boolean(latestVersion) && Boolean(logoPath) && !buildingSelected
-
-  const pipelineStage = inferPipelineStage(activeLogs, activeDone, Boolean(activeError))
-  const showPipeline = buildingSelected || activeDone || Boolean(activeError)
 
   function selectPlugin(pluginId: string) {
     setSelectedId(pluginId)
@@ -126,6 +118,7 @@ export function BuildInstallerPage() {
     setInstallerResult(null)
     setLogs([])
     setActivePluginId(null)
+    setDetailsOpen(false)
   }
 
   async function handlePickLogo() {
@@ -279,7 +272,7 @@ export function BuildInstallerPage() {
               )}
 
               {/* Configuration */}
-              <div className="mx-6 mt-4 grid gap-3 sm:grid-cols-2">
+              <div className={cn('mx-6 mt-4 grid gap-3', !installerReady && 'sm:grid-cols-2')}>
                 {/* Logo upload zone */}
                 <div className="rounded-lg border border-white/8 bg-white/[0.02] p-4">
                   <div className="mb-3 flex items-center justify-between">
@@ -327,27 +320,29 @@ export function BuildInstallerPage() {
                   )}
                 </div>
 
-                {/* Release being packaged */}
-                <div className="rounded-lg border border-white/8 bg-white/[0.02] p-4">
-                  <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                    Release Being Packaged
-                  </p>
-                  {latestVersion ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded bg-sky-500/10 px-2 py-0.5 font-mono text-xs font-medium text-sky-300">
-                          v{latestVersion.version}
-                        </span>
-                        <CheckCircle2 className="size-3.5 text-emerald-400" />
+                {/* Release being packaged — folded into Build details once installed */}
+                {!installerReady && (
+                  <div className="rounded-lg border border-white/8 bg-white/[0.02] p-4">
+                    <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Release Being Packaged
+                    </p>
+                    {latestVersion ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-sky-500/10 px-2 py-0.5 font-mono text-xs font-medium text-sky-300">
+                            v{latestVersion.version}
+                          </span>
+                          <CheckCircle2 className="size-3.5 text-emerald-400" />
+                        </div>
+                        <p className="line-clamp-3 text-[11px] leading-relaxed text-zinc-400">
+                          {latestVersion.release_notes}
+                        </p>
                       </div>
-                      <p className="line-clamp-3 text-[11px] leading-relaxed text-zinc-400">
-                        {latestVersion.release_notes}
-                      </p>
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-zinc-600">No published release yet.</p>
-                  )}
-                </div>
+                    ) : (
+                      <p className="text-[11px] text-zinc-600">No published release yet.</p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Action bar */}
@@ -361,86 +356,11 @@ export function BuildInstallerPage() {
                   ) : (
                     <>
                       <PackageCheck className="size-4" />
-                      Build Installer
+                      {installerReady ? 'Rebuild Installer' : 'Build Installer'}
                     </>
                   )}
                 </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={handleOpenInstaller}
-                  disabled={!installerReady || buildingSelected}
-                >
-                  <Download className="size-4" />
-                  Download Installer
-                </Button>
               </div>
-
-              {/* Pipeline stepper */}
-              {showPipeline && (
-                <div className="mx-6 mt-4 rounded-lg border border-white/8 bg-white/[0.02] px-5 py-4">
-                  <p className="mb-4 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                    Pipeline
-                  </p>
-                  <div className="flex items-center">
-                    {PIPELINE_STAGES.map((stage, i) => {
-                      const isComplete = pipelineStage > i
-                      const isCurrent = !activeDone && !activeError && pipelineStage === i
-                      const isErrored = Boolean(activeError) && pipelineStage === i
-                      return (
-                        <Fragment key={stage}>
-                          <div className="flex flex-col items-center gap-1.5">
-                            <div
-                              className={cn(
-                                'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold transition-all duration-300',
-                                isComplete
-                                  ? 'bg-emerald-500 text-white'
-                                  : isCurrent
-                                    ? 'bg-sky-500 text-white ring-2 ring-sky-500/30'
-                                    : isErrored
-                                      ? 'bg-red-500 text-white'
-                                      : 'bg-white/8 text-zinc-600',
-                              )}
-                            >
-                              {isComplete ? (
-                                <Check className="size-3" />
-                              ) : isCurrent ? (
-                                <Loader2 className="size-3 animate-spin" />
-                              ) : isErrored ? (
-                                <X className="size-3" />
-                              ) : (
-                                i + 1
-                              )}
-                            </div>
-                            <span
-                              className={cn(
-                                'whitespace-nowrap text-[11px] font-medium',
-                                isComplete
-                                  ? 'text-emerald-300'
-                                  : isCurrent
-                                    ? 'text-sky-300'
-                                    : isErrored
-                                      ? 'text-red-300'
-                                      : 'text-zinc-600',
-                              )}
-                            >
-                              {stage}
-                            </span>
-                          </div>
-                          {i < PIPELINE_STAGES.length - 1 && (
-                            <div
-                              className={cn(
-                                'mx-3 mb-4 h-px flex-1 transition-colors duration-500',
-                                pipelineStage > i ? 'bg-emerald-500/40' : 'bg-white/8',
-                              )}
-                            />
-                          )}
-                        </Fragment>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
 
               {/* Build error */}
               {activeError && (
@@ -468,45 +388,85 @@ export function BuildInstallerPage() {
                 </div>
               )}
 
-              {/* Success results */}
-              {activeDone && (
-                <div className="mx-6 mt-3">
-                  <div className="mb-3 flex items-center gap-2">
-                    <CheckCircle2 className="size-4 text-emerald-400" />
-                    <p className="text-sm font-semibold text-emerald-300">Installer built</p>
+              {/* Installer ready — hero card, renders whether just-built this session
+                  or loaded from the backend-persisted plugin.installer on return */}
+              {installerInfo && (
+                <div className="mx-6 mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/15">
+                        <CheckCircle2 className="size-5 text-emerald-400" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-emerald-300">Installer ready</p>
+                        <p className="mt-0.5 truncate text-xs text-zinc-400">
+                          {installerInfo.filename}
+                          <span className="mx-1.5 text-zinc-600">·</span>
+                          <span className="font-mono">v{installerInfo.version}</span>
+                          {installerBuiltAt && (
+                            <>
+                              <span className="mx-1.5 text-zinc-600">·</span>
+                              Built{' '}
+                              {new Date(installerBuiltAt * 1000).toLocaleString([], {
+                                month: 'short',
+                                day: 'numeric',
+                                hour: 'numeric',
+                                minute: '2-digit',
+                              })}
+                            </>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    <Button size="sm" onClick={handleOpenInstaller}>
+                      <Download className="size-4" />
+                      Download Installer
+                    </Button>
                   </div>
-                  <div className="space-y-2">
-                    {installerOutputPath && (
-                      <ResultCard
-                        icon={<HardDrive className="size-4" />}
-                        label="Local installer"
-                        value={installerOutputPath}
-                      />
-                    )}
-                    {currentResult?.cloud_download_url && (
-                      <ResultCard
-                        icon={<HardDrive className="size-4" />}
-                        label="Cloud download URL"
-                        value={currentResult.cloud_download_url}
-                        href={currentResult.cloud_download_url}
-                      />
-                    )}
-                    {currentResult?.cloud_version_download_url && (
-                      <ResultCard
-                        icon={<HardDrive className="size-4" />}
-                        label="Version download URL"
-                        value={currentResult.cloud_version_download_url}
-                        href={currentResult.cloud_version_download_url}
-                      />
-                    )}
-                    {currentResult?.installed_runtime_path && (
-                      <ResultCard
-                        icon={<HardDrive className="size-4" />}
-                        label="Runtime path"
-                        value={currentResult.installed_runtime_path}
-                      />
-                    )}
-                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setDetailsOpen((v) => !v)}
+                    className="mt-3 flex items-center gap-1 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-300"
+                  >
+                    <ChevronDown className={cn('size-3.5 transition-transform', detailsOpen && 'rotate-180')} />
+                    Build details
+                  </button>
+
+                  {detailsOpen && (
+                    <div className="mt-2 space-y-2">
+                      {installerOutputPath && (
+                        <ResultCard
+                          icon={<HardDrive className="size-4" />}
+                          label="Local installer"
+                          value={installerOutputPath}
+                        />
+                      )}
+                      {currentResult?.cloud_download_url && (
+                        <ResultCard
+                          icon={<HardDrive className="size-4" />}
+                          label="Cloud download URL"
+                          value={currentResult.cloud_download_url}
+                          href={currentResult.cloud_download_url}
+                        />
+                      )}
+                      {currentResult?.cloud_version_download_url && (
+                        <ResultCard
+                          icon={<HardDrive className="size-4" />}
+                          label="Version download URL"
+                          value={currentResult.cloud_version_download_url}
+                          href={currentResult.cloud_version_download_url}
+                        />
+                      )}
+                      {currentResult?.installed_runtime_path && (
+                        <ResultCard
+                          icon={<HardDrive className="size-4" />}
+                          label="Runtime path"
+                          value={currentResult.installed_runtime_path}
+                        />
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

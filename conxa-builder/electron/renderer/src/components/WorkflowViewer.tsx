@@ -3,12 +3,23 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { StepEditorDTO } from '../types/workflow'
 import { useEditorStore } from '../store/editorStore'
+import { useRetargetStore } from '@/store/retargetStore'
 import { ListPlus, Plus } from 'lucide-react'
 import type { AddActionKind } from '@/lib/workflowViewerHelpers'
 import { WorkflowHeader } from '@/components/workflowViewer/WorkflowHeader'
 import { WorkflowStepItem } from '@/components/workflowViewer/WorkflowStepItem'
 import { DeleteStepDialog } from '@/components/workflowViewer/DeleteStepDialog'
 import { BranchSubList } from '@/components/workflowViewer/BranchSubList'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 type Props = {
   steps: StepEditorDTO[]
@@ -40,6 +51,20 @@ export function WorkflowViewer({
   const setSel = useEditorStore((s) => s.setSelectedStepIndex)
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
+  const [pendingSelect, setPendingSelect] = useState<number | null>(null)
+
+  // The re-target wizard stages selector/validation edits in useRetargetStore until Apply
+  // (see InlineRetargetFlow) — switching steps before Apply would silently drop them, so confirm
+  // first instead. `dirty` only ever gets set once a phase-2/3 edit actually happens.
+  const handleSelect = (index: number) => {
+    if (index === selected) return
+    const rt = useRetargetStore.getState()
+    if (rt.dirty) {
+      setPendingSelect(index)
+      return
+    }
+    setSel(index)
+  }
 
   const move = (from: number, to: number) => {
     if (to < 0 || to >= steps.length || from === to) return
@@ -88,7 +113,7 @@ export function WorkflowViewer({
                   isDragging={draggingIndex === step.step_index}
                   recordingShotDragActive={recordingShotDragActive}
                   draggingIndex={draggingIndex}
-                  onSelect={setSel}
+                  onSelect={handleSelect}
                   onDeleteRequest={setDeleteIndex}
                   onConfirmOptionalHint={onConfirmOptionalHint}
                   onDragStart={setDraggingIndex}
@@ -114,6 +139,31 @@ export function WorkflowViewer({
           setDeleteIndex(null)
         }}
       />
+
+      <AlertDialog open={pendingSelect !== null} onOpenChange={(open) => !open && setPendingSelect(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard your unsaved re-target edits?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You've changed selectors or outcome checks on the current step that haven't been
+              applied yet. Switching steps now will lose those changes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingSelect(null)}>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                useRetargetStore.getState().reset()
+                if (pendingSelect !== null) setSel(pendingSelect)
+                setPendingSelect(null)
+              }}
+            >
+              Discard edits
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }
