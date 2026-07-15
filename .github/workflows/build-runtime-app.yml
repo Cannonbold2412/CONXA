@@ -122,6 +122,20 @@ jobs:
             --debug-protection false `
             --self-defending false
           Write-Output "Obfuscated: auth_manager.js (no self-defending)"
+          # page_scripts.js holds functions Playwright serializes and runs inside the browser
+          # page (not this Node process) — --string-array/--self-defending rewrite a function
+          # body to reference a module-scope decoder/guard var that does not exist once the
+          # source is re-parsed in the browser, breaking those functions at runtime. Keep
+          # mangled identifiers (safe: renames only in-function locals) but disable both.
+          javascript-obfuscator page_scripts.js `
+            --output obfuscated/page_scripts.js `
+            --compact true `
+            --identifier-names-generator mangled `
+            --string-array false `
+            --dead-code-injection false `
+            --debug-protection false `
+            --self-defending false
+          Write-Output "Obfuscated: page_scripts.js (no string-array, no self-defending — runs in-page)"
         shell: pwsh
 
       - name: Stage obfuscated JS to dist-app
@@ -133,7 +147,7 @@ jobs:
             "server", "sync", "run", "browser",
             "skill_loader", "auth_manager", "tracker", "install_identity",
             "bootstrap", "recovery", "resolve_adapter", "resolver", "drift", "version_manager",
-            "manifest_manager"
+            "manifest_manager", "page_scripts"
           )
           foreach ($base in $files) {
             Copy-Item obfuscated/$base.js dist-app/$base.js

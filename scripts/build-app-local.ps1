@@ -55,12 +55,29 @@ $files = @(
   "server.js", "sync.js", "run.js", "browser.js",
   "skill_loader.js", "tracker.js", "install_identity.js",
   "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
-  "drift.js", "version_manager.js", "manifest_manager.js", "auth_manager.js"
+  "drift.js", "version_manager.js", "manifest_manager.js", "auth_manager.js",
+  "page_scripts.js"
 )
 $hashes = @{}
 foreach ($f in $files) {
   $src = Join-Path $RuntimeDir $f
   $out = Join-Path $versionDest $f
+  # page_scripts.js holds functions Playwright serializes into the browser page realm —
+  # string-array/self-defending inject a module-scope ref that doesn't exist once re-parsed
+  # there (see runtime/page_scripts.js header). auth_manager.js needs no-self-defending for
+  # its native-module (process.dlopen) patterns.
+  if ($f -eq "page_scripts.js") {
+    npx --yes javascript-obfuscator $src `
+      --output $out `
+      --compact true `
+      --identifier-names-generator mangled `
+      --string-array false `
+      --dead-code-injection false `
+      --debug-protection false `
+      --self-defending false
+    $hashes[$f] = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+    continue
+  }
   $selfDefending = if ($f -eq "auth_manager.js") { "false" } else { "true" }
   npx --yes javascript-obfuscator $src `
     --output $out `
