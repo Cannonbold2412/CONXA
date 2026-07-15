@@ -568,6 +568,34 @@ def test_apply_composes_bbox_target_and_identity_bundle(session_fixture, monkeyp
     assert step["validation"]["assertions"] == []
 
 
+def test_apply_skips_vision_regen_when_bbox_unchanged(session_fixture, monkeypatch):
+    """Applying with the step's already-stored bbox (e.g. Human Edit Phase 3 — the human only
+    toggled a validation checkbox and never redrew) must not call the vision LLM at all."""
+    from conxa_compile.editor.retarget import apply_retarget
+
+    def _boom(*_a, **_k):
+        raise AssertionError("vision LLM should not be called when bbox is unchanged")
+
+    monkeypatch.setattr("conxa_compile.llm.anchor_vision_llm.generate_anchors_for_step_or_raise", _boom)
+
+    doc = _base_document()
+    payload = {
+        "bbox": dict(RECORDED_EVENT["visual"]["bbox"]),  # identical to the step's stored bbox
+        "primary_selector": '[data-testid="submit-btn"]',
+        "fallback_selectors": [],
+        "keep_validation": True,
+        "edited_assertions": [
+            {"type": "url_changed", "target": "", "timeout_ms": 5000, "required": True}
+        ],
+    }
+    new_doc = apply_retarget(doc, 0, payload)
+
+    step = new_doc["skills"][0]["steps"][0]
+    assert step["signals"]["visual"]["bbox"] == RECORDED_EVENT["visual"]["bbox"]
+    assert step["validation"]["assertions"][0]["type"] == "url_changed"
+    assert new_doc["meta"]["version"] == 2
+
+
 def test_apply_regenerates_validation_when_not_kept(session_fixture, monkeypatch):
     from conxa_compile.editor.retarget import apply_retarget
 

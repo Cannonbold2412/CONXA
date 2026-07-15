@@ -100,6 +100,22 @@ def test_step_to_dto_compile_confidence_none_without_identity_bundle():
     assert dto.compile_confidence is None
 
 
+def test_step_to_dto_scroll_step_confidence_always_none():
+    """A scroll step has no element to select — even a stray persisted selector_confidence
+    (e.g. left over from before the step was edited into a scroll step) must not render."""
+    step = _fill_step()
+    step["action"] = {"action": "scroll"}
+    step["target"]["selector_confidence"] = 0.0
+    step["identity_bundle"] = {
+        "signals": [
+            {"engine": "testid", "selector": "[data-testid=\"email\"]", "durability": 0.99,
+             "orthogonality_class": "test-contract", "unique_at_compile": True, "source": "compiler"},
+        ]
+    }
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.compile_confidence is None
+
+
 # ─────────────────────────────────────────────────
 # 2026-07-10 Human Edit vs. Skill Package redesign — read-only visibility additions.
 # ─────────────────────────────────────────────────

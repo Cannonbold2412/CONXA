@@ -57,8 +57,6 @@ def capture_state_snapshot(step: Step, *, before: bool) -> dict[str, Any]:
     target = step.get("target") or {}
     context = step.get("context") or {}
     selectors = step.get("selectors") or {}
-    state_change = step.get("state_change") or {}
-    state_text = str(state_change.get("before" if before else "after") or "")
     visible = [
         str(selectors.get("aria") or ""),
         str(selectors.get("text_based") or ""),
@@ -72,11 +70,12 @@ def capture_state_snapshot(step: Step, *, before: bool) -> dict[str, Any]:
         "url": str(page.get("url") or ""),
         "page_title": str(page.get("title") or ""),
         "visible_key_elements": [x for x in visible if x],
-        "important_text_blocks": [
-            x
-            for x in [target_text[:240], state_text.strip()[:240]]
-            if x
-        ][:4],
+        # `state_change.before/after` (bridge.js's pageFingerprint(), format
+        # "url|title|hash") used to be folded in here too — it's a compact identity
+        # hash, not real page text, and leaked straight into text_present assertions
+        # ("the text 'https://.../|Render Dashboard|391b9b69' appears on the page")
+        # whenever the hash segment changed between before/after.
+        "important_text_blocks": [x for x in [target_text[:240]] if x][:4],
     }
     state["dom_fingerprint"] = _fingerprint(state)
     return state

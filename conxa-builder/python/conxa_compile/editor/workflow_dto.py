@@ -513,6 +513,11 @@ def step_to_dto(
         compile_confidence = confidence_from_signal_rows(bundle_signals_raw)
     else:
         compile_confidence = None
+    if flags.is_scroll:
+        # A scroll step has no element to select — there's nothing for this rollup to score.
+        # Any stray 0.0 left on target.selector_confidence (e.g. from before a step was edited
+        # into a scroll step) would otherwise render as a misleading "0%" instead of no badge.
+        compile_confidence = None
 
     # Merge: signals first (hot-path, ordered by durability), then any target selectors
     # not already represented (recovery-only / legacy compiled selectors).

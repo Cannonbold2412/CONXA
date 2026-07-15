@@ -312,6 +312,16 @@ def update_step_visual_bbox_and_regenerate_anchors_or_raise(
     signals = dict(step.get("signals") or {})
     visual_prev = signals.get("visual") if isinstance(signals.get("visual"), dict) else {}
     visual = dict(visual_prev)
+
+    # The wizard's Pick phase defaults to the step's existing bbox so a human who only wants to
+    # edit validation (Phase 3) can continue without redrawing. When the box genuinely hasn't
+    # moved, the vision-derived anchors describing landmarks around it are still valid — skip the
+    # LLM round-trip entirely instead of re-deriving them. This also means a validation-only Apply
+    # can't fail on a transient vision-proxy error it has no real reason to depend on.
+    prev_bbox = visual_prev.get("bbox") if isinstance(visual_prev.get("bbox"), dict) else None
+    if prev_bbox == next_bbox:
+        return document
+
     raw_full = visual.get("full_screenshot")
     if not isinstance(raw_full, str) or not raw_full.strip():
         raise ValueError("step_missing_full_screenshot")

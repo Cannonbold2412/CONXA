@@ -1120,6 +1120,26 @@ def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
     for i, step in enumerate(steps):
         target = step.target or {}
         selector = str(target.get("primary_selector") or "")
+
+        if not recovery_enabled_for_action(step.action):
+            # Steps like scroll/navigate/wait/frame_enter/frame_exit have no element to select —
+            # there's nothing here to score. Without this, an empty target reads as
+            # selector_confidence=0.0 and both drags min_confidence to 0% and raises a spurious
+            # "low_selector_confidence"/"empty_selector" warning on a step that was never
+            # supposed to have a selector in the first place.
+            step_reports.append({
+                "index": i,
+                "intent": step.intent,
+                "selector": selector,
+                "confidence": None,
+                "confidence_breakdown": {},
+                "source": str(target.get("selector_source") or "heuristic"),
+                "reasoning": "",
+                "input_binding": step.input_binding,
+                "warnings": [],
+            })
+            continue
+
         confidence = float(target.get("selector_confidence") or 0.0)
         breakdown = target.get("confidence_breakdown") or {}
         source = str(target.get("selector_source") or "heuristic")

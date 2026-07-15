@@ -474,6 +474,30 @@ class PhaseTests(unittest.TestCase):
         out = merge_dom_diff_evidence({}, state_diff)
         self.assertEqual(out, state_diff)
 
+    def test_capture_state_snapshot_does_not_leak_page_fingerprint_as_text(self) -> None:
+        # state_change.before/after is bridge.js's pageFingerprint() — "url|title|hash" — an
+        # internal identity string, not real page text. It used to get folded into
+        # important_text_blocks and, when the hash segment changed between before/after, leak
+        # straight into a user-facing text_present check like "the text
+        # 'https://dashboard.render.com/|Render Dashboard|391b9b69' appears on the page".
+        from conxa_compile.compiler.state_validation import capture_state_snapshot
+
+        step = {
+            "page": {"url": "https://dashboard.render.com/", "title": "Render Dashboard"},
+            "target": {"tag": "button", "inner_text": "New"},
+            "context": {},
+            "selectors": {},
+            "state_change": {
+                "before": "https://dashboard.render.com/|Render Dashboard|391b9b69",
+                "after": "https://dashboard.render.com/|Render Dashboard|a1b2c3d4",
+            },
+        }
+        after = capture_state_snapshot(step, before=False)
+        blocks = after["important_text_blocks"]
+        self.assertNotIn("https://dashboard.render.com/|Render Dashboard|a1b2c3d4", blocks)
+        self.assertTrue(all("|" not in b for b in blocks))
+        self.assertIn("New", blocks)
+
     def test_infer_success_conditions_demotes_ephemeral_elements_from_required(self) -> None:
         # A cookie-consent banner and a toast happened to appear in the recorded diff alongside
         # a legitimate confirmation element — only the legitimate one may become the REQUIRED

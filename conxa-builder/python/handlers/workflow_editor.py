@@ -388,6 +388,7 @@ class WorkflowEditorMixin:
 
         from conxa_compile.editor.retarget import RetargetError, apply_retarget
         from conxa_compile.compiler.patch import revalidate_step
+        from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
         from conxa_core.storage.json_store import read_skill, write_skill
         from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
 
@@ -402,6 +403,11 @@ class WorkflowEditorMixin:
             doc = apply_retarget(doc, step_index, payload)
         except RetargetError as exc:
             raise _CommandError(exc.code, exc.message) from exc
+        except VisionAnchorGenerationError as exc:
+            detail = f" ({exc.hint})" if exc.hint else ""
+            raise _CommandError(
+                "vision_anchors_failed", f"Could not re-derive recovery anchors ({exc.reason}){detail}."
+            ) from exc
         except EntitlementBlocked as exc:
             raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
         except QuotaExceeded as exc:
