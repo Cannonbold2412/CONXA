@@ -117,6 +117,8 @@
   const siblingsMax = Number(CAP.siblings_summarize_max) > 0 ? Number(CAP.siblings_summarize_max) : 6;
   const inputDebounceMs = Number(CAP.input_debounce_ms) > 0 ? Number(CAP.input_debounce_ms) : 350;
   const scrollDebounceMs = Number(CAP.scroll_debounce_ms) > 0 ? Number(CAP.scroll_debounce_ms) : 220;
+  const clickSettleQuietMs = Number(CAP.click_settle_quiet_ms) > 0 ? Number(CAP.click_settle_quiet_ms) : 20;
+  const clickSettleMaxMs = Number(CAP.click_settle_max_ms) > 0 ? Number(CAP.click_settle_max_ms) : 250;
   function djb2(str) {
     let hash = 5381;
     for (let i = 0; i < str.length; i++) {
@@ -817,6 +819,67 @@
     return finalizeStateWithAfter(payload, after);
   }
 
+  // Click (and click-family: dblclick/right_click) is the action most likely to trigger a
+  // meaningful DOM change — a dropdown, panel, or dialog appearing — but the click listener runs
+  // in the CAPTURE phase, before the page's own bubble-phase handler (e.g. React's delegated
+  // onClick) has even fired, let alone re-rendered. Calling finalizeState() synchronously there
+  // always diffs the page against itself: dom_diff comes back empty on effectively every click.
+  // Wait for the DOM to go quiet (or a max ceiling, for network-driven updates that never fully
+  // settle) before capturing the "after" snapshot, mirroring the existing hover/drag_drop
+  // deferral pattern below but with an actual mutation-based settle instead of a fixed frame.
+  let _finalizeQueue = Promise.resolve();
+
+  function _waitForDomSettle(quietMs, maxWaitMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      let quietTimer = null;
+      let mo = null;
+      function finish() {
+        if (done) return;
+        done = true;
+        if (quietTimer) clearTimeout(quietTimer);
+        clearTimeout(maxTimer);
+        try { mo && mo.disconnect(); } catch (_e) {}
+        resolve();
+      }
+      function scheduleQuiet() {
+        if (quietTimer) clearTimeout(quietTimer);
+        quietTimer = setTimeout(finish, quietMs);
+      }
+      const maxTimer = setTimeout(finish, maxWaitMs);
+      try {
+        mo = new MutationObserver(scheduleQuiet);
+        mo.observe(document.documentElement || document, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          characterData: true,
+        });
+      } catch (_e) {
+        mo = null;
+      }
+      scheduleQuiet();
+    });
+  }
+
+  // Finalizes in submission order (not completion order) so two fast clicks in a row can never
+  // have their state_change/dom_diff reported out of sequence.
+  // Pending payloads are tracked so beforeunload can force-flush them (see below) — otherwise a
+  // click that triggers fast navigation races the settle wait and the step is silently dropped.
+  let _pendingClickPayloads = [];
+  function finalizeStateAfterSettle(payload, quietMs, maxWaitMs) {
+    _pendingClickPayloads.push(payload);
+    _finalizeQueue = _finalizeQueue
+      .then(() => _waitForDomSettle(quietMs, maxWaitMs))
+      .then(() => {
+        _pendingClickPayloads = _pendingClickPayloads.filter((p) => p !== payload);
+        if (payload.__flushed) return;
+        finalizeState(payload);
+      })
+      .catch(() => {});
+    return _finalizeQueue;
+  }
+
   function finalizeStateWithAfter(payload, after) {
     const domAfter = interactiveSignature();
     const domBefore = payload.state_probe && payload.state_probe.dom_before ? payload.state_probe.dom_before : "";
@@ -1059,7 +1122,7 @@
       if (resolved) {
         flushPendingHoverBeforeClick(resolved);
         const p = serializeTarget(resolved, "click", null);
-        finalizeState(p);
+        finalizeStateAfterSettle(p, clickSettleQuietMs, clickSettleMaxMs);
         return;
       }
     },
@@ -1187,7 +1250,7 @@
       const resolved = resolveMeaningfulTarget(el);
       if (!resolved) return;
       const p = serializeTarget(resolved, "dblclick", null);
-      finalizeState(p);
+      finalizeStateAfterSettle(p, clickSettleQuietMs, clickSettleMaxMs);
     },
     true
   );
@@ -1199,7 +1262,7 @@
       if (!el || el.nodeType !== 1) return;
       const resolved = resolveMeaningfulTarget(el) || el;
       const p = serializeTarget(resolved, "right_click", null);
-      finalizeState(p);
+      finalizeStateAfterSettle(p, clickSettleQuietMs, clickSettleMaxMs);
     },
     true
   );
@@ -1737,6 +1800,14 @@
     if (hoverTimer) {
       clearTimeout(hoverTimer);
       hoverTimer = null;
+    }
+    if (_pendingClickPayloads.length) {
+      const toFlush = _pendingClickPayloads;
+      _pendingClickPayloads = [];
+      toFlush.forEach((p) => {
+        p.__flushed = true;
+        finalizeState(p);
+      });
     }
   }, true);
 })();

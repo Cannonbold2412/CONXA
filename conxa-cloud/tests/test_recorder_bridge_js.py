@@ -176,6 +176,37 @@ def test_custom_drawer_role_button_records_click(page: Page) -> None:
     assert events[0]["target"]["aria_label"] == "Create"
 
 
+def test_click_that_synchronously_reveals_element_is_captured_in_dom_diff(page: Page) -> None:
+    # The click listener runs in the capture phase — before the page's own bubble-phase handler
+    # fires. If finalizeState() ran synchronously right there (the historical bug), the "after"
+    # snapshot would be taken before this handler's appendChild ever executes, so dom_diff would
+    # always come back empty even though the click plainly revealed something.
+    _install_bridge(
+        page,
+        """
+        <button id="opener">Open</button>
+        <script>
+          document.getElementById('opener').addEventListener('click', () => {
+            const panel = document.createElement('div');
+            panel.setAttribute('data-testid', 'reveal-panel');
+            panel.textContent = 'Revealed content';
+            document.body.appendChild(panel);
+          });
+        </script>
+        """,
+    )
+
+    page.click("#opener")
+    page.wait_for_timeout(120)
+
+    click_events = _action_events(page, "click")
+    assert len(click_events) == 1
+    dom_diff = click_events[0]["state_change"]["dom_diff"]
+    assert dom_diff is not None
+    added = "\n".join(dom_diff["added"])
+    assert "reveal-panel" in added
+
+
 def test_sidebar_form_fields_and_focusable_button_are_recorded(page: Page) -> None:
     _install_bridge(
         page,
