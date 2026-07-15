@@ -294,10 +294,13 @@ conxa-runtime.exe  ← host layer (Node.js + all npm deps + bootstrap.js, ~85 MB
         ├── sync.js                   (skill pack sync)
         ├── auth_manager.js           (token + session management)
         ├── browser.js                (Playwright browser lifecycle)
+        ├── page_scripts.js           (functions run inside the browser page — see below)
         └── tracker.js                (telemetry event emission)
 ```
 
 `bootstrap.js` (bundled in host): resolves `conxa-app/current` (a directory junction — see §4.4) via `version_manager.resolveCurrent()`, checks that version's `version.json` for `min_host` compatibility, then loads its `server.js`. On failure, calls `version_manager.rollback()` to flip `current` back to the previously-retained version and retries — no re-download needed, since old versions are never deleted until pruned by retention. App-layer files are obfuscated JS (self-defending, string-array rc4) — not human-readable on disk, but no V8 bytecode dependency on the host's exact Node build.
+
+`page_scripts.js` is the one app-layer file obfuscated **without** `--self-defending`/`--string-array` (mangled identifiers only). Every function it exports is one Playwright ships into the browser page via `page.evaluate()`/`locator.evaluate()` (`Function.prototype.toString()`, re-parsed and run outside this Node process). Both of those transforms rewrite a function body to call back into a module-scope decoder/self-defending guard — invisible once the source is re-parsed in the browser realm, so a full-strength build throws `ReferenceError: <mangled-name> is not defined` at the first evaluate() call that runs (silent for evaluate() sites wrapped in try/catch, fatal for `run.js`'s scroll handler, which is not). `run.js`, `server.js`, `resolve_adapter.js`, and `drift.js` call into `page_scripts.js` rather than defining browser-context functions inline — keep it that way; a new inline arrow passed to `page.evaluate()`/`locator.evaluate()` anywhere else in the app layer will reproduce this bug.
 
 > **Why not bytecode?** `@yao-pkg/pkg` embeds its own prebuilt Node24 base, whose V8 build differs from official nodejs.org Node 24.x. `bytenode`'s `fixBytecode` overwrites the header bytes that reveal the mismatch, so `cachedDataRejected` never fires — but the deserialization segfaults silently (0xC0000005, no stderr). Obfuscated plain JS eliminates this coupling permanently.
 
@@ -368,7 +371,7 @@ that works without requiring admin rights or Developer Mode.
 │   ├── v1.0.0/, v1.1.0/         (each: server.js, sync.js, run.js, browser.js,
 │   │                             auth_manager.js, tracker.js, skill_loader.js,
 │   │                             install_identity.js, version_manager.js,
-│   │                             manifest_manager.js, version.json)
+│   │                             manifest_manager.js, page_scripts.js, version.json)
 │   └── current                 (directory junction → the active version)
 ├── manifest.json                (locally cached copy of the last Ed25519-verified signed manifest)
 ├── chromium/                   (Playwright browser — unversioned, external)
@@ -957,6 +960,21 @@ fail fast (recompile required).
     fallback signal. `RecordedEvent.post_condition` and `StateChange.dom_diff` are both optional;
     old recordings validate unchanged. No runtime change — `run.js`'s `evaluateAssertion` already
     handles every assertion type this preference pass can produce.
+  - **Click-family "after" capture waits for the DOM to settle (2026-07-13):** `bridge.js`'s
+    click/dblclick/right_click listeners run in the event's **capture phase** — before the page's
+    own bubble-phase handler (e.g. a React `onClick`) has even fired. Calling `finalizeState()`
+    synchronously there (the historical behavior) always diffed the page against itself: the
+    "after" snapshot was taken before the click's own effect — a revealed dropdown, panel, or
+    dialog — had a chance to render, so `state_change.dom_diff` came back empty on effectively
+    every click. This was the root cause of validation-less/"click new button"-style vague
+    checks: `merge_dom_diff_evidence` had nothing to fold in, so intent-derived-token grounding
+    (see `decision_layer.py::intent_tokens_grounded_in_context` below) correctly rejected
+    ungrounded guesses but left the step with zero real evidence to fall back on. Fix:
+    `finalizeStateAfterSettle()` defers the "after" capture behind a short mutation-quiet window
+    (`click_settle_quiet_ms`, default 20ms) capped at a hard ceiling (`click_settle_max_ms`,
+    default 250ms), queued so two fast clicks in a row still finalize in submission order. Covered
+    by `test_recorder_bridge_js.py::test_click_that_synchronously_reveals_element_is_captured_in_dom_diff`,
+    which fails against the old synchronous capture and passes with the settle wait.
   - **Ephemeral filtering at compile time:** `validation_planner.py::infer_success_conditions`
     runs `required_elements` candidates through `selector_filters.py::is_ephemeral_anchor` before
     handing them to `build.py::_build_assertions`'s primary-signal picker — a cookie-banner/toast/
