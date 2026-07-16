@@ -40,6 +40,17 @@ from conxa_compile.recorder.frame_utils import (
     is_blank_url,
 )
 
+# Both is_connected() and context.pages have been observed to read "gone" for
+# several real seconds — not just one flaky tick — while the browser is still
+# open and busy loading a heavy same-page iframe (e.g. HubSpot's "Create new"
+# object-builder embed). Ending the recording on the first bad reading silently
+# truncates it mid-session. Require the bad reading to persist across this many
+# consecutive 0.2s loop ticks before treating it as a real close/crash — a
+# genuine close is unaffected, it just confirms a few seconds later. Measured
+# against real HubSpot recordings, the 8s (40-tick) window was consistently
+# exhausted by that specific panel's load time, so this is now 20s.
+_NO_PAGES_GRACE_TICKS = 100  # ~20s at the loop's 0.2s cadence
+
 
 @dataclass
 class RecordingSession:
@@ -79,6 +90,7 @@ class RecordingSession:
     _traces: list[dict] = field(default_factory=list)
     _frame_snapshots: list[dict] = field(default_factory=list)
     _pump_tick: int = 0
+    _no_pages_streak: int = 0
     binding_errors: list[str] = field(default_factory=list)
     browser_open: bool = False
     ended_by_user: bool = False
@@ -818,8 +830,27 @@ class RecordingSession:
                     except Empty:
                         pass
                 if not self._browser.is_connected() or not self._open_pages_sync():
-                    self.ended_by_user = True
-                    break
+                    # A heavy same-page iframe load (e.g. HubSpot's "Create new" object
+                    # panel) can make both of these read "gone" for several real seconds
+                    # while the browser is still open and busy — is_connected() has been
+                    # observed to flicker under CDP/network pressure just like the page
+                    # list does. Debounce both under one streak so neither ends the
+                    # recording on a single bad tick; a real close/crash still confirms
+                    # well within the grace window.
+                    self._no_pages_streak += 1
+                    if self._no_pages_streak >= _NO_PAGES_GRACE_TICKS:
+                        try:
+                            still_connected = self._browser.is_connected()
+                        except Exception as exc:  # noqa: BLE001
+                            still_connected = f"is_connected() raised: {exc!s}"
+                        self.binding_errors.append(
+                            f"recorder_gave_up: streak={self._no_pages_streak} "
+                            f"browser_connected={still_connected} current_url={self.current_url!r}"
+                        )
+                        self.ended_by_user = True
+                        break
+                else:
+                    self._no_pages_streak = 0
                 time.sleep(0.2)
 
             if not self.auth_mode:

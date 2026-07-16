@@ -61,6 +61,13 @@ export function CompileProgress() {
   const [apiCalls, setApiCalls] = useState<ApiCallEntry[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const firedFor = useRef<string | null>(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (overallStatus !== "running") return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [overallStatus]);
 
   useEffect(() => {
     if (!pluginId || !sessionId) return;
@@ -366,7 +373,7 @@ export function CompileProgress() {
             </div>
             <div style={{ overflowY: "auto", padding: "6px 0" }}>
               {steps.map((step) => (
-                <PhaseRow key={step.id} step={step} />
+                <PhaseRow key={step.id} step={step} now={now} />
               ))}
             </div>
           </div>
@@ -454,12 +461,12 @@ function ProgressBar({ pct, status }: { pct: number; status: string }) {
   );
 }
 
-function PhaseRow({ step }: { step: CompileStep }) {
+function PhaseRow({ step, now }: { step: CompileStep; now: number }) {
   const elapsed =
     step.startedAt && step.endedAt
       ? ((step.endedAt - step.startedAt) / 1000).toFixed(1) + "s"
       : step.startedAt && step.state === "running"
-      ? "…"
+      ? ((now - step.startedAt) / 1000).toFixed(1) + "s"
       : null;
 
   return (

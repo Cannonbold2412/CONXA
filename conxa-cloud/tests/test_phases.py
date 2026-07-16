@@ -214,6 +214,76 @@ class PhaseTests(unittest.TestCase):
         frame_sigs = step["identity_bundle"]["frame_chain"][0]["signals"]
         assert any(s["selector"] == 'iframe[data-test-id="object-builder-ui-iframe"]' for s in frame_sigs)
 
+    def test_phase3_compiler_keeps_distinct_iframe_steps_with_weak_selectors(self) -> None:
+        """End-to-end: recorded steps across several iframes with generic/empty
+        selectors (typical of HubSpot-style embedded micro-frontends) must all
+        survive run_pipeline() + compile_skill_package() as distinct steps.
+
+        Regression for a bug where clean_steps()'s target-dedup key ignored the
+        frame chain, so weak-selector steps recorded in *different* iframes were
+        treated as "the same field" and silently merged/dropped at compile time.
+        """
+        from conxa_compile.compiler.build import compile_skill_package
+        from conxa_compile.pipeline.run import run_pipeline
+
+        def _frame_chain_event(label: str, idx: int, value: str) -> dict:
+            ev = _minimal_click_event()
+            ev["action"] = {"action": "type", "timestamp": "2026-01-01T00:00:00Z", "value": value}
+            ev["target"] = {
+                "tag": "input", "id": None, "classes": [], "inner_text": "",
+                "role": None, "aria_label": None, "name": None,
+            }
+            ev["selectors"] = {"css": "", "xpath": "", "text_based": "", "aria": ""}
+            ev["visual"]["full_screenshot"] = f"images/evt_{idx:04d}_full.jpg"
+            ev["visual"]["element_snapshot"] = f"images/evt_{idx:04d}_element.jpg"
+            ev["frame"] = {
+                "chain": [
+                    {
+                        "url": f"https://app.hubspot.com/widgets/{label}",
+                        "url_pattern": f"pattern_{label}",
+                        "fingerprint": {
+                            "signals": [
+                                {"engine": "css-structural", "selector": f'iframe[src="{label}"]',
+                                 "durability": 0.5, "orthogonality_class": "structural",
+                                 "unique_at_compile": False, "source": "compiler"},
+                            ],
+                            "url": f"https://app.hubspot.com/widgets/{label}",
+                            "url_pattern": f"pattern_{label}",
+                        },
+                    }
+                ]
+            }
+            return ev
+
+        raw = [
+            _frame_chain_event("contact-editor", 0, "Alice"),
+            _frame_chain_event("form-widget", 1, "Bob"),
+            _frame_chain_event("note-composer", 2, "Carol"),
+        ]
+        evs = run_pipeline(raw)
+        data_dir, *patchers = _compile_with_vision_mocks("s-multi-frame", evs)
+        try:
+            with ExitStack() as stack:
+                for p in patchers:
+                    stack.enter_context(p)
+                pkg = compile_skill_package(
+                    evs,
+                    skill_id="skill_multi_frame",
+                    source_session_id="s-multi-frame",
+                    title="t",
+                    version=1,
+                )
+        finally:
+            shutil.rmtree(data_dir, ignore_errors=True)
+
+        steps = pkg.skills[0].steps
+        type_steps = [s for s in steps if s.action == "type"]
+        self.assertEqual(len(type_steps), 3, "steps from different iframes must not collapse")
+        values = [s.value for s in type_steps]
+        self.assertEqual(values, ["Alice", "Bob", "Carol"])
+        patterns = [s.model_dump(mode="json")["frame"]["chain"][0]["url_pattern"] for s in type_steps]
+        self.assertEqual(patterns, ["pattern_contact-editor", "pattern_form-widget", "pattern_note-composer"])
+
     def test_phase6_patch_bumps_version(self) -> None:
         from conxa_compile.compiler.build import compile_skill_package
         from conxa_compile.compiler.patch import apply_step_patch
@@ -655,6 +725,36 @@ class PhaseTests(unittest.TestCase):
         with_focus = sanitize_steps_preserving_order(out, {})
         actions = [(s.get("action") or {}).get("action") for s in with_focus]
         self.assertEqual(actions, ["focus", "type", "focus", "type"])
+
+    def test_clean_steps_keeps_same_looking_fields_in_different_iframes(self) -> None:
+        """Weak/generic-selector steps in different iframes must not collapse into one.
+
+        HubSpot-style micro-frontends embed several iframes whose fields share identical
+        (often empty) name/id/aria/css signals. Without frame identity in the dedup key,
+        clean_steps() treated "the first empty <input>" in every frame as the same target
+        and silently merged/dropped the rest.
+        """
+        from conxa_compile.compiler.step_anchors import clean_steps
+
+        def _ev(frame_label: str, value: str) -> dict:
+            return {
+                "action": {"action": "type", "value": value},
+                "target": {"tag": "input", "name": "", "id": "", "placeholder": ""},
+                "selectors": {"aria": "", "text_based": "", "css": ""},
+                "semantic": {},
+                "frame": {"chain": [{"url": f"https://app.hubspot.com/widget/{frame_label}", "url_pattern": f"pattern_{frame_label}"}]},
+                "page": {"url": "https://app.hubspot.com/contacts/123"},
+                "context": {},
+                "timing": {"timeout": 5000},
+            }
+
+        seq = [_ev("A", "Alice"), _ev("B", "Bob"), _ev("C", "Carol")]
+        out = clean_steps(seq, {})
+        values = [(s["frame"]["chain"][0]["url_pattern"], s["action"]["value"]) for s in out]
+        self.assertEqual(
+            values,
+            [("pattern_A", "Alice"), ("pattern_B", "Bob"), ("pattern_C", "Carol")],
+        )
 
     def test_sanitize_steps_preserving_order_inserts_focus_only_when_needed(self) -> None:
         from conxa_compile.compiler.step_anchors import clean_steps, sanitize_steps_preserving_order

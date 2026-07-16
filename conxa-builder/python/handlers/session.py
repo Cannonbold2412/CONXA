@@ -135,6 +135,37 @@ class SessionMixin:
             self._active_recording = sess.session_id
             return result
 
+    def cmd_cancel_recording(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Discard an in-progress recording the user cancelled from the UI.
+
+        Unlike cmd_stop_recording, this never saves anything — it force-stops the
+        session (even if the browser is still open) and drops any workflow
+        placeholder created at start_recording. This exists because closing the
+        recorder's Chromium window doesn't clear the active-recording lock right
+        away: session.py debounces the close for up to ~8s (plus a shutdown drain)
+        before it flips browser_open to False on its own. Without this handler, a
+        user who closes the browser and hits Cancel — instead of waiting for that
+        auto-save/detection — leaves the lock held, so the very next
+        start_recording attempt fails with "recording_in_progress" even though the
+        browser is already gone.
+        """
+        session_id = _safe_id(payload.get("session_id"), "session_id")
+        sess = _recorder_registry.get(session_id)
+        if sess is not None:
+            self._loop.run(sess.stop())
+            _recorder_registry.pop(session_id)
+        with self._rec_lock:
+            if self._active_recording == session_id:
+                self._active_recording = None
+
+        plugin_id_raw = str(payload.get("plugin_id") or "").strip()
+        workflow_id_raw = str(payload.get("workflow_id") or "").strip()
+        if plugin_id_raw and workflow_id_raw:
+            from conxa_core.storage.plugin_store import remove_workflow
+
+            remove_workflow(_safe_id(plugin_id_raw, "plugin_id"), _safe_id(workflow_id_raw, "workflow_id"))
+        return {"ok": True}
+
     def cmd_stop_recording(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         registry = _recorder_registry
 

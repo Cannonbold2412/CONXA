@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from conxa_compile.recorder.session import registry as _recorder_registry
+from conxa_core.progress import job_event_scope
 from handlers.protocol import _CommandError, _event_sink, _safe_id
 
 class CompileMixin:
@@ -143,13 +144,14 @@ class CompileMixin:
         _log("Starting compiler — generating selectors, assertions, recovery blocks…")
         sink({"phase": "compiler_start"})
         try:
-            package = compile_skill_package(
-                normalized,
-                skill_id=skill_id,
-                source_session_id=session_id,
-                title=title,
-                version=version,
-            )
+            with job_event_scope(rid):
+                package = compile_skill_package(
+                    normalized,
+                    skill_id=skill_id,
+                    source_session_id=session_id,
+                    title=title,
+                    version=version,
+                )
         except (CloudUnreachable, EntitlementBlocked, QuotaExceeded) as exc:
             _log(str(exc), level="error")
             sink({"phase": "compile_error", "message": str(exc), "failed_step": "selectors"})

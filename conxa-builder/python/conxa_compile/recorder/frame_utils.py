@@ -273,10 +273,17 @@ def _load_bridge_script(*, capture_hover: bool = False) -> str:
     )
 
 
-def _typing_target_key(event: RecordedEvent) -> tuple[str, str, str, str]:
+def _typing_target_key(event: RecordedEvent) -> tuple[str, str, str, str, str]:
     selectors = event.selectors
     semantic = event.semantic
+    chain = event.frame.chain if event.frame else []
+    frame_sig = ">".join(
+        str(level.get("url_pattern") or level.get("url") or "")
+        for level in chain
+        if isinstance(level, dict)
+    )
     return (
+        frame_sig,
         str(selectors.css or ""),
         str(selectors.xpath or ""),
         str(semantic.input_type or ""),

@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import threading
+import time
 import traceback
 import re
 from pathlib import Path
@@ -56,6 +57,28 @@ from handlers.workflow_editor import WorkflowEditorMixin  # noqa: E402
 from handlers.visual import VisualMixin  # noqa: E402
 from handlers.skill_packages import SkillPackagesMixin  # noqa: E402
 from handlers.runs import RunsMixin  # noqa: E402
+from conxa_core.progress import set_event_sink  # noqa: E402
+
+# Compile-time sub-step logging (conxa_compile/compiler/build.py's
+# _compile_log calls) routes through conxa_core.progress.append_current_job_event,
+# which is a no-op unless a sink is registered. Wiring it here — once, at
+# module scope — turns those existing per-step logs ("Compiling step N.",
+# "Generating vision anchors for step N.", ...) into live compile_log IPC
+# events instead of being silently dropped. Stateless and routed purely by
+# the job_id argument, so it's safe across the per-request dispatch threads
+# spawned below.
+def _progress_event_sink(job_id: str, event: str, message: str, data: dict[str, Any] | None) -> None:
+    _write({
+        "type": "event",
+        "id": job_id,
+        "phase": "compile_log",
+        "message": message,
+        "level": (data or {}).get("level", "info"),
+        "ts": time.time(),
+    })
+
+
+set_event_sink(_progress_event_sink)
 
 # --- background asyncio loop for the recorder --------------------------------
 

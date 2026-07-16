@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  cancelRecording,
   createPlugin,
   deletePlugin,
   fetchPlugins,
@@ -73,14 +74,12 @@ function AuthRecordDialog({
   const [step, setStep] = useState<'guide' | 'record'>('guide')
   const [activeSession, setActiveSession] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const [autoFinalizing, setAutoFinalizing] = useState(false)
 
   const startMut = useMutation({
     mutationFn: () => startAuthRecord(plugin.id),
     onSuccess: (data) => {
       setActiveSession(data.session_id)
       setError('')
-      setAutoFinalizing(false)
     },
     onError: (e: Error) => setError(e.message),
   })
@@ -89,14 +88,12 @@ function AuthRecordDialog({
     mutationFn: async () => finalizeAuth(plugin.id, activeSession!),
     onSuccess: () => {
       setActiveSession(null)
-      setAutoFinalizing(false)
       onRefresh()
       onOpenChange(false)
     },
     onError: (e: Error) => {
       setError(e.message)
       setActiveSession(null)
-      setAutoFinalizing(false)
     },
   })
 
@@ -106,31 +103,29 @@ function AuthRecordDialog({
     onError: (e: Error) => setError(e.message),
   })
 
+  const cancelMut = useMutation({
+    mutationFn: () => cancelRecording(activeSession!, { pluginId: plugin.id }),
+    onSettled: () => setActiveSession(null),
+  })
+
   const isRecording = !!activeSession
   const statusQ = useQuery({
     queryKey: ['plugin-auth-recording-status', plugin.id, activeSession],
     queryFn: () => getPluginRecordingStatus(activeSession!),
-    enabled: isRecording && !finalizeMut.isPending && !autoFinalizing,
+    enabled: isRecording && !finalizeMut.isPending,
     refetchInterval: 1000,
     retry: false,
   })
-
-  useEffect(() => {
-    if (!isRecording || autoFinalizing || finalizeMut.isPending) return
-    if (statusQ.data?.browser_open === false) {
-      setAutoFinalizing(true)
-      finalizeMut.mutate()
-    }
-  }, [isRecording, autoFinalizing, finalizeMut, statusQ.data?.browser_open])
+  const authBrowserClosed = statusQ.data?.browser_open === false
 
   function handleClose(v: boolean) {
-    if (!v && isRecording && !autoFinalizing && !finalizeMut.isPending) return
-    if (!v) { setStep('guide'); setError(''); setActiveSession(null); setAutoFinalizing(false) }
+    if (!v && isRecording && !finalizeMut.isPending) return
+    if (!v) { setStep('guide'); setError(''); setActiveSession(null) }
     onOpenChange(v)
   }
 
-  const RECORD_STEPS = ['Open browser', 'Log in', 'Close to save']
-  const recordStep = autoFinalizing ? 2 : 1
+  const RECORD_STEPS = ['Open browser', 'Log in', 'Save']
+  const recordStep = finalizeMut.isPending ? 2 : 1
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -193,7 +188,7 @@ function AuthRecordDialog({
                         'flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold transition-all',
                         done ? 'bg-emerald-500 text-white' : current ? 'bg-sky-500 text-white ring-2 ring-sky-500/30' : 'bg-white/8 text-zinc-600',
                       )}>
-                        {done ? <Check className="size-3" /> : current && !autoFinalizing ? <Loader2 className="size-3 animate-spin" /> : i + 1}
+                        {done ? <Check className="size-3" /> : current && !finalizeMut.isPending ? <Loader2 className="size-3 animate-spin" /> : i + 1}
                       </div>
                       <span className={cn('whitespace-nowrap text-[11px] font-medium', done ? 'text-emerald-300' : current ? 'text-sky-300' : 'text-zinc-600')}>
                         {s}
@@ -207,13 +202,15 @@ function AuthRecordDialog({
               })}
             </div>
             <p className="text-xs leading-5 text-sky-100/70">
-              {autoFinalizing
-                ? 'Browser closed — saving your session…'
+              {finalizeMut.isPending
+                ? 'Saving your session…'
+                : authBrowserClosed
+                ? 'Browser closed. Click Save Session Now to keep this session, or Cancel to discard it.'
                 : 'Browser is open. Log in, navigate to the page where workflows should start, then close the browser.'}
             </p>
-            {!autoFinalizing && (
+            {!finalizeMut.isPending && (
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" className="flex-1 border-white/10 bg-white/[0.06] text-zinc-300 hover:bg-white/10 hover:text-white" onClick={() => setActiveSession(null)} disabled={finalizeMut.isPending}>
+                <Button size="sm" variant="outline" className="flex-1 border-white/10 bg-white/[0.06] text-zinc-300 hover:bg-white/10 hover:text-white" onClick={() => cancelMut.mutate()} disabled={finalizeMut.isPending || cancelMut.isPending}>
                   Cancel
                 </Button>
                 <Button size="sm" className="flex-1 bg-sky-600 text-white hover:bg-sky-500" onClick={() => finalizeMut.mutate()} disabled={finalizeMut.isPending}>
@@ -308,7 +305,6 @@ function NewWorkflowDialog({
   const [captureHover, setCaptureHover] = useState(false)
   const [activeSession, setActiveSession] = useState<{ sessionId: string; workflowId: string } | null>(null)
   const [error, setError] = useState('')
-  const [workflowFinalizeRequested, setWorkflowFinalizeRequested] = useState(false)
   const [promoteToAuth, setPromoteToAuth] = useState<{ sessionId: string; workflowId: string } | null>(null)
 
   const workflowStartUrl = (plugin.protected_url || plugin.target_url).trim()
@@ -321,7 +317,6 @@ function NewWorkflowDialog({
     onSuccess: (data) => {
       setActiveSession({ sessionId: data.session_id, workflowId: data.workflow_id })
       setError('')
-      setWorkflowFinalizeRequested(false)
     },
     onError: (e: Error) => setError(e.message),
   })
@@ -350,7 +345,6 @@ function NewWorkflowDialog({
       setName('')
       setCaptureHover(false)
       setActiveSession(null)
-      setWorkflowFinalizeRequested(false)
       onCreated()
     },
     onError: (e: Error) => {
@@ -358,9 +352,18 @@ function NewWorkflowDialog({
       setError(message)
       if (message.toLowerCase().startsWith('no workflow actions were recorded')) {
         setActiveSession(null)
-        setWorkflowFinalizeRequested(false)
         onCreated()
       }
+    },
+  })
+
+  const cancelMut = useMutation({
+    mutationFn: () =>
+      cancelRecording(activeSession!.sessionId, { pluginId: plugin.id, workflowId: activeSession!.workflowId }),
+    onSettled: () => {
+      setActiveSession(null)
+      setError('')
+      onCreated()
     },
   })
 
@@ -373,12 +376,6 @@ function NewWorkflowDialog({
     retry: false,
   })
   const workflowBrowserClosed = statusQ.data?.browser_open === false
-
-  useEffect(() => {
-    if (!isRecording || !workflowBrowserClosed || workflowFinalizeRequested || finalizeMut.isPending) return
-    setWorkflowFinalizeRequested(true)
-    finalizeMut.mutate()
-  }, [isRecording, workflowBrowserClosed, workflowFinalizeRequested, finalizeMut])
 
   const defaultTrigger = (
     <Button
@@ -397,7 +394,7 @@ function NewWorkflowDialog({
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen && activeSession && !workflowBrowserClosed && !finalizeMut.isPending) return
+        if (!nextOpen && activeSession && !finalizeMut.isPending) return
         if (!nextOpen) setStep(1)
         setOpen(nextOpen)
       }}
@@ -487,10 +484,30 @@ function NewWorkflowDialog({
             <div className="flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2">
               <Loader2 className="size-4 animate-spin text-blue-400" />
               <p className="text-xs text-blue-300">
-                {finalizeMut.isPending ? 'Saving workflow…' : workflowBrowserClosed ? 'Browser closed — saving the workflow…' : 'Browser is open — perform your workflow, then close it when done.'}
+                {finalizeMut.isPending
+                  ? 'Saving workflow…'
+                  : workflowBrowserClosed
+                  ? 'Browser closed. Click Save Workflow Now to keep this recording, or Cancel to discard it.'
+                  : 'Browser is open — perform your workflow, then close it when done.'}
               </p>
             </div>
             {error ? <p className="text-sm text-red-400">{error}</p> : null}
+            {!finalizeMut.isPending && (
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 border-white/10 bg-white/5 text-zinc-300"
+                  onClick={() => cancelMut.mutate()}
+                  disabled={cancelMut.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button size="sm" className="flex-1" onClick={() => finalizeMut.mutate()}>
+                  Save Workflow Now
+                </Button>
+              </div>
+            )}
           </div>
         )}
 

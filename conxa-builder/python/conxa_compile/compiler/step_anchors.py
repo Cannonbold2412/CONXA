@@ -147,11 +147,31 @@ def semantic_anchor_phrase_kept(element: str, policy: dict[str, Any] | None = No
     return _phrase_is_discriminative(str(element or ""), sem_cfg, _generic_anchors(pol))
 
 
+def _frame_signature(step: Step) -> str:
+    """Stable per-frame identity so steps in different iframes never share a target key.
+
+    HubSpot-style micro-frontends routinely embed multiple iframes whose fields carry
+    identical (often empty) name/id/aria/css signals — without this, _target_key()
+    treats "the first empty <input>" in every frame as the same target, and the merge
+    logic below silently collapses distinct steps recorded in different iframes.
+    """
+    frame = step.get("frame") or {}
+    chain = frame.get("chain") if isinstance(frame, dict) else None
+    if not isinstance(chain, list):
+        return ""
+    return ">".join(
+        str(level.get("url_pattern") or level.get("url") or "")
+        for level in chain
+        if isinstance(level, dict)
+    )
+
+
 def _target_key(step: Step) -> str:
     target = step.get("target") or {}
     selectors = step.get("selectors") or {}
     return "|".join(
         [
+            _frame_signature(step),
             str(selectors.get("aria") or ""),
             str(selectors.get("text_based") or ""),
             str(selectors.get("css") or ""),

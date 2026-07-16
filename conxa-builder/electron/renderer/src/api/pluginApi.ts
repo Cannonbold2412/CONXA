@@ -285,6 +285,17 @@ export function finalizeWorkflow(
   )
 }
 
+export function cancelRecording(
+  sessionId: string,
+  opts: { pluginId?: string; workflowId?: string } = {},
+): Promise<{ ok: boolean }> {
+  return cmd<{ ok: boolean }>('cancel_recording', {
+    session_id: sessionId,
+    plugin_id: opts.pluginId ?? '',
+    workflow_id: opts.workflowId ?? '',
+  })
+}
+
 export function deleteWorkflow(pluginId: string, workflowId: string): Promise<{ deleted: boolean }> {
   return cmd<{ deleted: boolean }>('delete_workflow', { plugin_id: pluginId, workflow_id: workflowId })
 }
