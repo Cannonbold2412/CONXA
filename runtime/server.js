@@ -265,7 +265,7 @@ try {
   skillLoader  = require("./skill_loader");
   sync         = require("./sync");
   authManager  = require("./auth_manager");
-  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions } = require("./run"));
+  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory } = require("./run"));
   ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
 } catch (e) {
@@ -572,6 +572,13 @@ function _stepRecoveryContext(err) {
   };
   if (anchors.length) ctx.anchors = anchors;
   if (step.value && typeof step.value === "string" && step.value.length < 80) ctx.value = step.value;
+  // Tell the agent explicitly when the target lives inside a nested iframe — otherwise it has no
+  // way to know the "Interactive elements NOW" list (top-level only, unless a frame-scoped
+  // inventory was also gathered) might not be the whole picture.
+  const frameChain = Array.isArray(step.identity_bundle && step.identity_bundle.frame_chain)
+    ? step.identity_bundle.frame_chain
+    : [];
+  if (frameChain.length) ctx.frame = { depth: frameChain.length };
   // Strip empty target fields so the agent sees only positive identity signals.
   ctx.target = Object.fromEntries(Object.entries(ctx.target).filter(([, v]) => v));
   if (!Object.keys(ctx.target).length) delete ctx.target;
@@ -687,6 +694,24 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker, steps
     currentInventory = await page.evaluate(pageScripts.domInventory);
   } catch (_) {}
 
+  // If the failed step's target lives inside an iframe, document.querySelectorAll above cannot
+  // see into it at all — merge in a frame-scoped inventory so the agent isn't shown a "ground
+  // truth" that silently omits the entire frame. `inputs` isn't threaded this deep (frame_chain
+  // selectors are structural iframe selectors, not input-templated, so this is a safe gap) —
+  // pass {} rather than plumb it through every layer for this diagnostic-only gather.
+  const failedStep = err && err.failedStep;
+  if (failedStep) {
+    try {
+      const frameEntries = await frameScopedInventory(page, failedStep, {});
+      if (Array.isArray(frameEntries) && frameEntries.length) {
+        currentInventory = [
+          ...(Array.isArray(currentInventory) ? currentInventory : []),
+          ...frameEntries.map(e => ({ ...e, in_frame: true })),
+        ];
+      }
+    } catch (_) {}
+  }
+
   // Secondary, and only when it actually differs from the current one: the inventory at the
   // exact moment of failure, before the T1/T2 cascade ran. A dropdown or dialog listed here may
   // have since closed — it must never be mistaken for the state to act on now.
@@ -711,13 +736,32 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker, steps
   // validateOverrideSelector), tell the agent exactly why and what it actually matched, instead
   // of just re-describing the original failure as if nothing had been tried.
   const overrideNote = err.overrideValidationFailed
-    ? `\n\nYour previous recovery selector ${err.overrideReason === "no-match"
-        ? "matched no element on the current page"
-        : "matched multiple elements with no clear winner"}.` +
-      (Array.isArray(err.overrideCandidates) && err.overrideCandidates.length
-        ? ` Candidates it matched: ${JSON.stringify(err.overrideCandidates)}.`
-        : "") +
-      ` Pick a more specific selector using the current-state inventory below.`
+    ? err.overrideReason === "frame-not-found"
+      ? `\n\nYour previous recovery selector could not even be tried: the frame/iframe this ` +
+        `element is supposed to live inside could not be located on the current page (it may not ` +
+        `have opened, or its identity changed). Picking a different element selector will not ` +
+        `help — first confirm whether the panel/dialog that should contain it is actually open.`
+      : `\n\nYour previous recovery selector ${err.overrideReason === "no-match"
+          ? "matched no element on the current page"
+          : "matched multiple elements with no clear winner"}.` +
+        (Array.isArray(err.overrideCandidates) && err.overrideCandidates.length
+          ? ` Candidates it matched: ${JSON.stringify(err.overrideCandidates)}.`
+          : "") +
+        ` Pick a more specific selector using the current-state inventory below.`
+    : "";
+
+  // Distinct from a plain element-not-found: the step's target lives inside a frame/iframe, and
+  // that frame itself could not be located this time (not just the element inside it) — e.g. the
+  // panel never opened, or the iframe's identifying attribute changed on reattach. Proposing a
+  // new element selector cannot fix this; the agent needs to know the failure is one level up.
+  const frameNotFoundNote = err.frameNotFound
+    ? `\n\nNote: this step's target lives inside a frame/iframe, and that containing frame could ` +
+      `not be located on the current page at all (not just the element inside it) — it may not ` +
+      `have opened yet, may have closed, or its identifying attributes may have changed. The ` +
+      `"Interactive elements NOW" list below is top-level only and will not show anything from ` +
+      `inside that frame. Check the screenshot for whether the expected panel/dialog is visible; ` +
+      `if it never opened, the fix is likely earlier in the sequence (the step that should have ` +
+      `opened it), not a new selector for this step.`
     : "";
 
   // Header + the exact closing-edge protocol so the agent can apply its finding and resume.
@@ -734,7 +778,7 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker, steps
     `target used to look and may be outdated. The screenshot is viewport-only; the target may be ` +
     `off-screen (see scrollY), so check the DOM inventory for existence even if it isn't visible ` +
     `in the image. Do not guess — if no element matches the intent, tell the user the page has ` +
-    `changed and ask how to proceed.${overrideNote}`;
+    `changed and ask how to proceed.${frameNotFoundNote}${overrideNote}`;
 
   // Tier 3 — semantic: the recorded intent, expected post-condition, execution trace, and the
   // live (ground-truth) inventory of interactive elements.
@@ -1322,8 +1366,11 @@ async function _handleTool(name, args, extra) {
   return err(`Unknown tool: ${name}`);
 }
 
-// MCP registration is written to claude_desktop_config.json (and ~/.claude.json if present)
-// by the NSIS installer via PowerShell at install time.
+// MCP registration (claude_desktop_config.json, ~/.claude.json, and every other
+// detected agent host) is handled by `conxa-runtime.exe register-mcp` /
+// `unregister-mcp` — see bootstrap.js, mcp_register.js, mcp_hosts.js, and
+// config_edit.js. The NSIS installer just invokes the subcommand; it holds no
+// config-editing logic of its own.
 
 async function _phonehome() {
   const companies = [...new Set(Object.values(skillIndex).map(s => s.company))];

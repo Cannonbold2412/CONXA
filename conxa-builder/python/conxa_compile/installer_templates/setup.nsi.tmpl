@@ -40,7 +40,10 @@
 ; Install tree is environment-scoped ({{INSTALL_SUBDIR}} = .conxa | .conxa-dev) so a
 ; dev-built installer never collides with a prod install on the same machine.
 !define INSTALL_DIR    "$PROFILE\{{INSTALL_SUBDIR}}"
-!define MCP_SERVER     "{{MCP_SERVER_NAME}}"
+; The MCP server key (conxa vs conxa-dev) is derived by conxa-runtime.exe itself
+; from CONXA_ENV at register-mcp/unregister-mcp time — see runtime/mcp_register.js.
+; NSIS no longer chooses or hardcodes it, which is what makes uninstall structurally
+; unable to remove the wrong key.
 !define CONXA_ENV      "{{CONXA_ENV}}"
 !define UPDATE_CHANNEL "{{CONXA_UPDATE_CHANNEL}}"
 !define RUNTIME_DIR    "${INSTALL_DIR}"
@@ -188,73 +191,57 @@ Section "SkillPacks" SEC_SKILLS
 SectionEnd
 
 ; ── MCP registration ──────────────────────────────────────────────────────────
-; Registers the Conxa MCP server in two places:
-;   1. claude_desktop_config.json — auto-detects Store app path (Packages\Claude_*) or falls back to %APPDATA%\Claude
-;   2. %USERPROFILE%\.claude.json (Claude Code) — only if the file already exists
-; Uses PowerShell for a non-destructive JSON merge (preserves existing MCP servers).
+; Registers the Conxa MCP server into every detected AI agent host (Claude
+; Desktop, Claude Code, and — as mcp_hosts.js grows — Cursor, VS Code,
+; Windsurf, etc). All config-editing logic lives in conxa-runtime.exe itself
+; (register-mcp / unregister-mcp — see runtime/mcp_register.js,
+; runtime/config_edit.js, runtime/mcp_hosts.js): atomic writes, ownership
+; checks so a foreign entry is never overwritten, and comment-preserving
+; edits. NSIS only invokes the subcommand and reports the result.
 ; command points through conxa-runtime\current — this stable path is registered ONCE,
 ; at install time, and never rewritten; every future self-update simply flips the
-; junction, so Claude Desktop's config never needs to change again.
+; junction, so no agent host's config ever needs to change again.
 ; RequestExecutionLevel=user ensures $APPDATA/$LOCALAPPDATA/$PROFILE always resolve
 ; to this user's profile — no admin wrong-profile bug.
 Section "MCPRegistration" SEC_MCP
   ; Kill Claude Desktop so the config file isn't locked and the new MCP entry
   ; is picked up on next launch (same pattern as conxa-runtime.exe kill above).
-  nsExec::ExecToLog 'taskkill /F /IM claude.exe'
-  Pop $0  ; discard — taskkill fails when Claude isn't running, that's fine
+  ; `taskkill /IM claude.exe` matches by image name only — the Claude Code CLI's
+  ; npm global-bin shim on Windows is ALSO compiled as claude.exe, so a blind
+  ; image-name kill takes down a running Claude Code session too. Scope the kill
+  ; to processes whose exe path actually looks like the Desktop app install
+  ; (ponytail: path-substring heuristic, not a signed/publisher check — revisit
+  ; if Desktop's install layout changes or this starts missing real instances).
+  FileOpen $0 "${RUNTIME_DIR}\conxa_kill_desktop.ps1" w
+  FileWrite $0 "Get-Process claude -EA SilentlyContinue | Where-Object {$\r$\n"
+  FileWrite $0 "  $$_.Path -and ($$_.Path -match 'AnthropicClaude' -or $$_.Path -match '\\Claude\\Claude\.exe$$')$\r$\n"
+  FileWrite $0 "} | Stop-Process -Force -EA SilentlyContinue$\r$\n"
+  FileClose $0
+  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"${RUNTIME_DIR}\conxa_kill_desktop.ps1$\""
+  Pop $0  ; discard — fails harmlessly when Desktop isn't running
+  Delete "${RUNTIME_DIR}\conxa_kill_desktop.ps1"
 
-  ; ── Claude Desktop ──────────────────────────────────────────────────────────
-  ; The Microsoft Store version of Claude Desktop virtualizes AppData to
-  ; %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude. The PS script
-  ; detects this at runtime; the CreateDirectory below is a non-Store fallback.
+  ; Non-Store fallback dir — the runtime also probes the Store path itself,
+  ; this just ensures the standard path's parent exists for a fresh profile.
   CreateDirectory "$APPDATA\Claude"
 
-  FileOpen $0 "${RUNTIME_DIR}\conxa_mcp.ps1" w
-  FileWrite $0 "$$d = (Get-ChildItem $\"$$env:LOCALAPPDATA\Packages$\" -Filter 'Claude_*' -Directory -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)$\r$\n"
-  FileWrite $0 "if ($$d) { $$p = $\"$$d\LocalCache\Roaming\Claude\claude_desktop_config.json$\" } else { $$p = $\"$$env:APPDATA\Claude\claude_desktop_config.json$\" }$\r$\n"
-  FileWrite $0 "$$dir = Split-Path $$p; if (-not (Test-Path $$dir)) { New-Item -ItemType Directory -Force $$dir | Out-Null }$\r$\n"
-  FileWrite $0 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { $$c = [PSCustomObject]@{} }$\r$\n"
-  FileWrite $0 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $0 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}'; CONXA_ENV = '${CONXA_ENV}'; CONXA_UPDATE_CHANNEL = '${UPDATE_CHANNEL}' } }$\r$\n"
-  FileWrite $0 "$$c.mcpServers | Add-Member ${MCP_SERVER} $$entry -Force$\r$\n"
-  FileWrite $0 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
-  FileClose $0
+  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& set CONXA_ENV=${CONXA_ENV}&& set CONXA_UPDATE_CHANNEL=${UPDATE_CHANNEL}&& "${RUNTIME_ROOT}\current\conxa-runtime.exe" register-mcp' $0
 
-  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"${RUNTIME_DIR}\conxa_mcp.ps1$\""
-  Pop $0
-  Delete "${RUNTIME_DIR}\conxa_mcp.ps1"
-
-  ; ── Claude Code (~/.claude.json) ────────────────────────────────────────────
-  ; Only update if the file already exists — never create it.
-  IfFileExists "$PROFILE\.claude.json" claudecode_update claudecode_skip
-
-  claudecode_update:
-  FileOpen $1 "${RUNTIME_DIR}\conxa_claude_code.ps1" w
-  FileWrite $1 "$$p = '$PROFILE\.claude.json'$\r$\n"
-  FileWrite $1 "if (-not (Test-Path $$p)) { exit 0 }$\r$\n"
-  FileWrite $1 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { exit 0 }$\r$\n"
-  FileWrite $1 "if (-not $$c.mcpServers) { $$c | Add-Member mcpServers ([PSCustomObject]@{}) }$\r$\n"
-  FileWrite $1 "$$entry = [PSCustomObject]@{ command = '${RUNTIME_ROOT}\current\conxa-runtime.exe'; args = @(); env = [PSCustomObject]@{ CONXA_DIR = '${INSTALL_DIR}'; CONXA_ENV = '${CONXA_ENV}'; CONXA_UPDATE_CHANNEL = '${UPDATE_CHANNEL}' } }$\r$\n"
-  FileWrite $1 "$$c.mcpServers | Add-Member ${MCP_SERVER} $$entry -Force$\r$\n"
-  FileWrite $1 "[System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false))$\r$\n"
+  ; register-mcp's own exit code is only nonzero when EVERY detected host
+  ; failed — a partial failure (some hosts registered, one didn't) still exits
+  ; 0, so the exit code alone can't drive this message. Read the one-line
+  ; summary conxa-runtime.exe writes instead (mcp_register.js: summarize() +
+  ; writeStatusFile()) — it reflects every host's real outcome either way.
+  ClearErrors
+  FileOpen $1 "${INSTALL_DIR}\mcp-register-status.txt" r
+  IfErrors mcp_no_status
+  FileRead $1 $2
   FileClose $1
-
-  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"${RUNTIME_DIR}\conxa_claude_code.ps1$\""
-  Pop $1
-  Delete "${RUNTIME_DIR}\conxa_claude_code.ps1"
-
-  claudecode_skip:
-
-  ; ── Completion message ───────────────────────────────────────────────────────
-  IntCmp $0 0 mcp_ok mcp_err mcp_err
-
-  mcp_ok:
-  MessageBox MB_OK "Setup complete!$\n$\nRestart Claude Desktop to activate ${COMPANY_NAME} skills.$\nAfter restart your skills will be immediately available."
-  Goto mcp_done
-
-  mcp_err:
-  MessageBox MB_OK "Setup complete — skill files installed.$\n$\nCould not auto-configure Claude Desktop (code $0).$\n$\nTo finish manually, add this to claude_desktop_config.json:$\n  Store app: %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\$\n  Standard:  %APPDATA%\Claude\$\n$\n  mcpServers > ${MCP_SERVER}:$\n    command: ${RUNTIME_ROOT}\current\conxa-runtime.exe$\n    env.CONXA_DIR: ${INSTALL_DIR}$\n    env.CONXA_ENV: ${CONXA_ENV}$\n    env.CONXA_UPDATE_CHANNEL: ${UPDATE_CHANNEL}$\n$\nThen restart Claude Desktop."
-  mcp_done:
+  Goto mcp_show
+  mcp_no_status:
+  StrCpy $2 "(no status available — code $0)"
+  mcp_show:
+  MessageBox MB_OK "Setup complete!$\n$\n$2$\n$\nRestart your AI agent(s) to activate ${COMPANY_NAME} skills.$\n$\nFull details: ${INSTALL_DIR}\mcp-register-status.txt$\nTo re-run manually: $\"${RUNTIME_ROOT}\current\conxa-runtime.exe$\" register-mcp"
 SectionEnd
 
 ; ── Uninstaller ────────────────────────────────────────────────────────────────
@@ -265,34 +252,14 @@ Section "Uninstall"
   ; Remove runtime and configs only if no other companies' skill packs remain
   IfFileExists "${INSTALL_DIR}\skill-packs\*.*" skip_shared_removal
 
-  ; Remove Conxa entry from Claude Desktop config (handles both Store and standard install paths)
-  FileOpen $0 "${INSTALL_DIR}\conxa_mcp_rm.ps1" w
-  FileWrite $0 "$$d = (Get-ChildItem $\"$$env:LOCALAPPDATA\Packages$\" -Filter 'Claude_*' -Directory -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)$\r$\n"
-  FileWrite $0 "if ($$d) { $$p = $\"$$d\LocalCache\Roaming\Claude\claude_desktop_config.json$\" } else { $$p = $\"$$env:APPDATA\Claude\claude_desktop_config.json$\" }$\r$\n"
-  FileWrite $0 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { exit 0 }$\r$\n"
-  FileWrite $0 "if ($$c.mcpServers -and ($$c.mcpServers.PSObject.Properties['conxa'])) {$\r$\n"
-  FileWrite $0 "  $$c.mcpServers.PSObject.Properties.Remove('conxa')$\r$\n"
-  FileWrite $0 "  [System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false)) }$\r$\n"
-  FileClose $0
-  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"${INSTALL_DIR}\conxa_mcp_rm.ps1$\""
-  Pop $0
-  Delete "${INSTALL_DIR}\conxa_mcp_rm.ps1"
-
-  ; ── Claude Code removal ──────────────────────────────────────────────────
-  ; Remove Conxa entry from Claude Code config if it exists
-  IfFileExists "$PROFILE\.claude.json" 0 mcp_remove_done
-  FileOpen $0 "${INSTALL_DIR}\conxa_mcp_rm2.ps1" w
-  FileWrite $0 "$$p = '$PROFILE\.claude.json'$\r$\n"
-  FileWrite $0 "if (-not (Test-Path $$p)) { exit 0 }$\r$\n"
-  FileWrite $0 "try { $$c = Get-Content $$p -Raw -EA Stop | ConvertFrom-Json } catch { exit 0 }$\r$\n"
-  FileWrite $0 "if ($$c.mcpServers -and ($$c.mcpServers.PSObject.Properties['conxa'])) {$\r$\n"
-  FileWrite $0 "  $$c.mcpServers.PSObject.Properties.Remove('conxa')$\r$\n"
-  FileWrite $0 "  [System.IO.File]::WriteAllText($$p, ($$c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $$false)) }$\r$\n"
-  FileClose $0
-  nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"${INSTALL_DIR}\conxa_mcp_rm2.ps1$\""
-  Pop $0
-  Delete "${INSTALL_DIR}\conxa_mcp_rm2.ps1"
-
+  ; Remove the Conxa entry from every AI agent host it was registered in.
+  ; Same binary, same ownership-checked logic as install — see
+  ; runtime/mcp_register.js. Run through the still-present `current` junction;
+  ; the runtime tree below is only removed AFTER this call. Deriving the key
+  ; (conxa vs conxa-dev) from CONXA_ENV here — the same way register-mcp did —
+  ; is what makes install/uninstall structurally impossible to drift apart.
+  IfFileExists "${RUNTIME_ROOT}\current\conxa-runtime.exe" 0 mcp_remove_done
+  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& set CONXA_ENV=${CONXA_ENV}&& set CONXA_UPDATE_CHANNEL=${UPDATE_CHANNEL}&& "${RUNTIME_ROOT}\current\conxa-runtime.exe" unregister-mcp' $0
   mcp_remove_done:
   ; RMDir /r on a tree containing directory junctions removes each junction as a
   ; single reparse-point entry without recursing into its target — standard Win32

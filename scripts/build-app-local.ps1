@@ -5,7 +5,7 @@
   Production. Dev only — never touches Production.
 
 .DESCRIPTION
-  Mirrors build-runtime-app.yml exactly: same 15 files, same javascript-obfuscator
+  Mirrors build-runtime-app.yml exactly: same file list, same javascript-obfuscator
   flags (including auth_manager.js's no-self-defending exception), same
   version.json shape (app_version, min_host, built_at, per-file sha256) — but on
   your own machine, writing straight into
@@ -56,7 +56,10 @@ $files = @(
   "skill_loader.js", "tracker.js", "install_identity.js",
   "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
   "drift.js", "version_manager.js", "manifest_manager.js", "auth_manager.js",
-  "page_scripts.js"
+  "page_scripts.js",
+  # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (mirrors
+  # build-runtime-app.yml's file list — must stay in lockstep with it)
+  "durable_context.js", "config_edit.js", "mcp_hosts.js"
 )
 $hashes = @{}
 foreach ($f in $files) {

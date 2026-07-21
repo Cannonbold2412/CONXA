@@ -319,6 +319,31 @@ Defined in `server.js` `_toolDefinitions()`:
 | `refresh_skills` | Force immediate skill pack sync |
 | `get_runtime_status` | Runtime diagnostics (non-mutating) |
 
+### 4.2a MCP Registration (`register-mcp` / `unregister-mcp`)
+
+`conxa-runtime.exe register-mcp` / `unregister-mcp` are **host-exe-layer subcommands**, dispatched in `bootstrap.js` immediately after `env.apply()` — before `version_manager.resolveCurrent()`/the app-layer load, so they work even when no app layer is staged yet (a thin installer ships one before the first app-layer download) and regardless of the app layer's `min_host` check. NSIS calls the subcommand directly (`ExecWait '... register-mcp'`); no config-editing logic lives in the installer template itself.
+
+Files (all host-layer, bundled into the exe via `bootstrap.js`'s static `require()`s — no `pkg.scripts` entry needed for a statically-required path):
+
+| File | Role |
+|---|---|
+| `mcp_hosts.js` | Data table of JSON-configured hosts (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Gemini CLI, Cline, Zed, Copilot CLI, Factory, KiloCode, Antigravity, OpenCode, OpenClaw, Crush, OpenHands, Augment, Kiro, Junie, Qwen). One row per host: `detect(ctx)`, `configPaths(ctx)` (plural — VS Code writes one file per profile, Cline writes two locations), `objectPath`, `shape`. |
+| `mcp_hosts_toml.js` | Codex CLI, Mistral Vibe (TOML — `# >>> conxa:<label> >>>` managed marker blocks, no TOML parser dependency). |
+| `mcp_hosts_yaml.js` | Goose, Hermes (YAML — `yaml` package's Document API, comment-preserving). |
+| `config_edit.js` | JSON/JSONC writer (`jsonc-parser`, so comments/formatting survive on every host, not just the hand-edited ones). Atomic write (temp file, `fsync`, `rename`), ownership check (`isOwned()` — an existing entry is "ours" only if its `command` resolves inside our install root), and a read-immediately-before-write CAS check against a concurrent writer. |
+| `config_edit_toml.js` | Marker-block editor for the two TOML hosts. A regular table (`[mcp_servers.conxa]`, Codex) can exist only once — TOML rejects a duplicate definition — so a second one outside our span is treated as foreign; an array-of-tables (`[[mcp_servers]]`, Vibe) legitimately repeats once per server, so the only real conflict is another entry whose own `name` already claims our key. |
+| `config_edit_yaml.js` | Document-API editor for the two YAML hosts; no marker needed (YAML mappings hold sibling keys natively, same as the JSON hosts). |
+| `mcp_register.js` | Orchestrator: `computeIdentity()` derives the entry key (`conxa` vs `conxa-dev`, from `env.js`'s `dev` flag — see §5.8-adjacent env resolution) and the stable `conxa-runtime/current/conxa-runtime.exe` command path; iterates all three host tables; never aborts the run because one host failed; writes a diagnostic status file (below); sets `process.exitCode` non-zero only if *every detected* host failed. |
+| `durable_context.js` | Post-sync discoverability: writes a per-company skill/instructions file (`SKILL.md`, `AGENTS.md`, `global_rules.md`, …) into each *registered* host so the agent actually reaches for the tools. Called from `sync.js` right after `pack.skills` is written — **not** from `register-mcp`, because a thin installer ships `pack.skills` empty (§5.9); there is nothing real to name until the first successful delta-sync. Best-effort; never fails the sync. |
+
+**Ownership is structural, not a hardcoded string.** Because `register-mcp` and `unregister-mcp` derive the entry key from the *same* `env.js` resolution every time, a dev-channel install and a stable-channel install on the same machine write to two distinct keys (`conxa-dev` / `conxa`) that can never drift apart — this replaces an earlier NSIS-generated-PowerShell design where the uninstaller's key was a separate hardcoded literal that fell out of sync with the installer's channel-derived key, leaving a dangling entry behind on dev-channel uninstalls.
+
+`register-mcp --plan` performs every detection/ownership check and prints the machine-readable receipt (what would be written, where) without touching any file — no network, no mutation. `--dry-run` is the same without the JSON dump. `--only <id>[,<id>]` restricts the run to specific host ids.
+
+Every run writes `<CONXA_DIR>\mcp-register-status.txt`: a one-line summary (`conxa register-mcp: 15 ok, 3 not installed, 1 left alone (not ours), 1 FAILED`) followed by per-host detail. NSIS reads the first line into its completion `MessageBox` — this is necessary, not cosmetic: the process exit code is only nonzero when *every* detected host fails, so a partial failure (14 hosts registered, 1 didn't) would otherwise show "Setup complete!" with no indication anything went wrong.
+
+Tests: `runtime/test/test_config_edit.js`, `test_config_edit_toml.js`, `test_config_edit_yaml.js`, `test_mcp_hosts.js`, `test_mcp_register.js`, `test_mcp_register_toml.js`, `test_mcp_register_yaml.js`, `test_durable_context.js` — fixture-driven (`os.tmpdir()` + `USERPROFILE`/`HOME`/`APPDATA`/`LOCALAPPDATA` env overrides so `os.homedir()`-based host detection never touches the real machine running the test). Run via `npm test` (`node --test`, no path argument — an explicit `test/` path argument does not reliably resolve as a directory glob in every environment).
+
 ### 4.3 Startup Sequence
 
 ```mermaid
@@ -796,7 +821,7 @@ The installer (`installer_builder.py`) wraps this with NSIS to produce a per-use
 1. Installs the skill pack to `$PROFILE\.conxa\skill-packs\{company}\`.
 2. Installs `conxa-runtime.exe` + `keytar.node` + `conxa-app\` (pre-extracted app layer) to `$PROFILE\.conxa\`.
 3. Installs Chromium to `$PROFILE\.conxa\chromium\` (via `conxa-runtime.exe --install-playwright`, run with `CONXA_DIR` set explicitly to `$PROFILE\.conxa` so it lands in the same place the runtime reads from later).
-4. Registers the MCP server by generating a PowerShell script that does a non-destructive JSON merge into `claude_desktop_config.json` (auto-detecting the Microsoft Store/MSIX config path) and into `~/.claude.json` for Claude Code if it already exists, setting `env.CONXA_DIR = $PROFILE\.conxa` on the entry.
+4. Registers the MCP server by invoking `conxa-runtime.exe register-mcp` (see §4.2a) — every detected agent host (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, and 20+ more), not just the two Claude surfaces, ownership-checked and atomically written.
 
 ---
 
@@ -1467,7 +1492,7 @@ Ships inside the company-specific installer produced by Build Studio. Per-user i
 - Windows: `$PROFILE\.conxa\conxa-runtime.exe` (i.e. `C:\Users\<user>\.conxa\`) plus `conxa-app\` for the pre-extracted app layer
 - Mac: `~/.conxa/runtime/runtime` (planned; Mac support is in build scripts but Windows is the primary target)
 
-MCP registration is done by the NSIS installer itself: a generated PowerShell script merges a `conxa` entry directly into `claude_desktop_config.json` (and into `~/.claude.json` for Claude Code, if present), setting `env.CONXA_DIR = $PROFILE\.conxa`. The script auto-detects the Microsoft Store/MSIX config path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise, which avoids MSIX filesystem virtualization issues affecting per-user config paths on Windows (see claude-code issue #26073). An earlier design used a `.mcpb` Desktop Extension instead — that mechanism has been removed and no longer exists in the installer.
+MCP registration is done by `conxa-runtime.exe register-mcp` itself (see §4.2a) — NSIS just invokes the subcommand, no config-editing logic lives in the installer template. Auto-detects the Microsoft Store/MSIX config path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise for Claude Desktop, which avoids MSIX filesystem virtualization issues affecting per-user config paths on Windows (see claude-code issue #26073) — and does the equivalent for every other detected host. An earlier design used a `.mcpb` Desktop Extension instead — that mechanism has been removed and no longer exists in the installer. A design before that generated a throwaway PowerShell script per host from the NSIS template — replaced because it reserialized the whole config file (losing comments/key order), wrote non-atomically, and its uninstaller hardcoded the registration key separately from the installer's channel-derived one, so a dev-channel uninstall could leave a dangling entry behind.
 
 ---
 

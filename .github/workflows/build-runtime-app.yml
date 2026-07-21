@@ -90,7 +90,15 @@ jobs:
             "server.js", "sync.js", "run.js", "browser.js",
             "skill_loader.js", "tracker.js", "install_identity.js",
             "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
-            "drift.js", "version_manager.js", "manifest_manager.js"
+            "drift.js", "version_manager.js", "manifest_manager.js",
+            # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (see
+            # runtime/durable_context.js) — all three must ship in the app layer
+            # too, not just be bundled into the host exe, since sync.js loads
+            # them from disk at runtime. Missing here means every sync silently
+            # fails to update discoverability files (caught by durable_context's
+            # own try/catch in sync.js, so it degrades to a warning, not a crash
+            # — but the feature would be dead in production without this).
+            "durable_context.js", "config_edit.js", "mcp_hosts.js"
           )
           foreach ($f in $files) {
             javascript-obfuscator $f `
@@ -147,7 +155,8 @@ jobs:
             "server", "sync", "run", "browser",
             "skill_loader", "auth_manager", "tracker", "install_identity",
             "bootstrap", "recovery", "resolve_adapter", "resolver", "drift", "version_manager",
-            "manifest_manager", "page_scripts"
+            "manifest_manager", "page_scripts",
+            "durable_context", "config_edit", "mcp_hosts"
           )
           foreach ($base in $files) {
             Copy-Item obfuscated/$base.js dist-app/$base.js

@@ -55,16 +55,65 @@
     } catch (_e) {}
   }
 
-  // Diagnostic: detect document.open() / document.write() calls — HubSpot's micro-frontend
-  // pattern replaces iframe document content this way instead of navigating, which means
-  // Playwright never fires framenavigated and our re-injection relies on the pump loop.
-  if (TRACE && document && !document.__SKILL_OPEN_HOOKED__) {
+  // Document-scoped listener registry: HubSpot's micro-frontend pattern replaces iframe
+  // document content via document.open()/write() instead of navigating a new document, which
+  // means add_init_script (real-navigation-only) never re-runs and the old, wiped-out listener
+  // set is gone. Collecting registrations here (instead of registering them directly at each
+  // addEventListener call-site below) lets installDocumentListeners() re-attach the exact same
+  // set on demand — once at initial bridge init, and again from the open/write/writeln patch
+  // below every time the document's content is swapped.
+  const _docListeners = [];
+  function onDoc(type, handler, options) {
+    _docListeners.push([type, handler, options]);
+  }
+  function installDocumentListeners() {
+    for (const [type, handler, options] of _docListeners) {
+      try { document.removeEventListener(type, handler, options); } catch (_e) {}
+      document.addEventListener(type, handler, options);
+    }
+    // Kept for the pump loop's diagnostics/backstop (see session.py) — no longer the sole
+    // signal a reinstall is needed; the prototype patch below is now primary.
+    document.__SKILL_BRIDGE_DOC_V1__ = true;
+    // Return value lets session.py's reinstall-backstop call confirm real listeners were
+    // actually (re)attached, not just that this function ran without throwing — a frame whose
+    // own onDoc(...) registrations never ran (e.g. the script errored before reaching them)
+    // would otherwise report success while attaching zero listeners.
+    return _docListeners.length;
+  }
+  // Exposed so session.py's pump-loop backstop can trigger a reinstall directly instead of
+  // re-running (and silently no-oping on) the whole bridge script.
+  window.__SKILL_REINSTALL_DOC__ = installDocumentListeners;
+
+  // Always-on (not TRACE-gated): patch Document.prototype.open/write/writeln so a document
+  // content swap re-attaches our listeners immediately, synchronously, in-page — no round trip,
+  // no poll cadence, no race window. Patched on the prototype (not the document instance)
+  // because an instance-level override is exactly what document.open() discards; the prototype
+  // belongs to the persistent window realm and survives the swap.
+  if (document && !document.__SKILL_OPEN_HOOKED__) {
     try {
       document.__SKILL_OPEN_HOOKED__ = true;
-      var _origOpen = document.open;
-      var _origWrite = document.write;
-      document.open = function() { trace("document_open", { url: location.href }); return _origOpen.apply(this, arguments); };
-      document.write = function(s) { trace("document_write", { len: (s && s.length) || 0 }); return _origWrite.apply(this, arguments); };
+      const proto = Document.prototype;
+      const _origOpen = proto.open;
+      const _origWrite = proto.write;
+      const _origWriteln = proto.writeln;
+      proto.open = function () {
+        trace("document_open", { url: location.href });
+        const ret = _origOpen.apply(this, arguments);
+        installDocumentListeners();
+        return ret;
+      };
+      proto.write = function (s) {
+        trace("document_write", { len: (s && s.length) || 0 });
+        const ret = _origWrite.apply(this, arguments);
+        installDocumentListeners();
+        return ret;
+      };
+      proto.writeln = function (s) {
+        trace("document_write", { len: (s && s.length) || 0 });
+        const ret = _origWriteln.apply(this, arguments);
+        installDocumentListeners();
+        return ret;
+      };
     } catch (_e) {}
   }
 
@@ -1108,11 +1157,7 @@
     return resolveEditableTarget(deepActiveElement(document));
   }
 
-  // Mark this specific document instance so the pump loop can detect document replacement
-  // (window.__SKILL_BRIDGE_V1__ persists across document.open() but this flag does not).
-  document.__SKILL_BRIDGE_DOC_V1__ = true;
-
-  document.addEventListener(
+  onDoc(
     "click",
     (ev) => {
       trace("event", { t: "click" });
@@ -1129,7 +1174,7 @@
     true
   );
 
-  document.addEventListener(
+  onDoc(
     "change",
     (ev) => {
       const el = eventTargetFromPath(ev);
@@ -1178,7 +1223,7 @@
     true
   );
 
-  document.addEventListener(
+  onDoc(
     "beforeinput",
     (ev) => {
       trace("event", { t: "beforeinput" });
@@ -1188,7 +1233,7 @@
     true
   );
 
-  document.addEventListener(
+  onDoc(
     "input",
     (ev) => {
       trace("event", { t: "input" });
@@ -1198,7 +1243,7 @@
     true
   );
 
-  document.addEventListener(
+  onDoc(
     "keyup",
     () => {
       const editable = activeEditableTarget();
@@ -1207,7 +1252,7 @@
     true
   );
 
-  document.addEventListener(
+  onDoc(
     "focusin",
     (ev) => {
       trace("event", { t: "focusin" });
@@ -1216,7 +1261,7 @@
     true
   );
 
-  document.addEventListener(
+  onDoc(
     "focusout",
     (ev) => {
       trace("event", { t: "focusout" });
@@ -1242,7 +1287,7 @@
     { passive: true }
   );
 
-  document.addEventListener(
+  onDoc(
     "dblclick",
     (ev) => {
       let el = eventTargetFromPath(ev);
@@ -1255,7 +1300,7 @@
     true
   );
 
-  document.addEventListener(
+  onDoc(
     "contextmenu",
     (ev) => {
       let el = eventTargetFromPath(ev);
@@ -1705,7 +1750,7 @@
       if (!lastStableHoverSnapshot) lastStableHoverSnapshot = captureHoverSnapshot(null);
     }, 0);
 
-    document.addEventListener(
+    onDoc(
       "mouseover",
       (ev) => {
         const el = eventTargetFromPath(ev);
@@ -1724,7 +1769,7 @@
       },
       { capture: true, passive: true }
     );
-    document.addEventListener("mouseout", function(ev) {
+    onDoc("mouseout", function(ev) {
       if (!pendingHover || pendingHover.emitted) {
         scheduleHoverBaselineRefresh(80);
         return;
@@ -1740,7 +1785,7 @@
 
   // Drag / drop — capture source selector on dragstart, emit combined event on drop
   let _dragSrcSelectors = null;
-  document.addEventListener(
+  onDoc(
     "dragstart",
     (ev) => {
       const el = eventTargetFromPath(ev);
@@ -1749,7 +1794,7 @@
     },
     true
   );
-  document.addEventListener(
+  onDoc(
     "drop",
     (ev) => {
       const dst = eventTargetFromPath(ev);
@@ -1769,7 +1814,7 @@
 
   // Keyboard shortcuts — modifier combos and common non-printable keys
   var _KEY_ALLOWLIST = { Tab: 1, Enter: 1, Escape: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1 };
-  document.addEventListener(
+  onDoc(
     "keydown",
     (ev) => {
       const hasModifier = ev.ctrlKey || ev.metaKey || ev.altKey;
@@ -1786,6 +1831,9 @@
     },
     true
   );
+
+  // Initial installation — must run after all onDoc(...) registrations above.
+  installDocumentListeners();
 
   // Flush pending typed input and hover before the frame unloads (e.g., form submit in iframe).
   // Also reset the window flag so the pump loop re-injects the bridge after document.open()

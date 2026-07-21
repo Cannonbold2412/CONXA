@@ -126,8 +126,18 @@ function pageFingerprint() {
   };
 }
 
+// Selector shared by domInventory() (top-level document) and inventoryEntryForElement() (a
+// single element already matched inside a frame — see run.js's frame-scoped inventory helper).
+// Duplicated as a literal string in both call sites below rather than a shared const: these
+// functions are serialized via Function.prototype.toString() and re-parsed standalone in the
+// browser page realm (see file header) — they cannot close over module-scope values.
+const INVENTORY_SELECTOR =
+  'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]';
+
 // Interactive-element inventory — shared by run.js's early-failure snapshot and server.js's
-// post-cascade "current inventory" for Tier 3+ recovery context.
+// post-cascade "current inventory" for Tier 3+ recovery context. Top-level document only; for a
+// step whose target lives inside an iframe, run.js additionally gathers a frame-scoped inventory
+// via inventoryEntryForElement() below (document.querySelectorAll cannot see into iframes).
 function domInventory() {
   const seen = new Set();
   return Array.from(document.querySelectorAll(
@@ -147,6 +157,23 @@ function domInventory() {
   }).filter(Boolean).slice(0, 50);
 }
 
+// Per-element counterpart of domInventory(), for elements already matched inside a specific
+// frame (run.js resolves the frame via rootCandidates()/frameLocator, then calls this via
+// locator.evaluate() on each matched element — the same per-item pattern resolve_adapter.js
+// already uses for candidate gathering). Field logic must stay identical to domInventory()'s
+// per-element body above; returns null (skip) for elements with no identifying signal, same as
+// domInventory() — dedup across elements is the caller's job since this only sees one at a time.
+function inventoryEntryForElement(el) {
+  const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
+  const tag  = el.tagName.toLowerCase();
+  const type = el.getAttribute("type")        || "";
+  const role = el.getAttribute("role")        || "";
+  const id   = el.id                          || undefined;
+  const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
+  if (!text && !type && !id && !dt) return null;
+  return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
+}
+
 module.exports = {
   extractDescriptor,
   rafStable,
@@ -156,4 +183,6 @@ module.exports = {
   preStepSignature,
   pageFingerprint,
   domInventory,
+  inventoryEntryForElement,
+  INVENTORY_SELECTOR,
 };

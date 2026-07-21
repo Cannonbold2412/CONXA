@@ -5,6 +5,8 @@
 require("playwright");
 require("keytar");
 require("semver");
+require("jsonc-parser");
+require("yaml");
 require("@modelcontextprotocol/sdk/server/index.js");
 require("@modelcontextprotocol/sdk/server/stdio.js");
 require("@modelcontextprotocol/sdk/types.js");

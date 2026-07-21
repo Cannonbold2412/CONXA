@@ -1056,6 +1056,16 @@ def _build_step(
         cw = dict(confidence_protocol.get("compile_warnings") or {})
         cw["weak_evidence"] = True
         confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
+    # A recorded frame level lacking fingerprint.signals is silently dropped from
+    # identity_bundle.frame_chain (see _build_identity_bundle) — without this warning the runtime
+    # then treats the whole chain as absent (rootCandidates -> [page], see runtime/run.js) with no
+    # diagnostic trail, silently mis-scoping or resolve-missing at runtime for a step that was
+    # actually recorded inside an iframe.
+    raw_frame_chain = (ev_with_intent.get("frame") or {}).get("chain") or []
+    if isinstance(raw_frame_chain, list) and len(raw_frame_chain) > len(identity_bundle.frame_chain):
+        cw = dict(confidence_protocol.get("compile_warnings") or {})
+        cw["frame_chain_incomplete"] = True
+        confidence_protocol = {**confidence_protocol, "compile_warnings": cw}
     if assertions:
         validation = ValidationBlock(
             wait_for=validation.wait_for,

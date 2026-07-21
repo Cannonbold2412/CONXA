@@ -67,10 +67,10 @@ def test_ensure_bridge_installs_missing_child_frame() -> None:
             self.installed = installed
             self.calls: list[str] = []
 
-        def evaluate(self, script: str) -> bool | None:
+        def evaluate(self, script: str) -> dict | None:
             self.calls.append(script)
-            if "const hasWin = !!window.__SKILL_BRIDGE_V1__" in script:
-                return not self.installed
+            if "hasWin: !!window.__SKILL_BRIDGE_V1__" in script:
+                return {"hasWin": self.installed, "hasDoc": self.installed}
             self.installed = True
             return None
 
@@ -88,12 +88,112 @@ def test_ensure_bridge_installs_missing_child_frame() -> None:
     sess._ensure_bridge_installed_sync(page)
 
     assert len(page.frames[0].calls) == 1
-    assert "const hasWin = !!window.__SKILL_BRIDGE_V1__" in page.frames[0].calls[0]
+    assert "hasWin: !!window.__SKILL_BRIDGE_V1__" in page.frames[0].calls[0]
     assert len(page.frames[1].calls) == 2
-    assert "const hasWin = !!window.__SKILL_BRIDGE_V1__" in page.frames[1].calls[0]
+    assert "hasWin: !!window.__SKILL_BRIDGE_V1__" in page.frames[1].calls[0]
     assert page.frames[1].calls[1] == sess._bridge_script
     assert page.frames[1].installed is True
     assert sess.binding_errors == []
+
+
+def test_ensure_bridge_reinstalls_doc_listeners_when_only_doc_flag_stale() -> None:
+    """Bridge already installed once in this realm (hasWin) but the document-scoped
+    listener flag is stale (hasDoc false) — e.g. bridge.js's own Document.prototype
+    open/write/writeln patch didn't take for some reason. The pump-loop backstop must
+    call the exposed reinstall hook, not re-run (and duplicate listeners from) the
+    whole bridge script."""
+    sess = RecordingSession(session_id="frame-bridge-reinstall")
+    sess._bridge_script = "window.__SKILL_BRIDGE_V1__ = true;"
+
+    class FakeFrame:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def evaluate(self, script: str) -> dict | None:
+            self.calls.append(script)
+            if "hasWin: !!window.__SKILL_BRIDGE_V1__" in script:
+                return {"hasWin": True, "hasDoc": False}
+            return None
+
+    frame = FakeFrame()
+    sess._ensure_bridge_installed_in_frame_sync(frame)
+
+    assert len(frame.calls) == 2
+    assert "hasWin: !!window.__SKILL_BRIDGE_V1__" in frame.calls[0]
+    assert "__SKILL_REINSTALL_DOC__" in frame.calls[1]
+    assert frame.calls[1] != sess._bridge_script
+
+
+def test_ensure_bridge_retries_through_transient_detach_then_succeeds() -> None:
+    """HubSpot-style embedded panels (e.g. the Create Contact object-builder-ui iframe) churn
+    through several attach/navigate/detach cycles before settling — a real recording's diagnostic
+    log showed the same frame failing 'Frame was detached'/'Execution context was destroyed' on
+    every single check for its entire practical lifetime, only stabilizing once there was no time
+    left to matter. A single check has no better than a coin-flip's chance of landing inside the
+    stable window between churns; the retry loop must keep trying through transient failures
+    within one call instead of waiting for the next external trigger."""
+    sess = RecordingSession(session_id="frame-churn-retry")
+    sess._bridge_script = "window.__SKILL_BRIDGE_V1__ = true;"
+
+    class ChurningFrame:
+        def __init__(self, fail_count: int) -> None:
+            self.fail_count = fail_count
+            self.calls = 0
+            self.installed = False
+
+        def evaluate(self, script: str) -> dict | None:
+            self.calls += 1
+            if self.calls <= self.fail_count:
+                raise Exception("Frame.evaluate: Frame was detached")
+            if "hasWin: !!window.__SKILL_BRIDGE_V1__" in script:
+                return {"hasWin": self.installed, "hasDoc": self.installed}
+            self.installed = True
+            return None
+
+    frame = ChurningFrame(fail_count=3)
+    sess._ensure_bridge_installed_in_frame_sync(frame)
+
+    assert frame.installed is True
+    assert sess.binding_errors == [], "should not report an error once a retry succeeds"
+
+
+def test_ensure_bridge_gives_up_after_max_attempts_on_persistent_churn() -> None:
+    sess = RecordingSession(session_id="frame-churn-exhausted")
+    sess._bridge_script = "window.__SKILL_BRIDGE_V1__ = true;"
+
+    class AlwaysDetachedFrame:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def evaluate(self, script: str) -> dict | None:
+            self.calls += 1
+            raise Exception("Frame.evaluate: Frame was detached")
+
+    frame = AlwaysDetachedFrame()
+    sess._ensure_bridge_installed_in_frame_sync(frame)
+
+    assert frame.calls == sess._BRIDGE_INSTALL_MAX_ATTEMPTS
+    assert len(sess.binding_errors) == 1
+    assert "Frame was detached" in sess.binding_errors[0]
+
+
+def test_ensure_bridge_does_not_retry_non_transient_errors() -> None:
+    sess = RecordingSession(session_id="frame-real-error")
+    sess._bridge_script = "window.__SKILL_BRIDGE_V1__ = true;"
+
+    class BrokenFrame:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def evaluate(self, script: str) -> dict | None:
+            self.calls += 1
+            raise Exception("SyntaxError: unexpected token")
+
+    frame = BrokenFrame()
+    sess._ensure_bridge_installed_in_frame_sync(frame)
+
+    assert frame.calls == 1, "a non-transient error should not trigger the churn retry loop"
+    assert len(sess.binding_errors) == 1
 
 
 def test_frame_ready_installs_bridge_immediately() -> None:
@@ -105,10 +205,10 @@ def test_frame_ready_installs_bridge_immediately() -> None:
             self.installed = False
             self.calls: list[str] = []
 
-        def evaluate(self, script: str) -> bool | None:
+        def evaluate(self, script: str) -> dict | None:
             self.calls.append(script)
-            if "const hasWin = !!window.__SKILL_BRIDGE_V1__" in script:
-                return not self.installed
+            if "hasWin: !!window.__SKILL_BRIDGE_V1__" in script:
+                return {"hasWin": self.installed, "hasDoc": self.installed}
             self.installed = True
             return None
 
@@ -117,9 +217,57 @@ def test_frame_ready_installs_bridge_immediately() -> None:
     sess._on_frame_ready(frame)
 
     assert len(frame.calls) == 2
-    assert "const hasWin = !!window.__SKILL_BRIDGE_V1__" in frame.calls[0]
+    assert "hasWin: !!window.__SKILL_BRIDGE_V1__" in frame.calls[0]
     assert frame.calls[1] == sess._bridge_script
     assert frame.installed is True
+
+
+def test_frame_lifecycle_logs_attach_navigate_detach_even_when_frame_is_gone() -> None:
+    """Diagnostic-only log (recorder_diag.json's frame_lifecycle) — event-driven, not sampled
+    like frame_snapshots, so it catches a frame that attaches and detaches faster than any
+    polling interval could observe. Must not blow up once the frame is actually gone."""
+    sess = RecordingSession(session_id="frame-lifecycle")
+    sess._bridge_script = "window.__SKILL_BRIDGE_V1__ = true;"
+
+    class FakeFrame:
+        def __init__(self, url: str, parent: "FakeFrame | None" = None) -> None:
+            self.url = url
+            self.parent_frame = parent
+
+        def evaluate(self, script: str) -> dict | None:
+            if "hasWin: !!window.__SKILL_BRIDGE_V1__" in script:
+                return {"hasWin": True, "hasDoc": True}
+            return None
+
+    top = FakeFrame("https://app-na2.hubspot.com/contacts/1")
+    child = FakeFrame("https://app-na2.hubspot.com/object-builder/1/embed", parent=top)
+
+    sess._on_frame_attached(child)
+    sess._on_frame_navigated(child)
+    sess._on_frame_detached(child)
+
+    kinds = [(e["kind"], e["url"], e["parent_url"]) for e in sess._frame_lifecycle]
+    assert kinds == [
+        ("attached", child.url, top.url),
+        ("navigated", child.url, top.url),
+        ("detached", child.url, top.url),
+    ]
+    assert all(isinstance(e["ts"], int) for e in sess._frame_lifecycle)
+
+    # A frame that's already gone (evaluate/parent_frame raise) must not crash the logger.
+    class DeadFrame:
+        @property
+        def url(self) -> str:
+            raise RuntimeError("Frame was detached")
+
+        @property
+        def parent_frame(self) -> None:
+            raise RuntimeError("Frame was detached")
+
+    sess._on_frame_detached(DeadFrame())
+    assert len(sess._frame_lifecycle) == 4
+    assert sess._frame_lifecycle[-1]["kind"] == "detached"
+    assert sess._frame_lifecycle[-1]["url"] == ""
 
 
 def test_binding_source_child_frame_adds_frame_context() -> None:
@@ -151,27 +299,39 @@ def test_binding_source_child_frame_adds_frame_context() -> None:
         pass
 
     payload = _payload()
+    src_frame = FakeFrame(
+        object(),
+        "https://app-na2.hubspot.com/object-builder/246242636/0-1/embed?",
+    )
     sess._binding_sink_sync(
         {
             "page": FakePage(),
-            "frame": FakeFrame(
-                object(),
-                "https://app-na2.hubspot.com/object-builder/246242636/0-1/embed?",
-            ),
+            "frame": src_frame,
         },
         payload,
     )
 
-    queued_payload, _page = sess._pending_payloads.get_nowait()
+    # _binding_sink_sync must NOT compute frame context itself — that requires Playwright
+    # sync-API calls, and this callback runs from inside Playwright's own dispatcher while
+    # delivering an expose_binding call; a nested blocking call there is a reentrancy hazard
+    # that can deadlock forever with no exception raised. It only passes the raw frame
+    # through; extraction happens later, from the plain pump-loop drain (see
+    # _consume_payload_sync), which is never invoked from inside that dispatch.
+    queued_payload, _page, queued_frame = sess._pending_payloads.get_nowait()
+    assert queued_frame is src_frame
+    assert "frame" not in queued_payload
+    assert "_frame_offset" not in queued_payload
+
+    frame_context, frame_offset = recorder_session._frame_context_and_offset_sync(queued_frame)
     # Cutover: frame chain carries durability-ranked fingerprint signals, not a single selector.
-    chain0 = queued_payload["frame"]["chain"][0]
+    chain0 = frame_context["chain"][0]
     signals = chain0["fingerprint"]["signals"]
     selectors = [s["selector"] for s in signals]
     # Highest-durability frame signal is a test-id attribute selector.
     assert signals[0]["selector"].startswith("iframe[data-")
     assert 'iframe[data-test-id="object-builder-ui-iframe"]' in selectors
     assert 'iframe[id="object-builder-ui"]' in selectors
-    assert queued_payload["_frame_offset"] == {"x": 42.0, "y": 18.0}
+    assert frame_offset == {"x": 42.0, "y": 18.0}
 
 
 def test_frame_offset_adjusts_visual_bbox_before_capture(tmp_path) -> None:

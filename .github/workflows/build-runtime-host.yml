@@ -61,6 +61,22 @@ jobs:
         working-directory: runtime
         run: npm ci
 
+      - name: Unit tests — MCP registration (register-mcp / unregister-mcp)
+        # Explicit file list, not `npm test`/bare `node --test`: several
+        # pre-existing files in test/ need Playwright browsers, external
+        # services, or the disabled execution gate (see TODO.md) that aren't
+        # set up in this job — running the whole directory here would block
+        # every release on unrelated, already-tracked gaps. These are
+        # fixture-only (os.tmpdir() + env overrides, no network, no browser)
+        # and sandbox os.homedir() so they never touch the runner's real
+        # filesystem state — see the header comment in test_mcp_register.js.
+        working-directory: runtime
+        run: >
+          node --test
+          test/test_config_edit.js test/test_config_edit_toml.js test/test_config_edit_yaml.js
+          test/test_mcp_hosts.js test/test_mcp_register.js test/test_mcp_register_toml.js
+          test/test_mcp_register_yaml.js test/test_durable_context.js test/test_sync.js
+
       - name: Stamp version, host_version, and manifest public key
         working-directory: runtime
         run: |

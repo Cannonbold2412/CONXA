@@ -10,6 +10,15 @@ const versionManager = require("./version_manager");
 // same isolated path roots + update channel. See env.js for the safety default.
 const envInfo = require("./env").apply();
 
+// `register-mcp` / `unregister-mcp` are host-exe-layer subcommands: they must
+// work even when no app layer is installed yet (a thin installer stages this
+// exe before the app layer is downloaded) and independent of the min_host
+// gate below, so they run and exit here, before any app-layer resolution.
+if (process.argv[2] === "register-mcp" || process.argv[2] === "unregister-mcp") {
+  require("./mcp_register").run(process.argv);
+  return;
+}
+
 const HOST_VERSION = require("./package.json").host_version || "host-v1.0.0";
 const CONXA_DIR    = process.env.CONXA_DIR; // set by env.apply() above
 // APP_ROOT is the component root (contains v1.0.0/, v1.1.0/, current/) — not the live dir itself.

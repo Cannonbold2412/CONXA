@@ -21,6 +21,31 @@ const https = require("https");
 
 const { syncSkillPacks } = require("../sync");
 
+// A successful sync now also calls durable_context.updateDurableContext()
+// (best-effort, see sync.js), which resolves its target paths from the REAL
+// os.homedir()/APPDATA/LOCALAPPDATA unless overridden. Without isolating
+// those here, every test below would write into this machine's actual
+// ~/.claude/skills, ~/.cursor/rules, etc. — sandbox HOME the same way
+// test_mcp_register.js and test_mcp_hosts.js do, so a passing test run never
+// touches a real AI-agent config.
+const ENV_KEYS = ["USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA"];
+let savedEnv;
+test.beforeEach(() => {
+  savedEnv = {};
+  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+  const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "sync-test-home-"));
+  process.env.USERPROFILE = sandboxHome;
+  process.env.HOME = sandboxHome;
+  process.env.APPDATA = path.join(sandboxHome, "AppData", "Roaming");
+  process.env.LOCALAPPDATA = path.join(sandboxHome, "AppData", "Local");
+});
+test.afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+});
+
 function mkSkillPacksDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "sync-test-"));
 }

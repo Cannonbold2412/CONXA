@@ -89,6 +89,15 @@ class RecordingSession:
     _frame_diag_seen: set[str] = field(default_factory=set)
     _traces: list[dict] = field(default_factory=list)
     _frame_snapshots: list[dict] = field(default_factory=list)
+    # Event-driven (not sampled) frame attach/navigate/detach log — complements the periodic
+    # _frame_snapshots, which only sees a frame if it's still around at the ~1s sample tick.
+    # This catches a frame that attaches and detaches faster than any polling interval.
+    _frame_lifecycle: list[dict] = field(default_factory=list)
+    # Wall-clock (monotonic) of each frame's most recent attach/navigate event, keyed by Python
+    # object identity (stable for the frame's lifetime, unlike its URL which is empty mid-
+    # transition). Used to defer bridge-install checks away from the exact instant a frame is
+    # least stable — see _BRIDGE_INSTALL_SETTLE_S.
+    _frame_last_transition_ts: dict[int, float] = field(default_factory=dict)
     _pump_tick: int = 0
     _no_pages_streak: int = 0
     binding_errors: list[str] = field(default_factory=list)
@@ -281,45 +290,172 @@ class RecordingSession:
         for frame in frames:
             self._ensure_bridge_installed_in_frame_sync(frame)
 
+    def _log_bridge_attempt(self, url: str, outcome: str) -> None:
+        # Deliberately NOT deduplicated (unlike _remember_bridge_install_error) — only logged for
+        # frames that need install/reinstall or fail, so it stays small for well-behaved frames
+        # while capturing the full timing/repeat-count pattern for a frame that keeps failing.
+        if len(self._frame_lifecycle) >= 2000:
+            return
+        self._frame_lifecycle.append({
+            "kind": "bridge_attempt",
+            "url": url,
+            "parent_url": None,
+            "ts": int(time.time() * 1000),
+            "outcome": outcome,
+        })
+
+    # HubSpot-style embedded panels (e.g. the "Create Contact" object-builder-ui iframe) can
+    # churn through several attach/navigate/detach cycles before settling — confirmed via
+    # recorder_diag.json's bridge_attempt log across several real recordings: the same frame
+    # fails every single check ("Frame was detached"/"Execution context was destroyed") for its
+    # entire practical interactive lifetime, only happening to stabilize right as the session
+    # ends, too late for anything typed earlier to have been captured. A single check racing
+    # that churn has no better than a coin-flip's chance of landing inside a stable window; a
+    # short in-place retry loop does, since the churn cycle itself is typically tens of
+    # milliseconds — much shorter than the ~200ms gap between external pump ticks/frame events.
+    _BRIDGE_INSTALL_MAX_ATTEMPTS = 5
+    _BRIDGE_INSTALL_RETRY_DELAY_S = 0.05
+    # How long to stay away from a frame after it attaches/navigates before calling
+    # frame.evaluate() into it at all. Playwright's sync-API evaluate() has no timeout and is
+    # thread-affine (no safe cross-thread watchdog is possible), so a call that lands on a frame
+    # mid-churn can hang the recorder's single pump thread forever with no exception raised —
+    # confirmed across multiple real HubSpot recordings where the whole recorder went silent the
+    # instant a check landed right on/near an attach event for a heavy, rapidly re-parenting
+    # iframe. bridge.js's own add_init_script + in-page Document.prototype reinstall patch already
+    # handle injection with zero Python round-trip, so this polling check is only a backstop —
+    # there's no real cost to letting a freshly-transitioned frame settle first.
+    #
+    # 0.3s was tried first and wasn't enough — real recordings show HubSpot's object-builder-ui
+    # panel can keep re-navigating/re-parenting for several seconds before settling (one session's
+    # bridge_attempt log showed ~38 failed attempts before it ever stabilized), and even a
+    # deliberately slow, ~52s-paced recording attempt never recovered on its own afterward. Widened
+    # to 2.5s to clear that window; _on_frame_navigated refreshes the timestamp on every further
+    # navigation, so a frame still actively churning keeps deferring rather than getting checked
+    # exactly once at a fixed offset from its first attach.
+    _BRIDGE_INSTALL_SETTLE_S = 2.5
+
     def _ensure_bridge_installed_in_frame_sync(self, frame: Any) -> None:
         if self.auth_mode or not self._bridge_script or frame is None:
             return
+        last_transition = self._frame_last_transition_ts.get(id(frame))
+        if last_transition is not None and (time.monotonic() - last_transition) < self._BRIDGE_INSTALL_SETTLE_S:
+            return
         try:
-            # Check both window flag AND document flag. The window flag persists across
-            # document.open() (HubSpot micro-frontend pattern) but the document flag does not.
-            # If window says installed but document flag is gone, reset window so we re-inject.
-            needs_install = frame.evaluate("""
-                () => {
-                    const hasWin = !!window.__SKILL_BRIDGE_V1__;
-                    const hasDoc = !!(document && document.__SKILL_BRIDGE_DOC_V1__);
-                    if (hasWin && !hasDoc) { window.__SKILL_BRIDGE_V1__ = false; }
-                    return !(hasWin && hasDoc);
-                }
-            """)
-            if needs_install:
-                frame.evaluate(self._bridge_script)
-            # Emit one diagnostic per unique frame URL so failures are visible.
-            frame_url = _frame_url(frame)
-            if frame_url and frame_url not in self._frame_diag_seen:
-                self._frame_diag_seen.add(frame_url)
-                try:
-                    bridge_ok = frame.evaluate("() => !!window.__SKILL_BRIDGE_V1__")
-                    binding_ok = frame.evaluate("() => typeof window.__skillReport === 'function'")
-                    if not bridge_ok:
-                        self.binding_errors.append(f"frame_bridge_missing:{frame_url}")
-                    if not binding_ok:
-                        self.binding_errors.append(f"frame_binding_missing:{frame_url}")
-                except Exception:  # noqa: BLE001
-                    self.binding_errors.append(f"frame_diag_error:{frame_url}")
-        except Exception as exc:  # noqa: BLE001
-            self._remember_bridge_install_error(str(exc))
+            frame_url_for_log = _frame_url(frame)
+        except Exception:  # noqa: BLE001
+            frame_url_for_log = ""
+        last_exc: Exception | None = None
+        for attempt in range(self._BRIDGE_INSTALL_MAX_ATTEMPTS):
+            try:
+                # Check both window flag AND document flag. The window flag persists across
+                # document.open() (HubSpot micro-frontend pattern) but the document flag does
+                # not always — bridge.js's own Document.prototype.open/write/writeln patch is
+                # the primary defense against that swap (re-attaches listeners synchronously,
+                # in-page, the moment it happens), so this check is now just a backstop for the
+                # rare frame where that patch didn't take.
+                state = frame.evaluate("""
+                    () => ({
+                        hasWin: !!window.__SKILL_BRIDGE_V1__,
+                        hasDoc: !!(document && document.__SKILL_BRIDGE_DOC_V1__),
+                    })
+                """)
+                bridge_action_taken = False
+                if not state.get("hasWin"):
+                    frame.evaluate(self._bridge_script)
+                    self._log_bridge_attempt(frame_url_for_log, "installed_fresh")
+                    bridge_action_taken = True
+                elif not state.get("hasDoc"):
+                    # Bridge already installed once in this realm — reinstall via the exposed
+                    # hook (reuses the persisted closures from the original install) rather than
+                    # re-running the whole script, which would recreate fresh closures and
+                    # duplicate listeners instead of replacing the stale ones. The hook's return
+                    # value (listener count) confirms real listeners were actually attached, not
+                    # just that the call didn't throw.
+                    listener_count = frame.evaluate(
+                        "() => (typeof window.__SKILL_REINSTALL_DOC__ === 'function')"
+                        " ? window.__SKILL_REINSTALL_DOC__() : -1"
+                    )
+                    self._log_bridge_attempt(
+                        frame_url_for_log, f"reinstalled_doc (listener_count={listener_count})"
+                    )
+                    bridge_action_taken = True
+                # Emit one diagnostic per unique frame URL so failures are visible. Deferred to a
+                # tick where the frame is already stable (no install/reinstall just happened this
+                # call) — two more evaluate() calls immediately after reinstalling into a frame
+                # that's still mid-churn (e.g. HubSpot's object-builder-ui) is exactly the
+                # highest-risk moment for a call that never returns rather than raising.
+                if not bridge_action_taken:
+                    frame_url = _frame_url(frame)
+                    if frame_url and frame_url not in self._frame_diag_seen:
+                        self._frame_diag_seen.add(frame_url)
+                        try:
+                            bridge_ok = frame.evaluate("() => !!window.__SKILL_BRIDGE_V1__")
+                            binding_ok = frame.evaluate("() => typeof window.__skillReport === 'function'")
+                            if not bridge_ok:
+                                self.binding_errors.append(f"frame_bridge_missing:{frame_url}")
+                            if not binding_ok:
+                                self.binding_errors.append(f"frame_binding_missing:{frame_url}")
+                        except Exception:  # noqa: BLE001
+                            self.binding_errors.append(f"frame_diag_error:{frame_url}")
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._log_bridge_attempt(
+                    frame_url_for_log,
+                    f"attempt {attempt + 1}/{self._BRIDGE_INSTALL_MAX_ATTEMPTS} failed: {exc!s}"[:200],
+                )
+                msg = str(exc).lower()
+                transient = "detached" in msg or "destroyed" in msg or "navigation" in msg
+                if not transient or attempt == self._BRIDGE_INSTALL_MAX_ATTEMPTS - 1:
+                    break
+                time.sleep(self._BRIDGE_INSTALL_RETRY_DELAY_S)
+        if last_exc is not None:
+            self._remember_bridge_install_error(str(last_exc))
+
+    def _log_frame_lifecycle(self, kind: str, frame: Any) -> None:
+        # A frame mid-detach can raise on nearly any access (this is the exact "Frame was
+        # detached"/"Execution context was destroyed" failure mode this log exists to catch) —
+        # guard each lookup individually so the event itself is still recorded even when its
+        # url/parent can't be resolved, rather than dropping the whole entry.
+        if len(self._frame_lifecycle) >= 2000:
+            return
+        try:
+            url = _frame_url(frame)
+        except Exception:  # noqa: BLE001
+            url = ""
+        try:
+            parent = _frame_parent(frame)
+            parent_url = _frame_url(parent) if parent else None
+        except Exception:  # noqa: BLE001
+            parent_url = None
+        self._frame_lifecycle.append({
+            "kind": kind,
+            "url": url,
+            "parent_url": parent_url,
+            "ts": int(time.time() * 1000),
+        })
 
     def _on_frame_ready(self, frame: Any) -> None:
         self._ensure_bridge_installed_in_frame_sync(frame)
 
-    def _consume_payload_safe_sync(self, payload: dict[str, Any], src_page: Any | None = None) -> None:
+    def _on_frame_attached(self, frame: Any) -> None:
+        self._frame_last_transition_ts[id(frame)] = time.monotonic()
+        self._log_frame_lifecycle("attached", frame)
+        self._on_frame_ready(frame)
+
+    def _on_frame_navigated(self, frame: Any) -> None:
+        self._frame_last_transition_ts[id(frame)] = time.monotonic()
+        self._log_frame_lifecycle("navigated", frame)
+        self._on_frame_ready(frame)
+
+    def _on_frame_detached(self, frame: Any) -> None:
+        self._log_frame_lifecycle("detached", frame)
+
+    def _consume_payload_safe_sync(
+        self, payload: dict[str, Any], src_page: Any | None = None, src_frame: Any | None = None
+    ) -> None:
         try:
-            self._consume_payload_sync(payload, src_page)
+            self._consume_payload_sync(payload, src_page, src_frame)
         except Exception as exc:  # noqa: BLE001
             raw_action = payload.get("action") if isinstance(payload, dict) else {}
             action = str((raw_action or {}).get("action") or "")
@@ -356,11 +492,18 @@ class RecordingSession:
                 return
             src_page = source.get("page") if isinstance(source, dict) else None
             src_frame = source.get("frame") if isinstance(source, dict) else None
-            frame_context, frame_offset = _frame_context_and_offset_sync(src_frame)
-            if frame_context:
-                payload_copy["frame"] = frame_context
-                payload_copy["_frame_offset"] = frame_offset
-            self._pending_payloads.put((payload_copy, src_page))
+            # Do NOT call _frame_context_and_offset_sync (or any other Playwright sync-API
+            # call) here — this callback is invoked by Playwright's dispatcher while
+            # delivering an expose_binding call, and a nested blocking call to the same
+            # dispatcher from inside that delivery is a reentrancy hazard that can deadlock
+            # forever with no exception raised (confirmed: every captured iframe-sourced
+            # event across many real HubSpot recordings silently vanished right here, since
+            # this was the only extra Playwright call in the path from browser to
+            # events.jsonl for any event with a non-top-level source frame — top-level
+            # clicks, which skip this call entirely, always worked fine). Deferred to
+            # _consume_payload_sync, which runs from the plain pump-loop drain, not from
+            # inside a callback the dispatcher is still in the middle of delivering.
+            self._pending_payloads.put((payload_copy, src_page, src_frame))
             self._last_enqueue_at = time.monotonic()
         except Exception as exc:  # noqa: BLE001 — recorder must never crash from page callback
             self.binding_errors.append(f"binding_error: {exc!s}")
@@ -378,7 +521,8 @@ class RecordingSession:
                 continue
 
     def _write_diagnostics_sync(self, session_dir: Path) -> None:
-        """Write binding_errors, traces, and a frame tree snapshot to recorder_diag.json."""
+        """Write binding_errors, traces, a frame tree snapshot, and the event-driven frame
+        lifecycle log to recorder_diag.json."""
         frame_tree: list[dict] = []
         try:
             page = self._active_page_sync()
@@ -412,6 +556,7 @@ class RecordingSession:
             "traces": self._traces,
             "frame_tree": frame_tree,
             "frame_snapshots": self._frame_snapshots,
+            "frame_lifecycle": self._frame_lifecycle,
         }
         try:
             out.write_text(json.dumps(diag, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -430,7 +575,18 @@ class RecordingSession:
             return False
         return _typing_target_key(prev) == _typing_target_key(curr)
 
-    def _consume_payload_sync(self, payload: dict[str, Any], src_page: Any | None = None) -> None:
+    def _consume_payload_sync(
+        self, payload: dict[str, Any], src_page: Any | None = None, src_frame: Any | None = None
+    ) -> None:
+        # Frame-chain/geometry extraction needs Playwright sync-API calls (walking the
+        # ancestor chain via frame.evaluate()); safe here since this runs from the plain
+        # pump-loop drain, never from inside the expose_binding callback that first received
+        # this payload (see _binding_sink_sync for why it can't be done there).
+        if src_frame is not None:
+            frame_context, frame_offset = _frame_context_and_offset_sync(src_frame)
+            if frame_context:
+                payload["frame"] = frame_context
+                payload["_frame_offset"] = frame_offset
         session_dir = self.data_root / "sessions" / self.session_id
         session_dir.mkdir(parents=True, exist_ok=True)
         page_for_visuals = src_page or self._active_page_sync()
@@ -640,7 +796,7 @@ class RecordingSession:
     def _enqueue_synthetic(self, kind: str, value_str: str) -> None:
         try:
             payload = self._make_synthetic_payload(kind, value_str)
-            self._pending_payloads.put((payload, None))
+            self._pending_payloads.put((payload, None, None))
             self._last_enqueue_at = time.monotonic()
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"synthetic_event_error:{kind}: {exc!s}")
@@ -699,8 +855,9 @@ class RecordingSession:
         page.on("filechooser", self._on_file_chooser)
         page.on("framenavigated", lambda frame: self._on_page_navigated(page, frame))
         if not self.auth_mode:
-            page.on("frameattached", self._on_frame_ready)
-            page.on("framenavigated", self._on_frame_ready)
+            page.on("frameattached", self._on_frame_attached)
+            page.on("framenavigated", self._on_frame_navigated)
+            page.on("framedetached", self._on_frame_detached)
 
     def _on_context_page(self, page: Any) -> None:
         self._page = page
@@ -779,8 +936,11 @@ class RecordingSession:
                 if not self.auth_mode:
                     for page in self._open_pages_sync():
                         try:
+                            self._log_bridge_attempt("<pump>", "tick_frame_check_begin")
                             self._ensure_bridge_installed_sync(page)
+                            self._log_bridge_attempt("<pump>", "tick_page_eval_begin")
                             page.evaluate("() => 0")
+                            self._log_bridge_attempt("<pump>", "tick_page_eval_done")
                         except Exception as exc:  # noqa: BLE001
                             self.binding_errors.append(f"pump_error: {exc!s}")
                     # Take a lightweight frame topology snapshot every 5th tick (~1 s)
@@ -808,9 +968,13 @@ class RecordingSession:
                 # window flicker during active login. This periodic call is also the
                 # safety net that keeps a recent save on disk before the risky moment of
                 # the browser actually closing (see the connection guard in that method).
+                self._log_bridge_attempt("<pump>", "tick_autosave_begin")
                 self._autosave_storage_state_sync()
+                self._log_bridge_attempt("<pump>", "tick_autosave_done")
+                self._log_bridge_attempt("<pump>", "tick_page_url_sweep_begin")
                 for page in self._open_pages_sync():
                     self._remember_page_url_sync(page)
+                self._log_bridge_attempt("<pump>", "tick_page_url_sweep_done")
                 if self.wait_for_url and not self.reached_wait_url:
                     try:
                         for page in self._open_pages_sync():
@@ -825,8 +989,8 @@ class RecordingSession:
                         pass
                 if not self.auth_mode:
                     try:
-                        payload, src_page = self._pending_payloads.get_nowait()
-                        self._consume_payload_safe_sync(payload, src_page)
+                        payload, src_page, src_frame = self._pending_payloads.get_nowait()
+                        self._consume_payload_safe_sync(payload, src_page, src_frame)
                     except Empty:
                         pass
                 if not self._browser.is_connected() or not self._open_pages_sync():
@@ -838,6 +1002,24 @@ class RecordingSession:
                     # recording on a single bad tick; a real close/crash still confirms
                     # well within the grace window.
                     self._no_pages_streak += 1
+                    # Log the streak's shape (not just its eventual give-up) — on the first tick
+                    # and then every ~10th tick while it continues — so recorder_diag.json shows
+                    # how long a "pages look gone" stretch actually lasted even when it resolves
+                    # on its own well under the give-up threshold, instead of being invisible.
+                    if self._no_pages_streak == 1 or self._no_pages_streak % 10 == 0:
+                        try:
+                            connected = self._browser.is_connected()
+                        except Exception as exc:  # noqa: BLE001
+                            connected = f"raised: {exc!s}"
+                        if len(self._frame_lifecycle) < 2000:
+                            self._frame_lifecycle.append({
+                                "kind": "no_pages_tick",
+                                "url": self.current_url,
+                                "parent_url": None,
+                                "ts": int(time.time() * 1000),
+                                "streak": self._no_pages_streak,
+                                "browser_connected": connected,
+                            })
                     if self._no_pages_streak >= _NO_PAGES_GRACE_TICKS:
                         try:
                             still_connected = self._browser.is_connected()
@@ -850,6 +1032,14 @@ class RecordingSession:
                         self.ended_by_user = True
                         break
                 else:
+                    if self._no_pages_streak > 0 and len(self._frame_lifecycle) < 2000:
+                        self._frame_lifecycle.append({
+                            "kind": "no_pages_resolved",
+                            "url": self.current_url,
+                            "parent_url": None,
+                            "ts": int(time.time() * 1000),
+                            "streak": self._no_pages_streak,
+                        })
                     self._no_pages_streak = 0
                 time.sleep(0.2)
 
@@ -867,9 +1057,9 @@ class RecordingSession:
                     drained = 0
                     try:
                         while True:
-                            payload, src_page = self._pending_payloads.get_nowait()
+                            payload, src_page, src_frame = self._pending_payloads.get_nowait()
                             drained += 1
-                            self._consume_payload_safe_sync(payload, src_page)
+                            self._consume_payload_safe_sync(payload, src_page, src_frame)
                     except Empty:
                         pass
                     elapsed = time.monotonic() - shutdown_start

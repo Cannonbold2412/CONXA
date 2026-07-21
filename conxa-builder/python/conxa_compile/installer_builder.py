@@ -400,14 +400,19 @@ def _render_nsis_script(
     icon_directive = f'Icon "{icon_path}"' if icon_path else ""
 
     # Environment-scoped install so a dev-built installer lands in its own tree and
-    # registers a distinct MCP server, letting Dev and Prod agents run side by side
-    # under Claude Desktop. The Studio's CONXA_ENV decides this at build time.
+    # registers a distinct MCP server key, letting Dev and Prod agents run side by
+    # side under Claude Desktop. The Studio's CONXA_ENV decides this at build time.
+    # The MCP server key itself (conxa vs conxa-dev) is no longer chosen here: NSIS
+    # just passes CONXA_ENV through to `conxa-runtime.exe register-mcp`, which
+    # derives the key the same way on both register and unregister — see
+    # runtime/mcp_register.js. That is what makes install/uninstall structurally
+    # unable to drift apart (see the dev-channel uninstall bug this replaced).
     from conxa_core.config import active_environment
     env = active_environment()
     if env == "dev":
-        install_subdir, mcp_name, channel = ".conxa-dev", "conxa-dev", "dev"
+        install_subdir, channel = ".conxa-dev", "dev"
     else:
-        install_subdir, mcp_name, channel = ".conxa", "conxa", "stable"
+        install_subdir, channel = ".conxa", "stable"
 
     rendered = (
         template
@@ -419,7 +424,6 @@ def _render_nsis_script(
         .replace("{{STAGING_DIR}}", str(tmp))
         .replace("{{ICON_DIRECTIVE}}", icon_directive)
         .replace("{{INSTALL_SUBDIR}}", install_subdir)
-        .replace("{{MCP_SERVER_NAME}}", mcp_name)
         .replace("{{CONXA_ENV}}", env)
         .replace("{{CONXA_UPDATE_CHANNEL}}", channel)
     )

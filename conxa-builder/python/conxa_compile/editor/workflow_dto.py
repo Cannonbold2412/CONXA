@@ -275,6 +275,15 @@ def collect_suggestions(steps: list[dict[str, Any]], policy: dict[str, Any]) -> 
                     message="No observed page change backs this step's required check — it only confirms the click did something, not what.",
                 )
             )
+        if isinstance(cw, dict) and cw.get("frame_chain_incomplete"):
+            items.append(
+                SuggestionItem(
+                    step_index=idx,
+                    severity="warn",
+                    code="frame_chain_incomplete",
+                    message="This step was recorded inside an iframe, but part of the frame chain had no usable identity signals and was dropped — it may run against the wrong part of the page or fail to find its target.",
+                )
+            )
         if destructive_compiler_step(skill_step_for_destructive_check(step), policy):
             if isinstance(cw, dict) and cw.get("destructive_low_anchor_count"):
                 items.append(

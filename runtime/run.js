@@ -116,7 +116,15 @@ function asArray(value) {
 // Frame roots are driven solely by identity_bundle.frame_chain (durability-ranked signals per
 // iframe level). Each frame signal selector is a CSS attribute selector (iframe[name=…] etc.),
 // so it feeds frameLocator() directly.
-function rootCandidates(page, step, inputs) {
+//
+// Async because it must actually VERIFY each iframe element exists (root.locator(selector).count())
+// before descending into it with frameLocator() — frameLocator() itself is lazy and happily hands
+// back a usable-looking FrameLocator for a selector that matches nothing, so relying on it alone
+// can never distinguish "the frame is gone/churned to a new identity" from "the frame exists and
+// has content" (confirmed: a synthetic test with a frame_chain selector matching no real iframe
+// still produced a non-empty roots array before this check was added, since frameLocator()
+// construction never fails on its own).
+async function rootCandidates(page, step, inputs) {
   const frameChain = asArray(asObject(step && step.identity_bundle).frame_chain);
   if (!frameChain.length) return [page];
 
@@ -129,20 +137,37 @@ function rootCandidates(page, step, inputs) {
     for (const root of roots) {
       if (!root || typeof root.frameLocator !== "function") continue;
       for (const s of sigs) {
-        next.push(root.frameLocator(interpolate(String(s.selector), inputs)));
+        const selector = interpolate(String(s.selector), inputs);
+        let exists = false;
+        try { exists = (await root.locator(selector).count()) > 0; } catch (_) { exists = false; }
+        if (!exists) continue;
+        next.push(root.frameLocator(selector));
       }
     }
     roots = next;
     if (!roots.length) break;
   }
 
-  return roots.length ? roots : [page];
+  // A non-empty frame_chain that resolved to zero roots means the containing iframe itself
+  // could not be located (e.g. its identifying attribute churned to a new value on reattach).
+  // This must NOT silently fall back to the top-level page — a same-selector element there
+  // could be wrongly acted on in place of a target that actually lives in a frame we lost
+  // track of. Return [] (distinct from the "no frame_chain at all" case above, which correctly
+  // returns [page]) so callers can diagnose "frame not found" instead of a generic miss.
+  return roots;
 }
 
-function locatorCandidates(page, step, inputs, selector) {
+// True only when the step's own frame_chain exists but rootCandidates() came back empty — i.e.
+// the frame lookup itself failed, not just "no frame_chain to resolve" (that returns [page]).
+function isFrameNotFound(step, roots) {
+  return asArray(asObject(step && step.identity_bundle).frame_chain).length > 0 && roots.length === 0;
+}
+
+async function locatorCandidates(page, step, inputs, selector) {
   const resolved = interpolate(selector || "", inputs);
   if (!resolved) return [];
-  return rootCandidates(page, step, inputs).map(root => root.locator(resolved));
+  const roots = await rootCandidates(page, step, inputs);
+  return roots.map(root => root.locator(resolved));
 }
 
 // Sentinel selector marking "resolve the step's primary target via identity_bundle.signals".
@@ -159,7 +184,13 @@ async function resolveStep(page, step, inputs) {
       { recompileRequired: true },
     );
   }
-  const roots = rootCandidates(page, step, inputs);
+  const roots = await rootCandidates(page, step, inputs);
+  if (isFrameNotFound(step, roots)) {
+    throw Object.assign(
+      new Error("Containing frame could not be located (identity may have changed)"),
+      { frameNotFound: true },
+    );
+  }
   const map = await gatherCandidates(roots, signals, interpolate, inputs);
   const fp = bundleFingerprint(bundle);
   const result = resolveSignals(signals, fp, { queryAll: sel => map[sel] || [] }, {});
@@ -223,8 +254,17 @@ async function validateOverrideSelector(page, step, inputs) {
   const selector = interpolate(step._explicit_selector || "", inputs);
   if (!selector) return { valid: false, reason: "missing-selector", candidates: [] };
 
+  const roots = await rootCandidates(page, step, inputs);
+  if (isFrameNotFound(step, roots)) {
+    // Distinct from "no-match": the agent's selector was never even tried, because the
+    // containing frame itself couldn't be located — telling the agent "no element matched"
+    // here would be misleading (it would keep proposing element selectors forever, when the
+    // real problem is the frame is gone/changed identity).
+    return { valid: false, reason: "frame-not-found", candidates: [] };
+  }
+
   const descriptors = [];
-  for (const root of rootCandidates(page, step, inputs)) {
+  for (const root of roots) {
     let all;
     try { all = await root.locator(selector).all(); } catch (_) { continue; }
     for (const item of all) {
@@ -285,10 +325,13 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
     // string-mode's unguarded .first().
     const validation = await validateOverrideSelector(page, step, inputs);
     if (!validation.valid) {
-      throw Object.assign(
-        new Error(validation.reason === "no-match"
+      const message = validation.reason === "frame-not-found"
+        ? "The containing frame/iframe could not be located — cannot validate an element selector inside it"
+        : validation.reason === "no-match"
           ? "Agent recovery selector matched no element on the page"
-          : "Agent recovery selector was ambiguous (no candidate cleared the uniqueness margin)"),
+          : "Agent recovery selector was ambiguous (no candidate cleared the uniqueness margin)";
+      throw Object.assign(
+        new Error(message),
         { overrideValidationFailed: true, overrideReason: validation.reason, overrideCandidates: validation.candidates },
       );
     }
@@ -296,8 +339,8 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
   } else {
     // Explicit recovery selector (PRIMARY + _explicit_selector, non-agent) or plain string mode.
     candidates = selector === PRIMARY
-      ? locatorCandidates(page, step, inputs, step._explicit_selector)
-      : locatorCandidates(page, step, inputs, selector);
+      ? await locatorCandidates(page, step, inputs, step._explicit_selector)
+      : await locatorCandidates(page, step, inputs, selector);
   }
   if (!candidates.length) throw new Error("Missing selector");
 
@@ -321,7 +364,7 @@ async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, tim
   if (!src || !dst) throw new Error("Missing selector");
 
   let lastErr = null;
-  for (const root of rootCandidates(page, step, inputs)) {
+  for (const root of await rootCandidates(page, step, inputs)) {
     try {
       const srcLoc = root.locator(src);
       const dstLoc = root.locator(dst);
@@ -340,7 +383,7 @@ async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, tim
 
 async function locatorEvaluateAll(page, step, inputs, selector, arg, fn) {
   let lastErr = null;
-  for (const locator of locatorCandidates(page, step, inputs, selector)) {
+  for (const locator of await locatorCandidates(page, step, inputs, selector)) {
     try {
       return await locator.evaluateAll(fn, arg);
     } catch (err) {
@@ -489,7 +532,7 @@ async function walkHoverChain(page, step, inputs) {
   const chain = asArray(asObject(step.handler_hints).hover_chain)
     .filter(sig => sig && sig.selector)
     .sort((a, b) => (b.durability || 0) - (a.durability || 0));
-  const roots = rootCandidates(page, step, inputs);
+  const roots = await rootCandidates(page, step, inputs);
   for (const sig of chain) {
     try {
       for (const root of roots) {
@@ -551,7 +594,7 @@ async function probePresent(page, probeSpec, inputs, timeoutMs) {
   }
   const selector = baseSelector(spec, inputs);
   if (!selector) return false;
-  const candidates = locatorCandidates(page, spec, inputs, selector);
+  const candidates = await locatorCandidates(page, spec, inputs, selector);
   if (!candidates.length) return false;
   return pollPositive(async () => {
     for (const locator of candidates) {
@@ -774,7 +817,7 @@ const HANDLERS = {
       try {
         const probeSpec = { selector };
         if (!(await probePresent(page, probeSpec, inputs, timeout))) continue;
-        const locator = locatorCandidates(page, probeSpec, inputs, selector)[0];
+        const locator = (await locatorCandidates(page, probeSpec, inputs, selector))[0];
         if (!locator) continue;
         await locator.first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
         return;
@@ -900,7 +943,19 @@ async function pollNegative(checkAbsentFn, timeoutMs) {
   }
 }
 
-async function evaluateAssertion(page, a, inputs, baseline) {
+// Presence-style locator check across every candidate frame root — true as soon as ANY root has
+// a match. Used for selector_present/text_present, where the target is expected to exist
+// SOMEWHERE among the roots (usually just [page], or the step's resolved frame chain).
+async function anyRootHasMatch(roots, target) {
+  for (const root of roots) {
+    try {
+      if ((await root.locator(target).count()) > 0) return true;
+    } catch (_) { /* try next root */ }
+  }
+  return false;
+}
+
+async function evaluateAssertion(roots, page, a, inputs, baseline) {
   const type = String(a.type || "").toLowerCase();
   const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
   const required = a.required !== false;
@@ -914,24 +969,29 @@ async function evaluateAssertion(page, a, inputs, baseline) {
     } else if (type === "url_pattern" || type === "url") {
       ok = !target || await pollPositive(() => new RegExp(target).test(page.url()), timeout);
     } else if (type === "selector_present") {
-      // Playwright's own waitFor is already a web-first poll — no extra wrapping needed.
-      await page.locator(target).first().waitFor({ state: "attached", timeout });
-      ok = true;
+      ok = await pollPositive(() => anyRootHasMatch(roots, target), timeout);
     } else if (type === "selector_absent") {
-      ok = await pollNegative(async () => (await page.locator(target).count()) === 0, timeout);
+      // Absent must hold in EVERY root, not just one — otherwise a root where it never existed
+      // would trivially satisfy "absent" while it's still very much present in another.
+      ok = await pollNegative(async () => !(await anyRootHasMatch(roots, target)), timeout);
     } else if (type === "text_present") {
-      ok = await pollPositive(async () => (await page.locator(`text=${JSON.stringify(target)}`).count()) > 0, timeout);
+      ok = await pollPositive(() => anyRootHasMatch(roots, `text=${JSON.stringify(target)}`), timeout);
     } else if (type === "text_absent") {
-      ok = await pollNegative(async () => (await page.locator(`text=${JSON.stringify(target)}`).count()) === 0, timeout);
+      ok = await pollNegative(async () => !(await anyRootHasMatch(roots, `text=${JSON.stringify(target)}`)), timeout);
     } else if (type === "value_equals") {
       const expected = interpolate(String(a.expected ?? ""), inputs);
       const normExpected = normText(expected);
       ok = await pollPositive(async () => {
-        const actual = await page.locator(target).first().inputValue({ timeout: VERIFY_POLL_INTERVAL_MS });
-        const normActual = normText(actual);
-        // Normalized-exact match, else fall back to "field contains expected" — tolerates
-        // masked/formatted fields (phone, currency) whose raw value never equals the typed text.
-        return normActual === normExpected || (!!normExpected && normActual.includes(normExpected));
+        for (const root of roots) {
+          try {
+            const actual = await root.locator(target).first().inputValue({ timeout: VERIFY_POLL_INTERVAL_MS });
+            const normActual = normText(actual);
+            // Normalized-exact match, else fall back to "field contains expected" — tolerates
+            // masked/formatted fields (phone, currency) whose raw value never equals the typed text.
+            if (normActual === normExpected || (!!normExpected && normActual.includes(normExpected))) return true;
+          } catch (_) { /* try next root */ }
+        }
+        return false;
       }, timeout);
     } else if (type === "state_changed") {
       // No compile-time target — confirms the action produced SOME observable effect (URL,
@@ -961,13 +1021,22 @@ async function verifyStep(page, step, inputs, baseline = null) {
   const assertions = stepAssertions(step);
   if (!assertions.length) return { pass: true, channel: "none", evidence: "no-assertions", results: [] };
 
+  // A post-condition for a step whose action happened inside an iframe is almost always about
+  // that same iframe (a confirmation message, a field's new value, ...) — resolve assertions
+  // against the step's own frame chain, not blindly the top-level page. Unlike action resolution
+  // (rootCandidates/resolveStep), a broken frame lookup here falls back to [page] rather than
+  // failing outright: verification has no "wrong click" risk, only a "checked the wrong document"
+  // risk, which naturally surfaces as a failed assertion rather than corrupting page state.
+  const frameRoots = await rootCandidates(page, step, inputs);
+  const roots = frameRoots.length ? frameRoots : [page];
+
   // Every assertion is evaluated — not just up to the first required failure — so a failed step
   // carries a full audit of what held and what didn't (advisory included). This is the dataset the
   // fleet dashboard needs to see an assertion decaying before it becomes a hard failure.
   const results = [];
   let failing = null;
   for (const a of assertions) {
-    const result = await evaluateAssertion(page, a, inputs, baseline);
+    const result = await evaluateAssertion(roots, page, a, inputs, baseline);
     results.push(result);
     if (!result.ok && result.required && !failing) failing = result;
   }
@@ -1139,7 +1208,15 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
   }
   try {
     if (remedy === "scroll-into-view" && primarySelector) {
-      await page.locator(primarySelector).first().scrollIntoViewIfNeeded({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+      // Scroll within the step's own resolved frame, not blindly the top-level page — a
+      // selector match at top level (if any) is a different element than the one that's
+      // actually out of view inside the iframe. If the frame chain itself can't be resolved
+      // there's nothing sensible to scroll; fall through and let the retry below surface the
+      // real failure instead of scrolling the wrong document.
+      const scrollRoots = await rootCandidates(page, step, inputs);
+      if (scrollRoots.length) {
+        await scrollRoots[0].locator(primarySelector).first().scrollIntoViewIfNeeded({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+      }
     } else if (remedy === "dismiss-overlay") {
       await page.keyboard.press("Escape").catch(() => {});
     } else if (remedy === "wait-stable" || remedy === "wait-enabled") {
@@ -1206,14 +1283,65 @@ async function maybeCapturePreStep(page, step) {
   return page.screenshot({ type: "jpeg", quality: 70, timeout: 1000 }).catch(() => null);
 }
 
+const FRAME_INVENTORY_CAP = 50;
+const FRAME_INVENTORY_PER_ROOT_CAP = 25;
+
+// Frame-scoped counterpart of pageScripts.domInventory() — for a step whose target lives inside
+// an iframe, document.querySelectorAll (what domInventory runs) cannot see into it at all, so
+// the Tier 3+ agent's "ground truth" inventory would silently omit everything in that frame.
+// Gathers the same kind of interactive-element summary, scoped to the step's own resolved frame
+// chain, using the same Locator-based pattern resolve_adapter.js already uses for candidate
+// gathering (root.locator(...).all() + per-item .evaluate()) — FrameLocator has no direct
+// raw-Frame conversion, so this is the correct mechanism, not a workaround.
+// Returns null when the step has no frame_chain (nothing extra to gather) or the frame couldn't
+// be located at all (a distinct "frame not found" condition surfaced separately — see
+// isFrameNotFound/frameNotFound — not silently reported as an empty inventory).
+async function frameScopedInventory(page, step, inputs) {
+  const frameChain = asArray(asObject(step && step.identity_bundle).frame_chain);
+  if (!frameChain.length) return null;
+
+  const roots = await rootCandidates(page, step, inputs);
+  if (!roots.length) return null;
+
+  const seen = new Set();
+  const out = [];
+  for (const root of roots) {
+    if (out.length >= FRAME_INVENTORY_CAP) break;
+    let items;
+    try { items = await root.locator(pageScripts.INVENTORY_SELECTOR).all(); } catch (_) { continue; }
+    for (const item of items.slice(0, FRAME_INVENTORY_PER_ROOT_CAP)) {
+      if (out.length >= FRAME_INVENTORY_CAP) break;
+      let entry;
+      try { entry = await item.evaluate(pageScripts.inventoryEntryForElement); } catch (_) { continue; }
+      if (!entry) continue;
+      const key = `${entry.tag}|${entry.type || ""}|${entry.text || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
 // Capture the interactive-element inventory at the exact moment of step failure, before the
 // T1/T2 recovery cascade runs (~12 s). Transient elements like open dropdown menus auto-close
 // during the cascade, leaving _buildFailureResponse with an empty DOM scan. Storing the snapshot
 // on the error object lets _buildFailureResponse prefer it over a stale post-cascade query.
-async function captureEarlyDomSnapshot(page) {
+// Merges in the frame-scoped inventory (tagged in_frame: true) when the step targets an iframe.
+async function captureEarlyDomSnapshot(page, step, inputs) {
+  let top;
   try {
-    return await page.evaluate(pageScripts.domInventory);
-  } catch (_) { return null; }
+    top = await page.evaluate(pageScripts.domInventory);
+  } catch (_) {
+    return null;
+  }
+  if (!Array.isArray(top)) return null;
+  let frameEntries = null;
+  try { frameEntries = await frameScopedInventory(page, step, inputs); } catch (_) { frameEntries = null; }
+  if (Array.isArray(frameEntries) && frameEntries.length) {
+    return [...top, ...frameEntries.map(e => ({ ...e, in_frame: true }))];
+  }
+  return top;
 }
 
 function stepFailure(step, stepIndex, cause, preShot) {
@@ -1236,6 +1364,7 @@ function stepFailure(step, stepIndex, cause, preShot) {
       err.overrideReason = cause.overrideReason;
       err.overrideCandidates = cause.overrideCandidates;
     }
+    if (cause.frameNotFound) err.frameNotFound = true;
   }
   return err;
 }
@@ -1312,7 +1441,7 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       continue;
     } catch (err) {
       primaryErr = err;
-      primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page);
+      primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page, step, inputs);
     }
 
     const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline);
@@ -1377,4 +1506,6 @@ module.exports = {
   probePresent,
   validateOverrideSelector,
   stepAssertions,
+  rootCandidates,
+  frameScopedInventory,
 };

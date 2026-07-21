@@ -197,6 +197,17 @@ async function _syncCompany(skillPacksDir, company, log) {
   fs.writeFileSync(packTmp, JSON.stringify(pack, null, 2));
   fs.renameSync(packTmp, packPath);
 
+  // Best-effort: keeps each registered agent host's discoverability file
+  // (SKILL.md, AGENTS.md, …) in sync with the company's current skill list.
+  // Never fails the sync itself over this — registration already succeeded
+  // and skills are already usable even if a host's instructions file couldn't
+  // be updated this round.
+  try {
+    await require("./durable_context").updateDurableContext(company, serverSkillNames);
+  } catch (e) {
+    log(`[sync:warn] ${company} durable-context update failed — ${e.message}`);
+  }
+
   if (activated.length > 0) {
     log(`[sync:status] ${company} updated (${activated.length} skill${activated.length !== 1 ? "s" : ""}: ${activated.join(", ")})`);
   } else if (changed.length === 0) {

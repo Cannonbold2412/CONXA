@@ -9,10 +9,14 @@
     "start": "node server.js",
     "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node24-win-x64 --output dist/conxa-runtime.exe --public --no-bytecode --public-packages \"*\"",
     "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node24-mac-x64 --output dist/conxa-runtime-mac --public --no-bytecode --public-packages \"*\"",
-    "build:all": "npm run build:win && npm run build:mac"
+    "build:all": "npm run build:win && npm run build:mac",
+    "test": "node --test"
   },
   "pkg": {
-    "targets": ["node24-win-x64", "node24-mac-x64"],
+    "targets": [
+      "node24-win-x64",
+      "node24-mac-x64"
+    ],
     "outputPath": "dist/",
     "assets": [
       "node_modules/playwright-core/browsers.json"
@@ -27,9 +31,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "playwright": "1.59.0",
+    "jsonc-parser": "^3.3.1",
     "keytar": "^7.9.0",
-    "semver": "^7.6.0"
+    "playwright": "1.59.0",
+    "semver": "^7.6.0",
+    "yaml": "^2.9.0"
   },
   "engines": {
     "node": ">=20"

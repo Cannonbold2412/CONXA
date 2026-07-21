@@ -289,6 +289,7 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Auth (Cloud API) | `conxa-cloud/backend/app/api/security.py` — Clerk JWT via PyJWT + JWKS |
 | Telemetry | `runtime/tracker.js` → `conxa-cloud/backend/app/api/tracking_routes.py` |
 | Skill pack sync | `runtime/sync.js` ↔ `app/api/skillpack_update_routes.py` |
+| MCP registration into agent hosts | `runtime/mcp_register.js` (`register-mcp`/`unregister-mcp` subcommands, dispatched from `bootstrap.js`) + `mcp_hosts.js`/`mcp_hosts_toml.js`/`mcp_hosts_yaml.js` (per-host tables) + `config_edit.js`/`config_edit_toml.js`/`config_edit_yaml.js` (atomic, ownership-checked writers) + `durable_context.js` (post-sync discoverability files) — see `docs/TRD.md` §4.2a |
 | Runtime two-layer bootstrap | `runtime/bootstrap.js` — min_host check, app-layer load, `.bak` fallback |
 | Host / app update manifests | `conxa-cloud/backend/app/api/updates_routes.py` (manifest_version 2; deps: `conxa-runtime`, `conxa-app`) |
 | Studio sandbox for workflow tests | `conxa-builder/python/conxa_compile/conxa_runtime.py` — stages host exe + app layer under `sandbox/.conxa/` |
@@ -327,6 +328,7 @@ These are non-negotiable. Do not work around them.
 - **Resolver never blindly picks `candidate[0]`.** `resolver.js` requires the winning candidate's margin over the runner-up to clear `uniqueMargin` (default 0.15); otherwise it falls through to the next signal. Do not add shortcut paths that skip this gate.
 - **LLM does not write selector strings on the primary compile path.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators when a workflow is first compiled. LLM is retained for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph. Two narrow, user-initiated re-compile exceptions exist, neither part of the primary compiler: the 1-click fix API (`compiler/patch.py::_regenerate_compiled_selectors`, via `llm/selector_regeneration.py`), which re-runs LLM-assisted selector generation against the original DOM snapshot when a user manually re-targets a step's element in the editor; and the Human Edit re-target wizard's "draw a new region" path (`editor/retarget.py` → `llm/region_selector_vision.py`, task `region_selector`), which uses a vision LLM — screenshot with the drawn region highlighted, plus the recorded DOM — because no recording stores per-element geometry a text prompt could resolve a drawn region against.
 - **App-layer min_host is enforced at load time.** `bootstrap.js` reads `version.json` from `conxa-app/` and refuses to load if `min_host` > current host semver. Do not bypass this check when bumping the app layer.
+- **MCP host-config editing lives only in the runtime, never in the installer.** `conxa-runtime.exe register-mcp`/`unregister-mcp` (`runtime/mcp_register.js` + `mcp_hosts*.js` + `config_edit*.js`) is the sole place that reads or writes an AI agent host's config file. NSIS invokes the subcommand and nothing more — do not reintroduce config-editing logic (PowerShell or otherwise) into `setup.nsi.tmpl`. This is what makes install and uninstall derive the registration key (`conxa` vs `conxa-dev`) from the same source instead of two values that can drift apart — see MCP-4 in `TODO.md` for the bug that shipped when they didn't.
 
 ---
 
@@ -380,4 +382,18 @@ Keep appending to `FIX.md` after every prompt as usual. When `FIX.md` crosses a 
 
 For everything else — adding a feature, fixing a flow, shipping a phase — update the technical docs (`TRD.md`, `Backend-Schema.md`, `App-Flow.md`, `Implementation-Plan.md`) and leave the PRD alone.
 
-After every prompt update the FIX.md file with a summary of the changes made, including any new features, bug fixes, or improvements. This will help keep track of the evolution of the codebase and provide context for future developers. But it should be in easy language, not technical. The goal is to make it easy for anyone to understand what has changed and why.
+After every prompt, add an entry to FIX.md summarizing what changed. Write it so a non-technical person (a founder, a salesperson, a new hire) understands it on first read — no jargon, no file paths, no function names, no acronyms.
+
+Rules for each entry:
+- 2-4 short sentences, plain words, one idea per sentence.
+- Say what the problem was (in real-world terms — "the button did nothing when clicked", not "handler was unbound"), what changed, and why it matters to a user.
+- Use an analogy if it helps ("like a light switch that was wired to the wrong bulb").
+- No code names, class names, or filenames. If you must reference a screen or feature, use its plain product name (e.g., "the Publish page", not `publish.py`).
+- End with a one-line "— YYYY-MM-DD" date, as today.
+
+Example entry:
+> **Fixed the workflow editor freezing when renaming a step — 2026-07-16**
+> Renaming a step in the editor used to lock up the screen. Now it saves instantly. This was breaking anyone trying to fix typos in their recorded workflows.
+
+Bad entry (too technical — do not do this):
+> Fixed race condition in `patch.py::_regenerate_compiled_selectors` where debounce wasn't awaited.
