@@ -12,8 +12,18 @@ from conxa_compile.compiler.patch import deep_merge
 from conxa_compile.compiler.selector_filters import selector_passes_filters
 from conxa_compile.compiler.wait_for_shape import destructive_wait_for_is_non_none
 from conxa_compile.editor.action_registry import action_spec, is_supported_action
+from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE, LOOSE_BRACE_RE
 from conxa_compile.editor.step_view import skill_step_for_destructive_check
 from conxa_compile.policy.intent_ontology import sanitize_intent_token
+
+
+def _validate_value_placeholders(value: str) -> None:
+    """Reject a step-value edit containing a malformed {{...}} attempt (hyphens, digits-first,
+    empty, etc.) rather than silently persisting text `interpolate()` will never substitute
+    (see CONXA replace-variable audit finding M5/C3)."""
+    for match in LOOSE_BRACE_RE.finditer(value):
+        if not FULL_PLACEHOLDER_RE.match(match.group(0)):
+            raise ValueError(f"invalid_placeholder_syntax:{match.group(0)}")
 
 
 def _merge_step_shell(step: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +56,15 @@ def _merge_step_shell(step: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
         out["signals"] = signals
     if "value" in patch:
         out["value"] = patch["value"]
+        # Keep input_binding in sync with the edited value instead of leaving it stale: a
+        # human edit that turns {{old_name}} into {{new_name}} (or into plain literal text)
+        # must not leave input_binding still pointing at "old_name" (audit finding L0).
+        new_value = patch["value"]
+        if isinstance(new_value, str):
+            full_match = FULL_PLACEHOLDER_RE.match(new_value.strip())
+            out["input_binding"] = full_match.group(1) if full_match else None
+        else:
+            out["input_binding"] = None
     if "url" in patch and isinstance(patch["url"], str):
         out["url"] = str(patch["url"]).strip()
     return out
@@ -172,6 +191,9 @@ def validate_editor_patch(
     """
     if in_branch_body and ("recovery" in patch or "validation" in patch):
         raise ValueError("branch_body_step_cannot_patch_recovery_or_validation")
+
+    if "value" in patch and isinstance(patch.get("value"), str):
+        _validate_value_placeholders(patch["value"])
 
     if "frame" in patch:
         _validate_frame_patch(patch.get("frame"))

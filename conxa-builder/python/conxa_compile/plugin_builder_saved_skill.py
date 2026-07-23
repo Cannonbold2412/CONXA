@@ -33,8 +33,8 @@ _LOGIN_MARKERS = frozenset(
 )
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_PLACEHOLDER_RE = re.compile(r"^\{\{[a-zA-Z][a-zA-Z0-9_]*\}\}$")
-_PLACEHOLDER_NAME_RE = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}")
+from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE as _PLACEHOLDER_RE
+from conxa_compile.editor.placeholder_grammar import PLACEHOLDER_RE as _PLACEHOLDER_NAME_RE
 _TEXT_SELECTOR_RE = re.compile(r"^text=(?P<quote>['\"]?)(?P<text>.+?)(?P=quote)$")
 
 
@@ -483,6 +483,9 @@ def _normalize_saved_skill_inputs(inputs: list[Any]) -> list[dict[str, Any]]:
         options = raw.get("options")
         if isinstance(options, list) and options:
             row["enum"] = [str(item) for item in options if str(item)]
+        default = raw.get("default")
+        if default is not None and str(default).strip():
+            row["default"] = default
         out.append(row)
     return out
 

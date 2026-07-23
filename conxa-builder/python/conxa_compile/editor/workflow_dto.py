@@ -183,7 +183,9 @@ def _screenshot_dto(
 
 def _parameter_bindings_from_step(step: dict[str, Any]) -> list[dict[str, Any]]:
     """Surface {{var}} usage in whitelisted string fields (read-only hints for UI)."""
-    pat = re.compile(r"\{\{([a-zA-Z][a-zA-Z0-9_]*)\}\}")
+    from conxa_compile.editor.placeholder_grammar import PLACEHOLDER_RE
+
+    pat = PLACEHOLDER_RE
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 

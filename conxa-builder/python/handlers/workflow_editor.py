@@ -275,6 +275,7 @@ class WorkflowEditorMixin:
         return result
 
     def cmd_update_workflow_inputs(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        import copy
         from conxa_core.storage.json_store import read_skill, write_skill
         from conxa_compile.editor.workflow_mutations import merge_skill_inputs
 
@@ -284,7 +285,12 @@ class WorkflowEditorMixin:
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
-        doc = merge_skill_inputs(doc, inputs, title)
+        snapshot = copy.deepcopy(doc)
+        try:
+            doc = merge_skill_inputs(doc, inputs, title)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Invalid variables: {exc}") from exc
+        self._push_undo(skill_id, snapshot)
         write_skill(skill_id, doc)
         return {"skill_id": skill_id, "ok": True}
 
@@ -300,10 +306,11 @@ class WorkflowEditorMixin:
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         self._push_undo(skill_id, copy.deepcopy(doc))
-        doc = replace_string_literals_in_skill_document(doc, find, replace_with)
+        doc, match_count = replace_string_literals_in_skill_document(doc, find, replace_with)
         write_skill(skill_id, doc)
         result = _skill_response(skill_id, doc)
         result.update(self._history_flags(skill_id))
+        result["match_count"] = match_count
         return result
 
     def cmd_undo_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:

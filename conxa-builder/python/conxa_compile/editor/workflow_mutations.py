@@ -13,8 +13,13 @@ from conxa_compile.compiler.action_policy import no_recovery_block
 from conxa_compile.compiler.patch import revalidate_step
 from conxa_compile.confidence.uncertainty import audit_reference
 from conxa_compile.editor.action_registry import action_spec, default_action_value, is_supported_action
+from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE, PLACEHOLDER_ID_PATTERN
 from conxa_compile.editor.workflow_dto import _build_reference_for_audit, collect_suggestions
 from conxa_compile.policy.bundle import get_policy_bundle
+
+import re
+
+_INPUT_ID_RE = re.compile(r"^" + PLACEHOLDER_ID_PATTERN + r"$")
 
 def validate_skill_document(document: dict[str, Any]) -> dict[str, Any]:
     policy = get_policy_bundle().data
@@ -337,7 +342,23 @@ def insert_step_after(document: dict[str, Any], action_kind: str, insert_after: 
     return doc
 
 
+def _validate_skill_inputs(inputs: list[dict[str, Any]]) -> None:
+    seen: set[str] = set()
+    for item in inputs:
+        if not isinstance(item, dict):
+            raise ValueError("input_must_be_object")
+        input_id = str(item.get("id") or "").strip()
+        if not input_id:
+            raise ValueError("input_id_required")
+        if not _INPUT_ID_RE.match(input_id):
+            raise ValueError(f"invalid_input_id:{input_id}")
+        if input_id in seen:
+            raise ValueError(f"duplicate_input_id:{input_id}")
+        seen.add(input_id)
+
+
 def merge_skill_inputs(document: dict[str, Any], inputs: list[dict[str, Any]], title: str | None) -> dict[str, Any]:
+    _validate_skill_inputs(inputs)
     doc = dict(document)
     doc["inputs"] = list(inputs)
     if title is not None:
@@ -350,25 +371,60 @@ def merge_skill_inputs(document: dict[str, Any], inputs: list[dict[str, Any]], t
     return doc
 
 
-def _deep_replace_string_values(value: Any, find: str, replace: str) -> Any:
-    """Return a structure copy with every string leaf updated via str.replace(find, replace)."""
-    if isinstance(value, str):
-        return value.replace(find, replace)
-    if isinstance(value, list):
-        return [_deep_replace_string_values(v, find, replace) for v in value]
-    if isinstance(value, dict):
-        return {k: _deep_replace_string_values(v, find, replace) for k, v in value.items()}
-    return value
+def _replace_in_step(step: dict[str, Any], find: str, replace: str) -> tuple[dict[str, Any], int]:
+    """Replace `find` with `replace` inside this step's own `value` field only (never
+    selectors/URLs/identity signals — audit finding C1), recursing into if_present branch
+    bodies. Skips a value that's already exactly one placeholder (`{{id}}`) so an unrelated
+    replace can't nest braces inside an existing binding (audit finding M3)."""
+    step = dict(step)
+    count = 0
+    val = step.get("value")
+    if isinstance(val, str) and find in val and not FULL_PLACEHOLDER_RE.match(val):
+        count += val.count(find)
+        step["value"] = val.replace(find, replace)
+    branch = step.get("branch")
+    if isinstance(branch, dict):
+        nested = branch.get("steps")
+        if isinstance(nested, list):
+            new_nested = []
+            for nested_step in nested:
+                if isinstance(nested_step, dict):
+                    nested_step, nested_count = _replace_in_step(nested_step, find, replace)
+                    count += nested_count
+                new_nested.append(nested_step)
+            branch = dict(branch)
+            branch["steps"] = new_nested
+            step["branch"] = branch
+    return step, count
 
 
-def replace_string_literals_in_skill_document(document: dict[str, Any], find: str, replace: str) -> dict[str, Any]:
-    """Replace a literal substring everywhere in the stored skill JSON (steps, inputs, meta, etc.)."""
+def replace_string_literals_in_skill_document(
+    document: dict[str, Any], find: str, replace: str
+) -> tuple[dict[str, Any], int]:
+    """Replace a literal substring inside every step's `value` field (the recorded user-typed
+    content) — never selectors, URLs, identity_bundle signals, or meta, which a blind
+    substring replace previously corrupted (audit finding C1). Returns (new_document,
+    match_count) so callers can surface a no-op or a large blast radius to the user."""
     if not isinstance(find, str) or not find:
         raise ValueError("find_must_be_nonempty")
     if not isinstance(replace, str):
         raise ValueError("replace_with_must_be_string")
-    new_doc = _deep_replace_string_values(dict(document), find, replace)
+    new_doc = dict(document)
+    skills = [dict(s) for s in (new_doc.get("skills") or [])]
+    match_count = 0
+    if skills:
+        block = dict(skills[0])
+        steps = list(block.get("steps") or [])
+        new_steps = []
+        for step in steps:
+            if isinstance(step, dict):
+                step, count = _replace_in_step(step, find, replace)
+                match_count += count
+            new_steps.append(step)
+        block["steps"] = new_steps
+        skills[0] = block
+    new_doc["skills"] = skills
     meta = dict(new_doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     new_doc["meta"] = meta
-    return new_doc
+    return new_doc, match_count
