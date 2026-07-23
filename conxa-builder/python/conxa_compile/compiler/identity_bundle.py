@@ -54,10 +54,15 @@ def generate_deterministic_signals(
 
     # 2. role + name (semantic-aria)
     role = str(semantic.get("role") or target.get("role") or "").strip()
+    # label_text stays last: it's the nearest external <label>'s text, not the element's
+    # own attribute, and can mis-capture a sibling's text (see runtime/run.js:1084-1093's
+    # a11yRecoveryName, which documents the same risk for its identical last-resort use).
     ax_name = (
         str(target.get("aria_label") or "")
         or str(target.get("name") or "")
         or str(target.get("inner_text") or "")[:80]
+        or str(target.get("placeholder") or "")
+        or str(target.get("label_text") or "")
     ).strip()
     if role and ax_name and role.lower() not in _EXCLUDED_ROLES:
         candidates.append(("role", to_playwright_grammar("role", role, ax_name)))

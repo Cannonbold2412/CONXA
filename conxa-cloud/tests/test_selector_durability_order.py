@@ -325,6 +325,82 @@ def test_signal_to_display_testid_roundtrip() -> None:
     )
 
 
+def test_role_signal_falls_back_to_placeholder_name() -> None:
+    """No aria_label/name/inner_text but a placeholder must still yield a role signal,
+    ranked above the xpath fallback — instead of degrading to positional xpath only.
+
+    Regression: a placeholder-only search input (hashed CSS classes, no aria-label/
+    name/label, e.g. HubSpot's contact search combobox) previously produced only a
+    durability-0.01 xpath since ax_name required aria_label/name/inner_text.
+    """
+    ev = {
+        "target": {"tag": "input", "role": "combobox", "placeholder": "Search"},
+        "semantic": {"role": "combobox"},
+        "selectors": {
+            "css": "",
+            "xpath": "/html[1]/body[1]/div[5]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/input[1]",
+        },
+        "anchors": [],
+        "snapshot": {},
+    }
+    signals = generate_deterministic_signals(ev)
+    role_signals = [s for s in signals if s.engine == "role"]
+    assert role_signals, f"Expected a role signal from placeholder fallback; got {[s.engine for s in signals]}"
+    assert role_signals[0].selector == 'internal:role=combobox[name="Search"]'
+    xpath_signals = [s for s in signals if s.engine == "xpath"]
+    assert xpath_signals, "Expected xpath signal to still be present as a fallback"
+    assert signals.index(role_signals[0]) < signals.index(xpath_signals[0]), (
+        "role (placeholder-derived) must rank above xpath"
+    )
+
+
+def test_role_signal_falls_back_to_label_text_name() -> None:
+    """No aria_label/name/inner_text/placeholder but a label_text must still yield a role
+    signal, ranked above the xpath fallback.
+
+    Regression: a phone-number input inside a popover (label association via a sibling
+    <label>, not aria-labelledby) previously produced only a durability-0.01 xpath since
+    ax_name didn't consider label_text at all. label_text must stay the LAST fallback
+    (after placeholder) since, unlike the element's own attributes, it can mis-capture a
+    sibling's text — see runtime/run.js's a11yRecoveryName, which documents the same risk.
+    """
+    ev = {
+        "target": {"tag": "input", "role": "textbox", "label_text": "Edit phone number"},
+        "semantic": {"role": "textbox"},
+        "selectors": {
+            "css": "",
+            "xpath": "/html[1]/body[1]/div[5]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/input[1]",
+        },
+        "anchors": [],
+        "snapshot": {},
+    }
+    signals = generate_deterministic_signals(ev)
+    role_signals = [s for s in signals if s.engine == "role"]
+    assert role_signals, f"Expected a role signal from label_text fallback; got {[s.engine for s in signals]}"
+    assert role_signals[0].selector == 'internal:role=textbox[name="Edit phone number"]'
+    xpath_signals = [s for s in signals if s.engine == "xpath"]
+    assert xpath_signals, "Expected xpath signal to still be present as a fallback"
+    assert signals.index(role_signals[0]) < signals.index(xpath_signals[0]), (
+        "role (label_text-derived) must rank above xpath"
+    )
+
+
+def test_placeholder_outranks_label_text_in_ax_name() -> None:
+    """When both placeholder and label_text are present, placeholder wins — it's the
+    element's own attribute, whereas label_text is external and can mis-capture a
+    sibling's text (same reasoning as runtime's a11yRecoveryName ordering)."""
+    ev = {
+        "target": {"tag": "input", "role": "textbox", "placeholder": "Search", "label_text": "wrong"},
+        "semantic": {"role": "textbox"},
+        "selectors": {"css": "", "xpath": "/html[1]/body[1]/input[1]"},
+        "anchors": [],
+        "snapshot": {},
+    }
+    signals = generate_deterministic_signals(ev)
+    role_signals = [s for s in signals if s.engine == "role"]
+    assert role_signals and role_signals[0].selector == 'internal:role=textbox[name="Search"]'
+
+
 def test_bundle_top_signal_is_role_for_named_button() -> None:
     """generate_deterministic_signals puts the role signal first for a named button."""
     ev = {
