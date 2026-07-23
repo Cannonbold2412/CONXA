@@ -28,6 +28,16 @@ class RetargetError(Exception):
         self.message = message
 
 
+def _is_frame_nested(step: dict[str, Any]) -> bool:
+    """True if this step's element lives inside 1+ iframes. dom_html/dom_snapshot is always
+    page.content() — the top-level document only — so any DOM-based uniqueness/match check
+    against it is structurally meaningless for such an element, both at compile time
+    (identity_bundle.py's unique_at_compile) and in the offline re-checks below.
+    """
+    bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
+    return bool(bundle.get("frame_chain"))
+
+
 def _get_step(document: dict[str, Any], step_index: int) -> dict[str, Any]:
     skills = list(document.get("skills") or [])
     if not skills:
@@ -191,6 +201,8 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
     bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
     signals = bundle.get("signals") if isinstance(bundle.get("signals"), list) else []
 
+    frame_nested = _is_frame_nested(step)
+
     rows: list[dict[str, Any]] = []
     if signals:
         for i, sig in enumerate(signals):
@@ -201,6 +213,11 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
                 continue
             unique = bool(sig.get("unique_at_compile"))
             engine = str(sig.get("engine") or _classify_engine(sel))
+            # unique_at_compile was computed against dom_html (page.content(), top-level only —
+            # see _is_frame_nested). For a frame-nested element that's not a real "not unique"
+            # verdict, just "couldn't check" — treat it the same as the unverifiable case rather
+            # than dropping it in _prune_review_candidates below.
+            verified = "unique" if unique else ("unverified" if frame_nested else "not_unique")
             rows.append(
                 {
                     "selector": sel,
@@ -208,10 +225,10 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
                     "durability": float(sig.get("durability") or 0.0),
                     "orthogonality_class": str(sig.get("orthogonality_class") or tag_orthogonality_class(engine)),
                     # exact count isn't stored — only the unique-or-not verdict; -1 keeps the UI
-                    # from claiming a specific number for the non-unique case.
+                    # from claiming a specific number for the non-unique/unverified case.
                     "match_count": 1 if unique else -1,
                     "unique": unique,
-                    "verified": "unique" if unique else "not_unique",
+                    "verified": verified,
                     "descriptor": _descriptor_for(step, ""),
                     "source": str(sig.get("source") or "compiler"),
                 }
@@ -229,7 +246,12 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
         if sel in seen:
             continue
         seen.add(sel)
-        _passes, match_count = validate_selector(sel, dom_snapshot)
+        if frame_nested:
+            # Same reasoning as above: dom_snapshot can't contain this element at all, so a
+            # match_count check here would reject every selector regardless of quality.
+            match_count = -1
+        else:
+            _passes, match_count = validate_selector(sel, dom_snapshot)
         rows.append(_candidate_row(step, sel, match_count))
         if len(rows) >= 5:
             break
@@ -292,11 +314,21 @@ def preview_retarget(
             dom_snapshot=dom_snapshot,
             action_type=action_type,
         )
+        # dom_snapshot is page.content() — the top-level document only, never iframe
+        # subdocument HTML (see session.py's _capture_dom_snapshot_sync). For a step
+        # recorded inside an iframe, no candidate selector can ever appear in it, so a
+        # match_count check here would reject every candidate regardless of quality.
+        # Trust the LLM instead, same as validate_selector already does when there's no
+        # dom_snapshot at all.
+        frame_nested = _is_frame_nested(step)
         candidates: list[dict[str, Any]] = []
         for cand in raw_candidates[:5]:
-            _passes, match_count = validate_selector(cand.selector, dom_snapshot)
-            if match_count == 0:
-                continue
+            if frame_nested:
+                match_count = -1
+            else:
+                _passes, match_count = validate_selector(cand.selector, dom_snapshot)
+                if match_count == 0:
+                    continue
             candidates.append(_candidate_row(step, cand.selector, match_count, cand.intent, source="llm"))
         # Same rule as the review path: no non-unique matches, nothing below the durability
         # floor — a freshly re-picked element deserves the same bar as a reviewed one.

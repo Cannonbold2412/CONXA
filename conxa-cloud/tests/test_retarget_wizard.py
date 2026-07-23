@@ -184,6 +184,32 @@ def test_preview_returns_ranked_candidates_with_match_counts(session_fixture, mo
     assert doc["meta"]["version"] == 1
 
 
+def test_preview_regenerate_path_trusts_candidates_for_frame_nested_step(session_fixture, monkeypatch):
+    """Regression: dom_snapshot is page.content(), the top-level document only — it never
+    contains iframe subdocument HTML. For a step recorded inside an iframe (identity_bundle
+    carries a non-empty frame_chain), a match_count==0 DOM check would reject every candidate
+    no matter how good, since the element can never appear in that snapshot. Such candidates
+    must be kept as unverified (match_count -1), not dropped."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _patch_raw_candidates(
+        monkeypatch,
+        [_candidate('[data-testid="firstname-input"]', rank=0, intent="Enter first name")],
+    )
+    _patch_validation_planner(monkeypatch)
+
+    doc = _base_document()
+    doc["skills"][0]["steps"][0]["identity_bundle"] = {"signals": [], "frame_chain": ["iframe#panel"]}
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20})
+
+    selectors = {c["selector"]: c for c in result["candidates"]}
+    assert '[data-testid="firstname-input"]' in selectors
+    cand = selectors['[data-testid="firstname-input"]']
+    assert cand["match_count"] == -1
+    assert cand["verified"] == "unverified"
+    assert result["pick_quality"] == "good"
+
+
 def test_preview_end_to_end_llm_wiring_filters_to_unique_candidates(session_fixture, monkeypatch):
     """Exercises the real compile_selectors_for_region (screenshot load + highlight + base64 +
     cache) via a call_llm mock — only the unique (in-snapshot) selector should reach
@@ -384,6 +410,42 @@ def test_preview_review_path_surfaces_compile_time_uniqueness(session_fixture, m
     assert "/html[1]/body[1]/div[1]/button[1]" not in by_sel
     assert not any(c["verified"] == "unverified" for c in result["candidates"])
     assert result["pick_quality"] == "good"
+
+
+def test_preview_review_path_trusts_signals_for_frame_nested_step(session_fixture, monkeypatch):
+    """Regression: unique_at_compile is computed against dom_html (page.content(), top-level
+    only — see session.py's _capture_dom_snapshot_sync), so for a step recorded inside an iframe
+    it's always False regardless of true uniqueness, since the selector can never appear in that
+    HTML. The review path must not treat that as a real "not unique" verdict and prune the
+    candidate away — it must show it as unverified instead, same as the regenerate path already
+    does for frame-nested steps."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _fail_if_llm_called(monkeypatch)
+
+    doc = _base_document()
+    step = doc["skills"][0]["steps"][0]
+    step["target"] = {"primary_selector": '[data-testid="firstname-input"]', "fallback_selectors": []}
+    step["identity_bundle"] = {
+        "frame_chain": ["iframe#panel"],
+        "signals": [
+            {
+                "engine": "testid",
+                "selector": '[data-testid="firstname-input"]',
+                "durability": 0.9,
+                "unique_at_compile": False,
+            }
+        ],
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    by_sel = {c["selector"]: c for c in result["candidates"]}
+    assert '[data-testid="firstname-input"]' in by_sel
+    cand = by_sel['[data-testid="firstname-input"]']
+    assert cand["verified"] == "unverified"
+    assert cand["match_count"] == -1
+    assert result["pick_quality"] != "none"
 
 
 def test_preview_review_path_surfaces_orthogonality_and_source(session_fixture, monkeypatch):
