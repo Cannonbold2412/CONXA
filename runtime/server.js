@@ -382,22 +382,29 @@ const startupSync = (async () => {
 process.on("SIGINT",  () => gracefulShutdown());
 process.on("SIGTERM", () => gracefulShutdown());
 
+// Reads a skill's declared input fields (inputs.json, falling back to legacy input.json).
+// Shared by the tool-definition builder, get_skill_inputs, and the execute_skill input gate
+// so all three agree on the same declared schema.
+function _readDeclaredInputs(entry) {
+  const inputsPath = path.join(entry.skillDir, "inputs.json");
+  const legacyPath = path.join(entry.skillDir, "input.json");
+  try {
+    const src = fs.existsSync(inputsPath) ? inputsPath : (fs.existsSync(legacyPath) ? legacyPath : null);
+    if (src) {
+      const raw = JSON.parse(fs.readFileSync(src, "utf8"));
+      if (Array.isArray(raw.inputs)) return raw.inputs;
+    }
+  } catch (_) {}
+  return [];
+}
+
 // ─── Skill-specific tool definitions (generated from loaded skill index) ─────
 // One tool per installed skill so Claude can match intent directly without
 // a discovery round-trip. Tool names: skill_{company}_{slug_underscored}.
 function _skillToolDefinitions() {
   const tools = [];
   for (const entry of Object.values(skillIndex)) {
-    const inputsPath = path.join(entry.skillDir, "inputs.json");
-    const legacyPath = path.join(entry.skillDir, "input.json");
-    let inputFields = [];
-    try {
-      const src = fs.existsSync(inputsPath) ? inputsPath : (fs.existsSync(legacyPath) ? legacyPath : null);
-      if (src) {
-        const raw = JSON.parse(fs.readFileSync(src, "utf8"));
-        if (Array.isArray(raw.inputs)) inputFields = raw.inputs;
-      }
-    } catch (_) {}
+    const inputFields = _readDeclaredInputs(entry);
 
     const properties = {};
     const required = [];
@@ -941,6 +948,28 @@ async function _handleTool(name, args, extra) {
       const required = entry.manifest.required_runtime || ">=0.0.0";
       if (!IS_LOCAL_DEV_RUNTIME && !semver.satisfies(RUNTIME_VERSION, required))
         return err(`Skill ${run.skill} requires runtime ${required}, installed: ${RUNTIME_VERSION}. Please update the Conxa runtime.`);
+
+      // Required-input gate (audit finding C2): interpolate() silently substitutes "" for a
+      // missing/mis-typed input, so a required field the caller forgot would fail silently
+      // deep inside a step instead of here, with a clear message. Declared defaults (H2) fill
+      // in first so a default-satisfied required field is never reported missing.
+      const declaredInputs = _readDeclaredInputs(entry);
+      const providedInputs = (run.inputs && typeof run.inputs === "object") ? run.inputs : {};
+      const effectiveInputs = {};
+      for (const f of declaredInputs) {
+        if (f && f.name && f.default !== undefined && f.default !== null && f.default !== "") {
+          effectiveInputs[f.name] = f.default;
+        }
+      }
+      Object.assign(effectiveInputs, providedInputs);
+      const missingInputs = (entry.manifest.inputs_required || []).filter((n) => {
+        const v = effectiveInputs[n];
+        return v === undefined || v === null || String(v).trim() === "";
+      });
+      if (missingInputs.length) {
+        return err(`Skill ${run.skill} is missing required input(s): ${missingInputs.join(", ")}. Call get_skill_inputs first.`);
+      }
+      run.inputs = effectiveInputs;
 
       const execPath = path.join(entry.skillDir, "execution.json");
       const recPath  = path.join(entry.skillDir, "recovery.json");
