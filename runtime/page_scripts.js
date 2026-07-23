@@ -73,9 +73,15 @@ function extractDescriptor(el) {
   pushText(el.previousElementSibling);
   pushText(el.nextElementSibling);
 
+  // `name` feeds resolver.js's fpName match — placeholder is included so a live candidate
+  // for a label-less input (e.g. a search box) can still match a fingerprint the compiler
+  // named from its placeholder (identity_bundle.py's aria_label||name||inner_text||placeholder).
+  // `_hashPayload`/axName above deliberately excludes it — that mirrors stable_hash.py's
+  // narrower ax_name (aria_label||name||inner_text) and must not drift from it.
+  const placeholder = el.getAttribute("placeholder") || "";
   return {
     role,
-    name: (ariaLabel || nameAttr || (el.textContent || "").trim()).slice(0, 120),
+    name: (ariaLabel || nameAttr || (el.textContent || "").trim() || placeholder).slice(0, 120),
     text: (el.textContent || "").trim().slice(0, 120),
     testid: el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "",
     anchorNeighbors: neighbors,

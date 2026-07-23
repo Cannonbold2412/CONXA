@@ -333,7 +333,9 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {spottedIds.map((id) => {
-                  const has = rows.some((r) => r.id.trim() === id)
+                  // Case-insensitive to match the header "N new" count and dedup, which treat
+                  // {{Email}} and {{email}} as the same binding (audit finding L-4).
+                  const has = rows.some((r) => r.id.trim().toLowerCase() === id.toLowerCase())
                   return (
                     <Badge
                       key={id}

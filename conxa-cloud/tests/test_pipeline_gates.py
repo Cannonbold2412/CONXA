@@ -316,3 +316,77 @@ class TestStaleBuildGate:
         assert wf.edited_at is not None
         assert plugin.build is not None
         assert wf.edited_at <= plugin.build.last_built_at
+
+
+# ─── Backend enforcement of the stale-build gate (cmd_test_workflow) ──────────
+
+class TestBackendStaleGateEnforcement:
+    """cmd_test_workflow must refuse to run a workflow edited after the last build,
+    independent of the UI's isStaleTest check (which a race or non-UI caller can bypass)."""
+
+    def _handler(self) -> Any:
+        from handlers.plugins import PluginsMixin
+        return PluginsMixin()
+
+    def test_raises_when_edited_after_build(self) -> None:
+        wf = PluginWorkflow(
+            id="wf-1", slug="test-wf", name="Test Workflow", session_id="sess-1",
+            recorded_at=0.0, skill_id="sk-1", edited_at=2000.0,
+        )
+        plugin = Plugin(
+            id="p-1", slug="test", name="Test", workspace_id="ws-1",
+            target_url="https://example.com", status="ready", created_at=0.0, updated_at=0.0,
+            workflows=[wf], build=PluginBuild(last_built_at=1000.0, output_path="/tmp/out", version="0.1.0"),
+        )
+        with patch("conxa_core.storage.plugin_store.get_plugin", return_value=plugin):
+            from handlers.protocol import _CommandError
+            with pytest.raises(_CommandError) as excinfo:
+                self._handler().cmd_test_workflow(
+                    {"plugin_id": "p-1", "workflow_id": "wf-1"}, "rid-1"
+                )
+            assert excinfo.value.code == "workflow_stale"
+
+    def test_does_not_raise_when_not_stale(self) -> None:
+        wf = PluginWorkflow(
+            id="wf-1", slug="test-wf", name="Test Workflow", session_id="sess-1",
+            recorded_at=0.0, skill_id="sk-1", edited_at=500.0,
+        )
+        plugin = Plugin(
+            id="p-1", slug="test", name="Test", workspace_id="ws-1",
+            target_url="https://example.com", status="ready", created_at=0.0, updated_at=0.0,
+            workflows=[wf], build=PluginBuild(last_built_at=1000.0, output_path="/tmp/out", version="0.1.0"),
+        )
+        with patch("conxa_core.storage.plugin_store.get_plugin", return_value=plugin):
+            from handlers.protocol import _CommandError
+            try:
+                self._handler().cmd_test_workflow(
+                    {"plugin_id": "p-1", "workflow_id": "wf-1"}, "rid-1"
+                )
+            except _CommandError as exc:
+                assert exc.code != "workflow_stale"
+
+
+# ─── H-5: sensitive-flagged test inputs never reach persisted test history ────
+
+class TestRedactSensitiveTestInputs:
+    def test_masks_values_declared_sensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from handlers.plugins import _redact_sensitive_test_inputs
+
+        doc = {"inputs": [
+            {"id": "password", "type": "text", "sensitive": True},
+            {"id": "username", "type": "text"},
+        ]}
+        monkeypatch.setattr("conxa_core.storage.json_store.read_skill", lambda skill_id: doc)
+
+        out = _redact_sensitive_test_inputs("sk-1", {"password": "hunter2", "username": "bob"})
+        assert out == {"password": "", "username": "bob"}
+
+    def test_noop_when_nothing_declared_sensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from handlers.plugins import _redact_sensitive_test_inputs
+
+        doc = {"inputs": [{"id": "username", "type": "text"}]}
+        monkeypatch.setattr("conxa_core.storage.json_store.read_skill", lambda skill_id: doc)
+
+        inputs = {"username": "bob"}
+        out = _redact_sensitive_test_inputs("sk-1", inputs)
+        assert out is inputs

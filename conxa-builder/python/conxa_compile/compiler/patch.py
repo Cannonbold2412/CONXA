@@ -13,6 +13,7 @@ from conxa_compile.compiler.recovery_policy import (
 )
 from conxa_compile.confidence.layered import layered_decision
 from conxa_compile.confidence.uncertainty import audit_reference
+from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE
 from conxa_compile.llm.semantic_llm import SemanticLLMInput, enrich_semantic
 from conxa_compile.policy.bundle import get_policy_bundle
 from conxa_compile.policy.intent_ontology import sanitize_intent_token
@@ -173,15 +174,23 @@ def _enhance_step_with_llm(step: dict[str, Any], *, user_edited_recovery: bool =
     return out
 
 
-def _apply_top_level_step_fields(step: dict[str, Any], patch: dict[str, Any]) -> None:
+def _apply_top_level_step_fields(
+    step: dict[str, Any], patch: dict[str, Any], *, sanitize_intent: bool = True
+) -> None:
     if "action" in patch and isinstance(patch["action"], dict):
         current = step.get("action")
         base = dict(current) if isinstance(current, dict) else {"action": str(current or "")}
         step["action"] = deep_merge(base, dict(patch["action"]))
     if "intent" in patch and isinstance(patch["intent"], str):
         raw = str(patch["intent"]).strip()
-        prev = str(step.get("intent") or "").strip()
-        resolved = sanitize_intent_token(raw, sanitize_intent_token(prev, "edited_step"))
+        # The 1-click-fix path slug-sanitizes; the live editor keeps intent as the user's
+        # free text (matching patch_gate) so the form field and the final_intent shadow that
+        # describe/recovery read show the same thing (audit C-2).
+        if sanitize_intent:
+            prev = str(step.get("intent") or "").strip()
+            resolved = sanitize_intent_token(raw, sanitize_intent_token(prev, "edited_step"))
+        else:
+            resolved = raw
         step["intent"] = resolved
         signals = dict(step.get("signals") or {})
         sem = dict(signals.get("semantic") or {})
@@ -192,6 +201,15 @@ def _apply_top_level_step_fields(step: dict[str, Any], patch: dict[str, Any]) ->
         step["signals"] = signals
     if "value" in patch:
         step["value"] = patch["value"]
+        # input_binding is a derived shadow of value: {{name}} → "name", anything else → None.
+        # Keep it in lockstep here so no edit path can leave it pointing at a stale variable
+        # (audit findings M-1/L-0). This is the single home for that derivation.
+        new_value = patch["value"]
+        if isinstance(new_value, str):
+            full_match = FULL_PLACEHOLDER_RE.match(new_value.strip())
+            step["input_binding"] = full_match.group(1) if full_match else None
+        else:
+            step["input_binding"] = None
     if "url" in patch and isinstance(patch["url"], str):
         url = str(patch["url"]).strip()
         step["url"] = url
@@ -246,6 +264,30 @@ def _sync_recovery_deterministic(step: dict[str, Any]) -> dict[str, Any]:
     recovery = merge_recovery_strategies_for_wait_shape(recovery, dict(wf) if isinstance(wf, dict) else {}, pol)
     out = dict(step)
     out["recovery"] = recovery
+    return out
+
+
+def sync_derived_step_fields(
+    step: dict[str, Any], patch: dict[str, Any], *, sync_recovery: bool = True
+) -> dict[str, Any]:
+    """Recompute every field that is a deterministic shadow of an edited source field.
+
+    After any merge of ``patch`` into ``step`` (whichever merge the caller used), this
+    re-derives: ``signals.semantic.final_intent``/``llm_intent`` from ``intent``,
+    ``input_binding`` from ``value``, ``action.url`` + ``signals.context.page_url`` from
+    ``url``, and — when ``sync_recovery`` — the deterministic recovery block from the
+    effective intent + ``validation.wait_for``.
+
+    This is the single place that keeps derived shadows coherent, so no edit path (live
+    editor, 1-click fix, retarget) can forget one (audit findings C-2/M-1/M-2). Branch-body
+    leaf steps pass ``sync_recovery=False`` — they never enter the recovery cascade
+    (CLAUDE.md Key Invariants), so their recovery block must stay a no-op marker.
+    """
+    out = dict(step)
+    _apply_top_level_step_fields(out, patch, sanitize_intent=False)
+    out = _normalize_step_anchor_blocks(out)
+    if sync_recovery:
+        out = _sync_recovery_deterministic(out)
     return out
 
 

@@ -1233,8 +1233,16 @@ def _deduplicate_input_bindings(steps: list[SkillStep]) -> None:
         seen_counts[binding] += 1
         new_binding = f"{binding}_{seen_counts[binding]}"
         step.input_binding = new_binding
-        if isinstance(step.value, str) and step.value == f"{{{{{binding}}}}}":
-            step.value = f"{{{{{new_binding}}}}}"
+        # Rewrite the {{binding}} token wherever it appears in the value, not only when the
+        # value is exactly "{{binding}}". A mixed value like "prefix {{name}}" would otherwise
+        # keep {{name}} while its binding became name_2 — a value/binding mismatch (audit
+        # finding L-2). Optional inner whitespace matches the placeholder grammar.
+        if isinstance(step.value, str):
+            step.value = re.sub(
+                r"\{\{\s*" + re.escape(binding) + r"\s*\}\}",
+                f"{{{{{new_binding}}}}}",
+                step.value,
+            )
 
 
 def compile_skill_package(

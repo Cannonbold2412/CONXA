@@ -31,6 +31,23 @@ test("a11y recovery name prefers aria_label first", () => {
   );
 });
 
+test("a11y recovery name derives from placeholder for label-less inputs", () => {
+  // Regression (audit H-3): the compiler names a placeholder-only search box from its
+  // placeholder text (identity_bundle.py's aria_label||name||inner_text||placeholder||
+  // label_text). Without placeholder here, recovery saw an empty name and bailed immediately.
+  assert.strictEqual(
+    a11yRecoveryName({ role: "combobox", aria_label: "", name: "", inner_text: "", placeholder: "Search", label_text: "" }),
+    "Search",
+  );
+});
+
+test("a11y recovery name prefers placeholder over label_text", () => {
+  assert.strictEqual(
+    a11yRecoveryName({ inner_text: "", placeholder: "Search", label_text: "Nav context" }),
+    "Search",
+  );
+});
+
 test("classifies stale/detached error", () => {
   assert.strictEqual(classifyException(new Error("Element is not attached to the DOM")), CLASS.STALE);
 });

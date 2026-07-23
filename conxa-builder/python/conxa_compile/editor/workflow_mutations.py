@@ -13,7 +13,7 @@ from conxa_compile.compiler.action_policy import no_recovery_block
 from conxa_compile.compiler.patch import revalidate_step
 from conxa_compile.confidence.uncertainty import audit_reference
 from conxa_compile.editor.action_registry import action_spec, default_action_value, is_supported_action
-from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE, PLACEHOLDER_ID_PATTERN
+from conxa_compile.editor.placeholder_grammar import PLACEHOLDER_ID_PATTERN, PLACEHOLDER_RE
 from conxa_compile.editor.workflow_dto import _build_reference_for_audit, collect_suggestions
 from conxa_compile.policy.bundle import get_policy_bundle
 
@@ -54,6 +54,7 @@ def reorder_steps(document: dict[str, Any], new_order: list[int]) -> dict[str, A
     block["steps"] = new_steps
     skills[0] = block
     doc["skills"] = skills
+    doc = _remap_intent_graph_indices(doc, {new_order[p]: p for p in range(n)})
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     doc["meta"] = meta
@@ -69,10 +70,15 @@ def delete_step_at(document: dict[str, Any], step_index: int) -> dict[str, Any]:
     steps = list(block.get("steps") or [])
     if step_index < 0 or step_index >= len(steps):
         raise ValueError("step_index_out_of_range")
+    original_len = len(steps)
     del steps[step_index]
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills
+    doc = _remap_intent_graph_indices(
+        doc,
+        {i: (None if i == step_index else i if i < step_index else i - 1) for i in range(original_len)},
+    )
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     doc["meta"] = meta
@@ -332,10 +338,14 @@ def insert_step_after(document: dict[str, Any], action_kind: str, insert_after: 
             raise ValueError("step_index_out_of_range")
         insert_at = insert_after + 1
         anchor_index = insert_after
+    original_len = len(steps)
     steps.insert(insert_at, _new_manual_step(action_kind, _last_known_page_url(steps, anchor_index)))
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills
+    doc = _remap_intent_graph_indices(
+        doc, {i: (i if i < insert_at else i + 1) for i in range(original_len)}
+    )
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     doc["meta"] = meta
@@ -352,9 +362,98 @@ def _validate_skill_inputs(inputs: list[dict[str, Any]]) -> None:
             raise ValueError("input_id_required")
         if not _INPUT_ID_RE.match(input_id):
             raise ValueError(f"invalid_input_id:{input_id}")
-        if input_id in seen:
+        # Ids collide case-insensitively at runtime ({{Email}} and {{email}} bind the same
+        # slot), so uniqueness must be enforced the same way — matching the frontend
+        # rowsToServerPayload check so the Advanced JSON editor / direct RPC can't slip a
+        # pair past the trust boundary (audit finding L-4/L-5 sibling).
+        id_key = input_id.lower()
+        if id_key in seen:
             raise ValueError(f"duplicate_input_id:{input_id}")
-        seen.add(input_id)
+        seen.add(id_key)
+        # A select input's default must be one of its options. The form enforces this, but the
+        # backend is the trust boundary — the Advanced JSON editor bypasses the form (audit
+        # finding L-5).
+        if str(item.get("type") or "").strip().lower() == "select":
+            default = item.get("default")
+            if default not in (None, ""):
+                options = item.get("options") if isinstance(item.get("options"), list) else []
+                if str(default) not in [str(o) for o in options]:
+                    raise ValueError(f"select_default_not_in_options:{input_id}")
+
+
+def _scan_placeholder_ids(value: Any, out: set[str]) -> None:
+    """Collect every {{id}} variable referenced anywhere in a step (matches the frontend's
+    collectVariableIdsFromSteps whole-step scan so 'spotted' means the same on both sides)."""
+    if isinstance(value, str):
+        for m in PLACEHOLDER_RE.finditer(value):
+            out.add(m.group(1))
+    elif isinstance(value, list):
+        for item in value:
+            _scan_placeholder_ids(item, out)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _scan_placeholder_ids(item, out)
+
+
+def reconcile_inputs_with_step_values(document: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Auto-declare any {{var}} referenced in a step but missing from the inputs list.
+
+    Without this, editing a value to reference {{new}} left the runtime prompting for the
+    old, now-dead variable while {{new}} resolved to empty at execution (audit finding M-3).
+    Orphaned declarations are deliberately left in place — an unrelated value edit shouldn't
+    silently drop a variable the user may still be wiring up; the drawer flags those as unused.
+    Returns (possibly-mutated document, whether anything was added).
+    """
+    steps = ((document.get("skills") or [{}])[0] or {}).get("steps") or []
+    spotted: set[str] = set()
+    for step in steps:
+        if isinstance(step, dict):
+            _scan_placeholder_ids(step, spotted)
+    if not spotted:
+        return document, False
+    inputs = list(document.get("inputs") or [])
+    declared = {str(i.get("id") or "").strip().lower() for i in inputs if isinstance(i, dict)}
+    added = False
+    for sid in sorted(spotted):
+        if sid.lower() not in declared:
+            inputs.append({"id": sid, "type": "text", "default": None, "options": []})
+            declared.add(sid.lower())
+            added = True
+    if not added:
+        return document, False
+    doc = dict(document)
+    doc["inputs"] = inputs
+    return doc, True
+
+
+def _remap_intent_graph_indices(
+    document: dict[str, Any], old_to_new: dict[int, int | None]
+) -> dict[str, Any]:
+    """Renumber intent_graph.steps[].index after a structural edit so the advisory per-step
+    plan keeps lining up with the steps it describes (audit finding L-1). Entries whose step
+    was deleted (mapped to None) are dropped; the rest are re-sorted by their new index."""
+    graph = document.get("intent_graph")
+    if not isinstance(graph, dict):
+        return document
+    entries = graph.get("steps")
+    if not isinstance(entries, list) or not entries:
+        return document
+    remapped: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        new_index = old_to_new.get(int(entry.get("index", -1)), None)
+        if new_index is None:
+            continue
+        e = dict(entry)
+        e["index"] = new_index
+        remapped.append(e)
+    remapped.sort(key=lambda e: e["index"])
+    doc = dict(document)
+    new_graph = dict(graph)
+    new_graph["steps"] = remapped
+    doc["intent_graph"] = new_graph
+    return doc
 
 
 def merge_skill_inputs(document: dict[str, Any], inputs: list[dict[str, Any]], title: str | None) -> dict[str, Any]:
@@ -371,17 +470,39 @@ def merge_skill_inputs(document: dict[str, Any], inputs: list[dict[str, Any]], t
     return doc
 
 
+def _replace_outside_placeholders(val: str, find: str, replace: str) -> tuple[str, int]:
+    """Replace `find` only in the literal segments between {{...}} placeholders, never inside
+    a placeholder. Protects both a pure `{{id}}` value AND a mixed one like `{{db}}/extra` —
+    a naive replace of `db`→`{{db_name}}` on the latter would nest braces into
+    `{{{{db_name}}}}/extra`, which no scanner interpolates (audit finding L-3)."""
+    out: list[str] = []
+    count = 0
+    last = 0
+    for m in PLACEHOLDER_RE.finditer(val):
+        segment = val[last : m.start()]
+        count += segment.count(find)
+        out.append(segment.replace(find, replace))
+        out.append(m.group(0))  # placeholder span left untouched
+        last = m.end()
+    tail = val[last:]
+    count += tail.count(find)
+    out.append(tail.replace(find, replace))
+    return "".join(out), count
+
+
 def _replace_in_step(step: dict[str, Any], find: str, replace: str) -> tuple[dict[str, Any], int]:
     """Replace `find` with `replace` inside this step's own `value` field only (never
     selectors/URLs/identity signals — audit finding C1), recursing into if_present branch
-    bodies. Skips a value that's already exactly one placeholder (`{{id}}`) so an unrelated
-    replace can't nest braces inside an existing binding (audit finding M3)."""
+    bodies. Only the literal text outside any {{id}} placeholder is touched, so an unrelated
+    replace can't corrupt or nest braces inside an existing binding (audit findings M3/L-3)."""
     step = dict(step)
     count = 0
     val = step.get("value")
-    if isinstance(val, str) and find in val and not FULL_PLACEHOLDER_RE.match(val):
-        count += val.count(find)
-        step["value"] = val.replace(find, replace)
+    if isinstance(val, str) and find in val:
+        new_val, seg_count = _replace_outside_placeholders(val, find, replace)
+        if seg_count:
+            step["value"] = new_val
+            count += seg_count
     branch = step.get("branch")
     if isinstance(branch, dict):
         nested = branch.get("steps")

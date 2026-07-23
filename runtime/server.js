@@ -409,8 +409,16 @@ function _skillToolDefinitions() {
     const properties = {};
     const required = [];
     for (const f of inputFields) {
-      properties[f.name] = { type: f.type || "string", description: f.description || f.name };
-      required.push(f.name);
+      const prop = { type: f.type || "string", description: f.description || f.name };
+      // A select input's declared choices reach the agent as an enum so it can't pass an
+      // out-of-range value that nothing would otherwise reject until execution (audit H-6).
+      if (Array.isArray(f.enum) && f.enum.length) prop.enum = f.enum;
+      properties[f.name] = prop;
+      // A field with a default is effectively optional to the calling agent — the execute
+      // gate below fills it in from f.default when omitted, so don't advertise it as
+      // mandatory (audit H-6).
+      const hasDefault = f.default !== undefined && f.default !== null && String(f.default).trim() !== "";
+      if (!hasDefault) required.push(f.name);
     }
 
     const needsStr = required.length ? ` Needs: ${required.join(", ")}.` : "";

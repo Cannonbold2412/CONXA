@@ -288,6 +288,31 @@ def to_playwright_grammar(engine: str, value: str, name: str = "") -> str:
     return value  # css, xpath, css-id, css-structural: pass through
 
 
+def compute_merged_display_target(step: dict[str, Any]) -> tuple[str, list[str]]:
+    """The editor's displayed (primary_selector, fallback_selectors) for a step: identity_bundle
+    signals (durability-ordered, as display strings) followed by any target selector not already
+    covered by a signal ("recovery extras" — legacy/recovery-only selectors).
+
+    This is the exact merge workflow_dto.step_to_dto shows the user, and is also the reference
+    point for deciding whether an incoming patch's target is a real edit or just an unmodified
+    round-trip of what was displayed (see cmd_patch_step's rebuild-identity-bundle gate).
+    """
+    raw_target = dict(step.get("target") or {})
+    bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
+    bundle_signals_raw = bundle.get("signals") if isinstance(bundle.get("signals"), list) else []
+    identity_display = signals_to_display_list(bundle_signals_raw)
+    identity_sel_set = {e["selector"] for e in identity_display}
+
+    target_primary = str(raw_target.get("primary_selector") or "").strip()
+    target_fallbacks = [str(s).strip() for s in (raw_target.get("fallback_selectors") or []) if str(s).strip()]
+    recovery_extras = [s for s in [target_primary] + target_fallbacks if s and s not in identity_sel_set]
+
+    merged_selector_strings = [e["selector"] for e in identity_display] + recovery_extras
+    if not merged_selector_strings:
+        return target_primary, target_fallbacks
+    return merged_selector_strings[0], merged_selector_strings[1:]
+
+
 def signals_to_display_list(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert IdentityBundle signals to the form used by the editor.
 

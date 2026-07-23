@@ -93,6 +93,16 @@ test("scoreCandidate rewards testid agreement", () => {
   assert.ok(match > mismatch);
 });
 
+// Regression (audit H-3): a label-less search box is named from its placeholder at compile
+// time (identity_bundle.py's aria_label||name||inner_text||placeholder). Without placeholder
+// in fpName, a correct candidate lost its name-match bonus entirely.
+test("scoreCandidate rewards placeholder-derived name agreement", () => {
+  const fp = { role: "combobox", aria_label: "", name: "", inner_text: "", placeholder: "Search" };
+  const match = scoreCandidate({ role: "combobox", name: "Search", text: "" }, fp);
+  const mismatch = scoreCandidate({ role: "combobox", name: "Filter", text: "" }, fp);
+  assert.ok(match > mismatch);
+});
+
 test("invalid root returns miss", () => {
   const r = resolve([TESTID_SIG], {}, null, {});
   assert.strictEqual(r.miss, true);

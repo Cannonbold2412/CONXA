@@ -24,7 +24,7 @@ from conxa_compile.compiler.wait_for_shape import (
 )
 from conxa_compile.confidence.uncertainty import audit_reference
 from conxa_compile.editor.action_registry import action_spec, action_spec_dict, normalize_action_kind
-from conxa_compile.compiler.selector_grammar import signals_to_display_list
+from conxa_compile.compiler.selector_grammar import compute_merged_display_target, signals_to_display_list
 from conxa_compile.compiler.selector_score import confidence_from_signal_rows
 from conxa_compile.editor.assets import asset_url
 from conxa_compile.editor.describe import describe_step
@@ -513,7 +513,6 @@ def step_to_dto(
     bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
     bundle_signals_raw = bundle.get("signals") if isinstance(bundle.get("signals"), list) else []
     identity_display = signals_to_display_list(bundle_signals_raw)  # [{selector, engine, durability, ...}]
-    identity_sel_set = {e["selector"] for e in identity_display}
 
     # Step-level confidence rollup: prefer whatever was persisted at last (re)compile/retarget
     # (target.selector_confidence), else derive it fresh from the bundle's raw signals.
@@ -532,16 +531,12 @@ def step_to_dto(
 
     # Merge: signals first (hot-path, ordered by durability), then any target selectors
     # not already represented (recovery-only / legacy compiled selectors).
-    target_primary = str(raw_target.get("primary_selector") or "").strip()
-    target_fallbacks = [str(s).strip() for s in (raw_target.get("fallback_selectors") or []) if str(s).strip()]
-    recovery_extras = [s for s in [target_primary] + target_fallbacks if s and s not in identity_sel_set]
-
-    merged_selector_strings = [e["selector"] for e in identity_display] + recovery_extras
+    merged_primary, merged_fallbacks = compute_merged_display_target(step)
     # Rebuild target with the merged list so the renderer's defaultsFromStep picks it up.
     merged_target = dict(raw_target)
-    if merged_selector_strings:
-        merged_target["primary_selector"] = merged_selector_strings[0]
-        merged_target["fallback_selectors"] = merged_selector_strings[1:]
+    if merged_primary or merged_fallbacks:
+        merged_target["primary_selector"] = merged_primary
+        merged_target["fallback_selectors"] = merged_fallbacks
 
     handler_hints_view = _handler_hints_view(step.get("handler_hints") if isinstance(step.get("handler_hints"), dict) else {})
     branch_summary, branch_steps = _branch_info(

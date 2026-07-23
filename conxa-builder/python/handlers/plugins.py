@@ -24,6 +24,29 @@ from handlers.protocol import (
 )
 from handlers.status import derive_workflow_stage
 
+
+def _redact_sensitive_test_inputs(skill_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    """Never let a `sensitive`-flagged input's value reach persisted test history.
+
+    The "Sensitive (mask value)" checkbox was written into skill.json/inputs.json at every
+    prior stage but read by nothing — this is its runtime consumer (audit H-5). Redacted to
+    "" rather than dropped so the field still round-trips as declared (just empty, so it
+    doesn't silently re-prefill a secret in the test form on the next run).
+    """
+    from conxa_core.storage.json_store import read_skill
+
+    doc = read_skill(skill_id) or {}
+    declared = doc.get("inputs") if isinstance(doc.get("inputs"), list) else []
+    sensitive_ids = {
+        str(i.get("id") or i.get("name") or "").strip().lower()
+        for i in declared
+        if isinstance(i, dict) and i.get("sensitive")
+    }
+    if not sensitive_ids:
+        return inputs
+    return {k: ("" if str(k).strip().lower() in sensitive_ids else v) for k, v in inputs.items()}
+
+
 class PluginsMixin:
     def cmd_create_plugin(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         from conxa_core.storage.plugin_store import create_plugin as _create
@@ -282,6 +305,15 @@ class PluginsMixin:
             raise _CommandError("workflow_not_compiled", "Compile this workflow before testing.")
         if plugin.build is None:
             raise _CommandError("plugin_not_built", "Build the plugin before testing its workflows.")
+        # Backend mirror of the UI's isStaleTest guard (PluginWorkflowTests.tsx) — edited_at is
+        # bumped on every skill.json write (json_store.write_skill → invalidate_workflow_test_by_skill),
+        # so this catches edits made after the last build regardless of which caller skipped the
+        # UI check (a state race, a non-UI caller, etc).
+        if workflow.edited_at is not None and workflow.edited_at > plugin.build.last_built_at:
+            raise _CommandError(
+                "workflow_stale",
+                "This workflow was edited after the last build. Rebuild the plugin before testing.",
+            )
 
         sink = _event_sink(rid)
         sink({"kind": "workflow_test", "message": f"Preparing test for {workflow.name!r}…"})
@@ -369,7 +401,10 @@ class PluginsMixin:
             set_workflow_test_error(plugin_id, workflow_id, failure)
             raise _CommandError("workflow_test_failed", failure)
 
-        set_workflow_test_result(plugin_id, workflow_id, status="passed", inputs=inputs)
+        set_workflow_test_result(
+            plugin_id, workflow_id, status="passed",
+            inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
+        )
         sink({"kind": "workflow_test", "message": message})
         return {"status": "passed", "message": message, "company": company, "skill": workflow.slug}
 

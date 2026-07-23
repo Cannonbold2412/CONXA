@@ -26,8 +26,12 @@ class WorkflowEditorMixin:
         identity_bundle.signals when the target selector list changed. Shared by cmd_patch_step's
         top-level and path-addressed (branch-body) flows so both go through the same gate."""
         from conxa_compile.compiler.selector_filters import selector_passes_filters
-        from conxa_compile.compiler.selector_grammar import rebuild_identity_signals_from_target
+        from conxa_compile.compiler.selector_grammar import (
+            compute_merged_display_target,
+            rebuild_identity_signals_from_target,
+        )
         from conxa_compile.compiler.build import _confidence_from_identity_bundle
+        from conxa_compile.compiler.patch import sync_derived_step_fields
         from conxa_compile.editor.patch_gate import validate_editor_patch
         from conxa_compile.policy.bundle import get_policy_bundle
 
@@ -37,29 +41,43 @@ class WorkflowEditorMixin:
             raise _CommandError(str(exc), f"Patch rejected: {exc}") from exc
 
         merged = _deep_merge(dict(step), patch)
+        # A plain deep-merge leaves every DERIVED field stale — semantic.final_intent (which
+        # wins over top-level intent everywhere it matters), input_binding, the url shadows,
+        # and the recovery block. Re-derive them here so the saved step is internally
+        # consistent (audit findings C-2/M-1/M-2). Branch-body leaf steps never enter the
+        # recovery cascade, so their recovery block is left untouched.
+        merged = sync_derived_step_fields(merged, patch, sync_recovery=not in_branch_body)
 
         if "target" in patch and isinstance(patch.get("target"), dict):
             tgt = merged.get("target") if isinstance(merged.get("target"), dict) else {}
             primary = str(tgt.get("primary_selector") or "").strip()
             if primary and not selector_passes_filters(primary):
                 raise _CommandError("invalid_selector", f"primary_selector failed quality gates: {primary!r}")
-            for fb in (tgt.get("fallback_selectors") or []):
-                fb_s = str(fb).strip()
-                if fb_s and not selector_passes_filters(fb_s):
+            fallbacks = [str(fb).strip() for fb in (tgt.get("fallback_selectors") or []) if str(fb).strip()]
+            for fb_s in fallbacks:
+                if not selector_passes_filters(fb_s):
                     raise _CommandError("invalid_selector", f"fallback_selector failed quality gates: {fb_s!r}")
 
-            # Rebuild identity_bundle.signals from the edited target selector list so the
-            # runtime hot path reflects exactly what the editor shows. Editor order = priority.
-            new_signals = rebuild_identity_signals_from_target(merged)
-            if new_signals:
-                bundle = dict(merged.get("identity_bundle") or {})
-                bundle["signals"] = new_signals
-                merged["identity_bundle"] = bundle
-                try:
-                    merged.setdefault("target", {})
-                    merged["target"]["selector_confidence"] = _confidence_from_identity_bundle(bundle)
-                except Exception:
-                    pass  # Non-critical — confidence will be recomputed on next compile.
+            # The form round-trips target: {primary_selector, fallback_selectors} on every save
+            # (StepConfigForm.tsx), even ones that only touched intent/assertions — and that
+            # display list already has the DTO's "recovery extras" (legacy/recovery-only
+            # selectors) folded in. Only rebuild identity_bundle.signals — which promotes those
+            # extras into the runtime hot path and can reset compile-time uniqueness/provenance
+            # — when the saved selector list actually differs from what was displayed (audit H-4).
+            displayed_primary, displayed_fallbacks = compute_merged_display_target(step)
+            if primary != displayed_primary or fallbacks != displayed_fallbacks:
+                # Rebuild identity_bundle.signals from the edited target selector list so the
+                # runtime hot path reflects exactly what the editor shows. Editor order = priority.
+                new_signals = rebuild_identity_signals_from_target(merged)
+                if new_signals:
+                    bundle = dict(merged.get("identity_bundle") or {})
+                    bundle["signals"] = new_signals
+                    merged["identity_bundle"] = bundle
+                    try:
+                        merged.setdefault("target", {})
+                        merged["target"]["selector_confidence"] = _confidence_from_identity_bundle(bundle)
+                    except Exception:
+                        pass  # Non-critical — confidence will be recomputed on next compile.
 
         return merged
 
@@ -67,6 +85,7 @@ class WorkflowEditorMixin:
         import copy
         from conxa_core.storage.json_store import read_skill, write_skill
         from conxa_compile.compiler.patch import revalidate_step
+        from conxa_compile.editor.workflow_mutations import reconcile_inputs_with_step_values
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
@@ -112,6 +131,11 @@ class WorkflowEditorMixin:
         block["steps"] = steps
         skills[0] = block
         doc["skills"] = skills
+        # A value edit can introduce a brand-new {{var}} — declare it so the runtime prompts
+        # for it instead of substituting empty, and so a renamed variable's old declaration
+        # isn't the only one left (audit finding M-3). Orphans are left for the drawer to flag.
+        if "value" in patch:
+            doc, _ = reconcile_inputs_with_step_values(doc)
         meta = dict(doc.get("meta") or {})
         meta["version"] = int(meta.get("version", 1)) + 1
         doc["meta"] = meta
@@ -297,7 +321,10 @@ class WorkflowEditorMixin:
     def cmd_replace_literals(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         import copy
         from conxa_core.storage.json_store import read_skill, write_skill
-        from conxa_compile.editor.workflow_mutations import replace_string_literals_in_skill_document
+        from conxa_compile.editor.workflow_mutations import (
+            reconcile_inputs_with_step_values,
+            replace_string_literals_in_skill_document,
+        )
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         find = str(payload.get("find") or "")
@@ -307,6 +334,8 @@ class WorkflowEditorMixin:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         self._push_undo(skill_id, copy.deepcopy(doc))
         doc, match_count = replace_string_literals_in_skill_document(doc, find, replace_with)
+        # A replace that turns literal text into {{var}} must declare that variable too (M-3).
+        doc, _ = reconcile_inputs_with_step_values(doc)
         write_skill(skill_id, doc)
         result = _skill_response(skill_id, doc)
         result.update(self._history_flags(skill_id))
