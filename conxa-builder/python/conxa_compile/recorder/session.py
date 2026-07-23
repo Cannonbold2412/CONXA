@@ -1084,7 +1084,8 @@ class RecordingSession:
         self._stop_requested.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
-        self._thread = None
+        if self._thread and not self._thread.is_alive():
+            self._thread = None
         self.browser_open = False
 
     def status(self) -> dict[str, Any]:
