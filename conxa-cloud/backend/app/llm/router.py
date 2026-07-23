@@ -422,9 +422,10 @@ class LLMRouter:
                     self.pool.remove(entry)
                 return None
 
-            # Other HTTP errors: transient, retry
+            # Other HTTP errors: transient, cool down and retry
             msg = f"HTTPError {exc.code}: {snippet}"
-            _debug_log(f"router: {msg}")
+            entry.cooled_until = now + self.cooldown_secs
+            _debug_log(f"router: {msg} (cooled {self.cooldown_secs}s)")
             _log_llm_exception(req_id, entry, ep, model, task, attempt, exc.code, duration_ms, msg)
             if error_detail:
                 error_detail.append(msg)
@@ -432,7 +433,8 @@ class LLMRouter:
 
         except (error.URLError, TimeoutError, OSError) as exc:
             msg = f"{type(exc).__name__}: {exc}"
-            _debug_log(f"router: transient_error {msg}")
+            entry.cooled_until = now + self.cooldown_secs
+            _debug_log(f"router: transient_error (cooled {self.cooldown_secs}s) {msg}")
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             _log_llm_exception(req_id, entry, ep, model, task, attempt, None, duration_ms, msg)
             if error_detail:
@@ -441,7 +443,8 @@ class LLMRouter:
 
         except (json.JSONDecodeError, ValueError) as exc:
             msg = f"{type(exc).__name__}: {exc}"
-            _debug_log(f"router: parse_error {msg}")
+            entry.cooled_until = now + self.cooldown_secs
+            _debug_log(f"router: parse_error (cooled {self.cooldown_secs}s) {msg}")
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             _log_llm_exception(req_id, entry, ep, model, task, attempt, None, duration_ms, msg)
             if error_detail:
