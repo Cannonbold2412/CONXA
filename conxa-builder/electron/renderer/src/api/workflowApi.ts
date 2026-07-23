@@ -287,6 +287,7 @@ export function postWorkflowReplaceLiterals(
   skill_id: string
   meta: Record<string, unknown>
   workflow: WorkflowResponse
+  match_count: number
 }> {
   return cmd('replace_literals', { skill_id: skillId, ...body })
 }

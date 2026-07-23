@@ -27,6 +27,7 @@ import {
   type VariableFormRow,
   rowsFromServerInputs,
   rowsToServerPayload,
+  unusedRowIds,
 } from '@/lib/skillInputVariables'
 
 type Props = {
@@ -128,6 +129,28 @@ function VariableRow({
           />
         </div>
       ) : null}
+      <div className="space-y-1.5 sm:col-span-2 lg:col-span-8">
+        <Label className="text-xs" htmlFor={`var-default-${row.key}`}>
+          Default (optional)
+        </Label>
+        <Input
+          id={`var-default-${row.key}`}
+          className="h-8 text-sm"
+          placeholder={row.varType === 'select' ? 'must match one option' : 'used when not provided'}
+          value={row.defaultValue}
+          onChange={(e) => onChange({ ...row, defaultValue: e.target.value })}
+        />
+      </div>
+      <div className="flex items-end sm:col-span-2 lg:col-span-4">
+        <label className="text-muted-foreground flex items-center gap-1.5 pb-1.5 text-xs">
+          <input
+            type="checkbox"
+            checked={row.sensitive}
+            onChange={(e) => onChange({ ...row, sensitive: e.target.checked })}
+          />
+          Sensitive (mask value)
+        </label>
+      </div>
       <div className="flex items-end justify-end sm:col-span-2 lg:col-span-12">
         <Button
           type="button"
@@ -156,6 +179,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
   const [replaceVariable, setReplaceVariable] = useState('')
   const [replaceBusy, setReplaceBusy] = useState(false)
   const [replaceErr, setReplaceErr] = useState<string | null>(null)
+  const [replaceInfo, setReplaceInfo] = useState<string | null>(null)
   const wasOpen = useRef(false)
 
   useEffect(() => {
@@ -182,6 +206,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
       setReplaceFind('')
       setReplaceVariable('')
       setReplaceErr(null)
+      setReplaceInfo(null)
       setAdvancedOpen(false)
     }
     wasOpen.current = open
@@ -192,6 +217,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
     [workflow.steps],
   )
   const missing = useMemo(() => missingSpottedIds(spottedIds, rows), [spottedIds, rows])
+  const unused = useMemo(() => unusedRowIds(spottedIds, rows), [spottedIds, rows])
 
   const applyJsonToForm = () => {
     setJsonErr(null)
@@ -225,6 +251,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
 
   const replaceLiteralInWorkflow = () => {
     setReplaceErr(null)
+    setReplaceInfo(null)
     const find = replaceFind.trim()
     if (!find) {
       setReplaceErr('Enter the exact text to find (for example conxa-db).')
@@ -240,10 +267,15 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
       find,
       replace_with: ph.value,
     })
-      .then(({ workflow: next }) => {
+      .then(({ workflow: next, match_count }) => {
         onSaved(next)
-        setReplaceFind('')
-        setReplaceVariable('')
+        if (match_count > 0) {
+          setReplaceInfo(`Replaced ${match_count} occurrence${match_count === 1 ? '' : 's'}.`)
+          setReplaceFind('')
+          setReplaceVariable('')
+        } else {
+          setReplaceInfo(`No matches for "${find}" in any step's typed value.`)
+        }
       })
       .catch((e: Error) => setReplaceErr(e.message))
       .finally(() => setReplaceBusy(false))
@@ -337,7 +369,8 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
           <div className={cn('border-border/70 space-y-2.5 rounded-lg border p-3', inline ? 'bg-white/[0.02]' : '')}>
             <h3 className="text-foreground/95 text-sm font-medium">Find &amp; replace</h3>
             <p className="text-muted-foreground text-xs leading-relaxed">
-              Replace a recorded value everywhere it appears in this skill.
+              Replace a recorded value inside typed step values only — selectors and other
+              identity signals are left untouched.
             </p>
             <div className="grid gap-2.5 sm:grid-cols-2">
               <div className="space-y-1.5">
@@ -378,6 +411,7 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
               </div>
             </div>
             {replaceErr ? <p className="text-destructive text-sm">{replaceErr}</p> : null}
+            {replaceInfo ? <p className="text-muted-foreground text-sm">{replaceInfo}</p> : null}
             <div className="flex justify-start">
               <Button
                 type="button"
@@ -405,6 +439,11 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
                 Add
               </Button>
             </div>
+            {unused.length > 0 ? (
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                Not used in any step: {unused.map((id) => `{{${id}}}`).join(', ')}.
+              </p>
+            ) : null}
             {rows.length === 0 ? (
               <p className="text-muted-foreground border-border/50 rounded-lg border border-dashed p-3 text-center text-sm">
                 No variables yet.
@@ -490,7 +529,10 @@ function ParameterizationForm({ open, workflow, onClose, onSaved, inline = false
 }
 
 export function ParameterizationDrawer({ open, onClose, workflow, onSaved }: Props) {
-  const version = Number((workflow.package_meta as { version?: number } | undefined)?.version ?? 0)
+  // Keyed on skill_id only — NOT package_meta.version. The version bumps on every save
+  // (including "Replace everywhere"), and remounting on that would blow away any unsaved
+  // row edits sitting in the form (audit finding H3). ParameterizationForm's own open-edge
+  // effect already reloads from the server when appropriate; it doesn't need a remount too.
   return (
     <Sheet open={open} onOpenChange={(next) => !next && onClose()}>
       <SheetContent
@@ -507,7 +549,7 @@ export function ParameterizationDrawer({ open, onClose, workflow, onSaved }: Pro
         </SheetHeader>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <ParameterizationForm
-            key={`${workflow.skill_id}-v${version}`}
+            key={workflow.skill_id}
             open={open}
             workflow={workflow}
             onClose={onClose}
@@ -520,10 +562,9 @@ export function ParameterizationDrawer({ open, onClose, workflow, onSaved }: Pro
 }
 
 export function ParameterizationInlinePanel({ workflow, onSaved }: Omit<Props, 'open' | 'onClose'>) {
-  const version = Number((workflow.package_meta as { version?: number } | undefined)?.version ?? 0)
   return (
     <ParameterizationForm
-      key={`${workflow.skill_id}-v${version}-inline`}
+      key={`${workflow.skill_id}-inline`}
       open
       workflow={workflow}
       onClose={() => {}}

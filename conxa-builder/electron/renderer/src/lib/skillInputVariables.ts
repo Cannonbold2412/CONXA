@@ -1,7 +1,9 @@
 import type { StepEditorDTO } from '../types/workflow'
 
-/** Aligned with `app/editor/workflow_service.py` `_parameter_bindings_from_step` pattern. */
-const PLACEHOLDER = /\{\{([a-zA-Z][a-zA-Z0-9_]*)\}\}/g
+/** Must match conxa_compile/editor/placeholder_grammar.py PLACEHOLDER_RE and
+ * runtime/run.js's interpolate() exactly — three independent scanners, one grammar
+ * (audit finding C3). Whitespace inside the braces (`{{ id }}`) is tolerated by all three. */
+const PLACEHOLDER = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g
 
 const ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]*$/
 
@@ -57,6 +59,8 @@ export type VariableFormRow = {
   label: string
   varType: InputVariableType
   optionsText: string
+  defaultValue: string
+  sensitive: boolean
 }
 
 /** Accepts `db_name` or full `{{db_name}}` for bulk replace / placeholders. */
@@ -85,6 +89,8 @@ export function newEmptyRow(): VariableFormRow {
     label: '',
     varType: 'text',
     optionsText: '',
+    defaultValue: '',
+    sensitive: false,
   }
 }
 
@@ -97,6 +103,8 @@ export function rowsFromServerInputs(inputs: Record<string, unknown>[]): Variabl
       label: String(raw.label ?? (id ? labelFromId(id) : '')),
       varType: raw.type === 'select' ? 'select' : 'text',
       optionsText: Array.isArray(raw.options) ? (raw.options as unknown[]).map((o) => String(o)).join(', ') : '',
+      defaultValue: raw.default == null ? '' : String(raw.default),
+      sensitive: raw.sensitive === true,
     }
   })
 }
@@ -104,12 +112,15 @@ export function rowsFromServerInputs(inputs: Record<string, unknown>[]): Variabl
 export function rowsToServerPayload(
   rows: VariableFormRow[],
 ): { ok: true; data: Record<string, unknown>[] } | { ok: false; error: string } {
+  // Ids are compared case-insensitively so {{Email}} and {{email}} can't silently collide as
+  // two distinct-looking-but-runtime-identical bindings (audit finding L3).
   const byId = new Set<string>()
   const data: Record<string, unknown>[] = []
   for (const row of rows) {
     const id = row.id.trim()
     if (!id) continue
-    if (byId.has(id)) {
+    const idKey = id.toLowerCase()
+    if (byId.has(idKey)) {
       return { ok: false, error: `Duplicate variable id: ${id}` }
     }
     if (!ID_PATTERN.test(id)) {
@@ -118,7 +129,7 @@ export function rowsToServerPayload(
         error: `Invalid id "${id}". Use letters, numbers, underscore; start with a letter (same as in {{id}}).`,
       }
     }
-    byId.add(id)
+    byId.add(idKey)
     const rec: Record<string, unknown> = {
       id,
       label: row.label.trim() || labelFromId(id),
@@ -131,17 +142,34 @@ export function rowsToServerPayload(
         .map((s) => s.trim())
         .filter(Boolean)
       rec.options = options
+      const def = row.defaultValue.trim()
+      if (def) {
+        if (!options.includes(def)) {
+          return { ok: false, error: `Default "${def}" for "${id}" must be one of its options.` }
+        }
+        rec.default = def
+      }
     } else {
       rec.options = []
+      const def = row.defaultValue.trim()
+      if (def) rec.default = def
     }
+    if (row.sensitive) rec.sensitive = true
     data.push(rec)
   }
   return { ok: true, data }
 }
 
 export function missingSpottedIds(spotted: string[], rows: VariableFormRow[]): string[] {
-  const have = new Set(rows.map((r) => r.id.trim()).filter(Boolean))
-  return spotted.filter((id) => !have.has(id))
+  const have = new Set(rows.map((r) => r.id.trim().toLowerCase()).filter(Boolean))
+  return spotted.filter((id) => !have.has(id.toLowerCase()))
+}
+
+/** Declared rows whose id never appears in any step ({{id}} typed nowhere) — a dead variable
+ * the agent would still prompt for (audit finding M2). */
+export function unusedRowIds(spotted: string[], rows: VariableFormRow[]): string[] {
+  const used = new Set(spotted.map((id) => id.toLowerCase()))
+  return rows.map((r) => r.id.trim()).filter((id) => id && !used.has(id.toLowerCase()))
 }
 
 export function addSpottedToRows(
@@ -155,6 +183,8 @@ export function addSpottedToRows(
     label: labelFromId(id),
     varType: 'text' as const,
     optionsText: '',
+    defaultValue: '',
+    sensitive: false,
   }))
   return [...rows, ...additions]
 }
