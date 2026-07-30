@@ -20,6 +20,9 @@ PUBLIC_PATHS = {
     # Runtime phonehome — installed runtimes have no Clerk session, only sync tokens.
     # This stores best-effort device registration; spoofing just inflates counts.
     "/api/v1/telemetry/runtime-start",
+    # Signed, unauthenticated self-update manifest polled by every installed
+    # runtime (runtime/manifest_manager.js) — no Clerk session exists at that point.
+    "/api/v1/manifest.json",
 }
 
 # Runtime telemetry ingestion uses its own package token; tracking reads stay behind Clerk.
@@ -28,6 +31,15 @@ PUBLIC_TRACKING_EVENT_PREFIXES = ("/api/tracking/", "/api/v1/tracking/")
 # Installed runtimes read data-only skill-pack deltas during startup before any
 # dashboard Clerk session exists. Event ingestion remains package-token guarded.
 PUBLIC_SKILL_PACK_SYNC_PREFIXES = ("/api/v1/skill-packs/",)
+
+# Versioned equivalents nested under /api/v1/plugins/{installer_version}/{company}/...
+# (see skillpack_update_routes.versioned_router / tracking_routes.versioned_router).
+# Matched by suffix rather than a blanket "/api/v1/plugins/" prefix because that
+# same path segment also hosts plugin_routes.py's Clerk-protected dashboard
+# endpoints (list/create/delete plugins) — only these two specific, package-token
+# guarded sub-paths are exempt from the Clerk gate.
+PUBLIC_VERSIONED_PLUGIN_SUFFIXES_GET = ("/skill-packs/delta",)
+PUBLIC_VERSIONED_PLUGIN_SUFFIXES_POST = ("/tracking/events",)
 
 # Installer downloads are fetched by end users who have no Clerk account; the
 # plugin_id in the path is the only credential and the file is non-sensitive.
@@ -55,8 +67,13 @@ def _is_public_path(path: str, method: str = "GET") -> bool:
         return True
     if method.upper() == "GET" and any(normalized.startswith(p.rstrip("/")) for p in PUBLIC_SKILL_PACK_SYNC_PREFIXES):
         return True
+    if method.upper() == "GET" and normalized.startswith("/api/v1/plugins/"):
+        return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_PLUGIN_SUFFIXES_GET)
     if method.upper() == "POST" and normalized.endswith("/events"):
-        return any(normalized.startswith(p) for p in PUBLIC_TRACKING_EVENT_PREFIXES)
+        if any(normalized.startswith(p) for p in PUBLIC_TRACKING_EVENT_PREFIXES):
+            return True
+        if normalized.startswith("/api/v1/plugins/"):
+            return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_PLUGIN_SUFFIXES_POST)
     return False
 
 

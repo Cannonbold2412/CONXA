@@ -4,6 +4,11 @@
 
 ---
 
+## Fixed installed customer apps being unable to download their skills or check for updates — 2026-07-31
+Every customer who installed one of our packaged apps was hitting a wall right after install: the app could never fetch its actual workflow files or check for a newer version, so its skills folder stayed empty no matter how long you waited. The cause was a security check on our servers that requires a proper login for almost everything — but a few specific requests are supposed to be let through without one, because a freshly installed app has no login yet, only a private access code baked in at build time. The list of "let these through" addresses on our server hadn't been updated to match where those requests actually go, so they were being turned away before our own code even got a chance to check the access code. The addresses have now been corrected, so a fresh install can pull down its skills and check for updates as intended.
+
+---
+
 ## Fixed a rare "reinstall the app" error when running a workflow test — 2026-07-30
 Occasionally, clicking Test on a workflow would fail with a scary message about the test engine being missing and needing to be reinstalled, even though nothing was actually wrong with the install. The test area keeps a note saying "already set up, no need to redo it" so it doesn't waste time rebuilding itself every single run — but that note could end up wrong if a previous run got interrupted partway through, leaving the note saying "all done" when a piece was actually still missing, like a "moving complete" sticky note left on a box that only got half-packed. It now double-checks that the piece the note claims exists is actually there before trusting it, so a one-off interruption fixes itself on the very next test run instead of failing every time until someone manually intervenes.
 
