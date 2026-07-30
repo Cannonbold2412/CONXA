@@ -39,7 +39,11 @@ def _bootstrap_runtime_dir() -> Path | None:
     """Locate the Studio deps-managed runtime (~/.conxa-build-studio/deps/runtime/<version>/).
 
     Mirrors services.bootstrap._deps_dir(); kept inline so this module stays
-    dependency-free. Returns the highest-versioned dir that holds a packed exe.
+    dependency-free. A local dev build (build-runtime-local.ps1, named
+    "host-v0.0.0-local.<timestamp>") always wins over a downloaded release — otherwise
+    "host-v1.2.3" outranks it lexicographically, shipping code older than the current
+    checkout (see FIX.md 2026-07-30, and the analogous fix to _bootstrap_app_dir()).
+    Absent a local build, returns the highest-versioned dir that holds a packed exe.
     """
     runtime_root = _studio_base() / "deps" / "conxa-runtime"
     if not runtime_root.is_dir():
@@ -47,6 +51,11 @@ def _bootstrap_runtime_dir() -> Path | None:
     candidates = [d for d in runtime_root.iterdir() if d.is_dir() and _runtime_exe(d) is not None]
     if not candidates:
         return None
+
+    local_builds = [d for d in candidates if "-local." in d.name]
+    if local_builds:
+        return max(local_builds, key=lambda d: d.name)
+
     candidates.sort(key=lambda d: d.name)
     return candidates[-1]
 
@@ -54,20 +63,30 @@ def _bootstrap_runtime_dir() -> Path | None:
 def _bootstrap_app_dir() -> Path | None:
     """Locate the Studio deps-managed app layer (~/.conxa-build-studio/deps/conxa-app/<version>/).
 
-    Mirrors _bootstrap_runtime_dir(). Prefers $CONXA_APP_LOCAL_DIR (set by the deps
-    bootstrap to the active version dir); otherwise returns the highest-named subdir.
-    Returns None when there is no app layer (e.g. a dev checkout).
+    Mirrors _bootstrap_runtime_dir(). A local dev build (build-app-local.ps1, named
+    "app-v0.0.0-local.<timestamp>") always wins over a downloaded release — otherwise
+    "app-v1.3.4" outranks it (both lexicographically and via $CONXA_APP_LOCAL_DIR,
+    which the deps bootstrap points at whatever it just downloaded), silently shipping
+    an installer built from stale code instead of the current checkout. Absent a local
+    build, prefers $CONXA_APP_LOCAL_DIR, then the highest-named subdir. Returns None
+    when there is no app layer (e.g. a dev checkout with deps never bootstrapped).
     """
+    app_root = _studio_base() / "deps" / "conxa-app"
+    candidates = (
+        [d for d in app_root.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        if app_root.is_dir() else []
+    )
+
+    local_builds = [d for d in candidates if "-local." in d.name]
+    if local_builds:
+        return max(local_builds, key=lambda d: d.name)
+
     local = os.environ.get("CONXA_APP_LOCAL_DIR", "").strip()
     if local:
         p = Path(local)
         if p.is_dir():
             return p
 
-    app_root = _studio_base() / "deps" / "conxa-app"
-    if not app_root.is_dir():
-        return None
-    candidates = [d for d in app_root.iterdir() if d.is_dir() and not d.name.startswith(".")]
     if not candidates:
         return None
     candidates.sort(key=lambda d: d.name)

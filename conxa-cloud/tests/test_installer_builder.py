@@ -1,6 +1,46 @@
 from conxa_compile.installer_builder import _render_nsis_script
 
 
+def _make_runtime_candidate(root, name):
+    d = root / "deps" / "conxa-runtime" / name
+    d.mkdir(parents=True)
+    (d / "conxa-runtime.exe").touch()
+    (d / "keytar.node").touch()
+    return d
+
+
+def test_find_studio_cache_runtime_dir_local_build_beats_higher_numbered_release(tmp_path, monkeypatch):
+    """A local dev build (build-runtime-local.ps1) must win even though a downloaded
+    release sorts higher numerically ("host-v1.2.3" -> (1,2,3) outranks the local
+    build's (0,0,0,<timestamp>) on the very first tuple element) — otherwise Build
+    Installer ships a host exe built before the current checkout, missing whatever
+    _pkg_stubs.js deps were added since (the jsonc-parser regression this guards
+    against; see FIX.md 2026-07-30)."""
+    from conxa_compile import installer_builder
+
+    monkeypatch.setenv("CONXA_STUDIO_HOME", str(tmp_path))
+    downloaded = _make_runtime_candidate(tmp_path, "host-v1.2.3")
+    local_build = _make_runtime_candidate(tmp_path, "host-v0.0.0-local.20260730124242")
+
+    result = installer_builder._find_studio_cache_runtime_dir()
+
+    assert result == local_build
+    assert result != downloaded
+
+
+def test_find_studio_cache_runtime_dir_picks_highest_numbered_release_without_local(tmp_path, monkeypatch):
+    from conxa_compile import installer_builder
+
+    monkeypatch.setenv("CONXA_STUDIO_HOME", str(tmp_path))
+    _make_runtime_candidate(tmp_path, "host-v1.0.0")
+    newest = _make_runtime_candidate(tmp_path, "host-v1.2.3")
+    _make_runtime_candidate(tmp_path, "host-v1.1.9")
+
+    result = installer_builder._find_studio_cache_runtime_dir()
+
+    assert result == newest
+
+
 def test_rendered_nsis_uses_skill_packs_paths(tmp_path):
     nsi_path = _render_nsis_script(tmp_path, "render", "Render", "v1.0.0")
     rendered = nsi_path.read_text(encoding="utf-8")

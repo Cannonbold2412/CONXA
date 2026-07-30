@@ -4,6 +4,14 @@
 
 ---
 
+## Fixed customer installers sometimes shipping months-old app code even after a fix was made — 2026-07-30
+A developer testing locally kept seeing the "Protocol http not supported" error even after that exact bug had already been fixed and rebuilt. The reason: when building a customer installer, the system keeps both a freshly rebuilt copy of the app and, separately, whatever copy it last downloaded from the cloud, and it was picking whichever one happened to sort last alphabetically — like a filing cabinet that hands you the folder labeled "March" instead of "January" just because M comes after J, even though January is the one you actually just updated. It now always prefers a freshly rebuilt local copy over a downloaded one, so testers and developers reliably see the code they just changed, not a stale version from weeks earlier.
+
+## Fixed a second, related case of installers shipping an out-of-date core program file — 2026-07-30
+Right after fixing the app-code problem above, the same test install hit a follow-on error: "Cannot find module 'jsonc-parser'". The core engine file that actually runs on a customer's computer has its own separate "which version do I use" picker, and it had the identical filing-cabinet mistake, just in a sneakier form — it compared version numbers like 1.2.3 versus 0.0.0, and treated the higher number as newer even when the 0.0.0 one was the just-built, actually-current copy. So the installer kept grabbing a copy of the engine built before a newer feature (the one this exact error comes from) was added to it. Both places that make this choice now correctly prefer a freshly rebuilt local copy first, closing out the whole class of "installer ships stale code" bugs found during this test session.
+
+---
+
 ## Fixed the cloud dashboard crashing when clicking "Rebuild" on a test (non-live) release channel — 2026-07-30
 Clicking "Rebuild" on anything other than the main live channel threw a server error and the rebuild never finished. The cloud's local storage saves each channel's data in its own named folder, and the test channel's folder name had a colon in it — a character Windows refuses to allow in folder names, like trying to label a folder "notes:draft" in File Explorer and having it get rejected. The system now swaps out any character Windows won't allow before creating the folder, so rebuilding on any channel works the same as the live one.
 

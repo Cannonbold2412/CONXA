@@ -335,7 +335,14 @@ def _runtime_version_sort_key(path: Path) -> tuple[int, tuple[int, ...], str]:
 
 
 def _find_studio_cache_runtime_dir() -> Path:
-    """Return the latest Build Studio runtime cache directory."""
+    """Return the latest Build Studio runtime cache directory.
+
+    A local dev build (build-runtime-local.ps1, named "host-v0.0.0-local.<ts>") always
+    wins over a downloaded release. _runtime_version_sort_key() compares numeric tuples,
+    so "host-v1.2.3" -> (1,2,3) outranks the local build's (0,0,0,<timestamp>) on the
+    very first element — shipping an installer built from host code older than the
+    current checkout (see FIX.md 2026-07-30).
+    """
     runtime_root = _studio_runtime_root()
     if not runtime_root.is_dir():
         raise RuntimeError(_STUDIO_RUNTIME_MISSING)
@@ -347,7 +354,11 @@ def _find_studio_cache_runtime_dir() -> Path:
     if not candidates:
         raise RuntimeError(_STUDIO_RUNTIME_MISSING)
 
-    candidate = max(candidates, key=_runtime_version_sort_key)
+    local_builds = [p for p in candidates if "-local." in p.name]
+    candidate = (
+        max(local_builds, key=lambda p: p.name) if local_builds
+        else max(candidates, key=_runtime_version_sort_key)
+    )
     runtime_exe = candidate / "conxa-runtime.exe"
     keytar_node = candidate / "keytar.node"
     if not runtime_exe.is_file():

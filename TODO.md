@@ -583,6 +583,17 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Complexity:** S each.
 - **Success criteria:** each gap either gets a real fix (e.g., path re-validation for SG-12) or an explicit, documented "accepted risk, will not fix" decision in `docs/Security.md` rather than sitting in an ambiguous "Low, not urgent" state indefinitely.
 
+### TEST-4 — Studio deps-cache version picker can select a stale runtime/app-layer build
+- **Category:** Testing & Cleanup / Builder
+- **Description:** `_bootstrap_runtime_dir()`/`_bootstrap_app_dir()` in `conxa_compile/conxa_runtime.py` pick the highest-versioned directory under `~/.conxa-build-studio(-dev)/deps/conxa-runtime|conxa-app/` via `_runtime_version_sort_key()`, which tuple-compares the digit groups parsed out of the directory name. This breaks when a real tagged build (e.g. `host-v1.2.3` → `(1,2,3)`) and a local dev build (e.g. `host-v0.0.0-local.20260721135338` → `(0,0,0,20260721135338)`) coexist in the same deps folder: Python tuple comparison stops at the first differing element, so `(1,2,3) > (0,0,0,…)` regardless of the local build's later timestamp — the stale/unrelated `v1.2.3` build silently wins over a just-built local one. Reproduced directly: a `host-v1.2.3` directory (whose bundled `bootstrap.js` predated the `register-mcp`/`unregister-mcp` subcommand) was picked by `_stage_runtime_binary()` for a customer installer build over a same-day local build that had the subcommand, so the resulting install's `conxa-runtime.exe register-mcp` silently did nothing (fell through to launching the full MCP server instead) instead of registering into any AI agent host.
+- **Why required:** silently picking the wrong cached build produces installers/test-sandboxes built from stale runtime code with no error or warning — the failure only surfaces later as a confusing runtime behavior mismatch, as it did here.
+- **Business value:** avoids shipping (or locally testing against) a build that doesn't reflect current `runtime/` source, without the developer realizing it.
+- **Technical value:** narrow, well-isolated fix — `_runtime_version_sort_key()` needs either directory mtime as a tiebreaker/primary key, or to stop mixing tagged semver-style names with the `-local.<timestamp>` naming scheme in the same comparison.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic — low urgency since `build-runtime-local.ps1`/`build-app-local.ps1` already delete every other version dir after a local build, which mostly avoids the collision going forward; only bites when something else (e.g. a real download from "Build Installer") repopulates a second, differently-named version dir alongside a local build.
+- **Complexity:** S.
+- **Success criteria:** `_bootstrap_runtime_dir()`/`_bootstrap_app_dir()` always resolve to the most-recently-built candidate (by mtime, not by name-parsed digit tuple) when multiple version directories are present.
+
 ### ADV-1 — TwelveLabs video-understanding integration
 - **Category:** Advanced / Research Integrations
 - **Description:** Per `research-analysis/07-go-to-market/twelvelabs-video-strategy.md`: Conxa already captures a `recording.webm` for every recorded workflow but doesn't currently use video-understanding models on it. Four integration points are laid out in detail: (1) compile-time intent enrichment (Pegasus model — richer per-step intent descriptions than can be inferred from screenshots/DOM alone); (2) semantic skill discovery and dedup (Marengo model — detect that two separately-recorded workflows are actually the same underlying task); (3) auto-generated assertions (Pegasus — infer expected post-conditions from what visibly changed in the recording); (4) recovery describe-then-match using Marengo at Tier 3+ only, consistent with the zero-token-hot-path invariant.
@@ -643,6 +654,22 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** opportunistic.
 - **Complexity:** S (add an editor) or M (migrate and delete, since it touches `compiler/patch.py` and the runtime's `verifyAssertions()` contract).
 - **Success criteria:** `success_conditions` is either editable through a real UI or removed from the schema — no third state.
+
+### ~~BUILD-8 — Host-exe deps picker has the same stale-local-build bug the app-layer picker had~~ — **Resolved 2026-07-30**
+- **Category:** Builder
+- **Description:** Fixed for both places that pick a host exe. `_bootstrap_runtime_dir()` (`conxa_runtime.py`, used by `resolve_runtime_dir()` for the Test Skill/sandbox path) sorted lexicographically, so `"host-v1.2.3"` outranked a local build. Separately — and this is what actually shipped the bug to a real installer — `installer_builder.py::_find_studio_cache_runtime_dir()` (used by `build_installer()`/"Build Installer") sorts by a *numeric*-tuple key (`_runtime_version_sort_key()`), which still picked `"host-v1.2.3"` → `(1,2,3)` over the local build's `"host-v0.0.0-local.<ts>"` → `(0,0,0,<ts>)`, because the first tuple element (`0` vs `1`) decides before the timestamp is ever compared. The installer shipped a host exe built before commit `caf2352` added `jsonc-parser` to `_pkg_stubs.js`, so the packaged exe's own `__hostRequire` bundle lacked it — surfacing at runtime as `Cannot find module 'jsonc-parser'` when `config_edit.js` (loaded from the disk app layer) fell through to a bare `require()` the host exe's snapshot couldn't satisfy (see `FIX.md` 2026-07-30). Both functions now prefer the newest `-local.`-named directory (a marker `build-runtime-local.ps1` already emits) before falling back to their prior version-comparison logic.
+- **Success criteria:** a locally rebuilt host exe (via `build-runtime-local.ps1`) is always what both `_bootstrap_runtime_dir()` and `_find_studio_cache_runtime_dir()` return when a local build and a downloaded release are both present in the deps cache. Covered by `test_conxa_runtime.py::TestBootstrapRuntimeDir` and `test_installer_builder.py::test_find_studio_cache_runtime_dir_local_build_beats_higher_numbered_release`.
+
+### BUILD-9 — Dev deps manifest can pin an app layer older than the runtime code requires
+- **Category:** Builder
+- **Description:** Discovered while diagnosing the BUILD-8-adjacent stale-app-layer bug (2026-07-30, see `FIX.md`): the dev deps manifest pinned `app-v1.3.4`, built 2026-07-04, which was missing five files (`http_client.js`, `page_scripts.js`, `durable_context.js`, `config_edit.js`, `mcp_hosts.js`) that the current `server.js`/`sync.js` require to even start. A fresh dev machine that bootstraps deps without ever running `build-app-local.ps1` would download this pinned version and hit the same runtime failure the http/https fix was meant to close.
+- **Why required:** the deps manifest is a silent trust boundary — nothing currently checks that a downloaded/pinned app layer actually contains the files the checked-out runtime source expects.
+- **Business value:** low-moderate — mainly protects new-developer onboarding and CI-adjacent dev flows from a confusing "works on my machine" gap.
+- **Technical value:** moderate — either bump the pinned dev manifest version, or add a build-time staleness check in `installer_builder.py::_stage_runtime_binary()` that diffs the staged app layer's `version.json` file list against a required-files constant and fails loudly instead of shipping an incomplete bundle.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic; do before the next round of onboarding a new developer to Build Studio.
+- **Complexity:** S (bump the pin) to M (add the staleness-check guard).
+- **Success criteria:** either the pinned dev app-layer version is kept current, or a build-time check catches a staged app layer missing files the current runtime source requires, before it reaches an installer.
 
 ---
 

@@ -71,6 +71,44 @@ class TestResolveRuntimeDir:
         assert resolve_runtime_dir() is None
 
 
+# ─── _bootstrap_runtime_dir ────────────────────────────────────────────────────
+
+class TestBootstrapRuntimeDir:
+    def _make_candidate(self, root: Path, name: str) -> Path:
+        d = root / "deps" / "conxa-runtime" / name
+        d.mkdir(parents=True)
+        (d / "conxa-runtime.exe").touch()
+        return d
+
+    def test_local_build_beats_higher_numbered_release(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """build-runtime-local.ps1's output must win even though a downloaded release
+        sorts higher lexicographically ("host-v1.2.3" > "host-v0.0.0-local.<ts>") —
+        otherwise an installer build ships a host exe older than the current checkout
+        (the jsonc-parser regression this guards against; see FIX.md 2026-07-30)."""
+        monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path))
+        downloaded = self._make_candidate(tmp_path, "host-v1.2.3")
+        local_build = self._make_candidate(tmp_path, "host-v0.0.0-local.20260730124242")
+
+        from conxa_compile.conxa_runtime import _bootstrap_runtime_dir
+
+        result = _bootstrap_runtime_dir()
+
+        assert result == local_build
+        assert result != downloaded
+
+    def test_picks_highest_version_without_local_build(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path))
+        self._make_candidate(tmp_path, "host-v1.0.0")
+        newest = self._make_candidate(tmp_path, "host-v1.2.3")
+        self._make_candidate(tmp_path, "host-v1.1.9")
+
+        from conxa_compile.conxa_runtime import _bootstrap_runtime_dir
+
+        result = _bootstrap_runtime_dir()
+
+        assert result == newest
+
+
 # ─── _bootstrap_app_dir ───────────────────────────────────────────────────────
 
 class TestBootstrapAppDir:
@@ -108,6 +146,41 @@ class TestBootstrapAppDir:
         result = _bootstrap_app_dir()
 
         assert result is None
+
+    def test_local_build_beats_downloaded_release(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """scripts/build-app-local.ps1 output must win even though a downloaded release
+        sorts higher lexicographically ("app-v1.3.4" > "app-v0.0.0-local.<ts>") and even
+        though the deps bootstrap points CONXA_APP_LOCAL_DIR at whatever it just
+        downloaded — otherwise Build Installer ships a stale app layer built before the
+        current checkout (the http:// sync fix regression this guards against)."""
+        monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path))
+        app_root = tmp_path / "deps" / "conxa-app"
+        downloaded = app_root / "app-v1.3.4"
+        downloaded.mkdir(parents=True)
+        local_build = app_root / "app-v0.0.0-local.20260730124130"
+        local_build.mkdir()
+        monkeypatch.setenv("CONXA_APP_LOCAL_DIR", str(downloaded))
+
+        from conxa_compile.conxa_runtime import _bootstrap_app_dir
+
+        result = _bootstrap_app_dir()
+
+        assert result == local_build
+
+    def test_newest_local_build_used_when_multiple(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CONXA_APP_LOCAL_DIR", raising=False)
+        monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path))
+        app_root = tmp_path / "deps" / "conxa-app"
+        older = app_root / "app-v0.0.0-local.20260701000000"
+        older.mkdir(parents=True)
+        newer = app_root / "app-v0.0.0-local.20260730124130"
+        newer.mkdir()
+
+        from conxa_compile.conxa_runtime import _bootstrap_app_dir
+
+        result = _bootstrap_app_dir()
+
+        assert result == newer
 
 
 # ─── sync_skill_pack ──────────────────────────────────────────────────────────
