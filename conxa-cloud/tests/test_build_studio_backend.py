@@ -503,6 +503,7 @@ def test_auth_stop_recording_marks_plugin_ready(backend, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "database_url", "")
 
     plugin = create_plugin("Example Plugin", "https://example.test/login")
+    auth_path = tmp_path / "plugins" / plugin.id / "auth" / "auth.json"
 
     class FakeContext:
         def storage_state(self, path: str) -> None:
@@ -526,7 +527,10 @@ def test_auth_stop_recording_marks_plugin_ready(backend, monkeypatch, tmp_path):
             return []
 
         async def stop(self):
-            return None
+            # Mirrors RecordingSession.stop(): the recorder thread forces a final
+            # storage_state autosave right before it tears down (session.py L1074).
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            self._context.storage_state(path=str(auth_path))
 
     class FakeRegistry:
         def get(self, session_id: str):
