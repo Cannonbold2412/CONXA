@@ -115,7 +115,7 @@ def try_open_select_wait_rule(
         return None
     if is_commit:
         return None
-    action = str((step.get("action") or {}).get("action") or "").lower()
+    action = action_name(step).lower()
     if action != "click":
         return None
     roles = disclosure_roles(step)

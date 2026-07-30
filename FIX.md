@@ -4,6 +4,11 @@
 
 ---
 
+## Fixed a crash when drawing a new box around an element in the step editor — 2026-07-25
+In the Human Edit screen's "pick element" step, drawing a fresh box around an element and clicking Continue always showed a scary "Something went wrong inside the app" message instead of moving on to the next step. The real cause: one internal check was written assuming a step's recorded action was always stored one way, but some steps store it a different (also valid) way, so the check tripped over its own assumption and crashed every single time, before the app ever got as far as looking at the drawn box. That check now reads the action the same safe way the rest of the app already does. Along the way we also closed a second, related gap in the same screen: if the AI that identifies what's inside the drawn box ever gives back an oddly-shaped answer, the app now treats that like any other "couldn't find it" case instead of crashing.
+
+---
+
 ## Fixed the remaining problems from this week's "compile → edit → test" hand-off audit — 2026-07-24
 Following up on the audit that found edits quietly not reaching the Test button, we closed out the rest of its findings. Testing a workflow now double-checks, on the server itself, that nothing was edited after the last build — before, that safety check only lived in the on-screen button and could be skipped. Saving a step that only touched something unrelated (like its description) no longer quietly rewrites the element-finding data behind the scenes, so that data stays as accurate as when it was first compiled. A search box or similar field that's only labeled by its placeholder text (like a greyed-out "Search…" hint) can now be found again automatically if the page changes slightly — previously, self-healing gave up immediately on exactly this kind of field. When an AI assistant is told what information a skill needs to run, it's no longer told every field is mandatory when some already have sensible defaults, and drop-down fields now show their actual list of choices instead of looking like free-text. And a password or other value marked "sensitive" during setup is no longer saved in plain text after a test run. All of this is covered by new automated tests.
 

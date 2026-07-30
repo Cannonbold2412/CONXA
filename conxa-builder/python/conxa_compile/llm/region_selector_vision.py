@@ -32,6 +32,7 @@ from conxa_compile.llm.client import call_llm
 from conxa_compile.llm.openapi_client import SelectorCandidate
 from conxa_compile.llm.selector_regeneration import _dom_snippet_for_llm
 from conxa_compile.policy.bundle import get_policy_bundle
+from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
 
 
 def compile_selectors_for_region(
@@ -99,27 +100,37 @@ def compile_selectors_for_region(
         "image_mime": "image/jpeg",
     }
     err_lines: list[str] = []
-    data = call_llm(
-        "region_selector",
-        payload,
-        settings.llm_vision_timeout_ms,
-        error_detail=err_lines,
-    )
-    if not isinstance(data, dict):
-        return []
+    try:
+        data = call_llm(
+            "region_selector",
+            payload,
+            settings.llm_vision_timeout_ms,
+            error_detail=err_lines,
+        )
+        if not isinstance(data, dict):
+            return []
 
-    raw_candidates = data.get("candidates")
-    if not isinstance(raw_candidates, list):
-        return []
+        raw_candidates = data.get("candidates")
+        if not isinstance(raw_candidates, list):
+            return []
 
-    candidates: list[SelectorCandidate] = []
-    for item in raw_candidates:
-        if not isinstance(item, dict):
-            continue
-        sel = str(item.get("selector") or "").strip()
-        if not sel:
-            continue
-        candidates.append(SelectorCandidate.from_dict(item))
+        candidates: list[SelectorCandidate] = []
+        for item in raw_candidates:
+            if not isinstance(item, dict):
+                continue
+            sel = str(item.get("selector") or "").strip()
+            if not sel:
+                continue
+            candidates.append(SelectorCandidate.from_dict(item))
+    except (QuotaExceeded, EntitlementBlocked, CloudUnreachable):
+        # Infrastructure failures get specific, actionable messages upstream
+        # (cmd_retarget_preview) — let them propagate instead of swallowing them here.
+        raise
+    except Exception:
+        # Anything else (a malformed candidate from the vision LLM, a cache hiccup, etc.)
+        # honors this function's documented "[] on any failure" contract instead of
+        # surfacing as a generic internal-error crash.
+        return []
 
     if snapshot_hash and candidates:
         selector_cache.set(snapshot_hash, bbox, effective_model, [c.to_dict() for c in candidates])
