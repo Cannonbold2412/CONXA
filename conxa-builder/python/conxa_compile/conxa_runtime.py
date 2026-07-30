@@ -280,9 +280,19 @@ def ensure_test_sandbox(
     if version_file.is_file() and _runtime_exe(conxa_dir) is not None:
         try:
             meta = json.loads(version_file.read_text(encoding="utf-8"))
+            # version.json is written before the app-layer copy completes (see
+            # stage_runtime_payload), so a matching label alone doesn't prove the
+            # app layer is actually there — an interrupted or overlapping stage can
+            # leave it stale. Confirm the file bootstrap.js actually loads exists too,
+            # so a broken sandbox self-heals on the next run instead of wedging.
+            app_layer_ok = (
+                app_dir is None
+                or (conxa_dir / "conxa-app" / "current" / "server.js").is_file()
+            )
             if (
                 meta.get("runtime_version") == runtime_dir.name
                 and meta.get("app_version") == (app_dir.name if app_dir else None)
+                and app_layer_ok
             ):
                 need_stage = False
         except Exception:

@@ -429,6 +429,10 @@ class TestEnsureTestSandbox:
             _json.dumps({"runtime_version": runtime_dir.name, "app_version": app_dir.name}),
             encoding="utf-8",
         )
+        # App layer already fully staged from a previous run — the cache-hit check
+        # now verifies this file is actually present, not just the version label.
+        (conxa_dir / "conxa-app" / "current").mkdir(parents=True)
+        (conxa_dir / "conxa-app" / "current" / "server.js").write_bytes(b"staged")
 
         from conxa_compile.conxa_runtime import ensure_test_sandbox
         with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
@@ -479,6 +483,33 @@ class TestEnsureTestSandbox:
 
         # Re-staged due to app version change
         assert (conxa_dir / "conxa-runtime.exe").read_bytes() == b"exe"
+
+    def test_restages_when_app_layer_missing_despite_matching_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A version.json label match alone must not be trusted if conxa-app/current/
+        server.js isn't actually there (interrupted or raced staging) — otherwise the
+        sandbox stays permanently broken instead of self-healing on the next run."""
+        import json as _json
+        monkeypatch.setenv("SKILL_DATA_DIR", str(tmp_path))
+        runtime_dir = self._make_runtime_dir(tmp_path)
+        app_dir = self._make_app_dir(tmp_path)
+
+        conxa_dir = tmp_path / "sandbox" / ".conxa"
+        conxa_dir.mkdir(parents=True)
+        (conxa_dir / "conxa-runtime.exe").write_bytes(b"original")
+        # Labels match current deps versions, but conxa-app/ was never staged.
+        (conxa_dir / "version.json").write_text(
+            _json.dumps({"runtime_version": runtime_dir.name, "app_version": app_dir.name}),
+            encoding="utf-8",
+        )
+
+        from conxa_compile.conxa_runtime import ensure_test_sandbox
+        with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=True):
+            ensure_test_sandbox(runtime_dir, app_dir)
+
+        version_dest = conxa_dir / "conxa-app" / app_dir.name
+        assert (version_dest / "server.jsc").is_file()
 
 
 # ─── call_runtime_tool env injection ──────────────────────────────────────────

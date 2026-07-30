@@ -4,6 +4,11 @@
 
 ---
 
+## Fixed a rare "reinstall the app" error when running a workflow test — 2026-07-30
+Occasionally, clicking Test on a workflow would fail with a scary message about the test engine being missing and needing to be reinstalled, even though nothing was actually wrong with the install. The test area keeps a note saying "already set up, no need to redo it" so it doesn't waste time rebuilding itself every single run — but that note could end up wrong if a previous run got interrupted partway through, leaving the note saying "all done" when a piece was actually still missing, like a "moving complete" sticky note left on a box that only got half-packed. It now double-checks that the piece the note claims exists is actually there before trusting it, so a one-off interruption fixes itself on the very next test run instead of failing every time until someone manually intervenes.
+
+---
+
 ## Fixed customer installers sometimes shipping months-old app code even after a fix was made — 2026-07-30
 A developer testing locally kept seeing the "Protocol http not supported" error even after that exact bug had already been fixed and rebuilt. The reason: when building a customer installer, the system keeps both a freshly rebuilt copy of the app and, separately, whatever copy it last downloaded from the cloud, and it was picking whichever one happened to sort last alphabetically — like a filing cabinet that hands you the folder labeled "March" instead of "January" just because M comes after J, even though January is the one you actually just updated. It now always prefers a freshly rebuilt local copy over a downloaded one, so testers and developers reliably see the code they just changed, not a stale version from weeks earlier.
 
