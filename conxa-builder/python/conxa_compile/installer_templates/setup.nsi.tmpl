@@ -138,9 +138,15 @@ Section "Runtime" SEC_RUNTIME
   File "${STAGING_DIR}\runtime\version.json"
   !insertmacro MakeJunction "${RUNTIME_ROOT}\current" "${RUNTIME_ROOT}\${RUNTIME_VER}"
 
-  ; Pre-extracted app layer — /nonfatal is a no-op if source dir is absent
+  ; Pre-extracted app layer — /nonfatal is a no-op if source dir is absent.
+  ; Source must be the version subfolder, not conxa-app\*.* — the staged conxa-app\
+  ; dir also contains a `current` junction (stage_runtime_payload's _ensure_junction)
+  ; pointing right back at this same version folder, and makensis follows junctions
+  ; as real directories, so a bare wildcard here double-copies everything one level
+  ; too deep (conxa-app\<ver>\<ver>\... and conxa-app\<ver>\current\...) and server.js
+  ; never lands where the app_stage_done check below expects it.
   SetOutPath "${APP_ROOT}\${APP_VER}"
-  File /nonfatal /r "${STAGING_DIR}\runtime\conxa-app\*.*"
+  File /nonfatal /r "${STAGING_DIR}\runtime\conxa-app\${APP_VER}\*.*"
   IfFileExists "${APP_ROOT}\${APP_VER}\server.js" 0 app_stage_done
   !insertmacro MakeJunction "${APP_ROOT}\current" "${APP_ROOT}\${APP_VER}"
   app_stage_done:

@@ -4,6 +4,11 @@
 
 ---
 
+## Fixed a packing mistake that made the customer installer fail right after "Setup complete!" — 2026-07-25
+A customer install would finish and immediately show a confusing "Setup complete! (no status available — code 1)" message, and the app itself refused to start afterward, complaining it couldn't find its own program files. The cause: the installer copies a folder of app files plus a shortcut-style pointer to that same folder, but the packaging step was also blindly sweeping up the pointer as if it were more real content — like photocopying a folder and, without realizing it, also photocopying the label that says "see the folder over there," landing a confused duplicate copy inside itself instead of the real files ending up where the app expects them. The installer now copies only the real folder, so the files land exactly where the app looks for them on first launch.
+
+---
+
 ## Fixed a crash when drawing a new box around an element in the step editor — 2026-07-25
 In the Human Edit screen's "pick element" step, drawing a fresh box around an element and clicking Continue always showed a scary "Something went wrong inside the app" message instead of moving on to the next step. The real cause: one internal check was written assuming a step's recorded action was always stored one way, but some steps store it a different (also valid) way, so the check tripped over its own assumption and crashed every single time, before the app ever got as far as looking at the drawn box. That check now reads the action the same safe way the rest of the app already does. Along the way we also closed a second, related gap in the same screen: if the AI that identifies what's inside the drawn box ever gives back an oddly-shaped answer, the app now treats that like any other "couldn't find it" case instead of crashing.
 
