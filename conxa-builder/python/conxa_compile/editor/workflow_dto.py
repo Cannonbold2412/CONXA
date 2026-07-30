@@ -9,7 +9,6 @@ _build_reference_for_audit after each edit; nothing here calls back into it.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from conxa_compile.anchors.schema import normalize_anchor_list
