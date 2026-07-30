@@ -155,7 +155,7 @@ jobs:
             "server", "sync", "run", "browser",
             "skill_loader", "auth_manager", "tracker", "install_identity",
             "bootstrap", "recovery", "resolve_adapter", "resolver", "drift", "version_manager",
-            "manifest_manager", "page_scripts",
+            "manifest_manager", "http_client", "page_scripts",
             "durable_context", "config_edit", "mcp_hosts"
           )
           foreach ($base in $files) {
