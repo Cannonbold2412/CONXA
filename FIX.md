@@ -9,6 +9,11 @@ Occasionally, clicking Test on a workflow would fail with a scary message about 
 
 ---
 
+## Corrected wrong instructions in the "Record Workflow" screen — 2026-07-30
+The help text shown before recording a workflow was giving instructions that didn't match what the app actually does. It said closing the browser finishes the recording, but you actually still have to click a "Save Workflow Now" button afterward — closing the browser alone doesn't save anything. It also said to "use variables instead" to avoid recording passwords, but that's not how it works: password fields are simply detected and blanked out automatically, no action needed. A tip about a hover setting that some workflows need was missing entirely, and one bullet was giving setup advice about a different screen that doesn't apply here. The instructions now describe what the app really does, and a new tip was added reminding people to go at a natural pace and let each page load before the next step, since recording too fast can miss things.
+
+---
+
 ## Fixed customer installers sometimes shipping months-old app code even after a fix was made — 2026-07-30
 A developer testing locally kept seeing the "Protocol http not supported" error even after that exact bug had already been fixed and rebuilt. The reason: when building a customer installer, the system keeps both a freshly rebuilt copy of the app and, separately, whatever copy it last downloaded from the cloud, and it was picking whichever one happened to sort last alphabetically — like a filing cabinet that hands you the folder labeled "March" instead of "January" just because M comes after J, even though January is the one you actually just updated. It now always prefers a freshly rebuilt local copy over a downloaded one, so testers and developers reliably see the code they just changed, not a stale version from weeks earlier.
 

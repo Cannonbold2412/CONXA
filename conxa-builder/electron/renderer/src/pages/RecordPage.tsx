@@ -414,8 +414,8 @@ function NewWorkflowDialog({
               <p className="text-xs font-semibold text-zinc-300">How it works</p>
               {[
                 'Name your workflow on the next screen, then click "Start Recording".',
-                'Perform the workflow naturally in the browser — every action is captured.',
-                'Close the browser when done to finalize the recording.',
+                'Do the steps in the browser like normal. Clicks, typing, and page changes are recorded. If a menu only shows up on hover, turn on "hover-only elements" first.',
+                'When done, close the browser, then click "Save Workflow Now".',
               ].map((text, i) => (
                 <div key={i} className="flex items-start gap-3">
                   <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-white/8 text-[11px] font-bold text-zinc-400">{i + 1}</span>
@@ -427,10 +427,10 @@ function NewWorkflowDialog({
             <div className="space-y-2">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Best practices</p>
               {[
-                'Keep each workflow focused on a single task.',
-                <span key="var">Use <code className="font-mono text-zinc-300">{'{{variable}}'}</code> placeholders for dynamic values.</span>,
-                'Never record passwords — use template variables instead.',
-                'One clean pass only — no backtracking.',
+                'Keep each workflow to one task.',
+                'Passwords are removed automatically — you don\'t need to do anything.',
+                'Go slow. Let each page finish loading before you click or type the next thing.',
+                'Do it in one clean pass — don\'t go back and redo steps.',
               ].map((tip, i) => (
                 <p key={i} className="text-xs leading-5 text-zinc-500"><span className="mr-1.5 text-zinc-600">·</span>{tip}</p>
               ))}
