@@ -26,9 +26,11 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -73,6 +75,22 @@ def save_installed(data: dict[str, Any]) -> None:
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(p)
+
+
+_installed_lock = threading.Lock()
+
+
+def _record_installed(dep_name: str, version: str) -> None:
+    """Read-modify-write the installed-versions ledger under a lock.
+
+    ensure_all() downloads deps concurrently, so two apply_dep_update() calls
+    can race a plain load_installed()/save_installed() pair — whichever
+    writes last wins and silently drops the other dep's ledger entry.
+    """
+    with _installed_lock:
+        installed = load_installed()
+        installed[dep_name] = {"version": version}
+        save_installed(installed)
 
 
 # ── Manifest TTL cache ────────────────────────────────────────────────────────
@@ -188,9 +206,7 @@ def apply_dep_update(
 
         tmp_dir.rename(version_dir)
 
-        installed = load_installed()
-        installed[dep_name] = {"version": version}
-        save_installed(installed)
+        _record_installed(dep_name, version)
 
         _configure_dep_env(dep_name, version_dir)
         _emit(on_event, dep=dep_name, status="ready", version=version)
@@ -507,52 +523,66 @@ def fetch_manifest(cloud_api: str) -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _ensure_chromium_task(on_event: EventSink | None) -> str | None:
+    try:
+        ensure_chromium(on_event)
+        return None
+    except Exception as exc:
+        _emit(on_event, dep="chromium", status="error", message=str(exc))
+        return f"chromium: {exc}"
+
+
+def _apply_dep_update_task(
+    dep_name: str, dep_spec: dict[str, Any], on_event: EventSink | None
+) -> str | None:
+    try:
+        apply_dep_update(dep_name, dep_spec, on_event=on_event)
+        return None
+    except Exception as exc:
+        return f"{dep_name}: {exc}"
+
+
 def ensure_all(cloud_api: str, on_event: EventSink | None = None) -> dict[str, Any]:
     """Ensure all deps are present and up-to-date. Runs on every startup.
 
-    Always fetches the cloud manifest fresh (cache bypassed), then for each dep:
-    - If already at the correct version: set env var, emit ready.
-    - If missing or outdated: download, verify, atomically install.
+    Always fetches the cloud manifest fresh (cache bypassed). Chromium and
+    every outdated manifest dep (nsis, conxa-runtime, conxa-app) download
+    concurrently on separate threads — they're independent files on
+    independent network requests, so there's no reason to serialize them.
     Falls back gracefully when the network is unavailable.
 
     Always emits status="complete" before returning, even on partial failure,
     so the frontend banner is never left stuck in the "updating" state.
     Returns ok=False with an "errors" list if any dep failed.
     """
-    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_ensure_chromium_task, on_event)]
 
-    # Chromium is managed by Playwright; always ensure it first.
-    try:
-        ensure_chromium(on_event)
-    except Exception as exc:
-        _emit(on_event, dep="chromium", status="error", message=str(exc))
-        errors.append(f"chromium: {exc}")
+        # Fetch manifest (with TTL cache; tolerate network failures) while
+        # Chromium downloads in the background.
+        try:
+            manifest = load_manifest_cache(cloud_api, force=True)
+        except Exception as exc:
+            _emit(on_event, status="warning",
+                  message=f"Manifest fetch failed: {exc}. Using installed deps.")
+            manifest = {}
 
-    # Fetch manifest (with TTL cache; tolerate network failures)
-    try:
-        manifest = load_manifest_cache(cloud_api, force=True)
-    except Exception as exc:
-        _emit(on_event, status="warning",
-              message=f"Manifest fetch failed: {exc}. Using installed deps.")
-        manifest = {}
+        installed = load_installed()
+        for dep_name, dep_spec in manifest.get("deps", {}).items():
+            if dep_spec.get("managed_by"):
+                continue
+            avail_ver = dep_spec.get("version")
+            if not avail_ver:
+                continue
+            inst_ver = installed.get(dep_name, {}).get("version")
+            version_dir = _deps_dir() / dep_name / avail_ver
+            if inst_ver == avail_ver and version_dir.is_dir():
+                _configure_dep_env(dep_name, version_dir)
+                _emit(on_event, dep=dep_name, status="ready", version=avail_ver)
+            else:
+                futures.append(pool.submit(_apply_dep_update_task, dep_name, dep_spec, on_event))
 
-    installed = load_installed()
-    for dep_name, dep_spec in manifest.get("deps", {}).items():
-        if dep_spec.get("managed_by"):
-            continue
-        avail_ver = dep_spec.get("version")
-        if not avail_ver:
-            continue
-        inst_ver = installed.get(dep_name, {}).get("version")
-        version_dir = _deps_dir() / dep_name / avail_ver
-        if inst_ver == avail_ver and version_dir.is_dir():
-            _configure_dep_env(dep_name, version_dir)
-            _emit(on_event, dep=dep_name, status="ready", version=avail_ver)
-        else:
-            try:
-                apply_dep_update(dep_name, dep_spec, on_event=on_event)
-            except Exception as exc:
-                errors.append(f"{dep_name}: {exc}")
+        errors = [err for err in (f.result() for f in futures) if err]
 
     _emit(on_event, status="complete")
     if errors:

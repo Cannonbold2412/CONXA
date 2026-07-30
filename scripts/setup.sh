@@ -8,25 +8,53 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 step() { echo ""; echo "==> $1"; }
 
-# ── 1. conxa-core (shared Python foundation) ──────────────────────────────────
-step "Installing conxa-core (shared Python foundation)"
-python3 -m pip install -e "$ROOT/packages/conxa-core" --quiet
+# ── Track A: Python (conxa-core → Build Studio deps → Playwright Chromium) ────
+# ── Track B: Electron / renderer (Node dependencies) ──────────────────────────
+# ── Track C: Runtime (Node dependencies) ──────────────────────────────────────
+# Tracks are independent (different toolchains/lockfiles) so they run concurrently.
+step "Installing Python deps, Playwright Chromium, and Node deps in parallel"
 
-# ── 2. Build Studio Python backend ────────────────────────────────────────────
-step "Installing Build Studio Python dependencies"
-python3 -m pip install -r "$ROOT/conxa-builder/python/requirements.txt" --quiet
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
 
-# ── 3. Playwright Chromium ────────────────────────────────────────────────────
-step "Installing Playwright Chromium browser"
-python3 -m playwright install chromium
+(
+    set -euo pipefail
+    python3 -m pip install -e "$ROOT/packages/conxa-core" --quiet
+    python3 -m pip install -r "$ROOT/conxa-builder/python/requirements.txt" --quiet
+    python3 -m playwright install chromium
+) >"$WORKDIR/python.log" 2>&1 &
+PYTHON_PID=$!
 
-# ── 4. Electron / renderer (Node dependencies) ────────────────────────────────
-step "Installing Electron dependencies"
-(cd "$ROOT/conxa-builder/electron" && npm install --silent)
+(
+    set -euo pipefail
+    cd "$ROOT/conxa-builder/electron"
+    npm install --silent
+) >"$WORKDIR/electron.log" 2>&1 &
+ELECTRON_PID=$!
 
-# ── 5. Runtime (Node dependencies) ────────────────────────────────────────────
-step "Installing runtime dependencies"
-(cd "$ROOT/runtime" && npm install --silent)
+(
+    set -euo pipefail
+    cd "$ROOT/runtime"
+    npm install --silent
+) >"$WORKDIR/runtime.log" 2>&1 &
+RUNTIME_PID=$!
+
+FAILED=0
+
+wait "$PYTHON_PID" || { echo "==> FAILED: Python (conxa-core, Build Studio deps, Playwright Chromium)"; FAILED=1; }
+cat "$WORKDIR/python.log"
+
+wait "$ELECTRON_PID" || { echo "==> FAILED: Electron dependencies"; FAILED=1; }
+cat "$WORKDIR/electron.log"
+
+wait "$RUNTIME_PID" || { echo "==> FAILED: Runtime dependencies"; FAILED=1; }
+cat "$WORKDIR/runtime.log"
+
+if [ "$FAILED" -ne 0 ]; then
+    echo ""
+    echo "Setup failed — see errors above."
+    exit 1
+fi
 
 echo ""
 echo "Setup complete."

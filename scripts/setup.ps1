@@ -11,29 +11,60 @@ function Step([string]$msg) {
     Write-Host "==> $msg" -ForegroundColor Cyan
 }
 
-# ── 1. conxa-core (shared Python foundation) ──────────────────────────────────
-Step "Installing conxa-core (shared Python foundation)"
-python -m pip install -e "$Root\packages\conxa-core" --quiet
+# ── Track A: Python (conxa-core → Build Studio deps → Playwright Chromium) ────
+# ── Track B: Electron / renderer (Node dependencies) ──────────────────────────
+# ── Track C: Runtime (Node dependencies) ──────────────────────────────────────
+# Tracks are independent (different toolchains/lockfiles) so they run concurrently.
+Step "Installing Python deps, Playwright Chromium, and Node deps in parallel"
 
-# ── 2. Build Studio Python backend ────────────────────────────────────────────
-Step "Installing Build Studio Python dependencies"
-python -m pip install -r "$Root\conxa-builder\python\requirements.txt" --quiet
+$pythonJob = Start-Job -ScriptBlock {
+    param($Root)
+    python -m pip install -e "$Root\packages\conxa-core" --quiet
+    if ($LASTEXITCODE -ne 0) { throw "conxa-core install failed" }
+    python -m pip install -r "$Root\conxa-builder\python\requirements.txt" --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Build Studio Python deps install failed" }
+    python -m playwright install chromium
+    if ($LASTEXITCODE -ne 0) { throw "Playwright Chromium install failed" }
+} -ArgumentList $Root
 
-# ── 3. Playwright Chromium ────────────────────────────────────────────────────
-Step "Installing Playwright Chromium browser"
-python -m playwright install chromium
+$electronJob = Start-Job -ScriptBlock {
+    param($Root)
+    Set-Location "$Root\conxa-builder\electron"
+    npm install --silent
+    if ($LASTEXITCODE -ne 0) { throw "Electron npm install failed" }
+} -ArgumentList $Root
 
-# ── 4. Electron / renderer (Node dependencies) ────────────────────────────────
-Step "Installing Electron dependencies"
-Push-Location "$Root\conxa-builder\electron"
-npm install --silent
-Pop-Location
+$runtimeJob = Start-Job -ScriptBlock {
+    param($Root)
+    Set-Location "$Root\runtime"
+    npm install --silent
+    if ($LASTEXITCODE -ne 0) { throw "Runtime npm install failed" }
+} -ArgumentList $Root
 
-# ── 5. Runtime (Node dependencies) ────────────────────────────────────────────
-Step "Installing runtime dependencies"
-Push-Location "$Root\runtime"
-npm install --silent
-Pop-Location
+$jobs = @(
+    @{ Name = "Python (conxa-core, Build Studio deps, Playwright Chromium)"; Job = $pythonJob },
+    @{ Name = "Electron dependencies"; Job = $electronJob },
+    @{ Name = "Runtime dependencies"; Job = $runtimeJob }
+)
+
+Wait-Job -Job $jobs.Job | Out-Null
+
+$failed = $false
+foreach ($entry in $jobs) {
+    $output = Receive-Job -Job $entry.Job -ErrorVariable jobError 2>&1
+    $output | ForEach-Object { Write-Host $_ }
+    if ($entry.Job.State -eq "Failed" -or $jobError) {
+        Write-Host "==> FAILED: $($entry.Name)" -ForegroundColor Red
+        $failed = $true
+    }
+    Remove-Job -Job $entry.Job
+}
+
+if ($failed) {
+    Write-Host ""
+    Write-Host "Setup failed — see errors above." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "Setup complete." -ForegroundColor Green

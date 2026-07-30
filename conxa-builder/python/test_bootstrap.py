@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -76,6 +78,26 @@ class BootstrapDownloadTests(unittest.TestCase):
         self.assertEqual(events[-1]["status"], "error")
         self.assertEqual(events[-1]["url"], "https://example.test/nsis.zip")
         self.assertIn("allow", events[-1]["message"])
+
+
+class RecordInstalledConcurrencyTests(unittest.TestCase):
+    def test_concurrent_record_installed_keeps_every_entry(self) -> None:
+        """ensure_all() now downloads deps on parallel threads; each one's
+        install must land in the ledger even when they finish at the same time."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"CONXA_STUDIO_HOME": tmpdir}):
+                threads = [
+                    threading.Thread(target=bootstrap._record_installed, args=(f"dep{i}", "1.0"))
+                    for i in range(8)
+                ]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+
+                installed = bootstrap.load_installed()
+                for i in range(8):
+                    self.assertEqual(installed[f"dep{i}"]["version"], "1.0")
 
 
 if __name__ == "__main__":

@@ -162,10 +162,7 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 On first launch, `services/bootstrap.py` runs `ensure_all()`:
 
 1. Fetches `GET /api/v1/updates/deps-manifest` (public, no auth).
-2. Downloads and SHA-256 verifies NSIS zip → extracts to `deps/nsis/`.
-3. Downloads and verifies `conxa-runtime.exe` + `keytar.node` → places in `deps/runtime/{ver}/`.
-4. Downloads and extracts the app-layer zip (`runtime_app.bundle_url`) → `deps/runtime/{ver}/runtime-app/`.
-5. Runs `playwright install chromium` to install the bundled browser.
+2. Runs `playwright install chromium` and, for every dep the manifest reports outdated (NSIS zip → `deps/nsis/`; `conxa-runtime.exe` + `keytar.node` → `deps/runtime/{ver}/`; app-layer zip → `deps/runtime/{ver}/runtime-app/`), downloads + SHA-256 verifies + extracts it — all on separate threads (`ThreadPoolExecutor`) concurrently, since each is an independent file on an independent URL. The installed-versions ledger write (`_record_installed`) is lock-protected so two concurrent installs finishing at once can't overwrite each other's ledger entry.
 
 This is idempotent — already-present deps are skipped.
 

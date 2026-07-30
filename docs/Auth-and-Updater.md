@@ -350,7 +350,7 @@ The manifest is fetched from `GET /api/v1/updates/deps-manifest` (public — cal
 1. App checks `check_status()` — fast offline check of canonical paths
 2. If `all_ready = true`: skip bootstrap entirely, go straight to login
 3. If any dep missing: show `BootstrapScreen` UI with per-dep progress bars
-4. `cmd('bootstrap')` → Python `ensure_all()` → `ensure_chromium()`, `ensure_nsis()`, `ensure_runtime()`
+4. `cmd('bootstrap')` → Python `ensure_all()` → Chromium and every outdated manifest dep download concurrently on separate threads (independent files/URLs, no reason to serialize); the installed-versions ledger write is lock-protected so concurrent installs can't drop each other's entry
 5. Each `ensure_*` is idempotent — safe to re-run if interrupted
 
 **SHA-256 verification:** Both NSIS zip and `runtime-win.exe` are SHA-256 verified against the manifest after download. Mismatch → file deleted, error surfaced with the download URL so IT teams can whitelist on corporate networks.

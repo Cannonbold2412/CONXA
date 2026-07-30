@@ -19,6 +19,11 @@ On some computers, opening Build Studio right after installing it went straight 
 
 ---
 
+## Sped up first-time setup by downloading things at the same time instead of one after another — 2026-07-30
+Two separate setup processes used to download their pieces one at a time even when there was no reason to wait: the checklist a developer runs once to set up Build Studio on their own computer, and the one-time download screen a company employee sees the very first time they open Build Studio after installing it (it fetches the browser engine and a few supporting programs before the app can be used). Neither step actually needed to wait for the others — it was like sending four separate errands to run one after another when they could all happen at once. Both now run their downloads side by side, so first-time setup finishes noticeably faster. Also closed a small related bug this uncovered: if two of those downloads finished at almost the exact same moment, the record of "what's already installed" could lose track of one of them, forcing it to download again next time — that's now fixed too.
+
+---
+
 ## Fixed customer installers sometimes shipping months-old app code even after a fix was made — 2026-07-30
 A developer testing locally kept seeing the "Protocol http not supported" error even after that exact bug had already been fixed and rebuilt. The reason: when building a customer installer, the system keeps both a freshly rebuilt copy of the app and, separately, whatever copy it last downloaded from the cloud, and it was picking whichever one happened to sort last alphabetically — like a filing cabinet that hands you the folder labeled "March" instead of "January" just because M comes after J, even though January is the one you actually just updated. It now always prefers a freshly rebuilt local copy over a downloaded one, so testers and developers reliably see the code they just changed, not a stale version from weeks earlier.
 
