@@ -26,10 +26,20 @@ def _get_engine():
     return _engine
 
 
+def _safe_namespace(namespace: str) -> str:
+    """Sanitize a namespace for filesystem use (Windows forbids ':' etc. in path segments;
+    namespaces like "manifest:dev" or "skill_packs:{company}:{slug}" use ':' as a joiner)."""
+    parts = namespace.replace("/", os.sep).split(os.sep)
+    return os.sep.join(
+        "".join("_" if ch in _WINDOWS_RESERVED_FILENAME_CHARS else ch for ch in part)
+        for part in parts
+    )
+
+
 def _fs_path(namespace: str, key: str) -> _Path:
     """Filesystem path for a (namespace, key) pair used when no DB is configured."""
     import hashlib
-    safe_ns = namespace.replace("/", os.sep)
+    safe_ns = _safe_namespace(namespace)
     # Hash the key to produce a filename that is safe on all platforms (Windows
     # forbids ':' in filenames; keys like selector_cache use ':' as a separator).
     safe_key = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -45,7 +55,7 @@ def _legacy_fs_path(namespace: str, key: str) -> _Path | None:
         or any(ch in _WINDOWS_RESERVED_FILENAME_CHARS for ch in key)
     ):
         return None
-    safe_ns = namespace.replace("/", os.sep)
+    safe_ns = _safe_namespace(namespace)
     return _Path(settings.data_dir) / "kv" / safe_ns / f"{key}.json"
 
 

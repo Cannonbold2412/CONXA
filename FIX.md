@@ -4,6 +4,11 @@
 
 ---
 
+## Fixed the cloud dashboard crashing when clicking "Rebuild" on a test (non-live) release channel — 2026-07-30
+Clicking "Rebuild" on anything other than the main live channel threw a server error and the rebuild never finished. The cloud's local storage saves each channel's data in its own named folder, and the test channel's folder name had a colon in it — a character Windows refuses to allow in folder names, like trying to label a folder "notes:draft" in File Explorer and having it get rejected. The system now swaps out any character Windows won't allow before creating the folder, so rebuilding on any channel works the same as the live one.
+
+---
+
 ## Made the runtime work with a local test cloud, and fixed a crash that stopped it starting at all — 2026-07-25
 Two problems, found while chasing yesterday's installer bug further. First: when someone on the team runs a private test copy of Conxa Cloud on their own laptop (which, unlike the real one, doesn't use a secure connection), the customer runtime always refused to talk to it, printing "Protocol http not supported. Expected https." The runtime's networking code only knew how to speak the secure kind of connection, no matter which kind the address actually needed — it now checks the address first and speaks whichever kind that address actually uses, so a real customer install still only ever uses the secure kind, but a private test setup finally works too. Second, and unrelated: a name was referenced in the program's startup code without ever having been introduced first, which crashed the entire runtime immediately on launch, in every environment, for everyone — introduced in this morning's audit-report commit. Both are now fixed, and skills correctly download from a locally running test cloud again.
 
