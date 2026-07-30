@@ -64,7 +64,10 @@ User clicks "Sign in"
                                   8. GET /oauth/userinfo (Bearer access_token)
                                      Extracts: sub, email, org_id, name
                                   9. Saves JSON to OS keyring:
-                                     service="conxa-studio", account="session"
+                                     service="conxa-studio" (or "conxa-studio-dev"
+                                     when CONXA_ENV=dev — keeps dev-lane logins from
+                                     being read back by a packaged/prod install),
+                                     account="session"
                                      { access_token, refresh_token, exp, userinfo }
   ←─ identity { org_id, user_id, email, name }
 ```

@@ -29,6 +29,18 @@ _KEYRING_SERVICE = "conxa-studio"
 _TOKEN_KEY = "session"
 _REFRESH_LEEWAY_S = 60
 
+
+def _keyring_service() -> str:
+    """Dev/prod-scoped keyring service name.
+
+    Mirrors env.js's CONXA_STUDIO_HOME dev-suffix convention so a session
+    logged in via `npm run dev` (dev Clerk instance) never gets picked up
+    by a packaged/prod install's whoami check, and vice versa.
+    """
+    raw = os.environ.get("CONXA_ENV", "").strip().lower()
+    is_dev = raw in ("dev", "development", "local")
+    return f"{_KEYRING_SERVICE}-dev" if is_dev else _KEYRING_SERVICE
+
 _PAGE_CSS = """
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
@@ -192,7 +204,7 @@ class AuthService:
         return keyring
 
     def _load(self) -> dict[str, Any] | None:
-        raw = self._keyring().get_password(_KEYRING_SERVICE, _TOKEN_KEY)
+        raw = self._keyring().get_password(_keyring_service(), _TOKEN_KEY)
         if not raw:
             return None
         try:
@@ -201,11 +213,11 @@ class AuthService:
             return None
 
     def _save(self, tokens: dict[str, Any]) -> None:
-        self._keyring().set_password(_KEYRING_SERVICE, _TOKEN_KEY, json.dumps(tokens))
+        self._keyring().set_password(_keyring_service(), _TOKEN_KEY, json.dumps(tokens))
 
     def logout(self) -> None:
         try:
-            self._keyring().delete_password(_KEYRING_SERVICE, _TOKEN_KEY)
+            self._keyring().delete_password(_keyring_service(), _TOKEN_KEY)
         except Exception:
             pass
 

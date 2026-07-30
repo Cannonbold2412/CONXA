@@ -14,6 +14,11 @@ The help text shown before recording a workflow was giving instructions that did
 
 ---
 
+## Fixed Build Studio skipping the login screen on a fresh install — 2026-07-30
+On some computers, opening Build Studio right after installing it went straight to the main app instead of asking the user to log in. This happened because the app remembers a login on the computer itself (similar to how a browser stays signed in), but it wasn't keeping the "for developers testing the app" login separate from the "real installed copy customers use" login. So a login from testing could quietly carry over and make a brand-new install look already signed in. The two are now kept fully separate, so a fresh install always asks for a real login.
+
+---
+
 ## Fixed customer installers sometimes shipping months-old app code even after a fix was made — 2026-07-30
 A developer testing locally kept seeing the "Protocol http not supported" error even after that exact bug had already been fixed and rebuilt. The reason: when building a customer installer, the system keeps both a freshly rebuilt copy of the app and, separately, whatever copy it last downloaded from the cloud, and it was picking whichever one happened to sort last alphabetically — like a filing cabinet that hands you the folder labeled "March" instead of "January" just because M comes after J, even though January is the one you actually just updated. It now always prefers a freshly rebuilt local copy over a downloaded one, so testers and developers reliably see the code they just changed, not a stale version from weeks earlier.
 
