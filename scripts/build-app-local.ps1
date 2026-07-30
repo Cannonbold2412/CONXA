@@ -56,7 +56,7 @@ $files = @(
   "skill_loader.js", "tracker.js", "install_identity.js",
   "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
   "drift.js", "version_manager.js", "manifest_manager.js", "auth_manager.js",
-  "page_scripts.js",
+  "http_client.js", "page_scripts.js",
   # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (mirrors
   # build-runtime-app.yml's file list — must stay in lockstep with it)
   "durable_context.js", "config_edit.js", "mcp_hosts.js"

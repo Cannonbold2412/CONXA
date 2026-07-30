@@ -90,7 +90,7 @@ jobs:
             "server.js", "sync.js", "run.js", "browser.js",
             "skill_loader.js", "tracker.js", "install_identity.js",
             "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
-            "drift.js", "version_manager.js", "manifest_manager.js",
+            "drift.js", "version_manager.js", "manifest_manager.js", "http_client.js",
             # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (see
             # runtime/durable_context.js) — all three must ship in the app layer
             # too, not just be bundled into the host exe, since sync.js loads

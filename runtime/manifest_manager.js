@@ -8,7 +8,7 @@
 const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
-const https  = require("https");
+const httpClient = require("./http_client");
 
 const versionManager = (typeof global !== "undefined" && global.__versionManager)
   ? global.__versionManager
@@ -84,7 +84,7 @@ function decideUpdate({ componentName, manifestEntry, currentVersion, installId,
 
 function _fetchJSON(url, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { "User-Agent": "conxa-runtime/1.0" } }, (res) => {
+    const req = httpClient.get(url, { headers: { "User-Agent": "conxa-runtime/1.0" } }, (res) => {
       let data = "";
       res.on("data", (c) => { data += c; });
       res.on("end", () => {
@@ -99,7 +99,7 @@ function _fetchJSON(url, timeoutMs) {
 
 function _downloadBuffer(url, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, (res) => {
+    const req = httpClient.get(url, (res) => {
       if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
       const chunks = [];
       res.on("data", (c) => chunks.push(c));

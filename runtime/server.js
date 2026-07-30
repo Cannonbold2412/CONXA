@@ -3,7 +3,7 @@
 const path   = require("path");
 const fs     = require("fs");
 const os     = require("os");
-const https  = require("https");
+const httpClient = require("./http_client");
 const crypto = require("crypto");
 const semver = (global.__hostRequire || require)("semver");
 const { loadInstallId } = require("./install_identity");
@@ -251,6 +251,7 @@ let clearRetryBudget;
 let checkRetryBudget;
 let isAuthFailure;
 let stepAssertions;
+let frameScopedInventory;
 let getCachedBrowser;
 let captureReAuth;
 let gracefulShutdown;
@@ -1418,7 +1419,7 @@ async function _phonehome() {
     install_id: INSTALL_ID,
   });
   await new Promise((resolve) => {
-    const req = https.request(`${CONXA_API}/api/v1/telemetry/runtime-start`, {
+    const req = httpClient.request(`${CONXA_API}/api/v1/telemetry/runtime-start`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
     }, (res) => { res.resume(); resolve(); });

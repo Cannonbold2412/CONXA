@@ -4,6 +4,11 @@
 
 ---
 
+## Made the runtime work with a local test cloud, and fixed a crash that stopped it starting at all — 2026-07-25
+Two problems, found while chasing yesterday's installer bug further. First: when someone on the team runs a private test copy of Conxa Cloud on their own laptop (which, unlike the real one, doesn't use a secure connection), the customer runtime always refused to talk to it, printing "Protocol http not supported. Expected https." The runtime's networking code only knew how to speak the secure kind of connection, no matter which kind the address actually needed — it now checks the address first and speaks whichever kind that address actually uses, so a real customer install still only ever uses the secure kind, but a private test setup finally works too. Second, and unrelated: a name was referenced in the program's startup code without ever having been introduced first, which crashed the entire runtime immediately on launch, in every environment, for everyone — introduced in this morning's audit-report commit. Both are now fixed, and skills correctly download from a locally running test cloud again.
+
+---
+
 ## Fixed a packing mistake that made the customer installer fail right after "Setup complete!" — 2026-07-25
 A customer install would finish and immediately show a confusing "Setup complete! (no status available — code 1)" message, and the app itself refused to start afterward, complaining it couldn't find its own program files. The cause: the installer copies a folder of app files plus a shortcut-style pointer to that same folder, but the packaging step was also blindly sweeping up the pointer as if it were more real content — like photocopying a folder and, without realizing it, also photocopying the label that says "see the folder over there," landing a confused duplicate copy inside itself instead of the real files ending up where the app expects them. The installer now copies only the real folder, so the files land exactly where the app looks for them on first launch.
 

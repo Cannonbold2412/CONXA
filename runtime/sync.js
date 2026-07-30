@@ -2,7 +2,7 @@
 const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
-const https  = require("https");
+const httpClient = require("./http_client");
 
 // Prefer the host-bridged instance (bootstrap.js sets this) so every layer shares one
 // implementation of the junction-handling logic; fall back to a local copy for direct
@@ -15,7 +15,7 @@ function _fetchJSON(url, token, timeoutMs) {
   return new Promise((resolve, reject) => {
     const headers = { "User-Agent": "conxa-runtime/1.0" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const req = https.get(url, { headers }, (res) => {
+    const req = httpClient.get(url, { headers }, (res) => {
       let data = "";
       res.on("data", c => data += c);
       res.on("end", () => {
@@ -36,7 +36,7 @@ function _fetchJSON(url, token, timeoutMs) {
 
 function _downloadBuffer(url, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, (res) => {
+    const req = httpClient.get(url, (res) => {
       const chunks = [];
       res.on("data", c => chunks.push(c));
       res.on("end", () => resolve(Buffer.concat(chunks)));
