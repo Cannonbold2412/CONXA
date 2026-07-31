@@ -364,6 +364,24 @@ class TestStageRuntimePayload:
         with pytest.raises(RuntimeError, match="No packed runtime executable"):
             stage_runtime_payload(tmp_path / "out", runtime_dir, None)
 
+    def test_raises_if_app_junction_update_fails(self, tmp_path: Path) -> None:
+        # Simulates a locked `current` junction (e.g. a just-killed test runtime process
+        # still holding a handle) — staging must fail loudly instead of silently leaving
+        # a stale/broken junction behind.
+        runtime_dir = self._make_runtime_dir(tmp_path / "deps")
+        app_dir = self._make_app_dir(tmp_path / "deps")
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        from conxa_compile.conxa_runtime import stage_runtime_payload
+        with patch("conxa_compile.conxa_runtime._ensure_junction", return_value=False):
+            with pytest.raises(RuntimeError, match="Failed to point"):
+                stage_runtime_payload(dest, runtime_dir, app_dir)
+
+        # The junction itself must not silently end up dangling/missing.
+        current = dest / "conxa-app" / "current"
+        assert not current.is_dir()
+
 
 # ─── ensure_test_sandbox ──────────────────────────────────────────────────────
 

@@ -480,6 +480,8 @@ def _normalize_saved_skill_inputs(inputs: list[Any]) -> list[dict[str, Any]]:
         }
         if raw.get("sensitive"):
             row["sensitive"] = True
+        if raw.get("optional"):
+            row["optional"] = True
         options = raw.get("options")
         if isinstance(options, list) and options:
             row["enum"] = [str(item) for item in options if str(item)]

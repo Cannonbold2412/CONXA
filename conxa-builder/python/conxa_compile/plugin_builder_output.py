@@ -29,6 +29,26 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _compute_inputs_required(idata: dict[str, Any]) -> list[str]:
+    """Derive the manifest's `inputs_required` from a parsed inputs.json.
+
+    An explicit top-level `required` list (legacy/cloud-authored packages) wins outright.
+    Otherwise every declared input is required EXCEPT one flagged `optional` in the editor —
+    that flag means the skill may run without it, so it must not block execution
+    (runtime/server.js's pre-execution gate) or be advertised as mandatory to the calling agent
+    (runtime/server.js's `_skillToolDefinitions`).
+    """
+    if "required" in idata:
+        return list(idata["required"])
+    if "inputs" in idata and isinstance(idata["inputs"], list):
+        return [
+            i["name"]
+            for i in idata["inputs"]
+            if isinstance(i, dict) and "name" in i and not i.get("optional")
+        ]
+    return []
+
+
 def _write_skill_packs_format(
     *,
     bundle_root: Path,
@@ -126,10 +146,7 @@ def _write_skill_packs_format(
         if inputs_p.is_file():
             try:
                 idata = json.loads(inputs_p.read_text(encoding="utf-8"))
-                if "required" in idata:
-                    inputs_required = list(idata["required"])
-                elif "inputs" in idata and isinstance(idata["inputs"], list):
-                    inputs_required = [i["name"] for i in idata["inputs"] if isinstance(i, dict) and "name" in i]
+                inputs_required = _compute_inputs_required(idata)
             except Exception:
                 pass
 

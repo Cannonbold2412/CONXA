@@ -61,6 +61,14 @@ export type VariableFormRow = {
   optionsText: string
   defaultValue: string
   sensitive: boolean
+  optional: boolean
+}
+
+/** A variable carrying a default is optional whether or not the box is ticked — the runtime
+ * fills the default in before its required-input gate runs (runtime/server.js). Single source
+ * of truth for the checkbox's checked+disabled state and for what gets saved. */
+export function isEffectivelyOptional(row: VariableFormRow): boolean {
+  return row.optional || row.defaultValue.trim() !== ''
 }
 
 /** Accepts `db_name` or full `{{db_name}}` for bulk replace / placeholders. */
@@ -91,6 +99,7 @@ export function newEmptyRow(): VariableFormRow {
     optionsText: '',
     defaultValue: '',
     sensitive: false,
+    optional: false,
   }
 }
 
@@ -105,6 +114,7 @@ export function rowsFromServerInputs(inputs: Record<string, unknown>[]): Variabl
       optionsText: Array.isArray(raw.options) ? (raw.options as unknown[]).map((o) => String(o)).join(', ') : '',
       defaultValue: raw.default == null ? '' : String(raw.default),
       sensitive: raw.sensitive === true,
+      optional: raw.optional === true,
     }
   })
 }
@@ -155,6 +165,10 @@ export function rowsToServerPayload(
       if (def) rec.default = def
     }
     if (row.sensitive) rec.sensitive = true
+    // Persisted only when it changes the outcome, keeping the stored shape sparse (as with
+    // `sensitive`). A defaulted variable is already optional at the gate, so the flag would be
+    // redundant noise there.
+    if (row.optional && !row.defaultValue.trim()) rec.optional = true
     data.push(rec)
   }
   return { ok: true, data }
@@ -185,6 +199,7 @@ export function addSpottedToRows(
     optionsText: '',
     defaultValue: '',
     sensitive: false,
+    optional: false,
   }))
   return [...rows, ...additions]
 }

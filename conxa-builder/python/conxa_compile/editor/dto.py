@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .placeholder_grammar import PLACEHOLDER_ID_PATTERN
 
 
 class StepFlags(BaseModel):
@@ -123,14 +125,46 @@ class SuggestionItem(BaseModel):
 
 
 class SkillInputVariable(BaseModel):
-    """Registry entry stored under SkillPackage.inputs."""
+    """Registry entry stored under SkillPackage.inputs, and the validation contract for every
+    input the editor saves — `workflow_mutations._validate_skill_inputs` parses each incoming
+    row through this model, so the declared shape and the enforced shape cannot drift apart.
 
-    id: str
+    `extra="allow"` on purpose: `merge_skill_inputs` persists the caller's original dicts, so a
+    key this model doesn't know about must not be rejected here (it would block saving a
+    document written by a newer Studio).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(pattern=rf"^{PLACEHOLDER_ID_PATTERN}$")
     label: str = ""
     type: Literal["text", "select"] = "text"
     default: str | None = None
     options: list[str] = Field(default_factory=list)
     pattern: str | None = None
+    # Masks the value out of persisted test history and drives the shipped bundle's auth hint.
+    sensitive: bool = False
+    # Declared-but-not-required: dropped from the manifest's `inputs_required`, so the runtime's
+    # pre-execution gate and the agent-facing tool schema both stop demanding it.
+    optional: bool = False
+
+    @field_validator("default", "options", mode="before")
+    @classmethod
+    def _scalars_to_str(cls, v: Any) -> Any:
+        """Legacy/JSON-editor documents can carry numeric defaults and options. Coerce rather
+        than reject — a number is a perfectly good value, it just has to round-trip as text."""
+        if isinstance(v, (int, float, bool)):
+            return str(v)
+        if isinstance(v, list):
+            return [str(x) if isinstance(x, (int, float, bool)) else x for x in v]
+        return v
+
+    @model_validator(mode="after")
+    def _select_default_must_be_an_option(self) -> SkillInputVariable:
+        if self.type == "select" and self.default not in (None, ""):
+            if self.default not in self.options:
+                raise ValueError(f"select_default_not_in_options:{self.id}")
+        return self
 
 
 class WorkflowResponse(BaseModel):

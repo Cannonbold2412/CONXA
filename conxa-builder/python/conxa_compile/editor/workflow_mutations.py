@@ -13,13 +13,11 @@ from conxa_compile.compiler.action_policy import no_recovery_block
 from conxa_compile.compiler.patch import revalidate_step
 from conxa_compile.confidence.uncertainty import audit_reference
 from conxa_compile.editor.action_registry import action_spec, default_action_value, is_supported_action
-from conxa_compile.editor.placeholder_grammar import PLACEHOLDER_ID_PATTERN, PLACEHOLDER_RE
+from conxa_compile.editor.dto import SkillInputVariable
+from conxa_compile.editor.placeholder_grammar import PLACEHOLDER_RE
 from conxa_compile.editor.workflow_dto import _build_reference_for_audit, collect_suggestions
 from conxa_compile.policy.bundle import get_policy_bundle
-
-import re
-
-_INPUT_ID_RE = re.compile(r"^" + PLACEHOLDER_ID_PATTERN + r"$")
+from pydantic import ValidationError as PydanticValidationError
 
 def validate_skill_document(document: dict[str, Any]) -> dict[str, Any]:
     policy = get_policy_bundle().data
@@ -352,7 +350,24 @@ def insert_step_after(document: dict[str, Any], action_kind: str, insert_after: 
     return doc
 
 
+def _input_error_code(input_id: str, exc: PydanticValidationError) -> str:
+    """Collapse a Pydantic ValidationError into the compact `code:detail` string the RPC layer
+    surfaces. `cmd_update_workflow_inputs` uses str(exc) as the machine-readable error code, so
+    a raw multi-line Pydantic message must never reach it."""
+    first = exc.errors()[0]
+    field = str(first["loc"][0]) if first.get("loc") else "input"
+    if field == "id":
+        return f"invalid_input_id:{input_id}"
+    # A model_validator raises its own already-compact code (e.g. select_default_not_in_options).
+    if first.get("type") == "value_error":
+        return str(first.get("ctx", {}).get("error") or first.get("msg") or f"invalid_input:{input_id}")
+    return f"invalid_input_{field}:{input_id}"
+
+
 def _validate_skill_inputs(inputs: list[dict[str, Any]]) -> None:
+    """Trust boundary for every saved input row. Shape/field rules live in SkillInputVariable so
+    the declared DTO and the enforced contract can't drift; only the cross-row uniqueness check
+    stays here, because no single-row model can see its siblings."""
     seen: set[str] = set()
     for item in inputs:
         if not isinstance(item, dict):
@@ -360,8 +375,13 @@ def _validate_skill_inputs(inputs: list[dict[str, Any]]) -> None:
         input_id = str(item.get("id") or "").strip()
         if not input_id:
             raise ValueError("input_id_required")
-        if not _INPUT_ID_RE.match(input_id):
-            raise ValueError(f"invalid_input_id:{input_id}")
+        # Validates the id grammar, the text/select type, and that a select's default is one of
+        # its options — the form already enforces these, but the Advanced JSON editor and direct
+        # RPC bypass the form (audit finding L-5).
+        try:
+            SkillInputVariable.model_validate({**item, "id": input_id})
+        except PydanticValidationError as exc:
+            raise ValueError(_input_error_code(input_id, exc)) from exc
         # Ids collide case-insensitively at runtime ({{Email}} and {{email}} bind the same
         # slot), so uniqueness must be enforced the same way — matching the frontend
         # rowsToServerPayload check so the Advanced JSON editor / direct RPC can't slip a
@@ -370,15 +390,6 @@ def _validate_skill_inputs(inputs: list[dict[str, Any]]) -> None:
         if id_key in seen:
             raise ValueError(f"duplicate_input_id:{input_id}")
         seen.add(id_key)
-        # A select input's default must be one of its options. The form enforces this, but the
-        # backend is the trust boundary — the Advanced JSON editor bypasses the form (audit
-        # finding L-5).
-        if str(item.get("type") or "").strip().lower() == "select":
-            default = item.get("default")
-            if default not in (None, ""):
-                options = item.get("options") if isinstance(item.get("options"), list) else []
-                if str(default) not in [str(o) for o in options]:
-                    raise ValueError(f"select_default_not_in_options:{input_id}")
 
 
 def _scan_placeholder_ids(value: Any, out: set[str]) -> None:

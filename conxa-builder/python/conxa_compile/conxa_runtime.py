@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -130,6 +131,11 @@ def _ensure_junction(link_path: Path, target: Path) -> bool:
 
     Returns True when the link exists and is correct or could be created, False on failure.
     Does NOT remove a real directory in case it already contains valid staged content.
+
+    Repointing an existing junction (Windows only) is retried a few times: a process that
+    just had link_path open (e.g. the test runtime, killed via terminate()/kill() in
+    runtime_tool.py right before restaging) can hold the directory briefly after exit,
+    making `rmdir` fail transiently rather than permanently.
     """
     if _is_link(link_path):
         try:
@@ -137,17 +143,26 @@ def _ensure_junction(link_path: Path, target: Path) -> bool:
                 return True
         except (OSError, ValueError):
             pass
-        # Wrong target — remove and recreate.
-        try:
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["cmd", "/c", "rmdir", str(link_path)],
-                    check=False, capture_output=True,
-                )
-            else:
-                link_path.unlink()
-        except OSError:
+        # Wrong target — remove and recreate, retrying past a transient Windows file lock.
+        attempts = 3 if sys.platform == "win32" else 1
+        for attempt in range(attempts):
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["cmd", "/c", "rmdir", str(link_path)],
+                        check=False, capture_output=True,
+                    )
+                else:
+                    link_path.unlink()
+            except OSError:
+                pass
+            if not _is_link(link_path) and not link_path.exists():
+                break
+            if attempt < attempts - 1:
+                time.sleep(0.2)
+        else:
             return False
+
     elif link_path.exists():
         # Real directory already present (older install or manual copy) — leave it.
         return True
@@ -228,7 +243,12 @@ def stage_runtime_payload(
         if version_dest.exists():
             shutil.rmtree(version_dest)
         shutil.copytree(str(app_dir), str(version_dest))
-        _ensure_junction(app_root / "current", version_dest)
+        if not _ensure_junction(app_root / "current", version_dest):
+            raise RuntimeError(
+                f"Failed to point {app_root / 'current'} at {version_dest} — "
+                "the previous target may still be locked by a just-exited process. "
+                "Retry the test."
+            )
 
         # The sandbox only ever needs one active version — drop any other (mirrors
         # sync_skill_pack's same cleanup for skill versions).

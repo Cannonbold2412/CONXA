@@ -4,6 +4,16 @@
 
 ---
 
+## Redesigned the Input Variables screen and added an "Optional" setting — 2026-07-31
+The screen where you turn a recorded value (like an email address) into a reusable variable had two problems. First, it had two different buttons that both looked like the main action — one added a blank row, the other actually saved your changes — so it wasn't clear which one to press. Second, the "replace with" box in its find-and-replace tool only accepted a short variable name, but nothing on screen said so, so typing an ordinary sentence there produced a confusing "Invalid id" error. We rebuilt the screen: variables now list as a compact table instead of a big form for each one, the confusing button was removed in favor of a single "New variable" strip, and the input that expects a variable name now visually wears the `{{ }}` braces so it's obvious what belongs there. We also fixed the "Save variables" button sometimes scrolling out of view when a workflow had many variables — it now always stays visible at the bottom. Separately, every declared variable used to be treated as required, with no way to say "this one's optional." There's now an Optional checkbox for each variable, and the AI running the workflow will no longer insist on a value for one you've marked optional.
+
+---
+
+## Made a test-engine update failure fail loudly instead of quietly breaking the next test — 2026-07-31
+When Build Studio updates the local test engine it uses to run workflow tests, it swaps in the new version and then updates a shortcut that points at "whichever version is current." On Windows, that shortcut swap could occasionally fail silently right after a previous test finished, if the old files were still momentarily locked — like trying to replace a nameplate on a door seconds after someone walked out of the room. Nobody saw an error at the time; instead, the *next* workflow test would fail with a confusing "reinstall needed" message even though everything had actually downloaded correctly. The swap now retries briefly to ride out that split-second lock, and if it still can't update the shortcut, it now says so immediately and clearly instead of pretending the update succeeded and leaving the next test to fail mysteriously.
+
+---
+
 ## Sped up the "Apply" button in Human Edit's re-targeting tool — 2026-07-31
 When someone re-targets a step by drawing a new box around an element, the tool needs to work out two things: which button/field it is (so it can click it later) and what it looks like to a human (so it can still find it if the page changes and the exact click breaks). Both of those used to be figured out at different moments — the first right after you draw the box, the second only when you hit the final "Apply" button — so Apply could sit and think for a few seconds every time the box had moved. Now both are worked out together, right after you draw the box, so by the time you click Apply everything is already known and it applies instantly. Nothing changes if you're only touching the checks below without moving the box — that was already instant and still is.
 

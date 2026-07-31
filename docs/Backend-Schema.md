@@ -217,6 +217,24 @@ class SkillPackage(BaseModel):
                                #            llm_router_stats, steps}
 ```
 
+Each entry in `inputs` is validated against `SkillInputVariable` (`conxa-builder/python/conxa_compile/editor/dto.py`):
+
+```python
+class SkillInputVariable(BaseModel):
+    id: str                    # letter-led, alnum + underscore — must match {{id}} grammar
+    label: str = ""
+    type: Literal["text", "select"] = "text"
+    default: str | None = None
+    options: list[str] = []    # required (non-empty) when type == "select"
+    pattern: str | None = None
+    sensitive: bool = False    # redacts the value from saved test history; feeds the shipped
+                               # bundle's inferred auth type (password/api-key/none)
+    optional: bool = False     # the skill may run without this value. A value with `default`
+                               # set is always effectively optional regardless of this flag.
+```
+
+`optional` is excluded from the packaged manifest's `inputs_required` (`plugin_builder_output.py::_compute_inputs_required`), which is what the runtime's pre-execution gate and the MCP tool's `inputSchema.required` both read (`runtime/server.js`).
+
 ### 3.2 SkillMeta
 
 ```python

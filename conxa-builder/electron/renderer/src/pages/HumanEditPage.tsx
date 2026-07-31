@@ -1041,31 +1041,35 @@ export function HumanEditPage() {
                 </div>
               )}
             </DialogHeader>
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="p-5">
-                {activeTool.key === 'suggestions' && <SuggestionsInlinePanel suggestions={wf.suggestions} />}
-                {activeTool.key === 'variables' && (
-                  <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} />
-                )}
-                {activeTool.key === 'screenshots' && (
-                  <RecordingScreenshotsPanel
-                    frames={currentStep?.screenshot?.frames ?? []}
-                    activeFrameLabel={currentStep?.screenshot?.default_frame_label ?? null}
-                    canClearVisual={!!currentStep && !currentStep.flags.is_scroll}
-                    onApplyFrame={currentStep && !currentStep.flags.is_scroll ? onApplyStepFrame : undefined}
-                    onClearVisual={selected !== null ? () => void onClearStepVisual(selected) : undefined}
-                    showAllFrames={showAllScreenshots}
-                    allItems={allScreenshotsQ.data?.items}
-                    isLoadingAllFrames={allScreenshotsQ.isLoading}
-                    onSelectAllFrame={
-                      currentStep && !currentStep.flags.is_scroll ? onSelectAllScreenshot : undefined
-                    }
-                  />
-                )}
-                {activeTool.key === 'workflowPlan' && <WorkflowPlanPanel workflow={wf} />}
-                {activeTool.key === 'diagnostics' && <DiagnosticsPanel workflow={wf} currentStep={currentStep} />}
-              </div>
-            </ScrollArea>
+            {activeTool.key === 'variables' ? (
+              // Own bounded flex layout (not the shared ScrollArea below): its footer sits
+              // below an internal, properly height-constrained scroll region instead of
+              // scrolling out of view at the end of an unbounded content column.
+              <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} />
+            ) : (
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="p-5">
+                  {activeTool.key === 'suggestions' && <SuggestionsInlinePanel suggestions={wf.suggestions} />}
+                  {activeTool.key === 'screenshots' && (
+                    <RecordingScreenshotsPanel
+                      frames={currentStep?.screenshot?.frames ?? []}
+                      activeFrameLabel={currentStep?.screenshot?.default_frame_label ?? null}
+                      canClearVisual={!!currentStep && !currentStep.flags.is_scroll}
+                      onApplyFrame={currentStep && !currentStep.flags.is_scroll ? onApplyStepFrame : undefined}
+                      onClearVisual={selected !== null ? () => void onClearStepVisual(selected) : undefined}
+                      showAllFrames={showAllScreenshots}
+                      allItems={allScreenshotsQ.data?.items}
+                      isLoadingAllFrames={allScreenshotsQ.isLoading}
+                      onSelectAllFrame={
+                        currentStep && !currentStep.flags.is_scroll ? onSelectAllScreenshot : undefined
+                      }
+                    />
+                  )}
+                  {activeTool.key === 'workflowPlan' && <WorkflowPlanPanel workflow={wf} />}
+                  {activeTool.key === 'diagnostics' && <DiagnosticsPanel workflow={wf} currentStep={currentStep} />}
+                </div>
+              </ScrollArea>
+            )}
           </>
         )}
       </DialogContent>

@@ -417,9 +417,9 @@ function _skillToolDefinitions() {
       properties[f.name] = prop;
       // A field with a default is effectively optional to the calling agent — the execute
       // gate below fills it in from f.default when omitted, so don't advertise it as
-      // mandatory (audit H-6).
+      // mandatory (audit H-6). Same for a field the editor explicitly marked optional.
       const hasDefault = f.default !== undefined && f.default !== null && String(f.default).trim() !== "";
-      if (!hasDefault) required.push(f.name);
+      if (!hasDefault && !f.optional) required.push(f.name);
     }
 
     const needsStr = required.length ? ` Needs: ${required.join(", ")}.` : "";
