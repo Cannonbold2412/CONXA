@@ -5,6 +5,12 @@ Phase 2 (review generated selectors) and Phase 3 (confirm validation): both are
 previewed here without persisting so the whole wizard lands as a single mutation
 when the user finally clicks Apply — see ``apply_retarget``.
 
+Both LLM-backed regenerations for a redrawn region (selector candidates and recovery
+anchors) run at the Phase 1 -> 2 "Continue" click (inside ``preview_retarget``'s
+``regenerate`` branch), not at Apply — nothing about either depends on Phase 2/3 edits
+(reordering candidates, editing assertions), so computing them once at Continue and
+carrying the result through the wizard state means Apply itself never waits on the LLM.
+
 A redrawn region has no stored per-element geometry to resolve against — only the
 originally-recorded element carries a bbox, and the DOM snapshot is plain HTML with no inline
 coordinates. Selector regeneration therefore uses a vision LLM
@@ -334,6 +340,19 @@ def preview_retarget(
         # floor — a freshly re-picked element deserves the same bar as a reviewed one.
         candidates = _prune_review_candidates(candidates)
 
+        # Regenerate recovery anchors here too (Continue), not at Apply — same drawn region, so
+        # paying for the vision call now means Apply never has to (see apply_retarget below).
+        from conxa_compile.editor.recording_visual import preview_visual_anchors_for_bbox_or_raise
+        from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
+
+        try:
+            visual_anchors = preview_visual_anchors_for_bbox_or_raise(document, step_index, next_bbox)
+        except VisionAnchorGenerationError as exc:
+            detail = f" ({exc.hint})" if exc.hint else ""
+            raise RetargetError(
+                "vision_anchors_failed", f"Could not re-derive recovery anchors ({exc.reason}){detail}."
+            ) from exc
+
         state_diff = matching_event.get("state_change") if isinstance(matching_event.get("state_change"), dict) else {}
         policy = get_policy_bundle().data
         proposed_wait_for = infer_wait_for_shape(step, state_diff, policy)
@@ -358,6 +377,7 @@ def preview_retarget(
         proposed_wait_for = current_wait_for
         proposed_assertions = current_assertions
         validation_changed = False
+        visual_anchors = None
 
     pick_quality = _pick_quality(candidates)
 
@@ -384,6 +404,7 @@ def preview_retarget(
         "proposed_assertions": proposed_assertions,
         "validation_changed": validation_changed,
         "fast_finish": pick_quality == "good" and not validation_changed,
+        "visual_anchors": visual_anchors,
     }
 
 
@@ -413,8 +434,11 @@ def apply_retarget(document: dict[str, Any], step_index: int, payload: dict[str,
     original_meta = dict(document.get("meta") or {})
     original_version = int(original_meta.get("version", 1))
 
-    # 1. bbox + regenerated vision anchors (existing, LLM-backed helper).
-    doc = update_step_visual_bbox_and_regenerate_anchors_or_raise(document, step_index, next_bbox)
+    # 1. bbox + vision anchors. Reuses anchors already generated at Continue (Phase 1's preview)
+    # when the caller sends them back — the LLM call happens once, there, not again here.
+    doc = update_step_visual_bbox_and_regenerate_anchors_or_raise(
+        document, step_index, next_bbox, precomputed_anchors=payload.get("visual_anchors")
+    )
 
     skills = list(doc.get("skills") or [])
     block = dict(skills[0])

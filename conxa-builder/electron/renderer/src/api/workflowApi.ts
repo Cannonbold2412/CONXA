@@ -216,6 +216,10 @@ export type EditableCandidate = RetargetCandidate & { id: string }
 
 export type PickQuality = 'good' | 'ambiguous' | 'none'
 
+/** Recovery anchors generated for a redrawn region, computed once here at preview time so
+ *  `retargetApply` can pass them straight through instead of re-calling the vision LLM. */
+export type VisualAnchors = { anchors: Record<string, unknown>[]; intent: string }
+
 export type RetargetPreviewResponse = {
   bbox: Bbox
   pick_quality: PickQuality
@@ -229,6 +233,8 @@ export type RetargetPreviewResponse = {
   /** Step-level identity-signal-quality rollup (0-1); null/undefined when there's no
    *  identity_bundle to derive it from. */
   compile_confidence?: number | null
+  /** Only set when this preview regenerated (redrawn region) — null on the review-only path. */
+  visual_anchors?: VisualAnchors | null
 }
 
 // regenerate=false reviews the already-compiled selectors (no LLM); pass true only when the
@@ -255,6 +261,9 @@ export function retargetApply(
     /** Human-edited assertion list from the Validation phase — takes precedence over
      *  proposed_assertions/current assertions when present. */
     edited_assertions?: Record<string, unknown>[]
+    /** Anchors already generated at Continue's preview — reused here so Apply doesn't call the
+     *  vision LLM again. Omitted/undefined on the position-only/no-preview fallback paths. */
+    visual_anchors?: VisualAnchors | null
   },
 ): Promise<WorkflowRevalidationResponse> {
   return cmd('retarget_apply', { skill_id: skillId, step_index: stepIndex, ...body })

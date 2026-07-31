@@ -4,6 +4,11 @@
 
 ---
 
+## Sped up the "Apply" button in Human Edit's re-targeting tool — 2026-07-31
+When someone re-targets a step by drawing a new box around an element, the tool needs to work out two things: which button/field it is (so it can click it later) and what it looks like to a human (so it can still find it if the page changes and the exact click breaks). Both of those used to be figured out at different moments — the first right after you draw the box, the second only when you hit the final "Apply" button — so Apply could sit and think for a few seconds every time the box had moved. Now both are worked out together, right after you draw the box, so by the time you click Apply everything is already known and it applies instantly. Nothing changes if you're only touching the checks below without moving the box — that was already instant and still is.
+
+---
+
 ## Fixed installed customer apps being unable to download their skills or check for updates — 2026-07-31
 Every customer who installed one of our packaged apps was hitting a wall right after install: the app could never fetch its actual workflow files or check for a newer version, so its skills folder stayed empty no matter how long you waited. The cause was a security check on our servers that requires a proper login for almost everything — but a few specific requests are supposed to be let through without one, because a freshly installed app has no login yet, only a private access code baked in at build time. The list of "let these through" addresses on our server hadn't been updated to match where those requests actually go, so they were being turned away before our own code even got a chance to check the access code. The addresses have now been corrected, so a fresh install can pull down its skills and check for updates as intended.
 

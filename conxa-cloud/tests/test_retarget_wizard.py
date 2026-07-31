@@ -88,6 +88,13 @@ def session_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(db, "_engine", None)
+    # preview_retarget's regenerate path now generates recovery anchors too (moved from
+    # apply-time to Continue-time) — default it to a no-op here; tests that care about
+    # anchor content or failure override this themselves.
+    monkeypatch.setattr(
+        "conxa_compile.llm.anchor_vision_llm.generate_anchors_for_step_or_raise",
+        lambda *_a, **_k: [],
+    )
 
     session_dir = tmp_path / "sessions" / SESSION_ID
     (session_dir / "blobs").mkdir(parents=True)
@@ -497,6 +504,35 @@ def test_preview_regenerate_path_tags_candidates_as_llm_sourced(session_fixture,
     assert cand["orthogonality_class"] == "test-contract"
 
 
+def test_preview_regenerate_path_returns_visual_anchors(session_fixture, monkeypatch):
+    """Continue (Phase 1 -> 2) now generates recovery anchors too, not just selector candidates,
+    so apply_retarget can reuse them instead of calling the vision LLM a second time."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _patch_raw_candidates(monkeypatch, [_candidate('[data-testid="submit-btn"]', rank=0)])
+    _patch_validation_planner(monkeypatch)
+    monkeypatch.setattr(
+        "conxa_compile.llm.anchor_vision_llm.generate_anchors_for_step_or_raise",
+        lambda *_a, **_k: [{"kind": "text", "value": "Submit"}],
+    )
+
+    doc = _base_document()
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20})
+
+    assert result["visual_anchors"]["anchors"] == [{"kind": "text", "value": "Submit"}]
+    assert result["visual_anchors"]["intent"] == "click_submit"
+
+
+def test_preview_review_path_has_no_visual_anchors(session_fixture, monkeypatch):
+    """The review-only path (no redraw) never touches the vision LLM — visual_anchors is absent."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    doc = _base_document()
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    assert result["visual_anchors"] is None
+
+
 def test_preview_review_path_prunes_below_30pct_durability(session_fixture, monkeypatch):
     """Hard floor: a unique selector still gets pruned if its durability is under 30%; one at
     exactly 30% is kept."""
@@ -628,6 +664,31 @@ def test_apply_composes_bbox_target_and_identity_bundle(session_fixture, monkeyp
     # keep_validation=True leaves validation untouched
     assert step["validation"]["wait_for"] == {"type": "none", "target": "", "timeout": 5000}
     assert step["validation"]["assertions"] == []
+
+
+def test_apply_reuses_precomputed_anchors_without_calling_llm(session_fixture, monkeypatch):
+    """Anchors generated during preview (Continue) are passed straight through at Apply — the
+    vision LLM must not be called a second time, even though the bbox changed."""
+    from conxa_compile.editor.retarget import apply_retarget
+
+    def _boom(*_a, **_k):
+        raise AssertionError("vision LLM should not be called again when anchors were precomputed")
+
+    monkeypatch.setattr("conxa_compile.llm.anchor_vision_llm.generate_anchors_for_step_or_raise", _boom)
+
+    doc = _base_document()
+    payload = {
+        "bbox": {"x": 15, "y": 15, "w": 60, "h": 25},  # redrawn — differs from the stored bbox
+        "primary_selector": '[data-testid="submit-btn"]',
+        "fallback_selectors": [],
+        "keep_validation": True,
+        "visual_anchors": {"anchors": [{"kind": "text", "value": "Submit"}], "intent": "click_submit"},
+    }
+    new_doc = apply_retarget(doc, 0, payload)
+
+    step = new_doc["skills"][0]["steps"][0]
+    assert step["signals"]["anchors"] == [{"kind": "text", "value": "Submit"}]
+    assert step["recovery"]["intent"] == "click_submit"
 
 
 def test_apply_skips_vision_regen_when_bbox_unchanged(session_fixture, monkeypatch):

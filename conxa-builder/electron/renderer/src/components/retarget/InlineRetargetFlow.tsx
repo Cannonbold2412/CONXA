@@ -181,6 +181,9 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
         // Only sent when the human actually touched the Validation phase's assertion editor —
         // otherwise the backend falls back to keep_validation/proposed_assertions as before.
         edited_assertions: editedAssertions ?? undefined,
+        // Generated back at Continue's preview — passing it through here means Apply skips the
+        // vision LLM call entirely instead of regenerating anchors it already has.
+        visual_anchors: preview.visual_anchors ?? undefined,
       })
       onWorkflowUpdated(res.workflow)
       if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)

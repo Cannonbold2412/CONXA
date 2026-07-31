@@ -11,7 +11,8 @@ from conxa_compile.compiler.recovery_policy import merge_recovery_strategies_for
 from conxa_core.config import settings
 from conxa_compile.editor.assets import asset_url, resolve_skill_asset
 from conxa_compile.editor.step_view import skill_step_for_destructive_check
-from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError, generate_anchors_for_step_or_raise
+from conxa_compile.llm import anchor_vision_llm
+from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
 from conxa_compile.policy.bundle import PolicyBundle, get_policy_bundle
 
 _STRIP_VISUAL_IMAGE_KEYS = ("full_screenshot", "element_snapshot", "scroll_screenshot", "bbox")
@@ -218,7 +219,7 @@ def apply_recording_event_visual_to_step_or_raise(
 
     session_root = (settings.data_dir / "sessions" / session_id).resolve()
     ev_llm = {"visual": dict(persisted_visual)}
-    anchors = generate_anchors_for_step_or_raise(
+    anchors = anchor_vision_llm.generate_anchors_for_step_or_raise(
         ev_llm,
         session_root=session_root,
         final_intent=intent,
@@ -268,17 +269,11 @@ def apply_recording_event_visual_to_step_or_raise(
     return doc
 
 
-def update_step_visual_bbox_and_regenerate_anchors_or_raise(
-    document: dict[str, Any],
-    step_index: int,
-    bbox: dict[str, Any],
-    *,
-    policy_bundle: PolicyBundle | None = None,
-) -> dict[str, Any]:
-    """Update ``signals.visual.bbox`` and regenerate vision-backed anchors for the current screenshot."""
-    bundle = policy_bundle or get_policy_bundle()
-    policy = bundle.data
-
+def _resolve_step_for_visual_update(
+    document: dict[str, Any], step_index: int, bbox: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Normalize the drawn bbox and look up the target step. Shared by the preview (Continue) and
+    apply-time entry points below so both validate identically."""
     try:
         next_bbox = {
             "x": int(round(float(bbox.get("x") or 0))),
@@ -292,22 +287,95 @@ def update_step_visual_bbox_and_regenerate_anchors_or_raise(
         raise ValueError("visual_bbox_too_small")
 
     meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
-    session_id = str(meta.get("source_session_id") or "").strip()
-    if not session_id:
+    if not str(meta.get("source_session_id") or "").strip():
         raise ValueError("no_source_session_id")
 
-    doc = dict(document)
-    skills = list(doc.get("skills") or [])
+    skills = list(document.get("skills") or [])
     if not skills:
         raise ValueError("no_skills_block")
-    block = dict(skills[0])
-    steps = list(block.get("steps") or [])
+    steps = list((skills[0] or {}).get("steps") or [])
     if step_index < 0 or step_index >= len(steps):
         raise ValueError("step_index_out_of_range")
 
     step = dict(steps[step_index])
     if action_name(step).lower() == "scroll":
         raise ValueError("cannot_update_visual_bbox_on_scroll_step")
+    return next_bbox, step
+
+
+def _generate_anchors_for_bbox(
+    step: dict[str, Any], next_bbox: dict[str, Any], session_id: str, policy: dict[str, Any], step_index: int
+) -> tuple[list[dict[str, Any]], str]:
+    """LLM-backed anchor generation for a step's screenshot + drawn region. Raises on missing inputs."""
+    signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
+    visual = dict(signals.get("visual") if isinstance(signals.get("visual"), dict) else {})
+    raw_full = visual.get("full_screenshot")
+    if not isinstance(raw_full, str) or not raw_full.strip():
+        raise ValueError("step_missing_full_screenshot")
+
+    from conxa_compile.compiler.intent_access import get_effective_intent_from_skill_step
+
+    intent = get_effective_intent_from_skill_step(step) or str(step.get("intent") or "").strip()
+    if not intent.strip():
+        raise ValueError("intent_required_for_visual_bbox")
+
+    visual["bbox"] = next_bbox
+    session_root = (settings.data_dir / "sessions" / session_id).resolve()
+    anchors = anchor_vision_llm.generate_anchors_for_step_or_raise(
+        {"visual": visual},
+        session_root=session_root,
+        final_intent=intent,
+        policy=policy,
+        step_index=step_index,
+    )
+    anchors = rank_merged_anchors(anchors, _ev_rank_stub_from_step(step), intent, policy)
+    return anchors, intent
+
+
+def preview_visual_anchors_for_bbox_or_raise(
+    document: dict[str, Any],
+    step_index: int,
+    bbox: dict[str, Any],
+    *,
+    policy_bundle: PolicyBundle | None = None,
+) -> dict[str, Any]:
+    """Compute (without persisting) the vision anchors a redrawn region would produce.
+
+    Lets the re-target wizard pay for the anchor LLM call once, at Continue (Phase 1 -> 2),
+    instead of again at Apply — see ``update_step_visual_bbox_and_regenerate_anchors_or_raise``'s
+    ``precomputed_anchors`` param.
+    """
+    bundle = policy_bundle or get_policy_bundle()
+    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox)
+    meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
+    session_id = str(meta.get("source_session_id") or "").strip()
+    anchors, intent = _generate_anchors_for_bbox(step, next_bbox, session_id, bundle.data, step_index)
+    return {"anchors": anchors, "intent": intent}
+
+
+def update_step_visual_bbox_and_regenerate_anchors_or_raise(
+    document: dict[str, Any],
+    step_index: int,
+    bbox: dict[str, Any],
+    *,
+    policy_bundle: PolicyBundle | None = None,
+    precomputed_anchors: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update ``signals.visual.bbox`` and apply vision-backed anchors for the current screenshot.
+
+    Pass ``precomputed_anchors`` (from ``preview_visual_anchors_for_bbox_or_raise``) to reuse
+    anchors already generated at Continue instead of calling the LLM again here.
+    """
+    bundle = policy_bundle or get_policy_bundle()
+    policy = bundle.data
+    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox)
+    meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
+    session_id = str(meta.get("source_session_id") or "").strip()
+
+    doc = dict(document)
+    skills = list(doc.get("skills") or [])
+    block = dict(skills[0])
+    steps = list(block.get("steps") or [])
 
     signals = dict(step.get("signals") or {})
     visual_prev = signals.get("visual") if isinstance(signals.get("visual"), dict) else {}
@@ -322,28 +390,13 @@ def update_step_visual_bbox_and_regenerate_anchors_or_raise(
     if prev_bbox == next_bbox:
         return document
 
-    raw_full = visual.get("full_screenshot")
-    if not isinstance(raw_full, str) or not raw_full.strip():
-        raise ValueError("step_missing_full_screenshot")
-
-    from conxa_compile.compiler.intent_access import get_effective_intent_from_skill_step
-
-    intent = get_effective_intent_from_skill_step(step) or str(step.get("intent") or "").strip()
-    if not intent.strip():
-        raise ValueError("intent_required_for_visual_bbox")
+    if precomputed_anchors is not None:
+        anchors = precomputed_anchors.get("anchors") or []
+        intent = str(precomputed_anchors.get("intent") or "")
+    else:
+        anchors, intent = _generate_anchors_for_bbox(step, next_bbox, session_id, policy, step_index)
 
     visual["bbox"] = next_bbox
-    session_root = (settings.data_dir / "sessions" / session_id).resolve()
-    ev_llm = {"visual": dict(visual)}
-    anchors = generate_anchors_for_step_or_raise(
-        ev_llm,
-        session_root=session_root,
-        final_intent=intent,
-        policy=policy,
-        step_index=step_index,
-    )
-    anchors = rank_merged_anchors(anchors, _ev_rank_stub_from_step(step), intent, policy)
-
     signals["visual"] = visual
     signals["anchors"] = list(anchors)
     step["signals"] = signals
@@ -531,7 +584,7 @@ def apply_step_frame_or_raise(
     session_root = (settings.data_dir / "sessions" / session_id).resolve() if session_id else frame_abs.parent.parent
     ev_llm = {"visual": dict(visual)}
     try:
-        anchors = generate_anchors_for_step_or_raise(
+        anchors = anchor_vision_llm.generate_anchors_for_step_or_raise(
             ev_llm,
             session_root=session_root,
             final_intent=intent,
