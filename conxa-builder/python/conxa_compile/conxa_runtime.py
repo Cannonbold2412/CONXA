@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -120,10 +121,23 @@ def _is_link(path: Path) -> bool:
 
     Path.is_symlink() alone misses junctions: mklink /J creates an NTFS reparse point
     that Windows reports as a plain directory, not a symlink, to os.path.islink().
+
+    Tested via the reparse tag rather than os.path.isjunction(), which only exists on
+    Python 3.12+. The Studio backend is frozen against 3.11 (see build-studio.yml), where
+    a hasattr() guard on isjunction degrades silently to "no junctions exist" — that made
+    _ensure_junction skip its repoint branch and the prune loop below delete through
+    `current` into whatever version it pointed at.
     """
     if path.is_symlink():
         return True
-    return sys.platform == "win32" and hasattr(os.path, "isjunction") and os.path.isjunction(str(path))
+    try:
+        st = os.lstat(path)
+        return st.st_reparse_tag in (
+            stat.IO_REPARSE_TAG_MOUNT_POINT,
+            stat.IO_REPARSE_TAG_SYMLINK,
+        )
+    except (AttributeError, OSError):
+        return False
 
 
 def _ensure_junction(link_path: Path, target: Path) -> bool:
@@ -246,11 +260,17 @@ def stage_runtime_payload(
         if version_dest.exists():
             shutil.rmtree(version_dest)
         shutil.copytree(str(app_dir), str(version_dest))
-        if not _ensure_junction(app_root / "current", version_dest):
+        link = app_root / "current"
+        if not _ensure_junction(link, version_dest):
+            detail = f"exists={os.path.lexists(link)} is_link={_is_link(link)}"
+            if _is_link(link):
+                try:
+                    detail += f" target={os.readlink(str(link))}"
+                except OSError:
+                    pass
             raise RuntimeError(
-                f"Failed to point {app_root / 'current'} at {version_dest} — "
-                "the previous target may still be locked by a just-exited process. "
-                "Retry the test."
+                f"Failed to point {link} at {version_dest} ({detail}). "
+                "Remove it manually and retry the test."
             )
 
         # The sandbox only ever needs one active version — drop any other (mirrors

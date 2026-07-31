@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -381,6 +384,71 @@ class TestStageRuntimePayload:
         # The junction itself must not silently end up dangling/missing.
         current = dest / "conxa-app" / "current"
         assert not current.is_dir()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="junction semantics are Windows-only")
+    def test_prune_does_not_delete_through_current_without_isjunction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The shipped Studio backend is frozen against Python 3.11, which has no
+        # os.path.isjunction (added in 3.12) — _is_link() must not rely on it, or
+        # _ensure_junction can't tell `current` apart from a plain directory and the
+        # prune loop in stage_runtime_payload deletes straight through the junction
+        # into whatever version it points at.
+        monkeypatch.delattr(os.path, "isjunction", raising=False)
+
+        runtime_dir = self._make_runtime_dir(tmp_path / "deps")
+        app_v1 = self._make_app_dir(tmp_path / "deps", "app-v1.0.0")
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        from conxa_compile.conxa_runtime import _is_link, stage_runtime_payload
+
+        stage_runtime_payload(dest, runtime_dir, app_v1)
+        current = dest / "conxa-app" / "current"
+        v1_dest = dest / "conxa-app" / "app-v1.0.0"
+        assert _is_link(current)
+        assert v1_dest.is_dir()
+
+        # Re-stage onto a new app version — this is the prune-loop path that deleted
+        # app-v2.0.1 in production.
+        app_v2 = self._make_app_dir(tmp_path / "deps", "app-v2.0.0")
+        stage_runtime_payload(dest, runtime_dir, app_v2)
+
+        v2_dest = dest / "conxa-app" / "app-v2.0.0"
+        assert v2_dest.is_dir(), "new version must be staged"
+        assert current.resolve() == v2_dest.resolve(), "current must repoint, not silently no-op"
+        # v1 is pruned as an ordinary stale dir, but only because it isn't `current` —
+        # `current` itself, and whatever it points at, must survive being iterated.
+        assert not v1_dest.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="junction semantics are Windows-only")
+    def test_ensure_junction_repoints_dangling_link_without_isjunction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reproduces the wedged-sandbox state found in production: `current` is a
+        # junction whose target was deleted (by the prune bug above, in the wild),
+        # under the Python 3.11 semantics the Studio backend actually ships with.
+        monkeypatch.delattr(os.path, "isjunction", raising=False)
+
+        from conxa_compile.conxa_runtime import _ensure_junction, _is_link
+
+        old = tmp_path / "app-v1"
+        old.mkdir()
+        new = tmp_path / "app-v2"
+        new.mkdir()
+        link = tmp_path / "current"
+
+        assert _ensure_junction(link, old)
+        shutil.rmtree(old)  # link is now dangling, mirroring the wedged machine
+        assert not link.exists()
+        assert os.path.lexists(link)
+
+        assert _is_link(link), "a dangling junction must still be detected as a link"
+        assert _ensure_junction(link, new), "must repoint a dangling junction, not fail"
+        # os.readlink() on a real junction returns an extended-length (\\?\-prefixed)
+        # path that Path.resolve() doesn't normalize away — strip it before comparing.
+        got = os.readlink(str(link)).removeprefix("\\\\?\\")
+        assert Path(got).resolve() == new.resolve()
 
 
 # ─── ensure_test_sandbox ──────────────────────────────────────────────────────

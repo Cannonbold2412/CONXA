@@ -594,6 +594,20 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Complexity:** S.
 - **Success criteria:** `_bootstrap_runtime_dir()`/`_bootstrap_app_dir()` always resolve to the most-recently-built candidate (by mtime, not by name-parsed digit tuple) when multiple version directories are present.
 
+### TEST-5 — Studio test-sandbox staging: unguarded rmtree, unreaped kill, no request serialization
+- **Category:** Testing & Cleanup / Builder
+- **Description:** Found while root-causing the "Failed to point conxa-app/current" wedge (fixed 2026-08-01 — `_is_link()` was blind to junctions under the shipped Python 3.11 build, see `FIX.md`). Three adjacent weaknesses in the same code path were out of scope for that fix and left open:
+  1. `stage_runtime_payload()`'s `shutil.rmtree(version_dest)` (`conxa_compile/conxa_runtime.py`, right before the `_ensure_junction` call) and the equivalent in `sync_skill_pack()` have no retry/backoff, unlike `_ensure_junction` immediately after them — a lingering handle on the *old* version dir raises a bare, unguarded `OSError` instead of the same defense-in-depth retry the junction repoint gets.
+  2. `runtime_tool.py`'s `finally` block calls `proc.kill()` on the timeout path with no following `wait()` — the child is killed but never reaped, and the function returns before Windows confirms the handle is released; stdout/stderr pipes are also never explicitly closed.
+  3. `backend.py`'s JSON-RPC dispatcher runs every request (including `cmd_test_workflow`) on its own daemon thread with no per-command lock or in-flight registry, and the renderer's "already running" guard (`PluginWorkflowTests.tsx`) is component-local — two workflow-test panels can both target the one singleton sandbox concurrently.
+- **Why required:** none of these caused the wedge that was just fixed, but all three are latent causes of the *next* confusing sandbox failure — the kind of thing the last three (wrong-diagnosis) fix attempts were chasing.
+- **Business value:** fewer "reinstall/retry" false alarms during workflow testing, which otherwise erode confidence in Build Studio during demos and onboarding.
+- **Technical value:** small, well-isolated hardening — a backoff loop on the two `rmtree` call sites, a `wait()` after `proc.kill()` (+ explicit pipe close), and either a lock around `cmd_test_workflow` or a sandbox-directory-scoped mutex.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic — pick up if sandbox flakiness resurfaces after the 2026-08-01 fix, since that fix removes the only known trigger.
+- **Complexity:** S.
+- **Success criteria:** a killed-mid-test runtime process is confirmed reaped before the next `stage_runtime_payload()` call; both `rmtree` call sites retry past a transient lock the same way `_ensure_junction` does; two concurrent `test_workflow` calls against the same sandbox no longer race.
+
 ### ADV-1 — TwelveLabs video-understanding integration
 - **Category:** Advanced / Research Integrations
 - **Description:** Per `research-analysis/07-go-to-market/twelvelabs-video-strategy.md`: Conxa already captures a `recording.webm` for every recorded workflow but doesn't currently use video-understanding models on it. Four integration points are laid out in detail: (1) compile-time intent enrichment (Pegasus model — richer per-step intent descriptions than can be inferred from screenshots/DOM alone); (2) semantic skill discovery and dedup (Marengo model — detect that two separately-recorded workflows are actually the same underlying task); (3) auto-generated assertions (Pegasus — infer expected post-conditions from what visibly changed in the recording); (4) recovery describe-then-match using Marengo at Tier 3+ only, consistent with the zero-token-hot-path invariant.
