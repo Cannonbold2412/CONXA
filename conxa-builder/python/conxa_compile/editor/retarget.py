@@ -188,42 +188,42 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
     """Selector candidates built from what the compiler already produced for this step — no LLM.
 
     Used on the "review" path, when the user opens the wizard and continues without re-picking
-    the element. Prefers the identity_bundle signals: each carries the compiler's own
-    ``unique_at_compile`` verdict (computed against the recorded DOM *and* accessibility tree at
-    compile time — the authoritative "verified after recording" result, which the offline CSS
-    re-check here can't reproduce for role=/text= selectors) plus a compiled engine and
-    durability. Falls back to an offline CSS re-check of the raw target selectors for older
-    skills that predate the identity_bundle.
+    the element. Prefers the identity_bundle signals: each row is rendered from *its own* signal's
+    stored selector (via ``signal_to_display`` — the inverse of ``display_to_signal``, which
+    ``rebuild_identity_signals_from_target`` uses on Apply), not from ``target.primary_selector``/
+    ``fallback_selectors`` — those are a separately-ranked list that does not align index-for-index
+    with ``identity_bundle.signals``, so pairing them by position showed the wrong selector string
+    next to a signal's verdict/engine/durability. Falls back to an offline CSS re-check of the raw
+    target selectors for older skills that predate the identity_bundle.
     """
+    from conxa_compile.compiler.selector_grammar import signal_to_display
     from conxa_compile.compiler.selector_score import tag_orthogonality_class
-
-    target = step.get("target") if isinstance(step.get("target"), dict) else {}
-    primary = str(target.get("primary_selector") or "").strip()
-    fallbacks = [str(s).strip() for s in (target.get("fallback_selectors") or []) if str(s).strip()]
-    # identity_bundle.signals align index-for-index with [primary, *fallbacks]; use the target
-    # strings for display (readable) but the signal for the verdict/engine/durability.
-    display = [s for s in [primary, *fallbacks] if s]
 
     bundle = step.get("identity_bundle") if isinstance(step.get("identity_bundle"), dict) else {}
     signals = bundle.get("signals") if isinstance(bundle.get("signals"), list) else []
 
-    frame_nested = _is_frame_nested(step)
-
     rows: list[dict[str, Any]] = []
     if signals:
-        for i, sig in enumerate(signals):
+        for sig in signals:
             if not isinstance(sig, dict):
                 continue
-            sel = display[i] if i < len(display) else str(sig.get("selector") or "").strip()
+            engine = str(sig.get("engine") or "")
+            stored_sel = str(sig.get("selector") or "").strip()
+            if not stored_sel:
+                continue
+            sel = signal_to_display(engine, stored_sel) if engine else stored_sel
             if not sel:
                 continue
             unique = bool(sig.get("unique_at_compile"))
-            engine = str(sig.get("engine") or _classify_engine(sel))
-            # unique_at_compile was computed against dom_html (page.content(), top-level only —
-            # see _is_frame_nested). For a frame-nested element that's not a real "not unique"
-            # verdict, just "couldn't check" — treat it the same as the unverifiable case rather
-            # than dropping it in _prune_review_candidates below.
-            verified = "unique" if unique else ("unverified" if frame_nested else "not_unique")
+            engine = engine or _classify_engine(sel)
+            # unique_at_compile can be False for two different reasons the compiler cannot tell
+            # apart from a bare bool: the selector was checked and genuinely matched >1 node, or
+            # it couldn't be checked at all (no snapshot, frame-nested element, role/text engines
+            # without an a11y tree — see uniqueness_gate). Treating False as "not unique" here
+            # deleted real, working selectors from the review list. Only "unique" is a positive
+            # claim this bool can make; anything else is "couldn't confirm", not "ambiguous" —
+            # _prune_review_candidates only drops "not_unique", so this keeps every real signal.
+            verified = "unique" if unique else "unverified"
             rows.append(
                 {
                     "selector": sel,
@@ -247,14 +247,20 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
     # No identity_bundle (older skill) — best-effort offline CSS re-check of the target strings.
     from conxa_compile.llm.selector_regeneration import validate_selector
 
+    target = step.get("target") if isinstance(step.get("target"), dict) else {}
+    primary = str(target.get("primary_selector") or "").strip()
+    fallbacks = [str(s).strip() for s in (target.get("fallback_selectors") or []) if str(s).strip()]
+    display = [s for s in [primary, *fallbacks] if s]
+    frame_nested = _is_frame_nested(step)
+
     seen: set[str] = set()
     for sel in display:
         if sel in seen:
             continue
         seen.add(sel)
         if frame_nested:
-            # Same reasoning as above: dom_snapshot can't contain this element at all, so a
-            # match_count check here would reject every selector regardless of quality.
+            # dom_snapshot can't contain a frame-nested element at all, so a match_count check
+            # here would reject every selector regardless of quality.
             match_count = -1
         else:
             _passes, match_count = validate_selector(sel, dom_snapshot)

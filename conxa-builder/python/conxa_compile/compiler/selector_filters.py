@@ -266,6 +266,7 @@ def uniqueness_gate(
     selector: str,
     dom_html: str | None,
     a11y_tree: dict[str, Any] | None = None,
+    absent_ok: bool = False,
 ) -> bool:
     """Return True if selector matches exactly 1 node in the recorded page.
 
@@ -273,10 +274,23 @@ def uniqueness_gate(
     `a11y_tree` is the Playwright accessibility snapshot (read_a11y_snapshot), needed to count
     internal:role= matches since ARIA role isn't derivable from raw HTML.
     Returns True when no HTML snapshot is available (can't verify, allow through).
+
+    `absent_ok`: when True, a 0-match result is also treated as "can't verify, allow through"
+    rather than "not unique". A 0 count here is genuinely ambiguous — it can mean the element
+    truly isn't on the recorded page (a real miss), or that the recorded snapshot just didn't
+    contain it (e.g. it was captured before a modal/portal-mounted element existed — see
+    conxa_compile.recorder.bridge.js's interactiveSignature dedup signature, which can miss
+    elements past its cap). Compile-time identity signal generation passes True here so a
+    snapshot gap doesn't wrongly stamp a real, durable selector as unverified; the fallback-pool
+    dedup in build.py keeps the strict default, since a *structural* selector that matches
+    nothing recorded is legitimately worth dropping there.
     """
     if not dom_html:
         return True
-    return _count_selector_matches(selector, dom_html, a11y_tree) == 1
+    count = _count_selector_matches(selector, dom_html, a11y_tree)
+    if count == 0 and absent_ok:
+        return True
+    return count == 1
 
 
 def dedup_by_orthogonality(signals: list["IdentitySignal"]) -> list["IdentitySignal"]:

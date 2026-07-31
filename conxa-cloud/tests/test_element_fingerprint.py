@@ -484,6 +484,21 @@ def test_uniqueness_gate_text_selector_multi_match():
     assert uniqueness_gate('internal:text="Edit"', html) is False
 
 
+def test_uniqueness_gate_absent_ok_allows_zero_matches():
+    """A 0-match verdict can mean 'genuinely not on this page' or 'the recorded snapshot didn't
+    contain it' (e.g. captured before a portal-mounted dialog existed) — absent_ok=True treats
+    both the same as the no-snapshot case (can't verify, allow through). Used at compile time
+    (identity_bundle.py) so a snapshot gap doesn't stamp a real, durable selector as not-unique."""
+    html = '<div data-testid="other-btn"></div>'
+    assert uniqueness_gate('internal:testid=[data-testid="submit-btn"]', html, absent_ok=True) is True
+
+
+def test_uniqueness_gate_absent_ok_still_rejects_multi_match():
+    """absent_ok only rescues the 0-match case — a genuine duplicate is still rejected."""
+    html = '<button data-testid="btn"></button><button data-testid="btn"></button>'
+    assert uniqueness_gate('internal:testid=[data-testid="btn"]', html, absent_ok=True) is False
+
+
 def test_uniqueness_gate_text_selector_single_match():
     html = "<button>Edit</button><button>Delete</button>"
     assert uniqueness_gate('internal:text="Edit"', html) is True

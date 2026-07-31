@@ -102,7 +102,10 @@ def generate_deterministic_signals(
     for dur, engine, sel, oc in ranked:
         if engine not in _NATIVE_ENGINES and not selector_passes_filters(sel):
             continue
-        unique = uniqueness_gate(sel, dom_html, a11y_tree)
+        # absent_ok=True: a 0-match verdict here means "couldn't confirm", not "not unique" — see
+        # uniqueness_gate's docstring. Without it, snapshot gaps (e.g. a modal captured before it
+        # mounted) wrongly stamped real, durable selectors as unverified.
+        unique = uniqueness_gate(sel, dom_html, a11y_tree, absent_ok=True)
         signals.append(IdentitySignal(
             engine=engine,
             selector=sel,

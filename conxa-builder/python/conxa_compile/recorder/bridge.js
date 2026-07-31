@@ -737,10 +737,11 @@
   // DOM diff: lightweight snapshot of interactive element signatures for post-action comparison.
   // `root` scopes the query (defaults to the whole document) — used by conditional-state
   // detection below to fingerprint just the descendants of one container.
+  const INTERACTIVE_SEL = 'button,a[href],input:not([type="hidden"]),select,textarea,[role="button"],[role="link"],[data-testid],[data-test-id]';
+
   function interactiveSignature(root) {
-    const sels = 'button,a[href],input:not([type="hidden"]),select,textarea,[role="button"],[role="link"],[data-testid],[data-test-id]';
     const scope = root || document;
-    const els = Array.from(scope.querySelectorAll(sels)).slice(0, 120);
+    const els = Array.from(scope.querySelectorAll(INTERACTIVE_SEL)).slice(0, 120);
     return els.map(el => {
       const tag = el.tagName.toLowerCase();
       const tid = el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "";
@@ -748,6 +749,22 @@
       const txt = (el.innerText || el.value || "").trim().slice(0, 60);
       return `${tag}|${tid}|${al}|${txt}`;
     }).join("\n");
+  }
+
+  // Dedup-signature helper: interactiveSignature() truncates at 120 elements, so a portal-mounted
+  // dialog appended past that cap (React portals mount as new children at the end of <body>) can
+  // add or replace elements without the sliced text changing at all. The session-level snapshot
+  // dedup (session.py's _capture_dom_snapshot_sync) then skips capturing a fresh DOM/a11y snapshot
+  // for an event that actually happened inside a brand-new dialog. Folding in the *unsliced*
+  // element count plus document.body's direct child count catches that case without changing
+  // interactiveSignature()'s own return value — which is also line-diffed by _computeDomDiff for
+  // dom_diff reporting, so it must stay stable.
+  function _dedupSigExtra() {
+    let total = 0;
+    try { total = document.querySelectorAll(INTERACTIVE_SEL).length; } catch (_e) {}
+    let bodyChildren = 0;
+    try { bodyChildren = document.body ? document.body.childElementCount : 0; } catch (_e) {}
+    return `${total}|${bodyChildren}`;
   }
 
   function serializeTarget(el, actionKind, value) {
@@ -804,7 +821,7 @@
     let domSigShort = "";
     try { ancestorsChain = captureAncestors(el, 24); } catch (_e) {}
     try { surroundingText = captureSurroundingText(el, 200); } catch (_e) {}
-    try { domSigShort = _domSignatureHash(interactiveSignature()); } catch (_e) {}
+    try { domSigShort = _domSignatureHash(interactiveSignature() + "|" + _dedupSigExtra()); } catch (_e) {}
     return {
       action: {
         action: actionKind,

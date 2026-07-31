@@ -685,6 +685,17 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Complexity:** S (bump the pin) to M (add the staleness-check guard).
 - **Success criteria:** either the pinned dev app-layer version is kept current, or a build-time check catches a staged app layer missing files the current runtime source requires, before it reaches an installer.
 
+### BUILD-10 — Accessibility snapshot capture has been silently dead since a Playwright upgrade
+- **Category:** Builder
+- **Description:** Discovered 2026-08-01 while diagnosing the Human Edit re-target wizard destroying good selectors (see `FIX.md`). `conxa_compile/recorder/session.py::_capture_a11y_async` calls `page.accessibility.snapshot()`, an API Playwright removed several majors ago (`hasattr(Page, "accessibility")` is `False` on the installed 1.58.0); it's also invoked from a worker thread against Playwright's thread-affine sync API. The call always raises, and a bare `except Exception` swallows it — no `.a11y.json` blob has ever been written by this recorder. Consequence: `selector_filters.py::_count_role` never runs, so `uniqueness_gate` returns `True` (via its `a11y_tree is None` branch) for every `role=` identity signal in every skill this Studio has ever compiled, regardless of whether the role/name is actually unique on the page. Nothing currently downstream depends on that verdict being correct enough to break (the runtime resolver ignores `unique_at_compile` entirely, and the same investigation's F3 fix stopped the compiler punishing signals it can't verify), which is why this shipped unnoticed rather than as a visible failure.
+- **Why required:** the compile-time uniqueness verdict shown in the Human Edit "Selector candidates" panel (`UNIQUE MATCH` badge) is a real claim to the user; for every `role` signal it is currently unconditionally true rather than checked.
+- **Business value:** low on its own (nothing observably breaks today) but removes a latent trust gap in a user-facing confidence signal, and is a prerequisite for any future feature that does start trusting `unique_at_compile` for `role` signals.
+- **Technical value:** fix is scoped and known — swap to `page.locator("body").aria_snapshot()` (present on 1.58), call it inline on the Playwright thread instead of a worker thread, and stop swallowing the exception. Store the YAML in the existing `.a11y.json` blob (e.g. `{"aria_yaml": "..."}`) so `read_a11y_snapshot`'s signature is unchanged; update `selector_filters.py::_count_role` to count `- role "name"` lines in the YAML instead of walking a dict tree, and `llm/selector_regeneration.py::_extract_a11y_node` for the new shape.
+- **Dependencies:** none blocking.
+- **Suggested order:** opportunistic — do before anything starts relying on `role` signal `unique_at_compile` being trustworthy.
+- **Complexity:** S–M.
+- **Success criteria:** a recorded session produces a non-empty `.a11y.json` blob per snapshot; `_count_role` returns real counts against it; a `role=` selector matching 2+ elements on the recorded page is correctly stamped `unique_at_compile: False` at compile time.
+
 ---
 
 ## Final Review Notes (from the audits that produced this file)

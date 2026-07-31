@@ -411,12 +411,77 @@ def test_preview_review_path_surfaces_compile_time_uniqueness(session_fixture, m
     assert by_sel['role=button[name="Submit"]']["engine"] == "role"  # compiled engine, not misclassified as "name"
     assert by_sel['text="Submit"']["verified"] == "unique"
     assert by_sel['text="Submit"']["engine"] == "text_based"
-    # the non-unique selector is pruned (could resolve to the wrong element at runtime)
-    assert ".dup" not in by_sel
-    # the near-zero-durability absolute XPath is pruned as categorically brittle, even though unique
+    # unique_at_compile=False means "the compiler couldn't confirm this" (no snapshot, a
+    # frame-nested element, a role/text signal with no a11y tree, ...), not "definitely matches
+    # >1 node" — it is offered as "unverified", not silently dropped. Its durability (0.3) sits
+    # exactly at the offer floor, so it still clears that gate.
+    assert by_sel[".dup"]["verified"] == "unverified"
+    # the near-zero-durability absolute XPath is still pruned as categorically brittle,
+    # regardless of its (real) unique_at_compile=True verdict
     assert "/html[1]/body[1]/div[1]/button[1]" not in by_sel
-    assert not any(c["verified"] == "unverified" for c in result["candidates"])
+    assert any(c["verified"] == "unverified" for c in result["candidates"])
     assert result["pick_quality"] == "good"
+
+
+def test_preview_review_path_renders_each_signals_own_selector(session_fixture, monkeypatch):
+    """Regression: identity_bundle.signals does NOT align index-for-index with
+    [target.primary_selector, *target.fallback_selectors] — build.py's _build_target ranks
+    fallback_selectors through a separate pipeline (generate_stable_selector + rank_selectors_scored),
+    re-ranked by durability, with only primary_selector pinned to the top signal. Pairing signals
+    with target strings by position showed a signal's verdict/engine/durability next to a DIFFERENT
+    selector string than the one it actually describes. Each row must instead be rendered from its
+    own signal's stored selector (via signal_to_display, the exact inverse of display_to_signal)."""
+    from conxa_compile.editor.retarget import preview_retarget
+
+    _fail_if_llm_called(monkeypatch)
+
+    doc = _base_document()
+    step = doc["skills"][0]["steps"][0]
+    # Deliberately scrambled / mismatched vs. the signals below, and shorter than the signal list —
+    # a naive index pairing would either show the wrong string or run out of entries.
+    step["target"] = {
+        "primary_selector": '[data-testid="confirm-delete-field"]',
+        "fallback_selectors": ["#sudo-command"],
+    }
+    step["identity_bundle"] = {
+        "signals": [
+            {
+                "engine": "testid",
+                "selector": 'internal:testid=[data-testid="confirm-delete-field"]',
+                "durability": 0.99,
+                "unique_at_compile": True,
+                "source": "compiler",
+            },
+            {
+                "engine": "role",
+                "selector": 'internal:role=textbox[name="sudoCommand"]',
+                "durability": 0.9025,
+                "unique_at_compile": True,
+                "source": "compiler",
+            },
+            {
+                "engine": "css-id",
+                "selector": "#sudo-command",
+                "durability": 0.4275,
+                "unique_at_compile": True,
+                "source": "compiler",
+            },
+        ]
+    }
+
+    result = preview_retarget(doc, 0, {"x": 10, "y": 10, "w": 40, "h": 20}, regenerate=False)
+
+    by_sel = {c["selector"]: c for c in result["candidates"]}
+    # The testid row must show the testid string — not "#sudo-command" (position 1 in target's
+    # fallback list) or any other signal's selector.
+    assert '[data-testid="confirm-delete-field"]' in by_sel
+    assert by_sel['[data-testid="confirm-delete-field"]']["engine"] == "testid"
+    assert by_sel['[data-testid="confirm-delete-field"]']["durability"] == 0.99
+    # The role signal must show its own (public-grammar) selector, not get skipped or mislabeled.
+    assert 'role=textbox[name="sudoCommand"]' in by_sel
+    assert by_sel['role=textbox[name="sudoCommand"]']["engine"] == "role"
+    assert "#sudo-command" in by_sel
+    assert by_sel["#sudo-command"]["engine"] == "css-id"
 
 
 def test_preview_review_path_trusts_signals_for_frame_nested_step(session_fixture, monkeypatch):
@@ -664,6 +729,78 @@ def test_apply_composes_bbox_target_and_identity_bundle(session_fixture, monkeyp
     # keep_validation=True leaves validation untouched
     assert step["validation"]["wait_for"] == {"type": "none", "target": "", "timeout": 5000}
     assert step["validation"]["assertions"] == []
+
+
+def test_review_then_apply_unchanged_is_lossless(session_fixture, monkeypatch):
+    """Regression for the wizard's "damage on a no-op pass" bug: walking Continue -> Continue ->
+    Apply on a step without picking a different element or editing a candidate must reproduce the
+    step's identity_bundle byte-for-byte (same signals, same confidence) — not degrade it to a
+    single low-durability, unverified selector that gets pruned to nothing the next time the
+    wizard is opened."""
+    from conxa_compile.compiler.build import _confidence_from_identity_bundle
+    from conxa_compile.editor.retarget import apply_retarget, preview_retarget
+
+    doc = _base_document()
+    step = doc["skills"][0]["steps"][0]
+    original_signals = [
+        {
+            "engine": "testid",
+            "selector": 'internal:testid=[data-testid="confirm-delete-field"]',
+            "durability": 0.99,
+            "orthogonality_class": "test-contract",
+            "unique_at_compile": True,
+            "source": "compiler",
+        },
+        {
+            "engine": "role",
+            "selector": 'internal:role=textbox[name="sudoCommand"]',
+            "durability": 0.9025,
+            "orthogonality_class": "semantic-aria",
+            "unique_at_compile": True,
+            "source": "compiler",
+        },
+        {
+            "engine": "css-id",
+            "selector": "#sudo-command",
+            "durability": 0.4275,
+            "orthogonality_class": "structural",
+            "unique_at_compile": True,
+            "source": "compiler",
+        },
+    ]
+    step["target"] = {
+        # Deliberately NOT aligned with identity_bundle.signals order/content, matching what
+        # build.py actually produces — see test_preview_review_path_renders_each_signals_own_selector.
+        "primary_selector": '[data-testid="confirm-delete-field"]',
+        "fallback_selectors": ["#sudo-command"],
+    }
+    step["identity_bundle"] = {"signals": [dict(s) for s in original_signals]}
+    original_confidence = _confidence_from_identity_bundle(step["identity_bundle"])
+    stored_bbox = dict(RECORDED_EVENT["visual"]["bbox"])  # unchanged bbox → no vision LLM call
+
+    preview = preview_retarget(doc, 0, stored_bbox, regenerate=False)
+    candidates = preview["candidates"]
+    assert len(candidates) == 3  # nothing pruned — see F1/F2
+
+    payload = {
+        "bbox": stored_bbox,
+        "primary_selector": candidates[0]["selector"],
+        "fallback_selectors": [c["selector"] for c in candidates[1:]],
+        "keep_validation": True,
+    }
+    new_doc = apply_retarget(doc, 0, payload)
+    new_step = new_doc["skills"][0]["steps"][0]
+
+    new_signals = new_step["identity_bundle"]["signals"]
+    assert len(new_signals) == 3
+    by_selector = {s["selector"]: s for s in new_signals}
+    for orig in original_signals:
+        got = by_selector[orig["selector"]]
+        assert got["engine"] == orig["engine"]
+        assert got["durability"] == orig["durability"]
+        assert got["unique_at_compile"] == orig["unique_at_compile"]
+        assert got["source"] == orig["source"]  # still "compiler" — NOT demoted to "user"
+    assert new_step["target"]["selector_confidence"] == pytest.approx(original_confidence)
 
 
 def test_apply_reuses_precomputed_anchors_without_calling_llm(session_fixture, monkeypatch):
