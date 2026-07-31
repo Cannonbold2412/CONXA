@@ -370,6 +370,10 @@ class Backend(
                     "skill_pack_version_exists",
                     f"Skill pack version {version} already exists in Conxa Cloud. Bump the version and republish.",
                 ) from exc
+            sink({
+                "kind": "skill_pack_publish",
+                "message": f"Cloud publish failed — Conxa Cloud responded {exc.code}: {body_text or exc}",
+            })
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body_text}") from exc
         except Exception as exc:
             # Nothing responded at all (connection refused, DNS failure, timeout, or not
@@ -382,15 +386,27 @@ class Backend(
                     "kind": "skill_pack_publish",
                     "message": f"Cloud publish skipped — {cloud_api} is not reachable ({exc})",
                 })
-                return {}
+                return {"skipped": True, "slug": company_slug, "version": version}
+            sink({
+                "kind": "skill_pack_publish",
+                "message": f"Cloud publish failed — could not reach {cloud_api} ({exc})",
+            })
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc}") from exc
 
         tracking = dict(published.get("tracking") or {})
         if not tracking.get("tracking_token"):
+            sink({
+                "kind": "skill_pack_publish",
+                "message": "Cloud publish failed — Conxa Cloud accepted the upload but did not return a tracking token.",
+            })
             raise _CommandError("cloud_publish_failed", "Cloud publish did not return a tracking token.")
 
         sync_token = str(published.get("sync_token") or "")
         if not sync_token:
+            sink({
+                "kind": "skill_pack_publish",
+                "message": "Cloud publish failed — Conxa Cloud accepted the upload but did not return a sync_token.",
+            })
             raise _CommandError(
                 "cloud_publish_failed",
                 "Cloud publish did not return a sync_token. "

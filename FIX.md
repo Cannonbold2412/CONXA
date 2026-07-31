@@ -4,6 +4,10 @@
 
 ---
 
+## Publishing failures now say why, instead of just "try again" — 2026-08-01
+When publishing a skill pack to Conxa Cloud failed, the app only ever said "Publishing to Conxa Cloud didn't complete. Please try publishing again" — with no clue whether the real reason was a signed-out account, a connection problem, or something on the cloud side. It was like a delivery app that just says "order failed" instead of "the restaurant is closed." The publish log now shows the actual reason so it can actually be diagnosed and fixed. Separately, a mismatched-message bug was fixed where testing against a private, developer-only version of the cloud that wasn't running could show a scary "publish failed" banner even though nothing was actually wrong — that case is now correctly shown as "skipped," not "failed."
+ — 2026-08-01
+
 ## Fixed the "review this step" screen quietly weakening a working step every time you opened it — 2026-08-01
 In the Human Edit screen, the list of ways the app could find a button or field sometimes showed the wrong description next to the wrong match — like a luggage tag that got swapped onto the wrong suitcase. Worse, if you opened a step and clicked through to Apply without changing anything, the app would throw away the step's other, stronger ways of finding that element and keep only the weakest one — and the next time you opened that same step, it looked broken ("no usable match found"), even though nothing was actually wrong with the page. This is also why a "Delete a Service" workflow test failed partway through: an earlier pass through that same screen had already quietly weakened one of its steps, so the real run couldn't find the field anymore. The review screen now always shows the correct description next to each match, and simply reopening and confirming a step no longer damages it. We also made the recording step better at noticing when a confirmation pop-up appears, so its fields get properly captured instead of being missed.
  — three earlier fixes were treating the wrong cause — 2026-08-01

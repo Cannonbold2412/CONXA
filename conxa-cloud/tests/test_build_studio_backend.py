@@ -351,7 +351,9 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
         release_notes="",
         sink=logs.append,
     )
-    assert result == {}
+    # Truthy sentinel, not {} — a caller that does `if not publish_info: raise` must
+    # not mistake a graceful skip for a failure (that was the actual bug: {} is falsy).
+    assert result == {"skipped": True, "slug": "render", "version": "1.0.0"}
     assert any("skipped" in entry["message"] for entry in logs)
 
     # Real, non-local cloud: the same unreachability must still fail the build.
