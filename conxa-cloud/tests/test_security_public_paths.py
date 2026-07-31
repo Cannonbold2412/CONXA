@@ -4,7 +4,8 @@ which share the same /api/v1/plugins/ path segment."""
 
 from __future__ import annotations
 
-from app.api.security import _is_public_path
+from app.api.security import _body_limit_for_path, _is_public_path
+from conxa_core.config import settings
 
 
 def test_unified_manifest_is_public():
@@ -36,3 +37,12 @@ def test_versioned_skill_pack_delta_wrong_method_not_public():
 
 def test_versioned_tracking_events_wrong_method_not_public():
     assert not _is_public_path("/api/v1/plugins/v2/render/tracking/events", "GET")
+
+
+def test_skill_pack_upload_gets_build_artifact_body_limit():
+    # Skill packs (base64-encoded screenshots/DOM snapshots) routinely exceed the
+    # generic 1MB JSON body cap — this path must use the 250MB build-artifact cap,
+    # not fall through to max_json_body_bytes.
+    path = "/api/v1/plugins/v2/render/skill-packs/upload"
+    assert _body_limit_for_path(path) == settings.build_artifact_upload_max_bytes
+    assert _body_limit_for_path(path) != settings.max_json_body_bytes

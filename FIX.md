@@ -4,6 +4,10 @@
 
 ---
 
+## Fixed skill pack publishing rejecting normal-sized packages — 2026-08-01
+Publishing a skill pack to Conxa Cloud was failing with "Publishing to Conxa Cloud didn't complete." The cause traced back to yesterday's fix that made publish failures show their real reason: it turned out the cloud was rejecting the upload as "too large," even though the skill pack was a completely normal size. The size limit check for this particular upload had been left at the small default meant for simple form submissions, instead of the much larger limit meant for file uploads like this one — like a mail room that only accepts letters, not the packages it's actually supposed to receive. The skill pack upload endpoint now gets the correct, much larger size allowance, so normal publishes go through.
+ — 2026-08-01
+
 ## Publishing failures now say why, instead of just "try again" — 2026-08-01
 When publishing a skill pack to Conxa Cloud failed, the app only ever said "Publishing to Conxa Cloud didn't complete. Please try publishing again" — with no clue whether the real reason was a signed-out account, a connection problem, or something on the cloud side. It was like a delivery app that just says "order failed" instead of "the restaurant is closed." The publish log now shows the actual reason so it can actually be diagnosed and fixed. Separately, a mismatched-message bug was fixed where testing against a private, developer-only version of the cloud that wasn't running could show a scary "publish failed" banner even though nothing was actually wrong — that case is now correctly shown as "skipped," not "failed."
  — 2026-08-01

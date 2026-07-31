@@ -51,6 +51,7 @@ PUBLIC_PATH_PREFIXES = (
 BUILD_ARTIFACT_UPLOAD_PATHS = (
     "/api/v1/plugins/publish",
     "/installer/upload",
+    "/skill-packs/upload",
 )
 
 
