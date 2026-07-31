@@ -30,6 +30,7 @@ import {
 type Props = {
   workflow: WorkflowResponse
   onSaved: (w: WorkflowResponse) => void
+  onClose: () => void
 }
 
 // grid-cols shared by the header and every body row so columns stay aligned.
@@ -186,7 +187,7 @@ function VariableRow({
   )
 }
 
-export function ParameterizationInlinePanel({ workflow, onSaved }: Props) {
+export function ParameterizationInlinePanel({ workflow, onSaved, onClose }: Props) {
   // Computed once at mount from the server-loaded workflow, then never recomputed from props —
   // `workflow` can change under us after a successful "Replace everywhere" call (it re-fetches
   // and calls onSaved), and re-deriving rows from that would blow away any unsaved edits sitting
@@ -305,7 +306,10 @@ export function ParameterizationInlinePanel({ workflow, onSaved }: Props) {
     setSaving(true)
     patchSkillInputs(workflow.skill_id, { inputs: out.data })
       .then(() => fetchWorkflow(workflow.skill_id))
-      .then((w: WorkflowResponse) => onSaved(w))
+      .then((w: WorkflowResponse) => {
+        onSaved(w)
+        onClose()
+      })
       .catch((e: Error) => setErr(e.message))
       .finally(() => setSaving(false))
   }

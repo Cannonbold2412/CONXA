@@ -41,13 +41,13 @@ Conxa separates the "teach" step from the "execute" step.
 
 A human performs a workflow once in the **Build Studio**. Conxa records not just the clicks — it captures intent, UI structure, element relationships, visual fingerprints, and recovery context. This session is compiled locally into a **Skill Package**: a structured, versioned execution artifact that encodes everything the runtime needs to execute the workflow reliably.
 
-That Skill Package is published to **Conxa Cloud**, packaged into a branded `.exe` installer, and distributed to end customers. On the customer's machine, the **Conxa Runtime** — a local MCP server — downloads the skill, exposes it as a Claude tool, and executes it with full self-healing recovery. Execution never leaves the customer's machine.
+That Skill Package is published to **Conxa Cloud**, packaged into a branded `.exe` installer, and distributed to end customers. On the customer's machine, the **Conxa Runtime** — a local MCP server — downloads the skill, exposes it as a native tool to whichever AI agent the customer already uses, and executes it with full self-healing recovery. Execution never leaves the customer's machine.
 
 ```
 SaaS Vendor                   Conxa Cloud               End Customer
 ──────────────────            ───────────               ────────────────────────
-Record workflow     →    Host + version + bill    →    Execute locally via
-in Build Studio          Distribute installer          Claude Desktop (MCP)
+Record workflow     →    Host + version + bill    →    Execute locally in the
+in Build Studio          Distribute installer          customer's agent (MCP)
 ```
 
 The result: the SaaS vendor teaches the workflow once. Their customers get it forever, always up-to-date, always recoverable.
@@ -68,7 +68,7 @@ The result: the SaaS vendor teaches the workflow once. Their customers get it fo
 
 Three shifts are converging:
 
-1. **MCP is becoming the standard interface between AI agents and tools.** Claude Desktop's MCP protocol is the first widely-adopted substrate for agent-to-tool communication. Conxa is built natively on MCP — skills are exposed directly as Claude tools.
+1. **MCP has become the standard interface between AI agents and tools.** What began as Claude Desktop's protocol is now implemented across the agent ecosystem — coding agents, IDE assistants, CLI agents, and desktop apps from multiple vendors all speak MCP. Conxa is built natively on it, and the runtime registers itself into every major MCP host rather than a single one. A skill recorded once is callable from whichever agent the customer already uses.
 
 2. **AI agents are graduating from demos to production.** Enterprises are now asking how Claude handles their actual software stack — not hypothetically, but operationally. There is no good answer without execution infrastructure.
 
@@ -95,7 +95,7 @@ Relevant verticals:
 
 Organizations with high-volume, repetitive software work that currently requires human operators.
 
-They use the Build Studio to record their own internal workflows, deploy skills to their teams, and let Claude execute them through Claude Desktop.
+They use the Build Studio to record their own internal workflows, deploy skills to their teams, and let their AI agents execute them — through Claude Desktop, a coding agent, or whichever MCP-capable host the team already runs.
 
 Relevant teams:
 - Operations and back-office
@@ -133,28 +133,46 @@ A thin coordination layer (FastAPI on Render, Next.js on Vercel) that handles:
 - Skill package hosting and versioning
 - Installer hosting and distribution
 - LLM proxy for compile-time AI calls (multi-provider: Groq, Google AI Studio, NVIDIA NIM)
-- Billing and subscription management (Cashfree)
+- Billing, plan entitlements, and subscription management (Cashfree)
 - Execution telemetry and run analytics
-- Team and organization management
+- Team and organization management, role-based access control, and a workspace audit log
 
 The cloud does not record, compile, or execute workflows. It is coordination infrastructure.
+
+**Governance.** Membership and roles are resolved from the vendor's identity provider, and privileged actions are restricted to workspace owners and admins. Every consequential action — publishing a skill release, changing a plugin's distribution state — is written to an immutable, per-workspace audit log that admins can review in the dashboard. Enterprise buyers treat this as table stakes: they need to answer "who shipped this skill to our customers, and when" without asking Conxa.
 
 ### Conxa Runtime
 
 A Node.js MCP server that ships inside the vendor's branded `.exe` installer and runs on the end customer's machine. It:
 
-- Registers itself with Claude Desktop as an MCP server on startup
+- Registers itself as an MCP server into every AI agent host installed on the machine
 - Syncs skill packs from Conxa Cloud (delta sync, SHA-256 verified)
-- Exposes skills as native Claude tools (`execute_skill`, `list_skills`, `get_skill_inputs`, etc.)
-- Executes skills locally via Playwright with a 5-tier self-healing recovery cascade
+- Exposes skills as native agent tools (`execute_skill`, `list_skills`, `get_skill_inputs`, etc.)
+- Executes skills locally via Playwright with a multi-tier self-healing recovery cascade — see `docs/TRD.md` §10.1
 - Streams execution telemetry back to Conxa Cloud
-- Self-updates by polling the runtime manifest
+- Self-updates by polling the update manifest
 
 Execution never leaves the customer's machine.
 
+**Two layers, updated on different clocks.** What installs as one program is internally split in two. **`conxa-runtime`** is the host binary — the heavy, stable layer that carries the browser engine and the OS integrations. It is ~85 MB and changes rarely, on the order of quarterly. **`conxa-app`** is the logic layer that sits on disk beside it — the executor, the element resolver, the recovery cascade. It is a ~60 KB download and ships with every release.
+
+This split is what makes fixes travel fast. A reliability improvement to the recovery cascade reaches every customer machine as a 60 KB update within a release cycle, rather than requiring an 85 MB reinstall that end users must consent to. Since the vendor's customers — not the vendor — are the ones running the software, an update path that needs their attention is an update path that doesn't happen.
+
+Two safeguards keep that speed from becoming a liability: the host refuses to load an app layer that declares a newer host requirement than it can satisfy, so a fast-moving logic layer can never half-run against an old binary; and a failed update rolls back to the previous version automatically. Both artifacts are integrity-checked, and the manifest describing them is cryptographically signed.
+
 ### MCP Layer
 
-Conxa Runtime speaks the Model Context Protocol natively. Skills appear to Claude as first-class tools. Claude can discover available skills, request required inputs, execute them, monitor status, and cancel runs — all through the standard MCP interface without any custom integration.
+Conxa Runtime speaks the Model Context Protocol natively, and registers into the agent hosts the customer already has installed rather than a single vendor's app. Supported hosts span desktop assistants (Claude Desktop), coding agents (Claude Code, Codex, Gemini CLI, GitHub Copilot CLI, OpenCode, Goose), IDE-embedded agents (Cursor, VS Code, Windsurf, Zed, Cline, Antigravity, Kiro, Junie), and agent platforms (Factory Droid, OpenHands, Augment, KiloCode, and others) — currently more than twenty, added as the ecosystem grows.
+
+Skills appear to each of these agents as first-class tools. An agent can discover available skills, request required inputs, execute them singly or as a sequence, inspect runtime status, and cancel runs — all through the standard MCP interface, with no custom integration per host.
+
+This is a distribution property, not just a compatibility one: the vendor records a workflow once and it becomes callable from every agent their customers use, without the vendor targeting any of them.
+
+### Platform Support
+
+**Build Studio is Windows-only.** Recording, compilation, and packaging happen on Windows. This is acceptable because the person recording a workflow is the vendor's own product or ops person, not their customer — it constrains one internal seat, not the addressable market.
+
+**The Runtime ships for Windows today.** A macOS runtime target exists and builds, but macOS is not yet a supported customer platform: there is no macOS installer format, and the host binary and update path are unverified on darwin. Treat macOS runtime support as roadmap, not capability, until an installer ships. This is the single largest platform gap for enterprise deployments with mixed fleets.
 
 ---
 
@@ -185,7 +203,7 @@ After recording, vendors can review the captured workflow step-by-step, modify i
 
 ### Skill Distribution
 
-Compiled skills are packaged into a self-contained plugin archive and bundled into an NSIS Windows installer. The installer is hosted on Conxa Cloud and linked from the vendor's dashboard. End customers download and run it — the runtime installs itself, registers with Claude Desktop, and is immediately available.
+Compiled skills are packaged into a self-contained plugin archive and bundled into an NSIS Windows installer. The installer is hosted on Conxa Cloud and linked from the vendor's dashboard. End customers download and run it — the runtime installs itself, registers into every MCP-capable agent host it finds on the machine, and is immediately available in all of them.
 
 ### Skill Versioning and Sync
 
@@ -243,7 +261,46 @@ Conxa's advantage: zero engineering required from the software vendor. If a huma
 
 ---
 
-## 11. Success Metrics
+## 11. Business Model
+
+Conxa sells to the vendor or enterprise that *builds* skills, not to the end customers who run them. The buyer is the workspace; their customers install the runtime for free.
+
+### What is metered
+
+Pricing follows the two things that actually cost Conxa money and the two that track account value:
+
+| Axis | What it limits | Why it's metered |
+|---|---|---|
+| **Seats** | People in the workspace who can build and publish | Tracks team size and account value |
+| **Skill pack slots** | Distinct products a workspace can distribute under | Tracks breadth of deployment |
+| **Compile credits** | Workflow compilations | Compilation is the real LLM cost centre |
+| **Human-edit tokens** | LLM usage in the workflow editor's assisted-repair paths | The other LLM cost centre, driven by manual fixing |
+
+### Plan shape
+
+| | Free | Starter | Pro | Enterprise |
+|---|---|---|---|---|
+| Seats | 1 | 3 | 10 | Negotiated |
+| Skill pack slots | 1 | 3 | 10 | Negotiated |
+| Compile credits / mo | 50 | 300 | 1,000 | Negotiated |
+| Human-edit tokens / mo | 1M | 10M | 50M | Negotiated |
+| Compile LLM pool | Free-tier providers | Paid mid-tier | Paid mid-tier | Highest-quality models |
+
+Enterprise carries no defaults — every limit is an explicit contractual override. Subscription billing runs through Cashfree.
+
+### What is deliberately *not* metered
+
+**Executions are free and unlimited.** Skills run entirely on the customer's machine using the customer's own compute — Conxa incurs no marginal cost per run, so charging per execution would price against the product's core promise. This is a structural advantage over every cloud-execution competitor, whose costs scale with customer usage and who must therefore meter it.
+
+The consequence: revenue scales with how many workflows a vendor *builds*, not how hard their customers *use* them. A vendor is never penalised for success, which removes the usual reason customers ration an automation platform.
+
+### Cost posture
+
+Compilation is a one-time cost per workflow version; execution is a recurring benefit. The free tier runs on free-tier LLM providers so that trial usage costs effectively nothing, while paid tiers route to higher-quality models where compile quality directly determines skill reliability. Unit economics are modelled in `docs/cost_model.md`.
+
+---
+
+## 12. Success Metrics
 
 ### Product Health
 
@@ -269,7 +326,7 @@ Conxa's advantage: zero engineering required from the software vendor. If a huma
 
 ---
 
-## 12. Product Principles
+## 13. Product Principles
 
 **Reliability over features.** A skill that works 99% of the time is worth more than ten features that work 70% of the time. Execution reliability is the core product promise — everything else is secondary.
 
@@ -279,11 +336,11 @@ Conxa's advantage: zero engineering required from the software vendor. If a huma
 
 **Zero-cost recovery by default.** Tier 1 and 2 recovery cost nothing. LLM escalation is a last resort, not a default fallback. Skills should be compiled with enough redundancy that most real-world UI drift resolves without an LLM call.
 
-**AI-native from the protocol up.** Conxa is not bolted onto an existing automation platform. It is designed from the ground up for AI agent consumption via MCP — skills are first-class Claude tools, not wrapped scripts.
+**AI-native from the protocol up.** Conxa is not bolted onto an existing automation platform. It is designed from the ground up for AI agent consumption via MCP — skills are first-class agent tools, not wrapped scripts.
 
 ---
 
-## 13. Long-Term Vision
+## 14. Long-Term Vision
 
 Conxa's goal is to become the universal execution layer between AI agents and existing software.
 

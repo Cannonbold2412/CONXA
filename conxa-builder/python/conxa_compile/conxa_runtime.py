@@ -132,10 +132,13 @@ def _ensure_junction(link_path: Path, target: Path) -> bool:
     Returns True when the link exists and is correct or could be created, False on failure.
     Does NOT remove a real directory in case it already contains valid staged content.
 
-    Repointing an existing junction (Windows only) is retried a few times: a process that
+    Repointing an existing junction (Windows only) is retried with backoff: a process that
     just had link_path open (e.g. the test runtime, killed via terminate()/kill() in
     runtime_tool.py right before restaging) can hold the directory briefly after exit,
-    making `rmdir` fail transiently rather than permanently.
+    making `rmdir` fail transiently rather than permanently. runtime_tool.py now gives that
+    process a grace period to shut down cleanly first, so this should rarely be needed — this
+    loop is defense-in-depth for whatever residual lock (e.g. AV scanning freshly-copied
+    files) survives that.
     """
     if _is_link(link_path):
         try:
@@ -144,8 +147,8 @@ def _ensure_junction(link_path: Path, target: Path) -> bool:
         except (OSError, ValueError):
             pass
         # Wrong target — remove and recreate, retrying past a transient Windows file lock.
-        attempts = 3 if sys.platform == "win32" else 1
-        for attempt in range(attempts):
+        backoffs = [0.2, 0.4, 0.8, 1.0] if sys.platform == "win32" else []
+        for attempt in range(len(backoffs) + 1):
             try:
                 if sys.platform == "win32":
                     subprocess.run(
@@ -158,8 +161,8 @@ def _ensure_junction(link_path: Path, target: Path) -> bool:
                 pass
             if not _is_link(link_path) and not link_path.exists():
                 break
-            if attempt < attempts - 1:
-                time.sleep(0.2)
+            if attempt < len(backoffs):
+                time.sleep(backoffs[attempt])
         else:
             return False
 

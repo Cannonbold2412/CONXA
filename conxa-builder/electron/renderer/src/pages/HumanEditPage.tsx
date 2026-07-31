@@ -1045,7 +1045,7 @@ export function HumanEditPage() {
               // Own bounded flex layout (not the shared ScrollArea below): its footer sits
               // below an internal, properly height-constrained scroll region instead of
               // scrolling out of view at the end of an unbounded content column.
-              <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} />
+              <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} onClose={() => setOpenTool(null)} />
             ) : (
               <ScrollArea className="min-h-0 flex-1">
                 <div className="p-5">

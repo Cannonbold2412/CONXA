@@ -189,6 +189,16 @@ def call_runtime_tool(
         except OSError:
             pass
         if proc.poll() is None:
+            # Closing stdin above is server.js's cue to run gracefulShutdown() (closes any
+            # cached Playwright browser before exiting) — give it a moment to do that on its
+            # own rather than jumping straight to a hard kill, which orphans the browser's
+            # child processes and can leave them holding a lock on conxa-app/current for the
+            # next stage_runtime_payload() call (see conxa_runtime.py::_ensure_junction).
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+        if proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=5)

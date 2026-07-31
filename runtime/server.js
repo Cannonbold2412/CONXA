@@ -382,6 +382,10 @@ const startupSync = (async () => {
 // ─── 12. Graceful shutdown ────────────────────────────────────────────────────
 process.on("SIGINT",  () => gracefulShutdown());
 process.on("SIGTERM", () => gracefulShutdown());
+// Windows callers (e.g. Build Studio's test harness) can't deliver SIGTERM — Popen.terminate()
+// there is an unconditional TerminateProcess with no signal handler run. They close stdin first
+// instead; react to that the same way so browser.close() still runs before the process exits.
+process.stdin.on("end", () => gracefulShutdown());
 
 // Reads a skill's declared input fields (inputs.json, falling back to legacy input.json).
 // Shared by the tool-definition builder, get_skill_inputs, and the execute_skill input gate
