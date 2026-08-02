@@ -1450,6 +1450,15 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page, step, inputs);
     }
 
+    // A login redirect is an auth condition, not a selector/DOM problem the T1/T2 cascade can
+    // fix — running it anyway just burns ~10s against a login page before server.js's own
+    // isAuthFailure check (which triggers the re-auth window) gets a turn. Skip straight to
+    // stepFailure so that check runs immediately.
+    if (await isAuthFailure(page)) {
+      t.emit("step_fail", { si: i, fc: "auth_failure" });
+      throw stepFailure(step, i, primaryErr, preShot);
+    }
+
     const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline);
     if (!recovered) {
       t.emit("step_fail", { si: i, fc: mapErrorToCode(primaryErr) });

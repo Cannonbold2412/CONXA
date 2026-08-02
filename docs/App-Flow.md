@@ -425,20 +425,32 @@ sequenceDiagram
     User->>Claude: "last week"
     Claude->>RT: execute_skill(skill="submit_expense", company="acme", inputs={period: "last week"})
     RT->>RT: load execution.json + recovery.json
-    RT->>RT: load storageState from cache/sessions/
-    RT->>Browser: launch Chromium (headed by default)
-    loop For each step
-        RT->>Browser: executeStep() with resolveElement()
-        Browser-->>RT: success or failure
-        RT->>RT: verifyAssertions()
-        RT->>RT: writeCheckpoint()
-        RT->>Cloud: POST /tracking/{co}/events (async)
+    RT->>RT: load storageState from cache/sessions/, validate against protected_url
+    alt session missing or expired
+        RT->>Browser: open interactive login window (non-blocking)
+        RT-->>Claude: "A login window is open — sign in, then re-run the skill."
+        Claude-->>User: relays the message
+        Note over Browser,RT: capture + save happens in the background;<br/>next execute_skill call picks up the fresh session
+    else session valid
+        RT->>Browser: launch Chromium (headed by default)
+        loop For each step
+            RT->>Browser: executeStep() with resolveElement()
+            Browser-->>RT: success or failure
+            RT->>RT: verifyAssertions()
+            RT->>RT: writeCheckpoint()
+            RT->>Cloud: POST /tracking/{co}/events (async)
+        end
+        Browser-->>RT: workflow complete
+        RT->>Browser: close
+        RT-->>Claude: {content: [{type: "text", text: "Done. Expense report submitted."}]}
+        Claude-->>User: "Done. Expense report submitted."
     end
-    Browser-->>RT: workflow complete
-    RT->>Browser: close
-    RT-->>Claude: {content: [{type: "text", text: "Done. Expense report submitted."}]}
-    Claude-->>User: "Done. Expense report submitted."
 ```
+
+A step failing mid-execution with a login redirect (session expired) follows the same
+non-blocking pattern: `isAuthFailure()` detects it, a login window opens in the background, and
+`execute_skill` returns immediately telling Claude to resume with `resume_from` once the user has
+signed in — see `docs/Auth-and-Updater.md` §1.3.
 
 ---
 

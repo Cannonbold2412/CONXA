@@ -160,15 +160,18 @@ File: ~/.conxa/data/sessions/{company}_state.json
 
 The session is only decryptable with the same per-company session key used to encrypt it. If that key is ever rotated or lost, the old session file is unreadable and a fresh session starts — this is intentional.
 
-#### Target website re-login
+#### Target website login — first run and mid-execution re-login
 
-If the target website's session expires mid-execution, the runtime's `refreshSession()` function:
-1. Opens a new Playwright page at the site's login URL
-2. Waits up to 3 minutes for the user to complete login
-3. Saves the refreshed `storageState` to disk (unencrypted `_raw_state.json` at this stage — Conxa token may not be available yet)
-4. Tracks attempts: after 3 failures, escalates to Tier 5 (human review)
+`runtime/browser.js`'s `getAuthContext()` resolves a company's browser session on every `execute_skill` call, in order: (1) the encrypted session, decrypted and probed against `pack.json`'s `protected_url` in a throwaway headless browser (`_validateSession`); (2) an unencrypted `_raw_state.json` fallback (installer-included initial session); (3) an interactive login window if neither validates. Mid-execution, `run.js`'s `isAuthFailure()` (URL/title heuristic) detects a login redirect after a step fails, and `server.js` routes it through the same interactive-login path via `captureReAuth()`.
 
-On headless Linux (no `DISPLAY`), it returns an error immediately rather than hanging.
+**The interactive login window is non-blocking.** `beginInteractiveAuth()` opens a headed Chromium window (seeded with whatever session is already on disk, even if expired — a partially-stale session often skips straight past steps the site would otherwise re-prompt for) and returns immediately with `{ authPending: true, loginUrl, message }`. Capture and persistence happen in the background:
+1. `_captureInteractiveAuth()` navigates to the login URL and watches for the page to land on `protected_url`'s **own hostname**, off any login path — scoped to that host so an OAuth leg through a different host (e.g. `accounts.google.com`, whose URLs contain `auth`/`oauth`/`signin`) is never mistaken for "still on the login page". This auto-closes the window ~1.5s after landing.
+2. The captured `storageState` is persisted the same way as (1)/(2) above — encrypted via the per-company keytar key, falling back to plaintext `_raw_state.json` only if encryption itself fails (SG-11).
+3. If the window is closed before a session is captured, it reopens once automatically; a second failure marks the attempt abandoned and the next `execute_skill` call starts over.
+
+Because the tool call returns immediately rather than blocking, a slow human login never risks losing the MCP client's response — the caller (Claude) is told a login window is open and to re-run the skill (or resume with `resume_from` for a mid-execution failure) once signed in; the next call picks up whatever session the background capture saved. There is no fixed timeout on the login window itself, and no attempt cap across separate `execute_skill` calls — each retry is a deliberate new tool call, not an in-process loop.
+
+`runtime/auth_manager.js`'s `refreshSession()` — a blocking, in-process version of the same idea — is dead code, superseded by the flow above; only `runtime/test/test_auth_recovery.js` still calls it.
 
 ---
 

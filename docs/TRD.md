@@ -870,7 +870,9 @@ next step resolves against the new page. Non-navigation steps have no inter-step
 
 > This table is the canonical, authoritative recovery-tier reference — `README.md`, `AGENTS.md`, `docs/PRD.md`, `docs/App-Flow.md`, and `docs/cost_model.md` all link here rather than repeating it. Some of those docs describe this as a "5-tier" cascade, counting human review/escalation after T4 is exhausted as an informal fifth tier — that's a framing difference, not a contradiction; the automated cascade itself has exactly four tiers.
 
-When step resolution fails to find the target:
+**Auth failures short-circuit the cascade.** A login redirect is not a selector/DOM problem T1/T2 can fix — before entering the cascade, `run.js` checks `isAuthFailure(page)` (URL/title heuristic) and, if true, fails the step immediately rather than spending T1/T2's ~10s budget against a login page. `server.js` then routes it through the non-blocking interactive-login flow (`docs/Auth-and-Updater.md` §1.3) instead of the T3/T4 agent-recovery payload — no screenshot, no DOM inventory, just an instruction to sign in and resume.
+
+When step resolution fails to find the target (and it isn't an auth failure):
 
 | Tier | Mechanism | LLM Cost | Trigger | Where |
 |---|---|---|---|---|

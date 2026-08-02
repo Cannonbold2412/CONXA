@@ -657,14 +657,9 @@ async function _buildFailureResponse(page, err, resolvedEntry, runTracker, steps
   const failedAt = typeof err.failedAt === "number" ? err.failedAt : null;
   const stepNo   = failedAt !== null ? failedAt + 1 : "?";
 
-  // Session expiry is surfaced in BOTH modes — it is an auth condition, not a selector miss.
-  if (err.session_expired) {
-    const reauth = AGENT_RECOVERY_ENABLED
-      ? `\nAsk the user to re-authenticate, then call execute_skill with resume_from: ${failedAt ?? 0}.`
-      : "";
-    return { content: [{ type: "text", text:
-      `Execution failed at step ${stepNo}: session expired — redirected to ${err.login_url || url}.${reauth}` }] };
-  }
+  // Session expiry is handled by the caller (see the `session_expired` branch in the outer
+  // catch, above the call site) before _buildFailureResponse is ever reached — it isn't a
+  // selector/DOM failure and needs no screenshot or recovery payload.
 
   // Build Studio (T1/T2 ceiling): deterministic terminal failure, no agent recovery payload.
   if (!AGENT_RECOVERY_ENABLED) {
@@ -1163,7 +1158,15 @@ async function _handleTool(name, args, extra) {
         appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
         _runTracker.emit("park_resumed", { si: primary.resumeFrom });
       } else {
-        ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = await getCachedBrowser(primary.entry.company, authManager, { headless: !watch }));
+        const _authResult = await getCachedBrowser(primary.entry.company, authManager, { headless: !watch, logFn: log });
+        if (_authResult.authPending) {
+          // No valid session — a login window was just opened for the user. Nothing ran yet,
+          // so there's no failedAt/page to report; the outer catch below turns this into an
+          // actionable "sign in, then re-run" response instead of a raw failure.
+          throw Object.assign(new Error(_authResult.message),
+            { session_expired: true, login_url: _authResult.loginUrl });
+        }
+        ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = _authResult);
         page = await _context.newPage();
         if (_protectedUrl) {
           await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
@@ -1207,58 +1210,34 @@ async function _handleTool(name, args, extra) {
 
       for (let si = 0; si < resolved.length; si++) {
         const { entry, steps, inputs, resumeFrom } = resolved[si];
-        let startAt = si === 0 ? resumeFrom : 0;
-        let authAttempts = 0;
+        const startAt = si === 0 ? resumeFrom : 0;
 
-        while (true) { // eslint-disable-line no-constant-condition
-          try {
-            const result = await runPlan(page, steps, inputs, startAt, entry.slug, {
-              onStep:        (i) => { if (activeExecution) activeExecution.step = i; },
-              cancelCheck:   _execCancelled,
-              tracker:       _runTracker,
-              downloadQueue: _downloadQueue,
-              structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
-            });
-            _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
-            break;
-          } catch (runErr) {
-            // Auth-failure recovery (Phase 5): detect login redirect, open headed re-auth window, resume.
-            const failedStep = runErr.failedAt ?? null;
+        try {
+          const result = await runPlan(page, steps, inputs, startAt, entry.slug, {
+            onStep:        (i) => { if (activeExecution) activeExecution.step = i; },
+            cancelCheck:   _execCancelled,
+            tracker:       _runTracker,
+            downloadQueue: _downloadQueue,
+            structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
+          });
+          _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
+        } catch (runErr) {
+          // Auth-failure recovery: detect a login redirect and open a (non-blocking) re-auth
+          // window. The user signs in on their own time and calls execute_skill again with
+          // resume_from — see the session_expired handling in the outer catch below, which
+          // builds that instruction.
+          const failedStep = runErr.failedAt ?? null;
+          if (failedStep !== null && await isAuthFailure(page)) {
             const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || page.url();
-            if (failedStep !== null && await isAuthFailure(page)) {
-              if (authAttempts >= 3) {
-                throw Object.assign(
-                  new Error("Authentication still failing after 3 re-login attempts — giving up."),
-                  { session_expired: true, login_url: loginUrl, failedAt: failedStep, fromEntry: entry }
-                );
-              }
-              authAttempts++;
-              appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep, attempt: authAttempts });
-              const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log);
-              if (!refreshResult.ok) {
-                // User cancelled the re-auth window — surface immediately.
-                throw Object.assign(
-                  new Error(refreshResult.message),
-                  { session_expired: true, login_url: loginUrl, failedAt: failedStep, fromEntry: entry }
-                );
-              }
-              appendRecoveryEvent({ event: "auth_refreshed", slug: entry.slug, attempt: authAttempts });
-              // Close stale execution context and rebuild with fresh session from disk.
-              await page.close().catch(() => {});
-              await _context.close().catch(() => {});
-              await _browser.close().catch(() => {});
-              ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } =
-                await getCachedBrowser(entry.company, authManager, { headless: !watch, logFn: log }));
-              page = await _context.newPage();
-              if (_protectedUrl)
-                await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-              _attachPageListeners(page);
-              startAt = failedStep;
-              continue;
-            }
-            runErr.fromEntry = entry;
-            throw runErr;
+            appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
+            const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log);
+            throw Object.assign(
+              new Error(refreshResult.message),
+              { session_expired: true, login_url: refreshResult.loginUrl || loginUrl, failedAt: failedStep, fromEntry: entry }
+            );
           }
+          runErr.fromEntry = entry;
+          throw runErr;
         }
       }
 
@@ -1348,6 +1327,23 @@ async function _handleTool(name, args, extra) {
           );
         }
         return err("Execution cancelled.");
+      }
+
+      // Session expiry is a distinct condition, not a selector/DOM failure — no screenshot,
+      // no recovery payload, just a clear instruction to sign in and re-run. Handled here
+      // rather than in _buildFailureResponse because the pre-run auth-pending case (session
+      // expired before any step ran) never has a `page` to build a response around.
+      if (runErr.session_expired) {
+        if (page) await page.close().catch(() => {});
+        if (watch) {
+          await _context?.close().catch(() => {});
+          await _browser?.close().catch(() => {});
+        }
+        const failedAt = typeof runErr.failedAt === "number" ? runErr.failedAt : null;
+        const resumeHint = AGENT_RECOVERY_ENABLED && failedAt !== null
+          ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
+          : ` Once signed in, call execute_skill again to run this skill.`;
+        return err(`${runErr.message}${resumeHint}`);
       }
 
       const failResp = page

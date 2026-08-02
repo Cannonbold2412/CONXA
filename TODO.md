@@ -229,6 +229,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ### PROD-4 — Session keeper + vendor-controlled long-lived sessions
 - **Category:** Product Strategy & Business-Risk Mitigation
+- **Session-keeper half resolved 2026-08-02:** the pre-flight dead-login check this item asked for already existed (`browser.js::_validateSession`, called before step 0) but was undermined by two bugs — the interactive login window discarded any existing session instead of reusing it, and the "did the user finish signing in?" check flagged a real OAuth login (e.g. through Google) as "still on the login page" because it matched substrings like `auth`/`oauth`/`signin` anywhere in the URL, including on the identity provider's own domain. Fixed: the capture check is now scoped to the target site's own hostname, the login window seeds from whatever session is already on disk, and the whole interactive-login path (first-run and mid-run) is now non-blocking — it returns immediately with "a login window is open, sign in and re-run" instead of holding the MCP call open past the client's response budget. See `docs/Auth-and-Updater.md` §1.3.
 - **Description:** Detect a dead login *before* a skill's first step runs (not mid-run), and prompt for re-login up front rather than failing partway through. Separately, since Conxa's customers own the software being automated, let a vendor configure longer-lived, device-locked sessions specifically for their own automation traffic — no MFA circumvention, just the app owner setting a sensible policy for their own runtime.
 - **Why required:** expired logins and MFA are named as the biggest practical interruption to scheduled/overnight runs; the source doc frames this as "an accepted design, not a gap to engineer around" for attended use, but a real gap for unattended runs specifically.
 - **Business value:** directly extends how "hands-off" the overnight/unattended pitch can honestly be — today it's capped by session lifetime.
@@ -403,6 +404,17 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** opportunistic — low complexity, do whenever convenient, e.g. bundled with other `conxa-builder/python` work.
 - **Complexity:** S.
 - **Success criteria:** either the two files are deleted (if `conxa-cloud/tests/`'s versions are confirmed to be strict supersets), or they're moved into `testpaths` and reconciled with the versions that do run.
+
+### TEST-6 — Remove dead `refreshSession()` from `runtime/auth_manager.js`
+- **Category:** Testing & Cleanup
+- **Description:** `auth_manager.js::refreshSession()` (a blocking, in-process target-site re-login) has no callers left in `server.js` — it was superseded by the non-blocking interactive-login flow added 2026-08-02 (`browser.js::beginInteractiveAuth`/`captureReAuth`, see `docs/Auth-and-Updater.md` §1.3). The only remaining caller is `runtime/test/test_auth_recovery.js`, which exercises it directly.
+- **Why required:** dead code that still has "real" test coverage reads as load-bearing when it isn't — a future change to the auth flow could be tempted to route through it instead of the actual (non-blocking) path.
+- **Business value:** none directly; hygiene.
+- **Technical value:** removes a second, divergent auth-failure-URL regex (duplicated from `run.js`) and a dead attempt-counter that no longer does anything useful once the real path is fixed.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic.
+- **Complexity:** S.
+- **Success criteria:** `refreshSession()` and its dedicated tests are removed (or the tests are repointed at the real `beginInteractiveAuth`/`captureReAuth` path if the coverage is still wanted).
 
 ---
 

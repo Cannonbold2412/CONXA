@@ -16,6 +16,58 @@ const LOGIN_URL_PATTERNS = [
   "session/new", "account/login", "accountchooser", "account-chooser",
 ];
 
+// Shared context options for any Chromium instance that talks to a real target site
+// (interactive login, session validation) — matches a normal desktop browser closely
+// enough that bot-protected sites (Render, Google OAuth) don't reject it outright.
+const STEALTH_CONTEXT_OPTIONS = {
+  userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  viewport: { width: 1280, height: 720 },
+  locale: "en-US",
+  timezoneId: "America/New_York",
+};
+
+async function _maskAutomation(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3] });
+  });
+}
+
+function _loadPack(company) {
+  const packPath = path.join(CONXA_DIR, "skill-packs", company, "pack.json");
+  try { return JSON.parse(fs.readFileSync(packPath, "utf8")); } catch (_) { return {}; }
+}
+
+// Has the page reached protectedUrl's own host and left any login/auth path? Scoped to the
+// target site's hostname so an OAuth leg through a different host (e.g. accounts.google.com,
+// whose URLs contain "auth"/"oauth"/"signin") is never mistaken for "still logging in".
+const LOGIN_PATH_RE = /^\/(login|signin|sign-in|session-expired)(\/|$|\?)/i;
+function _reachedProtectedUrl(url, protectedUrl) {
+  if (!protectedUrl) return false;
+  try {
+    const u = new URL(url);
+    const p = new URL(protectedUrl);
+    return u.hostname === p.hostname && !LOGIN_PATH_RE.test(u.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function _persistSession(company, state, authManager, sessionsDir, logFn) {
+  if (authManager) {
+    try {
+      const sessionKey = await authManager.getSessionKey(company, logFn);
+      const encrypted = authManager.saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
+      if (!encrypted) authManager.saveRawSession(company, state, sessionsDir, logFn);
+    } catch (_) {
+      authManager.saveRawSession(company, state, sessionsDir, logFn);
+    }
+  } else {
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, `${company}_raw_state.json`), JSON.stringify(state, null, 2), { mode: 0o600 });
+  }
+}
+
 // ─── Browser cache (per-company, 5-min idle timeout) ─────────────────────────
 
 const _cache    = new Map();
@@ -47,7 +99,9 @@ async function getCachedBrowser(company, authManager, opts = {}) {
     }
   }
   const result = await getAuthContext(company, authManager, { headless, logFn: opts.logFn });
-  if (headless) {
+  // authPending means no browser/context was built (a login window was opened instead) —
+  // nothing to cache.
+  if (headless && !result.authPending) {
     _cache.set(company, { browser: result.browser, context: result.context, protectedUrl: result.protectedUrl, idleTimer: null });
     _scheduleCleanup(company);
   }
@@ -115,11 +169,7 @@ function _resolveProtectedUrl(company, pack = {}) {
 async function _isAuthenticated(page, protectedUrl) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
-    try {
-      const u = new URL(page.url());
-      if (u.hostname === new URL(protectedUrl).hostname && !u.pathname.startsWith("/login"))
-        return true;
-    } catch (_) {}
+    if (_reachedProtectedUrl(page.url(), protectedUrl)) return true;
     await new Promise(r => setTimeout(r, 200));
   }
   return false;
@@ -132,7 +182,7 @@ async function _validateSession(stored, protectedUrl) {
     args: ["--disable-blink-features=AutomationControlled"],
   });
   try {
-    const context = await browser.newContext({ storageState: stored, acceptDownloads: true });
+    const context = await browser.newContext({ ...STEALTH_CONTEXT_OPTIONS, storageState: stored, acceptDownloads: true });
     const page = await context.newPage();
     await page.goto(protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
     return await _isAuthenticated(page, protectedUrl);
@@ -150,23 +200,29 @@ async function _buildExecContext(stored, headless = false) {
   return { browser, context };
 }
 
-async function _captureInteractiveAuth(company, targetUrl) {
+async function _captureInteractiveAuth(company, targetUrl, opts = {}) {
+  const { storedState, protectedUrl } = opts;
   const loginBrowser = await chromium.launch({
     headless: false,
     args: ["--disable-blink-features=AutomationControlled"],
   });
   const loginCtx = await loginBrowser.newContext({
+    ...STEALTH_CONTEXT_OPTIONS,
     acceptDownloads: true,
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    viewport: { width: 1280, height: 720 },
-    locale: "en-US",
-    timezoneId: "America/New_York",
+    // Seed with the last known session (even if expired) so a partially-stale session
+    // (e.g. one cookie refreshed, others still good) can skip straight past steps the
+    // site would otherwise re-prompt for, instead of forcing a full fresh login.
+    ...(storedState ? { storageState: storedState } : {}),
   });
   let lastUrl = "";
   let lastState = null;
   let _autoCloseScheduled = false;
 
-  // Capture storageState when the user lands on an authenticated page.
+  // Capture storageState when the user lands on an authenticated page. Scoped to
+  // protectedUrl's own hostname when known — an OAuth leg through a different host
+  // (accounts.google.com, whose URLs contain "auth"/"oauth"/"signin") is never mistaken
+  // for "still on the login page". Falls back to the old whole-URL heuristic when
+  // protectedUrl isn't known yet.
   // On first successful capture, schedule auto-close after 1.5 s so the user
   // does not need to close the window manually.  The 1.5 s gap lets the
   // periodic interval fire once more to pick up any localStorage tokens
@@ -174,7 +230,10 @@ async function _captureInteractiveAuth(company, targetUrl) {
   // If the user closes the window before the timer fires, `disconnected`
   // resolves the outer promise and the already-captured state is used.
   const _captureIfAuthenticated = async () => {
-    if (_rejectReasonForProtectedUrl(lastUrl)) return;
+    const reached = protectedUrl
+      ? _reachedProtectedUrl(lastUrl, protectedUrl)
+      : !_rejectReasonForProtectedUrl(lastUrl);
+    if (!reached) return;
     try { lastState = await loginCtx.storageState(); } catch (_) { return; }
     if (lastState && !_autoCloseScheduled) {
       _autoCloseScheduled = true;
@@ -214,10 +273,7 @@ async function _captureInteractiveAuth(company, targetUrl) {
   const loginPage = await loginCtx.newPage();
 
   // Mask Playwright detection at the JS level — prevents "browser not secure" errors
-  await loginPage.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3] });
-  });
+  await _maskAutomation(loginPage);
 
   attachPage(loginPage);
   await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -246,14 +302,60 @@ async function _captureInteractiveAuth(company, targetUrl) {
   return { state: lastState, protectedUrl: lastUrl };
 }
 
+// Per-company handle for an in-flight (or just-finished) interactive login window, so a
+// second execute_skill call while the window is open doesn't spawn a second one.
+const _pendingAuth = new Map();
+
+// Open a headed Chromium window for the user to log in, WITHOUT blocking the caller.
+// Returns immediately with { authPending: true, loginUrl, message }; the capture (and
+// session save) happens in the background. The window disconnecting with no session
+// captured (user closed it before signing in) reopens once, then gives up — the next
+// call to this function starts a fresh attempt.
+async function beginInteractiveAuth(company, targetUrl, opts = {}) {
+  const { storedState, protectedUrl, authManager, sessionsDir, logFn } = opts;
+
+  const existing = _pendingAuth.get(company);
+  if (existing && existing.status === "pending") {
+    return { authPending: true, loginUrl: targetUrl,
+      message: `A login window for ${company} is already open. Sign in there, then re-run the skill.` };
+  }
+  const reopened = existing && existing.status === "done" && existing.outcome === "abandoned";
+
+  const handle = { status: "pending", outcome: null };
+  _pendingAuth.set(company, handle);
+
+  (async () => {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { state, protectedUrl: capturedUrl } =
+          await _captureInteractiveAuth(company, targetUrl, { storedState, protectedUrl });
+        await _persistSession(company, state, authManager, sessionsDir, logFn);
+        _writeAuthMeta(company, { protected_url: capturedUrl });
+        handle.status = "done";
+        handle.outcome = "captured";
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    handle.status = "done";
+    handle.outcome = "abandoned";
+    handle.message = lastErr && lastErr.message;
+  })();
+
+  const message = reopened
+    ? `The previous login window for ${company} was closed before signing in. Opened a new one — sign in there, then re-run the skill.`
+    : `Opened a browser window for the user to log in to ${company}. Sign in there — the window closes on its own once you land on the app.`;
+  return { authPending: true, loginUrl: targetUrl, message };
+}
+
 async function getAuthContext(company, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
   const logFn = opts.logFn;
   let _hadEncryptedSession = false; // set true if encrypted path ran; raw session is then stale
-  // Resolve pack config for this company
-  const packPath = path.join(CONXA_DIR, "skill-packs", company, "pack.json");
-  let pack = {};
-  try { pack = JSON.parse(fs.readFileSync(packPath, "utf8")); } catch (_) {}
+  let lastKnownState = null; // best available (possibly expired) session — seeds the login window
+  const pack = _loadPack(company);
   const protectedUrl = _resolveProtectedUrl(company, pack);
   const targetUrl    = pack.target_url || protectedUrl;
 
@@ -264,6 +366,7 @@ async function getAuthContext(company, authManager, opts = {}) {
       if (token) {
         const stored = authManager.loadDecryptedSession(company, token, SESSIONS_DIR);
         if (stored) {
+          lastKnownState = stored;
           if (await _validateSession(stored, protectedUrl)) {
             _writeAuthMeta(company, { protected_url: protectedUrl });
             const { browser, context } = await _buildExecContext(stored, headless);
@@ -283,6 +386,7 @@ async function getAuthContext(company, authManager, opts = {}) {
     let stored;
     try { stored = JSON.parse(fs.readFileSync(rawSessionPath, "utf8")); } catch (_) {}
     if (stored) {
+      lastKnownState = stored;
       if (await _validateSession(stored, protectedUrl)) {
         _writeAuthMeta(company, { protected_url: protectedUrl });
         const { browser, context } = await _buildExecContext(stored, headless);
@@ -291,51 +395,25 @@ async function getAuthContext(company, authManager, opts = {}) {
     }
   }
 
-  // No valid session — open interactive browser for user to log in
+  // No valid session — open an interactive login window for the user (non-blocking).
   if (!targetUrl) throw new Error(`No target_url configured for company ${company}. Cannot authenticate.`);
 
-  const { state, protectedUrl: capturedProtectedUrl } = await _captureInteractiveAuth(company, targetUrl);
-  _writeAuthMeta(company, { protected_url: capturedProtectedUrl });
-
-  // Encrypt and save the session using the per-machine session key; only fall
-  // back to a plaintext write if encryption itself reports failure (SG-11).
-  if (authManager) {
-    try {
-      const sessionKey = await authManager.getSessionKey(company, logFn);
-      const encrypted = authManager.saveEncryptedSession(company, state, sessionKey, SESSIONS_DIR, logFn);
-      if (!encrypted) authManager.saveRawSession(company, state, SESSIONS_DIR, logFn);
-    } catch (_) {
-      authManager.saveRawSession(company, state, SESSIONS_DIR, logFn);
-    }
-  } else {
-    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-    fs.writeFileSync(path.join(SESSIONS_DIR, `${company}_raw_state.json`), JSON.stringify(state, null, 2), { mode: 0o600 });
-  }
-
-  const { browser, context } = await _buildExecContext(state, headless);
-  return { browser, context, protectedUrl: capturedProtectedUrl, sessionSource: "new" };
+  return beginInteractiveAuth(company, targetUrl, {
+    storedState: lastKnownState,
+    protectedUrl,
+    authManager,
+    sessionsDir: SESSIONS_DIR,
+    logFn,
+  });
 }
 
-// Open a fresh headed Chromium at loginUrl for mid-execution re-auth.
-// Reuses _captureInteractiveAuth (auto-close + session capture) and saves
-// the result via authManager.  Called from server.js on auth failure.
+// Open a fresh headed Chromium at loginUrl for mid-execution re-auth. Non-blocking, same
+// contract as getAuthContext's interactive-auth path — see beginInteractiveAuth. Called
+// from server.js on auth failure.
 async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn) {
-  try {
-    const { state, protectedUrl } = await _captureInteractiveAuth(company, loginUrl);
-    if (authManager) {
-      try {
-        const sessionKey = await authManager.getSessionKey(company, logFn);
-        const encrypted = authManager.saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
-        if (!encrypted) authManager.saveRawSession(company, state, sessionsDir, logFn);
-      } catch (_) {
-        authManager.saveRawSession(company, state, sessionsDir, logFn);
-      }
-    }
-    _writeAuthMeta(company, { protected_url: protectedUrl });
-    return { ok: true, state, protectedUrl };
-  } catch (e) {
-    return { ok: false, message: e.message };
-  }
+  const pack = _loadPack(company);
+  const protectedUrl = _resolveProtectedUrl(company, pack);
+  return beginInteractiveAuth(company, loginUrl, { protectedUrl, authManager, sessionsDir, logFn });
 }
 
 async function gracefulShutdown() {
@@ -351,10 +429,12 @@ module.exports = {
   getCachedBrowser,
   getAuthContext,
   captureReAuth,
+  beginInteractiveAuth,
   gracefulShutdown,
   _authMetaPath,
   _readAuthMeta,
   _writeAuthMeta,
   _resolveProtectedUrl,
   _rejectReasonForProtectedUrl,
+  _reachedProtectedUrl,
 };
