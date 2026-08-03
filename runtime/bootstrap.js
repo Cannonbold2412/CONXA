@@ -41,6 +41,50 @@ global.__runtimeVersion   = require("./package.json").version;
 global.__versionManager   = versionManager;
 global.__manifestPublicKey = require("./package.json").ed25519_public_key || "";
 
+// App-layer pre-load self-update. Unlike the conxa_runtime leg (still checked from
+// server.js's startupSync, post-load — a running binary can't replace itself, and that
+// leg's own download budget is generous because it isn't launch-blocking), this one runs
+// BEFORE the app layer is require()'d below, so a newer conxa_app build takes effect on
+// THIS launch instead of the next one. manifest_manager.js + http_client.js join
+// version_manager.js as shared logic baked into the host exe (frozen until the next
+// quarterly host release) specifically so it can run before any app layer exists on disk
+// to load it from — see version_manager.js's header comment for the existing precedent.
+const manifestManager = require("./manifest_manager");
+const { loadInstallId } = require("./install_identity");
+
+function _bootLog(level, event, data) {
+  process.stderr.write(`[bootstrap] ${level} ${event} ${JSON.stringify(data || {})}\n`);
+}
+
+// Every failure path here (network down, bad signature, download failure, decode
+// failure) is caught and swallowed — this must never block startup. Falling through
+// just leaves `current` pointing at whatever it pointed at before, same as if this
+// check never ran. Bounded to a few seconds by fetchManifest's 3s timeout and the
+// tightened downloadArtifact retry budget below (60 KB zip; no need for the
+// 2-minute-per-attempt default that server.js's post-load, non-blocking leg can afford).
+async function _updateAppLayerBeforeLoad() {
+  if (process.env.CONXA_SKIP_SELF_UPDATE === "1") return;
+  try {
+    const installId = loadInstallId(envInfo.dataDir);
+    const { manifest } = await manifestManager.checkForUpdates({
+      apiUrl: envInfo.apiUrl,
+      conxaDir: CONXA_DIR,
+      installId,
+      channel: envInfo.channel,
+      publicKeyB64: global.__manifestPublicKey,
+      hostVersion: HOST_VERSION,
+      components: ["conxa_app"],
+      appDownloadOptions: { maxRetries: 2, timeoutMs: 5000 },
+      log: _bootLog,
+    });
+    // Let server.js's startupSync reuse this fetch for the conxa_runtime leg instead
+    // of hitting the manifest endpoint a second time on the same launch.
+    if (manifest) global.__conxaManifest = manifest;
+  } catch (e) {
+    _bootLog("warn", "app_update_skipped", { reason: e.message });
+  }
+}
+
 function tryLoad(dir) {
   if (!dir) return false; // resolveCurrent()/rollback() return null when nothing is installed yet
   const versionFile = path.join(dir, "version.json");
@@ -72,21 +116,26 @@ function tryLoad(dir) {
   }
 }
 
-const primaryDir = versionManager.resolveCurrent(APP_ROOT);
-if (!tryLoad(primaryDir)) {
-  const rolledBack = versionManager.rollback(APP_ROOT);
-  const fallbackDir = rolledBack ? versionManager.resolveCurrent(APP_ROOT) : null;
-  if (fallbackDir && tryLoad(fallbackDir)) {
-    process.stderr.write(
-      `[bootstrap] primary app layer unusable — rolled back to ${fallbackDir}\n` +
-      `  The app will re-download the latest version on next startup.\n`
-    );
-  } else {
-    process.stderr.write(
-      `[bootstrap] FATAL: no usable app layer found under ${APP_ROOT}\n` +
-      `  Expected: ${path.join(APP_ROOT, "current", "server.js")}\n` +
-      `  Reinstall or restore the conxa-app package.\n`
-    );
-    process.exit(1);
+(async () => {
+  await _updateAppLayerBeforeLoad();
+
+  // Re-resolve `current` — _updateAppLayerBeforeLoad may have just flipped it.
+  const primaryDir = versionManager.resolveCurrent(APP_ROOT);
+  if (!tryLoad(primaryDir)) {
+    const rolledBack = versionManager.rollback(APP_ROOT);
+    const fallbackDir = rolledBack ? versionManager.resolveCurrent(APP_ROOT) : null;
+    if (fallbackDir && tryLoad(fallbackDir)) {
+      process.stderr.write(
+        `[bootstrap] primary app layer unusable — rolled back to ${fallbackDir}\n` +
+        `  The app will re-download the latest version on next startup.\n`
+      );
+    } else {
+      process.stderr.write(
+        `[bootstrap] FATAL: no usable app layer found under ${APP_ROOT}\n` +
+        `  Expected: ${path.join(APP_ROOT, "current", "server.js")}\n` +
+        `  Reinstall or restore the conxa-app package.\n`
+      );
+      process.exit(1);
+    }
   }
-}
+})();

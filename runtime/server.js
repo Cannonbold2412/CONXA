@@ -318,9 +318,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 // two-endpoint _checkHostUpdate()/_checkAppUpdate() cold-start checks. Both host and
 // app updates land in their own versioned directory (conxa-runtime/<version>/,
 // conxa-app/<version>/) with a `current` junction flipped by version_manager.js —
-// there is no .bak/.next staging or update.bat dance anymore: the currently running
-// process never has its own files touched, so activation can happen immediately
-// rather than waiting for a "safe" restart.
+// there is no .bak/.next staging or update.bat dance anymore.
+//
+// The conxa_app leg now runs pre-load, in bootstrap.js, before server.js is ever
+// require()'d — so a pushed app update takes effect THIS launch instead of the next
+// one. Only the conxa_runtime leg still runs here: this process IS the running host
+// exe, so it can never replace itself — that update can only ever take effect on the
+// next cold start, same as before.
 const CONXA_API = process.env.CONXA_API_URL || "https://apis.conxa.in";
 const manifestManager = (typeof global !== "undefined" && global.__manifestManager)
   ? global.__manifestManager
@@ -336,7 +340,10 @@ async function _checkForUpdates() {
     // deployed prod installs never see dev prereleases. Defaults to stable.
     channel: process.env.CONXA_UPDATE_CHANNEL || "stable",
     publicKeyB64: (typeof global !== "undefined" && global.__manifestPublicKey) || "",
-    isComponentBusy: (component) => component === "conxa_app" && activeExecution !== null,
+    components: ["conxa_runtime"],
+    // bootstrap.js's pre-load app-update check already fetched the manifest once this
+    // launch (see global.__conxaManifest) — reuse it instead of fetching again.
+    manifest: (typeof global !== "undefined" && global.__conxaManifest) || undefined,
     log,
   });
 }

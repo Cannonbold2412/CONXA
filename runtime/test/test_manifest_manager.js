@@ -109,6 +109,34 @@ test("decideUpdate: 100% rollout includes every install without hashing", () => 
   assert.strictEqual(d.reason, "rollout_100");
 });
 
+test("decideUpdate: min_host above the running host refuses the update outright, even at 100% rollout", () => {
+  const d = mm.decideUpdate({
+    componentName: "conxa_app",
+    manifestEntry: { version: "2.0.0", min_host: "host-v2.0.0", rollout: { percentage: 100 } },
+    currentVersion: "1.0.0", installId: "x", hostVersion: "host-v1.5.0",
+  });
+  assert.strictEqual(d.update, false);
+  assert.strictEqual(d.reason, "host_too_old");
+});
+
+test("decideUpdate: min_host at or below the running host does not block", () => {
+  const d = mm.decideUpdate({
+    componentName: "conxa_app",
+    manifestEntry: { version: "2.0.0", min_host: "host-v1.5.0" },
+    currentVersion: "1.0.0", installId: "x", hostVersion: "host-v1.5.0",
+  });
+  assert.strictEqual(d.update, true);
+});
+
+test("decideUpdate: min_host present but no hostVersion supplied does not block (back-compat: conxa_runtime callers never pass hostVersion)", () => {
+  const d = mm.decideUpdate({
+    componentName: "conxa_app",
+    manifestEntry: { version: "2.0.0", min_host: "host-v99.0.0" },
+    currentVersion: "1.0.0", installId: "x",
+  });
+  assert.strictEqual(d.update, true);
+});
+
 test("decideUpdate: a partial rollout is consistent with rolloutBucket for the same inputs", () => {
   const installId = "consistency-check-install";
   const bucket = mm.rolloutBucket(installId, "conxa_app");

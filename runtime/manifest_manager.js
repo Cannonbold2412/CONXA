@@ -61,11 +61,22 @@ function _coerce(v) { return v ? _semver().coerce(String(v)) : null; }
 function _gt(a, b) { const pa = _coerce(a), pb = _coerce(b); return pa && pb ? _semver().gt(pa, pb) : false; }
 function _lt(a, b) { const pa = _coerce(a), pb = _coerce(b); return pa && pb ? _semver().lt(pa, pb) : false; }
 
-// Decide whether to take a component update: version comparison, minimum_versions
-// floor (forces update, ignoring rollout, if currently below the floor), `required`
-// flag (bypasses rollout once newer), and percentage rollout bucketing otherwise.
-function decideUpdate({ componentName, manifestEntry, currentVersion, installId, minimumVersion }) {
+// Decide whether to take a component update: min_host floor (refuses outright — a host
+// too old to run the new layer must never activate-then-rollback on every launch, see
+// bootstrap.js's pre-load app update), version comparison, minimum_versions floor
+// (forces update, ignoring rollout, if currently below the floor), `required` flag
+// (bypasses rollout once newer), and percentage rollout bucketing otherwise.
+function decideUpdate({ componentName, manifestEntry, currentVersion, installId, minimumVersion, hostVersion }) {
   if (!manifestEntry || !manifestEntry.version) return { update: false, reason: "no_manifest_entry" };
+
+  if (manifestEntry.min_host && hostVersion) {
+    const minHost = _coerce(manifestEntry.min_host);
+    const host = _coerce(hostVersion);
+    if (minHost && host && _semver().lt(host, minHost)) {
+      return { update: false, reason: "host_too_old" };
+    }
+  }
+
   if (!currentVersion) return { update: true, reason: "not_installed" };
   if (!_gt(manifestEntry.version, currentVersion)) return { update: false, reason: "up_to_date" };
 
@@ -111,24 +122,19 @@ function _downloadBuffer(url, timeoutMs) {
   });
 }
 
-// Fetch + verify the unified manifest, with a local cache. On any failure (network,
-// bad signature) falls back to the last cache entry that itself passed verification —
+// Fetch + verify the unified manifest. Always hits the network — no local TTL cache —
+// so a launch never silently skips the check the way the old 1-hour cache did; the
+// cache file below exists purely as the network-failure/bad-signature fallback. On
+// any such failure falls back to the last cache entry that itself passed verification —
 // the cache file is only ever written after a successful verify, so re-serving it is
 // always safe.
 async function fetchManifest(apiUrl, cacheFile, options = {}) {
-  const { cacheTtlMs = 60 * 60 * 1000, publicKeyB64, log = () => {}, channel } = options;
-
-  if (fs.existsSync(cacheFile)) {
-    try {
-      const cached = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
-      if (cached._cached_at && Date.now() - cached._cached_at < cacheTtlMs) return cached;
-    } catch (_) {}
-  }
+  const { publicKeyB64, log = () => {}, channel } = options;
 
   let manifest;
   try {
     const q = channel ? `?channel=${encodeURIComponent(channel)}` : "";
-    manifest = await _fetchJSON(`${apiUrl}/api/v1/manifest.json${q}`, 8000);
+    manifest = await _fetchJSON(`${apiUrl}/api/v1/manifest.json${q}`, 3000);
   } catch (e) {
     log("warn", "manifest_fetch_failed", { reason: e.message });
     return _lastVerifiedCache(cacheFile);
@@ -241,14 +247,21 @@ async function updateHostComponent(componentDir, entry, conxaDir, log = () => {}
   return versionManager.activate(componentDir, versionDir, { requiredFiles: ["conxa-runtime.exe"], keep: 3 });
 }
 
-// conxa_app ships as a single zip — download, extract, validate, activate. Flipping
-// `current` here never affects the currently running process: server.js is already
-// require()'d into this process's module cache, so this only takes effect on the
-// next cold start (same as today's "effective on next restart" behaviour).
-async function updateAppComponent(componentDir, entry, log = () => {}) {
+// conxa_app ships as a single zip — download, extract, validate, activate. Called from
+// two places with different consequences: bootstrap.js's pre-load caller flips `current`
+// before server.js is ever require()'d, so that activation takes effect THIS launch (see
+// checkForUpdates' components filter). server.js's post-load caller (host-exe leg only in
+// practice now, but the function itself doesn't know that) can't do this — this process
+// already has the old server.js in its module cache, so flipping `current` there only
+// takes effect on the next cold start.
+// downloadOptions lets bootstrap.js's pre-load caller tighten maxRetries/timeoutMs —
+// that call sits on the launch path (see checkForUpdates below), so it can't accept
+// downloadArtifact's default up-to-two-minute-per-attempt budget the post-load,
+// non-blocking server.js caller can afford.
+async function updateAppComponent(componentDir, entry, log = () => {}, downloadOptions = {}) {
   const zipFile = (entry.files || []).find((f) => f.filename.endsWith(".zip"));
   if (!zipFile) throw new Error("app manifest entry missing a .zip artifact");
-  const buf = await downloadArtifact(zipFile.url, zipFile.sha256, { log });
+  const buf = await downloadArtifact(zipFile.url, zipFile.sha256, { log, ...downloadOptions });
 
   const versionDir = path.join(componentDir, entry.version);
   const stageDir = `${versionDir}.staging-${process.pid}-${Date.now()}`;
@@ -272,53 +285,66 @@ async function updateAppComponent(componentDir, entry, log = () => {}) {
   return versionManager.activate(componentDir, versionDir, { requiredFiles: ["server.js"], keep: 3 });
 }
 
-// Top-level orchestration called from server.js's startupSync. Fetches the manifest,
-// decides which of conxa_runtime/conxa_app need updating, and activates them.
-// Skill-pack artifacts are NOT handled here — sync.js's per-company/per-skill delta
-// sync (see runtime/sync.js) remains the transport for skill content; the manifest's
-// skill_packs section carries version/compat metadata only (no files[]), so it never
-// broadcasts one company's proprietary workflow checksums to every other install.
+// Top-level orchestration, called from two places:
+//   - bootstrap.js, pre-load, with components: ["conxa_app"] only — decides/activates
+//     the app-layer update before server.js is ever require()'d, so it takes effect
+//     THIS launch instead of the next one.
+//   - server.js's startupSync, post-load, with components: ["conxa_runtime"] and
+//     ctx.manifest passed through from bootstrap's fetch (when available) so the
+//     manifest is fetched at most once per launch.
+// Fetches the manifest (unless one is passed in), decides which of the requested
+// components need updating, and activates them. Skill-pack artifacts are NOT handled
+// here — sync.js's per-company/per-skill delta sync (see runtime/sync.js) remains the
+// transport for skill content; the manifest's skill_packs section carries version/compat
+// metadata only (no files[]), so it never broadcasts one company's proprietary workflow
+// checksums to every other install.
 async function checkForUpdates(ctx) {
   const {
-    apiUrl, conxaDir, installId, publicKeyB64, channel,
+    apiUrl, conxaDir, installId, publicKeyB64, channel, hostVersion,
+    components = ["conxa_runtime", "conxa_app"],
+    appDownloadOptions = {},
     isComponentBusy = () => false, // e.g. () => activeExecution !== null
     log = () => {},
   } = ctx;
 
   const cacheFile = path.join(conxaDir, "manifest.json");
-  const manifest = await fetchManifest(apiUrl, cacheFile, { publicKeyB64, log, channel });
-  if (!manifest) { log("warn", "manifest_unavailable", {}); return { manifest: null }; }
+  const manifest = ctx.manifest || await fetchManifest(apiUrl, cacheFile, { publicKeyB64, log, channel });
+  if (!manifest) { log("warn", "manifest_unavailable", {}); return { manifest: null, results: {} }; }
 
   const minimums = manifest.minimum_versions || {};
   const results = {};
 
-  const hostDir = path.join(conxaDir, "conxa-runtime");
-  const hostCurrent = versionManager.currentVersion(hostDir);
-  const hostDecision = decideUpdate({
-    componentName: "conxa_runtime", manifestEntry: manifest.conxa_runtime,
-    currentVersion: hostCurrent, installId, minimumVersion: minimums.conxa_runtime,
-  });
-  if (hostDecision.update) {
-    try {
-      results.conxa_runtime = await updateHostComponent(hostDir, manifest.conxa_runtime, conxaDir, log);
-      log("info", "host_update_activated", results.conxa_runtime);
-    } catch (e) {
-      log("warn", "host_update_failed", { error: e.message });
+  if (components.includes("conxa_runtime")) {
+    const hostDir = path.join(conxaDir, "conxa-runtime");
+    const hostCurrent = versionManager.currentVersion(hostDir);
+    const hostDecision = decideUpdate({
+      componentName: "conxa_runtime", manifestEntry: manifest.conxa_runtime,
+      currentVersion: hostCurrent, installId, minimumVersion: minimums.conxa_runtime,
+    });
+    if (hostDecision.update) {
+      try {
+        results.conxa_runtime = await updateHostComponent(hostDir, manifest.conxa_runtime, conxaDir, log);
+        log("info", "host_update_activated", results.conxa_runtime);
+      } catch (e) {
+        log("warn", "host_update_failed", { error: e.message });
+      }
     }
   }
 
-  const appDir = path.join(conxaDir, "conxa-app");
-  const appCurrent = versionManager.currentVersion(appDir);
-  const appDecision = decideUpdate({
-    componentName: "conxa_app", manifestEntry: manifest.conxa_app,
-    currentVersion: appCurrent, installId, minimumVersion: minimums.conxa_app,
-  });
-  if (appDecision.update && !isComponentBusy("conxa_app")) {
-    try {
-      results.conxa_app = await updateAppComponent(appDir, manifest.conxa_app, log);
-      log("info", "app_update_activated", results.conxa_app);
-    } catch (e) {
-      log("warn", "app_update_failed", { error: e.message });
+  if (components.includes("conxa_app")) {
+    const appDir = path.join(conxaDir, "conxa-app");
+    const appCurrent = versionManager.currentVersion(appDir);
+    const appDecision = decideUpdate({
+      componentName: "conxa_app", manifestEntry: manifest.conxa_app,
+      currentVersion: appCurrent, installId, minimumVersion: minimums.conxa_app, hostVersion,
+    });
+    if (appDecision.update && !isComponentBusy("conxa_app")) {
+      try {
+        results.conxa_app = await updateAppComponent(appDir, manifest.conxa_app, log, appDownloadOptions);
+        log("info", "app_update_activated", results.conxa_app);
+      } catch (e) {
+        log("warn", "app_update_failed", { error: e.message });
+      }
     }
   }
 
