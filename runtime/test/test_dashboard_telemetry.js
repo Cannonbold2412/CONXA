@@ -41,6 +41,16 @@ function makeClickPage() {
       };
     },
     async waitForTimeout() {},
+    // runPlan settles the page, grabs a pre-step frame, and checks for an auth
+    // redirect on failure — all always present on a real Playwright page.
+    async waitForLoadState() {},
+    async screenshot() {
+      return Buffer.alloc(0);
+    },
+    url: () => "https://app.example.com/dashboard",
+    async title() {
+      return "Dashboard";
+    },
   };
 }
 

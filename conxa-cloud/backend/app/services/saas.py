@@ -144,11 +144,17 @@ def _slug_from_org_id(org_id: str) -> str:
     return text or "workspace"
 
 
-def _normalize_org_role(role: str | None) -> str:
+def _normalize_org_role(role: str | None, *, personal_workspace: bool = False) -> str:
     value = str(role or "").strip().lower()
     if value.startswith("org:"):
         value = value.removeprefix("org:").strip()
-    return value or "basic_member"
+    if value:
+        return value
+    # No active Clerk org means the principal is in their own personal workspace
+    # (`personal_{user_id}`), which nobody else can reach — they are its sole member
+    # and owner. Defaulting them to `basic_member` locked them out of every
+    # `require_admin` route (publish, plugin create/delete, subscribe).
+    return "owner" if personal_workspace else "basic_member"
 
 
 def personal_workspace_id(user_id: str) -> str:
@@ -286,7 +292,10 @@ def principal_from_request(request: Request) -> Principal:
                 workspace_id=org_id,
                 workspace_slug=workspace_slug,
                 workspace_name=proxy_identity.get("org_name") or "Workspace",
-                role=_normalize_org_role(proxy_identity.get("org_role")),
+                role=_normalize_org_role(
+                    proxy_identity.get("org_role"),
+                    personal_workspace=not proxy_identity.get("org_id"),
+                ),
                 auth_provider="clerk",
                 identity_source="trusted_proxy",
                 proxy_identity_trusted=True,
@@ -312,7 +321,7 @@ def principal_from_request(request: Request) -> Principal:
     if not raw_role and raw_org_id:
         # Clerk OAuth tokens carry org_id but not org_role — resolve via Backend API.
         raw_role = _clerk_org_role(subject, str(raw_org_id))
-    org_role = _normalize_org_role(raw_role)
+    org_role = _normalize_org_role(raw_role, personal_workspace=not raw_org_id)
     identity_source = "trusted_proxy" if proxy_identity else "clerk_jwt"
     return Principal(
         user_id=subject,

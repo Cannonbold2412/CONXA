@@ -598,6 +598,33 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
     assert diagnostics_body["same_user_personal_company_count"] == 1
 
 
+def test_org_member_without_a_role_is_not_admin(monkeypatch, tmp_path):
+    """The personal-workspace owner default must not leak into org workspaces: a user
+    inside an org whose role header is missing stays a basic member and cannot publish."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "api_proxy_shared_secret", "proxy-secret")
+
+    pub = client.post(
+        "/api/v1/plugins/publish",
+        json={
+            "slug": "org-no-role",
+            "display_name": "Org No Role",
+            "target_url": "https://example.test",
+            "skill_pack_version": "1.0.0",
+            "skills": [],
+            "files": [],
+        },
+        headers={
+            "x-conxa-proxy-secret": "proxy-secret",
+            "x-conxa-user-id": "user_norole",
+            "x-conxa-org-id": "org_norole",
+        },
+    )
+    assert pub.status_code == 403, pub.text
+    assert pub.json()["detail"] == "admin role required"
+
+
 def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
@@ -715,10 +742,13 @@ def test_installer_upload_rejects_duplicate_version_and_preserves_history():
     assert rows[1]["is_latest"] is False
 
 
-def test_installer_history_survives_disk_wipe(monkeypatch, tmp_path):
+def test_installer_history_survives_disk_wipe_but_binary_does_not(monkeypatch, tmp_path):
     """Render's free plan has no persistent disk and idles out, wiping local files
-    between requests. The Postgres-backed copy (faked here via the fs KV fallback,
-    since `using_database` is forced on) must still serve old versions and history."""
+    between requests. Version *history* is Postgres-backed (faked here via the fs KV
+    fallback, since `using_database` is forced on) and survives. The .exe itself is
+    disk-only — installer upload stores metadata only, deliberately, because a ~20 MB
+    base64 blob does not belong in a JSONB field — so a wiped binary is a clean 404
+    until the vendor re-uploads. Object storage is the real fix; see TODO.md CLOUD-2."""
     monkeypatch.setattr("app.api.publish_routes.using_database", lambda: True)
     slug = "wipe-installer-test"
     first = b"MZfirst-wipe"
@@ -746,15 +776,22 @@ def test_installer_history_survives_disk_wipe(monkeypatch, tmp_path):
     assert rows["1.0.1"]["is_latest"] is True
     assert rows["1.0.0"]["is_latest"] is False
 
-    old_download = client.get(f"/api/v1/installers/{slug}/versions/1.0.0")
-    assert old_download.status_code == 200
-    assert old_download.content == first
+    # 1.0.1 was uploaded after the wipe, so its bytes are still on disk and serve fine.
+    current_download = client.get(f"/api/v1/installers/{slug}/versions/1.0.1")
+    assert current_download.status_code == 200
+    assert current_download.content == second
 
-    # Wipe again to exercise the "latest" (no version) DB fallback path too.
+    # 1.0.0's bytes went with the wiped disk. History knows the version exists; the
+    # download is a clean 404, not a 500 or a truncated file.
+    old_download = client.get(f"/api/v1/installers/{slug}/versions/1.0.0")
+    assert old_download.status_code == 404
+    assert old_download.json()["detail"] == "installer_not_published"
+
+    # Same for "latest" once its bytes are wiped too.
     shutil.rmtree(tmp_path / "installers", ignore_errors=True)
     latest_download = client.get(f"/api/v1/installers/{slug}")
-    assert latest_download.status_code == 200
-    assert latest_download.content == second
+    assert latest_download.status_code == 404
+    assert latest_download.json()["detail"] == "installer_not_published"
 
 
 def test_installer_upload_updates_plugin_latest_metadata():

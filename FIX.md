@@ -4,6 +4,14 @@
 
 ---
 
+## Anyone not part of a company team was locked out of publishing — 2026-08-04
+Signing in as an individual, rather than as a member of a company team, quietly stripped away every permission — publishing, creating or deleting a plugin, and starting a subscription all came back as "you need to be an admin." The account was the sole owner of its own private workspace, but the system was treating a missing team role as "lowest possible access" instead of "there is no team here, so this person owns the place." It was like being refused entry to your own house because you couldn't produce a company badge. Someone with their own private workspace is now correctly treated as its owner, while a person who *is* in a company team but has no assigned role still gets no admin powers, so nothing was loosened for real teams.
+ — 2026-08-04
+
+## Two automated safety checks had drifted and were quietly failing — 2026-08-04
+Two of the tests that are supposed to catch problems before customers see them had fallen out of step with the software they check, so they failed on every run and their warnings became background noise. One was checking a made-up web page that had grown too simple for what the software now does with real pages. The other was still demanding that an old installer file be downloadable after the server's temporary storage is wiped — but that file is deliberately no longer kept in the database, so the check was asking for something we chose not to do. Both now check what the software actually promises. Worth knowing: because installer files live only on the server's own disk, an installer download link can go dead if that disk is cleared, until it is uploaded again — this is now written down in the backlog as something to solve properly.
+ — 2026-08-04
+
 ## One stuck picture-taking step used to spoil an entire recording's snapshots — 2026-08-04
 After recording a workflow, the app takes a handful of snapshot pictures of each step so it can later recognize buttons and fields by sight, not just by their underlying code. On one recording, the very last snapshot got stuck and never finished — and because all the picture-taking happened in one uninterruptible batch right when recording stopped, that single stuck picture caused every other step's pictures to be thrown away too, even the ones that had already finished successfully. It was like a photo booth that shreds the whole roll of film because the last shot jammed. Worse, the mistake was permanent: recompiling the workflow never tried taking those pictures again, so the workflow was stuck with lower-quality button recognition forever. Picture-taking now happens when you compile instead of the moment you stop recording, each step's pictures are judged on their own, and a compile only redoes the pictures that are actually missing — so recompiling now genuinely fixes it, and one bad snapshot never costs you the rest.
  — 2026-08-04
