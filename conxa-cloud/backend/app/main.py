@@ -7,6 +7,7 @@ building all happen locally in the Build Studio.
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -64,6 +65,13 @@ def _validate_production_config() -> None:
         missing.append("SKILL_TRACKING_HMAC_SECRET (required so telemetry ingest rejects unrecognized companies)")
     if not settings.installer_signing_key:
         missing.append("SKILL_INSTALLER_SIGNING_KEY (required to sign time-limited installer download links)")
+    # Reads os.environ directly rather than settings.* — this key intentionally bypasses
+    # the SKILL_-prefixed Settings object (see manifest_signer.py's header comment): it's a
+    # PEM secret shared with the runtime's build-time public-key stamping, not a
+    # SKILL_-namespaced setting. Without it, updates_routes.py silently serves every
+    # self-update manifest with signature="", which every runtime then discards outright.
+    if not os.environ.get("CONXA_MANIFEST_SIGNING_KEY"):
+        missing.append("CONXA_MANIFEST_SIGNING_KEY (required so self-update manifests are verifiable)")
     if missing:
         raise RuntimeError(
             "Refusing to start: SKILL_AUTH_REQUIRED=true but these are unset: "

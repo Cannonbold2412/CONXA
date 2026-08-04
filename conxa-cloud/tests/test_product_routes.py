@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import unittest
@@ -182,6 +183,28 @@ class ProductRoutesTests(unittest.TestCase):
             patch("conxa_core.config.settings.cashfree_pro_plan_id", ""),
         ):
             with self.assertRaisesRegex(RuntimeError, "CASHFREE_STARTER_PLAN_ID / CASHFREE_PRO_PLAN_ID"):
+                _validate_production_config()
+
+    def test_production_config_requires_manifest_signing_key(self) -> None:
+        from app.main import _validate_production_config
+
+        with (
+            patch("conxa_core.config.settings.auth_required", True),
+            patch("conxa_core.config.settings.database_url", "postgresql://example"),
+            patch("conxa_core.config.settings.clerk_issuer", "https://clerk.example"),
+            patch("conxa_core.config.settings.clerk_jwks_url", "https://clerk.example/.well-known/jwks.json"),
+            patch("conxa_core.config.settings.cors_allowed_origins", "https://app.example"),
+            patch("conxa_core.config.settings.cashfree_app_id", "cf_app"),
+            patch("conxa_core.config.settings.cashfree_secret_key", "cf_secret"),
+            patch("conxa_core.config.settings.cashfree_webhook_secret", "cf_webhook"),
+            patch("conxa_core.config.settings.cashfree_starter_plan_id", "plan_starter"),
+            patch("conxa_core.config.settings.cashfree_pro_plan_id", "plan_pro"),
+            patch("conxa_core.config.settings.api_base_url", "https://api.example"),
+            patch("conxa_core.config.settings.tracking_hmac_secret", "hmac_secret"),
+            patch("conxa_core.config.settings.installer_signing_key", "installer_key"),
+            patch.dict(os.environ, {"CONXA_MANIFEST_SIGNING_KEY": ""}),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "CONXA_MANIFEST_SIGNING_KEY"):
                 _validate_production_config()
 
     def test_patch_bundle_release_records_release_and_audit(self) -> None:
