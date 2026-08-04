@@ -26,7 +26,7 @@ class CompileMixin:
         from conxa_compile.pipeline.run import run_pipeline
         from conxa_core.storage.json_store import read_skill, write_skill
         from conxa_core.storage.plugin_store import get_plugin, save_plugin
-        from conxa_core.storage.session_events import read_session_events
+        from conxa_core.storage.session_events import read_session_events, session_events_path
         from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
         registry = _recorder_registry
 
@@ -80,21 +80,36 @@ class CompileMixin:
         try:
             sess = registry.get(session_id)
             if sess is not None:
-                # Frame extraction runs in the recorder thread after stop() and writes
-                # frames to events.jsonl on disk — it never updates the in-memory
-                # _materialized list. Wait for the thread to finish so the on-disk
-                # events.jsonl is complete before we read it.
+                # recording.webm is renamed into place in the recorder thread's
+                # shutdown path (session.py:_finalize_video_file_sync). Wait for
+                # that to finish before extracting frames from it.
                 thread = getattr(sess, '_thread', None)
                 if thread is not None and thread.is_alive():
-                    _log("Waiting for post-recording frame extraction to complete…")
-                    thread.join(timeout=120)
+                    _log("Waiting for recording to finalize…")
+                    thread.join(timeout=30)
                     if thread.is_alive():
-                        _log("Frame extraction thread still running after 120 s — compiling without frames.", level="warn")
+                        _log("Recording finalize still running after 30 s — compiling without frames.", level="warn")
+
+            session_dir = session_events_path(session_id).parent
+            if (session_dir / "recording.webm").is_file():
+                from conxa_compile.recorder.frame_extractor import extract_frames_for_session
+
+                def _on_frame_progress(done: int, total: int) -> None:
+                    _log(f"Extracted frames for event {done}/{total}.")
+
+                try:
+                    _, frame_failures = extract_frames_for_session(
+                        session_dir, on_progress=_on_frame_progress
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Session-wide extraction problem (missing ffmpeg, corrupt video, etc.) —
+                    # compile continues with DOM-only anchors rather than blocking.
+                    _log(f"Warning: frame_extraction_error: {exc!s}", level="warn")
+                else:
+                    for idx, message in frame_failures:
+                        _log(f"Warning: frame_extraction_error: event {idx + 1}: {message}", level="warn")
+
             raw = read_session_events(session_id)
-            if sess is not None:
-                errs = [e for e in (getattr(sess, 'binding_errors', None) or []) if 'frame_extraction' in e]
-                for e in errs:
-                    _log(f"Warning: {e}", level="warn")
         except Exception:
             if reservation_id and not reservation_committed:
                 self._release_compile_credit(reservation_id)

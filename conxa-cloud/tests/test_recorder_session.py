@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from conxa_compile.recorder import session as recorder_session
 from conxa_compile.recorder.session import RecordingSession
 
@@ -388,27 +386,20 @@ def test_visual_capture_is_deferred_to_frame_extraction(tmp_path) -> None:
     assert not any(err.startswith("visual_capture_error:") for err in sess.binding_errors)
 
 
-def test_finalize_video_recording_skips_frame_extraction_when_no_events(tmp_path) -> None:
+def test_finalize_video_file_renames_webm_without_touching_events(tmp_path) -> None:
+    # Frame extraction moved to compile time (see handlers/compile.py and
+    # frame_extractor.py) so it can be retried per-event on recompile.
+    # Finalize at recorder shutdown now only renames Playwright's raw .webm —
+    # it no longer needs or touches events.jsonl at all.
     sess = RecordingSession(session_id="empty-video", data_root=tmp_path)
     session_dir = tmp_path / "sessions" / sess.session_id
     session_dir.mkdir(parents=True)
     raw_video = session_dir / "playwright-output.webm"
     raw_video.write_bytes(b"video")
 
-    sess._finalize_video_recording_sync()
+    sess._finalize_video_file_sync()
 
     assert not raw_video.exists()
     assert (session_dir / "recording.webm").read_bytes() == b"video"
     assert not (session_dir / "events.jsonl").exists()
-    assert sess.binding_errors == ["video_frame_extraction_skipped:no_events"]
-
-
-def test_finalize_video_recording_requires_events_file_when_events_exist(tmp_path) -> None:
-    sess = RecordingSession(session_id="missing-events-file", data_root=tmp_path)
-    session_dir = tmp_path / "sessions" / sess.session_id
-    session_dir.mkdir(parents=True)
-    (session_dir / "recording.webm").write_bytes(b"video")
-    sess._materialized.append(object())  # type: ignore[arg-type]
-
-    with pytest.raises(FileNotFoundError, match="events.jsonl not found"):
-        sess._finalize_video_recording_sync()
+    assert sess.binding_errors == []

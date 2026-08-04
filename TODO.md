@@ -710,6 +710,19 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
+### BUILD-11 — Batch the 5 ffmpeg calls per event into one invocation
+- **Category:** Builder
+- **Description:** Found 2026-08-04 while fixing a production compile where one hung ffmpeg process (extracting `evt_0008_before_far.png` at `-ss 34.414`) discarded frames for the whole session — see `FIX.md`. That fix moved frame extraction from recorder shutdown into compile (`handlers/compile.py:cmd_compile`) and made it idempotent + per-event isolated, but each event still spawns 5 separate `ffmpeg` processes (`before_far/near`, `at`, `after_near/far`), one per offset. Measured cost is only ~0.2s/frame, so this is not currently a real bottleneck — it's a follow-up optimization, not a fix.
+- **Why required:** not required today. Would matter for very long recordings (hundreds of events → thousands of ffmpeg spawns) or if the acceptable compile-time budget tightens.
+- **Business value:** low now; faster compiles at scale later.
+- **Technical value:** one ffmpeg invocation per event instead of 5 (`-ss <T-0.5> -i recording.webm -vf fps=4 -frames:v 5 ...`) cuts process-spawn overhead ~5x. Needs verification that `fps` resampling on Playwright's variable-frame-rate webm lands the 5 outputs on the intended offsets (before_far/near, at, after_near/far) rather than approximate ones — the current per-offset `-ss` seek is exact, a batched filter isn't guaranteed to be without checking.
+- **Dependencies:** none blocking.
+- **Suggested order:** opportunistic — only worth doing if compile time for long recordings becomes a complaint.
+- **Complexity:** S.
+- **Success criteria:** frame extraction for an N-event session uses N ffmpeg processes instead of 5N, and the 5 frames produced for a sample event are pixel-verified to match the current per-offset `-ss` output within tolerance.
+
+---
+
 ## Final Review Notes (from the audits that produced this file)
 
 - Every row in `docs/Security.md`'s security-gaps table (SG-01 through SG-13) has a corresponding item above or is confirmed already fully resolved with no residual work.

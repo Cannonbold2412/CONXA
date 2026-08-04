@@ -698,8 +698,9 @@ sequenceDiagram
 2. `bridge.js` is injected into every frame (including iframes) via `page.addInitScript`.
 3. Bridge captures: `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.
 4. Each event carries: `action`, `url`, `frame` (iframe chain), `target` (element signals), `value`, `ts`.
-5. `frame_extractor.py` walks the iframe parent chain to accumulate page-level bounding box offsets.
+5. `frame_utils.py`'s `_frame_context_and_offset_sync` walks the iframe parent chain to accumulate page-level bounding box offsets; `session.py` calls it per event.
 6. Events stream to `session_events.py` which appends to `events.jsonl`.
+7. On stop, `session.py` closes the Playwright context and renames the raw `.webm` to `recording.webm`. It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
 
 ### 6.2 Iframe Chain Preservation
 
@@ -719,6 +720,17 @@ This chain is preserved verbatim through compile and execution. Bounding boxes a
 ### 7.1 Pipeline Stages
 
 ```
+recording.webm
+        │
+        ▼  recorder/frame_extractor.py:extract_frames_for_session()
+        │  • 5 ffmpeg frame captures per event (before_far/near, at, after_near/far)
+        │  • idempotent — frames already on disk from a prior attempt are not re-cut
+        │  • per-event isolated — one event's ffmpeg failure doesn't cost any other
+        │    event its frames; failures are logged and that step falls back to
+        │    deterministic anchors (see anchor_vision_llm.py below)
+        │  • writes visual.frames / visual.full_screenshot back into events.jsonl
+        │
+        ▼
 events.jsonl (raw RecordedEvents)
         │
         ▼  pipeline/normalize.py
@@ -755,6 +767,8 @@ events.jsonl (raw RecordedEvents)
            │
            └── → SkillPackage (models/skill_spec.py)
 ```
+
+**Frame extraction runs at compile time** (`handlers/compile.py:cmd_compile`), not at recorder shutdown. It used to run once in the recorder thread's `finally` block, all-or-nothing across every event in the session — a single ffmpeg timeout on one event discarded frames for every other event too, permanently, since extraction never ran again. Moving it into `cmd_compile` makes it idempotent and per-event isolated (see diagram above), so a recompile repairs only the events still missing frames.
 
 ### 7.2 LLM Calls Per Step
 

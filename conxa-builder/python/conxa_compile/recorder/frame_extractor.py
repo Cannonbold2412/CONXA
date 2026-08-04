@@ -14,8 +14,11 @@ when bbox w/h < 2). This replaces the old synchronous page.screenshot() capture.
 Updates events.jsonl in place: each event's visual.frames dict gets the 5 paths.
 Uses ffmpeg (from Playwright's bundled binary, imageio-ffmpeg, or PATH).
 
-Raises on any failure (missing video, missing ffmpeg, per-frame failure,
-missing event timestamp) — silent degradation is not allowed.
+Runs at compile time (not at recording stop), so it is idempotent — frames
+already on disk are not re-cut — and a recompile repairs whatever frames
+failed on a prior attempt. A single event's frame failure does not lose
+frames for any other event: it is recorded in the returned failures list and
+that event falls back to DOM-only anchors at compile.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from conxa_core.config import settings
 from conxa_compile.recorder.visual import crop_element_from_frame
@@ -99,7 +102,14 @@ def _extract_frame(
         str(out_path),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        # stdin=DEVNULL: without it ffmpeg inherits the backend process's stdin
+        # (the Electron<->Python JSON-RPC pipe) and can hang past exit waiting
+        # on it instead of closing. timeout=30 is generous headroom over the
+        # ~0.2s/frame measured cost — it exists to bound a genuine hang, not
+        # normal decode time.
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL
+        )
     except (subprocess.TimeoutExpired, OSError) as exc:
         raise RuntimeError(f"ffmpeg invocation failed: {exc!s} (cmd={' '.join(cmd)})") from exc
 
@@ -112,12 +122,23 @@ def _extract_frame(
         raise RuntimeError(f"ffmpeg produced empty/missing frame: {out_path}")
 
 
-def extract_frames_for_session(session_dir: Path) -> dict[int, dict[str, str]]:
-    """Extract 4 frames per event from recording.webm into session_dir/frames/.
+def extract_frames_for_session(
+    session_dir: Path,
+    *,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> tuple[dict[int, dict[str, str]], list[tuple[int, str]]]:
+    """Extract 5 frames per event from recording.webm into session_dir/frames/.
 
-    Returns {event_index: {label: relative_path}} on success. Raises on any
-    failure — missing video, missing ffmpeg, missing events.jsonl, event
-    without timestamp_ms, or per-frame failure.
+    Idempotent: a frame already present on disk (non-empty file) is not
+    re-cut, so a recompile after a partial failure only redoes the missing
+    frames. Per-event isolated: a frame failure for one event is recorded in
+    the returned failures list and that event is left without visual.frames /
+    full_screenshot — it does not affect any other event.
+
+    Returns (frames_by_event_index, failures) where failures is
+    [(event_index, message), ...] for events that could not get frames.
+    Raises only on session-wide problems: missing video, missing ffmpeg,
+    missing events.jsonl, or an event without a timestamp.
     """
     video_path = session_dir / "recording.webm"
     events_path = session_dir / "events.jsonl"
@@ -156,6 +177,9 @@ def extract_frames_for_session(session_dir: Path) -> dict[int, dict[str, str]]:
             events.append(json.loads(line))  # raises on invalid JSON — by design
 
     result: dict[int, dict[str, str]] = {}
+    failures: list[tuple[int, str]] = []
+    images_dir = session_dir / "images"
+
     for i, ev in enumerate(events):
         visual = ev.setdefault("visual", {})
         ts_ms = visual.get("timestamp_ms")
@@ -164,39 +188,45 @@ def extract_frames_for_session(session_dir: Path) -> dict[int, dict[str, str]]:
                 f"event index {i} has no visual.timestamp_ms; non-auth events must have one"
             )
 
-        frames: dict[str, str] = {}
-        for label, offset_ms in offsets:
-            frame_path = frames_dir / f"evt_{i + 1:04d}_{label}.png"
-            target_ms = int(ts_ms) + offset_ms
-            _extract_frame(ffmpeg, video_path, frame_path, target_ms)
-            frames[label] = f"frames/evt_{i + 1:04d}_{label}.png"
+        try:
+            frames: dict[str, str] = {}
+            for label, offset_ms in offsets:
+                frame_path = frames_dir / f"evt_{i + 1:04d}_{label}.png"
+                if not (frame_path.is_file() and frame_path.stat().st_size > 0):
+                    target_ms = int(ts_ms) + offset_ms
+                    _extract_frame(ffmpeg, video_path, frame_path, target_ms)
+                frames[label] = f"frames/evt_{i + 1:04d}_{label}.png"
+
+            # Set the default representative: before_near frame (T-250ms).
+            # This is after the user initiated the action but before any page reaction/navigation,
+            # so the target element is still present and the bbox is valid.
+            representative_rel = frames["before_near"]
+            representative_abs = session_dir / representative_rel
+            bbox = visual.get("bbox") if isinstance(visual.get("bbox"), dict) else {}
+            images_dir.mkdir(parents=True, exist_ok=True)
+            el_out = images_dir / f"evt_{i + 1:04d}_element.jpg"
+            el_rel = crop_element_from_frame(
+                representative_abs,
+                bbox,
+                el_out,
+                jpeg_quality=settings.screenshot_jpeg_quality,
+            )
+        except (RuntimeError, OSError) as exc:
+            # RuntimeError: ffmpeg failure. OSError (incl. PIL's UnidentifiedImageError,
+            # a subclass): frame file unreadable/corrupt during the crop step.
+            failures.append((i, str(exc)))
+            continue
 
         visual["frames"] = frames
-
-        # Set the default representative: before_near frame (T-250ms).
-        # This is after the user initiated the action but before any page reaction/navigation,
-        # so the target element is still present and the bbox is valid.
-        representative_rel = frames["before_near"]
         visual["full_screenshot"] = representative_rel
-
-        # Derive the element crop from the representative frame.
-        representative_abs = session_dir / representative_rel
-        bbox = visual.get("bbox") if isinstance(visual.get("bbox"), dict) else {}
-        images_dir = session_dir / "images"
-        images_dir.mkdir(parents=True, exist_ok=True)
-        el_out = images_dir / f"evt_{i + 1:04d}_element.jpg"
-        el_rel = crop_element_from_frame(
-            representative_abs,
-            bbox,
-            el_out,
-            jpeg_quality=settings.screenshot_jpeg_quality,
-        )
         visual["element_snapshot"] = el_rel
-
         result[i] = frames
+
+        if on_progress is not None:
+            on_progress(i + 1, len(events))
 
     with open(events_path, "w", encoding="utf-8") as f:
         for ev in events:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
 
-    return result
+    return result, failures

@@ -148,13 +148,17 @@ flowchart TD
     I --> J[Events captured: click, fill, select, navigate, etc.]
     J --> K[User closes the browser, clicks 'Save Workflow Now']
     K --> L[Backend: cmd_stop_recording]
-    L --> M[Events saved to sessions/session_id/events.jsonl]
+    L --> L2[Playwright context closes; recording.webm renamed into place]
+    L2 --> M[Events saved to sessions/session_id/events.jsonl]
     M --> N[PluginWorkflow created with status=recorded]
     N --> O[Workflow appears in plugin list]
 ```
 
 **Event types captured by bridge.js:**
 `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.
+
+Stop-recording no longer waits on video frame extraction — it only renames Playwright's raw `.webm` to
+`recording.webm` and returns. Frame extraction (for vision anchors) now runs at compile time, see §6.
 
 ---
 
@@ -164,7 +168,8 @@ flowchart TD
 flowchart TD
     A[User selects workflow, clicks Compile] --> B[Backend: cmd_compile]
     B --> C[Install LLM proxy router]
-    C --> D[Load raw events from events.jsonl]
+    C --> C2[Extract video frames from recording.webm]
+    C2 --> D[Load raw events from events.jsonl]
     D --> E[pipeline/normalize.py]
     E --> F[pipeline/dedupe.py]
     F --> G[pipeline/enrich.py]
@@ -185,6 +190,15 @@ flowchart TD
     S --> T[Update PluginWorkflow: status=compiled, skill_id set]
     T --> U[Compile complete — step count shown to user]
 ```
+
+**Frame extraction (step C2):** runs once per compile against `recording.webm`, cutting 5 PNGs per
+recorded event (`before_far/near`, `at`, `after_near/far`) via ffmpeg for the compiler's vision-anchor
+step. It is idempotent — a frame already on disk from a prior compile attempt is not re-cut — and
+isolated per event, so one event's extraction failure (e.g. a slow/timed-out ffmpeg call) does not cost
+any other event its frames. A failed event falls back to deterministic, DOM-derived anchors instead of
+vision-model anchors for that step only (`Vision anchors fell back for step N` in the compile log);
+primary element selection is unaffected, since the `IdentityBundle` never reads vision output. Recompile
+re-attempts only the events still missing frames.
 
 **Fresh compile quota:** Before local compile starts, Build Studio reserves 1 compile credit through `POST /api/v1/usage/compile/reserve`. The reservation is committed before the first LLM-assisted pipeline/compiler stage. If compile fails before commit, Build Studio releases the reservation; after commit, the credit remains consumed.
 

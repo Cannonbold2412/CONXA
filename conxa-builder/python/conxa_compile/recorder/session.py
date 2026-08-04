@@ -156,16 +156,18 @@ class RecordingSession:
             self._playwright = None
         self._page = None
         try:
-            self._finalize_video_recording_sync()
+            self._finalize_video_file_sync()
         except Exception as exc:  # noqa: BLE001
-            self.binding_errors.append(f"frame_extraction_error: {exc!s}")
+            self.binding_errors.append(f"video_finalize_error: {exc!s}")
 
-    def _finalize_video_recording_sync(self) -> None:
-        """Rename Playwright's auto-generated .webm to recording.webm + extract frames.
+    def _finalize_video_file_sync(self) -> None:
+        """Rename Playwright's auto-generated .webm to recording.webm.
 
-        Auth-mode sessions are exempt (they don't record video). For non-auth
-        sessions, missing video or frame-extraction failure raises — silent
-        degradation is no longer allowed.
+        Frame extraction no longer happens here — it runs at compile time
+        (see handlers/compile.py), so it can be retried per-event on
+        recompile instead of being a one-shot, all-or-nothing step tied to
+        the lifetime of this recorder thread. Auth-mode sessions are exempt
+        (they don't record video).
         """
         if self.auth_mode:
             return
@@ -187,19 +189,6 @@ class RecordingSession:
                 "Check that the browser context was launched with record_video_dir and the "
                 "session closed cleanly via context.close()."
             )
-
-        events_path = session_dir / "events.jsonl"
-        if not events_path.is_file():
-            with self._lock:
-                event_count = len(self._materialized)
-            if event_count == 0:
-                self.binding_errors.append("video_frame_extraction_skipped:no_events")
-                return
-            raise FileNotFoundError(f"events.jsonl not found in {session_dir}")
-
-        from conxa_compile.recorder.frame_extractor import extract_frames_for_session
-        # Raises on missing ffmpeg, missing video, missing events, or per-frame failure.
-        extract_frames_for_session(session_dir)
 
     def _compute_event_timestamp_ms(self, action: dict[str, Any]) -> int | None:
         """Convert ISO 8601 action.timestamp to ms offset from video start (None on parse error)."""

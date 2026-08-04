@@ -64,6 +64,13 @@ function _bootLog(level, event, data) {
 // 2-minute-per-attempt default that server.js's post-load, non-blocking leg can afford).
 async function _updateAppLayerBeforeLoad() {
   if (process.env.CONXA_SKIP_SELF_UPDATE === "1") return;
+  // --selfcheck (manifest_manager.js's _selfcheck, used to verify a freshly-downloaded
+  // host exe boots before conxa_runtime activates) must stay inert — a quick, read-only
+  // "does this binary boot" smoke test, not a second update check. Without this, that
+  // spawn would run this whole block too and could, in a rollout-timing race, actually
+  // download and activate an app layer as a side effect of what's supposed to be a
+  // no-op boot check.
+  if (process.argv.includes("--selfcheck")) return;
   try {
     const installId = loadInstallId(envInfo.dataDir);
     const { manifest } = await manifestManager.checkForUpdates({
