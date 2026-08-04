@@ -155,9 +155,9 @@ data/                       Runtime state: sessions/, plugins/, skills/, saas/, 
 .github/workflows/
   build-runtime-host.yml    CI: builds host exe (--no-bytecode), tags host-vX.Y.Z releases
   build-runtime-app.yml     CI: obfuscates disk-resident app layer, tags app-vX.Y.Z releases;
-                            execution gate (gate_replay.js, real skill replay) is currently
-                            disabled in this workflow (see comment above the Zip app layer step) —
-                            re-enable before shipping customer builds; see TODO.md
+                            execution gate (gate_replay.js, real skill replay against the
+                            MIN_HOST exe) runs before the zip/release/publish steps and
+                            fails the build if the app layer can't replay under MIN_HOST
   build-studio.yml          CI: Electron + Python bundle
   promote-release.yml       CI: dev→stable channel promotion, Ed25519 re-signing (see docs/TRD.md §16)
 
@@ -293,7 +293,7 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Runtime two-layer bootstrap | `runtime/bootstrap.js` — min_host check, app-layer load, `.bak` fallback |
 | Host / app update manifests | `conxa-cloud/backend/app/api/updates_routes.py` (manifest_version 2; deps: `conxa-runtime`, `conxa-app`) |
 | Studio sandbox for workflow tests | `conxa-builder/python/conxa_compile/conxa_runtime.py` — stages host exe + app layer under `sandbox/.conxa/` |
-| CI execution gate | `runtime/test/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay, currently **disabled** in `build-runtime-app.yml` pending re-enablement (see `TODO.md`); run it manually before shipping customer builds |
+| CI execution gate | `runtime/test/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay, **active** in both `build-runtime-host.yml` (vs. the freshly built exe) and `build-runtime-app.yml` (vs. the `MIN_HOST` exe). A red app-layer gate usually means `MIN_HOST` is stale, not that the gate is wrong |
 | Frontend screens | `conxa-cloud/frontend/src/` — Dashboard, Plugins, Billing, Team, Settings |
 
 ---

@@ -38,17 +38,22 @@ jobs:
       # Node version for the build environment — used for obfuscation tooling and
       # npm ci. No longer load-bearing for V8 bytecode compatibility; any 24.x works.
       NODE_VERSION: "24"
-      # Must be <= the host_version the SHIPPED host exes actually report. The new
-      # .js app layer requires a host that loads server.js (not server.jsc), so this
-      # must be bumped to the first host release that ships the updated bootstrap.js.
-      # Old hosts skip the new app via this gate and self-update the host first.
+      # The oldest host exe this app layer is promised to run on. Stamped into
+      # version.json, where the runtime's bootstrap enforces it before loading — hosts
+      # below it skip the new app layer and self-update the host first. The execution
+      # gate below replays against exactly this version, so a wrong value fails the
+      # build rather than shipping a false compatibility claim.
       #
-      # host-v1.1.2 is the first host built with --no-bytecode, which fixes the broken
-      # Playwright selector engine (host-v1.1.1 returns 0 elements for every locator).
-      # The execution gate below downloads MIN_HOST and runs a real replay, so MIN_HOST
-      # MUST point at a host that actually resolves elements — i.e. host-v1.1.2 must be
-      # released (build-runtime-host.yml) BEFORE the next app-v* tag is pushed.
-      MIN_HOST:    "host-v1.1.2"
+      # host-v2.0.0 (2026-07-30) is the oldest host that can run the current app layer:
+      #   - versioned component layout (conxa-app/<version>/ + `current` junction,
+      #     runtime/version_manager.js) — hosts before host-v1.2.0 look for a flat
+      #     conxa-app/server.js and abort with "no app layer found";
+      #   - jsonc-parser in _pkg_stubs.js (added 2026-07-21), which the app layer's
+      #     config_edit.js reaches through __hostRequire for MCP host registration —
+      #     first shipped in a host release with host-v2.0.0.
+      # Verified by running runtime/test/gate_replay.js against both: host-v1.1.2 fails
+      # to load the app layer at all, host-v2.0.0 replays to "Done." (2026-08-04).
+      MIN_HOST:    "host-v2.0.0"
 
     steps:
       - name: Checkout
@@ -183,8 +188,54 @@ jobs:
           Write-Output "version.json written"
         shell: pwsh
 
-      # Execution gate (real replay against host exe) is temporarily disabled.
-      # Re-enable before shipping customer builds — see runtime/test/gate_replay.js.
+      - name: Install Chromium for execution gate
+        # Mirrors build-runtime-host.yml's install step exactly. The earlier version of
+        # this gate wrapped the install in actions/cache + `timeout-minutes: 20`; restoring
+        # a cached extraction of thousands of chromium files on a Windows runner (with
+        # Defender scanning each one) pushed past that 20-minute cliff and failed the build,
+        # which is why the gate was disabled on 2026-06-28. The host workflow has run this
+        # plain, uncached install on every host release since without trouble — so no cache,
+        # and no artificial timeout to trip over.
+        working-directory: runtime
+        run: npx playwright install chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
+
+      - name: Validate app layer against host exe (execution gate — real replay)
+        # Download the MIN_HOST exe and run a real, hermetic skill replay against it with the
+        # freshly-staged dist-app/ as the conxa-app layer. This validates the app layer
+        # against the *actual* host binary AND exercises the Playwright selector engine
+        # end-to-end (navigate + click on a local fixture) — an MCP-initialize-only check
+        # would NOT catch a broken selector engine, since every locator returns 0 elements
+        # while init still succeeds. A non-"Done." result fails the build before anything is
+        # zipped or published.
+        #
+        # Gating against MIN_HOST (not the newest host) is deliberate: MIN_HOST is the
+        # compatibility promise stamped into version.json, so this asserts the oldest host
+        # we claim to support can actually run this app layer. A failure here usually means
+        # MIN_HOST needs bumping, not that the gate is wrong.
+        #
+        # NOTE: PLAYWRIGHT_BROWSERS_PATH is intentionally passed here so gate_replay.js
+        # inherits it via ...process.env and the host exe's server.js respects it.
+        working-directory: runtime
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
+        run: |
+          $hostVersion = "$env:MIN_HOST"
+          $exe = "$env:TEMP\gate-host.exe"
+          Write-Output "Downloading host exe: $hostVersion"
+          $exeUrl = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/conxa-runtime.exe"
+          Invoke-WebRequest -Uri $exeUrl -OutFile $exe -UseBasicParsing
+          Write-Output "Running replay gate (app layer = dist-app) against $hostVersion…"
+          node test/gate_replay.js $exe dist-app
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "EXECUTION GATE FAILED: app layer replay did not reach 'Done.' under $hostVersion"
+            exit 1
+          }
+          Write-Output "Execution gate passed: app layer replays cleanly under $hostVersion"
 
       - name: Zip app layer
         working-directory: runtime

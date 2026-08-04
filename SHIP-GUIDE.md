@@ -291,9 +291,11 @@ can actually ship a change in.
    obfuscates, zips, publishes a GitHub Release marked `prerelease`, and posts the manifest to
    the **dev cloud** (`CLOUD_API_URL_DEV`). Production is untouched at this point.
 3. **Test it on dev.** Point a test runtime install at the dev channel, let it self-update via
-   `manifest.json?channel=dev`, and verify it behaves correctly end-to-end. This is where
-   `runtime/test/gate_replay.js` (real skill replay) should run before anything ships — it's
-   currently noted as temporarily disabled in the workflow, so don't skip a manual pass.
+   `manifest.json?channel=dev`, and verify it behaves correctly end-to-end. `runtime/test/gate_replay.js`
+   (real skill replay) already ran in CI against the `MIN_HOST` exe before this tag published —
+   no manual pass needed. If that gate goes red, check `MIN_HOST` in `build-runtime-app.yml`
+   first: it's the compatibility promise stamped into `version.json`, and a stale value fails
+   the replay before it fails a customer.
 4. **Promote to stable** — manually trigger the **Promote Release** workflow
    (`promote-release.yml`, run via `workflow_dispatch` in GitHub → Actions) with:
    - `component`: `conxa_app` (or `conxa_runtime` for a host-layer change)
