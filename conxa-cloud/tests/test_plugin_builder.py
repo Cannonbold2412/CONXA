@@ -19,8 +19,10 @@ from conxa_compile.editor.action_registry import is_supported_action
 from conxa_compile.plugin_builder_saved_skill import (
     _build_workflow_from_saved_skill,
     _is_login_step,
+    _merge_saved_inputs_with_execution_placeholders,
     _normalize_saved_skill_inputs,
     _saved_step_to_execution_step,
+    _upload_input_descriptions,
     strip_login_steps,
 )
 
@@ -991,3 +993,99 @@ class TestSavedSkillJsonBuild:
         claude_md = (tmp_path / "Claude.md").read_text(encoding="utf-8")
         assert "conxa" in claude_md
         assert "npx -y conxa install" not in claude_md
+
+
+# ─────────────────────────────────────────────────
+# Upload steps
+# ─────────────────────────────────────────────────
+
+# bridge.js records a file input's change event as JSON.stringify(files) — file *metadata*,
+# never a path, because browsers only ever expose File.name. That string is truthy, so the old
+# `_action_value_text(step) or "{{file_path}}"` fallback never fired and the metadata blob was
+# emitted as the upload path. setInputFiles would then fail on a nonsense filename and, since
+# `upload` is in RECOVERY_ACTION_TYPES, burn Tier 1-4 recovery healing a selector that was fine.
+RECORDED_FILE_METADATA = json.dumps(
+    [{"name": "kyc_document.pdf", "size": 8421, "type": "application/pdf"}]
+)
+
+
+def _upload_step(value, action="upload_intent"):
+    return {
+        "action": {"action": action, "value": value},
+        "target": {"primary_selector": "#file-upload"},
+    }
+
+
+class TestUploadStepSerialization:
+    """Uploads are always parameterised: the compiled step must carry {{file_path}} so the real
+    path arrives as a runtime input, and so the required-input gate in server.js can enforce it."""
+
+    def test_upload_is_a_supported_action(self):
+        assert is_supported_action("upload") is True
+
+    def test_recorded_file_metadata_becomes_the_file_path_placeholder(self):
+        out = _saved_step_to_execution_step(_upload_step(RECORDED_FILE_METADATA))
+        assert out["type"] == "upload"
+        assert out["value"] == "{{file_path}}"
+        assert "kyc_document.pdf" not in out["value"]
+
+    def test_recorded_metadata_from_an_upload_action_is_also_parameterised(self):
+        out = _saved_step_to_execution_step(_upload_step(RECORDED_FILE_METADATA, action="upload"))
+        assert out["value"] == "{{file_path}}"
+
+    def test_empty_value_becomes_the_file_path_placeholder(self):
+        assert _saved_step_to_execution_step(_upload_step(""))["value"] == "{{file_path}}"
+
+    def test_hand_authored_literal_path_is_preserved(self):
+        # A path typed into Human Edit is a deliberate choice — don't overwrite it.
+        out = _saved_step_to_execution_step(_upload_step("C:/fixed/form.pdf"))
+        assert out["value"] == "C:/fixed/form.pdf"
+
+    def test_hand_authored_custom_placeholder_is_preserved(self):
+        out = _saved_step_to_execution_step(_upload_step("{{invoice_pdf}}"))
+        assert out["value"] == "{{invoice_pdf}}"
+
+    def test_selector_is_carried_through(self):
+        out = _saved_step_to_execution_step(_upload_step(RECORDED_FILE_METADATA))
+        assert out["selector"] == "#file-upload"
+
+
+class TestUploadInputDeclaration:
+    """{{file_path}} must auto-declare a required input, described well enough that an agent
+    calling get_skill_inputs knows a real file on disk is expected."""
+
+    def test_file_path_is_auto_declared_from_the_placeholder(self):
+        steps = [{"type": "upload", "value": "{{file_path}}", "selector": "#file-upload"}]
+        inputs = _merge_saved_inputs_with_execution_placeholders([], steps)
+        assert [i["name"] for i in inputs] == ["file_path"]
+
+    def test_description_names_the_recorded_example_file(self):
+        descriptions = _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])
+        assert descriptions == {"file_path": "Path to the file to upload (e.g. kyc_document.pdf)"}
+
+    def test_description_omits_the_example_when_none_was_recorded(self):
+        descriptions = _upload_input_descriptions([_upload_step("")])
+        assert descriptions == {"file_path": "Path to the file to upload"}
+
+    def test_no_description_without_an_upload_step(self):
+        click = {"action": {"action": "click"}, "target": {"primary_selector": "#go"}}
+        assert _upload_input_descriptions([click]) == {}
+
+    def test_upload_description_reaches_the_declared_input(self):
+        steps = [{"type": "upload", "value": "{{file_path}}", "selector": "#file-upload"}]
+        inputs = _merge_saved_inputs_with_execution_placeholders(
+            [], steps, _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])
+        )
+        assert inputs[0]["description"] == "Path to the file to upload (e.g. kyc_document.pdf)"
+
+    def test_other_placeholders_keep_the_generic_description(self):
+        steps = [
+            {"type": "upload", "value": "{{file_path}}"},
+            {"type": "fill", "value": "{{borrower_name}}"},
+        ]
+        inputs = _merge_saved_inputs_with_execution_placeholders(
+            [], steps, _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])
+        )
+        by_name = {i["name"]: i["description"] for i in inputs}
+        assert by_name["borrower_name"] == "Enter borrower name"
+        assert by_name["file_path"].startswith("Path to the file to upload")

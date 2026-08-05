@@ -722,6 +722,17 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Complexity:** S.
 - **Success criteria:** frame extraction for an N-event session uses N ffmpeg processes instead of 5N, and the 5 frames produced for a sample event are pixel-verified to match the current per-offset `-ss` output within tolerance.
 
+### BUILD-12 — In-Studio file picker during recording (richer alternative to the OS dialog fix)
+- **Category:** Builder
+- **Description:** Fixed 2026-08-06 (see `FIX.md`): the recorder's `page.on("filechooser", ...)` listener was silently intercepting the file dialog with no `set_files()` call, so choosing a file during recording did nothing. The shipped fix removes the listener so Chromium's native OS picker opens instead — correct and sufficient, since recording is always headed (`session.py` `headless=False`) and there's no other viable path today. A richer alternative was considered and explicitly deferred: have the Electron Studio itself supply the file, via the file-picker capability that already exists for the Build Installer page (`electron/main.js`'s `dialog:pick-file` IPC handler, exposed as `window.conxa.pickFile()`). That would let recording capture a real full path (which browsers never expose — `File.name` is basename-only) or a Studio-side "always use this file" convenience.
+- **Why required:** not required — the native-dialog fix is complete on its own. This is upside, not a gap: a richer authoring experience if there's ever appetite for it.
+- **Business value:** small — marginally nicer recording UX; the shipped fix already unblocks recording and executing uploads end to end.
+- **Technical value:** none today; would need real new infrastructure. The Python recorder→Electron renderer channel is currently one-way, event-only (`handlers/protocol.py::_emit_event`); there is no request/response mechanism for the backend to ask the UI a question mid-recording and await an answer. Playwright invokes the `filechooser` listener on the driver thread, and the recording loop (`session.py`, polls a queue non-blockingly) has no way to unblock a synchronous wait there without deadlocking — so this isn't a small addition, it's a new bidirectional IPC channel plus threading work.
+- **Dependencies:** blocked on building that backend↔frontend request/response channel first; nothing else in the recorder currently needs one, so there's no existing plumbing to extend.
+- **Suggested order:** opportunistic, only if in-Studio file selection during recording becomes an explicit ask — the OS dialog is a complete answer for now.
+- **Complexity:** L — the channel/threading work dominates; the actual `pickFile()` call and wiring it into the upload step's recorded value would be small once that exists.
+- **Success criteria:** not applicable until picked up — no user-visible gap exists today for this to close.
+
 ---
 
 ## Final Review Notes (from the audits that produced this file)

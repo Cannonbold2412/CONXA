@@ -795,7 +795,13 @@ const HANDLERS = {
 
   upload: async (page, step, inputs) => {
     const filePath = interpolate(step.value || "", inputs);
-    if (!filePath) return;
+    // Deliberately NOT the best-effort skip used by check/assert: silently not uploading a
+    // document while reporting the step as successful is the worst failure mode this action
+    // has. server.js's required-input gate should already reject a missing file_path, so this
+    // is defence-in-depth for a hand-authored step whose value never resolves.
+    if (!filePath) {
+      throw new Error("upload step has no file path — supply the skill's file_path input");
+    }
 
     await runLocatorStep(page, step, inputs, locator => {
       return locator.setInputFiles(filePath, { timeout: ACTION_TIMEOUT_MS });

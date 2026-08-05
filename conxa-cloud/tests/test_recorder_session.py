@@ -403,3 +403,25 @@ def test_finalize_video_file_renames_webm_without_touching_events(tmp_path) -> N
     assert (session_dir / "recording.webm").read_bytes() == b"video"
     assert not (session_dir / "events.jsonl").exists()
     assert sess.binding_errors == []
+
+
+def test_no_filechooser_listener_is_registered() -> None:
+    """Regression guard for uploads being unrecordable.
+
+    Attaching a Playwright "filechooser" listener switches on interception: the native OS file
+    picker never opens, the user cannot choose a file, the input's change event never fires, and
+    bridge.js therefore never emits upload_intent. Recording is always headed, so the real dialog
+    must be allowed through. Re-adding a listener here silently breaks every upload workflow.
+    """
+    sess = RecordingSession(session_id="no-filechooser")
+    registered: list[str] = []
+
+    class _FakePage:
+        def on(self, event: str, _handler) -> None:
+            registered.append(event)
+
+    sess._attach_page_listeners(_FakePage())
+
+    assert "filechooser" not in registered
+    # The other page-level listeners must still be wired, or this test would pass vacuously.
+    assert {"download", "dialog", "popup", "framenavigated"} <= set(registered)

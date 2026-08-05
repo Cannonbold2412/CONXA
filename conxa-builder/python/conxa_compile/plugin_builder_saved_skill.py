@@ -250,6 +250,42 @@ def _action_value_json(step: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _is_recorded_file_metadata(value: str) -> bool:
+    """True for bridge.js's ``JSON.stringify(files)`` payload on an upload step.
+
+    That payload is file *metadata* (``[{name, size, type}, ...]``), never a path. It is
+    truthy, so it must be recognised explicitly rather than relying on an ``or`` fallback.
+    """
+    if not value.startswith("["):
+        return False
+    try:
+        return isinstance(json.loads(value), list)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _upload_recorded_filename(step: dict[str, Any]) -> str:
+    """Basename of the file picked while recording — documentation only.
+
+    Browsers expose only ``File.name``, never a full path, so this can never be used as an
+    upload target. It is surfaced in the runtime input's description so the agent knows what
+    kind of file the skill expects.
+    """
+    raw = _action_value_text(step).strip()
+    if not _is_recorded_file_metadata(raw):
+        return ""
+    try:
+        parsed = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return ""
+    for item in parsed:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if name:
+                return name
+    return ""
+
+
 def _copy_saved_common(step: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
     _copy_frame(step, out)
     # Final Selector Architecture: the runtime resolves the primary target from
@@ -451,7 +487,15 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
 
     if action in {"upload", "upload_intent"}:
         selector = _step_selector(step)
-        value = _action_value_text(step) or "{{file_path}}"
+        # Uploads are always parameterised. A recording can only ever yield file metadata --
+        # browsers never expose a full path -- so nothing the recorder captured is a valid
+        # upload target on the machine that will replay the skill. The real path arrives as a
+        # runtime input; {{file_path}} is auto-declared and gated by
+        # _merge_saved_inputs_with_execution_placeholders below. A literal path or a custom
+        # placeholder typed by hand in Human Edit is preserved as authored.
+        value = _action_value_text(step).strip()
+        if not value or _is_recorded_file_metadata(value):
+            value = "{{file_path}}"
         out = {"type": "upload", "value": value}
         if selector:
             out["selector"] = selector
@@ -516,12 +560,29 @@ def _placeholder_names_from_payload(payload: Any) -> list[str]:
     return names
 
 
+def _upload_input_descriptions(source_steps: list[dict[str, Any]]) -> dict[str, str]:
+    """Describe the auto-declared ``file_path`` input using the recorded example filename.
+
+    Without this the generic derivation yields "Enter file path", which does not tell an agent
+    calling ``get_skill_inputs`` that a real file on disk is expected.
+    """
+    for step in source_steps:
+        if _step_action_name(step) not in {"upload", "upload_intent"}:
+            continue
+        example = _upload_recorded_filename(step)
+        hint = f" (e.g. {example})" if example else ""
+        return {"file_path": f"Path to the file to upload{hint}"}
+    return {}
+
+
 def _merge_saved_inputs_with_execution_placeholders(
     declared_inputs: list[Any],
     execution_steps: list[dict[str, Any]],
+    descriptions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     inputs = _normalize_saved_skill_inputs(declared_inputs)
     seen = {str(item.get("name") or "") for item in inputs}
+    overrides = descriptions or {}
     for name in _placeholder_names_from_payload(execution_steps):
         if name in seen:
             continue
@@ -530,7 +591,7 @@ def _merge_saved_inputs_with_execution_placeholders(
             {
                 "name": name,
                 "type": "string",
-                "description": f"Enter {name.replace('_', ' ')}",
+                "description": overrides.get(name) or f"Enter {name.replace('_', ' ')}",
             }
         )
     return inputs
@@ -849,6 +910,7 @@ def _build_workflow_from_saved_skill(
     inputs = _merge_saved_inputs_with_execution_placeholders(
         list(saved_skill.get("inputs") or []),
         execution_steps,
+        _upload_input_descriptions(source_steps),
     )
     skill_dir = bundle_root / "skills" / workflow_slug
     if skill_dir.exists():

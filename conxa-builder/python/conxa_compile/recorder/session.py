@@ -820,12 +820,6 @@ class RecordingSession:
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"popup_event_error: {exc!s}")
 
-    def _on_file_chooser(self, _fc: Any) -> None:
-        try:
-            self._enqueue_synthetic("file_chooser_opened", "")
-        except Exception as exc:  # noqa: BLE001
-            self.binding_errors.append(f"file_chooser_event_error: {exc!s}")
-
     def _on_page_navigated(self, page: Any, frame: Any) -> None:
         try:
             parent = getattr(frame, "parent_frame", None)
@@ -841,7 +835,11 @@ class RecordingSession:
         page.on("download", self._on_download)
         page.on("dialog", self._on_dialog)
         page.on("popup", self._on_popup)
-        page.on("filechooser", self._on_file_chooser)
+        # No "filechooser" listener by design: attaching one makes Playwright intercept the
+        # dialog, so the native OS picker never opens and the user cannot choose a file. The
+        # input's change event then never fires and bridge.js never emits upload_intent, which
+        # made uploads impossible to record. Recording is always headed (headless=False below),
+        # so letting the real dialog through is safe.
         page.on("framenavigated", lambda frame: self._on_page_navigated(page, frame))
         if not self.auth_mode:
             page.on("frameattached", self._on_frame_attached)
