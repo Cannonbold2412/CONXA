@@ -4,6 +4,10 @@
 
 ---
 
+## Fixed an upload failing when the file's folder name has spaces in it — 2026-08-06
+A document-upload workflow failed with a confusing error after the file it was trying to send was described using a path copied from Windows ("Copy as path"). Windows wraps that copied text in quotation marks whenever the folder name contains spaces — which is very common, since folder names like "Downloads" often have longer, spaced-out names inside them. The automation was using that text exactly as given, quotation marks and all, so it went looking for a folder that doesn't exist instead of the real file. Pasted file locations now have those quotation marks removed automatically before the upload runs, the same way a person would just ignore them when reading the path.
+ — 2026-08-06
+
 ## Fixed a finished upload workflow freezing the browser instead of uploading the file — 2026-08-06
 Right after fixing the file picker (below), a real test run of a document-upload workflow got stuck: the browser opened a file-picker window mid-run and just sat there, since nothing runs the automation is able to click buttons inside a picker window — only a person can do that. The cause: the moment you originally clicked "Choose File" while recording was correctly captured, but the finished workflow was still replaying that click as if it were a real, needed step. It isn't — the click was only ever needed so a human could pick the file in the first place; the actual upload step that follows already knows how to attach the file directly, with no window needed at all. That leftover click is now automatically dropped when the workflow is built, so replaying it goes straight to attaching the file, and the picker window never opens during a run. We also made every upload step ask for its file the same consistent way ("file_path"), instead of guessing a name from whatever text happened to be near the upload button on that particular page.
  — 2026-08-06

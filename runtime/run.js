@@ -794,7 +794,14 @@ const HANDLERS = {
   },
 
   upload: async (page, step, inputs) => {
-    const filePath = interpolate(step.value || "", inputs);
+    let filePath = interpolate(step.value || "", inputs).trim();
+    // Windows Explorer's "Copy as path" wraps any path containing spaces in double quotes.
+    // Node only recognizes a bare drive letter ("C:\...") as absolute, so a quoted path is
+    // silently treated as relative and joined onto the runtime's own working directory instead
+    // of erroring clearly. Strip one matching pair before it ever reaches setInputFiles.
+    if (filePath.length >= 2 && filePath.startsWith('"') && filePath.endsWith('"')) {
+      filePath = filePath.slice(1, -1).trim();
+    }
     // Deliberately NOT the best-effort skip used by check/assert: silently not uploading a
     // document while reporting the step as successful is the worst failure mode this action
     // has. server.js's required-input gate should already reject a missing file_path, so this

@@ -64,3 +64,51 @@ test("file_path input interpolates into the upload path", () => {
 test("a hand-authored literal path is passed through unchanged", () => {
   assert.strictEqual(interpolate("C:/fixed/form.pdf", {}), "C:/fixed/form.pdf");
 });
+
+// Regression: Windows Explorer's "Copy as path" wraps any path containing spaces in double
+// quotes. Before the fix, that quoted string was passed straight to setInputFiles; Node only
+// recognizes a bare drive letter as absolute, so the quoted path was treated as relative and
+// silently joined onto the runtime's own working directory, failing with a garbled ENOENT deep
+// inside the runtime's own install path instead of a clear error about the file itself.
+function mockUploadPage(sel) {
+  const calls = [];
+  return {
+    page: {
+      locator: (s) => {
+        assert.strictEqual(s, sel);
+        return {
+          first: () => ({
+            setInputFiles: async (path, opts) => { calls.push(path); },
+          }),
+        };
+      },
+    },
+    calls,
+  };
+}
+
+test("a quoted path from Windows 'Copy as path' is unwrapped before use", async () => {
+  const { page, calls } = mockUploadPage("#file-upload");
+  const step = {
+    type: "upload",
+    value: "{{file_path}}",
+    _explicit_selector: "#file-upload",
+  };
+  const raw = 'C:\\Users\\Lenovo\\Downloads\\WhatsApp Unknown 2026-08-06\\photo.jpeg';
+  await executeStep(page, step, { file_path: `"${raw}"` });
+  assert.deepStrictEqual(calls, [raw]);
+});
+
+test("a path with incidental leading/trailing whitespace is trimmed", async () => {
+  const { page, calls } = mockUploadPage("#file-upload");
+  const step = { type: "upload", value: "{{file_path}}", _explicit_selector: "#file-upload" };
+  await executeStep(page, step, { file_path: "  C:/docs/kyc.pdf  " });
+  assert.deepStrictEqual(calls, ["C:/docs/kyc.pdf"]);
+});
+
+test("an unmatched leading quote (no trailing quote) is left alone rather than mangled", async () => {
+  const { page, calls } = mockUploadPage("#file-upload");
+  const step = { type: "upload", value: "{{file_path}}", _explicit_selector: "#file-upload" };
+  await executeStep(page, step, { file_path: '"C:/docs/kyc.pdf' });
+  assert.deepStrictEqual(calls, ['"C:/docs/kyc.pdf']);
+});
