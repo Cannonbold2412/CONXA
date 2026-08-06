@@ -733,6 +733,17 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Complexity:** L — the channel/threading work dominates; the actual `pickFile()` call and wiring it into the upload step's recorded value would be small once that exists.
 - **Success criteria:** not applicable until picked up — no user-visible gap exists today for this to close.
 
+### BUILD-13 — A cancelled file-picker click, recorded with no following upload, can still hang a run
+- **Category:** Builder
+- **Description:** Found 2026-08-06 while fixing the upload-workflow hang documented in `FIX.md` (compiler now drops a recorded click on a file input when it's immediately followed by the `upload_intent`/`upload` step that supersedes it — `step_anchors.py::clean_steps`). That fix is a merge: it requires the upload to actually be present in the recording to know the click was superseded. If a user opens the native file picker while recording and cancels it without choosing a file, the browser's `change` event never fires, `bridge.js` never emits `upload_intent`, and the lone `click` on the file input survives compilation untouched — including past `is_editable_target`'s file-input exclusion (also shipped 2026-08-06), which stops it being mislabeled `focus` but does not remove it. A literal `click` step on a file input still opens an undismissable native OS dialog at runtime, with nothing to drive it, hanging the run exactly as the original bug did.
+- **Why required:** not urgent — it only affects a recording where the user opened and then abandoned the file picker, a deliberately incomplete recording action a user would normally redo. But it's a real, reachable hang with no current guard, in the same class of bug as the one just fixed.
+- **Business value:** low-moderate — a confusing, silent hang during recording review or a customer's first run is a bad experience even if the recording that caused it was itself accidental.
+- **Technical value:** two options, both deliberately out of scope for the 2026-08-06 fix (which was scoped compiler-only, no runtime change): (1) compiler-side — in `clean_steps`, drop any `click`/`focus` step on a `semantic.input_type == "file"` target that has no following `upload`/`upload_intent` anywhere later in the same recording, since such a click can never be a valid runtime step on its own; (2) runtime-side — a `page.on("filechooser", ...)` guard in `browser.js` that auto-cancels any dialog a stray click opens during a run, as defense-in-depth against this and any structurally similar case (e.g. a custom "Attach" button that wraps a hidden file input in a way the compiler can't statically detect). Option 2 is more robust (catches cases the compiler can't reason about at all) but was explicitly scoped out of the immediate fix per user direction.
+- **Dependencies:** none blocking; independent of BUILD-12.
+- **Suggested order:** opportunistic — pick up if this hang is ever actually hit in practice, or bundled with any other runtime `browser.js` work.
+- **Complexity:** S (compiler-side drop) or S (runtime-side guard) — either alone is small; doing both is still small.
+- **Success criteria:** a recording containing a cancelled file-picker click (a lone click on a file input, no following upload) either never reaches the compiled skill, or is safely absorbed at runtime without hanging.
+
 ---
 
 ## Final Review Notes (from the audits that produced this file)

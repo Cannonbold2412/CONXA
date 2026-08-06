@@ -19,7 +19,16 @@ def action_name(step: Step) -> str:
 def is_editable_target(step: Step) -> bool:
     target = step.get("target") or {}
     tag = str(target.get("tag") or "").lower()
-    return tag in {"input", "textarea", "select"}
+    if tag != "input":
+        return tag in {"textarea", "select"}
+    # A file input isn't a text-entry field: clicking it invokes a native OS picker, not caret
+    # placement. Treating it as "editable" makes the click->focus rewrite below turn a recorded
+    # click into a `focus` step, and runtime's focus handler clicks before it focuses -- reopening
+    # a dialog nothing can drive during an unattended run.
+    semantic = step.get("semantic") or {}
+    if str(semantic.get("input_type") or "").lower() == "file":
+        return False
+    return True
 
 
 def is_editable_field_click(step: Step) -> bool:

@@ -260,8 +260,11 @@ def clean_steps(steps: list[Step], policy: dict[str, Any] | None = None) -> list
                         prev["action"] = prev_payload
                 continue
 
-        # Merge noisy click/focus + type on same field.
-        if action == "type" and cleaned and cleaned[-1] is not None:
+        # Merge noisy click/focus + the field's real value-setting action. An upload_intent
+        # (or an already-normalized upload) on a file input supersedes the picker-invoking click
+        # exactly the way `type` supersedes a text field's prep click — replay must never see
+        # that click, since clicking a file input reopens an OS dialog nothing can drive.
+        if action in {"type", "upload", "upload_intent"} and cleaned and cleaned[-1] is not None:
             prev = cleaned[-1]
             if prev is not None and action_name(prev) in {"click", "focus"} and _target_key(prev) == key:
                 cleaned.pop()

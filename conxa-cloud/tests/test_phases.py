@@ -816,6 +816,101 @@ class PhaseTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["action"]["action"], "type")
 
+    def test_clean_steps_drops_prep_click_before_upload_intent(self) -> None:
+        """Regression: a recorded click on a file input followed by upload_intent must not
+        survive into the compiled output. If it does, the compiler's click->focus rewrite turns
+        it into a `focus` step, and runtime's focus handler clicks before it focuses -- reopening
+        an OS file dialog nothing can drive during an unattended run. This is the exact 3-event
+        sequence (click, upload_intent, click) that produced a real hung skill."""
+        from conxa_compile.compiler.step_anchors import clean_steps
+
+        def _file_step(action: str, value=None) -> dict:
+            return {
+                "action": {"action": action, "value": value},
+                "target": {"tag": "input", "id": "file-upload", "name": "file", "label_text": "File Uploader"},
+                "selectors": {"css": "#file-upload", "aria": '[role="textbox"][name="file"]'},
+                "semantic": {"role": "textbox", "input_type": "file"},
+                "context": {"form_context": "form"},
+                "page": {"url": "https://example.com/upload", "title": "Upload"},
+                "timing": {"timeout": 5000},
+            }
+
+        submit_click = {
+            "action": {"action": "click"},
+            "target": {"tag": "input", "id": "file-submit", "type": "submit"},
+            "selectors": {"css": "#file-submit"},
+            "semantic": {"role": "button"},
+            "context": {},
+            "page": {"url": "https://example.com/upload", "title": "Upload"},
+            "timing": {"timeout": 5000},
+        }
+        seq = [
+            _file_step("click"),
+            _file_step("upload_intent", value='[{"name":"kyc.pdf","size":1,"type":"application/pdf"}]'),
+            submit_click,
+        ]
+        out = clean_steps(seq, {})
+        actions = [(s.get("action") or {}).get("action") for s in out]
+        self.assertEqual(actions, ["upload_intent", "click"])
+
+    def test_is_editable_target_excludes_file_inputs(self) -> None:
+        """A file input isn't a text-entry field -- clicking it invokes a native OS picker, not
+        caret placement. Treating it as editable made the click->focus rewrite fire, and
+        runtime's focus handler clicks before it focuses, reopening an undismissable dialog."""
+        from conxa_compile.compiler.action_semantics import is_editable_target
+
+        file_input = {"target": {"tag": "input"}, "semantic": {"input_type": "file"}}
+        self.assertFalse(is_editable_target(file_input))
+
+        text_input = {"target": {"tag": "input"}, "semantic": {"input_type": "text"}}
+        self.assertTrue(is_editable_target(text_input))
+
+        untyped_input = {"target": {"tag": "input"}}
+        self.assertTrue(is_editable_target(untyped_input))
+
+        self.assertTrue(is_editable_target({"target": {"tag": "textarea"}}))
+        self.assertTrue(is_editable_target({"target": {"tag": "select"}}))
+        self.assertFalse(is_editable_target({"target": {"tag": "button"}}))
+
+    def test_normalize_prep_click_to_focus_leaves_file_input_click_alone(self) -> None:
+        """With is_editable_target excluding file inputs, a lone click on one (e.g. a recorded
+        picker that was opened then cancelled, leaving no upload_intent to merge against) is no
+        longer relabeled `focus` -- which would make runtime's click-first focus handler open an
+        undismissable OS dialog. It stays a literal `click`; see TODO.md for the residual risk
+        that a lone click on a file input is still not runtime-safe on its own."""
+        from conxa_compile.compiler.step_anchors import clean_steps
+
+        click_only = {
+            "action": {"action": "click"},
+            "target": {"tag": "input", "id": "file-upload", "name": "file"},
+            "selectors": {"css": "#file-upload"},
+            "semantic": {"role": "textbox", "input_type": "file"},
+            "context": {},
+            "page": {"url": "https://example.com/upload", "title": "Upload"},
+            "timing": {"timeout": 5000},
+        }
+        out = clean_steps([click_only], {})
+        self.assertEqual(out[0]["action"]["action"], "click")
+
+    def test_derive_input_binding_always_names_upload_file_path(self) -> None:
+        """Without this, the binding name is guessed from whatever label text sits near the file
+        input ("File Uploader", "Attach document", "Upload CSV", ...), so every upload skill asks
+        for a differently-named input for the same concept."""
+        from conxa_compile.compiler.input_binding import derive_input_binding
+
+        ev = {
+            "action": {"action": "upload_intent", "value": '[{"name":"kyc.pdf","size":1,"type":"application/pdf"}]'},
+            "target": {"label_text": "File Uploader", "aria_label": "Upload CSV", "placeholder": "Choose a file"},
+            "semantic": {"input_type": "file"},
+        }
+        value, binding = derive_input_binding(ev, {})
+        self.assertEqual((value, binding), ("{{file_path}}", "file_path"))
+
+        # Same for a step already normalized to the "upload" action name (post-compile shape).
+        ev2 = {**ev, "action": {"action": "upload", "value": None}}
+        value2, binding2 = derive_input_binding(ev2, {})
+        self.assertEqual((value2, binding2), ("{{file_path}}", "file_path"))
+
     def test_pipeline_drops_zero_bbox_hover_events(self) -> None:
         from conxa_compile.pipeline.run import _drop_non_actionable_hover_events
 

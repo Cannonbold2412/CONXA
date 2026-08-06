@@ -112,6 +112,12 @@ def derive_input_binding(
             return key_name, None
         return raw_value, None
 
+    # Uploads always bind to file_path, never a label-derived name (the label/aria text on the
+    # picker element varies per site -- "File Uploader", "Attach document", "Upload CSV" -- which
+    # would give every upload skill a differently named input for the same concept).
+    if action_type in {"upload", "upload_intent"}:
+        return "{{file_path}}", "file_path"
+
     if raw_value is None:
         return None, None
 

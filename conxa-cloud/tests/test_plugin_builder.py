@@ -1089,3 +1089,20 @@ class TestUploadInputDeclaration:
         by_name = {i["name"]: i["description"] for i in inputs}
         assert by_name["borrower_name"] == "Enter borrower name"
         assert by_name["file_path"].startswith("Path to the file to upload")
+
+    def test_override_replaces_an_already_declared_generic_description(self):
+        # The primary record->compile path (compiler/build.py) declares file_path itself, with a
+        # generic humanized label ("File Path"), before this function ever runs -- so the
+        # "not yet seen" branch never fires for it. The override must still win.
+        declared = [{"id": "file_path", "label": "File Path"}]
+        steps = [{"type": "upload", "value": "{{file_path}}", "selector": "#file-upload"}]
+        inputs = _merge_saved_inputs_with_execution_placeholders(
+            declared, steps, _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])
+        )
+        assert len(inputs) == 1
+        assert inputs[0]["description"] == "Path to the file to upload (e.g. kyc_document.pdf)"
+
+    def test_no_override_leaves_other_declared_descriptions_untouched(self):
+        declared = [{"id": "borrower_name", "label": "Borrower Name"}]
+        inputs = _merge_saved_inputs_with_execution_placeholders(declared, [], {})
+        assert inputs[0]["description"] == "Borrower Name"

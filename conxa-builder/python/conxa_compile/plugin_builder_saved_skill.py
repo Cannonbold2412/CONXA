@@ -583,6 +583,14 @@ def _merge_saved_inputs_with_execution_placeholders(
     inputs = _normalize_saved_skill_inputs(declared_inputs)
     seen = {str(item.get("name") or "") for item in inputs}
     overrides = descriptions or {}
+    # The primary record->compile path (compiler/build.py) already declares file_path with a
+    # generic humanized label ("File Path") before this function ever sees it, so the "not yet
+    # seen" branch below never fires for it. Overwrite it here too, since the upload-derived
+    # description is always more specific than a generic label-cased binding name.
+    for item in inputs:
+        override = overrides.get(str(item.get("name") or ""))
+        if override:
+            item["description"] = override
     for name in _placeholder_names_from_payload(execution_steps):
         if name in seen:
             continue
