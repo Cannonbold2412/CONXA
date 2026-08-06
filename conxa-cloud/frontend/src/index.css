@@ -36,11 +36,39 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 14%);
   --ring: oklch(0.62 0.02 240);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  /* Chart palette — deliberately separate from the status palette above. A series
+     painted emerald reads as "healthy" even when it only means "workflow 4", so
+     categorical identity never borrows a status hue.
+
+     Kept as hex because these are the exact values checked by the dataviz palette
+     validator (dark mode, surface #0b0f14). Re-run it before changing any of them:
+     all four pass lightness band, chroma floor, all-pairs CVD separation,
+     normal-vision separation, and 3:1 contrast. Six hues do NOT survive the
+     all-pairs check on this surface — that's why the 5th slot is "Other", not a
+     generated hue. */
+  --chart-1: #0891b2;
+  --chart-2: #8b5cf6;
+  --chart-3: #d97706;
+  --chart-4: #ec4899;
+  --chart-5: #64748b; /* "Other" — the overflow bucket, never a 5th identity */
+
+  /* Sequential ramp for the recovery-tier ladder. One hue, brightness carries
+     escalation: Tier 1 recedes, Tier 4 is the one that costs model tokens and
+     should catch the eye. Brightest step is the brand accent, so the ramp reads as
+     the product's own signal rather than a second colour system. */
+  --tier-1: #164e63;
+  --tier-2: #0e7490;
+  --tier-3: #06b6d4;
+  --tier-4: #22d3ee;
+
+  /* Sequential ramp for heatmap density. Monotonic in OKLCH lightness so a darker
+     cell is always a smaller number — on a near-black canvas "more" has to mean
+     brighter, or the busiest cells disappear into the background. */
+  --heat-0: #0f1b24;
+  --heat-1: #134152;
+  --heat-2: #0e7490;
+  --heat-3: #06b6d4;
+  --heat-4: #67e8f9;
   --radius: 0.625rem;
   --sidebar: oklch(0.14 0.01 285);
   --sidebar-foreground: oklch(0.96 0 0);

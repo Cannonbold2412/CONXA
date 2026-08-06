@@ -260,8 +260,11 @@ def _date_key(epoch_ms: int) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(epoch_ms / 1000))
 
 
+_RANGE_DAYS = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
+
+
 def _range_days(value: str) -> int:
-    return 30 if str(value or "").lower() == "30d" else 7
+    return _RANGE_DAYS.get(str(value or "").lower().strip(), 7)
 
 
 def _visible_runtime_registrations(principal: Principal) -> list[dict[str, Any]]:
@@ -527,7 +530,17 @@ def _assertion_health_by_step(records: list[dict[str, Any]]) -> list[dict[str, A
     return rows[:12]
 
 
-def _dashboard_metrics(principal: Principal, range_value: str) -> dict[str, Any]:
+def _dashboard_metrics(
+    principal: Principal,
+    range_value: str,
+    records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Adoption, reliability, and recovery aggregates for one range.
+
+    ``records`` lets a caller that has already run ``_visible_run_records`` pass the scan in
+    rather than paying for a second one — see ``tracking_analytics.dashboard``, which composes
+    this with the operations analytics into a single response.
+    """
     days = _range_days(range_value)
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - (days * _DAY_MS)
@@ -546,7 +559,7 @@ def _dashboard_metrics(principal: Principal, range_value: str) -> dict[str, Any]
         and (reg.get("install_id") or reg.get("company") or reg.get("platform"))
     }
 
-    all_records = _visible_run_records(principal)
+    all_records = _visible_run_records(principal) if records is None else records
     range_records = [record for record in all_records if _record_time_ms(record) >= start_ms]
     last_24h_records = [record for record in all_records if _record_time_ms(record) >= last_24h_ms]
     completed_records = [r for r in range_records if (r.get("summary") or {}).get("status") in {"ok", "fail"}]

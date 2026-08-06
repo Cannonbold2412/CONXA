@@ -1,21 +1,22 @@
 import type { Metadata } from 'next'
 import { Hero } from '@/components/marketing/hero/Hero'
-import { TrustedWorkflows } from '@/components/marketing/sections/TrustedWorkflows'
-import { UseCases } from '@/components/marketing/sections/UseCases'
-import { ValueGrid } from '@/components/marketing/value/ValueGrid'
-import { Pipeline } from '@/components/marketing/sections/Pipeline'
-import { RecoveryLayers } from '@/components/marketing/sections/RecoveryLayers'
-import { ObservableRuntime } from '@/components/marketing/sections/ObservableRuntime'
-import { AnalyticsDashboard } from '@/components/marketing/sections/AnalyticsDashboard'
-import { InternalEnterprise } from '@/components/marketing/sections/InternalEnterprise'
-import { Reliability } from '@/components/marketing/sections/Reliability'
-import { Cta } from '@/components/marketing/sections/Cta'
+import { Problem } from '@/components/marketing/sections/Problem'
+import { OldVsNew } from '@/components/marketing/sections/OldVsNew'
+import { HowItWorks } from '@/components/marketing/sections/HowItWorks'
+import { Examples } from '@/components/marketing/sections/Examples'
+import { WhyAiNeedsIt } from '@/components/marketing/sections/WhyAiNeedsIt'
+import { Outcomes } from '@/components/marketing/sections/Outcomes'
+import { DemoStory } from '@/components/marketing/sections/DemoStory'
+import { Architecture } from '@/components/marketing/sections/Architecture'
+import { Security } from '@/components/marketing/sections/Security'
+import { Faq } from '@/components/marketing/sections/Faq'
+import { FinalCta } from '@/components/marketing/sections/FinalCta'
 import { createPublicPageMetadata } from '@/lib/siteMetadata'
 
 export const metadata: Metadata = createPublicPageMetadata({
   title: 'CONXA',
   description:
-    'Conxa turns recorded browser workflows into local MCP skills for Claude Desktop automation and reliable software operation.',
+    'Show AI how to use your software once. Conxa turns one demonstration into a reliable, self-healing skill your AI can run — locally, on any web app, no API needed.',
   path: '/',
 })
 
@@ -23,16 +24,17 @@ export default function MarketingPage() {
   return (
     <>
       <Hero />
-      <TrustedWorkflows />
-      <UseCases />
-      <ValueGrid />
-      <Pipeline />
-      <RecoveryLayers />
-      <ObservableRuntime />
-      <AnalyticsDashboard />
-      <InternalEnterprise />
-      <Reliability />
-      <Cta />
+      <Problem />
+      <OldVsNew />
+      <HowItWorks />
+      <Examples />
+      <WhyAiNeedsIt />
+      <Outcomes />
+      <DemoStory />
+      <Architecture />
+      <Security />
+      <Faq />
+      <FinalCta />
     </>
   )
 }

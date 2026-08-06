@@ -126,6 +126,18 @@ A near-monochrome dark canvas with a single accent gradient held in reserve.
 - **Body** (400, `clamp(1rem, 1.2vw, 1.125rem)`, line-height 1.625): Subheadlines and card copy, in Fog Gray. Cap prose measure at 65–75ch even though most instances here are short (2xl max-width containers already keep this in range).
 - **Label** (500, 0.75rem, tracking 0.1em, uppercase): Eyebrow badges and the smallest meta text ("scroll" hint). The only place uppercase tracking is used — see §6 for its status as a Don't for new work.
 
+### Product UI scale (authenticated dashboard)
+
+The scale above is the **brand** scale — fluid `clamp()` sizes for the marketing site, where a headline should fill the viewport. The authenticated dashboard is the **product** register and uses a **fixed** scale instead: a fluid heading that shrinks inside a sidebar looks broken, not responsive, and product surfaces carry far more text roles per screen, so the steps sit closer together.
+
+- **Page title** (600, 1.125rem / `text-lg`, 1rem below `sm`): `PageHeader`'s title. One per screen.
+- **Section title** (600, 0.875rem / `text-sm`): Card and panel headers.
+- **Body / data** (400, 0.875rem / `text-sm`): Table cells, list rows, descriptions.
+- **Metric value** (600, 1.25–1.875rem, `tabular-nums`): KPI numbers. Always tabular so digits don't jitter between refreshes.
+- **Meta** (400–500, 0.6875rem / `text-[11px]`): Captions, cell sublabels, axis ticks, legend text, tooltip rows. This is the dashboard's densest step and the floor — nothing goes below it. Never used for prose, only for labels attached to a value.
+
+`text-[11px]` is a documented step, not an ad-hoc value: it is the established meta size across the dashboard (`DashboardPage.tsx`, `AppChrome.tsx`) and the size chart chrome is designed at in `components/viz/chartTheme.ts`.
+
 ### Named Rules
 **The One-Family Rule.** Every text role uses Geist Variable. A second typeface — serif, mono, or a different sans — is a signal this system doesn't currently make; don't introduce one without a deliberate reason tied to a specific new surface (e.g. a code sample block).
 

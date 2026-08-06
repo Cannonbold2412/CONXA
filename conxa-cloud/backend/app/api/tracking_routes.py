@@ -18,11 +18,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from conxa_core.db import db_append, db_get, db_list_kv
 from app.api.deps import current_principal
 from app.api.product_ownership import validate_installer_version
+from app.services.rbac import require_admin
 from app.services.saas import Principal
 from app.services.tracking import (
     _batches_for_principal,
     _cap_events,
-    _dashboard_metrics,
     _drift_review_queue,
     _pre_exec_drift_queue,
     _run_summary,
@@ -31,6 +31,7 @@ from app.services.tracking import (
     _verify_token,
     _visible_run_records,
 )
+from app.services import tracking_analytics
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
 public_router = APIRouter(prefix="/api/tracking", tags=["tracking"])
@@ -118,8 +119,52 @@ def tracking_dashboard(
     range: str = "7d",
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    """Return workspace-scoped adoption, reliability, and recovery aggregates."""
-    return _dashboard_metrics(principal, range)
+    """Return the full operations payload: adoption, reliability, recovery, health, ROI, insights.
+
+    Accepts ``24h``, ``7d``, ``30d``, ``90d``; anything else falls back to ``7d``.
+    """
+    return tracking_analytics.dashboard(principal, range)
+
+
+@router.get("/activity")
+def tracking_activity(
+    limit: int = 50,
+    before: int | None = None,
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Return recent runs across every visible company for the live activity feed."""
+    return tracking_analytics.activity_feed(principal, limit=limit, before=before)
+
+
+@router.get("/roi-assumptions")
+def get_roi_assumptions(
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Return the workspace's ROI assumptions, defaulted where unset."""
+    return tracking_analytics.read_assumptions(principal.workspace_id)
+
+
+@router.put("/roi-assumptions")
+def put_roi_assumptions(
+    payload: dict[str, Any],
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Update the workspace's ROI assumptions. Admin only — this drives a reported figure."""
+    require_admin(principal)
+    return tracking_analytics.write_assumptions(
+        principal.workspace_id, payload, user_id=principal.user_id
+    )
+
+
+@router.get("/workflows/{company}/{slug}")
+def tracking_workflow_detail(
+    company: str,
+    slug: str,
+    range: str = "7d",
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Return step-level analytics for a single skill."""
+    return tracking_analytics.workflow_detail(principal, company, slug, range)
 
 
 @router.get("/drift")
@@ -191,6 +236,7 @@ def get_run_timeline(
     events.sort(key=lambda e: e.get("ts", 0))
 
     meta = batches[-1] if batches else {}
+    summary = _run_summary(run_id, batches)
     return {
         "run_id":      run_id,
         "company":     company,
@@ -201,4 +247,10 @@ def get_run_timeline(
         "wid":         meta.get("wid", ""),
         "workspace_id": meta.get("workspace_id", ""),
         "timeline":    events,
+        "summary":     summary,
+        # Step-by-step outcome, derived server-side so the run view and the dashboard
+        # aggregates classify recoveries the same way.
+        "steps": tracking_analytics.run_step_flow(
+            {"company": company, "summary": summary, "events": events}
+        ),
     }

@@ -62,7 +62,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P1 — High Value, Do Soon (14 items)
+## P1 — High Value, Do Soon (15 items)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -96,6 +96,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** high value — sequence alongside EXEC-2, since both work from the same underlying drift-detection signal.
 - **Complexity:** L — the dashboard/re-record UX is moderate; the "skill CI" integration (a CLI tool the vendor's own CI calls) is a new, self-contained deliverable.
 - **Success criteria:** a vendor can see per-skill health and drift status in the dashboard; a `conxa test` CLI step exists that a vendor can wire into their own build pipeline and that fails the build when a staging-environment change would break a published skill.
+- **Partial progress (2026-08-07):** the *health-dashboard half* of the first success criterion is done — the operations-dashboard redesign ships per-skill rollups with success rate, period-over-period delta, p50/p95 duration and a per-version breakdown (`/dashboard/workflows`), a step-level drill-down, and drift status on `/dashboard/healing`. Still open: the fast diff-based re-record/republish flow and the `conxa test` skill-CI integration, which are the differentiated parts of this item.
 
 ### DOC-1 — Keep the 2026-07 documentation audit's fixes from re-drifting
 - **Category:** Documentation & Process
@@ -212,6 +213,18 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** can proceed independently of BUILD-1, but is more natural once a CIR-based content hash exists.
 - **Complexity:** L — signing key management, a per-pack Merkle manifest format, and updating both the publish flow and the runtime's verification path.
 - **Success criteria:** a published skill pack carries a publisher signature the runtime verifies before installing, independent of (in addition to) the existing bearer sync-token auth.
+
+### CLOUD-2 — Materialize dashboard aggregates instead of re-scanning every run per request
+- **Category:** Cloud / Performance
+- **Description:** `app.services.tracking._visible_run_records` loads **every** run's full event list out of KV on every dashboard request, and every aggregate is derived from that list in-process. The 2026-08-07 operations-dashboard redesign was built to pay this cost exactly once per request (`tracking_analytics.dashboard` performs the single scan and threads the records into `_dashboard_metrics` via its `records` parameter), so it did not regress today's latency — but the cost is O(all telemetry ever ingested) and grows without bound. The fix is a daily rollup written at ingest time (or on a schedule) that the dashboard reads instead, falling back to the live scan for the current partial day.
+- **Why required:** the redesign puts far more on the dashboard than the old page did, and the whole surface is now the post-login landing page, so this scan runs on every session. At a few thousand runs it is fine; at a few hundred thousand it becomes the slowest thing in the product, on the screen customers see first.
+- **Explicitly not the fix:** a short-TTL in-process memo over `(workspace_id, range)`. It was considered and rejected — the dashboard's Refresh control invalidates the query and refetches, so a TTL cache would hand back byte-identical data and make an explicit user action silently do nothing. Any cache here has to be invalidated by ingest, not by a timer, or bypassed on explicit refresh.
+- **Business value:** keeps the first screen after login fast as customer run volume grows, which is precisely when the dashboard matters most.
+- **Technical value:** removes the only unbounded-cost read path in the cloud; also makes longer ranges (90d, and eventually year-over-year) viable, which the current scan makes progressively more expensive.
+- **Dependencies:** none. Benefits from EXEC-9's richer events landing first so the rollup schema is designed once.
+- **Suggested order:** before the first customer with sustained daily run volume; not urgent at pilot scale.
+- **Complexity:** M — rollup table/namespace, write path at ingest, read path with partial-day fallback, and a backfill for existing telemetry.
+- **Success criteria:** dashboard response time is flat with respect to total ingested runs; the live scan is used only for the current day's partial bucket; Refresh still returns genuinely fresh data.
 
 ---
 

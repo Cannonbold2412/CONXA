@@ -237,7 +237,7 @@ function HRPortalPage({ state }: { state: SimState }) {
         {/* Main */}
         <div className="flex-1 overflow-auto p-4">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white">Add Employee</h2>
+            <p className="text-sm font-semibold text-white">Add Employee</p>
             <div className="rounded-md bg-cyan-500/10 px-3 py-1 text-xs text-cyan-400 border border-cyan-500/20">+ Add Employee</div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -278,7 +278,7 @@ function AccessControlPage({ state }: { state: SimState }) {
         ))}
       </div>
       <div className="flex-1 p-4">
-        <h2 className="mb-3 text-sm font-semibold text-white">Role Assignment</h2>
+        <p className="mb-3 text-sm font-semibold text-white">Role Assignment</p>
         <Field label="Search user" target="Search user" state={state} />
         {(state.typingText.length > 0 || state.checkedItems.includes('Permissions applied')) && (
           <motion.div
@@ -320,7 +320,7 @@ function AccessControlPage({ state }: { state: SimState }) {
 function OnboardingDocsPage({ state }: { state: SimState }) {
   return (
     <div className="flex h-full flex-col p-4 gap-4">
-      <h2 className="text-sm font-semibold text-white">Onboarding Documents — Priya Shah</h2>
+      <p className="text-sm font-semibold text-white">Onboarding Documents — Priya Shah</p>
       <div className="rounded-xl border-2 border-dashed border-white/10 bg-[#0d1117] p-6 text-center">
         <div className="mb-2 text-2xl">📂</div>
         <p className="text-xs text-[#6b7280]">Drop files or click to upload</p>

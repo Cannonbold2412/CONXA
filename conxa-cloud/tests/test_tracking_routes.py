@@ -112,6 +112,68 @@ class TrackingRoutesTests(unittest.TestCase):
         self.assertEqual(dashboard.status_code, 200)
         self.assertIn("assertion_health_by_step", dashboard.json())
 
+    def test_dashboard_wires_through_the_operations_analytics_blocks(self) -> None:
+        # The arithmetic behind each block is asserted directly in
+        # test_tracking_analytics.py; this locks in that the composed response exposes them.
+        body = self._client().get("/api/v1/tracking/dashboard").json()
+        for key in (
+            "health", "kpis", "series", "workflows", "recovery_cascade",
+            "reliability_heatmap", "failure_codes", "roi", "insights", "granularity",
+        ):
+            self.assertIn(key, body)
+
+    def test_dashboard_accepts_the_wider_range_tokens(self) -> None:
+        client = self._client()
+        for token, granularity in (("24h", "hour"), ("7d", "day"), ("30d", "day"), ("90d", "day")):
+            body = client.get(f"/api/v1/tracking/dashboard?range={token}").json()
+            self.assertEqual(body["range"], token)
+            self.assertEqual(body["granularity"], granularity)
+
+    def test_dashboard_falls_back_to_7d_for_an_unknown_range(self) -> None:
+        body = self._client().get("/api/v1/tracking/dashboard?range=all-time").json()
+        self.assertEqual(body["range"], "7d")
+
+    def test_activity_feed_returns_runs_newest_first(self) -> None:
+        client = self._client()
+        self._ingest(client, "acme", "run_old", [
+            {"e": "wf_start", "ts": 1000},
+            {"e": "wf_ok", "ts": 2000, "dur": 1000, "tot": 2, "rec": 0},
+        ])
+        res = client.get("/api/v1/tracking/activity?limit=10")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIn("runs", body)
+        self.assertTrue(all("recovery_tiers" in row for row in body["runs"]))
+
+    def test_workflow_detail_route_does_not_collide_with_the_company_runs_route(self) -> None:
+        # /tracking/workflows/{company}/{slug} and /tracking/{company}/runs/{run_id} are both
+        # three segments. The latter requires a literal "runs" in the middle, so these can
+        # only be told apart by that literal — worth pinning so a future reorder can't
+        # silently route skill drill-downs into the run-timeline handler.
+        res = self._client().get("/api/v1/tracking/workflows/acme/checkout")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["company"], "acme")
+        self.assertEqual(body["workflow"], "checkout")
+        self.assertIn("steps", body)
+
+    def test_roi_assumptions_round_trip(self) -> None:
+        client = self._client()
+        defaults = client.get("/api/v1/tracking/roi-assumptions").json()
+        self.assertEqual(defaults["default_minutes"], 8)
+
+        saved = client.put(
+            "/api/v1/tracking/roi-assumptions",
+            json={"default_minutes": 25, "hourly_rate": 90, "per_workflow": {"acme/checkout": 45}},
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["default_minutes"], 25)
+
+        reread = client.get("/api/v1/tracking/roi-assumptions").json()
+        self.assertEqual(reread["hourly_rate"], 90)
+        self.assertEqual(reread["per_workflow"], {"acme/checkout": 45})
+        self.assertIn("updated_at", reread)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -365,6 +365,12 @@ billing enforcement, error-message UX).
 
 **Files:** `skillpack_update_routes.py`, `security.py`, `runtime/server.js`, `DashboardPage.tsx`, `pluginApi.ts`
 
+> **Superseded 2026-08-07 (operations-dashboard redesign):** `DashboardPage.tsx` no longer
+> exists. Runtime-registration visibility now lives in `src/dashboard/sections/FootprintStrip.tsx`
+> (installs, active users, active companies, runtimes gone quiet) on `/dashboard`, and the stale
+> count is also surfaced on `/dashboard/impact` and feeds the platform health score as its
+> "runtime freshness" factor. See `docs/UI-UX-Brief.md` §3.2.
+
 ---
 
 ### 2.2 Implement Drift Detection

@@ -326,10 +326,32 @@ Source: `conxa-cloud/frontend/`
 ### 3.1 Marketing/Landing Page
 
 **Path:** `app/(marketing)/page.tsx`  
-**Purpose:** Public landing page for Conxa.  
-**Components:** Hero, TrustedWorkflows, UseCases, ValueGrid, Pipeline, RecoveryLayers, ObservableRuntime, AnalyticsDashboard, InternalEnterprise, Reliability, Cta.
+**Purpose:** Public landing page for Conxa. Rebuilt 2026-08-06 as a **communication-first scroll story** for enterprise buyers (CEO/CTO/CIO/VP Eng/Ops) — the prior version was feature-led and never explained the problem before listing capabilities. Each section lands one idea and answers the question the previous one raised, at plain-language reading level.
 
-**Status:** Implemented with 3D Spline scene, Framer Motion animations, marketing sections.
+**Section order (`src/components/marketing/sections/`, plus `hero/Hero.tsx`):**
+
+| # | id | Answers | Component |
+|---|----|---------|-----------|
+| 1 | — | What is Conxa? | `hero/Hero.tsx` (live chat + browser simulation) |
+| 2 | `problem` | Why is this hard? | `Problem.tsx` + `diagrams/PathVsGuesswork.tsx` |
+| 3 | `old-vs-new` | Why not RPA / APIs / raw agents? | `OldVsNew.tsx` |
+| 4 | `how-it-works` | How does it work? | `HowItWorks.tsx` (sticky scroll-scrub ≥1024px, stacked below / reduced motion) |
+| 5 | `examples` | Does it work on my software? | `Examples.tsx` |
+| 6 | `why-ai-needs-it` | Why does AI need this? | `WhyAiNeedsIt.tsx` (animated SVG delegation diagram) |
+| 7 | `outcomes` | So what, for my business? | `Outcomes.tsx` |
+| 8 | `demo` | What does using it look like? | `DemoStory.tsx` (click-to-play YouTube embed) |
+| 9 | `architecture` | Where does this run? | `Architecture.tsx` |
+| 10 | `security` | Can I trust it? | `Security.tsx` |
+| 11 | `faq` | Everything else pre-demo | `Faq.tsx` (native `<details>`) |
+| 12 | `cta` | What now? | `FinalCta.tsx` |
+
+**Copy constraints (do not regress):** no SOC 2 / HIPAA / GDPR / ITAR / certification claims; recovery Tiers 3–5 are described as *assisted*, never "fully autonomous" or "never breaks"; no invented metrics, customer logos, or testimonials; Windows-only runtime, macOS as roadmap. Allowed claims are the shipped ones — local execution, AES-256-GCM sessions in the OS keychain, credentials never in published skills, Ed25519-signed updates, admin-only publishing plus audit log, telemetry limited to event codes, unlimited free executions.
+
+**Assets:** `DemoStory.tsx` embeds the product demo video (YouTube, click-to-play — the iframe is only injected on click, so it costs nothing at page load). Real product screenshots live in `public/marketing/screenshots/`, wired through `primitives/ShotFrame.tsx`: the four `shot_*.png` files are **cropped derivatives** of the originals — cropped both to stay legible at column width and, in the case of `shot_execution.png`, to remove the personal chat-history rail from the Claude Desktop capture. Keep the originals; re-crop rather than swapping in a raw full-window capture. `public/marketing/examples-stack.png` is an AI-generated illustration (Codex `image_gen`) whose background is exactly `#06080b`, so it composites seamlessly on the Void Black canvas — match that background on any replacement.
+
+**Deliberately not used:** the dashboard capture (`dashboard.png`) shows a red "Attention needed" state, a 36% success rate, and single-digit workspace counts from a dev workspace. It is not on the page; the Outcomes section carries its own code-built charts instead. Only put a dashboard screenshot on the homepage once its numbers represent real, healthy usage.
+
+**Status:** Implemented with Framer Motion + Lenis. The Three.js `OrchestrationScene` was removed from the page (decorative only, no communication value); `3d/SplineScene.tsx` remains unused.
 
 ---
 
@@ -345,16 +367,36 @@ Source: `conxa-cloud/frontend/`
 
 ---
 
-### 3.2 Dashboard (`app/(protected)/dashboard/page.tsx`)
+### 3.2 Operations Dashboard (`app/(protected)/dashboard/`)
 
-**Purpose:** Enterprise operations overview after login.
-**Inputs:** Clerk auth context.  
-**Outputs:** Consolidated health status, execution trend, runtime footprint, risk queue, recovery intelligence, and assertion health using the tracking dashboard API.
-**User goal:** Understand production automation health, adoption, failures, and recovery behavior without scanning duplicate metric panels.
+**Purpose:** The enterprise AI-operations control center — the landing surface after login.
+**Inputs:** Clerk auth context; `?range=` in the URL (`24h` / `7d` / `30d` / `90d`).
+**User goal:** Answer, in order — is the platform healthy, what needs attention, what is running now, which workflows are slipping, is self-healing keeping up, and what is this worth.
 
-**Status:** Implemented as a frontend-only observability dashboard. It preserves 7d/30d range controls, refresh behavior, and empty telemetry states while consolidating failed workflows/steps into one risk queue and recovery type/workflow drilldowns into one recovery intelligence panel.
+**Structure (2026-08 redesign).** One sidebar entry, five routes behind a sub-navigation tab row. The range picker and refresh live in the shared shell (`src/dashboard/DashboardShell.tsx`) and the selected range is held in the URL so a link shows the recipient the same window.
 
-**Assertion health card (2026-07, post-condition validation):** a new full-width section below Risk queue / Recovery intelligence, sourced from `assertion_health_by_step` (`app.services.tracking._assertion_health_by_step`, aggregating the runtime's `verify_result` telemetry event). Lists steps worst-pass-rate-first with a per-step pass-rate bar (green ≥95%, amber ≥80%, red below), check count, and advisory-failure count — the fleet-wide early-warning signal for a post-condition assertion decaying before it becomes a hard step failure.
+| Route | Answers |
+|---|---|
+| `/dashboard` | Health score + factors, KPI strip, execution trend, live activity, insights, risk queue, ROI summary |
+| `/dashboard/workflows` | Per-skill volume, success rate + period delta, p50/p95, version comparison, fleet topology, failure codes |
+| `/dashboard/workflows/[company]/[slug]` | Step-level reliability, version breakdown, recovery cascade, recent runs |
+| `/dashboard/healing` | Recovery cascade Sankey, tier ladder, reliability heatmap, drift queue, assertion health |
+| `/dashboard/impact` | Hours saved, value returned, measured reliability counts, editable ROI assumptions |
+| `/dashboard/runs/[company]/[runId]` | One execution step by step, with the recovery tier that resolved each step |
+
+**Prior state.** The dashboard was a single 631-line page (`src/DashboardPage.tsx`, now removed) with six metric tiles, a hand-drawn bar chart, and four ranked lists. It answered "what broke" but not whether the platform was healthy, which workflows were degrading, or what any of it was worth. Its sections were re-homed: risk queue → Overview, recovery/assertion/drift panels → Self-healing, trend → the shared `TrendChart`.
+
+**Design decisions worth keeping.**
+- **KPIs are one divided strip, not a tile grid.** Five boxed hero-metric cards is the marketing reflex; a strip with hairline dividers reads as one instrument panel. Each cell carries value, sparkline, and a delta against the prior equal period, with per-KPI `direction` so a rising failure count is never painted green.
+- **Health score is decomposed on screen.** The arc is the headline; the five weighted factors (success rate, assertion pass rate, drift resistance, zero-token healing, runtime freshness) are listed beside it with their own values and contributions. A score nobody can decompose is a score nobody acts on. No telemetry yields `score: null` / grade "No telemetry" — never a red zero for a workspace that has done nothing wrong.
+- **Section headings are questions.** "Where does recovery spend its budget?" rather than "Recovery" — each panel states the job it does.
+- **Estimates are visibly separated from measurements.** Hours saved depends on an admin-supplied minutes-per-run baseline (telemetry has no such signal); it renders beside the assumption that produced it, with an inline editor, and is tagged "Estimate". Counts derived purely from telemetry are tagged "Measured".
+- **Insights are rule-derived, never model-generated.** Each carries the metric behind it and links to the evidence.
+- **Chart palette is separate from the status palette** (`--chart-1..4` plus an "Other" slot, `--tier-1..4`, `--heat-0..4` in `src/index.css`). A series painted emerald would read as "healthy" when it only means "workflow 4". Four categorical hues, not six — six do not survive the all-pairs colour-vision check on this surface.
+
+**Visualizations** live in `src/components/viz/`: `Sparkline`, `TrendChart` (stacked outcome bars), `HealthArc`, `TierLadder`, `RecoverySankey` (d3-sankey), `Heatmap`, `FleetTopology` (deterministic radial layout — never force-directed, so nodes stay where the operator left them), `ExecutionFlow`. d3 supplies layout maths only; all markup is local so theming stays in the design system.
+
+**Assertion health (2026-07, post-condition validation):** sourced from `assertion_health_by_step` (`app.services.tracking._assertion_health_by_step`, aggregating the runtime's `verify_result` event). Steps worst-pass-rate-first with a pass-rate bar (green ≥95%, amber ≥80%, red below), check count, and advisory-failure count — the fleet-wide early warning for an assertion decaying before it becomes a hard step failure. Now lives on `/dashboard/healing`.
 
 ---
 

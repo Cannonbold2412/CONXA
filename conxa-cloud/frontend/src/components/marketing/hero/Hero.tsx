@@ -21,13 +21,7 @@ export function Hero() {
         className="relative z-10 mb-5 max-w-4xl text-center font-semibold tracking-tight text-[#f4f5f7]"
         style={{ fontSize: 'clamp(2.5rem, 6.5vw, 5.5rem)', lineHeight: 1.08 }}
       >
-        Operate software{' '}
-        <span
-          className="bg-clip-text text-transparent"
-          style={{ backgroundImage: 'linear-gradient(135deg, #22d3ee, #5eead4)' }}
-        >
-          by talking.
-        </span>
+        Teach your software to AI.
       </motion.h1>
 
       {/* Subheadline */}
@@ -37,7 +31,7 @@ export function Hero() {
         transition={{ duration: 0.7, delay: 0.18, ease: [0.16, 1, 0.3, 1] }}
         className="relative z-10 mb-10 max-w-2xl text-center text-base leading-relaxed text-[#9ba3af] sm:text-lg"
       >
-        CONXA makes SaaS Platforms directly operatable through Claude.
+        Show Conxa a workflow once. Your AI runs it reliably from then on — no code, no APIs, no brittle scripts.
       </motion.p>
 
       {/* CTAs */}
@@ -48,7 +42,7 @@ export function Hero() {
         className="relative z-10 mb-16 flex flex-wrap items-center justify-center gap-3"
       >
         <GlowButton href="/sign-up">Start for free</GlowButton>
-        <GlowButton href="#pipeline" variant="ghost">See how it works →</GlowButton>
+        <GlowButton href="#how-it-works" variant="ghost">See how it works →</GlowButton>
       </motion.div>
 
       {/* Demo panels */}

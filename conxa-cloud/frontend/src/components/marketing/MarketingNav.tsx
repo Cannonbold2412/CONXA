@@ -6,10 +6,10 @@ import Link from 'next/link'
 import { GlowButton } from './primitives/GlowButton'
 
 const links = [
-  { label: 'How it works', href: '/#pipeline' },
-  { label: 'Recovery', href: '/#recovery' },
-  { label: 'Observability', href: '/#observability' },
-  { label: 'Enterprise', href: '/#enterprise' },
+  { label: 'How it works', href: '/#how-it-works' },
+  { label: 'Examples', href: '/#examples' },
+  { label: 'Security', href: '/#security' },
+  { label: 'FAQ', href: '/#faq' },
   { label: 'Docs', href: '/docs' },
 ]
 

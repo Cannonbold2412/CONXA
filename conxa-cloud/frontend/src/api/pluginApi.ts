@@ -388,9 +388,22 @@ export type TrackingRunDetail = {
   uid: string
   wid: string
   timeline: TrackingEvent[]
+  summary: TrackingRunSummary
+  /** Per-step outcome, classified server-side so it matches the dashboard aggregates. */
+  steps: TrackingRunStep[]
 }
 
-export type TrackingDashboardRange = '7d' | '30d'
+export type TrackingRunStep = {
+  index: number
+  label: string
+  status: 'ok' | 'recovered' | 'failed' | 'not_reached'
+  tiers: string[]
+  assertionsPassed: number
+  assertionsFailed: number
+}
+
+export type TrackingDashboardRange = '24h' | '7d' | '30d' | '90d'
+export type TrackingGranularity = 'hour' | 'day'
 export type TrackingRecoveryType = 'Selector' | 'Text Anchor' | 'Text Variant' | 'Vision'
 export type TrackingRecoveryTier = 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4' | 'Unknown'
 
@@ -456,17 +469,232 @@ export type TrackingDashboardResponse = {
     failed: number
     recovered: number
   }>
-  assertion_health_by_step: Array<{
-    company: string
-    workflow: string
-    step_index: number | null
-    step_label: string
-    total: number
-    passed: number
-    pass_rate: number
-    advisory_failures: number
-    last_seen: number
+  assertion_health_by_step: TrackingAssertionRow[]
+
+  // ── Operations analytics (composed by app.services.tracking_analytics) ──
+  granularity: TrackingGranularity
+  generated_at: number
+  series: TrackingSeriesBucket[]
+  kpis: TrackingKpi[]
+  health: TrackingHealth
+  workflows: TrackingWorkflowRow[]
+  recovery_cascade: TrackingCascade
+  reliability_heatmap: TrackingHeatmap
+  failure_codes: TrackingFailureCode[]
+  roi: TrackingRoi
+  insights: TrackingInsight[]
+  stale_runtimes: number
+}
+
+export type TrackingAssertionRow = {
+  company: string
+  workflow: string
+  step_index: number | null
+  step_label: string
+  total: number
+  passed: number
+  pass_rate: number
+  advisory_failures: number
+  last_seen: number
+}
+
+export type TrackingSeriesBucket = {
+  bucket: string
+  at: number
+  executions: number
+  successful: number
+  failed: number
+  recovered: number
+  /** null when nothing completed in the bucket — distinct from a genuine 0%. */
+  success_rate: number | null
+  avg_duration: number
+}
+
+export type TrackingKpi = {
+  key: string
+  label: string
+  unit: 'count' | 'percent' | 'duration'
+  /** Which way is good, so a rising failure count is never painted as an improvement. */
+  direction: 'up_good' | 'down_good'
+  value: number
+  previous: number
+  delta: number
+  /** null when the previous period had no data to compare against. */
+  delta_pct: number | null
+  series: number[]
+}
+
+export type TrackingHealthFactor = {
+  key: string
+  label: string
+  weight: number
+  value: number
+  contribution: number
+  detail: string
+}
+
+export type TrackingHealth = {
+  /** null means "no telemetry", never "scored zero". */
+  score: number | null
+  grade: 'Excellent' | 'Healthy' | 'Degraded' | 'Critical' | 'No telemetry'
+  factors: TrackingHealthFactor[]
+  summary: string
+}
+
+export type TrackingWorkflowVersion = {
+  version: string
+  runs: number
+  success_rate: number
+  recovery_rate: number
+  last_seen: number
+}
+
+export type TrackingWorkflowRow = {
+  company: string
+  workflow: string
+  runs: number
+  successful: number
+  failed: number
+  success_rate: number
+  previous_success_rate: number | null
+  success_rate_delta: number | null
+  recovery_rate: number
+  unattended_rate: number
+  p50_duration: number
+  p95_duration: number
+  last_seen: number
+  versions: TrackingWorkflowVersion[]
+}
+
+export type TrackingCascade = {
+  nodes: Array<{ name: string }>
+  links: Array<{ source: number; target: number; value: number }>
+  entered_recovery: number
+  healed: number
+  failed: number
+  heal_rate: number
+  resolved_directly: number
+  tier_touch: Array<{ tier: string; steps: number }>
+  /** Steps that healed without ever reaching a paid tier — a count of steps, not tier hits. */
+  zero_token_heals: number
+  /** Steps whose recovery reached Tier 3 or 4, healed or not. */
+  agent_assisted: number
+}
+
+export type TrackingHeatmap = {
+  cells: Array<{
+    weekday: number
+    hour: number
+    runs: number
+    successful: number
+    failed: number
+    success_rate: number | null
   }>
+  max_runs: number
+}
+
+export type TrackingFailureCode = {
+  code: string
+  count: number
+  last_seen: number
+  workflow_count: number
+}
+
+export type RoiAssumptions = {
+  default_minutes: number
+  hourly_rate: number
+  currency: string
+  per_workflow: Record<string, number>
+  updated_at?: number
+  updated_by?: string
+}
+
+export type TrackingRoi = {
+  assumptions: RoiAssumptions
+  /** Derived from an admin-supplied baseline — always labelled as an estimate in the UI. */
+  estimated: {
+    hours_saved: number
+    value_amount: number
+    currency: string
+    by_workflow: Array<{
+      company: string
+      workflow: string
+      runs: number
+      minutes_per_run: number
+      is_estimate_default: boolean
+      minutes_saved: number
+      hours_saved: number
+    }>
+  }
+  /** Pure telemetry — no assumption anywhere in these numbers. */
+  measured: {
+    unattended_completions: number
+    self_healed_runs: number
+    zero_token_recoveries: number
+    agent_assisted_recoveries: number
+  }
+}
+
+export type TrackingInsight = {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  title: string
+  body: string
+  metric: string
+  evidence: string
+}
+
+export type TrackingActivityRow = {
+  run_id: string
+  company: string
+  workflow: string
+  version: string
+  runtime_version: string
+  status: 'ok' | 'fail' | 'running'
+  duration_ms: number
+  total_steps: number
+  recovered_steps: number
+  failed_step_id: number | null
+  failure_code: string | null
+  recovery_tiers: string[]
+  at: number
+}
+
+export type TrackingActivityResponse = {
+  runs: TrackingActivityRow[]
+  next_cursor: number | null
+  generated_at: number
+}
+
+export type TrackingStepRow = {
+  step_index: number | null
+  step_label: string
+  attempts: number
+  failures: number
+  recoveries: number
+  success_rate: number
+  recovery_rate: number
+  tier_counts: Array<{ tier: string; count: number }>
+  assertion_pass_rate: number | null
+  assertions_total: number
+  advisory_failures: number
+  dominant_failure_code: string
+  last_seen: number
+}
+
+export type TrackingWorkflowDetail = {
+  company: string
+  workflow: string
+  range: TrackingDashboardRange
+  granularity: TrackingGranularity
+  generated_at: number
+  summary: TrackingWorkflowRow | null
+  series: TrackingSeriesBucket[]
+  steps: TrackingStepRow[]
+  recovery_cascade: TrackingCascade
+  failure_codes: TrackingFailureCode[]
+  assertion_health: TrackingAssertionRow[]
+  recent_runs: TrackingActivityRow[]
 }
 
 export type TrackingDriftEntry = {
@@ -506,6 +734,38 @@ export type TrackingDriftResponse = {
 
 export function fetchTrackingDrift(): Promise<TrackingDriftResponse> {
   return apiFetch('/tracking/drift').then((r) => json<TrackingDriftResponse>(r))
+}
+
+/**
+ * Recent runs across every visible company.
+ *
+ * Separate from the dashboard payload so the live feed can poll on its own cadence without
+ * re-running the full aggregation on every tick.
+ */
+export function fetchTrackingActivity(limit = 40): Promise<TrackingActivityResponse> {
+  return apiFetch(`/tracking/activity?limit=${limit}`).then((r) => json<TrackingActivityResponse>(r))
+}
+
+export function fetchTrackingWorkflow(
+  company: string,
+  slug: string,
+  range: TrackingDashboardRange,
+): Promise<TrackingWorkflowDetail> {
+  const path = `/tracking/workflows/${encodeURIComponent(company)}/${encodeURIComponent(slug)}`
+  return apiFetch(`${path}?range=${encodeURIComponent(range)}`).then((r) => json<TrackingWorkflowDetail>(r))
+}
+
+export function fetchRoiAssumptions(): Promise<RoiAssumptions> {
+  return apiFetch('/tracking/roi-assumptions').then((r) => json<RoiAssumptions>(r))
+}
+
+/** Admin-only on the server; the UI hides the control for everyone else. */
+export function saveRoiAssumptions(payload: Partial<RoiAssumptions>): Promise<RoiAssumptions> {
+  return apiFetch('/tracking/roi-assumptions', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then((r) => json<RoiAssumptions>(r))
 }
 
 export function fetchTrackingRuns(

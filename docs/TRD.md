@@ -215,6 +215,10 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/tracking/{co}/runs` | Run summaries | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline | Clerk JWT |
 | `GET /api/v1/tracking/{co}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) | Clerk JWT |
+| `GET /api/v1/tracking/dashboard?range=` | Full operations payload — adoption, reliability, health score, per-skill rollups, recovery cascade, heatmap, ROI, rule-derived insights. `range` accepts `24h`/`7d`/`30d`/`90d` | Clerk JWT |
+| `GET /api/v1/tracking/activity` | Recent runs across every visible company for the live feed (polls independently of the dashboard aggregate) | Clerk JWT |
+| `GET /api/v1/tracking/workflows/{co}/{slug}?range=` | Step-level drill-down for one skill | Clerk JWT |
+| `GET \| PUT /api/v1/tracking/roi-assumptions` | Workspace ROI baseline (minutes per run, hourly rate). `PUT` is admin/owner only | Clerk JWT |
 | `GET /api/v1/updates/deps-manifest` | Bootstrap manifest (Build Studio deps only) | Public |
 | `GET /api/v1/manifest.json` | **Unified, Ed25519-signed** runtime update manifest — conxa_runtime, conxa_app, and per-skill versions, compatibility matrix, minimum versions, rollout percentages. Source of truth for `runtime/manifest_manager.js`. Served straight from `manifest` KV (signed once at publish time, not on the read path). | Public |
 | `POST /api/v1/admin/component-versions/{component}` | CI (after host/app build) and `publish_routes.py` (after skill publish) write a component's version record here; recomposes + re-signs the full manifest immediately. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. | Bearer: `CONXA_ADMIN_TOKEN` |
@@ -1031,9 +1035,10 @@ fail fast (recompile required).
     advisory `text_present` token instead of dropped.
   - **Fleet dashboard:** `app.services.tracking._assertion_health_by_step` aggregates
     `verify_result` events per (company, workflow, step) into a pass-rate view, exposed on
-    `GET /api/v1/tracking/dashboard` as `assertion_health_by_step` and rendered by the Cloud
-    Dashboard's Assertion health card (§3.2 `docs/UI-UX-Brief.md`) — worst-pass-rate steps surface
-    first.
+    `GET /api/v1/tracking/dashboard` as `assertion_health_by_step` and rendered on the Cloud
+    Dashboard's Self-healing page, `/dashboard/healing` (§3.2 `docs/UI-UX-Brief.md`) —
+    worst-pass-rate steps surface first. It is also one of the five weighted inputs to the
+    platform health score.
   - **Human Edit UI + patch gate:** `StepConfigForm.tsx` carries a self-contained Validation card
     (shared `components/validation/AssertionEditor.tsx`, also used by the re-target wizard's
     Validation phase) that saves independently via `patch_step`'s `validation.assertions`.

@@ -881,6 +881,81 @@ Response:
 }
 ```
 
+**GET /api/v1/tracking/{company}/runs/{run_id}** additionally returns `summary` (the same
+run-summary shape as above) and `steps` — the per-step outcome used by the run drill-down:
+
+```json
+{
+  "steps": [
+    {"index": 0, "label": "Step 1", "status": "ok", "tiers": [], "assertionsPassed": 1, "assertionsFailed": 0},
+    {"index": 2, "label": "Step 3", "status": "recovered", "tiers": ["Tier 1", "Tier 2"], "assertionsPassed": 0, "assertionsFailed": 0},
+    {"index": 3, "label": "Step 4", "status": "failed", "tiers": [], "assertionsPassed": 0, "assertionsFailed": 1},
+    {"index": 4, "label": "Step 5", "status": "not_reached", "tiers": [], "assertionsPassed": 0, "assertionsFailed": 0}
+  ]
+}
+```
+
+`status` is derived server-side (`tracking_analytics.run_step_flow`) rather than in the
+frontend, so the run view and the dashboard aggregates classify a recovery the same way.
+`run.js` does not reliably emit a per-step success event, so a step is treated as healed
+unless it is positively known to have failed; steps after the failing one are reported as
+`not_reached` rather than omitted.
+
+### 5.7a Operations Analytics
+
+Aggregation for the operations dashboard lives in `app/services/tracking_analytics.py` as
+pure functions over the record list `tracking._visible_run_records` produces. Everything is
+derived from telemetry the runtime already emits — no new event codes, no LLM calls.
+
+**GET /api/v1/tracking/dashboard?range={24h|7d|30d|90d}** — unknown values fall back to `7d`.
+
+Returns the pre-existing keys (`metrics`, `recovery_type_usage`, `recovery_usage_by_step`,
+`recovery_usage_by_workflow`, `most_failed_workflows`, `most_failed_steps`,
+`execution_trend`, `assertion_health_by_step`) plus:
+
+| Key | Shape |
+|---|---|
+| `granularity` | `"hour"` for `24h`, `"day"` otherwise |
+| `series[]` | `{bucket, at, executions, successful, failed, recovered, success_rate, avg_duration}` — pre-seeded so quiet periods are zeros, not gaps. `success_rate` is `null` when nothing completed, which is distinct from a genuine 0% |
+| `kpis[]` | `{key, label, unit, direction, value, previous, delta, delta_pct, series[]}`. `direction` (`up_good`/`down_good`) tells the UI which way is an improvement per metric |
+| `health` | `{score, grade, factors[], summary}`. `score` is `null` (grade `"No telemetry"`) for a workspace with no runs — never 0. Factor weights sum to 100: success rate 40, assertion pass rate 20, drift resistance 15, zero-token healing 15, runtime freshness 10 |
+| `workflows[]` | Per-skill rollups grouped by `(company, plugin_id)` — runs, success rate, `success_rate_delta` vs the previous equal period, recovery/unattended rate, p50/p95 duration, and a nested `versions[]` breakdown |
+| `recovery_cascade` | Sankey `{nodes, links}` over `Entered recovery → Tier 1…4 → Healed \| Failed`, plus `entered_recovery`, `healed`, `failed`, `heal_rate`, `resolved_directly`, `tier_touch[]`, `zero_token_heals`, `agent_assisted` |
+| `reliability_heatmap` | `{cells[{weekday, hour, runs, successful, failed, success_rate}], max_runs}`, UTC |
+| `failure_codes[]` | `{code, count, last_seen, workflow_count}` |
+| `roi` | `{assumptions, estimated{...}, measured{...}}` — see below |
+| `insights[]` | `{id, severity, title, body, metric, evidence}`, most severe first, capped at 8 |
+| `stale_runtimes` | Registrations with no report in 30+ days |
+
+Only steps that entered recovery appear in `recovery_cascade`; the far larger directly-resolved
+population is reported as `resolved_directly` instead, because folding it in would compress
+every other band to a hairline. `zero_token_heals` counts **steps that healed without ever
+reaching a paid tier** — not Tier 1/2 event hits, which would double-count a step that tried
+both and would credit a step that only succeeded after escalating to a model.
+
+`roi.estimated` (hours saved, value) depends on the stored assumptions; `roi.measured`
+(unattended completions, self-healed runs, zero-token heals, agent-assisted heals) does not.
+They are separate objects so the UI can never present an assumption as a measurement.
+
+**GET /api/v1/tracking/activity?limit=50&before={epoch_ms}** — recent runs across every
+visible company, newest first, each with `recovery_tiers[]`. Separate from the dashboard
+payload because the live feed polls every 10s and must not re-run the full aggregation.
+
+**GET /api/v1/tracking/workflows/{company}/{slug}?range=** — step-level drill-down for one
+skill: `summary`, `series[]`, `steps[]`, `recovery_cascade`, `failure_codes[]`,
+`assertion_health[]`, `recent_runs[]`.
+
+**GET | PUT /api/v1/tracking/roi-assumptions** — read/write the `roi_assumptions` row for the
+caller's workspace. `PUT` requires admin or owner (`app.services.rbac.require_admin`) and
+normalizes input rather than trusting it.
+
+> **One scan per request.** `_visible_run_records` reads every run's full event list out of
+> KV, so it is the dominant cost of the dashboard. `tracking_analytics.dashboard` performs
+> that scan once and derives every block from it, passing the records into
+> `tracking._dashboard_metrics` via its optional `records` parameter. Adding a further
+> endpoint that re-scans for one more panel would repeat the most expensive thing the
+> dashboard does — extend the composed response instead.
+
 ### 5.8 Unified Signed Runtime Manifest
 
 **GET /api/v1/manifest.json** — the single source of truth for `runtime/manifest_manager.js`'s self-updater. Replaces the three previous manifest endpoints (still served as deprecated shims — see below). Served straight from `manifest` KV; signed once at publish time, not on the read path.
@@ -1183,6 +1258,7 @@ erDiagram
 | `compile_reservations` | `{reservation_id}` | Compile reservation row | Cloud entitlements |
 | `publish_owners` | `{slug}` | `{workspace_id, claimed_at}` | Cloud publish |
 | `tracking_tokens` | `{company}` | `{token, workspace_id, ...}` | Cloud tracking |
+| `roi_assumptions` | `{workspace_id}` | `{default_minutes, hourly_rate, currency, per_workflow: {"{company}/{skill}": minutes}, updated_at, updated_by}` | Operations dashboard — Impact page. The only input the dashboard cannot derive from telemetry: how long a task took a human before it was automated. Admin-writable, surfaced beside every figure that depends on it |
 | `sync_tokens` | `{slug}` | `{token, company, version, workspace_id, owner_user_id, updated_at}` | Cloud publish, runtime sync auth |
 | `installer_versions__{slug}` | `{version}` | Installer `meta.json` fields + `content_base64` (full .exe) | Cloud publish — durable backing for installer history; Render's free-tier disk is ephemeral, this KV namespace (Postgres in prod) is the source of truth, local disk is a rehydratable cache |
 | `skillpack_files__{slug}` | `{relative_path}` (e.g. `pack.json`, `{skill}/execution.json`) | `{path, content_base64}` | Cloud publish, skill-pack sync — durable backing for published skill-pack files, same disk-wipe rationale as above. `path` is stored explicitly because the fs-fallback KV implementation keys files by a hash of the original key, not the literal string |
