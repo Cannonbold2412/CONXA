@@ -429,14 +429,6 @@ class Backend(
         pack["sync_endpoint"] = f"{cloud_api}{sync_url}"
         pack["sync_token"] = sync_token
         pack["installer_version"] = generation
-        if str(published.get("plan") or "free") == "free":
-            from services.machine_id import get_machine_id_hash
-
-            machine_hash = get_machine_id_hash()
-            if machine_hash:
-                pack["build_machine_id"] = machine_hash
-        else:
-            pack.pop("build_machine_id", None)
         pack["published"] = {
             "cloud_api": cloud_api,
             "workspace_id": str(published.get("workspace_id") or ""),

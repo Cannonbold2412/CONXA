@@ -27,16 +27,6 @@ function loadSkillRegistry(skillPacksDir, cacheDir) {
     let pack;
     try { pack = JSON.parse(fs.readFileSync(packPath, "utf8")); } catch (_) { continue; }
 
-    // Free-trial skill packs are locked to the machine they were built on
-    // (see conxa-builder/python/backend.py's publish flow, which stamps
-    // build_machine_id only when the workspace is on the Free plan). A
-    // mismatch means this pack was copied to another machine — skip it
-    // entirely; other companies' unlocked packs on this machine are unaffected.
-    if (pack.build_machine_id) {
-      const currentHash = require("./machine_hash").getMachineIdHash();
-      if (currentHash && currentHash !== pack.build_machine_id) continue;
-    }
-
     for (const slug of (pack.skills || [])) {
       const skillDir     = _skillCurrentDir(companyDir, slug);
       const manifestPath = path.join(skillDir, "manifest.json");

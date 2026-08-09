@@ -1506,45 +1506,26 @@ general seat-integrity mechanism across all paid tiers.
   (the endpoint that would need to hard-cap Free's 1-install limit on the *running* side, not the
   build side) is deliberately public and unauthenticated — installed runtimes have no Clerk session,
   and its own docstring notes "spoofing inflates counts but leaks nothing." Hard-blocking installs
-  there on a spoofable `install_id` would be a false security control, not a real one. Free's *actual*
-  install-side enforcement is the machine lock and delta-sync gate below — both keyed off the
-  `sync_token` (minted server-side at publish, embedded in `pack.json`, not spoofable the way a
-  client-supplied `install_id` is), not off this telemetry endpoint.
+  there on a spoofable `install_id` would be a false security control, not a real one. A 2026-08-09
+  attempt at real install-side enforcement (a machine-hash lock stamped into `pack.json`, checked by
+  the runtime and by the delta-sync endpoint) was reverted the same day — it blocked legitimate
+  Free-tier reinstalls and machine swaps. No install-side enforcement exists today; see `TODO.md`
+  CLOUD-3 (reopened).
 
-**Free-tier machine lock (installer) and delta-sync gate (updates), added 2026-08-09:**
-
-The machine-slot pool above only ever gated the *build* side (compile credits, LLM proxy). Nothing
-stopped a Free-tier installer, once built, from being copied to and run on any number of other
-machines, and nothing stopped `skillpack_update_routes.py::_delta_impl` — the endpoint that actually
-pushes workflow updates to already-installed runtimes — from serving updates to those other machines
-forever, including after a downgrade from a paid tier. Two additions close this, both scoped to Free
-specifically (Starter carries `distribution="external"` and is unrestricted by machine count — see
-§13.4):
-
-- **Installer machine lock.** `publish_routes._publish_skill_pack_impl` now returns `plan` and
-  `distribution` alongside the existing `sync_token`. Build Studio (`backend.py`, the publish flow)
-  stamps `pack.json.build_machine_id = get_machine_id_hash()` only when `plan == "free"`; a workspace
-  that later upgrades has the field cleared on its next publish. The runtime computes the same hash on
-  the customer's machine (`runtime/machine_hash.js`, using the `node-machine-id` package's
-  `machineIdSync(true)` to read the identical `MachineGuid` registry value, SHA-256'd the same way as
-  the Python side — verified to produce byte-identical hashes for the same physical machine) and
-  `skill_loader.js::loadSkillRegistry` excludes any company whose `build_machine_id` doesn't match,
-  per company, before that company's skills are indexed. Fails open (never blocks) if the hash can't be
-  computed on either side, consistent with every other machine-identity check in this codebase.
-- **Delta-sync distribution gate.** `entitlements.ensure_delta_sync_allowed(workspace_id, machine_hash)`
-  is called from `_delta_impl` after `_verify_sync_token` (workspace_id is recovered from the
-  `sync_tokens` KV record, not from a Clerk session — the runtime has none). If the workspace's plan
-  carries `distribution="external"` it's a no-op (all of Starter/Pro/Enterprise, unchanged). Otherwise
-  (Free) it requires the request's `X-Conxa-Machine` header (sent by `runtime/sync.js` on every poll,
-  computed via the same `machine_hash.js`) to match an entry already in the `DEVICE_NS` pool
-  `ensure_machine_slot` populates — i.e. the workspace's own registered Build Studio machine. Anything
-  else — no header, or a hash not in that workspace's pool — gets `403 distribution_not_permitted`: a
-  Free workspace's already-installed external customers get zero further updates, closing the downgrade
-  loophole (a workspace that shipped externally while Pro/Enterprise and later dropped to Free could
-  otherwise keep pushing free updates to those installs indefinitely). No staged fail-open rollout was
-  needed: the app-layer self-update channel (`updates_routes.py`'s manifest endpoints, §16) has no
-  distribution gate and is independent of `skillpack_update_routes.py`, so an old runtime that predates
-  the header self-updates its app layer on its next launch and succeeds on its next sync.
+**Plan-aware installer naming and icon, added 2026-08-09:** `publish_routes._upload_installer_impl`
+picks the served installer's filename by plan when the caller doesn't pass an explicit `?filename=`:
+Free gets a random 10-letter name (`_random_installer_name()`, no branding signal); paid plans
+(Starter/Pro/Enterprise) use the workspace's stored, *unverified* "installer domain"
+(`entitlements.get_installer_domain`/`set_installer_domain`, `GET`/`POST /entitlements/installer-domain`,
+admin-only) if one is set, falling back to the previous `{slug}-Plugin-Setup.exe` otherwise. There is no
+proof the workspace actually owns that domain yet — see `TODO.md` PROD-6, which this field is meant to
+be gated on once domain-ownership verification ships. Separately, the installer's `.exe` icon (embedded
+locally by `conxa_compile.installer_builder._stage_logo_icon` at build time, before anything is
+uploaded) is plan-gated in Build Studio itself: `handlers/plugins.py::cmd_build_installer` calls
+`GET /entitlements/current` and drops any supplied `logo_path` when the plan is Free (or the call
+fails — fail-safe defaults to no icon). This is distinct from `ensure_white_label_allowed`
+(`white_label`), which stays Enterprise-only for whatever else custom branding covers — see
+`docs/PRD.md` §11.
 
 ### 13.5 Enterprise BYOK (Azure OpenAI)
 

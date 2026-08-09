@@ -79,6 +79,10 @@ User clicks "Sign in"
 - **Cloudflare workaround.** The token endpoint at `clerk.conxa.in` is behind Cloudflare, which blocks Python's default user-agent. The code sends a Chrome-style `User-Agent` header.
 - **Userinfo size limit.** Windows Credential Manager has a ~2500-byte limit. Only 5 fields are kept from `/oauth/userinfo`: `sub`, `email`, `name`, `full_name`, `org_id`.
 
+#### Dev-only auth bypass
+
+Setting `CONXA_DEV_SKIP_AUTH=1` alongside `CONXA_ENV=dev` makes `login()` and `current_identity()` (`auth_service.py`) short-circuit to a fixed `dev-user`/`dev-org` identity instead of running the Clerk PKCE flow — no browser round-trip, no keyring read. It requires both vars (not just the dev lane) so `dev-studio.ps1` still exercises real Clerk login by default; set the flag only when iterating on Studio UI and you don't need a real identity. Never honored outside `CONXA_ENV=dev`.
+
 #### Token refresh
 
 On every `get_token()` call (which happens before every LLM proxy request), the service checks if the access token expires within 60 seconds. If so, it silently calls `POST /oauth/token` with `grant_type=refresh_token` and saves the new token set to the keyring. The app never shows a re-login prompt unless the refresh token itself has expired.

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.auth_service import AuthService, _keyring_service  # noqa: E402
+from services.auth_service import AuthService, _dev_skip_auth, _keyring_service  # noqa: E402
 
 
 class KeyringServiceScopingTests(unittest.TestCase):
@@ -31,6 +31,30 @@ class KeyringServiceScopingTests(unittest.TestCase):
     def test_unrelated_env_value_falls_back_to_prod(self) -> None:
         with patch.dict("os.environ", {"CONXA_ENV": "prod"}):
             self.assertEqual(_keyring_service(), "conxa-studio")
+
+
+class DevSkipAuthTests(unittest.TestCase):
+    def test_off_by_default_in_dev(self) -> None:
+        with patch.dict("os.environ", {"CONXA_ENV": "dev"}, clear=False):
+            import os
+
+            os.environ.pop("CONXA_DEV_SKIP_AUTH", None)
+            self.assertFalse(_dev_skip_auth())
+
+    def test_requires_both_dev_env_and_flag(self) -> None:
+        with patch.dict("os.environ", {"CONXA_ENV": "prod", "CONXA_DEV_SKIP_AUTH": "1"}):
+            self.assertFalse(_dev_skip_auth())
+
+    def test_enabled_when_both_set(self) -> None:
+        with patch.dict("os.environ", {"CONXA_ENV": "dev", "CONXA_DEV_SKIP_AUTH": "true"}):
+            self.assertTrue(_dev_skip_auth())
+
+    def test_login_and_current_identity_short_circuit(self) -> None:
+        svc = AuthService(clerk_domain="https://clerk.example", client_id="client")
+        with patch.dict("os.environ", {"CONXA_ENV": "dev", "CONXA_DEV_SKIP_AUTH": "1"}):
+            identity = svc.login()
+            self.assertEqual(identity["user_id"], "dev-user")
+            self.assertEqual(svc.current_identity(), identity)
 
 
 class AuthServiceKeyringCallsTests(unittest.TestCase):

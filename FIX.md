@@ -4,6 +4,15 @@
 
 ---
 
+## Free installers no longer lock to one computer, and their name and icon now depend on the plan — 2026-08-09
+Free trial installers used to be welded to whichever computer built them — copy the installer to a new machine, or even reinstall after a repair, and it would simply refuse to run. That was too strict for normal, honest use, so it's been removed. The separate limit on how many computers a company can use to build with is unaffected and still works the same as before.
+In its place, installers now look different depending on the plan. A free installer gets a random, unbranded file name (like a string of random letters) and no custom icon. A paying customer's installer can be named after their own company domain (typed in by them for now — verifying they actually own that domain is a follow-up piece of work) and can carry a custom icon.
+ — 2026-08-09
+
+## Developers can skip the sign-in screen when working on the Build Studio locally — 2026-08-09
+Launching the Build Studio in developer mode always showed the same "Sign in" screen as the real app, even though a developer just wants to poke at the interface, not log into a live account. Now there's an opt-in developer switch that skips straight past sign-in with a placeholder developer identity, so no browser pop-up or real account is needed. It only works in the isolated developer mode and has to be turned on deliberately, so it can never accidentally show up for a real customer.
+ — 2026-08-09
+
 ## Support can now grant someone a paid plan for free, with an optional expiry date — 2026-08-09
 Until now, the only way a customer got Starter or Pro access was by actually paying through checkout — there was no way for us to comp a plan for a sales demo, a support fix, or a trial extension without either a real charge or someone hand-editing the database. Now there's a proper backend switch: give a specific customer Starter, Pro, or Enterprise access directly, and optionally set how long the grant should last — 1 month, 3 months, a year, whatever's needed. When a timed grant runs out, the customer automatically drops back to the free plan on its own; nobody has to remember to go take it away.
 While building this we also found and fixed a small pre-existing bug: if a customer published two automations in the same publish action, the system could occasionally get confused about which one was actually older when deciding what to lock during a downgrade — like a filing system that sometimes misfiles same-day paperwork. Automations now keep a precise creation order internally, so the oldest-gets-locked-first rule always picks the right one.

@@ -15,10 +15,12 @@ from app.services.entitlements import (
     PLAN_LIMITS,
     commit_compile_credit,
     current_entitlements,
+    get_installer_domain,
     list_machines,
     release_compile_credit,
     reserve_compile_credit,
     revoke_machine,
+    set_installer_domain,
 )
 from app.services.rbac import require_admin
 from app.services.saas import upsert_billing
@@ -40,6 +42,10 @@ class ReservationBody(BaseModel):
 
 class RevokeMachineBody(BaseModel):
     machine_hash: str = Field(..., min_length=1, max_length=128)
+
+
+class InstallerDomainBody(BaseModel):
+    domain: str = Field(..., min_length=1, max_length=253)
 
 
 class AssignPlanBody(BaseModel):
@@ -102,6 +108,26 @@ def post_revoke_machine(body: RevokeMachineBody, request: Request) -> dict[str, 
     require_admin(principal)
     revoke_machine(principal, body.machine_hash)
     return {"machine_hash": body.machine_hash, "revoked": True}
+
+
+@router.get("/entitlements/installer-domain")
+def get_installer_domain_route(request: Request) -> dict[str, Any]:
+    """Unverified, workspace-supplied domain used to name paid-plan
+    installers — see docs/PRD.md §11 and TODO.md PROD-6."""
+    principal = current_principal(request)
+    require_admin(principal)
+    return {"domain": get_installer_domain(principal.workspace_id)}
+
+
+@router.post("/entitlements/installer-domain")
+def post_installer_domain(body: InstallerDomainBody, request: Request) -> dict[str, Any]:
+    principal = current_principal(request)
+    require_admin(principal)
+    try:
+        domain = set_installer_domain(principal, body.domain)
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
+    return {"domain": domain}
 
 
 @router.post("/entitlements/admin/billing")

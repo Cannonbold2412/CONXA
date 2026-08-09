@@ -654,21 +654,23 @@ flowchart TD
     P -->|No| Q[402 white_label_not_permitted]
     P -->|Yes| R[Upload accepted, branded]
     O -->|No| S[Upload accepted, Conxa-branded]
+    R --> AE{filename given explicitly?}
+    S --> AE
+    AE -->|Yes| AF[Use given filename]
+    AE -->|No, plan = free| AG[Random unbranded filename]
+    AE -->|No, plan != free| AH{Installer domain set?}
+    AH -->|Yes| AI[Use domain-based filename]
+    AH -->|No| AJ["Fallback: slug-Plugin-Setup.exe"]
 
     B -->|Dashboard / audit / drift route| T{Workspace ops_tier vs. route's requirement}
     T -->|Below requirement| U[403 ops_tier_required]
     T -->|Meets requirement| V[Route returns data]
 
-    B -->|Skill-pack publish| W{Plan == free?}
-    W -->|Yes| X[Stamp pack.json.build_machine_id]
-    W -->|No| Y[Publish normally, clear any stale build_machine_id]
-    X --> Z[Runtime later refuses to load this pack on any other machine]
-
-    B -->|Runtime delta-sync poll| AA{Plan distribution = external?}
-    AA -->|Yes: Starter/Pro/Enterprise| AB[Serve delta — unrestricted]
-    AA -->|No: Free| AC{X-Conxa-Machine matches a registered device?}
-    AC -->|Yes| AB
-    AC -->|No| AD[403 distribution_not_permitted — zero updates]
+    B -->|Build installer, before staging icon| AK{logo_path supplied?}
+    AK -->|No| AL[Build without custom icon]
+    AK -->|Yes| AM{Plan = free, or entitlements check fails?}
+    AM -->|Yes| AL
+    AM -->|No| AN[Build with supplied icon]
 ```
 
 **First-time machine registration.** A brand-new device registers itself on its first gated call — there
@@ -685,13 +687,14 @@ prompt (`docs/UI-UX-Brief.md`).
 workspace routes to the customer's own deployment instead of the shared pool — silently, with no
 per-call toggle. `GET` on the same endpoint never returns the key, only whether one is configured.
 
-**Free-tier machine lock and delta-sync gate**, added 2026-08-09 (`docs/TRD.md` §13.4a): Free is now the
-only plan with a hard machine restriction on its distributed artifacts — Starter's `distribution` moved
-to `"external"` and is unrestricted by machine count (see the plan-defaults update in `docs/TRD.md`
-§13.4). An installer built on Free only runs on the machine it was built on (`pack.json.build_machine_id`
-checked by `skill_loader.js`), and the cloud denies delta-sync updates to any machine that isn't the
-Free workspace's own registered device — including after a downgrade from a paid tier that once
-distributed externally.
+**Plan-aware installer naming and icon**, added 2026-08-09 (`docs/TRD.md` §13.4a, `docs/Backend-Schema.md`
+§5.1c): a Free-tier installer that predates this feature would run and update on any machine — an
+earlier same-day attempt at hard-locking that (machine-hash stamped into `pack.json`, checked by the
+runtime and the delta-sync endpoint) was reverted for blocking legitimate reinstalls, so no such lock
+exists today (see `TODO.md` CLOUD-3, reopened). What ships instead is cosmetic, not restrictive: Free
+gets a randomly-named, unbranded `.exe` with no custom icon; paid plans get a filename derived from a
+workspace-set (but not yet ownership-verified — see `TODO.md` PROD-6) installer domain, and may embed a
+custom icon.
 
 ---
 

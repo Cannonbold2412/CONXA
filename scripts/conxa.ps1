@@ -23,6 +23,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 
 # ── The single switch ────────────────────────────────────────────────────────
 $env:CONXA_ENV = $Env
+$env:CONXA_DEV_SKIP_AUTH = "1"
 
 # ── Isolated path roots per lane ─────────────────────────────────────────────
 if ($Env -eq "dev") {

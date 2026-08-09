@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -22,6 +23,9 @@ USAGE_NS = "entitlement_usage"
 RESERVATION_NS = "compile_reservations"
 DEVICE_NS = "workspace_devices"
 WORKFLOW_NS = "entitlement_workflows"
+INSTALLER_DOMAIN_NS = "workspace_installer_domain"
+
+_DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 
 ALLOWED_USAGE_CLASSES = {"compile", "human_edit"}
 
@@ -934,32 +938,6 @@ def ensure_distribution_allowed(principal: Principal, *, external: bool) -> None
         raise EntitlementError("distribution_not_permitted", 402)
 
 
-def ensure_delta_sync_allowed(workspace_id: str, machine_hash: str) -> None:
-    """Delta-sync gate: once a workspace's plan doesn't allow external
-    distribution (Free), only the workspace's own registered Build Studio
-    machine may pull skill-pack updates from skillpack_update_routes — every
-    other machine gets none. This is what makes a downgrade (or a Free
-    workspace that never had the right in the first place) actually stop
-    reaching already-installed customers, instead of just blocking new
-    installer uploads. Reuses the same DEVICE_NS pool ensure_machine_slot
-    populates; this is a read-only lookup, it never registers or consumes
-    a slot."""
-    if not settings.entitlements_enforce_distribution:
-        return
-    from app.services.saas import billing_for_workspace
-
-    limits = _limits_from_billing(billing_for_workspace(workspace_id))
-    if limits["distribution"] == "external":
-        return
-    machine_hash = str(machine_hash or "").strip()
-    if not machine_hash:
-        raise EntitlementError("distribution_not_permitted", 403)
-    with _locked_store(f"machines:{workspace_id}") as store:
-        existing = store.get(DEVICE_NS, _device_key(workspace_id, machine_hash))
-    if not isinstance(existing, dict) or existing.get("revoked"):
-        raise EntitlementError("distribution_not_permitted", 403)
-
-
 def ensure_white_label_allowed(principal: Principal, *, custom_branding: bool) -> None:
     """White-label installer branding is an Enterprise-only capability."""
     if not custom_branding:
@@ -968,3 +946,19 @@ def ensure_white_label_allowed(principal: Principal, *, custom_branding: bool) -
     limits = _limits_from_billing(billing)
     if settings.entitlements_enforce_distribution and not limits["white_label"]:
         raise EntitlementError("white_label_not_permitted", 402)
+
+
+def get_installer_domain(workspace_id: str) -> str:
+    """Unverified, workspace-supplied domain used to name paid-plan installers
+    (see docs/PRD.md §11). No proof of ownership yet — see TODO.md PROD-6."""
+    row = db_get(INSTALLER_DOMAIN_NS, workspace_id)
+    return str(row.get("domain") or "") if isinstance(row, dict) else ""
+
+
+def set_installer_domain(principal: Principal, domain: str) -> str:
+    domain = str(domain or "").strip().lower()
+    domain = re.sub(r"^[a-z]+://", "", domain).split("/", 1)[0]
+    if not _DOMAIN_RE.match(domain):
+        raise EntitlementError("invalid_domain", 400)
+    db_set(INSTALLER_DOMAIN_NS, principal.workspace_id, {"workspace_id": principal.workspace_id, "domain": domain})
+    return domain

@@ -323,9 +323,14 @@ not only *how much*:
 | Who | An engineer proving it works | One product team automating its own processes | An enterprise running its org, or a vendor scaling as a channel | A SaaS vendor or consultancy shipping to their customers |
 | Record → compile → execute, full self-healing | Yes | Yes | Yes | Yes |
 | Distribution | Internal, 1 machine | Internal, unbranded | External, Conxa-branded | External, white-label |
+| Installer icon (added 2026-08-09) | No | Yes | Yes | Yes |
 | Ops dashboard | None | Basic | Full (+ healing, impact, drift) | Full |
 | Audit log & RBAC | None | Basic | Full | Full + SSO/SAML |
 | BYOK | No | No | No | Yes (Azure OpenAI) |
+
+A custom installer icon is available from Starter upward, independent of full white-label branding
+(still Enterprise-only) — a paying workspace can put its own icon on the `.exe` without needing the
+rest of white-label's Conxa-branding removal.
 
 Self-healing stays in every tier including Free. It costs Conxa nothing — the two zero-token recovery
 tiers are deterministic and local, and the LLM-backed tiers run on the customer's own agent subscription

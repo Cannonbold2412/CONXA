@@ -359,33 +359,6 @@ def test_machine_limit_blocks_new_device_but_allows_known_one(monkeypatch, tmp_p
     assert again["used"] == 1
 
 
-def test_ensure_delta_sync_allowed_free_vs_starter(monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(settings, "database_url", "")
-    monkeypatch.setattr(settings, "entitlements_enforce_distribution", True)
-    from app.services.entitlements import EntitlementError, ensure_delta_sync_allowed, ensure_machine_slot
-
-    _set_plan("free")
-    principal = Principal(
-        user_id="u1", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
-        role="owner", email=None, name=None, auth_provider="local",
-    )
-    ensure_machine_slot(principal, "machine-a", "10.0.0.1")
-
-    ensure_delta_sync_allowed("wrk_local", "machine-a")  # registered — no raise
-
-    with pytest.raises(EntitlementError) as exc_info:
-        ensure_delta_sync_allowed("wrk_local", "machine-b")
-    assert exc_info.value.code == "distribution_not_permitted"
-
-    with pytest.raises(EntitlementError) as exc_info:
-        ensure_delta_sync_allowed("wrk_local", "")
-    assert exc_info.value.code == "distribution_not_permitted"
-
-    _set_plan("starter")
-    ensure_delta_sync_allowed("wrk_local", "")  # unrestricted once external is allowed
-    ensure_delta_sync_allowed("wrk_local", "any-machine-at-all")
-
 
 def test_trial_expired_blocks_compile_but_not_sync(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)

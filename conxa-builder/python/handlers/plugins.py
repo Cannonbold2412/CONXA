@@ -224,6 +224,16 @@ class PluginsMixin:
             )
 
         logo_path = str(payload.get("logo_path") or "").strip() or None
+        if logo_path:
+            # Custom installer icons are a paid-plan capability (see docs/PRD.md
+            # §11) — Build Studio has no local plan awareness, so ask the cloud.
+            # Any doubt (call fails, plan missing) defaults to Free, i.e. no icon.
+            try:
+                plan = str(self._cloud_json("/api/v1/entitlements/current").get("plan") or "free")
+            except Exception:
+                plan = "free"
+            if plan == "free":
+                logo_path = None
         sink = _event_sink(rid)
         result = build_installer(
             plugin_id,

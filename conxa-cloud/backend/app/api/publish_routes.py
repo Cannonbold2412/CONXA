@@ -55,6 +55,7 @@ from app.services.entitlements import (
     ensure_trial_active,
     ensure_white_label_allowed,
     ensure_workflow_publishable,
+    get_installer_domain,
     normalize_plan,
     record_published_workflow,
 )
@@ -142,6 +143,11 @@ def _validate_release_notes(notes: str | None) -> str:
     if len(value) > 2000:
         raise HTTPException(status_code=400, detail="release_notes_too_long")
     return value
+
+
+def _random_installer_name() -> str:
+    """Free-plan installers get an unbranded name — see docs/PRD.md §11."""
+    return "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(10))
 
 
 def _mint_pack_token(
@@ -530,7 +536,13 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
     sha256 = hashlib.sha256(body).hexdigest()
     version = _validate_version(request.query_params.get("version", ""))
     release_notes = _validate_release_notes(request.query_params.get("release_notes"))
-    filename = request.query_params.get("filename") or f"{slug}-Plugin-Setup.exe"
+    filename = request.query_params.get("filename")
+    if not filename:
+        if normalize_plan(billing_for(principal)) == "free":
+            filename = f"{_random_installer_name()}.exe"
+        else:
+            domain = get_installer_domain(principal.workspace_id)
+            filename = f"{domain}.exe" if domain else f"{slug}-Plugin-Setup.exe"
     filename = Path(filename).name  # strip any path components
     plugin_record = next(
         (p for p in list_plugins(workspace_id=principal.workspace_id) if p.slug == slug),

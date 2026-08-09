@@ -687,6 +687,26 @@ Every versioned route validates `{installer_version}` against the allow-list (40
 
 **KV namespace:** `installer_versions__{slug}` — one row per version, binary mirrored separately in Postgres (`installer_storage.load_installer_from_db`) since Render's disk is ephemeral.
 
+### 5.1c Plan-Aware Installer Naming + Icon (added 2026-08-09)
+
+When `?filename=` is omitted from the upload call above, the served filename now depends on plan:
+Free gets a random 10-letter unbranded name; paid plans (Starter/Pro/Enterprise) use the workspace's
+stored **installer domain** if one is set, else fall back to the previous `{slug}-Plugin-Setup.exe`.
+The installer domain is plain text and unverified — no DNS proof of ownership yet (see `TODO.md`
+PROD-6, which this field is meant to be gated on once that ships).
+
+**GET /api/v1/entitlements/installer-domain** (owner/admin) — `{domain: string}` (empty string if unset).
+
+**POST /api/v1/entitlements/installer-domain** (owner/admin) — `{domain: string}` → validated (protocol
+stripped, basic hostname shape), stored, and returned. 400 `invalid_domain` on a malformed value.
+
+**KV namespace:** `workspace_installer_domain` — one row per workspace, `{workspace_id, domain}`.
+
+The installer's `.exe` icon is a separate, build-time-only concern (embedded in the binary by Build
+Studio before upload, so the cloud has no upload-time hook for it): Build Studio checks
+`GET /entitlements/current`'s `plan` before calling the local builder and drops any supplied
+`logo_path` on the Free plan. See `docs/TRD.md` §13.4's "Plan-aware installer naming and icon" note.
+
 ### 5.2 Skill Pack Delta
 
 See §5.9 (Skill-Pack Delta Sync) — the sole current contract for this endpoint. An earlier revision of this document described a single shared pack-wide version here; that has been superseded by §5.9's per-skill version map and removed to avoid two contradictory contracts for the same endpoint.
@@ -732,7 +752,7 @@ Response:
   }
 }
 ```
-(Free is the only plan carrying `"distribution": "internal"` — see the machine lock and delta-sync gate below.)
+(Free is the only plan carrying `"distribution": "internal"`, enforced by `ensure_distribution_allowed` at installer-upload time — see §5.1b below.)
 
 **Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(plugin_id, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
 
@@ -1062,15 +1082,6 @@ Authentication: `Authorization: Bearer <sync_token>` where `sync_token` is the p
 - Production (`SKILL_AUTH_REQUIRED=true`): 401 if token is missing or does not match stored token.
 - Local dev (`SKILL_AUTH_REQUIRED=false`): validation skipped.
 
-**Distribution gate (Free-tier only, added 2026-08-09):** after token verification, `_delta_impl` calls
-`entitlements.ensure_delta_sync_allowed(workspace_id, machine_hash)`, where `workspace_id` is read from
-the `sync_tokens` record and `machine_hash` is the `X-Conxa-Machine` header (§13.4a). A no-op for any
-workspace whose plan carries `distribution="external"` (Starter, Pro, Enterprise). For Free
-(`distribution="internal"`), the header must match a machine already registered in the `machines` device
-pool (the same pool `ensure_machine_slot` populates from Build Studio calls) — otherwise `403
-distribution_not_permitted`. This is what stops a Free workspace's already-installed customers from
-receiving further updates, including after a downgrade from a paid tier.
-
 Response:
 ```json
 {
@@ -1100,12 +1111,10 @@ The sync_token is also returned in the publish response so the Build Studio can 
 }
 ```
 
-`plan`/`distribution` (added 2026-08-09) let Build Studio decide whether to machine-lock the pack it's
-about to stage: when `plan == "free"`, `backend.py` stamps `pack.json.build_machine_id` with the SHA-256
-`MachineGuid` hash (§13.4a) of the machine doing the publish; any other plan clears the field if present
-(e.g. after an upgrade). Presence of the field is the signal — the runtime's `skill_loader.js` excludes
-a company's skills entirely if its own machine hash doesn't match, and paid tiers simply never get the
-field written.
+`plan`/`distribution` (added 2026-08-09) are informational — surfaced so Build Studio can reflect the
+workspace's current plan/reach in its own UI without a separate `/entitlements/current` round trip. An
+earlier revision of this field pair drove a machine-lock stamp (`pack.json.build_machine_id`); that
+mechanism was removed the same day — see §5.1c and `docs/TRD.md` §13.4.
 
 **KV namespace:** `sync_tokens` — keyed by slug, stores `{token, company, version, workspace_id, owner_user_id, updated_at}`.
 

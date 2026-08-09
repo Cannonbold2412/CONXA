@@ -11,11 +11,10 @@ const versionManager = (typeof global !== "undefined" && global.__versionManager
   ? global.__versionManager
   : require("./version_manager");
 
-function _fetchJSON(url, token, timeoutMs, machineHash) {
+function _fetchJSON(url, token, timeoutMs) {
   return new Promise((resolve, reject) => {
     const headers = { "User-Agent": "conxa-runtime/1.0" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    if (machineHash) headers["X-Conxa-Machine"] = machineHash;
     const req = httpClient.get(url, { headers }, (res) => {
       let data = "";
       res.on("data", c => data += c);
@@ -105,12 +104,6 @@ async function _syncCompany(skillPacksDir, company, log) {
     sinceMap[slug] = version;
   }
 
-  // Sent so the cloud can allow a Free-tier workspace's own registered Build
-  // Studio machine to keep syncing while denying every other machine — see
-  // entitlements.ensure_delta_sync_allowed. No-op header for Starter/Pro/
-  // Enterprise, which aren't machine-restricted.
-  const machineHash = require("./machine_hash").getMachineIdHash();
-
   let delta;
   {
     const url = `${syncEndpoint}?since=${encodeURIComponent(JSON.stringify(sinceMap))}`;
@@ -118,7 +111,7 @@ async function _syncCompany(skillPacksDir, company, log) {
     for (const waitMs of [0, 300]) {
       if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
       try {
-        delta = await _fetchJSON(url, token, 3000, machineHash);
+        delta = await _fetchJSON(url, token, 3000);
         lastErr = null;
         break;
       } catch (e) {
