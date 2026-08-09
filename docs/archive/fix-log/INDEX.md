@@ -37,6 +37,7 @@ This index lists every rotated file plus the live one.
 | [`FIX-2026-08-03.md`](FIX-2026-08-03.md) | 1 | App updates now reach customers on their very next launch, not the one after |
 | [`FIX-2026-08-02.md`](FIX-2026-08-02.md) | 1 | Fixed the login window rejecting a successful sign-in |
 | [`FIX-2026-08-01.md`](FIX-2026-08-01.md) | 3 | Fixed skill pack publishing rejecting normal-sized packages; Publishing failures now say why, instead of just "try again"; Fixed the "review this step" screen quietly weakening a working step every time you opened it |
+| [`FIX-2026-08-07.md`](FIX-2026-08-07.md) | 4 | Brought the handbooks back in line with how the product actually works; Rebuilt the customer dashboard into an operations control center; Fixed the "free repairs" count being roughly double the real figure; Put the real demo video and product screenshots on the new homepage |
 | `FIX.md` (live) | — | today's entries, not yet rotated |
 
 **Rotation rule:** at the end of each day (or sooner if `FIX.md` exceeds ~800 lines), split by

@@ -1,6 +1,6 @@
 # App Flow Document
 
-**Status:** Current as of 2026-06-01  
+**Status:** Current as of 2026-08-08  
 **Scope:** All major user flows across Build Studio, Conxa Cloud, and Runtime
 
 ---
@@ -24,6 +24,7 @@
 15. [Skill Sync (Runtime Side)](#15-skill-sync-runtime-side)
 16. [Runtime Self-Update](#16-runtime-self-update)
 17. [Failure Recovery (End User)](#17-failure-recovery-end-user)
+18. [Entitlement Gates (Trial, Machines, Distribution, BYOK)](#18-entitlement-gates-trial-machines-distribution-byok)
 
 ---
 
@@ -159,6 +160,13 @@ flowchart TD
 
 Stop-recording no longer waits on video frame extraction — it only renames Playwright's raw `.webm` to
 `recording.webm` and returns. Frame extraction (for vision anchors) now runs at compile time, see §6.
+
+**Recording a file upload** works exactly like any other step from the user's point of view: click the
+page's upload control, pick a file in the normal Windows dialog, done. Under the hood the recorder
+deliberately does *not* intercept that dialog — if it did, the native picker would never open and the
+user could never pick anything. What gets recorded is the file's *name*, never its path (browsers do
+not expose paths), so the compiled skill turns the upload into a required `file_path` input the
+calling agent must supply at run time. See `docs/TRD.md` §9.3.
 
 ---
 
@@ -399,11 +407,12 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[conxa-runtime.exe starts via conxa-runtime/current junction] --> B[Resolve CONXA_DIR + CONXA_DATA_DIR]
-    B --> C[bootstrap.js: version_manager.resolveCurrent for conxa-app, load server.js]
+    B --> B2[bootstrap.js: GET manifest.json signature-verified, update conxa-app if newer — see §16]
+    B2 --> C[bootstrap.js: version_manager.resolveCurrent for conxa-app, min_host check, load server.js]
     C --> D[Load skill index from skill-packs/ cache]
     D --> E[Connect MCP to Claude Desktop]
     E --> F[Async: POST /telemetry/runtime-start fire-and-forget]
-    E --> G[Async: manifest_manager.checkForUpdates — GET manifest.json, 1h cached, signature-verified]
+    E --> G[Async: manifest_manager.checkForUpdates for conxa_runtime — reuses the manifest bootstrap already fetched]
     E --> H[Async: syncSkillPacks — per-skill delta, 4s timeout]
     H --> I[For each company in skill-packs/:]
     I --> J[getToken from OS keychain]
@@ -568,25 +577,32 @@ Each skill is compared and activated **independently** — republishing one skil
 
 ```mermaid
 flowchart TD
-    A[Runtime cold start] --> B[Fetch GET /api/v1/manifest.json - 1h cache]
+    A[Runtime cold start — bootstrap.js, before the app layer is loaded] --> B[Fetch GET /api/v1/manifest.json — no local TTL, every launch fetches]
     B --> C[Verify Ed25519 signature against baked-in public key]
     C -->|Invalid| D[Discard — fall back to last verified cache, or skip check]
-    C -->|Valid| E[decideUpdate per component: semver + minimum_versions floor + rollout bucket]
+    C -->|Valid| E[decideUpdate conxa_app: semver + min_host floor + minimum_versions floor + rollout bucket]
 
-    E -->|conxa_runtime update decided| F[Download exe + keytar.node into conxa-runtime/<version>/]
+    E -->|update decided| L[Download zip on a tight budget — 2 retries x 5s, launch-blocking]
+    L --> M[SHA-256 verify, extract to conxa-app/<version>/, validate server.js present]
+    M --> N[version_manager.activate — flip conxa-app/current, prune old versions]
+    N --> O[Live on THIS launch — server.js has not been require'd yet]
+    E -->|no update, or any failure| P[Fall through — current junction left untouched]
+
+    O --> Q[require conxa-app/current/server.js]
+    P --> Q
+    Q --> R[startupSync: decideUpdate conxa_runtime, reusing the manifest bootstrap already fetched]
+
+    R -->|update decided| F[Download exe + keytar.node into conxa-runtime/<version>/]
     F --> G[SHA-256 verify each file]
     G --> H[Spawn new exe --selfcheck with its own CONXA_DIR]
     H -->|Fails| I[Abort — current untouched, old host keeps running]
     H -->|Passes| J[version_manager.activate — flip conxa-runtime/current, prune old versions]
-    J --> K[Takes effect on the NEXT process spawn — this process's own file was never touched]
-
-    E -->|conxa_app update decided, no active execution| L[Download zip, extract to conxa-app/<version>/]
-    L --> M[Validate server.js present]
-    M --> N[version_manager.activate — flip conxa-app/current, prune old versions]
-    N --> O[Takes effect on next cold start — this process already has server.js in its module cache]
+    J --> K[Takes effect on the NEXT process spawn — a process cannot replace its own running binary]
 ```
 
 Because each new version lands in its own directory rather than overwriting whatever file the *currently running* process loaded from, activation never needs to wait for a "safe restart" — there's nothing running that could be disrupted by it.
+
+The two legs are timed differently on purpose. The app layer is checked *before* anything loads it, so a new app version takes effect on the same launch that downloaded it — which is why its download budget is deliberately small and every failure is swallowed rather than surfaced. The host exe can't possibly apply until the next spawn, so it keeps a generous retry budget and runs in the background alongside skill sync. See `docs/TRD.md` §5.8.
 
 ---
 
@@ -610,6 +626,75 @@ flowchart TD
 
 ---
 
+## 18. Entitlement Gates (Trial, Machines, Distribution, BYOK)
+
+Added 2026-08-08 for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.4). These gates sit in
+front of steps 6 (Pipeline & Compilation) and 9 (Build Installer & Publish) above — they don't replace
+those flows, they can block entry into them.
+
+```mermaid
+flowchart TD
+    A[Build Studio calls a cloud-gated action] --> B{Which action?}
+    B -->|Compile / LLM proxy call| C[Send X-Conxa-Machine header]
+    C --> D{Known machine, or under machines limit?}
+    D -->|No, new device at limit| E[402 machine_limit_exceeded]
+    D -->|Yes| F{Free plan, trial expired?}
+    F -->|Yes| G[402 trial_expired]
+    F -->|No| H[Proceed: compile reserve / LLM proxy call]
+    H --> I{compile_pool = premium and BYOK configured?}
+    I -->|Yes| J[Route to workspace's Azure OpenAI deployment]
+    I -->|No| K[Route to shared pool: free or premium tier]
+
+    B -->|Installer upload| L{distribution=external requested?}
+    L -->|Yes| M{Plan distribution = external?}
+    M -->|No| N[402 distribution_not_permitted]
+    M -->|Yes| O{white_label requested?}
+    L -->|No| O
+    O -->|Yes| P{Plan white_label = true?}
+    P -->|No| Q[402 white_label_not_permitted]
+    P -->|Yes| R[Upload accepted, branded]
+    O -->|No| S[Upload accepted, Conxa-branded]
+
+    B -->|Dashboard / audit / drift route| T{Workspace ops_tier vs. route's requirement}
+    T -->|Below requirement| U[403 ops_tier_required]
+    T -->|Meets requirement| V[Route returns data]
+
+    B -->|Skill-pack publish| W{Plan == free?}
+    W -->|Yes| X[Stamp pack.json.build_machine_id]
+    W -->|No| Y[Publish normally, clear any stale build_machine_id]
+    X --> Z[Runtime later refuses to load this pack on any other machine]
+
+    B -->|Runtime delta-sync poll| AA{Plan distribution = external?}
+    AA -->|Yes: Starter/Pro/Enterprise| AB[Serve delta — unrestricted]
+    AA -->|No: Free| AC{X-Conxa-Machine matches a registered device?}
+    AC -->|Yes| AB
+    AC -->|No| AD[403 distribution_not_permitted — zero updates]
+```
+
+**First-time machine registration.** A brand-new device registers itself on its first gated call — there
+is no separate "register this machine" step in the Studio UI. Settings shows the resulting device list
+(`GET /entitlements/machines`) and lets an admin revoke one (`POST /entitlements/machines/revoke`); a
+revoked machine re-enters through the limit check on its next call, it doesn't silently reappear.
+
+**Trial banner.** While `trial_expired` is false but `trial_ends_at` is set, Studio and the dashboard
+show a countdown; once expired, the same building actions above 402, with a plain-language upgrade
+prompt (`docs/UI-UX-Brief.md`).
+
+**BYOK setup** (Enterprise only): Settings → configure Azure OpenAI endpoint/deployment/API key via
+`PUT /api/v1/workspace/llm-key`. Once configured, every subsequent compile and LLM proxy call for that
+workspace routes to the customer's own deployment instead of the shared pool — silently, with no
+per-call toggle. `GET` on the same endpoint never returns the key, only whether one is configured.
+
+**Free-tier machine lock and delta-sync gate**, added 2026-08-09 (`docs/TRD.md` §13.4a): Free is now the
+only plan with a hard machine restriction on its distributed artifacts — Starter's `distribution` moved
+to `"external"` and is unrestricted by machine count (see the plan-defaults update in `docs/TRD.md`
+§13.4). An installer built on Free only runs on the machine it was built on (`pack.json.build_machine_id`
+checked by `skill_loader.js`), and the cloud denies delta-sync updates to any machine that isn't the
+Free workspace's own registered device — including after a downgrade from a paid tier that once
+distributed externally.
+
+---
+
 ## Flow Summary
 
 | Flow | Trigger | Systems Involved | Duration |
@@ -625,3 +710,4 @@ flowchart TD
 | Recovery | Step failure | Runtime, Cloud (LLM at T3+) | +2–30s |
 | Skill update | Company publishes | Cloud, Runtime (next start) | <15s sync |
 | Runtime update | Cold start check | Runtime, Cloud | Background |
+| Entitlement gate | Every compile/LLM/installer call | Build Studio, Cloud | <200ms |

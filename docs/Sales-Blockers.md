@@ -1,7 +1,61 @@
 # Conxa — Sales Blockers & Implementation Roadmap
 
-**Date:** 2026-07-04  
+**Date:** 2026-07-04 (reviewed 2026-08-08 — repositioned around the capability ladder, code-signing
+blocker unchanged and now more urgent, see below)  
 **Purpose:** Define what code must ship before Conxa can close its first enterprise customer.
+
+---
+
+## The Two Blockers That Actually Matter Now (2026-08-08)
+
+Following the Centelon pilot demo (7 Aug 2026 — see `Conxa-Pilot-Conclusions.pdf`, internal), the
+product's blockers split into two different kinds, and this doc only owns one of them:
+
+1. **Code signing is still the engineering blocker, and it just got sharper.** The pricing/capability
+   ladder now puts external distribution — the "ship it to your customers" rung — on Pro and
+   Enterprise, and Enterprise additionally gets white-label installers (`docs/PRD.md` §11). Distribution
+   is the entire point of those tiers, and distribution is exactly what an unsigned `.exe` breaks.
+   Nothing here changed about the fix: it's still a ~$200/year certificate purchase with zero
+   remaining engineering work (§2.5 below).
+2. **The ICP is a hypothesis, and no amount of code fixes that.** "A pricing ladder is not evidence
+   anyone will climb it. We have decided what to charge for. Nobody has said yes." That gets answered
+   by the follow-up conversation with Centelon and the qualification checklist below — not by this
+   document, and not by more engineering. Track it in `docs/Implementation-Plan.md`, not here.
+
+Use the **Workflow Qualification Checklist** (new, from the pilot) before promising any customer that a
+workflow can be automated — MFA policy, bot protection, terms of service, session lifetime. Better to
+disqualify in week one than fail in week six:
+
+| Check | What kills the deal | Notes |
+|---|---|---|
+| MFA policy | A fresh OTP on every login | The one genuine blocker — can't be worked around, don't try |
+| Bot protection / CAPTCHA / IP allowlisting | Aggressive detection built for adversarial traffic | Mostly irrelevant for line-of-business software (ERPs, internal CRMs, loan origination, vendor portals) — nobody puts bot protection on internal LOB software. Bites consumer platforms, which is why they're gone from the marketing site |
+| Terms of service | A clause banning automated access | Check before demoing, not after |
+| Session lifetime | How long an authenticated session lasts unattended | Determines whether the workflow can run truly unattended vs. needs a human nearby |
+
+See `docs/PRD.md`'s "Workflow Qualification Checklist" section for the full reasoning.
+
+---
+
+## What Changed Since This Doc Was Written
+
+Nothing here reopened, and **Windows installer code signing (2.5) is still the single hard
+blocker** — the signing step still runs automatically the moment `CONXA_SIGN_CERT_SHA1` is set
+(`installer_builder.py`); no certificate has been procured. Three things landed since that
+strengthen the sales position rather than change the blocker list:
+
+- **Customer-facing operations dashboard (2026-08-07).** A buyer-legible health score with its own
+  breakdown, a risk queue, per-workflow reliability with version comparison, self-healing analytics,
+  and an ROI view whose time-saved assumption is editable and labelled an estimate (measured vs.
+  estimated numbers are kept visually separate). This is the artifact to show in a security or
+  procurement review — see `docs/UI-UX-Brief.md`.
+- **CI execution gate re-enabled (2026-08-04).** Every app-layer release now replays a real skill
+  against the declared minimum host build before it can ship. "We can't publish a runtime that
+  fails to execute" is now enforced, not asserted.
+- **Self-update manifests are enforced-signed (2026-08-04).** Production refuses to start without
+  `CONXA_MANIFEST_SIGNING_KEY`, so an unsigned update manifest can't reach customer machines. The
+  runtime binary itself is still not Authenticode-signed — that is the same gap as 2.5 and
+  `docs/Security.md` SG-09.
 
 ---
 
