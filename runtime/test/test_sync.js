@@ -165,3 +165,40 @@ test("a brand-new skill added to a company post-install is picked up from nothin
 
   fs.rmSync(skillPacksDir, { recursive: true, force: true });
 });
+
+test("sync sends X-Conxa-Machine header so the cloud can gate Free-tier delta-sync", async (t) => {
+  // See entitlements.ensure_delta_sync_allowed (cloud side) — it denies any
+  // machine not registered for a Free-tier workspace. The header only does
+  // anything if it's actually sent on every request.
+  const skillPacksDir = mkSkillPacksDir();
+  writePack(skillPacksDir, "acme", { skills: [] });
+
+  let capturedOptions = null;
+  const getMock = mock.method(https, "get", (_url, options, callback) => {
+    capturedOptions = options;
+    const res = {
+      statusCode: 200,
+      on(event, cb) {
+        if (event === "data") process.nextTick(() => cb(Buffer.from(JSON.stringify({ skills: [] }))));
+        if (event === "end") process.nextTick(cb);
+        return res;
+      },
+    };
+    callback(res);
+    return { setTimeout() {}, on() {}, destroy() {} };
+  });
+  t.after(() => getMock.mock.restore());
+
+  await syncSkillPacks(skillPacksDir, { timeoutMs: 4000, log: () => {} });
+
+  const { getMachineIdHash } = require("../machine_hash");
+  const expected = getMachineIdHash();
+  assert.ok(capturedOptions, "delta request must have been made");
+  if (expected) {
+    assert.strictEqual(capturedOptions.headers["X-Conxa-Machine"], expected);
+  } else {
+    assert.ok(!("X-Conxa-Machine" in capturedOptions.headers), "no header when the hash is unavailable");
+  }
+
+  fs.rmSync(skillPacksDir, { recursive: true, force: true });
+});

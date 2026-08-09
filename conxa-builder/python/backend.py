@@ -218,11 +218,16 @@ class Backend(
     def _cloud_json(self, path: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> dict[str, Any]:
         import urllib.request
 
+        from services.machine_id import get_machine_id_hash
+
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = urllib.request.Request(f"{self._cloud_api_base()}{path}", data=data, method=method)
         if body is not None:
             req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self._cloud_token()}")
+        machine_hash = get_machine_id_hash()
+        if machine_hash:
+            req.add_header("X-Conxa-Machine", machine_hash)
         try:
             with urllib.request.urlopen(req, timeout=45) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
@@ -244,8 +249,11 @@ class Backend(
         messages = {
             "compile_credit_limit_exceeded": "Monthly compile credits are exhausted for this workspace.",
             "human_edit_pool_exceeded": "Monthly Human Edit pool is exhausted for this workspace.",
-            "installer_limit_exceeded": "Installer slot limit reached for this workspace.",
             "seat_limit_exceeded": "Seat limit reached for this workspace.",
+            "machine_limit_exceeded": "This workspace's plan is limited to fewer build machines than are currently registered.",
+            "trial_expired": "The 30-day free trial has ended. Upgrade to keep building.",
+            "distribution_not_permitted": "This plan can only build installers for internal use. Upgrade to Pro to distribute to customers.",
+            "white_label_not_permitted": "White-label installer branding requires the Enterprise plan.",
             "entitlements_unavailable": "Cloud entitlements are unavailable, so quota-gated actions are blocked.",
             "invalid_usage_class": "Invalid LLM usage class.",
         }
@@ -421,6 +429,14 @@ class Backend(
         pack["sync_endpoint"] = f"{cloud_api}{sync_url}"
         pack["sync_token"] = sync_token
         pack["installer_version"] = generation
+        if str(published.get("plan") or "free") == "free":
+            from services.machine_id import get_machine_id_hash
+
+            machine_hash = get_machine_id_hash()
+            if machine_hash:
+                pack["build_machine_id"] = machine_hash
+        else:
+            pack.pop("build_machine_id", None)
         pack["published"] = {
             "cloud_api": cloud_api,
             "workspace_id": str(published.get("workspace_id") or ""),
@@ -491,7 +507,7 @@ class Backend(
                 detail = str(error_payload.get("detail") or "")
             except Exception:
                 detail = ""
-            if detail in {"installer_limit_exceeded", "entitlements_unavailable"}:
+            if detail in {"distribution_not_permitted", "white_label_not_permitted", "entitlements_unavailable"}:
                 raise _CommandError(detail, self._entitlement_error_message(detail)) from exc
             if exc.code == 409:
                 raise _CommandError(

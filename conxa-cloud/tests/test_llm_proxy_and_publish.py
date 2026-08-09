@@ -13,6 +13,7 @@ from conxa_core.db import db_get, db_set
 from conxa_core.storage.plugin_store import create_plugin, list_plugins
 from app.main import app
 from app.services import llm_metering
+from app.services.saas import upsert_billing
 
 client = TestClient(app)
 STUDIO_HEADER = {"X-Conxa-Client": settings.llm_proxy_client_header}
@@ -26,7 +27,8 @@ def _reset_quota(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "entitlements_enforce_compile", False)
     monkeypatch.setattr(settings, "entitlements_enforce_human_edit", False)
-    monkeypatch.setattr(settings, "entitlements_enforce_installers", False)
+    monkeypatch.setattr(settings, "entitlements_enforce_distribution", False)
+    monkeypatch.setattr(settings, "entitlements_enforce_machines", False)
     yield
     settings.llm_proxy_monthly_token_quota = original
     settings.api_proxy_shared_secret = original_proxy_secret
@@ -44,7 +46,7 @@ def test_proxy_forwards_and_meters(monkeypatch):
     from app.api import llm_proxy_routes
 
     class FakeRouter:
-        def route_text(self, task, payload, timeout_ms, *, error_detail=None):
+        def route_text(self, task, payload, timeout_ms, *, error_detail=None, pool=None):
             return {"text": "ok", "output": "ok"}
 
     monkeypatch.setattr(llm_proxy_routes, "get_router", lambda: FakeRouter())
@@ -256,6 +258,64 @@ def test_skill_pack_delta_requires_sync_token_when_cloud_auth_required(monkeypat
 
     assert ok.status_code == 200, ok.text
     assert ok.json()["skills"] == []  # pack.json declares no skills in this fixture
+
+
+def test_skill_pack_delta_gates_free_tier_to_its_own_machine(monkeypatch, tmp_path):
+    """Once a workspace's plan doesn't allow external distribution (Free),
+    only its own registered Build Studio machine may pull a skill-pack
+    delta — every other machine, or no machine header at all, gets denied.
+    Starter is unrestricted (distribution="external"). See
+    entitlements.ensure_delta_sync_allowed."""
+    monkeypatch.setattr(settings, "auth_required", True)
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_distribution", True)
+    import app.api.skillpack_update_routes as sp
+    from app.services.entitlements import ensure_machine_slot
+    from app.services.saas import Principal
+
+    upsert_billing("wrk_local", {"plan": "free"})
+
+    packs_dir = tmp_path / "skill-packs" / "free-co"
+    packs_dir.mkdir(parents=True)
+    (packs_dir / "pack.json").write_text(
+        '{"company":"free-co","skill_pack_version":"1.0.0","skills":[]}',
+        encoding="utf-8",
+    )
+    db_set("sync_tokens", "free-co", {"token": "free-sync-secret", "workspace_id": "wrk_local"})
+    auth_header = {"Authorization": "Bearer free-sync-secret"}
+
+    sp._rate_cache.clear()
+    no_header = client.get("/api/v1/skill-packs/free-co/delta?since=0", headers=auth_header)
+    assert no_header.status_code == 403
+    assert no_header.json()["detail"] == "distribution_not_permitted"
+
+    principal = Principal(
+        user_id="u1", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+    ensure_machine_slot(principal, "machine-a", "10.0.0.1")
+
+    sp._rate_cache.clear()
+    other_machine = client.get(
+        "/api/v1/skill-packs/free-co/delta?since=0",
+        headers={**auth_header, "X-Conxa-Machine": "machine-b"},
+    )
+    assert other_machine.status_code == 403
+    assert other_machine.json()["detail"] == "distribution_not_permitted"
+
+    sp._rate_cache.clear()
+    own_machine = client.get(
+        "/api/v1/skill-packs/free-co/delta?since=0",
+        headers={**auth_header, "X-Conxa-Machine": "machine-a"},
+    )
+    assert own_machine.status_code == 200, own_machine.text
+
+    # Starter is unrestricted — no machine header needed.
+    upsert_billing("wrk_local", {"plan": "starter"})
+    sp._rate_cache.clear()
+    starter_ok = client.get("/api/v1/skill-packs/free-co/delta?since=0", headers=auth_header)
+    assert starter_ok.status_code == 200, starter_ok.text
 
 
 def test_tracking_ingest_requires_published_token_and_lists_runs():
@@ -537,6 +597,10 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "api_proxy_shared_secret", "proxy-secret")
+    # Dashboard/runs endpoints are ops_tier-gated (Free has none) — this test is
+    # about workspace-scoping visibility, not billing tiers, so give the org
+    # workspace dashboard access rather than asserting against the Free default.
+    upsert_billing("org_same", {"plan": "pro"})
     personal_headers = {
         "x-conxa-proxy-secret": "proxy-secret",
         "x-conxa-user-id": "user_same",
@@ -629,6 +693,7 @@ def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_p
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "api_proxy_shared_secret", "proxy-secret")
+    upsert_billing("org_same", {"plan": "pro"})
 
     pub = client.post(
         "/api/v1/plugins/publish",

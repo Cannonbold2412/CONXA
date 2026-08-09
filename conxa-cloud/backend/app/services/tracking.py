@@ -16,6 +16,7 @@ from typing import Any
 from conxa_core.db import db_get, db_list, db_list_kv
 from conxa_core.config import settings
 from conxa_core.storage.plugin_store import list_plugins
+from app.services.entitlements import analytics_retention_cutoff_ms
 from app.services.saas import (
     Principal,
     personal_workspace_id,
@@ -269,6 +270,7 @@ def _range_days(value: str) -> int:
 
 def _visible_runtime_registrations(principal: Principal) -> list[dict[str, Any]]:
     visible_ids = set(visible_workspace_ids_for(principal))
+    cutoff_ms = analytics_retention_cutoff_ms(principal)
     registrations: list[dict[str, Any]] = []
     for reg in db_list("runtime_registrations"):
         if not isinstance(reg, dict):
@@ -276,11 +278,14 @@ def _visible_runtime_registrations(principal: Principal) -> list[dict[str, Any]]
         workspace_id = str(reg.get("workspace_id") or "")
         if not workspace_id or workspace_id not in visible_ids:
             continue
+        if cutoff_ms is not None and _epoch_ms(reg.get("last_seen")) < cutoff_ms:
+            continue
         registrations.append(reg)
     return registrations
 
 
 def _visible_run_records(principal: Principal) -> list[dict[str, Any]]:
+    cutoff_ms = analytics_retention_cutoff_ms(principal)
     records: list[dict[str, Any]] = []
     for row in _tracking_company_rows(principal):
         company = str(row.get("company") or "").strip()
@@ -294,7 +299,10 @@ def _visible_run_records(principal: Principal) -> list[dict[str, Any]]:
             for batch in scoped:
                 events.extend(batch.get("events", []))
             summary = _run_summary(run_id, scoped)
-            records.append({"company": company, "summary": summary, "events": events})
+            record = {"company": company, "summary": summary, "events": events}
+            if cutoff_ms is not None and _record_time_ms(record) < cutoff_ms:
+                continue
+            records.append(record)
     records.sort(key=lambda r: _record_time_ms(r), reverse=True)
     return records
 

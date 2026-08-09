@@ -15,8 +15,10 @@ from pydantic import BaseModel
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_list, db_list_kv, using_database
+from app.api.deps import entitlement_http_error
 from app.api.product_ownership import validate_installer_version
 from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
+from app.services.entitlements import ensure_delta_sync_allowed
 from app.services.saas import principal_from_request, ensure_principal
 
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
@@ -197,11 +199,22 @@ def _delta_impl(company: str, since: str, request: Request) -> dict[str, Any]:
     Authentication: Bearer token must match the per-company sync_token minted
     at publish time and embedded in the installer's pack.json.
     Rate limited: 1 request per 5 minutes per token.
+
+    Distribution gate: once the owning workspace's plan doesn't allow
+    external distribution (Free), only its own registered Build Studio
+    machine may pull a delta — see ensure_delta_sync_allowed.
     """
     token = _extract_token(request) if request else None
     _verify_sync_token(company, token)
     if token:
         _check_rate_limit(token)
+    stored = db_get("sync_tokens", company)
+    workspace_id = str(stored.get("workspace_id") or "") if isinstance(stored, dict) else ""
+    machine_hash = (request.headers.get("x-conxa-machine", "") if request else "").strip()
+    try:
+        ensure_delta_sync_allowed(workspace_id, machine_hash)
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
     try:
         since_map = json.loads(since) if since else {}
         if not isinstance(since_map, dict):

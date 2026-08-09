@@ -14,6 +14,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable
 
+from services.machine_id import get_machine_id_hash
+
 # Minimum HTTP timeout for proxied calls (double-hop: Studio → cloud → LLM provider).
 # The per-task timeout_ms (e.g. llm_text_timeout_ms=2000) was designed for direct
 # LLM endpoints; proxied calls need a much larger budget.
@@ -99,6 +101,9 @@ class LLMProxyClient:
         req.add_header("Content-Type", "application/json")
         req.add_header("X-Conxa-Client", self._client_header)
         req.add_header("Authorization", f"Bearer {self._token_provider()}")
+        machine_hash = get_machine_id_hash()
+        if machine_hash:
+            req.add_header("X-Conxa-Machine", machine_hash)
 
         # Use a minimum 90s budget for proxied calls; the caller's timeout_ms is
         # calibrated for direct LLM endpoints, not a double-hop proxy.
@@ -132,6 +137,8 @@ class LLMProxyClient:
             if detail in {
                 "compile_credit_limit_exceeded",
                 "human_edit_pool_exceeded",
+                "machine_limit_exceeded",
+                "trial_expired",
                 "entitlements_unavailable",
                 "invalid_usage_class",
             }:
