@@ -60,7 +60,11 @@ def _is_openai_compatible_endpoint(endpoint: str) -> bool:
     # Local/custom adapters may still accept the legacy payload shape.
     if "integrate.api.nvidia.com" in (parsed.netloc or ""):
         return True
-    return (parsed.path or "").rstrip("/") == "/v1"
+    path = (parsed.path or "").rstrip("/")
+    # A pre-built chat/completions URL (e.g. an Azure OpenAI BYOK deployment
+    # URL, which has no /v1 segment at all) is accepted verbatim here — it
+    # mirrors _chat_completions_url's own short-circuit for the same shape.
+    return path == "/v1" or path.endswith("/chat/completions")
 
 
 def _chat_completions_url(endpoint: str) -> str:

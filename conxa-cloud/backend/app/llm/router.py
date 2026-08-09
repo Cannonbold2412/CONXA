@@ -30,6 +30,11 @@ class PoolEntry:
     api_key: str
     text_model: str
     vision_model: str
+    pool: str = "free"  # "free" | "premium" — see Settings.llm_premium_providers
+    # "bearer" (Authorization: Bearer <key>, every pooled provider) or
+    # "api_key_header" (api-key: <key> — Azure OpenAI's REST auth, used only
+    # by BYOK entries; see app/services/byok.py).
+    auth_style: str = "bearer"
     requests_sent: int = 0
     requests_429: int = 0
     last_used_at: float = 0.0
@@ -151,11 +156,17 @@ class LLMRouter:
                 api_key=provider_cfg.api_key,
                 text_model=provider_cfg.text_model,
                 vision_model=provider_cfg.vision_model,
+                pool=provider_cfg.pool,
             )
             self.pool.append(entry)
 
-    def _next_available_entry(self, *, for_vision: bool = False) -> PoolEntry | None:
-        """Pick next available entry from pool using LRU, skipping cooled entries."""
+    def _next_available_entry(self, *, for_vision: bool = False, pool: str | None = None) -> PoolEntry | None:
+        """Pick next available entry from pool using LRU, skipping cooled entries.
+
+        ``pool`` (None = no filter) restricts to "free" or "premium" entries —
+        the caller passes the requesting workspace's compile_pool capability
+        (docs/PRD.md §11). A pool with no matching entries falls through to
+        None just like an exhausted pool, rather than silently mixing tiers."""
         if not self.pool:
             return None
 
@@ -176,6 +187,9 @@ class LLMRouter:
             if for_vision and not entry.vision_model:
                 continue
 
+            if pool is not None and entry.pool != pool:
+                continue
+
             return entry
 
         return None
@@ -187,8 +201,13 @@ class LLMRouter:
         timeout_ms: int,
         *,
         error_detail: list[str] | None = None,
+        pool: str | None = None,
     ) -> dict[str, Any] | None:
-        """Route a text-only LLM call to an available provider."""
+        """Route a text-only LLM call to an available provider.
+
+        ``pool`` restricts to "free" or "premium" providers; if the requested
+        pool has no available entry, falls back to any pool rather than
+        failing a paying customer's compile over a provider misconfiguration."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
@@ -196,7 +215,10 @@ class LLMRouter:
             )
 
         for attempt in range(self.max_retries):
-            entry = self._next_available_entry(for_vision=False)
+            entry = self._next_available_entry(for_vision=False, pool=pool)
+            if entry is None and pool is not None:
+                _debug_log(f"router: pool={pool} exhausted, falling back to any pool")
+                entry = self._next_available_entry(for_vision=False)
             if entry is None:
                 _debug_log("router: all providers cooled or exhausted")
                 if error_detail:
@@ -227,8 +249,10 @@ class LLMRouter:
         timeout_ms: int,
         *,
         error_detail: list[str] | None = None,
+        pool: str | None = None,
     ) -> dict[str, Any] | None:
-        """Route a vision-capable LLM call to an available provider."""
+        """Route a vision-capable LLM call to an available provider. See
+        route_text for the ``pool`` fallback behavior."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
@@ -236,7 +260,10 @@ class LLMRouter:
             )
 
         for attempt in range(self.max_retries):
-            entry = self._next_available_entry(for_vision=True)
+            entry = self._next_available_entry(for_vision=True, pool=pool)
+            if entry is None and pool is not None:
+                _debug_log(f"router: pool={pool} exhausted for vision, falling back to any pool")
+                entry = self._next_available_entry(for_vision=True)
             if entry is None:
                 _debug_log("router: no providers with vision support available")
                 if error_detail:
@@ -258,6 +285,28 @@ class LLMRouter:
             # Continue to next provider on failure
             _debug_log(f"router: retry {attempt + 1}/{self.max_retries} for vision task {task}")
 
+        return None
+
+    def call_entry_directly(
+        self,
+        entry: PoolEntry,
+        task: str,
+        payload: dict[str, Any],
+        timeout_ms: int,
+        *,
+        error_detail: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Single-attempt call against a caller-supplied entry, bypassing pool
+        selection and cross-provider failover entirely. Used for BYOK — there's
+        exactly one deployment to call, so the shared pool's rotate/cool-down/
+        drop-on-401 machinery (which assumes many interchangeable keys) doesn't
+        apply; the entry is never added to self.pool, so it's never dropped
+        from anything. One retry mirrors the pooled paths' minimum useful
+        resilience against a single transient failure."""
+        for attempt in range(min(2, self.max_retries)):
+            result = self._call_provider(entry, task, payload, timeout_ms, error_detail=error_detail, attempt=attempt)
+            if result is not None:
+                return result
         return None
 
     def _call_provider(
@@ -300,10 +349,11 @@ class LLMRouter:
             return None
 
         ep = _chat_completions_url(entry.endpoint)
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {entry.api_key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        if entry.auth_style == "api_key_header":
+            headers["api-key"] = entry.api_key
+        else:
+            headers["Authorization"] = f"Bearer {entry.api_key}"
 
         timeout_s = max(0.2, timeout_ms / 1000.0)
 
@@ -459,6 +509,7 @@ class LLMRouter:
                 {
                     "provider": entry.provider,
                     "endpoint": entry.endpoint,
+                    "pool": entry.pool,
                     "requests_sent": entry.requests_sent,
                     "requests_429": entry.requests_429,
                     "cooled": entry.cooled_until > time.monotonic(),
