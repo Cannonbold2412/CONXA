@@ -52,14 +52,14 @@ class CashfreeRoutesTests(unittest.TestCase):
 
         return TestClient(app)
 
-    def test_list_plans_returns_three_tiers(self) -> None:
+    def test_list_plans_returns_four_tiers(self) -> None:
         res = self._client().get("/api/v1/subscriptions/plans")
         self.assertEqual(res.status_code, 200)
         plans = {p["tier"]: p for p in res.json()["plans"]}
-        self.assertEqual(set(plans), {"free", "starter", "pro"})
+        self.assertEqual(set(plans), {"free", "starter", "pro", "enterprise"})
         self.assertEqual(plans["free"]["amount"], 0)
-        self.assertEqual(plans["starter"]["amount"], 29999)
-        self.assertEqual(plans["pro"]["amount"], 79999)
+        self.assertEqual(plans["starter"]["amount"], 19999)
+        self.assertEqual(plans["pro"]["amount"], 49999)
         self.assertTrue(all(p["features"] for p in plans.values()))
 
     def test_create_subscription_returns_reference_and_stores_mapping(self) -> None:

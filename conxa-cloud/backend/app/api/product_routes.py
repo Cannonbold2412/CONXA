@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
-from app.api.deps import current_principal
+from app.api.deps import current_principal, entitlement_http_error
+from app.services.entitlements import ensure_ops_tier
 from app.services.rbac import require_admin
 from app.services.saas import (
     Principal,
@@ -103,4 +104,11 @@ def list_audit_events(
     limit: int = 100,
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
+    """Audit log visibility is a "basic"+ ops_tier capability — Free has none,
+    Starter gets read-only, Pro/Enterprise get full (export is a documented
+    follow-up, see TODO.md; there's no separate export endpoint to gate yet)."""
+    try:
+        ensure_ops_tier(principal, "basic")
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
     return {"audit_events": audit_events_for(principal, limit=limit)}

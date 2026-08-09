@@ -35,14 +35,16 @@ _CF_BASE = {
 def _plan_features(tier: str) -> list[str]:
     """Derive the human-readable feature list from the single source of truth
     (``PLAN_LIMITS`` in the entitlements service) so pricing copy can never drift
-    from what is actually enforced."""
+    from what is actually enforced. Order mirrors the capability ladder in
+    docs/PRD.md §11: reach (seats/machines), spend (credits/tokens), then what
+    the plan unlocks (distribution, ops depth, retention, BYOK)."""
     limits = PLAN_LIMITS.get(tier, {})
 
     def _seat(n: int | None) -> str:
         return "Unlimited seats" if n is None else f"{n} seat" + ("s" if n != 1 else "")
 
-    def _slot(n: int | None) -> str:
-        return "Unlimited skill pack slots" if n is None else f"{n} skill pack slot" + ("s" if n != 1 else "")
+    def _machine(n: int | None) -> str:
+        return "Unlimited machines" if n is None else f"{n} machine" + ("s" if n != 1 else "")
 
     def _credits(n: int | None) -> str:
         return "Unlimited compile credits/month" if n is None else f"{n} compile credits/month"
@@ -50,14 +52,37 @@ def _plan_features(tier: str) -> list[str]:
     def _tokens(n: int | None) -> str:
         if n is None:
             return "Unlimited Human Edit tokens/month"
-        return f"{n // 1_000_000}M Human Edit tokens/month"
+        if n >= 1_000_000:
+            return f"{n // 1_000_000}M Human Edit tokens/month"
+        return f"{n // 1_000}K Human Edit tokens/month"
 
-    return [
+    def _distribution(dist: str, white_label: bool) -> str:
+        if dist != "external":
+            return "Internal distribution only"
+        return "External distribution, white-label" if white_label else "External distribution, Conxa-branded"
+
+    def _ops(ops_tier: str) -> str:
+        return {"none": "No ops dashboard", "basic": "Basic dashboard", "full": "Full dashboard, drift detection, audit export"}.get(
+            ops_tier, "No ops dashboard"
+        )
+
+    def _retention(n: int | None) -> str:
+        if n is None:
+            return "Custom analytics retention"
+        return "No analytics retention" if n == 0 else f"{n}-day analytics retention"
+
+    features = [
         _seat(limits.get("seats")),
-        _slot(limits.get("skill_pack_slots")),
+        _machine(limits.get("machines")),
         _credits(limits.get("compile_credits")),
         _tokens(limits.get("human_edit_tokens")),
+        _distribution(str(limits.get("distribution") or "internal"), bool(limits.get("white_label"))),
+        _ops(str(limits.get("ops_tier") or "none")),
+        _retention(limits.get("analytics_retention_days")),
     ]
+    if limits.get("byok"):
+        features.append("Bring your own key (Azure OpenAI)")
+    return features
 
 
 TIER_INFO = {
@@ -70,17 +95,31 @@ TIER_INFO = {
     },
     "starter": {
         "name": "Starter",
-        "amount": 29999,  # INR (Cashfree uses actual rupees, not paise)
+        "amount": 19_999,  # INR (Cashfree uses actual rupees, not paise)
         "currency": "INR",
         "period": "monthly",
         "features": _plan_features("starter"),
     },
     "pro": {
         "name": "Pro",
-        "amount": 79999,  # INR
+        "amount": 49_999,  # INR
         "currency": "INR",
         "period": "monthly",
         "features": _plan_features("pro"),
+    },
+    "enterprise": {
+        "name": "Enterprise",
+        "amount": 99_999,  # INR — floor of a negotiated, custom price
+        "currency": "INR",
+        "period": "monthly",
+        "features": _plan_features("enterprise"),
+    },
+    "credits_addon_25": {
+        "name": "+25 compile credits",
+        "amount": 4_999,  # INR/month, stacks on Starter or Pro
+        "currency": "INR",
+        "period": "monthly",
+        "features": ["+25 compile credits/month, stacks with Starter or Pro"],
     },
 }
 
@@ -116,7 +155,18 @@ def _configured_plan_id(tier: str) -> str:
         return settings.cashfree_starter_plan_id.strip()
     if tier == "pro":
         return settings.cashfree_pro_plan_id.strip()
+    if tier == "credits_addon_25":
+        return settings.cashfree_addon_plan_id.strip()
     return ""
+
+
+def _bump_addon_packs(workspace_id: str, delta: int) -> None:
+    """+1 on addon activation, -1 (floored at 0) on addon cancellation. Reads
+    current count via upsert_billing's own read-then-merge rather than adding a
+    second billing-read path — an empty patch returns the record unchanged."""
+    current = upsert_billing(workspace_id, {})
+    packs = max(0, int(current.get("addon_compile_packs") or 0) + delta)
+    upsert_billing(workspace_id, {"addon_compile_packs": packs})
 
 
 def _plan_store_path() -> Path:
@@ -157,6 +207,7 @@ def _tier_for_plan_id(plan_id: str) -> str | None:
     configured = {
         "starter": settings.cashfree_starter_plan_id.strip(),
         "pro": settings.cashfree_pro_plan_id.strip(),
+        "credits_addon_25": settings.cashfree_addon_plan_id.strip(),
     }
     for tier, configured_plan_id in configured.items():
         if configured_plan_id and plan_id == configured_plan_id:
@@ -246,33 +297,15 @@ def _ensure_plan(tier: str) -> str:
 
 @router.get("/plans")
 def list_plans() -> dict[str, Any]:
-    """Return available subscription tiers with features and pricing."""
+    """Return the four public tiers with features and pricing. This is what the
+    marketing pricing page renders — deriving straight from TIER_INFO (itself
+    built from PLAN_LIMITS via _plan_features) is what keeps the public price
+    sheet from ever drifting out of sync with what's actually enforced. The
+    add-on plan is deliberately excluded — it's a checkout item, not a tier."""
     return {
         "plans": [
-            {
-                "tier": "free",
-                "name": TIER_INFO["free"]["name"],
-                "amount": 0,
-                "currency": "INR",
-                "period": None,
-                "features": TIER_INFO["free"]["features"],
-            },
-            {
-                "tier": "starter",
-                "name": TIER_INFO["starter"]["name"],
-                "amount": TIER_INFO["starter"]["amount"],
-                "currency": "INR",
-                "period": "monthly",
-                "features": TIER_INFO["starter"]["features"],
-            },
-            {
-                "tier": "pro",
-                "name": TIER_INFO["pro"]["name"],
-                "amount": TIER_INFO["pro"]["amount"],
-                "currency": "INR",
-                "period": "monthly",
-                "features": TIER_INFO["pro"]["features"],
-            },
+            {"tier": tier, **TIER_INFO[tier]}
+            for tier in ("free", "starter", "pro", "enterprise")
         ]
     }
 
@@ -285,8 +318,8 @@ async def create_subscription(
     """Create a Cashfree subscription for a tier. Returns subscription_id and auth_link."""
     require_admin(principal)
     tier = _normalize_tier(body.get("tier", ""))
-    if tier not in ["starter", "pro"]:
-        raise HTTPException(status_code=400, detail="tier must be 'starter' or 'pro'")
+    if tier not in ["starter", "pro", "credits_addon_25"]:
+        raise HTTPException(status_code=400, detail="tier must be 'starter', 'pro', or 'credits_addon_25'")
     try:
         plan_id = _ensure_plan(tier)
         info = TIER_INFO[tier]
@@ -370,12 +403,17 @@ async def verify_subscription(
         tier = _tier_for_plan_id(plan_id)
         if not tier or tier == "free":
             raise HTTPException(status_code=400, detail="unknown_plan")
-        upsert_billing(principal.workspace_id, {
-            "plan": tier,
-            "status": "active",
-            "subscription_id": subscription_id,
-            "current_period_end": _parse_next_charge(subscription),
-        })
+        if tier == "credits_addon_25":
+            # Stacks on top of whatever plan is already active — never touches
+            # plan/status/current_period_end, which belong to the base subscription.
+            _bump_addon_packs(principal.workspace_id, 1)
+        else:
+            upsert_billing(principal.workspace_id, {
+                "plan": tier,
+                "status": "active",
+                "subscription_id": subscription_id,
+                "current_period_end": _parse_next_charge(subscription),
+            })
         logger.info(
             "cashfree_subscription_verified workspace_id=%s tier=%s status=%s",
             principal.workspace_id,
@@ -430,7 +468,9 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
         ):
             try:
                 tier = _tier_for_plan_id(plan_id) or _normalize_tier(mapping.get("tier", ""))
-                if tier and tier != "free":
+                if tier == "credits_addon_25":
+                    _bump_addon_packs(workspace_id, 1)
+                elif tier and tier != "free":
                     upsert_billing(
                         workspace_id,
                         {
@@ -451,14 +491,20 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
     ):
         if workspace_id:
             try:
-                upsert_billing(
-                    workspace_id,
-                    {
-                        "plan": "free",
-                        "status": "inactive",
-                        "current_period_end": None,
-                    },
-                )
+                cancelled_tier = _tier_for_plan_id(plan_id) or _normalize_tier(mapping.get("tier", ""))
+                if cancelled_tier == "credits_addon_25":
+                    # An add-on pack expiring only removes that pack's 25 credits —
+                    # the base plan and its own subscription are untouched.
+                    _bump_addon_packs(workspace_id, -1)
+                else:
+                    upsert_billing(
+                        workspace_id,
+                        {
+                            "plan": "free",
+                            "status": "inactive",
+                            "current_period_end": None,
+                        },
+                    )
             except Exception:
                 logger.exception(
                     "cashfree_webhook_cancel_failed event=%s workspace_id=%s",

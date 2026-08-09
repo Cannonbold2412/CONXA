@@ -49,9 +49,17 @@ from app.api.product_ownership import (
     validate_installer_version,
 )
 from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns, skillpack_versions_ns
-from app.services.entitlements import ensure_skill_pack_slot_available
+from app.services.entitlements import (
+    _limits_from_billing,
+    ensure_distribution_allowed,
+    ensure_trial_active,
+    ensure_white_label_allowed,
+    ensure_workflow_publishable,
+    normalize_plan,
+    record_published_workflow,
+)
 from app.services.rbac import require_admin
-from app.services.saas import add_audit_event
+from app.services.saas import add_audit_event, billing_for
 from app.api.updates_routes import (
     _COMPONENT_VERSIONS_NS,
     _MANIFEST_NS,
@@ -257,19 +265,17 @@ def _publish_skill_pack_impl(
     is ``None`` for the legacy route (unversioned URLs are minted into pack.json,
     matching every runtime already deployed against them).
     """
-    # Conflict-check before the slot-limit check, and claim only after it passes —
-    # claiming first would make every brand-new slug look pre-owned by the time
-    # the "is this actually a new slot" check ran, making the limit unenforceable.
-    _assert_not_owned_by_other(slug, principal.workspace_id)
-
-    # Enforce the plan's product/skill-pack-slot limit. Publishing to a slug that
-    # already has a release is always allowed (updates), so only creating a brand
-    # new product beyond the plan's slot count is blocked.
     try:
-        ensure_skill_pack_slot_available(principal, slug)
+        ensure_trial_active(principal)
+        ensure_workflow_publishable(principal, slug, body.skills)
     except Exception as exc:  # noqa: BLE001
         raise entitlement_http_error(exc) from exc
 
+    # Conflict-check before claiming — a workspace may publish under any number
+    # of slugs (the per-plan slot limit was removed 2026-08-08; see
+    # docs/Implementation-Plan.md), the only remaining rule is that a slug
+    # already claimed by another workspace can't be taken over.
+    _assert_not_owned_by_other(slug, principal.workspace_id)
     _claim_owner(slug, principal.workspace_id)
 
     skill_pack_version = _validate_skill_pack_version(body.skill_pack_version)
@@ -377,6 +383,7 @@ def _publish_skill_pack_impl(
         if identifier not in index:
             index.append(identifier)
             index_changed = True
+        record_published_workflow(principal.workspace_id, slug, skill_slug)
     if index_changed:
         db_set(_MANIFEST_NS, "skill_pack_index", index)
     if body.skills:
@@ -414,6 +421,8 @@ def _publish_skill_pack_impl(
         metadata={"version": skill_pack_version, "files_written": written},
     )
 
+    billing = billing_for(principal)
+    limits = _limits_from_billing(billing)
     return {
         "slug": slug,
         "version": skill_pack_version,
@@ -423,6 +432,8 @@ def _publish_skill_pack_impl(
         "tracking": tracking,
         "workspace_id": principal.workspace_id,
         "published_at": published_at,
+        "plan": normalize_plan(str(billing.get("plan") or "free")),
+        "distribution": limits["distribution"],
     }
 
 
@@ -480,16 +491,30 @@ def _skill_pack_versions_impl(slug: str, request: Request) -> dict[str, Any]:
 async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
     """Upload the built installer .exe as a raw octet-stream body.
 
-    Query params: ``filename`` (display name), ``version``, ``release_notes``.
+    Query params: ``filename`` (display name), ``version``, ``release_notes``,
+    ``distribution`` (``internal`` default | ``external``), ``white_label``.
 
-    No product/skill-pack-slot entitlement check here — that gate lives on
-    skill-pack publish only (installer upload is optional and unmetered; see
-    ``_publish_skill_pack_impl``).
+    No product/skill-pack-slot entitlement check here — the per-slug slot limit
+    was removed 2026-08-08 (see docs/Implementation-Plan.md). What's gated now
+    is *reach*: Free and Starter may only upload an internal-use installer;
+    external distribution requires Pro or Enterprise, and custom branding
+    requires Enterprise (see docs/PRD.md §11, the capability ladder).
     """
     principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(slug)
     _assert_owner(slug, principal.workspace_id)
+
+    distribution = request.query_params.get("distribution", "internal").strip().lower()
+    if distribution not in ("internal", "external"):
+        distribution = "internal"
+    white_label = request.query_params.get("white_label", "false").strip().lower() == "true"
+    try:
+        ensure_trial_active(principal)
+        ensure_distribution_allowed(principal, external=distribution == "external")
+        ensure_white_label_allowed(principal, custom_branding=white_label)
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
 
     max_bytes = settings.build_artifact_upload_max_bytes
     cl = request.headers.get("content-length")
@@ -536,6 +561,8 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
         "workspace_id": principal.workspace_id,
         "is_latest": True,
         "workflow_count": workflow_count,
+        "distribution": distribution,
+        "white_label": white_label,
     }
     (version_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

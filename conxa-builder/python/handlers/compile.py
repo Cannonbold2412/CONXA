@@ -49,8 +49,7 @@ class CompileMixin:
         if not title:
             raise _CommandError("invalid_input", "skill_title is required")
 
-        is_recompile = bool(workflow and workflow.skill_id) or str(payload.get("mode") or "").strip() == "recompile"
-        usage_class = "human_edit" if is_recompile else "compile"
+        usage_class = "compile"
         reservation_id: str | None = None
         reservation_committed = False
 
@@ -59,19 +58,16 @@ class CompileMixin:
         def _log(message: str, level: str = "info") -> None:
             sink({"phase": "compile_log", "message": message, "level": level, "ts": _time.time()})
 
-        if not is_recompile:
-            workflow_id = str(getattr(workflow, "id", "") or "")
-            reservation_id = self._compile_reservation_id(rid, plugin_id, workflow_id, session_id)
-            _log("Reserving one compile credit...")
-            reserve = self._reserve_compile_credit(
-                reservation_id=reservation_id,
-                plugin_id=plugin_id,
-                workflow_id=workflow_id,
-                session_id=session_id,
-            )
-            sink({"phase": "quota", "meter": "compile_credits", "status": "reserved", **reserve})
-        else:
-            _log("Recompile selected: LLM work will use the Human Edit pool.")
+        workflow_id = str(getattr(workflow, "id", "") or "")
+        reservation_id = self._compile_reservation_id(rid, plugin_id, workflow_id, session_id)
+        _log("Reserving one compile credit...")
+        reserve = self._reserve_compile_credit(
+            reservation_id=reservation_id,
+            plugin_id=plugin_id,
+            workflow_id=workflow_id,
+            session_id=session_id,
+        )
+        sink({"phase": "quota", "meter": "compile_credits", "status": "reserved", **reserve})
 
         sink({"phase": "pipeline_start"})
         sink({"phase": "compile_step", "step": "normalize", "status": "running"})

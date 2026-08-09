@@ -742,6 +742,81 @@ def test_compile_derives_title_from_plugin_workflow_and_marks_compiled(
     )
 
 
+def test_recompile_reserves_compile_credit_not_human_edit(backend, monkeypatch, tmp_path):
+    """A recompile (workflow already has a skill_id) must still spend a
+    compile credit and bill LLM calls as usage_class="compile" — recompile no
+    longer draws from the Human Edit pool."""
+    b, out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.plugin_store import add_workflow, create_plugin, save_plugin
+    import conxa_compile.compiler.build as compiler_build
+    import conxa_compile.pipeline.run as pipeline_run
+    import conxa_core.storage.session_events as session_events
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    calls: dict[str, list] = {"reserve": [], "commit": [], "release": [], "proxy": []}
+    monkeypatch.setattr(
+        b,
+        "_install_proxy_router",
+        lambda sink=None, usage_class="compile": calls["proxy"].append(usage_class),
+    )
+    monkeypatch.setattr(
+        b,
+        "_reserve_compile_credit",
+        lambda **kwargs: (
+            calls["reserve"].append(kwargs["reservation_id"]),
+            {"reservation_id": kwargs["reservation_id"], "remaining_compile_credits": 99},
+        )[1],
+    )
+    monkeypatch.setattr(
+        b,
+        "_commit_compile_credit",
+        lambda reservation_id: (
+            calls["commit"].append(reservation_id),
+            {"reservation_id": reservation_id, "remaining_compile_credits": 98},
+        )[1],
+    )
+    monkeypatch.setattr(
+        b,
+        "_release_compile_credit",
+        lambda reservation_id: calls["release"].append(reservation_id),
+    )
+    monkeypatch.setattr(session_events, "read_session_events", lambda session_id: [{"type": "click"}])
+    monkeypatch.setattr(pipeline_run, "run_pipeline", lambda raw: raw)
+    monkeypatch.setattr(
+        compiler_build,
+        "compile_skill_package",
+        lambda events, *, skill_id, source_session_id, title, version: SimpleNamespace(
+            skills=[SimpleNamespace(steps=[{"kind": "click"}])],
+            compile_report={"status": "ok", "min_confidence": 1.0, "steps_with_warnings": 0},
+            model_dump=lambda mode="json": {
+                "meta": {"id": skill_id, "source_session_id": source_session_id, "title": title, "version": version},
+                "skills": [{"steps": [{"kind": "click"}]}],
+            },
+        ),
+    )
+
+    plugin = create_plugin("Example Plugin", "https://example.test")
+    added = add_workflow(plugin.id, "Submit Invoice", "sess-recompile")
+    assert added is not None
+    plugin, workflow = added
+    workflow.skill_id = "skill_sess-recompile"
+    save_plugin(plugin)
+
+    result = b.cmd_compile(
+        {"plugin_id": plugin.id, "session_id": "sess-recompile", "mode": "recompile"},
+        "recompile-request",
+    )
+
+    assert result["skill_id"] == "skill_sess-recompile"
+    assert len(calls["reserve"]) == 1
+    assert len(calls["commit"]) == 1
+    assert calls["proxy"] == ["compile"]
+
+
 def test_sign_off_auto_builds_when_all_workflows_ready(backend, monkeypatch, tmp_path):
     """Sign-off should trigger build_plugin the moment its own gate (every workflow
     compiled + edited) is satisfied, without a separate Build Plugin page visit."""

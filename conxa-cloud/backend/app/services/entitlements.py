@@ -16,49 +16,88 @@ from sqlalchemy import text
 
 from conxa_core.config import settings
 from conxa_core.db import _get_engine, db_get, db_list, db_set  # type: ignore[attr-defined]
-from app.api.product_ownership import owned_slugs_for_workspace, _owner_of
 from app.services.saas import Principal, billing_for, membership_count_for
 
 USAGE_NS = "entitlement_usage"
 RESERVATION_NS = "compile_reservations"
+DEVICE_NS = "workspace_devices"
+WORKFLOW_NS = "entitlement_workflows"
 
 ALLOWED_USAGE_CLASSES = {"compile", "human_edit"}
 
-# "skill_pack_slots" = the plan's product limit: how many distinct company
-# slugs a workspace may own. A slot is consumed the first time a workspace
-# publishes a skill pack OR uploads an installer for a given slug (whichever
-# comes first) — see product_ownership.owned_slugs_for_workspace.
-PLAN_LIMITS: dict[str, dict[str, int | None]] = {
+# The capability ladder (see docs/PRD.md §11): each tier is not just bigger
+# numbers, it unlocks what a workspace can *do*. There is no limit on how many
+# distinct product slugs a workspace may publish under — that used to be
+# "skill_pack_slots" and was removed 2026-08-08 (see docs/Implementation-Plan.md);
+# a "plugin" is just a named group of workflows, not a rationed slot. Reach is
+# gated by `distribution` (internal vs. external) instead of a count.
+PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {
         "seats": 1,
-        "skill_pack_slots": 1,
-        "compile_credits": 50,
-        "human_edit_tokens": 1_000_000,
+        "machines": 1,
+        "compile_credits": 25,
+        "human_edit_tokens": 500_000,
+        "trial_days": 30,
+        "distribution": "internal",
+        "white_label": False,
+        "ops_tier": "none",
+        "analytics_retention_days": 0,
+        "compile_pool": "free",
+        "byok": False,
     },
     "starter": {
         "seats": 3,
-        "skill_pack_slots": 3,
-        "compile_credits": 300,
-        "human_edit_tokens": 10_000_000,
+        "machines": 3,
+        "compile_credits": 200,
+        "human_edit_tokens": 2_500_000,
+        "trial_days": None,
+        "distribution": "external",
+        "white_label": False,
+        "ops_tier": "basic",
+        "analytics_retention_days": 90,
+        "compile_pool": "premium",
+        "byok": False,
     },
     "pro": {
         "seats": 10,
-        "skill_pack_slots": 10,
-        "compile_credits": 1_000,
-        "human_edit_tokens": 50_000_000,
+        "machines": 10,
+        "compile_credits": 500,
+        "human_edit_tokens": 10_000_000,
+        "trial_days": None,
+        "distribution": "external",
+        "white_label": False,
+        "ops_tier": "full",
+        "analytics_retention_days": 365,
+        "compile_pool": "premium",
+        "byok": False,
     },
-    # Enterprise workspaces must carry explicit overrides in billing metadata.
+    # Enterprise workspaces must carry explicit overrides in billing metadata
+    # for the numeric limits; the capability flags below are Enterprise's floor.
     "enterprise": {
         "seats": 0,
-        "skill_pack_slots": 0,
-        "compile_credits": 0,
+        "machines": 0,
+        "compile_credits": None,
         "human_edit_tokens": 0,
+        "trial_days": None,
+        "distribution": "external",
+        "white_label": True,
+        "ops_tier": "full",
+        "analytics_retention_days": None,
+        "compile_pool": "premium",
+        "byok": True,
     },
     "development": {
         "seats": None,
-        "skill_pack_slots": None,
+        "machines": None,
         "compile_credits": None,
         "human_edit_tokens": None,
+        "trial_days": None,
+        "distribution": "external",
+        "white_label": True,
+        "ops_tier": "full",
+        "analytics_retention_days": None,
+        "compile_pool": "premium",
+        "byok": True,
     },
 }
 
@@ -177,35 +216,71 @@ def normalize_plan(plan: str | None) -> str:
     return value if value in PLAN_LIMITS else "free"
 
 
-def _limits_from_billing(billing: dict[str, Any]) -> dict[str, int | None]:
+_QUOTA_ALIASES = {
+    "seats": "seats",
+    "seat_limit": "seats",
+    "machines": "machines",
+    "machine_limit": "machines",
+    "compile_credits": "compile_credits",
+    "monthly_compile_credits": "compile_credits",
+    "human_edit_tokens": "human_edit_tokens",
+    "monthly_human_edit_tokens": "human_edit_tokens",
+}
+
+def _limits_from_billing(billing: dict[str, Any]) -> dict[str, Any]:
     plan = normalize_plan(str(billing.get("plan") or "free"))
     limits = dict(PLAN_LIMITS[plan])
     overrides = billing.get("entitlement_overrides") or billing.get("limits") or {}
-    if isinstance(overrides, dict):
-        aliases = {
-            "seats": "seats",
-            "seat_limit": "seats",
-            "skill_pack_slots": "skill_pack_slots",
-            # Pre-rename override keys — still accepted so already-configured
-            # Cashfree/billing metadata keeps working unchanged.
-            "installer_slots": "skill_pack_slots",
-            "installer_limit": "skill_pack_slots",
-            "compile_credits": "compile_credits",
-            "monthly_compile_credits": "compile_credits",
-            "human_edit_tokens": "human_edit_tokens",
-            "monthly_human_edit_tokens": "human_edit_tokens",
-        }
-        for raw_key, target_key in aliases.items():
-            if raw_key not in overrides:
-                continue
-            raw_value = overrides.get(raw_key)
-            if raw_value is None or str(raw_value).lower() == "unlimited":
-                limits[target_key] = None
-                continue
+    if not isinstance(overrides, dict):
+        return limits
+
+    for raw_key, target_key in _QUOTA_ALIASES.items():
+        if raw_key not in overrides:
+            continue
+        raw_value = overrides.get(raw_key)
+        if raw_value is None or str(raw_value).lower() == "unlimited":
+            limits[target_key] = None
+            continue
+        try:
+            limits[target_key] = max(0, int(raw_value))
+        except (TypeError, ValueError):
+            continue
+
+    # analytics_retention_days shares the "None = unlimited/forever" sentinel
+    # with the quota keys above but isn't a compile/seat quota, so it's kept
+    # in its own loop rather than folded into _QUOTA_ALIASES.
+    if "analytics_retention_days" in overrides:
+        raw_value = overrides.get("analytics_retention_days")
+        if raw_value is None or str(raw_value).lower() == "unlimited":
+            limits["analytics_retention_days"] = None
+        else:
             try:
-                limits[target_key] = max(0, int(raw_value))
+                limits["analytics_retention_days"] = max(0, int(raw_value))
             except (TypeError, ValueError):
-                continue
+                pass
+
+    if "distribution" in overrides and str(overrides["distribution"]) in ("internal", "external"):
+        limits["distribution"] = str(overrides["distribution"])
+    if "ops_tier" in overrides and str(overrides["ops_tier"]) in ("none", "basic", "full"):
+        limits["ops_tier"] = str(overrides["ops_tier"])
+    if "compile_pool" in overrides and str(overrides["compile_pool"]) in ("free", "premium"):
+        limits["compile_pool"] = str(overrides["compile_pool"])
+    if "white_label" in overrides:
+        limits["white_label"] = bool(overrides["white_label"])
+    if "byok" in overrides:
+        limits["byok"] = bool(overrides["byok"])
+    if "trial_days" in overrides:
+        raw_value = overrides.get("trial_days")
+        limits["trial_days"] = None if raw_value in (None, "") else max(0, int(raw_value))
+
+    # Credit add-on packs (+25 compile credits/mo each) stack on top of the
+    # plan's base compile_credits — stored directly on billing, not inside
+    # entitlement_overrides, since Cashfree activates/cancels them independently
+    # of the base subscription (see cashfree_routes._bump_addon_packs).
+    addon_packs = int(billing.get("addon_compile_packs") or 0)
+    if addon_packs and limits["compile_credits"] is not None:
+        limits["compile_credits"] = int(limits["compile_credits"]) + 25 * addon_packs
+
     return limits
 
 
@@ -312,20 +387,167 @@ def _active_reserved_amount(store: _FileKvStore | _SqlKvStore, workspace_id: str
     return total
 
 
-def skill_pack_slot_count(workspace_id: str) -> int:
-    """Number of distinct slugs this workspace owns — the single source of
-    truth is publish_owners (product_ownership), set the first time a
-    workspace publishes a skill pack OR uploads an installer for a slug.
+def _device_key(workspace_id: str, machine_hash: str) -> str:
+    return f"{workspace_id}:{machine_hash}"
 
-    Replaces the old plugin.installer/disk-meta.json-based counting, which
-    never counted a slug for a publish-only workspace — the latent bug this
-    rename also fixes.
+
+def _workspace_devices(store: _FileKvStore | _SqlKvStore, workspace_id: str) -> list[dict[str, Any]]:
+    """Active (non-revoked) devices — a revoked machine frees its slot
+    immediately rather than counting against the limit forever."""
+    rows: list[dict[str, Any]] = []
+    for row in store.list(DEVICE_NS):
+        if isinstance(row, dict) and row.get("workspace_id") == workspace_id and not row.get("revoked"):
+            rows.append(row)
+    return rows
+
+
+def list_machines(workspace_id: str) -> list[dict[str, Any]]:
+    """All devices ever seen for this workspace, including revoked ones, for
+    the Settings device-list UI — unlike _workspace_devices, this doesn't
+    filter revoked rows out, so the UI can show revocation history."""
+    with _locked_store(f"machines:{workspace_id}") as store:
+        rows = [
+            row for row in store.list(DEVICE_NS)
+            if isinstance(row, dict) and row.get("workspace_id") == workspace_id
+        ]
+    rows.sort(key=lambda row: str(row.get("last_seen") or ""), reverse=True)
+    return rows
+
+
+def machine_count(workspace_id: str) -> int:
+    with _locked_store(f"machines:{workspace_id}") as store:
+        return len(_workspace_devices(store, workspace_id))
+
+
+def ensure_machine_slot(principal: Principal, machine_hash: str, ip: str = "") -> dict[str, Any]:
+    """Register a build-side device against the workspace's machine limit.
+
+    Known hash: touch last_seen/last_ip and allow, uncounted. New hash within
+    the limit: register and allow. New hash at the limit: reject — this is the
+    control that stops a single-machine free trial from quietly becoming a
+    free Pro seat (see docs/PRD.md §11).
     """
-    return len(owned_slugs_for_workspace(workspace_id))
+    machine_hash = str(machine_hash or "").strip()
+    if not machine_hash:
+        raise EntitlementError("invalid_machine_id", 400)
+    billing = billing_for(principal)
+    limits = _limits_from_billing(billing)
+    limit = limits["machines"]
+    workspace_id = principal.workspace_id
+    with _locked_store(f"machines:{workspace_id}") as store:
+        existing = store.get(DEVICE_NS, _device_key(workspace_id, machine_hash))
+        now_iso = _iso(_now())
+        # A revoked machine is treated as brand-new — falls through to the
+        # limit check below rather than silently un-revoking on next touch.
+        if isinstance(existing, dict) and existing.get("revoked"):
+            existing = None
+        if isinstance(existing, dict):
+            existing["last_seen"] = now_iso
+            if ip:
+                existing["last_ip"] = ip
+            store.set(DEVICE_NS, _device_key(workspace_id, machine_hash), existing)
+            used = len(_workspace_devices(store, workspace_id))
+            return {"machine_hash": machine_hash, "registered": True, "used": used, "limit": limit}
+        used = len(_workspace_devices(store, workspace_id))
+        if settings.entitlements_enforce_machines and limit is not None and used >= int(limit):
+            raise EntitlementError("machine_limit_exceeded", 402)
+        row = {
+            "workspace_id": workspace_id,
+            "machine_hash": machine_hash,
+            "last_ip": ip,
+            "first_seen": now_iso,
+            "last_seen": now_iso,
+        }
+        store.set(DEVICE_NS, _device_key(workspace_id, machine_hash), row)
+        used += 1
+    return {"machine_hash": machine_hash, "registered": True, "used": used, "limit": limit}
 
 
-def skill_pack_slug_has_slot(workspace_id: str, slug: str) -> bool:
-    return _owner_of(slug) == workspace_id
+def revoke_machine(principal: Principal, machine_hash: str) -> None:
+    workspace_id = principal.workspace_id
+    with _locked_store(f"machines:{workspace_id}") as store:
+        existing = store.get(DEVICE_NS, _device_key(workspace_id, machine_hash))
+        if isinstance(existing, dict) and existing.get("workspace_id") == workspace_id:
+            store.set(DEVICE_NS, _device_key(workspace_id, machine_hash), {**existing, "revoked": True})
+
+
+def trial_expired(billing: dict[str, Any]) -> bool:
+    """True only for a free-plan workspace past its trial window. Paid and
+    development plans never expire regardless of trial_started_at."""
+    plan = normalize_plan(str(billing.get("plan") or "free"))
+    if plan != "free":
+        return False
+    trial_days = PLAN_LIMITS["free"]["trial_days"]
+    if not trial_days:
+        return False
+    started = _positive_epoch(billing.get("trial_started_at"))
+    if started is None:
+        return False
+    return time.time() - started > trial_days * 86400
+
+
+def trial_ends_at(billing: dict[str, Any]) -> str | None:
+    plan = normalize_plan(str(billing.get("plan") or "free"))
+    trial_days = PLAN_LIMITS["free"]["trial_days"] if plan == "free" else None
+    started = _positive_epoch(billing.get("trial_started_at"))
+    if plan != "free" or not trial_days or started is None:
+        return None
+    return _iso(datetime.fromtimestamp(started + trial_days * 86400, UTC))
+
+
+def compile_pool_for(principal: Principal) -> str:
+    """"free" or "premium" — which router pool this workspace's plan compiles
+    against (docs/PRD.md §11). Free trials get the free-tier LLM rotation;
+    Starter and up route to premium providers, where compile quality directly
+    determines skill reliability."""
+    limits = _limits_from_billing(billing_for(principal))
+    return str(limits.get("compile_pool") or "free")
+
+
+def byok_enabled_for(principal: Principal) -> bool:
+    """True only for plans carrying the ``byok`` capability (Enterprise, or an
+    explicit override) — the gate app/services/byok.py checks before letting a
+    workspace store or use its own Azure OpenAI deployment."""
+    return bool(_limits_from_billing(billing_for(principal)).get("byok"))
+
+
+def analytics_retention_cutoff_ms(principal: Principal) -> int | None:
+    """Epoch-ms cutoff below which telemetry is outside this plan's retention
+    window — None means unlimited (Enterprise custom or a None override).
+    A cutoff of "now" (Free's 0-day retention) means everything is filtered."""
+    billing = billing_for(principal)
+    limits = _limits_from_billing(billing)
+    days = limits.get("analytics_retention_days")
+    if days is None:
+        return None
+    return int((time.time() - int(days) * 86400) * 1000)
+
+
+_OPS_TIER_RANK = {"none": 0, "basic": 1, "full": 2}
+
+
+def ensure_ops_tier(principal: Principal, minimum: str) -> None:
+    """Gates the ops surfaces the pilot feedback called out as what enterprises
+    actually pay for — dashboard, drift detection, audit export (docs/PRD.md
+    §11). ``minimum`` is "basic" or "full"; Free (ops_tier "none") is blocked
+    from all of it, Starter ("basic") clears "basic" gates only."""
+    billing = billing_for(principal)
+    limits = _limits_from_billing(billing)
+    have = _OPS_TIER_RANK.get(str(limits.get("ops_tier") or "none"), 0)
+    need = _OPS_TIER_RANK.get(minimum, 0)
+    if have < need:
+        raise EntitlementError("ops_tier_required", 403)
+
+
+def ensure_trial_active(principal: Principal) -> None:
+    """Blocks *building* — compile, human-edit LLM calls, publish, installer
+    upload — once a free trial has run past its 30 days. Deliberately not
+    called from skill sync or telemetry ingest: execution is local and the
+    cloud isn't in that path, so an already-installed machine keeps working
+    even after the trial that built it has expired (docs/PRD.md §11)."""
+    billing = billing_for(principal)
+    if trial_expired(billing):
+        raise EntitlementError("trial_expired", 402)
 
 
 def _meter(used: int, limit: int | None, *, reserved: int = 0) -> dict[str, Any]:
@@ -379,12 +601,14 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
         "plan": plan,
         "period": period,
         "reset_at": reset_at,
+        "trial_ends_at": trial_ends_at(billing),
+        "trial_expired": trial_expired(billing),
         "meters": {
             "seats": _meter(
                 _clerk_org_member_count(principal) or membership_count_for(workspace_id),
                 limits["seats"],
             ),
-            "skill_pack_slots": _meter(skill_pack_slot_count(workspace_id), limits["skill_pack_slots"]),
+            "machines": _meter(machine_count(workspace_id), limits["machines"]),
             "compile_credits": _meter(
                 int(usage.get("compile_credits_used") or 0),
                 limits["compile_credits"],
@@ -392,6 +616,22 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
             ),
             "human_edit_tokens": _meter(human_edit_used, limits["human_edit_tokens"]),
         },
+        # The capability ladder (docs/PRD.md §11) — what this plan unlocks, not
+        # just how much of it. Consumed by the pricing page, the dashboard nav,
+        # and the installer/publish gates in app/api/installer_storage.py and
+        # app/api/publish_routes.py.
+        "capabilities": {
+            "distribution": limits["distribution"],
+            "white_label": limits["white_label"],
+            "ops_tier": limits["ops_tier"],
+            "compile_pool": limits["compile_pool"],
+            "byok": limits["byok"],
+        },
+        # Persistent workflow slot ledger — separate from the monthly
+        # compile_credits meter above, which resets every period. This is what
+        # a downgrade below the workspace's current published-workflow count
+        # soft-locks against (see ensure_workflow_publishable).
+        "workflow_lock": workflow_lock_status(principal),
     }
 
 
@@ -406,6 +646,8 @@ def reserve_compile_credit(
     if not reservation_id.strip():
         raise EntitlementError("invalid_reservation_id", 400)
     billing = billing_for(principal)
+    if trial_expired(billing):
+        raise EntitlementError("trial_expired", 402)
     limits = _limits_from_billing(billing)
     period, _reset_at = usage_window_for_billing(billing)
     workspace_id = principal.workspace_id
@@ -504,6 +746,109 @@ def release_compile_credit(principal: Principal, reservation_id: str) -> dict[st
     return {"reservation_id": reservation_id, "status": status}
 
 
+def _workflow_key(workspace_id: str, plugin_id: str, workflow_id: str) -> str:
+    return f"{workspace_id}:{plugin_id}:{workflow_id}"
+
+
+def _reconcile_workflow_locks(
+    store: _FileKvStore | _SqlKvStore, workspace_id: str, limit: int | None
+) -> list[dict[str, Any]]:
+    """Keep the ``limit`` most-recently-published workflows active and lock the
+    rest, oldest first. Re-run on every read so a plan change — upgrade,
+    downgrade, or an admin override — takes effect on its own, without a
+    separate downgrade migration step (the Pro→Starter soft-lock story,
+    docs/PRD.md §11)."""
+    rows = [
+        row
+        for row in store.list(WORKFLOW_NS)
+        if isinstance(row, dict) and row.get("workspace_id") == workspace_id
+    ]
+    rows.sort(key=lambda r: str(r.get("created_at") or ""))
+    cutoff = max(0, len(rows) - int(limit)) if limit is not None else 0
+    for index, row in enumerate(rows):
+        should_lock = index < cutoff
+        if bool(row.get("locked")) != should_lock:
+            row["locked"] = should_lock
+            store.set(
+                WORKFLOW_NS,
+                _workflow_key(workspace_id, str(row.get("plugin_id") or ""), str(row.get("workflow_id") or "")),
+                row,
+            )
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return rows
+
+
+def record_published_workflow(workspace_id: str, plugin_id: str, workflow_id: str) -> None:
+    """Durable ledger entry for a published workflow. Unlike the monthly
+    compile-credit meter this never resets, so a downgrade later has
+    something stable to soft-lock the oldest excess against."""
+    workflow_id = str(workflow_id or "").strip()
+    if not workflow_id:
+        return
+    plugin_id = str(plugin_id or "").strip()
+    key = _workflow_key(workspace_id, plugin_id, workflow_id)
+    with _locked_store(f"workflow-ledger:{workspace_id}") as store:
+        if isinstance(store.get(WORKFLOW_NS, key), dict):
+            return
+        store.set(
+            WORKFLOW_NS,
+            key,
+            {
+                "workspace_id": workspace_id,
+                "plugin_id": plugin_id,
+                "workflow_id": workflow_id,
+                "created_at": _iso(_now()),
+                "locked": False,
+            },
+        )
+
+
+def ensure_workflow_publishable(principal: Principal, plugin_id: str, workflow_ids: list[str]) -> None:
+    """Publish-time gate: a plan's compile-credit number doubles as the max
+    number of workflows a workspace may keep active at once (docs/PRD.md §11).
+    Republishing an already-active workflow (a new version) is always allowed;
+    a locked workflow must wait for an upgrade to free room — there's no
+    delete-to-free-a-slot flow yet; a brand-new workflow is blocked once the
+    workspace is already at its cap."""
+    billing = billing_for(principal)
+    limits = _limits_from_billing(billing)
+    limit = limits["compile_credits"]
+    if limit is None or not settings.entitlements_enforce_compile:
+        return
+    plugin_id = str(plugin_id or "").strip()
+    workspace_id = principal.workspace_id
+    with _locked_store(f"workflow-ledger:{workspace_id}") as store:
+        rows = _reconcile_workflow_locks(store, workspace_id, limit)
+        active = sum(1 for row in rows if not row.get("locked"))
+        known = {
+            (str(row.get("plugin_id") or ""), str(row.get("workflow_id") or "")): row for row in rows
+        }
+        for raw_workflow_id in workflow_ids:
+            workflow_id = str(raw_workflow_id or "").strip()
+            if not workflow_id:
+                continue
+            existing = known.get((plugin_id, workflow_id))
+            if existing is None:
+                if active >= int(limit):
+                    raise EntitlementError("workflow_limit_exceeded", 402)
+                active += 1
+            elif existing.get("locked"):
+                raise EntitlementError("workflow_locked", 402)
+
+
+def workflow_lock_status(principal: Principal) -> dict[str, Any]:
+    """Dashboard view of the workflow ledger: active/locked counts plus the
+    per-workflow rows, newest first — what a "300 workflows locked, upgrade to
+    reactivate" banner reads from."""
+    limits = _limits_from_billing(billing_for(principal))
+    limit = limits["compile_credits"]
+    workspace_id = principal.workspace_id
+    with _locked_store(f"workflow-ledger:{workspace_id}") as store:
+        rows = _reconcile_workflow_locks(store, workspace_id, limit)
+    locked = sum(1 for row in rows if row.get("locked"))
+    return {"limit": limit, "active": len(rows) - locked, "locked": locked, "workflows": rows}
+
+
 def record_llm_usage(
     principal: Principal,
     *,
@@ -561,29 +906,49 @@ def ensure_human_edit_available(principal: Principal, *, estimated_tokens: int =
         raise EntitlementError("human_edit_pool_exceeded", 402)
 
 
-def ensure_skill_pack_slot_available(principal: Principal, slug: str) -> dict[str, Any]:
+def ensure_distribution_allowed(principal: Principal, *, external: bool) -> None:
+    """Gate the ladder's top rung: Free and Starter build internal-only
+    installers; Pro and Enterprise may distribute externally (docs/PRD.md §11).
+    Called from installer upload and publish — server-side, not just UI-hidden."""
+    if not external:
+        return
     billing = billing_for(principal)
     limits = _limits_from_billing(billing)
-    limit = limits["skill_pack_slots"]
-    workspace_id = principal.workspace_id
-    existing_slot = skill_pack_slug_has_slot(workspace_id, slug)
-    used = skill_pack_slot_count(workspace_id)
-    if (
-        settings.entitlements_enforce_installers
-        and not existing_slot
-        and limit is not None
-        and used >= int(limit)
-    ):
-        raise EntitlementError("installer_limit_exceeded", 402)
-    return {
-        "slug": slug,
-        "existing_slot": existing_slot,
-        "used": used,
-        "limit": limit,
-        "remaining": None if limit is None else max(0, int(limit) - used),
-    }
+    if settings.entitlements_enforce_distribution and limits["distribution"] != "external":
+        raise EntitlementError("distribution_not_permitted", 402)
 
 
-# Deprecated alias kept for one release cycle in case anything external still
-# imports the old name. Remove in a follow-up once nothing references it.
-ensure_installer_slot_available = ensure_skill_pack_slot_available
+def ensure_delta_sync_allowed(workspace_id: str, machine_hash: str) -> None:
+    """Delta-sync gate: once a workspace's plan doesn't allow external
+    distribution (Free), only the workspace's own registered Build Studio
+    machine may pull skill-pack updates from skillpack_update_routes — every
+    other machine gets none. This is what makes a downgrade (or a Free
+    workspace that never had the right in the first place) actually stop
+    reaching already-installed customers, instead of just blocking new
+    installer uploads. Reuses the same DEVICE_NS pool ensure_machine_slot
+    populates; this is a read-only lookup, it never registers or consumes
+    a slot."""
+    if not settings.entitlements_enforce_distribution:
+        return
+    from app.services.saas import billing_for_workspace
+
+    limits = _limits_from_billing(billing_for_workspace(workspace_id))
+    if limits["distribution"] == "external":
+        return
+    machine_hash = str(machine_hash or "").strip()
+    if not machine_hash:
+        raise EntitlementError("distribution_not_permitted", 403)
+    with _locked_store(f"machines:{workspace_id}") as store:
+        existing = store.get(DEVICE_NS, _device_key(workspace_id, machine_hash))
+    if not isinstance(existing, dict) or existing.get("revoked"):
+        raise EntitlementError("distribution_not_permitted", 403)
+
+
+def ensure_white_label_allowed(principal: Principal, *, custom_branding: bool) -> None:
+    """White-label installer branding is an Enterprise-only capability."""
+    if not custom_branding:
+        return
+    billing = billing_for(principal)
+    limits = _limits_from_billing(billing)
+    if settings.entitlements_enforce_distribution and not limits["white_label"]:
+        raise EntitlementError("white_label_not_permitted", 402)
