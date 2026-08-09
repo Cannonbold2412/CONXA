@@ -4,34 +4,34 @@ import { Reveal } from '../primitives/Reveal'
 
 const SCENARIOS = [
   {
-    domain: 'Sales & CRM',
-    tool: 'Salesforce and similar',
-    once: 'Creating an account, logging a call, moving a deal forward',
-    then: 'AI keeps the pipeline updated from a plain-language request',
+    domain: 'Customer onboarding',
+    tool: 'CRM → ERP → email → internal tools',
+    once: 'Provisioning an account, configuring settings, triggering the welcome sequence — across four logins',
+    then: 'AI runs the whole process as one skill, every system updated in step',
   },
   {
-    domain: 'Finance',
-    tool: 'SAP and other ERPs',
-    once: 'Entering a vendor invoice with the right codes and approvals',
+    domain: 'Claims intake',
+    tool: 'Portal → policy system → finance → notification',
+    once: 'Carrying a claim by hand between systems that were never built to talk to each other',
+    then: 'AI moves the claim through every stage without a person relaying it',
+  },
+  {
+    domain: 'Vendor onboarding',
+    tool: 'Procurement → compliance → ERP → payments',
+    once: 'The exact process a services firm gets paid to implement for its clients',
+    then: 'AI runs it as a skill instead of a project, for every client whose stack looks the same',
+  },
+  {
+    domain: 'Invoice processing',
+    tool: 'Document intake → extraction → accounting → approval',
+    once: 'Uploading a vendor invoice, coding it correctly, routing it for sign-off',
     then: 'AI handles the routine entry runs, the same way, every time',
   },
   {
-    domain: 'Cloud operations',
-    tool: 'AWS and other consoles',
-    once: 'A routine console task — provisioning, checks, cleanups',
-    then: 'AI carries out the run-of-the-mill ops work on request',
-  },
-  {
-    domain: 'HR & onboarding',
-    tool: 'People platforms',
-    once: 'Setting up a new hire across your HR and access tools',
+    domain: 'HR onboarding',
+    tool: 'HR platform → access/identity → payroll → compliance',
+    once: 'Setting up a new hire across every system that needs to know they exist',
     then: 'AI takes each new hire through the same proven steps',
-  },
-  {
-    domain: 'Internal tools',
-    tool: 'Legacy systems with no API',
-    once: 'The workflow only two people in the company know',
-    then: "AI operates software that was never going to get an integration",
   },
 ]
 
@@ -40,8 +40,8 @@ export function Examples() {
     <section id="examples" className="relative bg-[#0b0f14] px-6 py-28">
       <div className="mx-auto max-w-6xl">
         <SectionHeader
-          headline="Works with the tools you already run."
-          sub="If a person can do it in a browser, Conxa can learn it. No API required — not even for the twenty-year-old internal system."
+          headline="Business processes, not single-app tasks."
+          sub="A real process crosses systems nobody fully owns. If a person can carry it between screens, Conxa can learn it — no API required, for any system in the chain."
         />
 
         <Reveal className="mt-14">

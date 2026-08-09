@@ -34,9 +34,9 @@ function statusBadge(status: Plugin['status']) {
   )
 }
 
-function SkillPackSlotSummary() {
+function CompileCreditsSummary() {
   const q = useQuery({ queryKey: queryKeys.entitlements, queryFn: fetchEntitlements, staleTime: 30_000, retry: 1 })
-  const meter = q.data?.meters?.skill_pack_slots
+  const meter = q.data?.meters?.compile_credits
 
   if (q.isLoading) {
     return (
@@ -53,7 +53,7 @@ function SkillPackSlotSummary() {
     return (
       <div className="flex h-9 min-w-56 items-center justify-between gap-4 border-l border-white/10 pl-4">
         <div className="leading-none">
-          <p className="text-[11px] font-medium text-zinc-500">Skill pack slots</p>
+          <p className="text-[11px] font-medium text-zinc-500">Compile credits</p>
           <p className="mt-1 text-[11px] text-amber-300">Usage unavailable</p>
         </div>
       </div>
@@ -61,12 +61,12 @@ function SkillPackSlotSummary() {
   }
 
   const usage = meter.unlimited ? formatCount(meter.used) : `${formatCount(meter.used)} / ${formatCount(meter.limit)}`
-  const capacity = meter.unlimited ? 'Unlimited capacity' : `${formatCount(meter.remaining)} available`
+  const capacity = meter.unlimited ? 'Unlimited this month' : `${formatCount(meter.remaining)} left this month`
 
   return (
     <div className="flex h-9 min-w-56 items-center justify-between gap-4 border-l border-white/10 pl-4">
       <div className="leading-none">
-        <p className="text-[11px] font-medium text-zinc-500">Skill pack slots</p>
+        <p className="text-[11px] font-medium text-zinc-500">Compile credits</p>
         <p className="mt-1 text-[11px] text-zinc-600">{capacity}</p>
       </div>
       <div className="whitespace-nowrap text-right">
@@ -90,7 +90,7 @@ export function PluginsPage() {
         actions={
           <>
             <OpenInStudioButton label="Create a Plugin" primary />
-            <SkillPackSlotSummary />
+            <CompileCreditsSummary />
           </>
         }
       />

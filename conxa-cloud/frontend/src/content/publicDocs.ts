@@ -422,8 +422,8 @@ export const publicDocs = [
           {
             type: 'paragraphs',
             items: [
-              'A published plugin can have one or more hosted workflow packages and an installer for customer distribution. Installer slots are a visible subscription meter because they represent live hosted distribution surfaces.',
-              'Uploading a new version for the same plugin slug is treated as an update to that hosted installer slot. A new slug consumes a new slot when the plan allows it.',
+              'A published plugin can have one or more hosted workflow packages and an installer. There is no limit on how many distinct plugins a workspace can publish — what the plan controls is who the installer can reach: an internal-only build on Free and Starter, or a distributable build on Pro and Enterprise, white-labeled on Enterprise.',
+              'Uploading a new version for the same plugin slug is treated as an update to that same hosted release.',
             ],
           },
         ],
@@ -854,7 +854,7 @@ export const publicDocs = [
             type: 'paragraphs',
             items: [
               'CONXA keeps information for as long as needed to provide the service, maintain business records, comply with legal obligations, resolve disputes, enforce agreements, and protect the service.',
-              'Retention may vary by plan and data type. For example, telemetry retention may be shorter on free or starter tiers and longer on enterprise terms. Support records and billing records may be kept longer when needed for accounting, tax, fraud prevention, or legal reasons.',
+              'Retention may vary by plan and data type. Telemetry is not retained on the free trial tier, is kept 90 days on Starter and 1 year on Pro, and follows contract terms on Enterprise. Support records and billing records may be kept longer when needed for accounting, tax, fraud prevention, or legal reasons.',
             ],
           },
         ],
@@ -1003,7 +1003,7 @@ export const publicDocs = [
             type: 'paragraphs',
             items: [
               'Paid plans are subscription services unless an order form says otherwise. Self-serve paid checkout may use Razorpay or another payment provider. Enterprise plans may use custom procurement, invoicing, and written commercial terms.',
-              'Plan limits may include seats, installer slots, monthly compile credits, and Human Edit pools. CONXA may enforce these limits automatically through the dashboard, Build Studio, backend APIs, or support processes.',
+              'Plan limits may include seats, machines/devices, monthly compile credits, and Human Edit pools, along with which capabilities a plan unlocks — internal or external distribution, dashboard and audit-log depth, and bring-your-own-key. CONXA may enforce these limits automatically through the dashboard, Build Studio, backend APIs, or support processes.',
               'Taxes, payment fees, foreign exchange costs, and bank charges may apply depending on the payment method, jurisdiction, and customer setup.',
             ],
           },
@@ -1214,7 +1214,7 @@ export const publicDocs = [
     lastUpdated: LAST_UPDATED,
     readingTime: '9 min read',
     summary: [
-      'CONXA uses subscription tiers with visible meters for seats, installer slots, compile credits, and Human Edit pool.',
+      'CONXA is a capability ladder: Free proves it works, Starter and Pro run it across your organization, and Pro and Enterprise can ship it to your own customers. Every tier has visible meters for seats, machines, compile credits, and Human Edit pool.',
       'Self-serve checkout may use Razorpay. Enterprise customers can use custom procurement and written order forms.',
       'Refunds are reviewed case by case unless mandatory law or a signed agreement requires a different result.',
     ],
@@ -1229,22 +1229,22 @@ export const publicDocs = [
             rows: [
               [
                 'Free',
-                'Trying CONXA with one workspace and limited monthly usage.',
+                'A 30-day trial to prove the product works, on one machine, before bringing it to a team.',
                 'No paid subscription required.',
               ],
               [
                 'Starter',
-                'Small product team building and maintaining a first serious plugin.',
+                'One product team automating its own processes internally.',
                 'Monthly self-serve subscription where checkout is available.',
               ],
               [
                 'Pro',
-                'Larger product team with more seats, installers, compile volume, and Human Edit usage.',
+                'An enterprise running its own cross-system processes, or a team scaling as a distribution channel — more seats, compile volume, and Human Edit usage, plus external distribution and the full dashboard.',
                 'Monthly self-serve subscription where checkout is available.',
               ],
               [
                 'Enterprise',
-                'Custom seats, installer slots, support, procurement, security review, or usage overrides.',
+                'A SaaS vendor or consultancy shipping to its own customers — white-label installers, bring-your-own-key, SSO, custom seats, support, and usage overrides.',
                 'Custom annual or contract terms.',
               ],
             ],
@@ -1259,7 +1259,7 @@ export const publicDocs = [
             type: 'bullets',
             items: [
               'Seats: people who can use the dashboard or Build Studio for the workspace.',
-              'Installer slots: unique hosted plugin installers or slugs available to the workspace.',
+              'Machines: distinct devices a workspace can build from — the control that keeps a trial from becoming a free seat.',
               'Compile credits: monthly fresh workflow compiles.',
               'Human Edit pool: monthly LLM-assisted repair, recompile, selector repair, semantic repair, visual re-anchor, or screenshot/bbox anchor regeneration usage.',
             ],
