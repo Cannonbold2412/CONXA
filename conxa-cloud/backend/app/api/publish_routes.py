@@ -432,7 +432,7 @@ def _publish_skill_pack_impl(
         "tracking": tracking,
         "workspace_id": principal.workspace_id,
         "published_at": published_at,
-        "plan": normalize_plan(str(billing.get("plan") or "free")),
+        "plan": normalize_plan(billing),
         "distribution": limits["distribution"],
     }
 

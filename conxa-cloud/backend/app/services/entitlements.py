@@ -209,8 +209,16 @@ def usage_window_for_billing(billing: dict[str, Any]) -> tuple[str, str]:
     return period, reset_at_for_period(period)
 
 
-def normalize_plan(plan: str | None) -> str:
-    value = str(plan or "free").strip().lower()
+def normalize_plan(billing: dict[str, Any]) -> str:
+    """Resolves a billing record to its effective plan, honoring
+    ``plan_expires_at`` — a time-boxed manual grant (see
+    ``entitlement_routes.post_assign_plan``) that has passed reverts to
+    "free" without needing a downgrade job. Real Cashfree subscriptions never
+    set this field, so they're unaffected."""
+    expires_at = _positive_epoch(billing.get("plan_expires_at"))
+    if expires_at is not None and time.time() >= expires_at:
+        return "free"
+    value = str(billing.get("plan") or "free").strip().lower()
     if value == "basic":
         return "starter"
     return value if value in PLAN_LIMITS else "free"
@@ -228,7 +236,7 @@ _QUOTA_ALIASES = {
 }
 
 def _limits_from_billing(billing: dict[str, Any]) -> dict[str, Any]:
-    plan = normalize_plan(str(billing.get("plan") or "free"))
+    plan = normalize_plan(billing)
     limits = dict(PLAN_LIMITS[plan])
     overrides = billing.get("entitlement_overrides") or billing.get("limits") or {}
     if not isinstance(overrides, dict):
@@ -474,7 +482,7 @@ def revoke_machine(principal: Principal, machine_hash: str) -> None:
 def trial_expired(billing: dict[str, Any]) -> bool:
     """True only for a free-plan workspace past its trial window. Paid and
     development plans never expire regardless of trial_started_at."""
-    plan = normalize_plan(str(billing.get("plan") or "free"))
+    plan = normalize_plan(billing)
     if plan != "free":
         return False
     trial_days = PLAN_LIMITS["free"]["trial_days"]
@@ -487,7 +495,7 @@ def trial_expired(billing: dict[str, Any]) -> bool:
 
 
 def trial_ends_at(billing: dict[str, Any]) -> str | None:
-    plan = normalize_plan(str(billing.get("plan") or "free"))
+    plan = normalize_plan(billing)
     trial_days = PLAN_LIMITS["free"]["trial_days"] if plan == "free" else None
     started = _positive_epoch(billing.get("trial_started_at"))
     if plan != "free" or not trial_days or started is None:
@@ -585,7 +593,7 @@ def _clerk_org_member_count(principal: Principal) -> int | None:
 
 def current_entitlements(principal: Principal) -> dict[str, Any]:
     billing = billing_for(principal)
-    plan = normalize_plan(str(billing.get("plan") or "free"))
+    plan = normalize_plan(billing)
     limits = _limits_from_billing(billing)
     period, reset_at = usage_window_for_billing(billing)
     workspace_id = principal.workspace_id
@@ -763,7 +771,14 @@ def _reconcile_workflow_locks(
         for row in store.list(WORKFLOW_NS)
         if isinstance(row, dict) and row.get("workspace_id") == workspace_id
     ]
-    rows.sort(key=lambda r: str(r.get("created_at") or ""))
+    # created_at is second-resolution (_iso truncates microseconds for display),
+    # so two workflows published in the same request — the common case, e.g.
+    # `_publish(..., ["wf1", "wf2"])` — routinely tie on it. Break ties with
+    # created_at_ns (nanosecond, sort-only, never shown) so lock order doesn't
+    # depend on incidental KV-store enumeration order. Legacy rows written
+    # before this field existed sort as 0 — they're already locked/unlocked
+    # from a prior reconcile pass, so a stable placement here doesn't matter.
+    rows.sort(key=lambda r: (str(r.get("created_at") or ""), r.get("created_at_ns") or 0))
     cutoff = max(0, len(rows) - int(limit)) if limit is not None else 0
     for index, row in enumerate(rows):
         should_lock = index < cutoff
@@ -774,7 +789,7 @@ def _reconcile_workflow_locks(
                 _workflow_key(workspace_id, str(row.get("plugin_id") or ""), str(row.get("workflow_id") or "")),
                 row,
             )
-    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    rows.sort(key=lambda r: (str(r.get("created_at") or ""), r.get("created_at_ns") or 0), reverse=True)
     return rows
 
 
@@ -798,6 +813,7 @@ def record_published_workflow(workspace_id: str, plugin_id: str, workflow_id: st
                 "plugin_id": plugin_id,
                 "workflow_id": workflow_id,
                 "created_at": _iso(_now()),
+                "created_at_ns": time.time_ns(),
                 "locked": False,
             },
         )
