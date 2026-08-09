@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status:** Current as of 2026-07-04 — **Phase 1 COMPLETE** (1.1–1.8 all done, superseded, or moot). Phase 2 mostly done (2.1, 2.2, 2.3, 2.5 code/wiring, 2.6, 2.7, 2.8, 2.9, runtime-split + auto-update arch); 2.4 (macOS) and 2.5's certificate procurement remain open — see `TODO.md`.
+**Status:** Current as of 2026-08-08 — **Phase 1 COMPLETE** (1.1–1.8, 1.10, 1.12 all done, superseded, or moot; 1.9 open). Phase 2 mostly done (2.1, 2.2, 2.3, 2.5 code/wiring, 2.6, 2.7, 2.8, 2.9, runtime-split + auto-update arch); 2.4 (macOS) and 2.5's certificate procurement remain open — see `TODO.md`. 1.12 is the pricing/positioning restructure following the Centelon pilot demo.
 **Audience:** Engineering team
 
 This plan is grounded in the actual codebase. Each item references the specific file or system that needs to change. Items are ordered by risk and dependency, not effort.
@@ -336,8 +336,61 @@ before this change — see `TODO.md`).
 
 ---
 
+### ✅ 1.12 Pricing & Positioning Restructure — DONE 2026-08-08
+
+**What was broken:** Following the Centelon pilot demo, the PRD carried two competing primary
+customers (SaaS vendors, enterprises) with no resolution between them, the marketing site showed
+single-app tasks instead of business processes, and pricing existed with four different numbers across
+`PLAN_LIMITS`, `docs/cost_model.md`, `cashfree_routes.TIER_INFO`, and `docs/PRD.md`. See
+`Conxa-Pilot-Conclusions.pdf` (internal) for the full pilot writeup.
+
+**What shipped:**
+- **Positioning** — `docs/PRD.md` rewritten around a single capability ladder (Free proves it works →
+  Starter/Pro run an organization → Pro/Enterprise ship to customers), the "own the process, not the
+  software" reframe, a new "What Our IP Actually Is" section, and the workflow qualification checklist.
+  Marketing site: new `/pricing` page rendering live from `GET /api/v1/subscriptions/plans`, rewritten
+  `Examples.tsx` (cross-system processes instead of single-app tasks), new FAQ entries, `publicDocs.ts`
+  cleanup.
+- **Pricing model** — `PLAN_LIMITS` (`conxa-cloud/backend/app/services/entitlements.py`) extended with
+  capability keys (`distribution`, `white_label`, `ops_tier`, `compile_pool`, `byok`, `trial_days`,
+  `analytics_retention_days`) alongside the four numeric meters. INR pricing: Starter ₹19,999/mo, Pro
+  ₹49,999/mo, Enterprise custom from ₹99,999/mo.
+- **Skill pack slots removed entirely** — no limit on how many product slugs a workspace publishes
+  under. Replaced by `machines` as the numeric meter (`workspace_devices` KV, machine-hash header
+  `X-Conxa-Machine`) — the actual trial-abuse/seat-integrity control.
+- **New enforcement**: 30-day Free trial expiry (`ensure_trial_active`, every building chokepoint);
+  machine binding at the LLM proxy and compile-reserve chokepoints; distribution/white-label gating on
+  installer upload and publish; `ops_tier` gating across the dashboard/audit/drift routes; analytics
+  retention filtering on read; a compile-credit add-on (+25/mo, stacks via Cashfree); a tiered
+  free/premium LLM router pool.
+- **Enterprise BYOK** (Azure OpenAI) — `app/services/byok.py`, AES-256-GCM key-at-rest, new
+  `PUT/GET/DELETE /api/v1/workspace/llm-key` routes, `LLMRouter.call_entry_directly` for the one-off
+  deployment call path.
+- **Deferred, not built** (see `TODO.md`): Free's running-side 1-install cap (the obvious enforcement
+  point is deliberately public/unauthenticated telemetry — a real gate needs an authenticated
+  install-provisioning step); write-side telemetry retention pruning (read-side filtering is
+  correctness-complete); build-queue priority (no server-side job queue exists to prioritize —
+  `jobs.py::enqueue_job` has zero callers today); Bedrock/Vertex BYOK; a Settings BYOK/device-list UI
+  panel.
+
+**Files:** `conxa-cloud/backend/app/services/entitlements.py`, `app/services/byok.py`,
+`app/services/saas.py`, `app/services/tracking.py`, `app/api/llm_proxy_routes.py`,
+`app/api/entitlement_routes.py`, `app/api/machine_binding.py`, `app/api/byok_routes.py`,
+`app/api/publish_routes.py`, `app/api/tracking_routes.py`, `app/api/product_routes.py`,
+`app/api/cashfree_routes.py`, `app/llm/router.py`, `packages/conxa-core/conxa_core/config.py`,
+`conxa-builder/python/services/machine_id.py`, `conxa-builder/python/services/llm_proxy_client.py`,
+`conxa-builder/python/backend.py`, `conxa-cloud/frontend/app/(marketing)/pricing/page.tsx`,
+`conxa-cloud/frontend/src/components/marketing/sections/PricingTable.tsx`, `docs/PRD.md`,
+`docs/cost_model.md`, `docs/TRD.md` §13, `docs/Backend-Schema.md` §5.3/§5.4/§7.
+
+**Verified:** 715 backend tests passing (`cd conxa-cloud && pytest -q tests`), including new coverage
+for machine limits, trial expiry, distribution gating, ops_tier gating, addon stacking, and BYOK
+routing. Frontend `npm run lint` and `npm run build` both clean, `/pricing` renders as a static route.
+
+---
+
 **Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
-phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10) is done, superseded, or moot;
+phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10, 1.12) is done, superseded, or moot;
 other open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
 billing enforcement, error-message UX).
 
@@ -477,6 +530,11 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 - **Installer** now lays out the versioned structure from the start (`installer_builder.py` nests each skill under its own `v`-prefixed version directory; `setup.nsi.tmpl` creates the `current` junctions and registers the MCP command through `conxa-runtime\current\`), so the initial install already matches the layout every later update writes into. No customer migration needed — pre-production, greenfield.
 
 **Result:** Instant no-network rollback (vs. one-step-only before); tamper-proof update manifest (vs. unsigned); staged rollout capability (vs. all-or-nothing); per-skill update granularity (vs. whole-company re-sync).
+
+**Follow-ups since:**
+- **Same-launch app updates + `min_host` enforcement (2026-08-03).** The `conxa_app` check moved out of `server.js`'s `startupSync` and into `bootstrap.js`, running *before* the app layer is `require()`'d — so a new app version is live on the launch that downloaded it instead of the next one. The manifest's local TTL cache was dropped (every launch fetches fresh, cache is failure-fallback only), `checkForUpdates()` gained a `components` filter, and the host leg now reuses the manifest bootstrap already fetched. A `min_host` floor is checked at decision time as well as load time, so a too-new app layer is never installed on an old host rather than being activated and rolled back on every launch. The pre-load leg runs on a deliberately tight budget (3s manifest, 2 retries × 5s zip) with every failure swallowed. `runtime/bootstrap.js`, `manifest_manager.js`, `server.js`, `test/test_manifest_manager.js`; TRD §4.3/§5.8/§11.3.
+- **Signing key required in production (2026-08-04).** `_validate_production_config()` now refuses to boot without `CONXA_MANIFEST_SIGNING_KEY`. Absent it, the manifest is served unsigned and every runtime silently discards it — self-updates would stop fleet-wide with no error on either end. `conxa-cloud/backend/app/main.py`, `tests/test_product_routes.py`.
+- **CI execution gate re-enabled (2026-08-04).** `build-runtime-app.yml` replays a real skill against the declared `MIN_HOST` exe before the zip/release/publish steps. Its first run caught a stale `MIN_HOST` (`host-v1.1.2` → `host-v2.0.0`); every app layer published since 2026-07-30 had been shipping a false `min_host` claim. See TODO.md ARCH-2.
 
 **Files:** `runtime/version_manager.js` (new), `runtime/manifest_manager.js` (new), `runtime/bootstrap.js`, `runtime/server.js`, `runtime/sync.js`, `runtime/skill_loader.js`, `runtime/test/test_version_manager.js` (new), `runtime/test/test_manifest_manager.js` (new), `runtime/test/gate_replay.js`, `packages/conxa-core/conxa_core/models/manifest.py` (new), `conxa-cloud/backend/app/api/manifest_signer.py` (new), `conxa-cloud/backend/app/api/updates_routes.py`, `skillpack_update_routes.py`, `publish_routes.py`, `conxa-cloud/tests/test_manifest_signing.py` (new), `conxa-builder/python/conxa_compile/installer_builder.py`, `conxa-builder/python/conxa_compile/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-host.yml`, `build-runtime-app.yml`
 

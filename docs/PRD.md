@@ -1,8 +1,15 @@
 # Conxa — Product Requirements Document
 
-**Version:** 1.0
+**Version:** 2.0
 **Status:** Foundational Product Definition
 **Owner:** Conxa
+
+**Revision note (2026-08-08):** Repositioned following the Centelon pilot demo (7 Aug 2026). The
+prior version carried two competing primary customers — SaaS vendors and enterprises — described as
+separate markets. This version resolves that into one ladder: an engineer proves the product works,
+an enterprise runs it across their own processes, and a vendor or consultancy scales it as a
+distribution channel to their customers. Same product, one buyer growing into the next. See
+`Conxa-Pilot-Conclusions.pdf` (internal) for the full reasoning.
 
 ---
 
@@ -20,18 +27,22 @@
 
 ## 2. The Problem
 
-AI agents are becoming the default interface for getting work done. But the software they need to operate was built for humans — not for agents.
+Every real business process crosses systems nobody fully owns. Onboarding a customer touches the CRM, the ERP, email, and two internal tools. Processing a claim touches a portal, a policy system, finance, and a notification service. No single team controls all of it, so no single team can justify building an integration for all of it — and the process stays manual, expensive, and dependent on the two people in the company who know every step.
+
+The instinct is to ask "what can automate this system?" That's backwards. The right question is "what does this business process cost, and what happens if we stop paying it in human hours?" Start with the business value, then pick the technology that delivers it — not the other way around.
 
 Today's approaches all break in predictable ways:
 
 - **Traditional RPA** encodes brittle selectors. One UI update and everything breaks. Maintenance costs compound faster than value delivered.
 - **Browser automation scripts** are developer tools, not something a SaaS company can hand to a customer.
 - **Sending an AI agent to navigate live UI** works for demos. It fails at scale — token costs explode, latency is high, and reliability is inconsistent because the agent rediscovers the interface on every run.
-- **Native integrations (APIs, webhooks)** require the SaaS vendor to build and maintain them — expensive, slow, and impossible for long-tail workflows that exist inside a product but don't justify a dedicated API.
+- **Native integrations (APIs, webhooks)** require someone to build and maintain them — expensive, slow, and impossible for the long tail of workflows that never survive sprint planning.
 
-The gap: there is no infrastructure layer that lets an AI agent reliably operate existing software at human-equivalent reliability, without requiring the software vendor to build anything.
+**"Why not just build the API?"** For the one system a company owns, that's often the right call — one extra engineering day beats adopting a new platform. But a cross-system process never has one owner. It's true for the system you control and false for the other four in the chain that you don't, and false again for the long-tail workflow that's too small to ever get its own sprint. We don't win this by explaining our architecture — we win it with a number: this process, these five systems, this many hours a month, this is what building and maintaining five integrations costs versus recording it once.
 
-Conxa fills that gap.
+The gap: there is no infrastructure layer that lets an AI agent reliably operate a process across the software an enterprise already uses, without requiring anyone to build anything new.
+
+Conxa fills that gap. Stop asking who owns the software. Start asking who owns the process — because Conxa automates workflows that employees are already authorised to perform, across the software they already use. Not "Conxa has permission from every application" — Conxa acts on behalf of the person who does.
 
 ---
 
@@ -41,26 +52,28 @@ Conxa separates the "teach" step from the "execute" step.
 
 A human performs a workflow once in the **Build Studio**. Conxa records not just the clicks — it captures intent, UI structure, element relationships, visual fingerprints, and recovery context. This session is compiled locally into a **Skill Package**: a structured, versioned execution artifact that encodes everything the runtime needs to execute the workflow reliably.
 
-That Skill Package is published to **Conxa Cloud**, packaged into a branded `.exe` installer, and distributed to end customers. On the customer's machine, the **Conxa Runtime** — a local MCP server — downloads the skill, exposes it as a native tool to whichever AI agent the customer already uses, and executes it with full self-healing recovery. Execution never leaves the customer's machine.
+That Skill Package is published to **Conxa Cloud**, packaged into an installer, and distributed — to the workspace's own employees on Free and Starter, or externally, under a branded installer, to their customers on Pro and Enterprise (see §11, the capability ladder). On the receiving machine, the **Conxa Runtime** — a local MCP server — downloads the skill, exposes it as a native tool to whichever AI agent that user already uses, and executes it with full self-healing recovery. Execution never leaves that machine.
 
 ```
-SaaS Vendor                   Conxa Cloud               End Customer
+Workspace                     Conxa Cloud               Every machine it reaches
 ──────────────────            ───────────               ────────────────────────
 Record workflow     →    Host + version + bill    →    Execute locally in the
-in Build Studio          Distribute installer          customer's agent (MCP)
+in Build Studio          Distribute installer          user's agent (MCP)
 ```
 
-The result: the SaaS vendor teaches the workflow once. Their customers get it forever, always up-to-date, always recoverable.
+The result: the workflow is taught once. Every machine that runs it gets it forever, always up-to-date, always recoverable — whether that machine belongs to your own team or your customer's.
 
 ---
 
 ## 4. Core Value Proposition
 
-**For SaaS companies:** Ship AI-native capabilities to your customers without touching your codebase. Record your product's workflows once in the Build Studio — Conxa compiles them into skills and distributes them to your customers as a branded installer. No API, no SDK, no new engineering headcount.
+**The business outcome first:** a process that used to require a person watching five screens now runs unattended, at the reliability of a human doing it carefully, every time. The technology underneath — recording, compilation, self-healing execution — exists to deliver that outcome, not the other way around.
 
-**For enterprises:** Stop relying on humans for repetitive software work. Give Claude the skills it needs to operate your tools the same way your team does — reliably, at scale, without token waste.
+**For an enterprise running its own operations:** stop assigning people to repetitive cross-system work. Record the process once, in the Build Studio; every AI agent your team already uses can execute it from then on — reliably, at scale, without token waste, and without waiting for five different vendors to ship five different integrations.
 
-**For AI agents:** Execute precompiled workflow skills instead of navigating live interfaces from scratch. Lower token cost, deterministic step execution, and built-in recovery that handles UI drift automatically.
+**For a SaaS vendor or a consultancy scaling as a channel:** once a process works for one client, ship it to every client whose stack looks the same. Record your product's workflows once — Conxa compiles them into skills and distributes them as a branded installer. No API, no SDK, no new engineering headcount, and a services firm that already knows which processes break across its client base turns that knowledge into a repeatable, sellable asset.
+
+**For AI agents:** execute precompiled workflow skills instead of navigating live interfaces from scratch. Lower token cost, deterministic step execution, and built-in recovery that handles UI drift automatically.
 
 ---
 
@@ -78,35 +91,47 @@ Three shifts are converging:
 
 ## 6. Target Customers
 
-### Primary: SaaS Companies
+Conxa is one product with one buying motion: a workspace climbs a ladder, from proving the product
+works to running it across an organization to distributing it as a channel. It is not two products for
+two markets — every capability below is the same compiler, the same recovery cascade, the same
+runtime, gated by what the buyer actually needs at their stage.
 
-SaaS vendors who want to make their platform operable by Claude without building native AI integrations.
+### Rung 1 — Prove it works
 
-They record their own product's workflows in the Build Studio, publish skills to the cloud, and distribute them to their customers. Conxa handles compilation, hosting, distribution, versioning, and telemetry.
+An engineer or product person, one machine, one process. They need to see a real workflow survive a
+recompile and a UI change before they bring it to their team. This is a qualification motion, not a
+revenue motion — the free tier exists to get someone from skeptical to convinced.
 
-Relevant verticals:
-- CRM and sales platforms
-- Marketing and growth tools
-- HR and people management platforms
-- Customer success and support tools
-- Internal business operations software
+### Rung 2 — Run your organization
 
-### Primary: Enterprises
+An enterprise automating its own cross-system processes: operations and back-office, finance and
+accounting, sales operations, customer support. They record their own internal workflows in the Build
+Studio, deploy skills to their own team, and let their AI agents execute them — through Claude Desktop,
+a coding agent, or whichever MCP-capable host the team already runs. This is the primary revenue
+customer: a bank automating claims intake, an insurer automating vendor onboarding, an internal ops
+team that owns a process nobody outside the company will ever build an API for.
 
-Organizations with high-volume, repetitive software work that currently requires human operators.
+### Rung 3 — Ship it to your customers
 
-They use the Build Studio to record their own internal workflows, deploy skills to their teams, and let their AI agents execute them — through Claude Desktop, a coding agent, or whichever MCP-capable host the team already runs.
+A SaaS vendor or an IT-services/consulting firm that has already solved this process for one client and
+wants to sell it to the next thirty. Two shapes of the same customer:
 
-Relevant teams:
-- Operations and back-office
-- Finance and accounting
-- Sales operations
-- Customer support
+- **SaaS vendors** who want their platform operable by Claude without building native AI integrations.
+  They record their own product's workflows, publish skills to the cloud, and distribute them to their
+  customers as a branded installer.
+- **IT-services and consulting firms** — the channel insight that came out of the Centelon pilot. A
+  services firm selling Odoo, Salesforce, ERP and CRM implementations across banking, insurance,
+  energy, aged care and government clients isn't a single customer — it's thirty enterprises reachable
+  through one relationship, and it already knows which processes are painful because it has watched
+  the same one break across many clients. Their own internal work (timesheets, invoicing, client
+  reporting) is a demo, not the sale; the sale is automating the same *shape* of cross-system process
+  they already get paid to implement for clients.
+
+Relevant verticals for both shapes: CRM and sales platforms, ERPs, marketing and growth tools, HR and
+people management, customer success and support tools, internal business operations software.
 
 ### Secondary
 
-- Automation consultants building skills for client stacks
-- Agencies managing software operations at scale
 - Internal IT teams standardizing software access for AI tooling
 - AI-first startups that need reliable non-API software integrations
 
@@ -217,19 +242,28 @@ Every execution emits structured telemetry — step outcomes, recovery tiers use
 
 ## 9. Major Use Cases
 
-**CRM operations** — Create leads, update contacts, log calls, manage pipeline stages, generate reports.
+Every use case here is a business process, not a single-app task — each one names the systems it
+crosses, because that's the shape of problem an enterprise or a services firm actually pays to solve.
 
-**Customer onboarding** — Provision new accounts, configure initial settings, trigger welcome sequences, set up integrations.
+**Customer onboarding** — CRM → ERP → email → internal provisioning tools. Create the account, configure
+initial settings, trigger the welcome sequence, and set up whatever internal system has to know the
+customer exists — as one process instead of four separate logins.
 
-**Invoice and finance processing** — Upload documents, extract structured data, update accounting systems, trigger approval flows.
+**Claims intake** — Portal → policy system → finance → notification. An insurer's claim moves through
+systems that were never built to talk to each other; today a person carries it between them by hand.
 
-**HR and people ops** — Onboard new employees, provision access, run payroll inputs, generate compliance reports.
+**Vendor onboarding** — Procurement → compliance → ERP → payments. The exact shape of work an IT-services
+firm gets paid to implement for its clients, run as a skill instead of a project.
 
-**DevOps and cloud management** — Environment setup, deployment triggers, infrastructure configuration, cloud console operations.
+**Invoice and finance processing** — Document intake → data extraction → accounting system → approval
+flow. Upload documents, extract structured data, post it correctly, and route it for sign-off.
 
-**Internal reporting** — Pull data from operational tools, populate dashboards, generate and distribute regular reports.
+**HR and people ops onboarding** — HR platform → access/identity system → payroll → compliance reporting.
+Provision a new hire the same way, every time, across every system that has to know about them.
 
-**Social and content operations** — Schedule and publish content, pull engagement reports, manage accounts across platforms.
+**Internal reporting** — Multiple operational tools → dashboard → distribution. Pull data from the
+systems that actually hold it, not the one system that has an API, and get it in front of people on
+schedule.
 
 ---
 
@@ -259,44 +293,138 @@ APIs require the software vendor to build and maintain them. They're unavailable
 
 Conxa's advantage: zero engineering required from the software vendor. If a human can do it in the browser, Conxa can make it a skill.
 
+### vs. AI Browser Assistants (Perplexity Comet, Claude for Chrome, etc.)
+
+This is a different category, not a better version of the same one — and we should say so rather than
+overclaim, because a technical buyer will test the claim in the room. Browser assistants rediscover the
+interface every run: per-session, per-user, non-deterministic, and paying token cost on every single
+execution. They're excellent for a person doing a one-off task who wants an agent alongside them.
+
+Conxa compiles a workflow once and replays it deterministically, with recovery, unattended. It's for a
+process that runs a thousand times without a person watching — not a person's session, a business's
+process.
+
 ---
 
 ## 11. Business Model
 
-Conxa sells to the vendor or enterprise that *builds* skills, not to the end customers who run them. The buyer is the workspace; their customers install the runtime for free.
+Conxa sells to the workspace that *builds* skills, not to the end users who run them. Pricing is **"pay
+for reach, not for runs"**: unlimited installs and unlimited executions on every tier, because execution
+is local and costs Conxa nothing marginal. What's priced is how much of the ladder a workspace has
+climbed — how many people can build, how much gets compiled, and how far the result can travel.
+
+### The capability ladder
+
+Each tier is a rung, not just a bigger number. What changes between them is *what a workspace can do*,
+not only *how much*:
+
+| | **Free** | **Starter** | **Pro** | **Enterprise** |
+|---|---|---|---|---|
+| Who | An engineer proving it works | One product team automating its own processes | An enterprise running its org, or a vendor scaling as a channel | A SaaS vendor or consultancy shipping to their customers |
+| Record → compile → execute, full self-healing | Yes | Yes | Yes | Yes |
+| Distribution | Internal, 1 machine | Internal, unbranded | External, Conxa-branded | External, white-label |
+| Ops dashboard | None | Basic | Full (+ healing, impact, drift) | Full |
+| Audit log & RBAC | None | Basic | Full | Full + SSO/SAML |
+| BYOK | No | No | No | Yes (Azure OpenAI) |
+
+Self-healing stays in every tier including Free. It costs Conxa nothing — the two zero-token recovery
+tiers are deterministic and local, and the LLM-backed tiers run on the customer's own agent subscription
+— and a free tier without it teaches people the product breaks, which is the opposite of what a trial is
+for. What Free *doesn't* get is reach: it is capped at one machine and expires after 30 days, which is
+what stops "free forever" from quietly substituting for Pro.
 
 ### What is metered
-
-Pricing follows the two things that actually cost Conxa money and the two that track account value:
 
 | Axis | What it limits | Why it's metered |
 |---|---|---|
 | **Seats** | People in the workspace who can build and publish | Tracks team size and account value |
-| **Skill pack slots** | Distinct products a workspace can distribute under | Tracks breadth of deployment |
+| **Machines** | Distinct devices/IPs a workspace can build from | The trial-abuse and seat-integrity control |
 | **Compile credits** | Workflow compilations | Compilation is the real LLM cost centre |
 | **Human-edit tokens** | LLM usage in the workflow editor's assisted-repair paths | The other LLM cost centre, driven by manual fixing |
 
-### Plan shape
+There is no longer a limit on how many distinct products or slugs a workspace can publish under — a
+"plugin" is just a named group of workflows, not a rationed slot. Reach is gated by the *distribution*
+capability (which tier you're on), not by a count.
 
-| | Free | Starter | Pro | Enterprise |
-|---|---|---|---|---|
-| Seats | 1 | 3 | 10 | Negotiated |
-| Skill pack slots | 1 | 3 | 10 | Negotiated |
-| Compile credits / mo | 50 | 300 | 1,000 | Negotiated |
-| Human-edit tokens / mo | 1M | 10M | 50M | Negotiated |
-| Compile LLM pool | Free-tier providers | Paid mid-tier | Paid mid-tier | Highest-quality models |
-
-Enterprise carries no defaults — every limit is an explicit contractual override. Subscription billing runs through Cashfree.
+Enterprise carries no numeric defaults — every limit is an explicit contractual override. Subscription
+billing runs through Cashfree. Full pricing is in `docs/cost_model.md` and on the public pricing page.
 
 ### What is deliberately *not* metered
 
-**Executions are free and unlimited.** Skills run entirely on the customer's machine using the customer's own compute — Conxa incurs no marginal cost per run, so charging per execution would price against the product's core promise. This is a structural advantage over every cloud-execution competitor, whose costs scale with customer usage and who must therefore meter it.
+**Executions and installs are free and unlimited on every tier.** Skills run entirely on the customer's
+machine using the customer's own compute — Conxa incurs no marginal cost per run, so charging per
+execution would price against the product's core promise. This is a structural advantage over every
+cloud-execution competitor, whose costs scale with customer usage and who must therefore meter it.
 
-The consequence: revenue scales with how many workflows a vendor *builds*, not how hard their customers *use* them. A vendor is never penalised for success, which removes the usual reason customers ration an automation platform.
+The consequence: revenue scales with how many workflows a workspace *builds* and how far it *reaches*,
+not how hard end users *run* them. Nobody is penalised for success, which removes the usual reason
+customers ration an automation platform.
 
 ### Cost posture
 
-Compilation is a one-time cost per workflow version; execution is a recurring benefit. The free tier runs on free-tier LLM providers so that trial usage costs effectively nothing, while paid tiers route to higher-quality models where compile quality directly determines skill reliability. Unit economics are modelled in `docs/cost_model.md`.
+Compilation is a one-time cost per workflow version; execution is a recurring benefit. The free tier
+runs on free-tier LLM providers so that trial usage costs effectively nothing, while paid tiers route to
+higher-quality models where compile quality directly determines skill reliability. Unit economics are
+modelled in `docs/cost_model.md`.
+
+---
+
+## What Our IP Actually Is
+
+The instinctive answer — "recording → compile → Playwright automation" — is also the exact phrase a
+technical evaluator uses to describe what's *not enough* to build a category on. A good team of ten
+could build a decent recording-to-Playwright compiler in six months, and large AI labs are actively
+shipping in this space. The compiler is hard work, but hard is not the same as defensible.
+
+What's actually hard to copy:
+
+**The recovery ladder.** Four tiers, most costing nothing, LLM only as a last resort. Making automation
+degrade gracefully instead of breaking hard is an execution architecture, not a compiler trick — see
+`docs/TRD.md` §10.1.
+
+**The telemetry loop.** Every run, recovery, and failure flows back into how we compile the next skill.
+A competitor can copy the compiler in a quarter. They cannot copy two years of execution history of how
+real UIs actually drift and which remedies actually work.
+
+**The cost structure.** Execution runs on the customer's machine, so it costs us nothing and we charge
+nothing for it. Any cloud-execution competitor must meter runs to survive; they cannot match this
+without rebuilding their business model.
+
+The correct framing: the compiler is the engine. The IP is that skills keep working after the UI
+changes, and that we get cheaper as customers use us more while cloud-execution competitors get more
+expensive as their customers use them more.
+
+**Two honest cautions.** First, a system of small IPs that only add up to something *as a loop* is much
+harder to sell than one big one — you cannot explain a loop in a first meeting, you need one sentence
+that survives the room. Second, the loop is only real once it's spinning. Today the architecture exists
+but execution history is thin, because install volume is thin. Right now this is a diagram, not a moat.
+It becomes real around customer ten.
+
+---
+
+## Workflow Qualification Checklist
+
+Run this before promising any workflow can be automated. Better to disqualify in week one than fail in
+week six.
+
+- **MFA policy.** If the target system demands a fresh OTP on every login, unattended automation is
+  dead — this is the one blocker that genuinely can't be worked around.
+- **Bot protection / CAPTCHA / IP allowlisting.** Aggressive bot detection is built for adversarial
+  traffic — datacenter IPs, headless browsers, high volume from fresh sessions. Conxa is none of those:
+  it runs on an employee's own machine, from a corporate IP, in a real browser, reusing a session that
+  employee legitimately created, at human speed. Most line-of-business software (an ERP, an internal
+  CRM, a bank's loan origination system, a vendor portal, an insurer's claims system) has no bot
+  detection at all — nobody puts bot protection on internal LOB software. Where it does bite is
+  consumer-facing platforms: social networks, some payment portals, public-web search. Moving up-market
+  to real business processes removes most of this risk along with the consumer-app examples that used
+  to headline our marketing.
+- **Terms of service.** Check for a clause banning automated access.
+- **Session lifetime.** How long does an authenticated session last unattended before it needs a human
+  to re-authenticate?
+
+If a workflow fails this checklist, say so and don't attempt it. The moment we try to defeat a
+protection, Conxa becomes a different company with a different legal profile — identify the blocker,
+say the workflow can't be automated, and move to the next one.
 
 ---
 

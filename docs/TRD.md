@@ -196,10 +196,14 @@ All under `/api/v1/` except health endpoints:
 | `GET /readyz` | Readiness (DB ping) | Public |
 | `POST /api/v1/llm/proxy/{text,vision}` | Metered LLM proxy | Clerk JWT + X-Conxa-Client header |
 | `GET /api/v1/llm/proxy/usage` | Token quota status | Clerk JWT |
-| `GET /api/v1/entitlements/current` | Workspace plan and four visible meters | Clerk JWT |
-| `POST /api/v1/usage/compile/reserve` | Reserve 1 fresh compile credit | Clerk JWT |
+| `GET /api/v1/entitlements/current` | Workspace plan, four numeric meters, and the capability ladder (distribution/white_label/ops_tier/compile_pool/byok), trial status | Clerk JWT |
+| `GET /api/v1/entitlements/machines` | Registered build devices for the Settings device list | Clerk JWT, owner/admin |
+| `POST /api/v1/entitlements/machines/revoke` | Revoke a device, freeing its slot | Clerk JWT, owner/admin |
+| `POST /api/v1/usage/compile/reserve` | Reserve 1 fresh compile credit; also registers `X-Conxa-Machine` and checks trial expiry | Clerk JWT |
 | `POST /api/v1/usage/compile/commit` | Commit a reserved compile credit | Clerk JWT |
 | `POST /api/v1/usage/compile/release` | Release an uncommitted compile reservation | Clerk JWT |
+| `GET \| PUT \| DELETE /api/v1/workspace/llm-key` | Enterprise BYOK (Azure OpenAI) key config — GET never returns the key | Clerk JWT, owner/admin |
+| `GET /api/v1/subscriptions/plans` | Public price sheet — the four tiers, derived from `PLAN_LIMITS` so it can't drift; excludes the credit add-on | Public |
 | `POST /api/v1/plugins/publish` | Skill pack publish (legacy, permanent) — **mandatory**, fails the whole publish on cloud error | Clerk JWT |
 | `POST /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/upload` | Skill pack publish (versioned equivalent, §17 row) — same contract/mandatory semantics | Clerk JWT |
 | `GET /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions` | Skill-pack release history (version, release notes, `is_latest`) — the Skill Pack Publishing page's changelog | Clerk JWT |
@@ -211,14 +215,14 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync — per-skill delta (see below), legacy permanent route | Rate-limited; token optional |
 | `GET /api/v1/plugins/{installer_version}/{company}/skill-packs/delta` | Runtime skill sync, versioned equivalent — identical contract | Rate-limited; token optional |
 | `POST /api/tracking/{co}/events` | Telemetry ingest — permanent back-compat alias (also served at `/api/v1/tracking/...` and the versioned `/api/v1/plugins/{installer_version}/{co}/tracking/events`) | Package tracking token |
-| `GET /api/v1/tracking/companies` | Company list | Clerk JWT |
-| `GET /api/v1/tracking/{co}/runs` | Run summaries | Clerk JWT |
-| `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline | Clerk JWT |
-| `GET /api/v1/tracking/{co}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) | Clerk JWT |
-| `GET /api/v1/tracking/dashboard?range=` | Full operations payload — adoption, reliability, health score, per-skill rollups, recovery cascade, heatmap, ROI, rule-derived insights. `range` accepts `24h`/`7d`/`30d`/`90d` | Clerk JWT |
-| `GET /api/v1/tracking/activity` | Recent runs across every visible company for the live feed (polls independently of the dashboard aggregate) | Clerk JWT |
-| `GET /api/v1/tracking/workflows/{co}/{slug}?range=` | Step-level drill-down for one skill | Clerk JWT |
-| `GET \| PUT /api/v1/tracking/roi-assumptions` | Workspace ROI baseline (minutes per run, hourly rate). `PUT` is admin/owner only | Clerk JWT |
+| `GET /api/v1/tracking/companies` | Company list — not ops_tier-gated (navigation lookup, not analytics content) | Clerk JWT |
+| `GET /api/v1/tracking/{co}/runs` | Run summaries — `ops_tier` "basic"+ (§13.4) | Clerk JWT |
+| `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline — `ops_tier` "basic"+ | Clerk JWT |
+| `GET /api/v1/tracking/{co}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) — `ops_tier` "full" only | Clerk JWT |
+| `GET /api/v1/tracking/dashboard?range=` | Full operations payload — adoption, reliability, health score, per-skill rollups, recovery cascade, heatmap, ROI, rule-derived insights. `range` accepts `24h`/`7d`/`30d`/`90d` — `ops_tier` "basic"+ | Clerk JWT |
+| `GET /api/v1/tracking/activity` | Recent runs across every visible company for the live feed (polls independently of the dashboard aggregate) — `ops_tier` "basic"+ | Clerk JWT |
+| `GET /api/v1/tracking/workflows/{co}/{slug}?range=` | Step-level drill-down for one skill — `ops_tier` "basic"+ | Clerk JWT |
+| `GET \| PUT /api/v1/tracking/roi-assumptions` | Workspace ROI baseline (minutes per run, hourly rate). `PUT` is admin/owner only — `ops_tier` "basic"+ | Clerk JWT |
 | `GET /api/v1/updates/deps-manifest` | Bootstrap manifest (Build Studio deps only) | Public |
 | `GET /api/v1/manifest.json` | **Unified, Ed25519-signed** runtime update manifest — conxa_runtime, conxa_app, and per-skill versions, compatibility matrix, minimum versions, rollout percentages. Source of truth for `runtime/manifest_manager.js`. Served straight from `manifest` KV (signed once at publish time, not on the read path). | Public |
 | `POST /api/v1/admin/component-versions/{component}` | CI (after host/app build) and `publish_routes.py` (after skill publish) write a component's version record here; recomposes + re-signs the full manifest immediately. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. | Bearer: `CONXA_ADMIN_TOKEN` |
@@ -228,7 +232,7 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — `since` is a JSON map of `{skill_slug: last_known_version}`; response is `{skills: [{name, action: "update"|"no_change", version?, files?}]}`. Each skill is compared and shipped independently — republishing one skill never triggers a re-download of the others. Authenticated by installer-embedded sync_token. | Bearer: `pack.json.sync_token`; 401 if invalid |
 | `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
-| `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, plugin create/delete) | Clerk JWT |
+| `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, plugin create/delete) — `ops_tier` "basic"+; export is a documented follow-up, not yet a separate endpoint | Clerk JWT |
 | `POST /api/v1/subscriptions/create` | Create Cashfree subscription (`subscription_id`, `auth_link`, `plan_id`) | Clerk JWT |
 | `POST /api/v1/subscriptions/webhooks/cashfree` | Cashfree webhook | Webhook secret HMAC over sorted `cf_`-prefixed fields |
 | `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
@@ -241,12 +245,14 @@ All under `/api/v1/` except health endpoints:
 `app/api/security.py` — `ProductionRequestMiddleware`:
 
 1. Attaches a request ID to every request.
-2. Enforces body size limits (1MB general; 250MB for publish/upload).
+2. Enforces body size limits (1MB general; 250MB for the `BUILD_ARTIFACT_UPLOAD_PATHS` set — `/api/v1/plugins/publish`, any `/installer/upload`, any `/skill-packs/upload`). A path missing from that set is silently held to the 1MB general limit, which is how versioned skill-pack publishes were being rejected until 2026-08-01.
 3. When `SKILL_AUTH_REQUIRED=true`:
    - Extracts `Authorization: Bearer <token>`.
    - Verifies against Clerk JWKS (`SKILL_CLERK_JWKS_URL`).
    - Attaches `request.state.auth` with subject, org_id, claims.
-4. Public paths bypass auth: health endpoints, installer downloads, update manifests, telemetry ingest, skill-pack delta GETs.
+4. Public paths bypass auth: health endpoints, installer downloads, update manifests (including the signed `/api/v1/manifest.json`, polled by every installed runtime before any Clerk session exists), telemetry ingest, skill-pack delta GETs.
+
+   The **versioned** runtime endpoints nested under `/api/v1/plugins/{installer_version}/{company}/…` are exempted by *suffix*, not by prefix — `PUBLIC_VERSIONED_PLUGIN_SUFFIXES_GET = ("/skill-packs/delta",)` and `PUBLIC_VERSIONED_PLUGIN_SUFFIXES_POST = ("/tracking/events",)`. A blanket `/api/v1/plugins/` prefix exemption would also unauthenticate `plugin_routes.py`'s Clerk-protected dashboard endpoints (list/create/delete), which share that path segment. Both exempted sub-paths are package-token guarded in their own handlers.
 
 ### 3.4 Workspace / Principal Model
 
@@ -267,6 +273,14 @@ class Principal:
 ```
 
 In local dev (`SKILL_AUTH_REQUIRED=false`), all requests are treated as a synthetic local principal.
+
+**Role normalization** (`_normalize_org_role`) strips Clerk's `org:` prefix and lowercases. When a
+principal has **no active Clerk org**, they are in their own personal workspace
+(`personal_{user_id}`) — a workspace nobody else can reach, of which they are the sole member — so
+the empty role normalizes to `"owner"`, not `"basic_member"`. Defaulting them to `basic_member`
+locked every solo user out of all `require_admin` routes: publish, plugin create/delete, subscribe.
+Both identity paths (trusted proxy and Clerk JWT) pass `personal_workspace=not org_id`. Tested in
+`tests/test_llm_proxy_and_publish.py`.
 
 ### 3.5 Billing
 
@@ -703,6 +717,7 @@ sequenceDiagram
 3. Bridge captures: `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.
 4. Each event carries: `action`, `url`, `frame` (iframe chain), `target` (element signals), `value`, `ts`.
 5. `frame_utils.py`'s `_frame_context_and_offset_sync` walks the iframe parent chain to accumulate page-level bounding box offsets; `session.py` calls it per event.
+5a. **No `filechooser` listener is attached** (`session.py::_bind_page_handlers`). Attaching one makes Playwright intercept the dialog, so the native OS picker never opens, the user can never pick a file, the input's `change` event never fires, and `bridge.js` never emits `upload_intent` — uploads become unrecordable. Recording is always headed, so letting the real dialog through is safe. See §9.3.
 6. Events stream to `session_events.py` which appends to `events.jsonl`.
 7. On stop, `session.py` closes the Playwright context and renames the raw `.webm` to `recording.webm`. It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
 
@@ -890,6 +905,24 @@ next step resolves against the new page. Non-navigation steps have no inter-step
 (Earlier revisions added randomized human-like delays per action type and a minimum
 "observer pause" after navigation, gated by `CONXA_HUMAN_PACING` and a per-company
 `pack.pacing.observer_ms` — both were removed to make execution as fast as the page allows.)
+
+### 9.3 File Upload Steps
+
+A browser never exposes a picked file's full path — only `File.name` — so **nothing captured
+while recording can ever be a valid upload target on the machine that replays the skill**. Upload
+steps are therefore always parameterised, end to end:
+
+| Stage | Behaviour | Where |
+|---|---|---|
+| Record | Native OS picker is allowed through (§6.1); `bridge.js` emits `upload_intent` off the input's `change` event, carrying `JSON.stringify(files)` metadata (`[{name, size, type}]`) — never a path | `recorder/session.py`, `bridge.js` |
+| Clean | An `upload`/`upload_intent` on a file input **supersedes the preceding click/focus on the same target**, exactly the way `type` supersedes a text field's prep click. Replay must never see that click — clicking a file input reopens an OS dialog nothing can drive unattended | `compiler/step_anchors.py::clean_steps` |
+| Compile | A file input is **not** an "editable target", so the click→focus rewrite never fires on it (the runtime's `focus` handler clicks before it focuses, which would reopen the dialog) | `compiler/action_semantics.py::is_editable_target` |
+| Bind | Uploads always bind to the input name `file_path`, never a label-derived name — otherwise "File Uploader" / "Attach document" / "Upload CSV" would each yield a differently named input for the same concept | `compiler/input_binding.py::derive_input_binding` |
+| Package | Recorded file *metadata* is recognised explicitly (it is truthy JSON, so an `or` fallback would pass it through as if it were a path) and replaced with `{{file_path}}`; a literal path or custom placeholder typed by hand in Human Edit is preserved as authored. The auto-declared input's description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk file is expected | `plugin_builder_saved_skill.py` |
+| Execute | `interpolate()` → `trim()` → strip one matching pair of surrounding double quotes (Windows Explorer's "Copy as path" quotes any path containing spaces, and Node only treats a bare drive letter as absolute — a quoted path would be silently joined onto the runtime's CWD) → `locator.setInputFiles()`. An empty resolved path **throws** rather than skipping: silently not uploading a document while reporting success is this action's worst failure mode. `server.js`'s required-input gate should already have rejected it; this is defence in depth | `runtime/run.js::HANDLERS.upload` |
+
+Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_plugin_builder.py`, `test_phases.py`,
+`test_recorder_session.py`.
 
 ---
 
@@ -1277,7 +1310,11 @@ Header: `X-Tracking-Token: <token from pack.json>`
 
 ### 13.1 Provider Pool
 
-The cloud maintains a flat pool of `(provider, endpoint, api_key, text_model, vision_model)` tuples. Multiple keys per provider expand to multiple entries.
+The cloud maintains a flat pool of `(provider, endpoint, api_key, text_model, vision_model, pool, auth_style)`
+tuples. Multiple keys per provider expand to multiple entries. `PoolEntry.pool` (`"free"` | `"premium"`)
+and `auth_style` (`"bearer"` | `"api_key_header"`) were added 2026-08-08 for the tiered compile pool
+and BYOK (§13.1a, §13.5) — every pooled provider keeps `auth_style="bearer"`, only BYOK entries use
+`"api_key_header"`.
 
 Enabled providers (current defaults):
 - **Groq** — `llama-3.3-70b-versatile` (text), `llama-4-scout-17b` (vision)
@@ -1286,12 +1323,29 @@ Enabled providers (current defaults):
 
 Disabled by default (toggle via env): Cerebras, Together, OpenRouter, Mistral.
 
+### 13.1a Tiered Compile Pool
+
+`Settings.llm_premium_providers` (env `LLM_PREMIUM_PROVIDERS`, comma-separated provider names, e.g.
+`google_ai_studio,nvidia_nim`) tags matching providers `pool="premium"` in `enabled_llm_providers()`;
+everything else defaults to `pool="free"`. `llm_proxy_routes._meter_and_call` reads the calling
+workspace's `compile_pool` capability (`entitlements.compile_pool_for`) and passes it to
+`route_text`/`route_vision` as the `pool` kwarg. `LLMRouter._next_available_entry` filters on it.
+
+If the requested pool has no available entry (e.g. no premium provider configured), the router falls
+back to any pool rather than failing a paying customer's compile over an ops misconfiguration — logged
+via `_debug_log`, not surfaced as an error. At least one premium provider must be enabled for Starter/Pro
+compile quality to actually differ from Free; see `ROUTER_SETUP.md`.
+
 ### 13.2 Router Behavior
 
 - Round-robin with cooldown: entries that return 429 are cooled for `llm_router_cooldown_secs` (60s default).
 - Failover: on error, moves to next entry.
 - Max retries: `llm_router_max_retries` (3 default).
 - Fast text preference: when `llm_router_prefer_fast_for_text=true`, text calls prefer low-latency providers.
+- `LLMRouter.call_entry_directly` bypasses pool selection and cross-provider failover for a
+  caller-supplied `PoolEntry` — used only for BYOK (§13.5), where there's exactly one deployment to
+  call and the shared pool's rotate/cool-down/drop-on-401 machinery (built for many interchangeable
+  keys) doesn't apply.
 
 ### 13.3 Build Studio → Cloud Proxy
 
@@ -1299,58 +1353,230 @@ Build Studio's LLM calls go through `services/llm_proxy_client.py`:
 - Target: `POST /api/v1/llm/proxy/text` or `/api/v1/llm/proxy/vision`
 - Header: `Authorization: Bearer <Clerk access_token>`
 - Header: `X-Conxa-Client: build-studio`
+- Header: `X-Conxa-Machine: <sha256 of Windows MachineGuid>` — omitted if unreadable; see §13.4a
 - Body includes `usage_class`: `compile` or `human_edit`. Missing values default to `compile` for rollout compatibility.
 - Compile LLM calls record compile input/output tokens; Human Edit LLM calls draw from the workspace's monthly Human Edit pool.
 - `CloudUnreachable`, `QuotaExceeded`, and stable entitlement errors propagate up to the compiler, which surfaces them as `compile_error` events to the renderer.
 
 ### 13.4 Entitlements And Visible Meters
 
-The cloud exposes four customer-visible meters:
+**Rewritten 2026-08-08** for the capability ladder (docs/PRD.md §11): the per-slug `skill_pack_slots`
+meter was removed entirely — a workspace may publish under unlimited product slugs on every tier —
+and reach is now gated by *capability* keys (distribution, white-label, ops tier, BYOK) rather than a
+count. `machines` replaced it as the numeric meter, enforcing the trial-abuse/seat-integrity control.
+
+The cloud exposes four customer-visible numeric meters, all defined in `PLAN_LIMITS`
+(`conxa-cloud/backend/app/services/entitlements.py`):
 - `seats`
-- `skill_pack_slots` (renamed from `installer_slots` 2026-07-09 — a slot is consumed by
-  the first skill-pack publish *or* installer upload for a slug, not installer upload alone;
-  see §17 versioned-installer-architecture row and `docs/Backend-Schema.md` §5.3)
+- `machines` — distinct build-side devices a workspace has registered (§13.4a)
 - `compile_credits`
 - `human_edit_tokens`
 
+...and five capability keys that shape what a plan can *do*, not just how much:
+- `distribution` — `"internal"` (Free only) or `"external"` (Starter, Pro, Enterprise). Starter's
+  distribution volume isn't machine-capped — it's naturally bounded by its 200 compile-credit ceiling,
+  since every meaningful update requires a fresh compile before it can be republished. Free is the only
+  tier with a hard machine restriction — see the machine lock and delta-sync gate under §13.4a.
+- `white_label` — bool; Enterprise only
+- `ops_tier` — `"none"` (Free), `"basic"` (Starter), `"full"` (Pro, Enterprise)
+- `compile_pool` — `"free"` or `"premium"`; which router pool compiles route to (§13.1a)
+- `byok` — bool; Enterprise only (§13.5)
+
 Plan defaults:
-- `free`: 1 seat, 1 skill pack slot, 50 compile credits/month, 1M Human Edit tokens/month.
-- `starter`: 3 seats, 3 skill pack slots, 300 compile credits/month, 10M Human Edit tokens/month.
-- `pro`: 10 seats, 10 skill pack slots, 1000 compile credits/month, 50M Human Edit tokens/month.
-- `enterprise`: explicit workspace overrides.
-- `development`: unlimited.
+- `free`: 1 seat, 1 machine, 25 compile credits/mo, 500K Human Edit tokens/mo, 30-day `trial_days`,
+  internal distribution, no white-label, `ops_tier="none"`, free compile pool, no BYOK.
+- `starter`: 3 seats, 3 machines (Build Studio dev-side seats only — its distributed installer output
+  reaches unlimited customer machines), 200 compile credits/mo, 2.5M Human Edit tokens/mo, external
+  distribution, no white-label, `ops_tier="basic"`, premium compile pool, no BYOK.
+- `pro`: 10 seats, 10 machines, 500 compile credits/mo, 10M Human Edit tokens/mo, external
+  distribution, Conxa-branded (no white-label), `ops_tier="full"`, premium compile pool, no BYOK.
+- `enterprise`: explicit workspace overrides for the numeric limits; capability floor is external
+  distribution, white-label, `ops_tier="full"`, premium pool, BYOK.
+- `development`: unlimited numerics, full capabilities.
 
 Legacy `basic` billing records normalize to `starter`. Paid (Cashfree-subscribed) workspaces use `billing:<current_period_end_unix>` as the usage period and reset at the next monthly payment timestamp stored on the billing record. Workspaces without a subscription timestamp fall back to the UTC calendar month (`YYYY-MM`) and reset at the first day of the next UTC month.
 
-Fresh compile flow:
-1. Build Studio determines the workflow has no `skill_id`.
-2. Build Studio calls `POST /api/v1/usage/compile/reserve`.
-3. If reservation fails, local compile is blocked before pipeline work starts.
-4. Build Studio commits the reservation before the first LLM-bearing compiler stage.
-5. If failure occurs before commit, Build Studio calls release. If failure occurs after commit, the credit remains consumed.
+Compile flow (first compile and recompile alike):
+1. Build Studio calls `POST /api/v1/usage/compile/reserve`, sending `X-Conxa-Machine` (§13.4a) alongside the existing `X-Conxa-Client` header — whether the workflow already has a `skill_id` (a recompile) or not (a first compile) makes no difference here.
+2. If reservation fails — quota, machine limit, or trial expired — local compile is blocked before pipeline work starts.
+3. Build Studio commits the reservation before the first LLM-bearing compiler stage.
+4. If failure occurs before commit, Build Studio calls release. If failure occurs after commit, the credit remains consumed.
+5. Proxied LLM calls during the compile run use `usage_class="compile"`.
 
-Recompile and LLM-assisted Human Edit:
-- Existing workflow `skill_id` means no compile-credit reservation.
-- Proxied LLM calls use `usage_class="human_edit"`.
-- Deterministic editor actions stay available when the Human Edit pool is exhausted.
+LLM-assisted Human Edit:
+- The Human Edit token pool is spent only by editor-triggered LLM paths, never by `cmd_compile`: the visual editor (`handlers/visual.py`), the workflow editor (`handlers/workflow_editor.py`), the 1-click fix selector-regeneration API (`compiler/patch.py::_regenerate_compiled_selectors`), and the Human Edit "draw a new region" retarget wizard (`region_selector_vision.py`).
+- Those calls use `usage_class="human_edit"`. Deterministic editor actions stay available when the Human Edit pool is exhausted.
+- The LLM proxy also enforces trial expiry and machine registration on every call (`app/api/llm_proxy_routes.py::_meter_and_call`), and routes to the workspace's `compile_pool` (or a BYOK entry — §13.5 — when configured).
 
-Installer slots:
-- Skill-pack publish does not consume a slot.
-- Installer upload consumes a slot only when the slug has no existing installer release for the workspace.
-- Same slug, newer version is allowed at the limit. Exact duplicate version is rejected separately.
+Persistent workflow-slot ledger (added 2026-08-09) — closes the one gap the reservation flow above doesn't cover: `compile_credits` resets every billing period, so it never reclaims access to workflows a workspace already published while on a higher tier. `record_published_workflow` (`entitlements.py`) writes one never-resetting entry per distinct `(plugin_id, workflow_id)` to the `entitlement_workflows` KV namespace on first publish (`publish_routes.py::_publish_skill_pack_impl`). `_reconcile_workflow_locks`, re-run on every read of `GET /api/v1/entitlements/current` (exposed as the `workflow_lock` field) and on every publish, reuses the plan's current `compile_credits` number as a standing cap on how many published workflows may stay **active**, keeping the most-recently-published `limit` unlocked and locking the rest oldest-first — self-healing, no separate downgrade migration step. `ensure_workflow_publishable` enforces the same cap at publish time: republishing an already-active workflow (new version) is always allowed, republishing a **locked** one 402s `workflow_locked`, and publishing a brand-new workflow once already at the cap 402s `workflow_limit_exceeded`. Scope is company-side only by design — it never touches `skillpack_update_routes.py`'s delta-sync, so an end customer who already has a workflow installed keeps syncing and running it regardless of the SaaS company's current plan.
+
+Distribution (replaces installer slots, removed 2026-08-08):
+- No limit on how many product slugs a workspace publishes under, or on skill-pack publish.
+- Installer upload (`publish_routes.py::_upload_installer_impl`) accepts `distribution` (`internal`
+  default | `external`) and `white_label` query params from Build Studio, and stores them in the
+  installer version's KV metadata (`installer_versions__{slug}`) alongside the existing
+  filename/version/release-notes fields. This is server-side gating on what the Studio *tells* the
+  cloud it's uploading, not an inspection of the binary's own `pack.json` — `installer_builder.py`
+  itself was not changed; it does not yet stamp `distribution` into the built artifact.
+- `ensure_distribution_allowed` rejects an `external` upload from a workspace whose plan carries
+  `distribution="internal"` (402 `distribution_not_permitted`). `ensure_white_label_allowed` rejects
+  custom branding without the `white_label` capability (402 `white_label_not_permitted`).
+- **Free's 1-install cap from docs/PRD.md §11 is not enforced.** The obvious enforcement point,
+  `skillpack_update_routes.py::post_telemetry_runtime_start`, is deliberately public and
+  unauthenticated (its own docstring: "spoofing inflates counts but leaks nothing") — hard-blocking
+  installs there on a spoofable `install_id` would be a false security control. Free's real boundary is
+  the machine-binding limit on the *build* side (§13.4a); the running-side cap needs an authenticated
+  install-provisioning step that doesn't exist yet — tracked in `TODO.md`.
+- Starter is *not* count-capped on installs — the sheet promises unlimited installs. Starter's actual
+  boundary is the `internal` distribution stamp and Conxa branding on the uploaded installer, visible
+  in the dashboard and telemetry — a contract violation the workspace can be *seen* committing, not one
+  blocked mid-run.
+
+Ops tier gating (`ensure_ops_tier`, `app/api/tracking_routes.py`, `app/api/product_routes.py`):
+- Free (`ops_tier="none"`): the ops dashboard, activity feed, workflow detail, ROI assumptions, run
+  lists, run timelines, and the audit log all 403 with `ops_tier_required`.
+- Starter (`"basic"`): all of the above are visible; drift detection (`GET /tracking/drift`) still 403s.
+- Pro/Enterprise (`"full"`): everything, including drift detection.
+- `GET /tracking/companies` and `GET /tracking/diagnostics` are **not** gated — lightweight
+  workspace-scoped lookups used by navigation, not analytics content.
+
+Analytics retention:
+- `analytics_retention_days` per plan (Free 0, Starter 90, Pro 365, Enterprise custom) filters
+  `_visible_run_records` and `_visible_runtime_registrations` on read
+  (`app/services/tracking.py`, via `entitlements.analytics_retention_cutoff_ms`).
+- Read-side filtering only — there is no write-side prune yet; tracked in `TODO.md`.
 
 Seat usage:
 - Clerk organization membership is the intended source of truth when an organization is present and `CLERK_SECRET_KEY` is configured for the cloud backend.
 - Local/dev falls back to SaaS membership state.
 - Hard seat enforcement requires a Conxa-owned invite API or Clerk webhook cleanup.
 
+Trial expiry (Free only):
+- `trial_started_at` is stamped once, on first sight of a workspace (`saas.ensure_principal`), with a
+  backstop in `billing_for` for pre-existing records that predate the field.
+- `entitlements.trial_expired(billing)` is true only for `plan == "free"` past `trial_days` (30).
+- Enforced at every building chokepoint — LLM proxy, compile reserve, skill-pack publish, installer
+  upload — via `ensure_trial_active`, 402 `trial_expired`. Never enforced on skill sync or telemetry
+  ingest: execution is local and the cloud isn't in that path, so an already-installed machine keeps
+  working after the trial that built it expires.
+
+Credit add-on:
+- `addon_compile_packs` (int, on the billing record) adds `25 * n` to `compile_credits` in
+  `_limits_from_billing` — stacks on Starter or Pro, purchased/cancelled via a `credits_addon_25`
+  Cashfree plan (`cashfree_routes._bump_addon_packs`), independent of the base subscription.
+
 Stable entitlement error codes:
 - `compile_credit_limit_exceeded`
 - `human_edit_pool_exceeded`
-- `installer_limit_exceeded`
 - `seat_limit_exceeded`
+- `machine_limit_exceeded`
+- `trial_expired`
+- `distribution_not_permitted`
+- `white_label_not_permitted`
+- `ops_tier_required`
 - `entitlements_unavailable`
 - `invalid_usage_class`
+
+### 13.4a Machine Binding
+
+The control that stops a single-machine free trial from quietly becoming a free Pro seat, and the
+general seat-integrity mechanism across all paid tiers.
+
+- Build Studio derives a stable machine id from Windows' `MachineGuid`
+  (`HKLM\SOFTWARE\Microsoft\Cryptography`), SHA-256 hashes it (`conxa-builder/python/services/machine_id.py`),
+  and sends it as `X-Conxa-Machine` on every call through `backend.py::_cloud_json` (compile reserve,
+  entitlements checks) and `services/llm_proxy_client.py` (the LLM proxy). Only the hash ever leaves the
+  machine.
+- `app/api/machine_binding.py::register_request_machine` reads the header and calls
+  `entitlements.ensure_machine_slot`, enforced at both `llm_proxy_routes._meter_and_call` and
+  `entitlement_routes.post_compile_reserve` — a Studio that can neither proxy an LLM call nor reserve a
+  compile credit cannot compile.
+- A known hash is touched (last_seen/last_ip updated) and never counted twice. A new hash within the
+  `machines` limit is registered and allowed. A new hash at the limit is rejected
+  (402 `machine_limit_exceeded`).
+- A revoked machine (`POST /entitlements/machines/revoke`, Settings device list) is treated as brand
+  new on its next registration attempt — it re-enters through the limit check rather than being
+  silently un-revoked.
+- One `machines` limit governs both device slots and distinct active IPs (the pricing sheet pairs them
+  1:1, 3:3, 10:10 on every tier) — a deliberate simplification (`ponytail:` in code); split only if a
+  tier ever needs different counts.
+- Older Studio builds that predate this header send no `X-Conxa-Machine` — enforcement is a no-op for
+  them, not a hard failure; `settings.entitlements_enforce_machines` is the real on/off switch.
+- **Caveat on install-side enforcement**: `skillpack_update_routes.py::post_telemetry_runtime_start`
+  (the endpoint that would need to hard-cap Free's 1-install limit on the *running* side, not the
+  build side) is deliberately public and unauthenticated — installed runtimes have no Clerk session,
+  and its own docstring notes "spoofing inflates counts but leaks nothing." Hard-blocking installs
+  there on a spoofable `install_id` would be a false security control, not a real one. Free's *actual*
+  install-side enforcement is the machine lock and delta-sync gate below — both keyed off the
+  `sync_token` (minted server-side at publish, embedded in `pack.json`, not spoofable the way a
+  client-supplied `install_id` is), not off this telemetry endpoint.
+
+**Free-tier machine lock (installer) and delta-sync gate (updates), added 2026-08-09:**
+
+The machine-slot pool above only ever gated the *build* side (compile credits, LLM proxy). Nothing
+stopped a Free-tier installer, once built, from being copied to and run on any number of other
+machines, and nothing stopped `skillpack_update_routes.py::_delta_impl` — the endpoint that actually
+pushes workflow updates to already-installed runtimes — from serving updates to those other machines
+forever, including after a downgrade from a paid tier. Two additions close this, both scoped to Free
+specifically (Starter carries `distribution="external"` and is unrestricted by machine count — see
+§13.4):
+
+- **Installer machine lock.** `publish_routes._publish_skill_pack_impl` now returns `plan` and
+  `distribution` alongside the existing `sync_token`. Build Studio (`backend.py`, the publish flow)
+  stamps `pack.json.build_machine_id = get_machine_id_hash()` only when `plan == "free"`; a workspace
+  that later upgrades has the field cleared on its next publish. The runtime computes the same hash on
+  the customer's machine (`runtime/machine_hash.js`, using the `node-machine-id` package's
+  `machineIdSync(true)` to read the identical `MachineGuid` registry value, SHA-256'd the same way as
+  the Python side — verified to produce byte-identical hashes for the same physical machine) and
+  `skill_loader.js::loadSkillRegistry` excludes any company whose `build_machine_id` doesn't match,
+  per company, before that company's skills are indexed. Fails open (never blocks) if the hash can't be
+  computed on either side, consistent with every other machine-identity check in this codebase.
+- **Delta-sync distribution gate.** `entitlements.ensure_delta_sync_allowed(workspace_id, machine_hash)`
+  is called from `_delta_impl` after `_verify_sync_token` (workspace_id is recovered from the
+  `sync_tokens` KV record, not from a Clerk session — the runtime has none). If the workspace's plan
+  carries `distribution="external"` it's a no-op (all of Starter/Pro/Enterprise, unchanged). Otherwise
+  (Free) it requires the request's `X-Conxa-Machine` header (sent by `runtime/sync.js` on every poll,
+  computed via the same `machine_hash.js`) to match an entry already in the `DEVICE_NS` pool
+  `ensure_machine_slot` populates — i.e. the workspace's own registered Build Studio machine. Anything
+  else — no header, or a hash not in that workspace's pool — gets `403 distribution_not_permitted`: a
+  Free workspace's already-installed external customers get zero further updates, closing the downgrade
+  loophole (a workspace that shipped externally while Pro/Enterprise and later dropped to Free could
+  otherwise keep pushing free updates to those installs indefinitely). No staged fail-open rollout was
+  needed: the app-layer self-update channel (`updates_routes.py`'s manifest endpoints, §16) has no
+  distribution gate and is independent of `skillpack_update_routes.py`, so an old runtime that predates
+  the header self-updates its app layer on its next launch and succeeds on its next sync.
+
+### 13.5 Enterprise BYOK (Azure OpenAI)
+
+The compliance argument, not a cost play: vision anchor generation sends screenshots of a customer's
+internal screens to third-party LLM providers, which is a dead stop in a bank's security review.
+Compiling against the customer's own Azure OpenAI deployment means no screenshot of their systems ever
+leaves their tenancy. Gated on the `byok` plan capability — Enterprise only. Bedrock and Vertex are
+tracked in `TODO.md`; Azure OpenAI was chosen first because it's OpenAI-compatible and reuses the
+existing router call path with minimal changes.
+
+**Storage** (`app/services/byok.py`): KV namespace `workspace_llm_keys`, one record per workspace —
+`{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}`. The API key
+is AES-256-GCM encrypted at rest under `SKILL_BYOK_ENCRYPTION_KEY` (32 raw bytes, base64-encoded) via
+`cryptography.hazmat.primitives.ciphers.aead.AESGCM` — no new dependency, already present transitively.
+An unconfigured key (`byok_not_configured`, 500) refuses to encrypt or decrypt rather than falling back
+to plaintext.
+
+**Routes** (`app/api/byok_routes.py`, `PUT/GET/DELETE /api/v1/workspace/llm-key`, owner/admin only via
+`require_admin`): `GET` returns metadata only (`configured`, `provider`, `endpoint`, `deployment`,
+`api_version`) — the key itself is never returned once stored.
+
+**Router integration**: `byok_pool_entry_for(principal)` (`app/services/byok.py`) returns `None` unless
+the plan carries `byok` *and* a key is configured, in which case it builds a one-off `PoolEntry`:
+`endpoint` is the full Azure chat-completions URL
+(`{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}`),
+`auth_style="api_key_header"` (Azure's REST API wants an `api-key` header, not `Authorization: Bearer`
+— the two required a small `_call_provider` change alongside `_is_openai_compatible_endpoint`, which
+now also accepts a pre-built `.../chat/completions` URL, not just the `/v1` convention the pooled
+providers use). `llm_proxy_routes._meter_and_call` checks `byok_pool_entry_for` first, before the
+pooled-provider path, and routes through `LLMRouter.call_entry_directly` when it returns an entry.
+
+Compile credits still apply on BYOK — credits meter reach against the plan, not Conxa's token cost.
 
 ---
 
@@ -1489,12 +1715,32 @@ Start command:     ./start.sh
   uvicorn app.main:app --host 0.0.0.0 --port $PORT
 Health check:      GET /healthz (liveness)
 Deploy gate:       GET /readyz (DB ping)
-Environment:       SKILL_AUTH_REQUIRED=true requires:
+Environment:       SKILL_AUTH_REQUIRED=true requires (app refuses to boot otherwise —
+                   app/main.py::_validate_production_config):
   SKILL_DATABASE_URL, SKILL_CLERK_ISSUER, SKILL_CLERK_JWKS_URL,
   SKILL_CORS_ORIGINS, CASHFREE_APP_ID, CASHFREE_SECRET_KEY,
   CASHFREE_WEBHOOK_SECRET, CASHFREE_STARTER_PLAN_ID,
-  CASHFREE_PRO_PLAN_ID, + at least one *_API_KEYS
+  CASHFREE_PRO_PLAN_ID, SKILL_API_BASE_URL,
+  SKILL_TRACKING_HMAC_SECRET, SKILL_INSTALLER_SIGNING_KEY,
+  CONXA_MANIFEST_SIGNING_KEY, + at least one *_API_KEYS
 ```
+
+`CONXA_MANIFEST_SIGNING_KEY` is in that list as of 2026-08-04: without it `manifest_signer.py`
+silently serves an **unsigned** `/api/v1/manifest.json`, which every runtime then discards as
+unverifiable — self-updates stop platform-wide with no error on either side. Failing the boot
+makes that misconfiguration loud instead of silent.
+
+**Optional, not boot-required (2026-08-08)** — each fails gracefully (not down) when unset, so they're
+deliberately absent from the required list above:
+- `LLM_PREMIUM_PROVIDERS` — comma-separated provider names routed to the `"premium"` compile pool
+  (§13.1a). Unset means every provider is `"free"`-pool, so Starter/Pro compiles get no quality lift
+  over Free until this is configured.
+- `SKILL_BYOK_ENCRYPTION_KEY` — 32 raw bytes, base64-encoded, for Enterprise BYOK key-at-rest
+  encryption (§13.5). Unset means BYOK storage refuses every write/read (`byok_not_configured`, 500)
+  rather than silently storing plaintext.
+- `CASHFREE_ADDON_PLAN_ID` — the compile-credit add-on's Cashfree plan ID. Unset behaves like the
+  starter/pro plan IDs do when unset in non-prod: the plan is auto-created on first use in dev,
+  and 500s in prod (`auth_required=true`) via the same `_ensure_plan` path.
 
 ### 16.2 Cloud Frontend (Vercel)
 
@@ -1544,4 +1790,6 @@ MCP registration is done by `conxa-runtime.exe register-mcp` itself (see §4.2a)
 | ~~`worker.py` scaffold~~ **N/A** | — | — | `app/worker.py` does not exist in the current repo — the job-queue scaffold described here was never committed (or was removed); see `TODO.md` for the actual durable-queue gap |
 | ~~`tracking_routes.py` public ingest endpoint bypasses `/api/v1`~~ **RESOLVED (reframed) 2026-07-09** | `app/api/tracking_routes.py`, `main.py` | — | The public telemetry-ingest route at `/api/tracking/{company}/events` is now a documented, **permanent** back-compat alias (installer-baked `pack.json.tracking.tracking_url` for already-deployed runtimes points at it and can never be migrated remotely — see the versioned-installer-architecture's `{installer_version}`-frozen-at-build-time rule). `/api/v1/tracking/...` and the new versioned `/api/v1/plugins/{installer_version}/{company}/tracking/events` both exist alongside it, all three calling the same `_ingest_events_impl()`. See `TODO.md` ARCH-1 and `CLAUDE.md` Key Invariants. |
 | No CDN/multi-region blob storage | `blob_read_write_token` config | Low | Config field still unwired, but durability gap is closed: installer versions and skill-pack files now persist to Postgres (`installer_versions__{slug}`, `skillpack_files__{slug}` KV namespaces), surviving Render disk wipes. Base64-in-Postgres doesn't scale indefinitely — revisit if installers approach `build_artifact_upload_max_bytes` (250 MB) regularly or DB storage cost/limits become an issue. |
-| `selector_cache_ttl_days` | Config | Low | Cache exists but no GC scheduler wired |
+| ~~`selector_cache_ttl_days` has no GC scheduler~~ **RESOLVED** | Config | — | Duplicate of the "Selector cache GC unscheduled" row above, which was resolved — the background loop honours this TTL. Kept only so the stale claim isn't re-derived from an older copy of this table. |
+| ~~CI execution gate disabled~~ **RESOLVED 2026-08-04** | `.github/workflows/build-runtime-app.yml`, `runtime/test/gate_replay.js` | — | Real-skill replay against the declared `MIN_HOST` exe runs before zip/release/publish and blocks the build on failure. Its first run caught a stale `MIN_HOST` (`host-v1.1.2` → `host-v2.0.0`): every app layer published since 2026-07-30 had been claiming a `min_host` it could not actually run under. A red app-layer gate usually means `MIN_HOST` is stale, not that the gate is wrong. |
+| Cancelled file-picker click can hang a run | `compiler/step_anchors.py::clean_steps`, `runtime/browser.js` | Medium | The 2026-08-06 fix drops a recorded click on a file input **only when a following `upload`/`upload_intent` proves it was superseded** (§9.3). If the user opens the native picker while recording and cancels it, no `change` event fires, no upload step is emitted, and the lone click survives compilation — at run time it opens an OS dialog nothing can drive. Tracked as TODO.md BUILD-13, with both a compiler-side and a runtime-side `filechooser`-guard option scoped. |

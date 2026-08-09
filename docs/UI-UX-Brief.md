@@ -1,6 +1,6 @@
 # UI/UX Brief
 
-**Status:** Current as of 2026-07-07 (Build Studio workflow-redesign Phase 1: stage-shaped sidebar, shared plugin selection, Inspector drawer)
+**Status:** Current as of 2026-08-08 (capability-ladder pricing restructure: new `/pricing` page, removed skill-pack-slot meter — see `docs/PRD.md` §11; Build Studio workflow-redesign Phase 1 from 2026-07-07: stage-shaped sidebar, shared plugin selection, Inspector drawer)
 **Scope:** Build Studio (Electron) + Cloud Dashboard (Next.js)
 
 ---
@@ -285,7 +285,11 @@ Revised 2026-07 (Phase 1): dropped its own local "Built Plugins" rail in favor o
 
 **Version history:** new `SkillPackVersionHistory`-style list (calling `fetchSkillPackVersions()` → `GET /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions`) — the version/release-comment/publishing-limit surface that moved here from Build Installer, per the original design brief. Republishing an already-used version number is rejected with `skill_pack_version_exists` (409) rather than silently overwriting history.
 
-**Meter behavior:** the skill-pack-slot meter pill lives here now (renamed from "installer slots" — see `docs/Backend-Schema.md` §5.3). A brand-new slug beyond the plan's slot limit is rejected with `installer_limit_exceeded` (error-code text unchanged for back-compat, meaning now "skill pack slots").
+**Meter behavior:** the header pill was repurposed 2026-08-08 from the now-removed skill-pack-slot meter
+to compile credits remaining — there is no longer any limit on how many distinct product slugs a
+workspace may publish under (`docs/PRD.md` §11). Trial-expired, machine-limit, and distribution/
+white-label errors from a publish or installer-upload attempt surface through the same error-message
+map as every other entitlement code (`lib/errorMessages.ts`) — no dedicated UI state per code yet.
 
 **Shared components:** the "Built Packages" sidebar list (`components/PluginListSidebar.tsx`) and the log/result-card UI (`components/BuildLogUi.tsx`) are shared with Build Installer (§2.10) to prevent the two pages' visual language drifting apart, per Recommended Improvement (closed) below.
 
@@ -367,6 +371,22 @@ Source: `conxa-cloud/frontend/`
 
 ---
 
+### 3.1.2 Pricing Page (`app/(marketing)/pricing/page.tsx`)
+
+**Path:** `/pricing`  
+**Purpose:** Added 2026-08-08 for the capability-ladder repositioning (`docs/PRD.md` §11). Public,
+unauthenticated. Renders `PricingTable.tsx`, which fetches `GET /api/v1/subscriptions/plans` client-side
+(TanStack Query) and shows the four tiers as cards — Pro carries a "Distribution channel" ribbon,
+matching the pricing sheet the restructuring was based on. Feature lists come straight from the API
+response, itself derived from `PLAN_LIMITS`, so the page cannot show a number that isn't actually
+enforced.
+
+**Status:** Implemented and linked from the marketing nav. Loading/error states covered (skeleton cards,
+inline error banner). Not yet built: a dedicated Enterprise "contact us" form (routes to
+`/docs/support` instead) and inline plan-comparison tooltips explaining each capability row.
+
+---
+
 ### 3.2 Operations Dashboard (`app/(protected)/dashboard/`)
 
 **Purpose:** The enterprise AI-operations control center — the landing surface after login.
@@ -439,10 +459,11 @@ Source: `conxa-cloud/frontend/`
 **Outputs:** Checkout readiness, plan tier, and workspace usage meters.
 **User goal:** Upgrade or manage subscription.
 
-**Meter behavior:** Shows all four customer meters first: seats, installer slots, compile credits, and Human Edit pool. Account timing and checkout state live in the Billing Operations panel rather than top summary cards. The panel shows active plan and Usage reset only; Usage reset uses the Cashfree monthly payment/renewal timestamp, and the separate Billing period end row is not shown.
+**Meter behavior:** Shows all four customer meters first: seats, machines, compile credits, and Human Edit pool (`installer slots` renamed/removed 2026-08-08 — see `docs/PRD.md` §11). Account timing and checkout state live in the Billing Operations panel rather than top summary cards. The panel shows active plan and Usage reset only; Usage reset uses the Cashfree monthly payment/renewal timestamp, and the separate Billing period end row is not shown.
 
 **UX issues:**
 - No invoice history.
+- **Not yet built (2026-08-08):** a trial countdown banner (backend already exposes `trial_ends_at`/`trial_expired` on `GET /entitlements/current` — nothing in this page consumes them yet), a purchase/cancel control for the compile-credit add-on (`credits_addon_25`, backend supports it end-to-end via `/subscriptions/create`), and a device list + revoke control for the `machines` meter (backend: `GET/POST /entitlements/machines[/revoke]`). Tracked in `TODO.md`.
 
 ---
 
@@ -461,6 +482,11 @@ Source: `conxa-cloud/frontend/`
 **Outputs:** Workspace identity, current user role, auth/session verification status, signed-in user context, and shortcuts to Team, Billing, and Audit.
 **User goal:** Confirm they are in the right workspace and quickly reach the admin areas that change company state.
 **Status:** Implemented as a read-oriented settings page backed by `/me`; real mutations remain in Team, Billing, and Audit instead of being implied by inactive settings controls.
+
+**Not yet built (2026-08-08):** an Enterprise BYOK panel for configuring the workspace's own Azure
+OpenAI deployment. The backend is complete and independently usable
+(`PUT/GET/DELETE /api/v1/workspace/llm-key`, `docs/TRD.md` §13.5) — this page just doesn't surface it
+yet. Tracked in `TODO.md`.
 
 ---
 

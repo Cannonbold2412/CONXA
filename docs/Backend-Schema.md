@@ -235,6 +235,8 @@ class SkillInputVariable(BaseModel):
 
 `optional` is excluded from the packaged manifest's `inputs_required` (`plugin_builder_output.py::_compute_inputs_required`), which is what the runtime's pre-execution gate and the MCP tool's `inputSchema.required` both read (`runtime/server.js`).
 
+**Auto-declared inputs.** Any `{{placeholder}}` present in the execution steps but absent from the declared input list is appended automatically at package time. One is special-cased: **every upload step binds to `file_path`**, regardless of the picker element's label — a recording can only ever capture a file's *name*, never a path, so the real path must arrive as a runtime input. Its description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk path is expected rather than a filename. See `docs/TRD.md` §9.3.
+
 ### 3.2 SkillMeta
 
 ```python
@@ -691,6 +693,11 @@ See §5.9 (Skill-Pack Delta Sync) — the sole current contract for this endpoin
 
 ### 5.3 Entitlements
 
+**Rewritten 2026-08-08** for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.4). The
+per-slug `skill_pack_slots` meter was removed entirely — a workspace may publish under unlimited
+product slugs on every tier, tracked only via `publish_owners` for the ownership-conflict check, not
+for a limit. `machines` replaced it as the numeric meter.
+
 **GET /api/v1/entitlements/current**
 
 Response:
@@ -700,16 +707,40 @@ Response:
   "plan": "starter",
   "period": "billing:1782691200",
   "reset_at": "2026-06-29T00:00:00Z",
+  "trial_ends_at": null,
+  "trial_expired": false,
   "meters": {
     "seats": {"used": 2, "limit": 3, "remaining": 1, "unlimited": false},
-    "skill_pack_slots": {"used": 1, "limit": 3, "remaining": 2, "unlimited": false},
-    "compile_credits": {"used": 42, "limit": 300, "remaining": 258, "unlimited": false},
-    "human_edit_tokens": {"used": 230000, "limit": 10000000, "remaining": 9770000, "unlimited": false}
+    "machines": {"used": 1, "limit": 3, "remaining": 2, "unlimited": false},
+    "compile_credits": {"used": 42, "limit": 200, "remaining": 158, "unlimited": false},
+    "human_edit_tokens": {"used": 230000, "limit": 2500000, "remaining": 2270000, "unlimited": false}
+  },
+  "capabilities": {
+    "distribution": "external",
+    "white_label": false,
+    "ops_tier": "basic",
+    "compile_pool": "premium",
+    "byok": false
+  },
+  "workflow_lock": {
+    "limit": 200,
+    "active": 200,
+    "locked": 12,
+    "workflows": [
+      {"workspace_id": "org_123", "plugin_id": "acme", "workflow_id": "wf1", "created_at": "2026-06-01T00:00:00Z", "locked": true}
+    ]
   }
 }
 ```
+(Free is the only plan carrying `"distribution": "internal"` — see the machine lock and delta-sync gate below.)
 
-For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`).
+**Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(plugin_id, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
+
+For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`). `trial_ends_at`/`trial_expired` are non-null only for the `free` plan.
+
+**GET /api/v1/entitlements/machines** (owner/admin) — registered build devices, `[{machine_hash, last_ip, first_seen, last_seen, revoked?}]`, newest `last_seen` first. Includes revoked devices for history.
+
+**POST /api/v1/entitlements/machines/revoke** (owner/admin) — `{machine_hash}` → frees that slot; the same hash re-registers as a brand-new device on its next call, re-entering through the limit check.
 
 **POST /api/v1/usage/compile/reserve**
 
@@ -722,13 +753,14 @@ Request:
   "session_id": "sess_123"
 }
 ```
+Also registers the `X-Conxa-Machine` header (§TRD 13.4a) and checks trial expiry before the reservation attempt.
 
 Response:
 ```json
 {
   "reservation_id": "cmp_org_123_plugin_wf_session_attempt",
   "status": "reserved",
-  "remaining_compile_credits": 257
+  "remaining_compile_credits": 157
 }
 ```
 
@@ -750,26 +782,29 @@ Stable entitlement error details (returned as HTTP `402` for quota-exhausted, `4
 config/availability):
 - `compile_credit_limit_exceeded` — 402, compile-credit reservation at limit (checked at `/usage/compile/reserve`)
 - `human_edit_pool_exceeded` — 402, monthly Human-Edit token pool exhausted (checked at the LLM proxy)
-- `installer_limit_exceeded` — 402, plan skill-pack-slot limit reached (checked at **skill-pack publish only** — installer upload is unmetered; error code kept unchanged for back-compat with Build Studio's existing error-message map)
 - `seat_limit_exceeded` — 402, workspace seat limit reached
+- `machine_limit_exceeded` — 402, plan's machine limit reached for a new (never-seen) device
+- `trial_expired` — 402, Free's 30-day trial window has passed; blocks LLM proxy, compile reserve, skill-pack publish, installer upload
+- `distribution_not_permitted` — installer upload (402): requested `distribution=external` but the plan carries `distribution="internal"`. Skill-pack delta-sync (403, §5.9): the requesting machine isn't the Free-tier workspace's own registered device.
+- `white_label_not_permitted` — 402, installer upload requested `white_label=true` without the plan's `white_label` capability
+- `ops_tier_required` — 403, dashboard/audit/drift route requested above the plan's `ops_tier`
 - `entitlements_unavailable` — 503, cloud could not evaluate entitlements (quota-gated actions blocked)
 - `invalid_usage_class` — 400
 
-**Enforcement is on by default** (`entitlements_enforce_compile|_human_edit|_installers = True` in
-`config.py`). Workspaces on the `development` plan, or any plan whose limit resolves to `None`
-(e.g. an `enterprise` override), are never blocked. Enforcement points: skill-pack publish
-(`publish_routes._publish_skill_pack_impl`, both the legacy and versioned routes — **not** installer
-upload, which is optional and unmetered), the compile-credit reserve/commit protocol (driven by
-Build Studio around each compile), and the Human-Edit pool at `llm_proxy_routes`.
+**Enforcement is on by default**
+(`entitlements_enforce_compile|_human_edit|_distribution|_machines = True` in `config.py`; the old
+`entitlements_enforce_installers` flag was renamed to `entitlements_enforce_distribution` and a new
+`entitlements_enforce_machines` flag added). Workspaces on the `development` plan, or any plan whose
+limit resolves to `None` (e.g. an `enterprise` override), are never blocked on the numeric meters.
+Enforcement points: skill-pack publish and installer upload (`publish_routes.py`, both legacy and
+versioned routes), the compile-credit reserve/commit protocol, the Human-Edit pool and machine
+registration at `llm_proxy_routes`, and `ops_tier` gates on the tracking/audit routes.
 
-**`skill_pack_slots` accounting** (`services/entitlements.py`): a slot is consumed the first time a
-workspace publishes a skill pack *or* uploads an installer for a given slug, tracked in the
-`publish_owners` KV namespace (one row per slug, `{slug, workspace_id, claimed_at}` — same store
-`_assert_owner`/`_assert_not_owned_by_other` use for the 403 ownership-conflict check).
-`ensure_skill_pack_slot_available` checks the *conflict* (`_assert_not_owned_by_other`) and the
-*limit* before the slug is claimed (`_claim_owner`) — claiming first would make a brand-new slug
-look pre-owned by the time the limit check ran, making the limit unenforceable. The old
-`installer_slots` override key is still accepted as an alias in billing metadata.
+**Slug ownership** (`services/entitlements.py`, `app/api/product_ownership.py`): unchanged as a
+security boundary — a slug is claimed the first time a workspace publishes a skill pack or uploads an
+installer for it, tracked in the `publish_owners` KV namespace (one row per slug,
+`{slug, workspace_id, claimed_at}`). `_assert_owner`/`_assert_not_owned_by_other` still gate slug
+takeover; there is no longer a *count* limit on how many slugs a workspace may claim.
 
 ### 5.4 Billing
 
@@ -782,19 +817,30 @@ Request:
 {"tier": "starter", "customer_email": "...", "customer_phone": "..."}
 ```
 
-Calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns:
+`tier` accepts `starter`, `pro`, or `credits_addon_25` (the compile-credit add-on — `enterprise` is
+sales-assisted, never self-serve checkout). Calls Cashfree's
+`POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns:
 ```json
 {
   "subscription_id": "<Cashfree subReferenceId>",
   "auth_link": "https://payments.cashfree.com/...",
   "plan_id": "<Cashfree planId>",
-  "amount": 2999900,
+  "amount": 19999,
   "currency": "INR",
   "tier": "starter"
 }
 ```
 
 The workspace↔subscription↔tier mapping is stored server-side in the `cashfree_sub_workspace` KV namespace (keyed by `subReferenceId`) for later webhook lookup, since Cashfree webhooks only carry the subscription reference id, not the originating workspace. The frontend redirects the user to `auth_link` to complete payment.
+
+**Credit add-on** (`tier: "credits_addon_25"`, ₹4,999/mo, stacks on Starter or Pro): activation and
+cancellation branch separately from the base-plan path in both `/verify` and the webhook handler —
+`_bump_addon_packs` increments/decrements `addon_compile_packs` on the billing record without ever
+touching `plan`/`status`/`current_period_end`, which belong to the base subscription. Cancelling an
+add-on pack removes only that pack's 25 credits; cancelling the base subscription resets `plan` to
+`free` as before and leaves any add-on packs' billing untouched (their own subscriptions cancel
+independently). `entitlements._limits_from_billing` adds `25 * addon_compile_packs` to
+`compile_credits` whenever the base limit isn't already `None` (unlimited).
 
 **POST /api/v1/subscriptions/verify**
 
@@ -1016,6 +1062,15 @@ Authentication: `Authorization: Bearer <sync_token>` where `sync_token` is the p
 - Production (`SKILL_AUTH_REQUIRED=true`): 401 if token is missing or does not match stored token.
 - Local dev (`SKILL_AUTH_REQUIRED=false`): validation skipped.
 
+**Distribution gate (Free-tier only, added 2026-08-09):** after token verification, `_delta_impl` calls
+`entitlements.ensure_delta_sync_allowed(workspace_id, machine_hash)`, where `workspace_id` is read from
+the `sync_tokens` record and `machine_hash` is the `X-Conxa-Machine` header (§13.4a). A no-op for any
+workspace whose plan carries `distribution="external"` (Starter, Pro, Enterprise). For Free
+(`distribution="internal"`), the header must match a machine already registered in the `machines` device
+pool (the same pool `ensure_machine_slot` populates from Build Studio calls) — otherwise `403
+distribution_not_permitted`. This is what stops a Free workspace's already-installed customers from
+receiving further updates, including after a downgrade from a paid tier.
+
 Response:
 ```json
 {
@@ -1039,9 +1094,18 @@ The sync_token is also returned in the publish response so the Build Studio can 
   "sync_url": "/api/v1/skill-packs/acme/delta",
   "tracking": {...},
   "workspace_id": "org_...",
-  "published_at": 1717000000.0
+  "published_at": 1717000000.0,
+  "plan": "free",
+  "distribution": "internal"
 }
 ```
+
+`plan`/`distribution` (added 2026-08-09) let Build Studio decide whether to machine-lock the pack it's
+about to stage: when `plan == "free"`, `backend.py` stamps `pack.json.build_machine_id` with the SHA-256
+`MachineGuid` hash (§13.4a) of the machine doing the publish; any other plan clears the field if present
+(e.g. after an upgrade). Presence of the field is the signal — the runtime's `skill_loader.js` excludes
+a company's skills entirely if its own machine hash doesn't match, and paid tiers simply never get the
+field written.
 
 **KV namespace:** `sync_tokens` — keyed by slug, stores `{token, company, version, workspace_id, owner_user_id, updated_at}`.
 
@@ -1270,6 +1334,8 @@ erDiagram
 | `rate_limits` | `{sha256(token)[:16]}` | `{last_ts}` | Skill-pack sync rate limiter — persisted so the 5-min window survives restarts and is shared across instances (1.5). In-memory dict fallback when no database is configured |
 | `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |
 | `manifest` | `current` (composed+signed `UnifiedManifest`), `skill_pack_index` (list of `{company}:{skill}` identifiers), `minimum_versions`, `compatibility` | 5.8 unified manifest — `skill_pack_index` exists because the filesystem-fallback KV store hashes keys, so `component_versions` entries for skills can't be discovered by scanning keys directly |
+| `workspace_devices` | `{workspace_id}:{machine_hash}` | `{workspace_id, machine_hash, last_ip, first_seen, last_seen, revoked?}` | 5.3 machine binding — `machine_hash` is SHA-256 of the Windows `MachineGuid`, never the raw ID. Added 2026-08-08 |
+| `workspace_llm_keys` | `{workspace_id}` | `{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}` | Enterprise BYOK (§TRD 13.5) — the API key is AES-256-GCM encrypted at rest under `SKILL_BYOK_ENCRYPTION_KEY`; never stored or returned in plaintext. Added 2026-08-08 |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |
 
 ---
@@ -1423,4 +1489,6 @@ First publish claims the slug. This prevents a different workspace from overwrit
 
 ### Tracking Token Security
 
-The tracking token (`secrets.token_urlsafe(32)`) is embedded in the installer. Anyone with the installer can extract the token and submit fake telemetry. `SKILL_TRACKING_HMAC_SECRET` can be set to add HMAC validation — but this field is currently optional and not enforced by default.
+The tracking token (`secrets.token_urlsafe(32)`) is embedded in the installer, so anyone holding an installer can extract it and submit telemetry as that company. What was closed (SG-05): ingest no longer falls back to a synthetic workspace for a company with no stored token — `_verify_token()` returns `None` (→ 401) and logs a warning whenever either `SKILL_TRACKING_HMAC_SECRET` or `SKILL_AUTH_REQUIRED` is set, and `_validate_production_config()` requires `SKILL_TRACKING_HMAC_SECRET` in production, so the permissive path survives only in true local dev. What remains open: the token is still a bearer secret shipped inside a customer-distributable binary, so a *legitimate* company's own installer can still be used to submit fabricated events for that company.
+
+**Production config gate.** `app/main.py::_validate_production_config()` refuses to start the backend when `SKILL_AUTH_REQUIRED=true` and any of these are unset: `SKILL_DATABASE_URL`, `SKILL_CLERK_ISSUER`, `SKILL_CLERK_JWKS_URL`, `SKILL_CORS_ORIGINS`, the Cashfree credential/plan set, `SKILL_API_BASE_URL`, `SKILL_TRACKING_HMAC_SECRET`, `SKILL_INSTALLER_SIGNING_KEY`, `CONXA_MANIFEST_SIGNING_KEY`, and at least one LLM provider key. Each of these has a silent-degradation failure mode if absent (see `docs/TRD.md` §16.1), which is why they fail the boot rather than warn.

@@ -62,7 +62,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P1 — High Value, Do Soon (15 items)
+## P1 — High Value, Do Soon (21 items)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -225,6 +225,56 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** before the first customer with sustained daily run volume; not urgent at pilot scale.
 - **Complexity:** M — rollup table/namespace, write path at ingest, read path with partial-day fallback, and a backfill for existing telemetry.
 - **Success criteria:** dashboard response time is flat with respect to total ingested runs; the live scan is used only for the current day's partial bucket; Refresh still returns genuinely fresh data.
+
+---
+
+### ~~CLOUD-3 — Real enforcement for Free's 1-install cap~~ — Resolved 2026-08-09
+- **Category:** Cloud / Billing
+- **Resolution:** Didn't need a new install-provisioning token after all — reused what already existed. Build Studio now stamps `pack.json.build_machine_id` (Free plan only) at publish time, and `runtime/skill_loader.js` refuses to load a company's skills if the running machine's hash doesn't match, so a Free-tier installer only runs where it was built. Separately, `entitlements.ensure_delta_sync_allowed` now gates `skillpack_update_routes.py::_delta_impl` (the actual update-push endpoint, not the unauthenticated telemetry one this item originally pointed at): for any workspace whose plan isn't `distribution="external"`, the runtime's `X-Conxa-Machine` header must match a device already in the same `DEVICE_NS` pool `ensure_machine_slot` populates, or the update is denied — closing both the fresh-install case and the "was Pro, downgraded to Free" case. See `docs/TRD.md` §13.4a.
+- **Original description (for context):** `docs/PRD.md` §11 says Free is capped at 1 install; nothing enforces it. The obvious hook, `skillpack_update_routes.py::post_telemetry_runtime_start`, is deliberately public and unauthenticated (its own docstring: "spoofing inflates counts but leaks nothing") — hard-blocking installs there on a spoofable `install_id` would be a false security control, not a real one (see `docs/Security.md` SG-15 for the related machine-fingerprint discussion).
+
+### CLOUD-4 — Write-side telemetry retention pruning
+- **Category:** Cloud / Storage
+- **Description:** Analytics retention (`analytics_retention_days` per plan) is enforced read-side only (`app/services/tracking.py`, filtering `_visible_run_records`/`_visible_runtime_registrations`) — see `docs/Security.md` SG-16. Raw telemetry past a workspace's retention window still exists in `tracking/{company}` KV; nothing deletes it. Add an amortised prune (on ingest, or a periodic sweep) that deletes rows past the longest contractually-possible retention window.
+- **Why required:** read-side filtering is correctness-complete for the customer-facing "you can't see data older than N days" promise, but not a real deletion guarantee, and storage grows unbounded.
+- **Dependencies:** ~~the prune needs the *publishing workspace's* plan, and there's no cheap workspace-id-keyed billing read today (`billing_for()` takes a `Principal`, not a bare workspace_id) — solve that lookup first, or accept a periodic batch job that resolves it per company.~~ Unblocked 2026-08-09: `app/services/saas.py::billing_for_workspace(workspace_id)` now exists (added for the delta-sync distribution gate, see resolved CLOUD-3) — reuse it here instead of adding a second lookup.
+- **Complexity:** M.
+
+### CLOUD-5 — Bedrock and Vertex BYOK
+- **Category:** Cloud / LLM
+- **Description:** Enterprise BYOK currently supports only Azure OpenAI (`app/services/byok.py`, `docs/TRD.md` §13.5), chosen first because it's OpenAI-compatible and reuses the existing router call path (`_is_openai_compatible_endpoint`/`_chat_completions_url`, extended to accept a pre-built `.../chat/completions` URL). AWS Bedrock (SigV4 auth, Converse API) and GCP Vertex AI (Google auth, `generateContent`) each need their own request/response translation layer and auth scheme — a materially bigger lift than Azure was.
+- **Why required:** AWS-first and GCP-first enterprise accounts can't use BYOK today.
+- **Dependencies:** none, but should follow the same `PoolEntry`/`call_entry_directly` pattern Azure established rather than inventing a parallel path.
+- **Complexity:** L each (Bedrock and Vertex), mostly in the provider-specific request signing/translation.
+
+### CLOUD-6 — Settings UI: BYOK panel, machine device list, billing add-on control, trial banner
+- **Category:** Cloud / Frontend
+- **Description:** Four backend capabilities from the 2026-08-08 pricing restructure have no frontend surface yet, all independently usable via API today: (1) Enterprise BYOK config (`PUT/GET/DELETE /api/v1/workspace/llm-key`) — see `docs/UI-UX-Brief.md` §3.8; (2) the machine device list + revoke (`GET/POST /entitlements/machines[/revoke]`); (3) the compile-credit add-on purchase/cancel flow (`POST /subscriptions/create` with `tier: "credits_addon_25"`) — see `docs/UI-UX-Brief.md` §3.6; (4) a Free-trial countdown banner (backend exposes `trial_ends_at`/`trial_expired` on `GET /entitlements/current`, nothing consumes them in the UI).
+- **Why required:** customers can't self-serve any of these four things through the dashboard today, even though the backend fully supports them.
+- **Dependencies:** none — each is independently shippable.
+- **Complexity:** M total (S each) — mostly straightforward CRUD panels following existing dashboard patterns (`BillingPage.tsx`, `SettingsPage.tsx`).
+
+### CLOUD-8 — Update pricing page copy for Starter's external distribution
+- **Category:** Cloud / Frontend
+- **Description:** `PLAN_LIMITS["starter"].distribution` flipped from `"internal"` to `"external"` on 2026-08-09 (see resolved CLOUD-3) — Starter can now ship to unlimited outside customer machines, throttled only by its existing 200 compile-credit ceiling. `conxa-cloud/frontend/src/components/marketing/sections/PricingTable.tsx` still badges only Pro as "Distribution channel" (`TIER_SUB`/highlight logic, lines ~10-42) and Starter's sub-copy ("One product team") doesn't mention it at all — the pricing page now undersells what Starter actually includes.
+- **Why required:** pricing copy that undersells a paid tier's real capability is a lost upsell/retention argument, not just a cosmetic gap.
+- **Dependencies:** none — copy-only change, the entitlement is already live.
+- **Complexity:** S.
+
+### CLOUD-7 — Server-side build-queue priority
+- **Category:** Cloud / Architecture
+- **Description:** The pricing sheet promises a tiered build queue (Standard/Priority/Highest/SLA-backed). `app/services/jobs.py::enqueue_job` is the only place that could host a priority queue, but it has zero callers today — nothing in the codebase actually queues a server-side build job; compiles happen client-side in Build Studio, and the cloud's LLM proxy answers each request synchronously. Adding a priority queue to `jobs.py` as-is would be dead code with no observable effect. This item is really "design and wire an actual server-side job producer" — priority ordering is trivial once that exists.
+- **Why required:** the pricing page's "Build speed: Standard / Priority / Highest / SLA-backed" row is currently aspirational, not enforced.
+- **Dependencies:** needs a real decision about what, if anything, should move server-side (see CLOUD-2/CLOUD-2 duplicate-ID items above for related queue/job-infrastructure thinking already in this backlog).
+- **Complexity:** L — mostly architectural decision-making, not the priority-queue mechanics themselves.
+
+### CLOUD-9 — No seat-limit enforcement on team invites
+- **Category:** Cloud / Billing
+- **Description:** `PLAN_LIMITS[plan]["seats"]` (1/3/10 for free/starter/pro) is never enforced. `app/services/entitlements.py`'s only seat-related code is a read-only usage meter shown on the dashboard (`membership_count_for` feeding the `"seats"` field around line 606) — there is no `ensure_seat_allowed`-style gate anywhere, unlike the equivalent `ensure_machine_slot` gate for build machines. Confirmed there is no backend route for team invites at all (`grep` for membership/invite across `app/api/` returns nothing) — invites go directly from the dashboard's Clerk UI component to Clerk's own API, so the backend never even observes an invite happening, let alone blocks one. The only way to actually gate this is a Clerk webhook (`organizationMembership.created`) that checks the new count against plan limits and revokes via Clerk's API if over — a genuinely new piece of infrastructure (webhook route + signature verification + revoke call), not a one-line check.
+- **Why required:** discovered 2026-08-09 while investigating what a Pro→Starter downgrade leaves unenforced. Unlike machines (`CLOUD-3`, resolved — new-machine registration is blocked at the current plan's cap, existing machines grandfathered) and every LLM/compile/distribution entitlement (all re-derived live from current billing on every check), seats have no enforcement at any point — a workspace can already invite unlimited members on any plan today, downgrade or not. A brief Pro upgrade isn't needed to exploit this; it's open on Free from day one.
+- **Business value:** seats are part of the priced ladder (docs/PRD.md §11); an unenforced cap means the dashboard's own seat meter is decorative, not a real limit.
+- **Dependencies:** none blocking, but needs a decision on enforcement policy at invite time (block over cap) and, separately, whether/how to handle a workspace already over its new cap after a downgrade (soft lock — block new invites, grandfather existing members — matches the policy just chosen for machines, so no additional product decision needed there).
+- **Complexity:** M — Clerk webhook endpoint, signature verification, revoke-on-over-limit call; no compiler/runtime involvement.
 
 ---
 
