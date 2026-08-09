@@ -35,10 +35,16 @@ export const errorMessages: Record<string, string> = {
     "You've used all of this month's compile credits. Upgrade your plan or wait for the next cycle.",
   human_edit_pool_exceeded:
     "You've used all of this month's Human Edit tokens. Upgrade your plan or wait for the next cycle.",
-  installer_limit_exceeded:
-    "You've reached the number of installers allowed on your plan. Upgrade to publish more.",
   seat_limit_exceeded:
     "Your workspace is at its seat limit. Upgrade your plan to add more members.",
+  machine_limit_exceeded:
+    "This workspace's plan allows fewer build machines than are currently registered. Revoke an old machine in Settings, or upgrade.",
+  trial_expired:
+    "Your 30-day free trial has ended. Upgrade to keep building and publishing.",
+  distribution_not_permitted:
+    "This plan can only build installers for your own team. Upgrade to Pro to distribute to customers.",
+  white_label_not_permitted:
+    "White-label installer branding requires the Enterprise plan.",
   invalid_usage_class: "Something went wrong charging this action. Please try again.",
 
   // Recording / auth

@@ -48,7 +48,7 @@ export function PublishPage() {
     retry: 1,
   })
 
-  const slotMeter = entitlementsQ.data?.meters?.skill_pack_slots
+  const creditsMeter = entitlementsQ.data?.meters?.compile_credits
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [version, setVersion] = useState('')
@@ -141,15 +141,19 @@ export function PublishPage() {
   }
 
   // Always rendered (never null) — PageHeader only shows its body row when
-  // `actions` is truthy, so a conditional-on-slotMeter pill would make this
+  // `actions` is truthy, so a conditional-on-creditsMeter pill would make this
   // row disappear entirely while entitlements are still loading.
   const slotPill = (
     <div className="flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px]">
       <span className="font-semibold text-zinc-200">
-        {slotMeter ? (slotMeter.unlimited ? slotMeter.used : `${slotMeter.used} / ${slotMeter.limit}`) : '—'}
+        {creditsMeter
+          ? creditsMeter.unlimited
+            ? creditsMeter.used
+            : `${creditsMeter.remaining} / ${creditsMeter.limit}`
+          : '—'}
       </span>
       <span className="text-zinc-500">
-        skill pack slot{slotMeter && !slotMeter.unlimited && slotMeter.limit === 1 ? '' : 's'} used
+        {creditsMeter?.unlimited ? 'compiles used' : 'compile credits left'}
       </span>
     </div>
   )
