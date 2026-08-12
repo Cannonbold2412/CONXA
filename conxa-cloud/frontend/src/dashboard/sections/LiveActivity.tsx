@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import { fetchTrackingActivity, type TrackingActivityRow } from '@/api/pluginApi'
+import { fetchTrackingActivity, type TrackingActivityRow } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { Skeleton } from '@/components/ui/skeleton'
 import { tierColor } from '@/components/viz/chartTheme'

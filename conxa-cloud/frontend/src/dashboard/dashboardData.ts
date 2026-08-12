@@ -1,4 +1,4 @@
-import type { TrackingDashboardResponse } from '@/api/pluginApi'
+import type { TrackingDashboardResponse } from '@/api/workflowsApi'
 
 export type RiskRow = {
   id: string

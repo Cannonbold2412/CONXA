@@ -10,8 +10,8 @@ export const queryKeys = {
   entitlements: ['entitlements'] as const,
   subscription: ['subscription'] as const,
   billingPlans: ['billing-plans'] as const,
-  plugins: ['plugins'] as const,
-  plugin: (id: string) => ['plugin', id] as const,
+  skillPacks: ['skill-packs'] as const,
+  skillPack: (slug: string) => ['skill-pack', slug] as const,
   installerVersions: (slug: string | undefined) => ['installer-versions', slug] as const,
   auditEvents: (scope?: string) =>
     (scope ? ['auditEvents', scope] : ['auditEvents']) as readonly string[],

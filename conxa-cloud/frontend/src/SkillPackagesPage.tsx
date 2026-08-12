@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { fetchPlugins, normalizePluginList, type Plugin } from '@/api/pluginApi'
+import { fetchSkillPacks, normalizeSkillPackList, type SkillPack } from '@/api/workflowsApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -19,12 +19,11 @@ function formatCount(value: number | null | undefined) {
   return new Intl.NumberFormat().format(value)
 }
 
-function statusBadge(status: Plugin['status']) {
-  const map: Record<Plugin['status'], { label: string; className: string }> = {
-    needs_auth: { label: 'Needs auth',  className: 'border-amber-500/30 bg-amber-500/10 text-amber-300' },
-    ready:      { label: 'Ready',       className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' },
-    building:   { label: 'Building',    className: 'border-blue-500/30 bg-blue-500/10 text-blue-300' },
-    error:      { label: 'Error',       className: 'border-red-500/30 bg-red-500/10 text-red-300' },
+function statusBadge(status: SkillPack['status']) {
+  const map: Record<SkillPack['status'], { label: string; className: string }> = {
+    idle:     { label: 'Idle',     className: 'border-white/10 bg-white/[0.04] text-zinc-400' },
+    building: { label: 'Building', className: 'border-blue-500/30 bg-blue-500/10 text-blue-300' },
+    error:    { label: 'Error',    className: 'border-red-500/30 bg-red-500/10 text-red-300' },
   }
   const { label, className } = map[status] ?? map.error
   return (
@@ -77,19 +76,19 @@ function CompileCreditsSummary() {
   )
 }
 
-export function PluginsPage() {
+export function SkillPackagesPage() {
   const [downloadOpen, setDownloadOpen] = useState(false)
-  const q = useQuery({ queryKey: queryKeys.plugins, queryFn: fetchPlugins, staleTime: 10_000 })
-  const plugins = normalizePluginList(q.data)
+  const q = useQuery({ queryKey: queryKeys.skillPacks, queryFn: fetchSkillPacks, staleTime: 10_000 })
+  const packs = normalizeSkillPackList(q.data)
 
   return (
     <div className="h-full overflow-y-auto">
       <PageHeader
-        title="Plugins"
-        description={q.isSuccess && plugins.length > 0 ? `${plugins.length} published plugin${plugins.length !== 1 ? 's' : ''}` : 'Published skills for customer installation.'}
+        title="Skill Packages"
+        description={q.isSuccess && packs.length > 0 ? `${packs.length} published skill package${packs.length !== 1 ? 's' : ''}` : 'Published skills for customer installation.'}
         actions={
           <>
-            <OpenInStudioButton label="Create a Plugin" primary />
+            <OpenInStudioButton label="Open Build Studio" primary />
             <CompileCreditsSummary />
           </>
         }
@@ -119,15 +118,15 @@ export function PluginsPage() {
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
             {(q.error as Error).message}
           </div>
-        ) : plugins.length === 0 ? (
+        ) : packs.length === 0 ? (
           <Card className="border-white/8 bg-white/[0.03] shadow-none">
             <CardContent className="flex flex-col items-center gap-2.5 py-9 text-center">
               <Globe className="size-7 text-zinc-600" />
-              <p className="text-sm font-medium text-zinc-300">No published plugins yet</p>
+              <p className="text-sm font-medium text-zinc-300">No published skill packages yet</p>
               <p className="max-w-xs text-xs text-zinc-500">
-                Build and publish a plugin from the Build Studio. It will appear here once published.
+                Build and publish a skill package from Build Studio. It will appear here once published.
               </p>
-              <OpenInStudioButton label="Create a Plugin" primary />
+              <OpenInStudioButton label="Open Build Studio" primary />
               <Button
                 variant="outline"
                 size="sm"
@@ -141,15 +140,15 @@ export function PluginsPage() {
           </Card>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {plugins.map((plugin) => {
-              const version = plugin.installer?.version ?? plugin.build?.version
-              const hasInstaller = !!plugin.installer
+            {packs.map((pack) => {
+              const version = pack.installer?.version ?? pack.build?.version
+              const hasInstaller = !!pack.installer
               return (
                 <Link
-                  key={plugin.id}
-                  href={`/plugins/${encodeURIComponent(plugin.id)}`}
+                  key={pack.company_slug}
+                  href={`/packages/${encodeURIComponent(pack.company_slug)}`}
                   className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-                  aria-label={`Open ${plugin.name} release history`}
+                  aria-label={`Open ${pack.company_name} release history`}
                 >
                   <Card
                     size="sm"
@@ -159,22 +158,18 @@ export function PluginsPage() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <CardTitle className="truncate text-sm font-medium text-white">
-                            {plugin.name}
+                            {pack.company_name}
                           </CardTitle>
-                          <p className="mt-0.5 truncate text-xs text-zinc-500">{plugin.target_url}</p>
+                          <p className="mt-0.5 truncate text-xs text-zinc-500">{pack.company_slug}</p>
                         </div>
-                        {statusBadge(plugin.status)}
+                        {statusBadge(pack.status)}
                       </div>
                     </CardHeader>
                     <CardContent className="pt-0">
-                      <div className="grid grid-cols-3 gap-2 border-y border-white/8 py-2.5 text-xs">
+                      <div className="grid grid-cols-2 gap-2 border-y border-white/8 py-2.5 text-xs">
                         <div>
                           <p className="text-[10px] uppercase tracking-[0.08em] text-zinc-600">Version</p>
                           <p className="mt-1 truncate font-mono text-zinc-300">{version ? `v${version}` : 'Not built'}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] uppercase tracking-[0.08em] text-zinc-600">Workflows</p>
-                          <p className="mt-1 text-zinc-300">{plugin.workflows.length}</p>
                         </div>
                         <div>
                           <p className="text-[10px] uppercase tracking-[0.08em] text-zinc-600">Installer</p>

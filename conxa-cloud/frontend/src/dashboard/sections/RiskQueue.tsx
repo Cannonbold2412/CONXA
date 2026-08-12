@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { ShieldCheck } from 'lucide-react'
-import type { TrackingDashboardResponse } from '@/api/pluginApi'
+import type { TrackingDashboardResponse } from '@/api/workflowsApi'
 import { cn } from '@/lib/utils'
 import { buildRiskRows, fmtRelative } from '../dashboardData'
 

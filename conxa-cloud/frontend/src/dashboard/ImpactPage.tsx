@@ -8,7 +8,7 @@ import {
   fetchTrackingDashboard,
   saveRoiAssumptions,
   type RoiAssumptions,
-} from '@/api/pluginApi'
+} from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

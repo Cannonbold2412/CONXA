@@ -1,6 +1,6 @@
 'use client'
 
-import type { TrackingHealth } from '@/api/pluginApi'
+import type { TrackingHealth } from '@/api/workflowsApi'
 import { HealthArc } from '@/components/viz/HealthArc'
 import { cn } from '@/lib/utils'
 

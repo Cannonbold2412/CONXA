@@ -21,7 +21,7 @@ import {
   CreditCard,
   Home,
   Menu,
-  Puzzle,
+  PackageCheck,
   Settings,
   Users,
 } from 'lucide-react'
@@ -33,7 +33,7 @@ const operateNavGroup = {
   label: 'Operate',
   items: [
     { to: '/dashboard', label: 'Dashboard', icon: Home },
-    { to: '/plugins', label: 'Plugins', icon: Puzzle },
+    { to: '/packages', label: 'Skill Packages', icon: PackageCheck },
     { to: '/audit', label: 'Audit', icon: ClipboardCheck },
   ],
 } as const
