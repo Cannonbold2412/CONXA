@@ -117,3 +117,5 @@ data/
 .impeccable/
 research-analysis/repo
 test_llm_providers.py
+
+.codebase-memory/
