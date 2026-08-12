@@ -3,11 +3,13 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 
-// Each skill is a versioned component (skill-packs/<company>/<slug>/v1.0.0/ + current/,
-// see runtime/version_manager.js). skillDir always points at the `current` junction, which
-// the OS resolves transparently to the active version dir for every fs call below.
-function _skillCurrentDir(companyDir, slug) {
-  return path.join(companyDir, slug, "current");
+// Each skill is a versioned component (skill-packs/<company>/<group>/<slug>/v1.0.0/ +
+// current/, see runtime/version_manager.js). skillDir always points at the `current`
+// junction, which the OS resolves transparently to the active version dir for every fs
+// call below. `group` is the skill's entry in pack.skill_groups (falls back to
+// "_default" — see runtime/sync.js for why every skill always has one).
+function _skillCurrentDir(companyDir, group, slug) {
+  return path.join(companyDir, group, slug, "current");
 }
 
 // Scan skill-packs/ dir → flat index { "company:slug": {slug, company, skillDir, manifest, pack} }
@@ -27,8 +29,10 @@ function loadSkillRegistry(skillPacksDir, cacheDir) {
     let pack;
     try { pack = JSON.parse(fs.readFileSync(packPath, "utf8")); } catch (_) { continue; }
 
+    const skillGroups = pack.skill_groups || {};
     for (const slug of (pack.skills || [])) {
-      const skillDir     = _skillCurrentDir(companyDir, slug);
+      const group         = skillGroups[slug] || "_default";
+      const skillDir     = _skillCurrentDir(companyDir, group, slug);
       const manifestPath = path.join(skillDir, "manifest.json");
       if (!fs.existsSync(manifestPath)) continue;
       let manifest;
@@ -78,7 +82,10 @@ function verifySkillIntegrity(skillDir, manifest, label) {
 
 // Reload a single skill in the live index without process restart
 function hotReloadSkill(company, slug, skillPacksDir, index) {
-  const skillDir     = _skillCurrentDir(path.join(skillPacksDir, company), slug);
+  const packPath = path.join(skillPacksDir, company, "pack.json");
+  const pack     = fs.existsSync(packPath) ? JSON.parse(fs.readFileSync(packPath, "utf8")) : {};
+  const group    = (pack.skill_groups || {})[slug] || "_default";
+  const skillDir     = _skillCurrentDir(path.join(skillPacksDir, company), group, slug);
   const manifestPath = path.join(skillDir, "manifest.json");
   const key          = `${company}:${slug}`;
   if (!fs.existsSync(manifestPath)) {
@@ -87,8 +94,6 @@ function hotReloadSkill(company, slug, skillPacksDir, index) {
   }
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    const packPath  = path.join(skillPacksDir, company, "pack.json");
-    const pack      = fs.existsSync(packPath) ? JSON.parse(fs.readFileSync(packPath, "utf8")) : {};
     index[key] = { slug, company, skillDir, manifest, pack };
   } catch (_) {}
 }

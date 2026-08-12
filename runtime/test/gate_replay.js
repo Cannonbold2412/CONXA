@@ -63,7 +63,9 @@ function activateVersion(componentDir, versionName, populate) {
 }
 
 // skill-packs/<company>/pack.json stays flat; each skill under it becomes its own
-// versioned component: skill-packs/<company>/<slug>/<version>/ + current.
+// versioned component: skill-packs/<company>/<group_id>/<slug>/<version>/ + current.
+// The fixture's pack.json carries no skill_groups map, so skill_loader.js resolves
+// every skill's group as the "_default" sentinel — mirror that here.
 const skillPacksDir = path.join(conxaDir, "skill-packs");
 for (const company of fs.readdirSync(SKILL_PACK_SRC)) {
   const companySrc = path.join(SKILL_PACK_SRC, company);
@@ -72,7 +74,7 @@ for (const company of fs.readdirSync(SKILL_PACK_SRC)) {
   for (const e of fs.readdirSync(companySrc, { withFileTypes: true })) {
     if (!e.isDirectory()) { fs.copyFileSync(path.join(companySrc, e.name), path.join(companyDst, e.name)); continue; }
     const slug = e.name;
-    activateVersion(path.join(companyDst, slug), GATE_VERSION, (versionDir) => copyDir(path.join(companySrc, slug), versionDir));
+    activateVersion(path.join(companyDst, "_default", slug), GATE_VERSION, (versionDir) => copyDir(path.join(companySrc, slug), versionDir));
   }
 }
 // Empty raw session → getAuthContext skips interactive login (protected_url is "").

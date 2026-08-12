@@ -53,6 +53,110 @@ function _reachedProtectedUrl(url, protectedUrl) {
   }
 }
 
+// ─── Multi-app group auth ─────────────────────────────────────────────────
+// A WorkflowGroup's session files are keyed `${company}__${appId}` (see
+// auth_manager.js — every save/load function already takes the key as its
+// first argument, so keying is purely a call-site convention). Merging N
+// per-app storageStates into one lets a single Chromium context stay signed
+// in to every app the group's workflows need. Python twin:
+// packages/conxa-core/conxa_core/storage/storage_state.py::merge_storage_states.
+function mergeStorageStates(states) {
+  const cookies = [];
+  const seenCookies = new Set();
+  const originsByUrl = new Map();
+
+  for (const state of states) {
+    if (!state) continue;
+    for (const cookie of state.cookies || []) {
+      const key = `${cookie.name}|${cookie.domain}|${cookie.path}`;
+      if (seenCookies.has(key)) continue;
+      seenCookies.add(key);
+      cookies.push(cookie);
+    }
+    for (const origin of state.origins || []) {
+      if (!origin.origin) continue;
+      const existing = originsByUrl.get(origin.origin);
+      if (!existing) {
+        originsByUrl.set(origin.origin, { origin: origin.origin, localStorage: [...(origin.localStorage || [])] });
+        continue;
+      }
+      const merged = new Map(existing.localStorage.map((item) => [item.name, item]));
+      for (const item of origin.localStorage || []) merged.set(item.name, item);
+      existing.localStorage = [...merged.values()];
+    }
+  }
+
+  return { cookies, origins: [...originsByUrl.values()] };
+}
+
+// Resolve a company's WorkflowGroup from pack.json's `groups` block. Packs
+// built before Workflow Groups shipped have no `groups` key — callers must
+// treat that as "take the legacy single-session path", not an error.
+function _resolveGroup(company, groupId) {
+  const pack = _loadPack(company);
+  const groups = Array.isArray(pack.groups) ? pack.groups : [];
+  if (groups.length === 0) return null;
+  if (groupId) return groups.find((g) => g.id === groupId) || null;
+  return groups[0];
+}
+
+function _groupAppSessionPath(company, appId) {
+  return path.join(SESSIONS_DIR, `${company}__${appId}_raw_state.json`);
+}
+
+async function _validateGroupApp(company, app, authManager, logFn) {
+  const key = `${company}__${app.id}`;
+  let stored = null;
+  if (authManager) {
+    try {
+      const token = await authManager.getSessionKey(key, logFn);
+      if (token) stored = authManager.loadDecryptedSession(key, token, SESSIONS_DIR);
+    } catch (_) {}
+  }
+  if (!stored) {
+    const rawPath = _groupAppSessionPath(company, app.id);
+    if (fs.existsSync(rawPath)) {
+      try { stored = JSON.parse(fs.readFileSync(rawPath, "utf8")); } catch (_) {}
+    }
+  }
+  if (!stored) return { app, stored: null, valid: false };
+  const valid = await _validateSession(stored, app.success_url || app.login_url);
+  return { app, stored, valid };
+}
+
+/** Group-aware auth resolution: validate every app's session, merge the
+ * valid ones into one context. Any missing/expired app opens its own login
+ * window (first one found) via the existing non-blocking beginInteractiveAuth
+ * contract — each re-run of execute_skill advances one app, same as the
+ * single-app flow, until every app in the group is signed in. */
+async function getGroupAuthContext(company, group, authManager, opts = {}) {
+  const headless = opts.headless !== false;
+  const logFn = opts.logFn;
+
+  const results = await Promise.all(group.apps.map((app) => _validateGroupApp(company, app, authManager, logFn)));
+  const missing = results.find((r) => !r.valid);
+
+  if (missing) {
+    const message =
+      `This workflow belongs to the ${group.name} group and requires authentication to ${group.apps.length} ` +
+      `application${group.apps.length === 1 ? "" : "s"}. Sign in to ${missing.app.name} in the window that just ` +
+      `opened, then run the skill again.`;
+    const pending = await beginInteractiveAuth(`${company}__${missing.app.id}`, missing.app.login_url, {
+      storedState: missing.stored,
+      protectedUrl: missing.app.success_url || missing.app.login_url,
+      authManager,
+      sessionsDir: SESSIONS_DIR,
+      logFn,
+    });
+    return { ...pending, message: pending.authPending ? message : pending.message };
+  }
+
+  const merged = mergeStorageStates(results.map((r) => r.stored));
+  const { browser, context } = await _buildExecContext(merged, headless);
+  const protectedUrl = group.apps[0] && (group.apps[0].success_url || group.apps[0].login_url);
+  return { browser, context, protectedUrl, sessionSource: "group" };
+}
+
 async function _persistSession(company, state, authManager, sessionsDir, logFn) {
   if (authManager) {
     try {
@@ -86,24 +190,25 @@ function _scheduleCleanup(company) {
 
 async function getCachedBrowser(company, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
+  const cacheKey = opts.groupId ? `${company}::${opts.groupId}` : company;
   if (headless) {
-    const entry = _cache.get(company);
+    const entry = _cache.get(cacheKey);
     if (entry && entry.browser && entry.context) {
       try {
         entry.context.pages(); // throws if closed
-        _scheduleCleanup(company);
+        _scheduleCleanup(cacheKey);
         return { browser: entry.browser, context: entry.context, protectedUrl: entry.protectedUrl, cached: true };
       } catch (_) {
-        _cache.delete(company);
+        _cache.delete(cacheKey);
       }
     }
   }
-  const result = await getAuthContext(company, authManager, { headless, logFn: opts.logFn });
+  const result = await getAuthContext(company, authManager, { headless, logFn: opts.logFn, groupId: opts.groupId });
   // authPending means no browser/context was built (a login window was opened instead) —
   // nothing to cache.
   if (headless && !result.authPending) {
-    _cache.set(company, { browser: result.browser, context: result.context, protectedUrl: result.protectedUrl, idleTimer: null });
-    _scheduleCleanup(company);
+    _cache.set(cacheKey, { browser: result.browser, context: result.context, protectedUrl: result.protectedUrl, idleTimer: null });
+    _scheduleCleanup(cacheKey);
   }
   return { ...result, cached: false };
 }
@@ -353,6 +458,17 @@ async function beginInteractiveAuth(company, targetUrl, opts = {}) {
 async function getAuthContext(company, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
   const logFn = opts.logFn;
+
+  // Workflow Groups path: a pack with a `groups` block resolves every app's
+  // session and merges them, instead of the single company-wide session
+  // below. Packs built before Workflow Groups shipped have no `groups` key,
+  // so _resolveGroup returns null and behavior is unchanged — see
+  // _resolveGroup's comment.
+  const group = _resolveGroup(company, opts.groupId);
+  if (group && group.apps && group.apps.length > 0) {
+    return getGroupAuthContext(company, group, authManager, { headless, logFn });
+  }
+
   let _hadEncryptedSession = false; // set true if encrypted path ran; raw session is then stale
   let lastKnownState = null; // best available (possibly expired) session — seeds the login window
   const pack = _loadPack(company);
@@ -409,8 +525,26 @@ async function getAuthContext(company, authManager, opts = {}) {
 
 // Open a fresh headed Chromium at loginUrl for mid-execution re-auth. Non-blocking, same
 // contract as getAuthContext's interactive-auth path — see beginInteractiveAuth. Called
-// from server.js on auth failure.
-async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn) {
+// from server.js on auth failure. Group-aware: picks the app whose success_url
+// host matches the failing page's URL, so re-auth targets the right app's own
+// session key instead of clobbering the whole group; falls back to the legacy
+// single-session behavior when there's no group.
+async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn, opts = {}) {
+  const group = _resolveGroup(company, opts.groupId);
+  if (group && group.apps && group.apps.length > 0) {
+    let failingHost = "";
+    try { failingHost = new URL(loginUrl).hostname; } catch (_) {}
+    const app =
+      group.apps.find((a) => {
+        try { return new URL(a.success_url || a.login_url).hostname === failingHost; } catch (_) { return false; }
+      }) || group.apps[0];
+    return beginInteractiveAuth(`${company}__${app.id}`, app.login_url, {
+      protectedUrl: app.success_url || app.login_url,
+      authManager,
+      sessionsDir,
+      logFn,
+    });
+  }
   const pack = _loadPack(company);
   const protectedUrl = _resolveProtectedUrl(company, pack);
   return beginInteractiveAuth(company, loginUrl, { protectedUrl, authManager, sessionsDir, logFn });
@@ -428,13 +562,16 @@ async function gracefulShutdown() {
 module.exports = {
   getCachedBrowser,
   getAuthContext,
+  getGroupAuthContext,
   captureReAuth,
   beginInteractiveAuth,
   gracefulShutdown,
+  mergeStorageStates,
   _authMetaPath,
   _readAuthMeta,
   _writeAuthMeta,
   _resolveProtectedUrl,
   _rejectReasonForProtectedUrl,
   _reachedProtectedUrl,
+  _resolveGroup,
 };

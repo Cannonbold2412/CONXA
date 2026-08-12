@@ -1165,7 +1165,11 @@ async function _handleTool(name, args, extra) {
         appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
         _runTracker.emit("park_resumed", { si: primary.resumeFrom });
       } else {
-        const _authResult = await getCachedBrowser(primary.entry.company, authManager, { headless: !watch, logFn: log });
+        const _authResult = await getCachedBrowser(primary.entry.company, authManager, {
+          headless: !watch,
+          logFn: log,
+          groupId: primary.entry.manifest && primary.entry.manifest.group_id,
+        });
         if (_authResult.authPending) {
           // No valid session — a login window was just opened for the user. Nothing ran yet,
           // so there's no failedAt/page to report; the outer catch below turns this into an
@@ -1237,7 +1241,9 @@ async function _handleTool(name, args, extra) {
           if (failedStep !== null && await isAuthFailure(page)) {
             const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || page.url();
             appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
-            const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log);
+            const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log, {
+              groupId: entry.manifest && entry.manifest.group_id,
+            });
             throw Object.assign(
               new Error(refreshResult.message),
               { session_expired: true, login_url: refreshResult.loginUrl || loginUrl, failedAt: failedStep, fromEntry: entry }
@@ -1250,13 +1256,20 @@ async function _handleTool(name, args, extra) {
 
       // Success — save session. Encrypt via the per-machine keytar-backed key;
       // only fall back to a plaintext write if encryption itself fails (SG-11).
-      const state = await _context.storageState();
-      try {
-        const sessionKey = await authManager.getSessionKey(primary.entry.company, log);
-        const encrypted = authManager.saveEncryptedSession(primary.entry.company, state, sessionKey, SESSIONS_DIR, log);
-        if (!encrypted) authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
-      } catch (_) {
-        authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+      // Skipped for a Workflow Group run: the context holds N apps' sessions
+      // merged together, and dumping that back under the single company key
+      // would blur per-app boundaries — each app's own session is refreshed
+      // independently via getGroupAuthContext's per-app validate/re-auth.
+      const _isGroupRun = !!(primary.entry.manifest && primary.entry.manifest.group_id);
+      if (!_isGroupRun) {
+        const state = await _context.storageState();
+        try {
+          const sessionKey = await authManager.getSessionKey(primary.entry.company, log);
+          const encrypted = authManager.saveEncryptedSession(primary.entry.company, state, sessionKey, SESSIONS_DIR, log);
+          if (!encrypted) authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+        } catch (_) {
+          authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+        }
       }
 
       const url  = page.url();

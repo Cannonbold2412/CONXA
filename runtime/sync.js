@@ -92,9 +92,19 @@ async function _syncCompany(skillPacksDir, company, log) {
   // Each skill is compared independently against its own last-known version (read
   // from its own version.json, not one shared company-wide counter), so republishing
   // one skill never triggers a redownload of skills that haven't changed.
+  //
+  // Version lookup only ever consults the group-nested path (skill_groups[slug],
+  // falling back to "_default"), never the pre-Groups flat `company/slug/` layout.
+  // That's deliberate: a skill that's only ever been synced to the old flat location
+  // has no version.json at its nested path, so it reads back as version "0" here,
+  // the server reports action:"update", and the file gets freshly written into the
+  // new nested location below — a one-time forced resync per skill instead of a
+  // separate migration pass.
+  const skillGroups = pack.skill_groups || {};
   const sinceMap = {};
   for (const slug of pack.skills || []) {
-    const skillRoot = path.join(skillPacksDir, company, slug);
+    const group = skillGroups[slug] || "_default";
+    const skillRoot = path.join(skillPacksDir, company, group, slug);
     const currentDir = versionManager.resolveCurrent(skillRoot);
     let version = "0";
     if (currentDir) {
@@ -162,9 +172,10 @@ async function _syncCompany(skillPacksDir, company, log) {
 
     for (const { skillEntry, files } of downloaded || []) {
       const slug = skillEntry.name;
+      const group = skillEntry.group || "_default";
       const rawVersion = String(skillEntry.version || "0");
       const versionDirName = /^v/.test(rawVersion) ? rawVersion : `v${rawVersion}`;
-      const skillRoot  = path.join(skillPacksDir, company, slug);
+      const skillRoot  = path.join(skillPacksDir, company, group, slug);
       const versionDir = path.join(skillRoot, versionDirName);
       try {
         // Clear any stale partial staging from a previously interrupted attempt at
@@ -192,6 +203,12 @@ async function _syncCompany(skillPacksDir, company, log) {
   // the 5-minute recency-skip above actually engage on a no-op sync; previously the
   // write only happened when something was newly activated.
   pack.skills = serverSkillNames;
+  // Persisted so the *next* sync's sinceMap computation above (which only ever reads
+  // the nested path) knows each skill's group without needing the delta again.
+  pack.skill_groups = {};
+  for (const s of delta.skills || []) {
+    if (s.name) pack.skill_groups[s.name] = s.group || "_default";
+  }
   pack.last_synced = new Date().toISOString();
   const packTmp = packPath + ".tmp";
   fs.writeFileSync(packTmp, JSON.stringify(pack, null, 2));
