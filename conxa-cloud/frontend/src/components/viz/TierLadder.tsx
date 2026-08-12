@@ -11,7 +11,7 @@ export type TierCount = { tier: string; steps?: number; count?: number }
  * and 2 resolve locally at zero model cost, Tier 3 and 4 call a model. An operator reading
  * this needs to see how much of their healing is free, not just how much there is.
  */
-export function TierLadder({ counts }: { counts: TierCount[] }) {
+export function TierLadder({ counts, showFootnote = true }: { counts: TierCount[]; showFootnote?: boolean }) {
   const byTier = new Map(counts.map((c) => [c.tier, c.steps ?? c.count ?? 0]))
   const rows = TIER_ORDER.map((tier) => ({ tier, value: byTier.get(tier) ?? 0 }))
   const max = Math.max(1, ...rows.map((r) => r.value))
@@ -43,9 +43,11 @@ export function TierLadder({ counts }: { counts: TierCount[] }) {
           </div>
         )
       })}
-      <p className="pt-1 text-[11px] leading-relaxed text-zinc-600">
-        Tier 1–2 resolve locally and cost nothing. Tier 3–4 call a model.
-      </p>
+      {showFootnote && (
+        <p className="pt-1 text-[11px] leading-relaxed text-zinc-600">
+          Tier 1–2 resolve locally and cost nothing. Tier 3–4 call a model.
+        </p>
+      )}
     </div>
   )
 }

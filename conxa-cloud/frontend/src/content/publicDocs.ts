@@ -144,7 +144,7 @@ export const publicDocs = [
           {
             type: 'numbered',
             items: [
-              'A builder signs in and creates a plugin or workflow in the Build Studio.',
+              'A builder signs in and creates a workflow in the Build Studio.',
               'The builder records the workflow in a controlled browser session and reviews the captured steps.',
               'The Build Studio compiles the workflow locally into a skill package, using Conxa Cloud only for authorized compile-time LLM proxy calls when needed.',
               'The builder publishes the data-only package and a branded installer to Conxa Cloud.',
@@ -303,12 +303,12 @@ export const publicDocs = [
           {
             type: 'numbered',
             items: [
-              'Create a plugin with a name, target product, and starting URL.',
+              'Create a workflow with a name, target product, and starting URL.',
               'Record an authentication session when the workflow requires a signed-in target application.',
               'Record the workflow by performing the task once in the browser.',
               'Review captured steps, screenshots, inputs, and validation expectations.',
               'Compile the workflow into a skill package with selectors, intent, assertions, and recovery metadata.',
-              'Test the compiled skill locally, adjust if needed, then build a plugin package or installer.',
+              'Test the compiled skill locally, adjust if needed, then build a skill package or installer.',
             ],
           },
         ],
@@ -371,7 +371,7 @@ export const publicDocs = [
                 'Should not contain browser credentials or Playwright storage state.',
               ],
               [
-                'Plugin archive',
+                'Skill package archive',
                 'Package used for inspection, distribution, and installer assembly.',
                 'Auth files are excluded from build output.',
               ],
@@ -393,7 +393,7 @@ export const publicDocs = [
     title: 'Conxa Cloud',
     eyebrow: 'Product docs',
     description:
-      'What the cloud dashboard and backend coordinate for published plugins, billing, teams, telemetry, and updates.',
+      'What the cloud dashboard and backend coordinate for published skill packages, billing, teams, telemetry, and updates.',
     lastUpdated: LAST_UPDATED,
     readingTime: '8 min read',
     summary: [
@@ -409,7 +409,7 @@ export const publicDocs = [
           {
             type: 'paragraphs',
             items: [
-              'Conxa Cloud gives workspaces a central place to manage published plugins, billing, team access, hosted installers, runtime updates, and operational telemetry. It exists so builders and customers do not need to manually exchange skill files or runtime updates.',
+              'Conxa Cloud gives workspaces a central place to manage published skill packages, billing, team access, hosted installers, runtime updates, and operational telemetry. It exists so builders and customers do not need to manually exchange skill files or runtime updates.',
               'The cloud backend exposes API routes under the versioned API path used by the frontend and runtime. The frontend dashboard uses those APIs through the existing proxy layer and Clerk authentication where required.',
             ],
           },
@@ -422,8 +422,8 @@ export const publicDocs = [
           {
             type: 'paragraphs',
             items: [
-              'A published plugin can have one or more hosted workflow packages and an installer. There is no limit on how many distinct plugins a workspace can publish — what the plan controls is who the installer can reach: an internal-only build on Free and Starter, or a distributable build on Pro and Enterprise, white-labeled on Enterprise.',
-              'Uploading a new version for the same plugin slug is treated as an update to that same hosted release.',
+              'A workspace publishes one skill package per company, bundling every signed-off workflow for that company into a single hosted installer. There is no limit on how many distinct company skill packages a workspace can publish — what the plan controls is who the installer can reach: an internal-only build on Free and Starter, or a distributable build on Pro and Enterprise, white-labeled on Enterprise.',
+              'Uploading a new version for the same company slug is treated as an update to that same hosted release.',
             ],
           },
         ],
@@ -693,7 +693,7 @@ export const publicDocs = [
           {
             type: 'paragraphs',
             items: [
-              `Report suspected security issues to ${SUPPORT_EMAIL}. Include the affected workspace, plugin slug if relevant, timestamps, reproduction steps, and whether any package or token may have been exposed.`,
+              `Report suspected security issues to ${SUPPORT_EMAIL}. Include the affected workspace, company slug if relevant, timestamps, reproduction steps, and whether any package or token may have been exposed.`,
               'Do not send target-site passwords, browser storage files, or production customer data unless Conxa support explicitly requests a secure transfer path.',
             ],
           },
@@ -754,8 +754,8 @@ export const publicDocs = [
                 'Create accounts, secure dashboard access, manage workspaces, and support account recovery.',
               ],
               [
-                'Workspace and plugin information',
-                'Plugin names, slugs, workflow names, package versions, installer metadata, usage meters, and publish status.',
+                'Workspace and skill package information',
+                'Company names, slugs, workflow names, package versions, installer metadata, usage meters, and publish status.',
                 'Host packages, show dashboard state, enforce plan limits, and deliver updates.',
               ],
               [
@@ -975,7 +975,7 @@ export const publicDocs = [
           {
             type: 'paragraphs',
             items: [
-              'You retain ownership of workflow recordings, workflow names, step descriptions, screenshots, plugin metadata, package content, support materials, and other content you submit or create through CONXA.',
+              'You retain ownership of workflow recordings, workflow names, step descriptions, screenshots, skill package metadata, package content, support materials, and other content you submit or create through CONXA.',
               'You grant CONXA the rights needed to host, process, transmit, analyze, compile, package, update, support, secure, and operate that content for the service. This includes using authorized service providers and LLM providers for requested build-time features.',
               'You represent that you have the rights and permissions needed to record workflows, automate the target application, publish packages, distribute installers, and process any data involved in those workflows.',
             ],
@@ -1267,7 +1267,7 @@ export const publicDocs = [
           {
             type: 'paragraphs',
             items: [
-              'Local plugin creation, local workflow recording, deterministic edits, reorder/delete/input edits, validation edits, sign-off, and package builds before quota-gated cloud actions are not intended to be billed as separate public meters.',
+              'Local workflow creation, local workflow recording, deterministic edits, reorder/delete/input edits, validation edits, sign-off, and package builds before quota-gated cloud actions are not intended to be billed as separate public meters.',
             ],
           },
         ],
@@ -1429,7 +1429,7 @@ export const publicDocs = [
           {
             type: 'paragraphs',
             items: [
-              `Report suspected abuse to ${SUPPORT_EMAIL}. Include the workspace, plugin slug, installer URL, timestamps, and a concise description of the concern.`,
+              `Report suspected abuse to ${SUPPORT_EMAIL}. Include the workspace, company slug, installer URL, timestamps, and a concise description of the concern.`,
             ],
           },
         ],
@@ -1485,7 +1485,7 @@ export const publicDocs = [
               ],
               [
                 'Package hosting',
-                'Skill package content, plugin slug, package versions, installer metadata.',
+                'Skill package content, company slug, package versions, installer metadata.',
                 'Distribute package updates and hosted installers.',
               ],
               [
@@ -1612,7 +1612,7 @@ export const publicDocs = [
             type: 'bullets',
             items: [
               'Workspace name or account email.',
-              'Plugin slug, workflow name, installer version, or runtime version if relevant.',
+              'Company slug, workflow name, installer version, or runtime version if relevant.',
               'Exact error message, timestamp, and what you expected to happen.',
               'Whether the issue affects Build Studio, Conxa Cloud, installer download, runtime sync, or local execution.',
               'Logs or screenshots that do not contain passwords, cookies, tokens, or confidential customer data.',

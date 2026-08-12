@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { listPlans, type Plan } from '@/api/cashfreeApi'
 import { formatPeriod, formatPrice, normalizePlan } from '@/billing/billingData'
@@ -7,11 +8,15 @@ import { SectionHeader } from '../primitives/SectionHeader'
 import { Reveal } from '../primitives/Reveal'
 import { GlowButton } from '../primitives/GlowButton'
 
-const TIER_SUB: Record<string, string> = {
-  free: '30-day trial',
-  starter: 'One product team',
-  pro: 'Scaling as a channel',
-  enterprise: 'Bank / insurer, cross-app',
+/**
+ * The rung each tier buys, in outcome terms. This is the one growth story the whole site
+ * is written around — the card states it, so the page doesn't need a separate ladder rail.
+ */
+const TIER_RUNG: Record<string, string> = {
+  free: 'Prove it works, on one machine',
+  starter: 'Run it across your team',
+  pro: 'Ship it to your own customers',
+  enterprise: 'Ship it under your own brand',
 }
 
 const TIER_CTA: Record<string, { label: string; href: string }> = {
@@ -44,21 +49,38 @@ function TierCard({ plan, highlighted }: { plan: Plan; highlighted: boolean }) {
         </>
       )}
       <p className="text-lg font-semibold text-[#f4f5f7]">{plan.name}</p>
-      <p className="mt-1 text-xs text-[#6b7280]">{TIER_SUB[tier] ?? ''}</p>
+      <p className="mt-1 text-xs leading-relaxed text-[#9ba3af]">{TIER_RUNG[tier] ?? ''}</p>
       <p className="mt-5 flex items-baseline gap-1.5">
         <span className="text-3xl font-semibold tabular-nums text-[#f4f5f7]">{formatPrice(plan)}</span>
         <span className="text-sm text-[#6b7280]">/ {formatPeriod(plan)}</span>
       </p>
 
       <ul className="mt-7 flex flex-1 flex-col gap-3">
-        {plan.features.map((feature) => (
-          <li key={feature} className="flex items-start gap-2.5 text-sm text-[#9ba3af]">
-            <svg className="mt-0.5 h-4 w-4 shrink-0 text-cyan-400" viewBox="0 0 16 16" fill="none" aria-hidden>
-              <path d="M3 8.5 6.5 12 13 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <span>{feature}</span>
-          </li>
-        ))}
+        {plan.features.map((feature) => {
+          // "No ops dashboard" with a cyan tick beside it reads as included. A feature the
+          // tier withholds gets a dash, so the card can be skimmed for what you actually get.
+          const absent = feature.startsWith('No ')
+          return (
+            <li
+              key={feature}
+              className={`flex items-start gap-2.5 text-sm ${absent ? 'text-[#6b7280]' : 'text-[#9ba3af]'}`}
+            >
+              <svg
+                className={`mt-0.5 h-4 w-4 shrink-0 ${absent ? 'text-[#6b7280]' : 'text-cyan-400'}`}
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden
+              >
+                {absent ? (
+                  <path d="M4 8h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                ) : (
+                  <path d="M3 8.5 6.5 12 13 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                )}
+              </svg>
+              <span>{feature}</span>
+            </li>
+          )
+        })}
       </ul>
 
       <div className="mt-8">
@@ -70,16 +92,21 @@ function TierCard({ plan, highlighted }: { plan: Plan; highlighted: boolean }) {
   )
 }
 
-export function PricingTable() {
+/**
+ * `compact` is the homepage host: same live tier data, but the four explainer columns stay
+ * on /pricing so the homepage doesn't carry the whole billing FAQ. Never fork this component
+ * — prices and feature lists are server-generated from the plan limits, and a second copy
+ * would drift from the backend the day either changes.
+ */
+export function PricingTable({ compact = false }: { compact?: boolean } = {}) {
   const q = useQuery({ queryKey: ['public-plans'], queryFn: listPlans, staleTime: 60_000, retry: 1 })
 
   return (
     <section id="pricing" className="relative bg-[#0b0f14] px-6 py-28">
       <div className="mx-auto max-w-6xl">
         <SectionHeader
-          eyebrow="Pricing"
           headline="Pay for reach, not for runs."
-          sub="Unlimited installs and unlimited executions on every tier. You pay for how much of your product you compile and publish — not how often it's used."
+          sub="Unlimited installs and unlimited executions on every tier — including the free one — because execution happens on your machines and costs us nothing. What you pay for is how far your skills are allowed to travel."
         />
 
         {q.isLoading && (
@@ -110,6 +137,16 @@ export function PricingTable() {
           </Reveal>
         )}
 
+        {compact ? (
+          <div className="mt-12 flex justify-center border-t border-white/6 pt-10">
+            <Link
+              href="/pricing"
+              className="text-sm font-medium text-[#22d3ee] transition-colors hover:text-[#5eead4]"
+            >
+              Compare every tier in full →
+            </Link>
+          </div>
+        ) : (
         <div className="mt-14 grid gap-8 border-t border-white/6 pt-10 sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <p className="text-sm font-medium text-[#f4f5f7]">Compile credit</p>
@@ -141,6 +178,7 @@ export function PricingTable() {
             </p>
           </div>
         </div>
+        )}
       </div>
     </section>
   )

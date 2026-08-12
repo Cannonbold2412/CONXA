@@ -1,7 +1,7 @@
 # Conxa Cloud Frontend
 
-The Conxa Cloud dashboard: Dashboard (execution/recovery telemetry), Plugins (published skill
-packages + installer versions), Billing (Cashfree subscription plans + usage meters), Team
+The Conxa Cloud dashboard: Dashboard (execution/recovery telemetry), Skill Packages (published
+skill packages + installer versions), Billing (Cashfree subscription plans + usage meters), Team
 (members + audit log), and Settings (identity + proxy diagnostics). Recording and compiling
 skills happens locally in the Build Studio — this app only surfaces the cloud coordination
 layer (auth, billing, telemetry, skill-pack hosting).
