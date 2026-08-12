@@ -15,7 +15,8 @@ from typing import Any
 
 from conxa_core.db import db_get, db_list, db_list_kv
 from conxa_core.config import settings
-from conxa_core.storage.plugin_store import list_plugins
+from conxa_core.storage.workflow_store import list_workflows
+from conxa_core.storage.skill_pack_store import list_skill_packs
 from app.services.entitlements import analytics_retention_cutoff_ms
 from app.services.saas import (
     Principal,
@@ -128,8 +129,8 @@ def _run_summary(run_id: str, batches: list[dict]) -> dict:
 
     return {
         "run_id":         meta.get("run_id", run_id),
-        "plugin_id":      meta.get("plugin_id", ""),
-        "plugin_ver":     meta.get("plugin_ver", ""),
+        "workflow_id":      meta.get("workflow_id", ""),
+        "workflow_ver":     meta.get("workflow_ver", ""),
         "runtime_ver":    meta.get("runtime_ver", ""),
         "uid":            meta.get("uid", ""),
         "wid":            meta.get("wid", ""),
@@ -181,12 +182,10 @@ def _tracking_company_rows(principal: Principal) -> list[dict[str, Any]]:
         }
 
     visible_workspace_ids = set(visible_workspace_ids_for(principal))
-    for plugin in list_plugins():
-        if plugin.workspace_id != principal.workspace_id and not (
-            plugin.workspace_id in visible_workspace_ids and plugin.owner_user_id == principal.user_id
-        ):
+    for pack in list_skill_packs():
+        if pack.workspace_id != principal.workspace_id and pack.workspace_id not in visible_workspace_ids:
             continue
-        company = str(plugin.slug or plugin.name or "").strip()
+        company = str(pack.company_slug or pack.company_name or "").strip()
         if not company:
             continue
         current = rows.get(company)
@@ -194,12 +193,12 @@ def _tracking_company_rows(principal: Principal) -> list[dict[str, Any]]:
             run_count, last_seen = _company_run_stats(company, principal)
             rows[company] = {
                 "company": company,
-                "workspace_id": principal.workspace_id,
+                "workspace_id": pack.workspace_id,
                 "run_count": run_count,
-                "last_seen": last_seen or float(plugin.updated_at or 0),
+                "last_seen": last_seen or float(pack.updated_at or 0),
             }
         elif not current.get("last_seen"):
-            current["last_seen"] = float(plugin.updated_at or 0)
+            current["last_seen"] = float(pack.updated_at or 0)
 
     return sorted(
         rows.values(),
@@ -222,12 +221,12 @@ def _tracking_diagnostics(principal: Principal) -> dict[str, Any]:
             same_user_personal += 1
             if workspace_id not in visible_workspace_ids:
                 hidden_same_user_personal += 1
-    plugin_count = 0
-    for plugin in list_plugins():
-        if plugin.workspace_id == principal.workspace_id or (
-            plugin.workspace_id in visible_workspace_ids and plugin.owner_user_id == principal.user_id
+    workflow_count = 0
+    for workflow in list_workflows():
+        if workflow.workspace_id == principal.workspace_id or (
+            workflow.workspace_id in visible_workspace_ids and workflow.owner_user_id == principal.user_id
         ):
-            plugin_count += 1
+            workflow_count += 1
     return {
         "workspace_id": principal.workspace_id,
         "user_id": principal.user_id,
@@ -237,7 +236,7 @@ def _tracking_diagnostics(principal: Principal) -> dict[str, Any]:
         "proxy_identity_status": principal.proxy_identity_status,
         "visible_workspace_ids": list(visible_workspace_ids),
         "visible_company_count": len(visible_companies),
-        "plugin_count": plugin_count,
+        "workflow_count": workflow_count,
         "same_user_personal_company_count": same_user_personal,
         "hidden_same_user_personal_count": hidden_same_user_personal,
     }
@@ -371,27 +370,27 @@ def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ``records`` is the workspace-visible run set (see ``_visible_run_records``),
     passed in so the caller can compute it once and share it with the pre-exec queue.
     """
-    # Distinct runs per (plugin_id, plugin_ver) — the denominator for occurrence_rate_pct.
+    # Distinct runs per (workflow_id, workflow_ver) — the denominator for occurrence_rate_pct.
     # A run can emit more than one repair_event for the same step (retried across escalating
     # tiers), so "how often does this step need repair" must count runs, not raw events.
     runs_by_version: dict[tuple[str, str], set[str]] = {}
     by_key: dict[tuple[str, str, Any], dict[str, Any]] = {}
     for record in records:
         summary = record.get("summary") or {}
-        plugin_id = str(summary.get("plugin_id") or "")
-        plugin_ver = str(summary.get("plugin_ver") or "")
+        workflow_id = str(summary.get("workflow_id") or "")
+        workflow_ver = str(summary.get("workflow_ver") or "")
         run_id = str(summary.get("run_id") or "")
-        runs_by_version.setdefault((plugin_id, plugin_ver), set()).add(run_id)
+        runs_by_version.setdefault((workflow_id, workflow_ver), set()).add(run_id)
         for evt in record.get("events") or []:
             if evt.get("e") != "repair_event":
                 continue
             step_id = evt.get("step_id")
-            key = (plugin_id, plugin_ver, step_id)
+            key = (workflow_id, workflow_ver, step_id)
             entry = by_key.get(key)
             if entry is None:
                 entry = {
-                    "plugin_id": plugin_id,
-                    "plugin_ver": plugin_ver,
+                    "workflow_id": workflow_id,
+                    "workflow_ver": workflow_ver,
                     "step_id": step_id,
                     "occurrences": 0,
                     "tiers": {},
@@ -415,7 +414,7 @@ def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     queue = []
     for entry in by_key.values():
-        version_key = (entry["plugin_id"], entry["plugin_ver"])
+        version_key = (entry["workflow_id"], entry["workflow_ver"])
         total_runs = len(runs_by_version.get(version_key) or set()) or 1
         run_count = len(entry.pop("run_ids"))
         entry["run_count"] = run_count
@@ -425,33 +424,33 @@ def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry["dominant_method"] = max(entry["methods"], key=entry["methods"].get) if entry["methods"] else ""
         queue.append(entry)
     # Surface "this step fails in most of its runs" ahead of "this step has many events
-    # because the plugin runs constantly" — rate first, raw occurrences as a tiebreaker.
+    # because the workflow runs constantly" — rate first, raw occurrences as a tiebreaker.
     queue.sort(key=lambda e: (e["occurrence_rate_pct"], e["occurrences"], e["last_seen"]), reverse=True)
     return queue
 
 
 def _pre_exec_drift_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Aggregate runtime pre-execution `drift_detected` signals per plugin version.
+    """Aggregate runtime pre-execution `drift_detected` signals per workflow version.
 
     These are advisory: the runtime warns (never blocks) when a pack's recorded
     structural landmarks are mostly missing at run start, hinting the target app
-    was redesigned. Grouped per (plugin_id, plugin_ver) since the signal is
+    was redesigned. Grouped per (workflow_id, workflow_ver) since the signal is
     per-run, not per-step. ``records`` is the shared workspace-visible run set.
     """
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for record in records:
         summary = record.get("summary") or {}
-        plugin_id = str(summary.get("plugin_id") or "")
-        plugin_ver = str(summary.get("plugin_ver") or "")
+        workflow_id = str(summary.get("workflow_id") or "")
+        workflow_ver = str(summary.get("workflow_ver") or "")
         for evt in record.get("events") or []:
             if evt.get("e") != "drift_detected":
                 continue
-            key = (plugin_id, plugin_ver)
+            key = (workflow_id, workflow_ver)
             entry = by_key.get(key)
             if entry is None:
                 entry = {
-                    "plugin_id": plugin_id,
-                    "plugin_ver": plugin_ver,
+                    "workflow_id": workflow_id,
+                    "workflow_ver": workflow_ver,
                     "occurrences": 0,
                     "max_drift_ratio": 0.0,
                     "missing_intents": {},
@@ -504,7 +503,7 @@ def _assertion_health_by_step(records: list[dict[str, Any]]) -> list[dict[str, A
     by_key: dict[tuple[str, str, int | None], dict[str, Any]] = {}
     for record in records:
         summary = record.get("summary") or {}
-        workflow = str(summary.get("plugin_id") or "Unknown workflow")
+        workflow = str(summary.get("workflow_id") or "Unknown workflow")
         company = str(record.get("company") or "")
         for evt in record.get("events") or []:
             if evt.get("e") != "verify_result":
@@ -660,7 +659,7 @@ def _dashboard_metrics(
     for record in range_records:
         summary = record.get("summary") or {}
         company = str(record.get("company") or "")
-        workflow = str(summary.get("plugin_id") or "Unknown workflow")
+        workflow = str(summary.get("workflow_id") or "Unknown workflow")
         for evt in record.get("events") or []:
             recovery_type = _event_recovery_type(evt)
             if recovery_type:
@@ -686,7 +685,7 @@ def _dashboard_metrics(
                 continue
             summary = record.get("summary") or {}
             company = str(record.get("company") or "")
-            workflow = str(summary.get("plugin_id") or "Unknown workflow")
+            workflow = str(summary.get("workflow_id") or "Unknown workflow")
             record_recovery_usage(
                 company=company,
                 workflow=workflow,
@@ -701,7 +700,7 @@ def _dashboard_metrics(
     step_failures: dict[str, dict[str, Any]] = {}
     for record in failed_records:
         summary = record.get("summary") or {}
-        workflow = str(summary.get("plugin_id") or "Unknown workflow")
+        workflow = str(summary.get("workflow_id") or "Unknown workflow")
         current = workflow_failures.setdefault(
             workflow,
             {"workflow": workflow, "failed_executions": 0, "last_failure_code": "", "last_seen": 0},

@@ -36,9 +36,9 @@ from app.services import tracking_analytics
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
 public_router = APIRouter(prefix="/api/tracking", tags=["tracking"])
-# Versioned equivalent of the ingest route below, nested under /plugins — see
+# Versioned equivalent of the ingest route below, nested under /workflows — see
 # publish_routes.py for the sibling publish/installer-upload/delta endpoints.
-versioned_router = APIRouter(prefix="/plugins", tags=["tracking"])
+versioned_router = APIRouter(prefix="/workflows", tags=["tracking"])
 
 
 async def _ingest_events_impl(company: str, request: Request) -> dict[str, Any]:
@@ -62,8 +62,8 @@ async def _ingest_events_impl(company: str, request: Request) -> dict[str, Any]:
     enriched: dict[str, Any] = {
         "run_id":      run_id,
         "company":     company,
-        "plugin_id":   body.get("pid", ""),
-        "plugin_ver":  body.get("pv", ""),
+        "workflow_id":  body.get("wfid", ""),
+        "workflow_ver": body.get("wfv", ""),
         "runtime_ver": body.get("rv", ""),
         "uid":         body.get("uid", ""),
         "wid":         body.get("wid", ""),
@@ -107,10 +107,10 @@ def _ensure_dashboard_access(principal: Principal) -> None:
 def list_tracking_companies(
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    """Return companies with workspace-visible tracking or plugin metadata.
+    """Return companies with workspace-visible tracking or workflow metadata.
 
     Not ops_tier-gated — this is a lightweight workspace-scoped lookup used by
-    navigation (e.g. Plugins, publish flows), not analytics content."""
+    navigation (e.g. Workflows, publish flows), not analytics content."""
     companies = _tracking_company_rows(principal)
     return {
         "companies": companies,
@@ -267,8 +267,8 @@ def get_run_timeline(
     return {
         "run_id":      run_id,
         "company":     company,
-        "plugin_id":   meta.get("plugin_id", ""),
-        "plugin_ver":  meta.get("plugin_ver", ""),
+        "workflow_id":  meta.get("workflow_id", ""),
+        "workflow_ver": meta.get("workflow_ver", ""),
         "runtime_ver": meta.get("runtime_ver", ""),
         "uid":         meta.get("uid", ""),
         "wid":         meta.get("wid", ""),

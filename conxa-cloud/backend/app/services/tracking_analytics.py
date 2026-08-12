@@ -181,7 +181,7 @@ def _workflow_key(record: dict[str, Any]) -> tuple[str, str]:
     summary = record.get("summary") or {}
     return (
         str(record.get("company") or ""),
-        str(summary.get("plugin_id") or "Unknown workflow"),
+        str(summary.get("workflow_id") or "Unknown workflow"),
     )
 
 
@@ -402,7 +402,7 @@ def workflow_analytics(
 ) -> list[dict[str, Any]]:
     """Per-skill rollups, newest-activity first, with a per-version breakdown.
 
-    ``plugin_id`` in telemetry is the individual skill's slug (``runtime/server.js`` passes
+    ``workflow_id`` in telemetry is the individual skill's slug (``runtime/server.js`` passes
     ``entry.slug``), so grouping by it gives genuine per-skill attribution. The nested
     version rows are what make a regression visible: "v0.3.0 is 8 points worse than v0.2.0"
     is actionable in a way that a single blended success rate never is.
@@ -434,7 +434,7 @@ def workflow_analytics(
 
         by_version: dict[str, list[dict[str, Any]]] = {}
         for record in group:
-            version = str((record.get("summary") or {}).get("plugin_ver") or "unknown")
+            version = str((record.get("summary") or {}).get("workflow_ver") or "unknown")
             by_version.setdefault(version, []).append(record)
 
         versions = [
@@ -706,7 +706,7 @@ def failure_codes(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry = counts.setdefault(code, {"code": code, "count": 0, "last_seen": 0, "workflows": set()})
         entry["count"] += 1
         entry["last_seen"] = max(entry["last_seen"], _record_time_ms(record))
-        entry["workflows"].add(str(summary.get("plugin_id") or ""))
+        entry["workflows"].add(str(summary.get("workflow_id") or ""))
 
     rows = [
         {
@@ -928,8 +928,8 @@ def insights(
         if rate >= 20:
             add(
                 "warning",
-                f"drift:{row.get('plugin_id')}:{row.get('step_id')}",
-                f"{row.get('plugin_id')} is drifting",
+                f"drift:{row.get('workflow_id')}:{row.get('step_id')}",
+                f"{row.get('workflow_id')} is drifting",
                 (
                     f"Step {row.get('step_id')} needs recovery on {rate}% of runs. The page has likely "
                     "changed — republishing this skill would restore a direct match."
@@ -1037,8 +1037,8 @@ def _activity_row(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": summary.get("run_id", ""),
         "company": str(record.get("company") or ""),
-        "workflow": str(summary.get("plugin_id") or "Unknown workflow"),
-        "version": str(summary.get("plugin_ver") or ""),
+        "workflow": str(summary.get("workflow_id") or "Unknown workflow"),
+        "version": str(summary.get("workflow_ver") or ""),
         "runtime_version": str(summary.get("runtime_ver") or ""),
         "status": summary.get("status", "running"),
         "duration_ms": int(_number(summary.get("duration_ms"))),

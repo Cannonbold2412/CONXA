@@ -153,7 +153,7 @@ def _normalize_org_role(role: str | None, *, personal_workspace: bool = False) -
     # No active Clerk org means the principal is in their own personal workspace
     # (`personal_{user_id}`), which nobody else can reach — they are its sole member
     # and owner. Defaulting them to `basic_member` locked them out of every
-    # `require_admin` route (publish, plugin create/delete, subscribe).
+    # `require_admin` route (publish, workflow create/delete, subscribe).
     return "owner" if personal_workspace else "basic_member"
 
 

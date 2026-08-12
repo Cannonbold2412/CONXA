@@ -31,7 +31,6 @@ _ASSIGNABLE_PLANS = {"free", "starter", "pro", "enterprise"}
 
 class ReserveCompileBody(BaseModel):
     reservation_id: str = Field(..., min_length=1, max_length=256)
-    plugin_id: str = Field(default="", max_length=128)
     workflow_id: str = Field(default="", max_length=128)
     session_id: str = Field(default="", max_length=128)
 
@@ -70,7 +69,6 @@ def post_compile_reserve(body: ReserveCompileBody, request: Request) -> dict[str
         return reserve_compile_credit(
             principal,
             reservation_id=body.reservation_id,
-            plugin_id=body.plugin_id,
             workflow_id=body.workflow_id,
             session_id=body.session_id,
         )

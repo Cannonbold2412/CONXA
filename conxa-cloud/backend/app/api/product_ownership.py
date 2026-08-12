@@ -66,7 +66,7 @@ def owned_slugs_for_workspace(workspace_id: str) -> list[str]:
 
     Used by entitlements to count consumed product/skill-pack slots off the
     single source of truth for "who owns this slug" rather than re-deriving it
-    from plugin records or installer meta files scattered on disk.
+    from workflow records or installer meta files scattered on disk.
 
     Reads the ``slug`` field from each row rather than the key ``db_list_kv``
     returns — the filesystem KV fallback's "key" is a SHA-256 hash of the real

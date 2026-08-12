@@ -1,6 +1,6 @@
 """FastAPI entrypoint for the thin Conxa cloud SaaS.
 
-The cloud serves the metered LLM proxy, auth, billing, dashboard, plugin/installer
+The cloud serves the metered LLM proxy, auth, billing, dashboard, workflow/installer
 hosting, runtime sync/update manifests, and telemetry. Recording, compiling, and
 building all happen locally in the Build Studio.
 """
@@ -23,7 +23,7 @@ from app.api.byok_routes import router as byok_router
 from app.api.entitlement_routes import router as entitlement_router
 from app.api.job_routes import router as job_router
 from app.api.llm_proxy_routes import router as llm_proxy_router
-from app.api.plugin_routes import router as plugin_router
+from app.api.workflow_routes import router as workflow_router
 from app.api.product_routes import router as product_router
 from app.api.publish_routes import admin_router as publish_admin_router, installers_router, router as publish_router
 from app.api.cashfree_routes import router as cashfree_router
@@ -134,7 +134,7 @@ app.include_router(job_router, prefix="/api/v1")
 app.include_router(byok_router, prefix="/api/v1")
 app.include_router(entitlement_router, prefix="/api/v1")
 app.include_router(product_router, prefix="/api/v1")
-app.include_router(plugin_router, prefix="/api/v1")
+app.include_router(workflow_router, prefix="/api/v1")
 app.include_router(llm_proxy_router, prefix="/api/v1")
 app.include_router(publish_router, prefix="/api/v1")
 app.include_router(publish_admin_router, prefix="/api/v1")

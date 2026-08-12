@@ -32,24 +32,24 @@ PUBLIC_TRACKING_EVENT_PREFIXES = ("/api/tracking/", "/api/v1/tracking/")
 # dashboard Clerk session exists. Event ingestion remains package-token guarded.
 PUBLIC_SKILL_PACK_SYNC_PREFIXES = ("/api/v1/skill-packs/",)
 
-# Versioned equivalents nested under /api/v1/plugins/{installer_version}/{company}/...
+# Versioned equivalents nested under /api/v1/workflows/{installer_version}/{company}/...
 # (see skillpack_update_routes.versioned_router / tracking_routes.versioned_router).
-# Matched by suffix rather than a blanket "/api/v1/plugins/" prefix because that
-# same path segment also hosts plugin_routes.py's Clerk-protected dashboard
-# endpoints (list/create/delete plugins) — only these two specific, package-token
+# Matched by suffix rather than a blanket "/api/v1/workflows/" prefix because that
+# same path segment also hosts workflow_routes.py's Clerk-protected dashboard
+# endpoints (list/create/delete workflows) — only these two specific, package-token
 # guarded sub-paths are exempt from the Clerk gate.
-PUBLIC_VERSIONED_PLUGIN_SUFFIXES_GET = ("/skill-packs/delta",)
-PUBLIC_VERSIONED_PLUGIN_SUFFIXES_POST = ("/tracking/events",)
+PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_GET = ("/skill-packs/delta",)
+PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST = ("/tracking/events",)
 
 # Installer downloads are fetched by end users who have no Clerk account; the
-# plugin_id in the path is the only credential and the file is non-sensitive.
+# company slug in the path is the only credential and the file is non-sensitive.
 PUBLIC_PATH_PREFIXES = (
     "/api/v1/installers/",
     "/api/v1/updates/",
 )
 
 BUILD_ARTIFACT_UPLOAD_PATHS = (
-    "/api/v1/plugins/publish",
+    "/api/v1/workflows/publish",
     "/installer/upload",
     "/skill-packs/upload",
 )
@@ -68,19 +68,19 @@ def _is_public_path(path: str, method: str = "GET") -> bool:
         return True
     if method.upper() == "GET" and any(normalized.startswith(p.rstrip("/")) for p in PUBLIC_SKILL_PACK_SYNC_PREFIXES):
         return True
-    if method.upper() == "GET" and normalized.startswith("/api/v1/plugins/"):
-        return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_PLUGIN_SUFFIXES_GET)
+    if method.upper() == "GET" and normalized.startswith("/api/v1/workflows/"):
+        return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_GET)
     if method.upper() == "POST" and normalized.endswith("/events"):
         if any(normalized.startswith(p) for p in PUBLIC_TRACKING_EVENT_PREFIXES):
             return True
-        if normalized.startswith("/api/v1/plugins/"):
-            return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_PLUGIN_SUFFIXES_POST)
+        if normalized.startswith("/api/v1/workflows/"):
+            return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST)
     return False
 
 
 def _body_limit_for_path(path: str) -> int:
     normalized = path.rstrip("/") or "/"
-    if normalized.endswith(BUILD_ARTIFACT_UPLOAD_PATHS) or normalized == "/api/v1/plugins/publish":
+    if normalized.endswith(BUILD_ARTIFACT_UPLOAD_PATHS) or normalized == "/api/v1/workflows/publish":
         return settings.build_artifact_upload_max_bytes
     return settings.max_json_body_bytes
 

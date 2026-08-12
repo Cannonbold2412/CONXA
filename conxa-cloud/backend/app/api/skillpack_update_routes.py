@@ -1,4 +1,10 @@
-"""Endpoints consumed by conxa-runtime.exe at startup for skill pack sync."""
+"""Endpoints consumed by conxa-runtime.exe at startup for skill pack sync.
+
+Every route here is package-token authenticated (or public), never Clerk —
+see app.api.security.PUBLIC_SKILL_PACK_SYNC_PREFIXES, which treats the whole
+"/api/v1/skill-packs/" prefix as bypassing the Clerk gate. Dashboard-facing
+SkillPack list/detail views live in workflow_routes.py instead, precisely to
+avoid landing on this public prefix."""
 
 from __future__ import annotations
 
@@ -20,10 +26,10 @@ from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
 from app.services.saas import principal_from_request, ensure_principal
 
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
-# Versioned equivalent of the delta route below, nested under /plugins so it
+# Versioned equivalent of the delta route below, nested under /workflows so it
 # shares one mental model with the other three per-company endpoints
 # (publish, installer upload, tracking) — see publish_routes.py.
-versioned_router = APIRouter(prefix="/plugins", tags=["skill-packs"])
+versioned_router = APIRouter(prefix="/workflows", tags=["skill-packs"])
 
 _STALE_RUNTIME_DAYS = 30
 
@@ -189,7 +195,7 @@ def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
 
 def _delta_impl(company: str, since: str, request: Request) -> dict[str, Any]:
     """Shared by the legacy ``/skill-packs/{company}/delta`` route and the
-    versioned ``/plugins/{installer_version}/{company}/skill-packs/delta``
+    versioned ``/workflows/{installer_version}/{company}/skill-packs/delta``
     route. `since` is a JSON-encoded map of {skill_slug: last_known_version},
     letting each skill be compared and shipped independently instead of one
     shared pack version.

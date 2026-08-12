@@ -2,7 +2,7 @@
 
 Build Studio compiles locally, then publishes the data-only skill pack here so
 conxa-runtime.exe instances can pull deltas (served by skillpack_update_routes), and
-uploads the built ``{Company}-Plugin-Setup.exe`` for end-user download.
+uploads the built ``{Company}-Setup.exe`` for end-user download.
 
 Ownership: the first workspace to publish a slug owns it. Subsequent publishes
 or installer uploads for that slug must come from the same workspace (403
@@ -25,12 +25,14 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-import uuid
-
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_list_kv, using_database
-from conxa_core.models.plugin import PluginBuild, PluginInstaller, PluginWorkflow
-from conxa_core.storage.plugin_store import create_plugin, list_plugins, save_plugin
+from conxa_core.storage.skill_pack_store import (
+    get_skill_pack_by_slug,
+    save_skill_pack,
+    upsert_skill_pack_by_slug,
+)
+from conxa_core.models.workflow import SkillPackBuild, SkillPackInstaller
 from app.api.deps import current_principal, entitlement_http_error
 from app.api.installer_storage import (
     installer_dir,
@@ -68,7 +70,7 @@ from app.api.updates_routes import (
     _require_admin,
 )
 
-router = APIRouter(prefix="/plugins", tags=["publish"])
+router = APIRouter(prefix="/workflows", tags=["publish"])
 installers_router = APIRouter(prefix="/installers", tags=["installers"])
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -200,63 +202,17 @@ def _api_base(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _upsert_published_plugin(
-    body: PublishBody, slug: str, skill_pack_version: str, workspace_id: str, owner_user_id: str
+def _upsert_published_skill_pack(
+    body: PublishBody, slug: str, skill_pack_version: str, workspace_id: str
 ) -> None:
+    """Mirror a publish into the cloud's own SkillPack record for this slug —
+    dashboard-visible build metadata. The workflows that compiled into this
+    release live in Build Studio's local store, not here; the cloud only ever
+    sees the published artifact, so it tracks the package, not the sources."""
     name = body.display_name.strip() or slug
-    target_url = body.target_url.strip() or "https://example.com"
-    protected_url = body.protected_url.strip()
-    existing = next(
-        (
-            plugin
-            for plugin in list_plugins(workspace_id=workspace_id)
-            if plugin.slug == slug or plugin.name.lower() == name.lower()
-        ),
-        None,
-    )
-    now = time.time()
-    build = PluginBuild(last_built_at=now, output_path="", version=skill_pack_version)
-    workflows = [
-        PluginWorkflow(
-            id=str(uuid.uuid4()),
-            slug=skill_slug,
-            name=skill_slug.replace("-", " ").title(),
-            session_id="",
-            recorded_at=now,
-            status="compiled",
-            skill_id=skill_slug,
-        )
-        for skill_slug in body.skills
-    ]
-    if existing is None:
-        plugin = create_plugin(
-            name=name,
-            target_url=target_url,
-            protected_url=protected_url,
-            workspace_id=workspace_id,
-            owner_user_id=owner_user_id,
-        )
-        plugin = plugin.model_copy(update={
-            "slug": slug,
-            "status": "ready",
-            "build": build,
-            "workflows": workflows,
-        })
-    else:
-        plugin = existing.model_copy(
-            update={
-                "slug": slug,
-                "name": name,
-                "workspace_id": workspace_id,
-                "owner_user_id": owner_user_id,
-                "target_url": target_url or existing.target_url,
-                "protected_url": protected_url or existing.protected_url,
-                "status": "ready",
-                "build": build,
-                "workflows": workflows,
-            }
-        )
-    save_plugin(plugin)
+    pack = upsert_skill_pack_by_slug(slug, workspace_id=workspace_id, company_name=name)
+    pack.build = SkillPackBuild(last_built_at=time.time(), output_path="", version=skill_pack_version)
+    save_skill_pack(pack)
 
 
 # ---------------------------------------------------------------------------
@@ -313,8 +269,8 @@ def _publish_skill_pack_impl(
     published_at = time.time()
     api_base = _api_base(request)
     if installer_version:
-        sync_url_path = f"/api/v1/plugins/{installer_version}/{slug}/skill-packs/delta"
-        tracking_url_path = f"/api/v1/plugins/{installer_version}/{slug}/tracking/events"
+        sync_url_path = f"/api/v1/workflows/{installer_version}/{slug}/skill-packs/delta"
+        tracking_url_path = f"/api/v1/workflows/{installer_version}/{slug}/tracking/events"
     else:
         sync_url_path = f"/api/v1/skill-packs/{slug}/delta"
         tracking_url_path = f"/api/tracking/{slug}/events"
@@ -369,7 +325,7 @@ def _publish_skill_pack_impl(
         "pack.json",
         {"path": "pack.json", "content_base64": base64.b64encode(pack_bytes).decode("ascii")},
     )
-    _upsert_published_plugin(body, slug, skill_pack_version, principal.workspace_id, principal.user_id)
+    _upsert_published_skill_pack(body, slug, skill_pack_version, principal.workspace_id)
 
     # Record each skill's version in the unified signed manifest so runtimes can
     # compare against it before pulling a delta. `files` is intentionally left empty
@@ -542,13 +498,17 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
             filename = f"{_random_installer_name()}.exe"
         else:
             domain = get_installer_domain(principal.workspace_id)
-            filename = f"{domain}.exe" if domain else f"{slug}-Plugin-Setup.exe"
+            filename = f"{domain}.exe" if domain else f"{slug}-Setup.exe"
     filename = Path(filename).name  # strip any path components
-    plugin_record = next(
-        (p for p in list_plugins(workspace_id=principal.workspace_id) if p.slug == slug),
-        None,
-    )
-    workflow_count = len(plugin_record.workflows) if plugin_record is not None else 0
+    # Skill count for the installer's meta.json — read from the already-published
+    # pack.json, the source of truth for what this slug's release actually contains.
+    workflow_count = 0
+    published_pack_path = skill_packs_dir(slug) / "pack.json"
+    if published_pack_path.is_file():
+        try:
+            workflow_count = len(json.loads(published_pack_path.read_text(encoding="utf-8")).get("skills") or [])
+        except Exception:
+            workflow_count = 0
 
     out_dir = installer_dir(slug)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -612,20 +572,19 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
     tmp_latest.replace(latest_exe_path)
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    # Persist installer metadata onto the plugin record so the dashboard can
+    # Persist installer metadata onto the SkillPack record so the dashboard can
     # surface version and a download button without reading the filesystem.
-    if plugin_record is not None:
-        plugin_record = plugin_record.model_copy(update={
-            "installer": PluginInstaller(
-                built_at=uploaded_at,
-                installer_path=str(latest_exe_path),
-                filename=filename,
-                version=version,
-                runtime_version="",
-                release_notes=release_notes,
-            )
-        })
-        save_plugin(plugin_record)
+    pack = get_skill_pack_by_slug(slug)
+    if pack is not None:
+        pack.installer = SkillPackInstaller(
+            built_at=uploaded_at,
+            installer_path=str(latest_exe_path),
+            filename=filename,
+            version=version,
+            runtime_version="",
+            release_notes=release_notes,
+        )
+        save_skill_pack(pack)
 
     add_audit_event(
         principal,
@@ -678,7 +637,7 @@ def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
             "slug": slug,
             "version": version,
             "release_notes": str(meta.get("release_notes") or ""),
-            "filename": str(meta.get("filename") or f"{slug}-Plugin-Setup.exe"),
+            "filename": str(meta.get("filename") or f"{slug}-Setup.exe"),
             "sha256": str(meta.get("sha256") or ""),
             "size": int(meta.get("size") or 0),
             "uploaded_at": float(meta.get("uploaded_at") or 0),
@@ -749,7 +708,7 @@ def get_installer_generations() -> dict[str, Any]:
     }
 
 
-@admin_router.post("/plugins/generations")
+@admin_router.post("/workflows/generations")
 def post_installer_generations(body: dict[str, Any], authorization: str = Header(default="")) -> dict[str, Any]:
     """Admin-only (Bearer CONXA_ADMIN_TOKEN). Flips the default generation
     stamped into new installer builds. Never affects already-installed

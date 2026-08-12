@@ -40,11 +40,19 @@ def _plan_features(tier: str) -> list[str]:
     the plan unlocks (distribution, ops depth, retention, BYOK)."""
     limits = PLAN_LIMITS.get(tier, {})
 
+    # Enterprise carries 0 for the numeric limits because they come from contractual
+    # overrides in billing metadata, not from this table. Rendering that 0 literally put
+    # "0 seats" on the public pricing cards, which reads as a broken tier rather than a
+    # negotiated one — so 0 means "agreed per contract" here, never a real ceiling.
     def _seat(n: int | None) -> str:
-        return "Unlimited seats" if n is None else f"{n} seat" + ("s" if n != 1 else "")
+        if n is None:
+            return "Unlimited seats"
+        return "Seats agreed per contract" if n == 0 else f"{n} seat" + ("s" if n != 1 else "")
 
     def _machine(n: int | None) -> str:
-        return "Unlimited machines" if n is None else f"{n} machine" + ("s" if n != 1 else "")
+        if n is None:
+            return "Unlimited machines"
+        return "Machines agreed per contract" if n == 0 else f"{n} machine" + ("s" if n != 1 else "")
 
     def _credits(n: int | None) -> str:
         return "Unlimited compile credits/month" if n is None else f"{n} compile credits/month"
@@ -52,6 +60,8 @@ def _plan_features(tier: str) -> list[str]:
     def _tokens(n: int | None) -> str:
         if n is None:
             return "Unlimited Human Edit tokens/month"
+        if n == 0:
+            return "Contracted Human Edit token reserve"
         if n >= 1_000_000:
             return f"{n // 1_000_000}M Human Edit tokens/month"
         return f"{n // 1_000}K Human Edit tokens/month"
