@@ -167,15 +167,26 @@ def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
     if not pack_path.is_file():
         raise HTTPException(status_code=404, detail=f"Skill pack not found: {company}")
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    skill_groups = pack.get("skill_groups") or {}
 
     skills_out: list[dict[str, Any]] = []
     for slug in pack.get("skills", []):
         current_version = _skill_version(company, slug)
         client_version = since_map.get(slug, "0")
-        skill_dir = packs_dir / slug
+        group_id = skill_groups.get(slug) or "_default"
+        skill_dir = packs_dir / group_id / slug
+        if not skill_dir.is_dir():
+            # Packs published before group-nesting shipped still have their files at the
+            # old flat `packs_dir/slug/` location on cloud storage — serve from there so
+            # already-published companies don't go stuck on "no_change" forever just
+            # because they haven't republished. `group_id` is still reported below so the
+            # client writes its copy into the new nested location regardless.
+            legacy_dir = packs_dir / slug
+            if legacy_dir.is_dir():
+                skill_dir = legacy_dir
 
         if current_version == client_version or not skill_dir.is_dir():
-            skills_out.append({"name": slug, "action": "no_change"})
+            skills_out.append({"name": slug, "action": "no_change", "group": group_id})
             continue
 
         files: list[dict[str, Any]] = []
@@ -188,7 +199,7 @@ def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
                 "sha256": _sha256_file(fpath),
                 "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
             })
-        skills_out.append({"name": slug, "version": current_version, "action": "update", "files": files})
+        skills_out.append({"name": slug, "version": current_version, "action": "update", "group": group_id, "files": files})
 
     return {"skills": skills_out}
 

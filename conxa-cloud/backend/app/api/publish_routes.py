@@ -103,6 +103,7 @@ class PublishBody(BaseModel):
     skill_pack_version: str = Field(..., min_length=1, max_length=32)
     release_notes: str = Field(default="", max_length=2000)
     skills: list[str] = Field(default_factory=list)
+    skill_groups: dict[str, str] = Field(default_factory=dict)
     files: list[PublishFile] = Field(default_factory=list)
 
 
@@ -307,6 +308,7 @@ def _publish_skill_pack_impl(
             "skill_pack_version": skill_pack_version,
             "release_notes": body.release_notes.strip(),
             "skills": list(body.skills),
+            "skill_groups": dict(body.skill_groups),
             "workspace_id": principal.workspace_id,
             "published_at": published_at,
             "sync_endpoint": f"{api_base}{sync_url_path}",
