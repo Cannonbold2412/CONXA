@@ -12,10 +12,32 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-class WorkflowAuth(BaseModel):
-    session_id: str
-    captured_at: float
-    storage_state_path: str
+class GroupApp(BaseModel):
+    """One authenticated application inside a WorkflowGroup — a login URL, the
+    URL that signals successful login, and (once captured) its session."""
+
+    id: str
+    name: str
+    login_url: str
+    success_url: str = ""
+    captured_at: float | None = None
+    storage_state_path: str = ""
+    last_error: str = ""
+
+
+class WorkflowGroup(BaseModel):
+    """A business-domain folder (e.g. "Sales") that owns both a set of
+    workflows and the authenticated applications those workflows need. Auth is
+    captured once per app, at the group level, and shared by every workflow in
+    the group — see docs/TRD.md's Workflow Groups section."""
+
+    id: str
+    slug: str
+    name: str
+    workspace_id: str = ""
+    apps: list["GroupApp"] = Field(default_factory=list)
+    created_at: float = 0.0
+    updated_at: float = 0.0
 
 
 class Workflow(BaseModel):
@@ -24,11 +46,11 @@ class Workflow(BaseModel):
     name: str
     owner_user_id: str = "local"
     workspace_id: str = ""
+    group_id: str = ""
     target_url: str
     protected_url: str = ""
     protected_url_marker_text: str = ""
     status: Literal["needs_auth", "ready", "error"] = "needs_auth"
-    auth: WorkflowAuth | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
     # The single recording this workflow holds (inlined — no inner list).

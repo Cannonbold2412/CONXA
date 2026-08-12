@@ -15,7 +15,7 @@ from typing import Any
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_delete, db_list
-from conxa_core.models.workflow import Workflow, WorkflowAuth
+from conxa_core.models.workflow import Workflow
 from conxa_core.workspace import LOCAL_WORKSPACE_ID
 
 
@@ -55,6 +55,10 @@ def _write_raw(workflow: Workflow) -> None:
 def _migrate_workspace(raw: dict) -> dict:
     if not raw.get("workspace_id"):
         raw["workspace_id"] = LOCAL_WORKSPACE_ID
+    if not raw.get("group_id"):
+        from conxa_core.storage.group_store import ensure_default_group
+
+        raw["group_id"] = ensure_default_group(raw["workspace_id"]).id
     return raw
 
 
@@ -65,17 +69,22 @@ def create_workflow(
     protected_url_marker_text: str = "",
     workspace_id: str = "",
     owner_user_id: str = "local",
+    group_id: str = "",
 ) -> Workflow:
     import re
+    from conxa_core.storage.group_store import ensure_default_group
+
     slug_base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "workflow"
     workflow_id = str(uuid.uuid4())
     now = time.time()
+    workspace_id = workspace_id or LOCAL_WORKSPACE_ID
     workflow = Workflow(
         id=workflow_id,
         slug=f"{slug_base}-{workflow_id[:8]}",
         name=name,
         owner_user_id=owner_user_id,
-        workspace_id=workspace_id or LOCAL_WORKSPACE_ID,
+        workspace_id=workspace_id,
+        group_id=group_id or ensure_default_group(workspace_id).id,
         target_url=target_url,
         protected_url=protected_url,
         protected_url_marker_text=protected_url_marker_text,
@@ -151,19 +160,13 @@ def delete_workflow(workflow_id: str) -> bool:
     return existed
 
 
-def set_workflow_auth(workflow_id: str, session_id: str, storage_state_path: str, protected_url: str | None = None) -> Workflow | None:
+def set_workflow_status_from_group_auth(workflow_id: str, group_ready: bool) -> Workflow | None:
+    """Recompute status from the owning group's auth readiness — auth is now
+    captured once per group (see group_store.py), not per workflow."""
     workflow = get_workflow(workflow_id)
     if workflow is None:
         return None
-    now = time.time()
-    workflow.auth = WorkflowAuth(
-        session_id=session_id,
-        captured_at=now,
-        storage_state_path=storage_state_path,
-    )
-    if protected_url is not None:
-        workflow.protected_url = protected_url
-    workflow.status = "ready"
+    workflow.status = "ready" if group_ready else "needs_auth"
     return save_workflow(workflow)
 
 
