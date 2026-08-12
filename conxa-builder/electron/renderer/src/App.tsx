@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { cmd, type UpdateCheckResult } from '@/lib/ipc'
 import { AuthContext, performLogout, type Identity } from '@/contexts/AuthContext'
 import { AppChrome } from '@/components/layout/AppChrome'
@@ -7,10 +8,9 @@ import { LoginOverlay } from '@/components/LoginOverlay'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { BootstrapScreen } from '@/pages/BootstrapScreen'
 import { UpdateRequiredScreen } from '@/pages/UpdateRequiredScreen'
-import { useSelectionStore } from '@/store/selectionStore'
+import { fetchWorkflow } from '@/api/workflowsApi'
 
 // Pages
-import { WorkflowPage } from '@/pages/WorkflowPage'
 import { WorkflowListPage } from '@/pages/WorkflowListPage'
 import { GroupPage } from '@/pages/GroupPage'
 import { HumanEditPage } from '@/pages/HumanEditPage'
@@ -43,13 +43,27 @@ function DeepLinkHandler() {
   return null
 }
 
-/** `/` has no id to route on — send the user back to whatever workflow they
- * were last looking at, falling back to the list when there's no persisted
- * selection (or it no longer exists). */
+/** `/` has no id to route on — the group list (`/workflows`) is the home. */
 function DefaultRedirect() {
-  const selectedWorkflowId = useSelectionStore((s) => s.selectedWorkflowId)
-  if (selectedWorkflowId) return <Navigate to={`/workflows/${selectedWorkflowId}`} replace />
   return <Navigate to="/workflows" replace />
+}
+
+/** The per-workflow detail page was folded into its owning group's page (every
+ * action it offered — record/compile/review/test — now lives on the group
+ * page's workflow row). This keeps old `/workflows/:workflowId` links (deep
+ * links, the compile page's "back", Human Edit's `?from=`) working by
+ * resolving the workflow and forwarding to its group. */
+function WorkflowRedirect() {
+  const { workflowId } = useParams<{ workflowId: string }>()
+  const q = useQuery({
+    queryKey: ['workflow', workflowId],
+    queryFn: () => fetchWorkflow(workflowId!),
+    enabled: !!workflowId,
+  })
+
+  if (q.isLoading) return null
+  if (q.isError || !q.data) return <Navigate to="/workflows" replace />
+  return <Navigate to={`/groups/${encodeURIComponent(q.data.workflow.group_id)}`} replace />
 }
 
 type DepUpdateBanner =
@@ -172,7 +186,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<DefaultRedirect />} />
             <Route path="/workflows" element={<WorkflowListPage />} />
-            <Route path="/workflows/:workflowId" element={<WorkflowPage />} />
+            <Route path="/workflows/:workflowId" element={<WorkflowRedirect />} />
             <Route path="/workflows/:workflowId/compile/:sessionId" element={<CompileProgress />} />
             <Route path="/groups/:groupId" element={<GroupPage />} />
             <Route path="/edit" element={<HumanEditPage />} />

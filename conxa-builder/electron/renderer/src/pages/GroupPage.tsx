@@ -5,14 +5,17 @@ import {
   addGroupApp,
   deleteGroup,
   fetchGroup,
-  removeGroupApp,
   renameGroup,
 } from '@/api/groupsApi'
-import { createWorkflow } from '@/api/workflowsApi'
+import { createWorkflow, fetchSkillPack, type SkillPackBuild, type Workflow } from '@/api/workflowsApi'
 import { GroupAuthWizard } from '@/components/GroupAuthWizard'
+import { RecordWorkflowDialog } from '@/components/RecordWorkflowDialog'
+import { DeleteWorkflowButton } from '@/components/DeleteWorkflowButton'
+import { InspectorDrawer } from '@/components/inspector/InspectorDrawer'
+import { MeterBadge } from '@/components/EntitlementMeters'
+import { WorkflowTestRow } from '@/components/WorkflowTests'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { StagePath, WorkflowStageBadge } from '@/components/StagePath'
-import { cn } from '@/lib/utils'
+import { WorkflowStageBadge, WorkflowStageRail } from '@/components/StagePath'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -29,7 +32,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { ChevronRight, Layers, Plus, Trash2 } from 'lucide-react'
+import { FolderKanban, Layers, Plus, Trash2 } from 'lucide-react'
 
 function AddAppDialog({ groupId }: { groupId: string }) {
   const qc = useQueryClient()
@@ -48,6 +51,7 @@ function AddAppDialog({ groupId }: { groupId: string }) {
       setSuccessUrl('')
       setError('')
       qc.invalidateQueries({ queryKey: ['group', groupId] })
+      qc.invalidateQueries({ queryKey: ['group-auth-status', groupId] })
       qc.invalidateQueries({ queryKey: ['groups'] })
     },
     onError: (e: Error) => setError(e.message),
@@ -56,8 +60,8 @@ function AddAppDialog({ groupId }: { groupId: string }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button size="sm" variant="outline">
-          <Plus className="size-3.5" /> Add app
+        <Button size="icon-sm" variant="outline" title="Add application">
+          <Plus className="size-3.5" />
         </Button>
       </DialogTrigger>
       <DialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100">
@@ -89,7 +93,7 @@ function AddAppDialog({ groupId }: { groupId: string }) {
 }
 
 function NewWorkflowDialog({ groupId }: { groupId: string }) {
-  const navigate = useNavigate()
+  const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [targetUrl, setTargetUrl] = useState('')
@@ -97,12 +101,12 @@ function NewWorkflowDialog({ groupId }: { groupId: string }) {
 
   const mutation = useMutation({
     mutationFn: () => createWorkflow({ name, target_url: targetUrl, group_id: groupId }),
-    onSuccess: (data) => {
+    onSuccess: () => {
       setOpen(false)
       setName('')
       setTargetUrl('')
       setError('')
-      navigate(`/workflows/${encodeURIComponent(data.workflow.id)}`)
+      qc.invalidateQueries({ queryKey: ['group', groupId] })
     },
     onError: (e: Error) => setError(e.message),
   })
@@ -141,6 +145,120 @@ function fmtDate(epoch: number) {
   return new Date(epoch * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+/** One workflow's whole lifecycle in a single row: name/status on the left,
+ * the five-node Record → Compile → Review → Test → Ready to Package rail in
+ * the middle, Inspector + Delete on the right. Replaces the old row that only
+ * navigated to a separate per-workflow detail page — every action that page
+ * used to own now lives here. */
+function WorkflowRow({
+  wf,
+  groupId,
+  groupReady,
+  skillPackBuild,
+  onChanged,
+}: {
+  wf: Workflow
+  groupId: string
+  groupReady: boolean
+  skillPackBuild: SkillPackBuild | null
+  onChanged: () => void
+}) {
+  const navigate = useNavigate()
+  const [recordOpen, setRecordOpen] = useState(false)
+  const [recompileConfirmOpen, setRecompileConfirmOpen] = useState(false)
+  const [testOpen, setTestOpen] = useState(false)
+
+  const hasRecording = !!wf.session_id
+  const hasSkill = !!wf.skill_id
+  const packBuilt = !!skillPackBuild
+  const stale = wf.edited_at != null && skillPackBuild != null && wf.edited_at > skillPackBuild.last_built_at
+
+  function handleCompileClick() {
+    if (!hasRecording) return
+    if (hasSkill) {
+      setRecompileConfirmOpen(true)
+      return
+    }
+    navigate(`/workflows/${encodeURIComponent(wf.id)}/compile/${encodeURIComponent(wf.session_id!)}`)
+  }
+
+  return (
+    <div className="border-b border-white/6 last:border-b-0">
+      <div className="flex items-center gap-4 px-5 py-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-medium text-white">{wf.name}</p>
+            <WorkflowStageBadge stage={wf.stage} />
+          </div>
+          <p className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">{wf.target_url}</p>
+        </div>
+
+        <WorkflowStageRail
+          stage={wf.stage ?? 'ready_to_compile'}
+          hasRecording={hasRecording}
+          hasSkill={hasSkill}
+          groupReady={groupReady}
+          packBuilt={packBuilt}
+          stale={stale}
+          onRecord={() => setRecordOpen(true)}
+          onCompile={handleCompileClick}
+          onReview={() => navigate(`/edit/${encodeURIComponent(wf.skill_id!)}?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
+          onToggleTest={() => setTestOpen((v) => !v)}
+          onPackage={() => navigate('/publish')}
+        />
+
+        <div className="flex shrink-0 items-center gap-1">
+          <InspectorDrawer
+            workflow={wf}
+            trigger={
+              <Button size="icon-sm" variant="outline" title="Inspector" className="border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white">
+                <FolderKanban className="size-3.5" />
+              </Button>
+            }
+          />
+          <DeleteWorkflowButton workflow={wf} onDeleted={onChanged} iconOnly />
+        </div>
+      </div>
+
+      {testOpen && (
+        <div className="border-t border-white/8 bg-black/10 px-5 py-3">
+          <WorkflowTestRow wf={wf} skillPackBuild={skillPackBuild} onComplete={onChanged} />
+        </div>
+      )}
+
+      <RecordWorkflowDialog
+        open={recordOpen}
+        onOpenChange={setRecordOpen}
+        workflow={wf}
+        onRecorded={() => {
+          setRecordOpen(false)
+          onChanged()
+        }}
+      />
+
+      <AlertDialog open={recompileConfirmOpen} onOpenChange={setRecompileConfirmOpen}>
+        <AlertDialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-white">Recompile &ldquo;{wf.name}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription className="text-zinc-400">
+              This rebuilds the skill from the original raw recording and uses the Human Edit pool. Saved editor changes will be replaced.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-white/10 bg-white/5 text-zinc-200">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-amber-600 text-white hover:bg-amber-700"
+              onClick={() => navigate(`/workflows/${encodeURIComponent(wf.id)}/compile/${encodeURIComponent(wf.session_id!)}?mode=recompile`)}
+            >
+              Recompile
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
 export function GroupPage() {
   const { groupId } = useParams<{ groupId: string }>()
   const navigate = useNavigate()
@@ -153,19 +271,16 @@ export function GroupPage() {
     queryFn: () => fetchGroup(groupId!),
     enabled: !!groupId,
   })
+  const packQ = useQuery({
+    queryKey: ['skill-pack'],
+    queryFn: fetchSkillPack,
+    staleTime: 10_000,
+  })
 
   const renameMut = useMutation({
     mutationFn: () => renameGroup(groupId!, renameValue),
     onSuccess: () => {
       setRenaming(false)
-      qc.invalidateQueries({ queryKey: ['group', groupId] })
-      qc.invalidateQueries({ queryKey: ['groups'] })
-    },
-  })
-
-  const removeAppMut = useMutation({
-    mutationFn: (appId: string) => removeGroupApp(groupId!, appId),
-    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['group', groupId] })
       qc.invalidateQueries({ queryKey: ['groups'] })
     },
@@ -199,6 +314,10 @@ export function GroupPage() {
 
   const { group, auth, workflows } = q.data
   const isDefault = group.name === 'Default'
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['group', groupId] })
+    qc.invalidateQueries({ queryKey: ['groups'] })
+  }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -207,6 +326,8 @@ export function GroupPage() {
         description={`${auth.apps_total} app${auth.apps_total === 1 ? '' : 's'} · ${auth.apps_authenticated} connected`}
         actions={
           <>
+            <MeterBadge meterKey="compile_credits" />
+            <MeterBadge meterKey="human_edit_tokens" />
             {!isDefault && (
               <Dialog open={renaming} onOpenChange={(v) => { setRenaming(v); if (v) setRenameValue(group.name) }}>
                 <DialogTrigger asChild>
@@ -247,74 +368,56 @@ export function GroupPage() {
         }
       />
 
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6">
-        <section className="rounded-xl border border-white/8 bg-white/[0.02]">
-          <div className="flex items-center justify-between border-b border-white/8 px-5 py-3.5">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:flex-row">
+        {/* ── Applications column ── */}
+        <section className="shrink-0 rounded-xl border border-white/8 bg-white/[0.02] lg:w-72">
+          <div className="flex items-center justify-between border-b border-white/8 px-4 py-3.5">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Applications</span>
             <AddAppDialog groupId={group.id} />
           </div>
-          <div className="p-4">
+          <div className="p-3">
             {group.apps.length === 0 ? (
               <p className="py-4 text-center text-xs text-zinc-600">No applications yet. Add one to start authenticating this group.</p>
             ) : (
-              <>
-                <GroupAuthWizard groupId={group.id} onAllAuthenticated={() => qc.invalidateQueries({ queryKey: ['group', groupId] })} />
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {group.apps.map((app) => (
-                    <button
-                      key={app.id}
-                      type="button"
-                      onClick={() => removeAppMut.mutate(app.id)}
-                      title="Remove app"
-                      className="rounded-md border border-white/8 bg-white/[0.03] px-2 py-1 text-[11px] text-zinc-500 hover:border-red-500/30 hover:text-red-400"
-                    >
-                      Remove {app.name}
-                    </button>
-                  ))}
-                </div>
-              </>
+              <GroupAuthWizard groupId={group.id} onAllAuthenticated={refresh} editable />
             )}
           </div>
         </section>
 
-        <ScrollArea className="min-h-0 flex-1">
-          {workflows.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-white/8 py-16 text-center">
-              <div className="rounded-full border border-white/8 bg-white/[0.03] p-4">
-                <Layers className="size-7 text-zinc-700" />
+        {/* ── Workflows column ── */}
+        <div className="min-w-0 flex-1">
+          <ScrollArea className="min-h-0 flex-1">
+            {workflows.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-white/8 py-16 text-center">
+                <div className="rounded-full border border-white/8 bg-white/[0.03] p-4">
+                  <Layers className="size-7 text-zinc-700" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-zinc-400">No workflows yet</p>
+                  <p className="mt-1 max-w-xs text-xs text-zinc-600">Create a workflow in this group to start automating.</p>
+                </div>
+                <NewWorkflowDialog groupId={group.id} />
               </div>
-              <div>
-                <p className="text-sm font-medium text-zinc-400">No workflows yet</p>
-                <p className="mt-1 max-w-xs text-xs text-zinc-600">Create a workflow in this group to start automating.</p>
+            ) : (
+              <div className="rounded-xl border border-white/8 bg-white/[0.02]">
+                <div className="flex items-center justify-between border-b border-white/8 px-5 py-3.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Workflows</span>
+                  <span className="text-[11px] text-zinc-600">Updated {fmtDate(Math.max(...workflows.map((w) => w.updated_at)))}</span>
+                </div>
+                {workflows.map((wf) => (
+                  <WorkflowRow
+                    key={wf.id}
+                    wf={wf}
+                    groupId={group.id}
+                    groupReady={auth.ready}
+                    skillPackBuild={packQ.data?.skill_pack?.build ?? null}
+                    onChanged={refresh}
+                  />
+                ))}
               </div>
-              <NewWorkflowDialog groupId={group.id} />
-            </div>
-          ) : (
-            <div className="divide-y divide-white/6 rounded-xl border border-white/8 bg-white/[0.02]">
-              {workflows.map((wf) => (
-                <button
-                  key={wf.id}
-                  type="button"
-                  onClick={() => navigate(`/workflows/${encodeURIComponent(wf.id)}`)}
-                  className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-white/[0.03]"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate text-sm font-medium text-white">{wf.name}</p>
-                      <WorkflowStageBadge stage={wf.stage} />
-                    </div>
-                    <p className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">{wf.target_url}</p>
-                  </div>
-                  <div className={cn('hidden w-48 shrink-0 sm:block')}>
-                    <StagePath stage={wf.stage ?? 'ready_to_compile'} />
-                  </div>
-                  <div className="w-28 shrink-0 text-right text-[11px] text-zinc-600">{fmtDate(wf.updated_at)}</div>
-                  <ChevronRight className="size-4 shrink-0 text-zinc-600" />
-                </button>
-              ))}
-            </div>
-          )}
-        </ScrollArea>
+            )}
+          </ScrollArea>
+        </div>
       </div>
     </div>
   )
