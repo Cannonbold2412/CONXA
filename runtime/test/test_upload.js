@@ -2,7 +2,7 @@
 
 // Unit tests for the upload action. Uploads are always parameterised — the compiler emits
 // {"type": "upload", "value": "{{file_path}}"} and the real path arrives as a runtime input
-// (see plugin_builder_saved_skill.py::_saved_step_to_execution_step). These tests pin the
+// (see skill_package_builder_saved_skill.py::_saved_step_to_execution_step). These tests pin the
 // behaviour that a path which never resolves must FAIL LOUDLY rather than skip: silently not
 // uploading a document while reporting success is this action's worst failure mode.
 // Disable GATE so no stability checks are simulated — mirrors test_branch.js's setup.

@@ -55,7 +55,7 @@ function writePack(skillPacksDir, company, overrides = {}) {
   fs.mkdirSync(companyDir, { recursive: true });
   const pack = {
     company,
-    sync_endpoint: "https://cloud.example/api/v1/plugins/v2/" + company + "/skill-packs/delta",
+    sync_endpoint: "https://cloud.example/api/v1/workflows/v2/" + company + "/skill-packs/delta",
     sync_token: "test-token",
     skills: [],
     ...overrides,

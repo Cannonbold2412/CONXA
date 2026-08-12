@@ -1085,8 +1085,8 @@ async function _handleTool(name, args, extra) {
     // Set up lightweight tracker for this execution
     const _tracker    = createTracker(primary.entry.pack?.tracking || {}, {
       runtime_version: RUNTIME_VERSION,
-      plugin_id:       primary.entry.slug,
-      plugin_version:  primary.entry.manifest?.version || "0",
+      workflow_id:      primary.entry.slug,
+      workflow_version: primary.entry.manifest?.version || "0",
       company_id:      primary.entry.company,
       log,
     });
