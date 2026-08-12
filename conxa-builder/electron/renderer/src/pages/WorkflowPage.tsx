@@ -6,14 +6,12 @@ import {
   cancelRecording,
   deleteWorkflowEntity,
   fetchWorkflow,
-  finalizeAuth,
   finalizeWorkflow,
   getWorkflowRecordingStatus,
-  reRecordAuth,
-  startAuthRecord,
   startWorkflowRecord,
   type Workflow,
 } from '@/api/workflowsApi'
+import { fetchGroup } from '@/api/groupsApi'
 import { fetchEntitlements } from '@/api/usageApi'
 import { useSelectionStore } from '@/store/selectionStore'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -36,11 +34,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
-  Check,
   ExternalLink,
   FolderKanban,
-  Globe,
-  KeyRound,
   ListChecks,
   Loader2,
   MousePointer2,
@@ -48,236 +43,55 @@ import {
   Play,
   RefreshCw,
   ShieldCheck,
+  ShieldAlert,
   Trash2,
   Zap,
 } from 'lucide-react'
 
 // ─────────────────────────────────────────────────
-// Record Login dialog
+// Group auth strip — read-only summary linking to the owning group's setup
+// (auth is captured once per group, not per workflow; see GroupPage.tsx).
 // ─────────────────────────────────────────────────
 
-function RecordLoginDialog({
-  open,
-  onOpenChange,
-  workflow,
-  onRefresh,
-}: {
-  open: boolean
-  onOpenChange: (v: boolean) => void
-  workflow: Workflow
-  onRefresh: () => void
-}) {
-  const [step, setStep] = useState<'guide' | 'record'>('guide')
-  const [activeSession, setActiveSession] = useState<string | null>(null)
-  const [error, setError] = useState('')
-
-  const startMut = useMutation({
-    mutationFn: () => startAuthRecord(workflow.id),
-    onSuccess: (data) => {
-      setActiveSession(data.session_id)
-      setError('')
-    },
-    onError: (e: Error) => setError(e.message),
+function GroupAuthStrip({ groupId }: { groupId: string }) {
+  const navigate = useNavigate()
+  const groupQ = useQuery({
+    queryKey: ['group', groupId],
+    queryFn: () => fetchGroup(groupId),
+    enabled: !!groupId,
   })
 
-  const finalizeMut = useMutation({
-    mutationFn: async () => finalizeAuth(workflow.id, activeSession!),
-    onSuccess: () => {
-      setActiveSession(null)
-      onRefresh()
-      onOpenChange(false)
-    },
-    onError: (e: Error) => {
-      setError(e.message)
-      setActiveSession(null)
-    },
-  })
-
-  const reRecordMut = useMutation({
-    mutationFn: () => reRecordAuth(workflow.id),
-    onSuccess: () => { onRefresh(); onOpenChange(false) },
-    onError: (e: Error) => setError(e.message),
-  })
-
-  const cancelMut = useMutation({
-    mutationFn: () => cancelRecording(activeSession!, workflow.id),
-    onSettled: () => setActiveSession(null),
-  })
-
-  const isRecording = !!activeSession
-  const statusQ = useQuery({
-    queryKey: ['workflow-auth-recording-status', workflow.id, activeSession],
-    queryFn: () => getWorkflowRecordingStatus(activeSession!),
-    enabled: isRecording && !finalizeMut.isPending,
-    refetchInterval: 1000,
-    retry: false,
-  })
-  const authBrowserClosed = statusQ.data?.browser_open === false
-
-  function handleClose(v: boolean) {
-    if (!v && isRecording && !finalizeMut.isPending) return
-    if (!v) { setStep('guide'); setError(''); setActiveSession(null) }
-    onOpenChange(v)
+  if (groupQ.isLoading || !groupQ.data) {
+    return (
+      <div className="flex items-center gap-3 rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5">
+          <Loader2 className="size-4 animate-spin text-zinc-500" />
+        </span>
+        <p className="text-xs text-zinc-500">Loading group…</p>
+      </div>
+    )
   }
 
-  const RECORD_STEPS = ['Open browser', 'Log in', 'Save']
-  const recordStep = finalizeMut.isPending ? 2 : 1
+  const { group, auth } = groupQ.data
+  const ready = auth.ready
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100 sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="text-white">
-            {workflow.auth ? 'Login Session' : 'Record Login'}
-          </DialogTitle>
-        </DialogHeader>
-
-        {/* ── Already captured ── */}
-        {workflow.auth ? (
-          <div className="space-y-4 pt-1">
-            <div className="flex items-center gap-4 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-4">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10">
-                <ShieldCheck className="size-5 text-emerald-400" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-emerald-200">Login session active</p>
-                <p className="mt-0.5 truncate text-xs text-emerald-100/50">
-                  Captured{' '}
-                  {new Date(workflow.auth.captured_at * 1000).toLocaleString([], {
-                    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-                  })}
-                </p>
-              </div>
-            </div>
-            <p className="text-xs text-zinc-500">
-              Re-recording will replace the existing session. The browser will open at your target URL — complete the full login flow, then close it.
-            </p>
-            {error ? <p className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-300">{error}</p> : null}
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1 border-white/10 bg-white/[0.06] text-zinc-300" onClick={() => onOpenChange(false)}>
-                Close
-              </Button>
-              <Button
-                variant="outline"
-                className="flex-1 border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
-                onClick={() => reRecordMut.mutate()}
-                disabled={reRecordMut.isPending}
-              >
-                {reRecordMut.isPending
-                  ? <><Loader2 className="size-4 animate-spin" />Re-recording…</>
-                  : <><RefreshCw className="size-4" />Re-record Login</>}
-              </Button>
-            </div>
-          </div>
-
-        ) : isRecording ? (
-          /* ── Recording in progress ── */
-          <div className="space-y-5 pt-1">
-            <div className="flex items-center">
-              {RECORD_STEPS.map((s, i) => {
-                const done = i < recordStep
-                const current = i === recordStep
-                return (
-                  <div key={s} className="flex items-center" style={{ flex: i < RECORD_STEPS.length - 1 ? '1' : undefined }}>
-                    <div className="flex flex-col items-center gap-1.5">
-                      <div className={cn(
-                        'flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold transition-all',
-                        done ? 'bg-emerald-500 text-white' : current ? 'bg-sky-500 text-white ring-2 ring-sky-500/30' : 'bg-white/8 text-zinc-600',
-                      )}>
-                        {done ? <Check className="size-3" /> : current && !finalizeMut.isPending ? <Loader2 className="size-3 animate-spin" /> : i + 1}
-                      </div>
-                      <span className={cn('whitespace-nowrap text-[11px] font-medium', done ? 'text-emerald-300' : current ? 'text-sky-300' : 'text-zinc-600')}>
-                        {s}
-                      </span>
-                    </div>
-                    {i < RECORD_STEPS.length - 1 && (
-                      <div className={cn('mb-4 mx-3 h-px flex-1 transition-colors duration-500', done ? 'bg-emerald-500/40' : 'bg-white/8')} />
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-            <p className="text-xs leading-5 text-sky-100/70">
-              {finalizeMut.isPending
-                ? 'Saving your session…'
-                : authBrowserClosed
-                ? 'Browser closed. Click Save Session Now to keep this session, or Cancel to discard it.'
-                : 'Browser is open. Log in, navigate to the page where the workflow should start, then close the browser.'}
-            </p>
-            {!finalizeMut.isPending && (
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" className="flex-1 border-white/10 bg-white/[0.06] text-zinc-300 hover:bg-white/10 hover:text-white" onClick={() => cancelMut.mutate()} disabled={finalizeMut.isPending || cancelMut.isPending}>
-                  Cancel
-                </Button>
-                <Button size="sm" className="flex-1 bg-sky-600 text-white hover:bg-sky-500" onClick={() => finalizeMut.mutate()} disabled={finalizeMut.isPending}>
-                  {finalizeMut.isPending ? <><Loader2 className="size-4 animate-spin" />Saving session…</> : 'Save Session Now'}
-                </Button>
-              </div>
-            )}
-            {error ? <p className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-300">{error}</p> : null}
-          </div>
-
-        ) : step === 'guide' ? (
-          /* ── Guide: how it works ── */
-          <div className="space-y-5 pt-1">
-            <div className="space-y-3">
-              <p className="text-xs font-semibold text-zinc-300">How it works</p>
-              {[
-                'A browser opens at your target URL.',
-                'Complete the full login flow, including 2FA or SSO.',
-                'Navigate to the page where the workflow should begin.',
-                'Close the browser — the session is saved automatically.',
-              ].map((text, i) => (
-                <div key={i} className="flex items-start gap-3">
-                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-white/8 text-[11px] font-bold text-zinc-400">{i + 1}</span>
-                  <p className="text-xs leading-5 text-zinc-400">{text}</p>
-                </div>
-              ))}
-            </div>
-            <div className="border-t border-white/8" />
-            <div className="space-y-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Best practices</p>
-              {[
-                "Complete the full flow before closing — partial sessions won't work.",
-                "Land on your app's actual starting page, not the login page.",
-                'Re-record whenever credentials or cookies change.',
-              ].map((tip) => (
-                <p key={tip} className="text-xs leading-5 text-zinc-500"><span className="mr-1.5 text-zinc-600">·</span>{tip}</p>
-              ))}
-            </div>
-            <Button className="w-full bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400" onClick={() => setStep('record')}>
-              Continue →
-            </Button>
-          </div>
-
-        ) : (
-          /* ── Record: target URL + launch ── */
-          <div className="space-y-4 pt-1">
-            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <Globe className="size-3.5 text-zinc-500" />
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Target URL</p>
-              </div>
-              <p className="truncate font-mono text-sm text-zinc-200">{workflow.target_url}</p>
-              <p className="mt-2 text-xs text-zinc-500">Log in, navigate to the starting page, then close the browser.</p>
-            </div>
-            {error ? <p className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-300">{error}</p> : null}
-            <div className="flex flex-col gap-2">
-              <Button
-                className="h-10 w-full bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400"
-                onClick={() => startMut.mutate()}
-                disabled={startMut.isPending}
-              >
-                {startMut.isPending ? <><Loader2 className="size-4 animate-spin" />Launching browser…</> : <><Play className="size-4" />Record Login</>}
-              </Button>
-              <button type="button" onClick={() => setStep('guide')} className="text-center text-xs text-zinc-500 transition-colors hover:text-zinc-300">
-                ← Back to guide
-              </button>
-            </div>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+    <button
+      type="button"
+      onClick={() => navigate(`/groups/${encodeURIComponent(group.id)}`)}
+      className="flex items-center gap-3 rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3 text-left transition-colors hover:bg-white/[0.05]"
+    >
+      <span className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg border', ready ? 'border-emerald-500/20 bg-emerald-500/[0.08]' : 'border-amber-500/20 bg-amber-500/[0.08]')}>
+        {ready ? <ShieldCheck className="size-4 text-emerald-400" /> : <ShieldAlert className="size-4 text-amber-400" />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Group</p>
+        <p className={cn('text-xs font-semibold', ready ? 'text-emerald-300' : 'text-amber-300')}>{group.name}</p>
+        <p className="text-[10px] text-zinc-600">
+          {auth.apps_authenticated} of {auth.apps_total} app{auth.apps_total === 1 ? '' : 's'} connected
+        </p>
+      </div>
+    </button>
   )
 }
 
@@ -546,7 +360,6 @@ export function WorkflowPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const setSelectedWorkflowId = useSelectionStore((s) => s.setSelectedWorkflowId)
-  const [authDialogOpen, setAuthDialogOpen] = useState(false)
   const [recordDialogOpen, setRecordDialogOpen] = useState(false)
 
   // A deep link (or manual URL nav) into a workflow should update the shared
@@ -589,7 +402,7 @@ export function WorkflowPage() {
   }
 
   const workflow = q.data.workflow
-  const canRecordWorkflow = workflow.status === 'ready' && !!workflow.auth
+  const canRecordWorkflow = workflow.status === 'ready'
   const hasRecording = !!workflow.session_id
   const compileMeter = entitlementsQ.data?.meters?.compile_credits
   const editMeter = entitlementsQ.data?.meters?.human_edit_tokens
@@ -628,16 +441,7 @@ export function WorkflowPage() {
 
         {/* ── Stat cards ── */}
         <div className="grid grid-cols-3 gap-3">
-          <div className="flex items-center gap-3 rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3">
-            <span className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg border', workflow.auth ? 'border-emerald-500/20 bg-emerald-500/[0.08]' : 'border-amber-500/20 bg-amber-500/[0.08]')}>
-              <KeyRound className={cn('size-4', workflow.auth ? 'text-emerald-400' : 'text-amber-400')} />
-            </span>
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Login</p>
-              <p className={cn('text-xs font-semibold', workflow.auth ? 'text-emerald-300' : 'text-amber-300')}>{workflow.auth ? 'Connected' : 'Required'}</p>
-              <p className="text-[10px] text-zinc-600">{workflow.auth ? `Recorded ${new Date(workflow.auth.captured_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}` : 'Not recorded'}</p>
-            </div>
-          </div>
+          <GroupAuthStrip groupId={workflow.group_id} />
 
           <div className="flex items-center gap-3 rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3">
             <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-violet-500/20 bg-violet-500/[0.08]">
@@ -667,33 +471,24 @@ export function WorkflowPage() {
         </div>
 
         {/* ── Action row ── */}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            onClick={() => setAuthDialogOpen(true)}
-            className={cn(!workflow.auth && 'bg-brand text-brand-foreground hover:bg-brand-hover')}
-          >
-            {workflow.auth ? <ShieldCheck className="size-3.5" /> : <KeyRound className="size-3.5" />}
-            {workflow.auth ? 'Re-record Login' : 'Record Login'}
-          </Button>
-
-          {!hasRecording && (
+        {!hasRecording && (
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
               variant="outline"
               disabled={!canRecordWorkflow}
-              title={canRecordWorkflow ? 'Record this workflow' : 'Record login first'}
+              title={canRecordWorkflow ? 'Record this workflow' : "Authenticate this workflow's group first"}
               onClick={() => setRecordDialogOpen(true)}
             >
               <Play className="size-3.5" />
               Record Workflow
             </Button>
-          )}
-        </div>
+          </div>
+        )}
 
         {!canRecordWorkflow && !hasRecording && (
           <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-amber-300">
-            Record login first to unlock workflow recording.
+            Authenticate every app in this workflow's group before recording — see the Group card above.
           </div>
         )}
 
@@ -772,7 +567,6 @@ export function WorkflowPage() {
         </section>
       </div>
 
-      <RecordLoginDialog open={authDialogOpen} onOpenChange={setAuthDialogOpen} workflow={workflow} onRefresh={refresh} />
       <RecordWorkflowDialog open={recordDialogOpen} onOpenChange={setRecordDialogOpen} workflow={workflow} onRecorded={refresh} />
     </div>
   )

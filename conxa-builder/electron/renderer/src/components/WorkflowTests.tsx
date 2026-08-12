@@ -7,6 +7,8 @@ import {
   type SkillPackBuild,
   type Workflow,
 } from '@/api/workflowsApi'
+import { getGroupAuthStatus } from '@/api/groupsApi'
+import { RunGateDialog } from '@/components/RunGateDialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -257,6 +259,7 @@ export function WorkflowTestRow({
   const [logs, setLogs] = useState<string[]>([])
   const [runError, setRunError] = useState('')
   const [runDone, setRunDone] = useState(false)
+  const [gateOpen, setGateOpen] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
 
   const stale = isStaleTest(wf, skillPackBuild)
@@ -357,6 +360,21 @@ export function WorkflowTestRow({
     }
   }
 
+  // Gate the run behind the workflow's group auth — same "belongs to the X
+  // group and requires authentication to N applications" check the runtime
+  // itself enforces, surfaced here so Studio users aren't left staring at a
+  // runtime error when a session has expired.
+  async function requestRun() {
+    if (!wf.group_id) { void runTest(); return }
+    try {
+      const status = await getGroupAuthStatus(wf.group_id)
+      if (status.ready) void runTest()
+      else setGateOpen(true)
+    } catch {
+      void runTest()
+    }
+  }
+
   function openInputDialog(mode: 'edit' | 'run') {
     setInputError('')
     setInputDialogMode(mode)
@@ -391,7 +409,7 @@ export function WorkflowTestRow({
           {inputSpecs !== null && inputSpecs.length === 0 && (
             <Button
               size="sm"
-              onClick={() => void runTest()}
+              onClick={() => void requestRun()}
               disabled={!canRun}
               title={stale ? 'Rebuild the skill package first' : undefined}
             >
@@ -459,7 +477,7 @@ export function WorkflowTestRow({
               onSubmit={(e) => {
                 e.preventDefault()
                 if (inputDialogMode === 'run') {
-                  void runTest()
+                  void requestRun()
                 } else {
                   saveInputs()
                 }
@@ -550,6 +568,10 @@ export function WorkflowTestRow({
       {/* Log + result panel — shown whenever there's output */}
       {(logs.length > 0 || runDone || runError) && (
         <WorkflowLogSection logs={logs} runDone={runDone} runError={runError} logRef={logRef} onRetry={runError ? () => void runTest() : undefined} />
+      )}
+
+      {wf.group_id && (
+        <RunGateDialog open={gateOpen} onOpenChange={setGateOpen} groupId={wf.group_id} onReady={() => void runTest()} />
       )}
     </div>
   )

@@ -1,10 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { createWorkflow, fetchWorkflows, normalizeWorkflowList } from '@/api/workflowsApi'
+import { createGroup, fetchGroups, type GroupSummary } from '@/api/groupsApi'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { StagePath, WorkflowStageBadge } from '@/components/StagePath'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,23 +15,22 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
-import { ChevronRight, Layers, Plus, Search } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { FolderKanban, Plus } from 'lucide-react'
 
-function NewWorkflowDialog() {
+function NewGroupDialog() {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
-  const [targetUrl, setTargetUrl] = useState('')
   const [error, setError] = useState('')
 
   const mutation = useMutation({
-    mutationFn: () => createWorkflow({ name, target_url: targetUrl }),
+    mutationFn: () => createGroup(name),
     onSuccess: (data) => {
       setOpen(false)
       setName('')
-      setTargetUrl('')
       setError('')
-      navigate(`/workflows/${encodeURIComponent(data.workflow.id)}`)
+      navigate(`/groups/${encodeURIComponent(data.group.id)}`)
     },
     onError: (e: Error) => setError(e.message),
   })
@@ -43,44 +40,31 @@ function NewWorkflowDialog() {
       <DialogTrigger asChild>
         <Button size="sm">
           <Plus className="size-4" />
-          New Workflow
+          New Group
         </Button>
       </DialogTrigger>
       <DialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100">
         <DialogHeader>
-          <DialogTitle className="text-white">New Workflow</DialogTitle>
+          <DialogTitle className="text-white">New Group</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 pt-2">
           <div className="space-y-1.5">
-            <Label className="text-zinc-300">Workflow name</Label>
+            <Label className="text-zinc-300">Group name</Label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && mutation.mutate()}
-              placeholder="e.g. Create new service on Render.com"
+              placeholder="e.g. Sales"
               className="border-white/10 bg-white/5 text-zinc-100"
               disabled={mutation.isPending}
             />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-zinc-300">Target URL</Label>
-            <Input
-              value={targetUrl}
-              onChange={(e) => setTargetUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && mutation.mutate()}
-              placeholder="https://render.com"
-              className="border-white/10 bg-white/5 text-zinc-100"
-              disabled={mutation.isPending}
-            />
-            <p className="text-xs text-zinc-500">The login or landing page for the site this workflow automates.</p>
+            <p className="text-xs text-zinc-500">
+              A business domain — e.g. Sales, Marketing. It groups both workflows and the applications they need to sign in to.
+            </p>
           </div>
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
-          <Button
-            className="w-full"
-            onClick={() => mutation.mutate()}
-            disabled={!name || !targetUrl || mutation.isPending}
-          >
-            {mutation.isPending ? 'Creating…' : 'Create Workflow'}
+          <Button className="w-full" onClick={() => mutation.mutate()} disabled={!name || mutation.isPending}>
+            {mutation.isPending ? 'Creating…' : 'Create Group'}
           </Button>
         </div>
       </DialogContent>
@@ -88,51 +72,66 @@ function NewWorkflowDialog() {
   )
 }
 
-const STATUS_FILTERS = ['all', 'needs_auth', 'ready', 'error'] as const
-type StatusFilter = typeof STATUS_FILTERS[number]
+function GroupCard({ group }: { group: GroupSummary }) {
+  const navigate = useNavigate()
+  const authLabel =
+    group.apps_total === 0
+      ? 'No apps yet'
+      : `${group.apps_authenticated} of ${group.apps_total} app${group.apps_total === 1 ? '' : 's'} connected`
 
-function fmtDate(epoch: number) {
-  return new Date(epoch * 1000).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(`/groups/${encodeURIComponent(group.id)}`)}
+      className="group flex flex-col items-start gap-3 rounded-xl border border-white/8 bg-white/[0.02] p-4 text-left transition-colors hover:border-brand/30 hover:bg-white/[0.04]"
+    >
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-zinc-300 group-hover:border-brand/40 group-hover:text-brand">
+        <FolderKanban className="size-5" />
+      </span>
+      <div className="min-w-0 w-full">
+        <p className="truncate text-sm font-semibold text-white">{group.name}</p>
+        <p className="mt-0.5 text-xs text-zinc-500">
+          {group.workflow_count} workflow{group.workflow_count === 1 ? '' : 's'}
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span
+          aria-hidden
+          className={cn('text-[13px] leading-none', group.ready ? 'text-status-ok' : 'text-status-warn')}
+        >
+          {group.ready ? '●' : '▲'}
+        </span>
+        <span className={cn(group.ready ? 'text-status-ok' : 'text-status-warn')}>{authLabel}</span>
+      </div>
+    </button>
+  )
 }
 
 export function WorkflowListPage() {
-  const navigate = useNavigate()
-  const workflowsQ = useQuery({ queryKey: ['workflows'], queryFn: fetchWorkflows })
-  const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const groupsQ = useQuery({ queryKey: ['groups'], queryFn: fetchGroups })
+  const groups = groupsQ.data?.groups ?? []
 
-  const workflows = normalizeWorkflowList(workflowsQ.data)
-  const filtered = workflows.filter((w) => {
-    const matchesSearch = !search || w.name.toLowerCase().includes(search.toLowerCase()) || w.target_url.toLowerCase().includes(search.toLowerCase())
-    const matchesStatus = statusFilter === 'all' || w.status === statusFilter
-    return matchesSearch && matchesStatus
-  })
-
-  if (workflowsQ.isLoading) {
+  if (groupsQ.isLoading) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <PageHeader title="Workflows" description="Show Conxa the task once — record a login, then record the workflow." />
-        <div className="min-h-0 flex-1 space-y-2 p-4">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-20 w-full rounded-xl" />
+        <PageHeader title="Workflows" description="Organize your automations by business group — each one owns its own logins." />
+        <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 w-full rounded-xl" />
           ))}
         </div>
       </div>
     )
   }
 
-  if (workflowsQ.isError || !workflowsQ.data) {
+  if (groupsQ.isError || !groupsQ.data) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         <PageHeader title="Workflows" />
         <div className="flex flex-1 flex-col items-center justify-center gap-3">
-          <p className="text-sm font-medium text-red-300">Failed to load workflows</p>
-          <p className="text-xs text-zinc-500">{(workflowsQ.error as Error)?.message ?? 'Unknown error'}</p>
-          <Button size="sm" variant="outline" onClick={() => void workflowsQ.refetch()}>
+          <p className="text-sm font-medium text-red-300">Failed to load groups</p>
+          <p className="text-xs text-zinc-500">{(groupsQ.error as Error)?.message ?? 'Unknown error'}</p>
+          <Button size="sm" variant="outline" onClick={() => void groupsQ.refetch()}>
             Retry
           </Button>
         </div>
@@ -144,77 +143,27 @@ export function WorkflowListPage() {
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         title="Workflows"
-        description="Show Conxa the task once — record a login, then record the workflow."
-        actions={<NewWorkflowDialog />}
+        description="Organize your automations by business group — each one owns its own logins."
+        actions={<NewGroupDialog />}
       />
 
-      {workflows.length > 0 && (
-        <div className="flex items-center gap-3 border-b border-white/8 px-4 py-2.5 sm:px-6">
-          <div className="relative w-64">
-            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search workflows…"
-              className="h-8 border-white/10 bg-white/[0.04] pl-7 text-xs text-zinc-100 placeholder:text-zinc-600"
-            />
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {STATUS_FILTERS.map((f) => (
-              <button
-                key={f}
-                onClick={() => setStatusFilter(f)}
-                className={cn(
-                  'rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
-                  statusFilter === f ? 'bg-white/10 text-white' : 'text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300',
-                )}
-              >
-                {f === 'all' ? 'All' : f === 'needs_auth' ? 'Needs login' : f.charAt(0).toUpperCase() + f.slice(1)}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto w-full max-w-4xl p-4 sm:p-6">
-          {workflows.length === 0 ? (
+        <div className="mx-auto w-full max-w-5xl p-4 sm:p-6">
+          {groups.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-white/8 py-20 text-center">
               <div className="rounded-full border border-white/8 bg-white/[0.03] p-4">
-                <Layers className="size-7 text-zinc-700" />
+                <FolderKanban className="size-7 text-zinc-700" />
               </div>
               <div>
-                <p className="text-sm font-medium text-zinc-400">No workflows yet</p>
-                <p className="mt-1 max-w-xs text-xs text-zinc-600">Create your first workflow to start automating.</p>
+                <p className="text-sm font-medium text-zinc-400">No groups yet</p>
+                <p className="mt-1 max-w-xs text-xs text-zinc-600">Create a group to start organizing workflows and their logins.</p>
               </div>
-              <NewWorkflowDialog />
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-20 text-center">
-              <p className="text-xs text-zinc-500">No workflows match your filter.</p>
+              <NewGroupDialog />
             </div>
           ) : (
-            <div className="divide-y divide-white/6 rounded-xl border border-white/8 bg-white/[0.02]">
-              {filtered.map((wf) => (
-                <button
-                  key={wf.id}
-                  type="button"
-                  onClick={() => navigate(`/workflows/${encodeURIComponent(wf.id)}`)}
-                  className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-white/[0.03]"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate text-sm font-medium text-white">{wf.name}</p>
-                      <WorkflowStageBadge stage={wf.stage} />
-                    </div>
-                    <p className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">{wf.target_url}</p>
-                  </div>
-                  <div className="hidden w-48 shrink-0 sm:block">
-                    <StagePath stage={wf.stage} />
-                  </div>
-                  <div className="w-28 shrink-0 text-right text-[11px] text-zinc-600">{fmtDate(wf.updated_at)}</div>
-                  <ChevronRight className="size-4 shrink-0 text-zinc-600" />
-                </button>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {groups.map((g) => (
+                <GroupCard key={g.id} group={g} />
               ))}
             </div>
           )}

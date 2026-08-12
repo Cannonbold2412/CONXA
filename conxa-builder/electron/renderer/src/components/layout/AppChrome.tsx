@@ -9,7 +9,6 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import {
   ChevronLeft,
   ChevronRight,
-  Cpu,
   Layers,
   ListChecks,
   LogOut,
@@ -22,17 +21,17 @@ import {
 
 const SIDEBAR_KEY = 'conxa-sidebar-collapsed'
 
-// One button per stage of Workflows -> Compile -> Human Edit -> Test Skill ->
-// Publish Skill Package -> Build Installer, so the sidebar mirrors the flow
-// itself instead of the compiler's internal pipeline stages. Workflows is the
-// app home — it also owns workflow create/delete/search alongside the
-// recording (login + workflow) actions on each workflow's own page.
+// One button per stage of Workflows -> Human Edit -> Test Skill -> Publish
+// Skill Package -> Build Installer, so the sidebar mirrors the flow itself
+// instead of the compiler's internal pipeline stages. Workflows is the app
+// home — it owns groups, workflow create/delete/search, and compile (each
+// workflow's own page owns Compile/Recompile — there is no standalone
+// Compile page or nav entry).
 const navGroups = [
   {
     label: 'Operate',
     items: [
       { to: '/workflows', label: 'Workflows', icon: ListChecks },
-      { to: '/compile', label: 'Compile', icon: Cpu },
       { to: '/human-edit', label: 'Human Edit', icon: PencilLine },
       { to: '/test', label: 'Test Skill', icon: PlayCircle },
       { to: '/publish', label: 'Publish Skill Package', icon: UploadCloud },

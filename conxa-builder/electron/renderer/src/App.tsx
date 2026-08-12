@@ -12,8 +12,8 @@ import { useSelectionStore } from '@/store/selectionStore'
 // Pages
 import { WorkflowPage } from '@/pages/WorkflowPage'
 import { WorkflowListPage } from '@/pages/WorkflowListPage'
+import { GroupPage } from '@/pages/GroupPage'
 import { HumanEditPage } from '@/pages/HumanEditPage'
-import { CompilePage } from '@/pages/CompilePage'
 import { HumanEditListPage } from '@/pages/HumanEditListPage'
 import { PublishPage } from '@/pages/PublishPage'
 import { BuildInstallerPage } from '@/pages/BuildInstallerPage'
@@ -174,9 +174,9 @@ export function App() {
             <Route path="/workflows" element={<WorkflowListPage />} />
             <Route path="/workflows/:workflowId" element={<WorkflowPage />} />
             <Route path="/workflows/:workflowId/compile/:sessionId" element={<CompileProgress />} />
+            <Route path="/groups/:groupId" element={<GroupPage />} />
             <Route path="/edit" element={<HumanEditPage />} />
             <Route path="/edit/:skillId" element={<HumanEditPage />} />
-            <Route path="/compile" element={<CompilePage />} />
             <Route path="/human-edit" element={<HumanEditListPage />} />
             <Route path="/test" element={<TestSkillPage />} />
             <Route path="/publish" element={<PublishPage />} />

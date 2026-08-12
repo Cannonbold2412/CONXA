@@ -1,22 +1,16 @@
 import { cmd } from '@/lib/ipc'
 import type { BackendEvent } from '@/lib/ipc'
 
-export type WorkflowAuth = {
-  session_id: string
-  captured_at: number
-  storage_state_path: string
-}
-
 export type Workflow = {
   id: string
   slug: string
   name: string
   owner_user_id: string
+  group_id: string
   target_url: string
   protected_url: string
   protected_url_marker_text: string
   status: 'needs_auth' | 'ready' | 'error'
-  auth: WorkflowAuth | null
   created_at: number
   updated_at: number
   // The single recording this workflow holds.
@@ -227,6 +221,7 @@ export function fetchWorkflow(id: string): Promise<{ workflow: Workflow }> {
 export function createWorkflow(body: {
   name: string
   target_url: string
+  group_id?: string
   protected_url?: string
   protected_url_marker_text?: string
 }): Promise<{ workflow: Workflow }> {
@@ -235,27 +230,6 @@ export function createWorkflow(body: {
 
 export function deleteWorkflowEntity(id: string): Promise<{ deleted: boolean }> {
   return cmd<{ deleted: boolean }>('delete_workflow', { workflow_id: id })
-}
-
-export function startAuthRecord(
-  workflowId: string,
-  body: { start_url?: string } = {},
-): Promise<{ session_id: string; start_url: string }> {
-  return cmd<{ session_id: string; start_url: string }>('start_recording', {
-    workflow_id: workflowId,
-    auth_mode: true,
-    ...body,
-  })
-}
-
-export function finalizeAuth(
-  workflowId: string,
-  sessionId: string,
-): Promise<{ workflow_status: string; storage_state_saved: boolean; protected_url: string }> {
-  return cmd<{ workflow_status: string; storage_state_saved: boolean; protected_url: string }>(
-    'stop_recording',
-    { workflow_id: workflowId, session_id: sessionId, auth_mode: true },
-  )
 }
 
 export function getWorkflowRecordingStatus(sessionId: string): Promise<{
@@ -269,10 +243,6 @@ export function getWorkflowRecordingStatus(sessionId: string): Promise<{
   current_url?: string
 }> {
   return cmd('get_recording_status', { session_id: sessionId })
-}
-
-export function reRecordAuth(workflowId: string): Promise<{ status: string }> {
-  return cmd<{ status: string }>('re_record_auth', { workflow_id: workflowId })
 }
 
 export function startWorkflowRecord(
@@ -314,8 +284,8 @@ export function deleteWorkflow(workflowId: string): Promise<{ deleted: boolean }
 
 export function updateWorkflow(
   workflowId: string,
-  body: { skill_id?: string | null; status?: string },
-): Promise<{ workflow_id: string; skill_id: string | null; status: string }> {
+  body: { skill_id?: string | null; status?: string; name?: string; group_id?: string },
+): Promise<{ workflow_id: string; skill_id: string | null; status: string; group_id: string; name: string }> {
   return cmd('update_workflow', { workflow_id: workflowId, ...body })
 }
 
