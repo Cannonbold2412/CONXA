@@ -53,6 +53,13 @@ echo "  CONXA_UPDATE_CHANNEL = $CONXA_UPDATE_CHANNEL"
 echo "  env file             = .env.$CONXA_ENV"
 echo "────────────────────────────────────────────────────────────────"
 
+# Dev-only sample data (a Default group plus a seeded Sales group/workflows) so
+# a fresh Studio checkout has something to look at. Never runs in prod; a
+# failure here is a warning, never a launch blocker — see seed_dev_data.py.
+if [ "$ENV" = "dev" ] && [ "$TARGET" = "studio" ]; then
+  python3 "$ROOT/scripts/seed_dev_data.py" || echo "  (seed data skipped)"
+fi
+
 case "$TARGET" in
   env)
     exit 0 ;;

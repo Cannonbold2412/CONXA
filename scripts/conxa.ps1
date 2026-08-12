@@ -56,6 +56,17 @@ Write-Host "  CONXA_UPDATE_CHANNEL = $($env:CONXA_UPDATE_CHANNEL)"
 Write-Host "  env file             = .env.$($env:CONXA_ENV)"
 Write-Host "-----------------------------------------------------------------"
 
+# Dev-only sample data (a Default group plus a seeded Sales group/workflows) so
+# a fresh Studio checkout has something to look at. Never runs in prod; a
+# failure here is a warning, never a launch blocker — see seed_dev_data.py.
+if ($Env -eq "dev" -and $Target -eq "studio") {
+  try {
+    python "$Root\scripts\seed_dev_data.py"
+  } catch {
+    Write-Host "  (seed data skipped: $_)"
+  }
+}
+
 $port = if ($env:PORT) { $env:PORT } else { "8000" }
 
 switch ($Target) {
