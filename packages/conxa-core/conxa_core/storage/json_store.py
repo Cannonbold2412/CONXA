@@ -28,7 +28,7 @@ def write_skill(skill_id: str, document: dict[str, Any]) -> Path:
         pass
     if is_update:
         try:
-            from conxa_core.storage.plugin_store import invalidate_workflow_test_by_skill  # noqa: PLC0415
+            from conxa_core.storage.workflow_store import invalidate_workflow_test_by_skill  # noqa: PLC0415
             invalidate_workflow_test_by_skill(skill_id)
         except Exception:  # noqa: BLE001
             pass
