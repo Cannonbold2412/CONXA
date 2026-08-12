@@ -39,7 +39,7 @@ class TrackingRoutesTests(unittest.TestCase):
     def _ingest(self, client: TestClient, company: str, rid: str, evts: list[dict]) -> None:
         res = client.post(
             f"/api/v1/tracking/{company}/events",
-            json={"rid": rid, "pid": "plug", "pv": "1.0.0", "rv": "2.0.0", "sv": 1, "evts": evts},
+            json={"rid": rid, "wfid": "plug", "wfv": "1.0.0", "rv": "2.0.0", "sv": 1, "evts": evts},
         )
         self.assertEqual(res.status_code, 202, res.text)
 
@@ -67,7 +67,7 @@ class TrackingRoutesTests(unittest.TestCase):
         timeline = client.get("/api/v1/tracking/acme/runs/run_ok")
         self.assertEqual(timeline.status_code, 200)
         tl = timeline.json()
-        self.assertEqual(tl["plugin_id"], "plug")
+        self.assertEqual(tl["workflow_id"], "plug")
         self.assertEqual([e["e"] for e in tl["timeline"]], ["wf_start", "wf_ok"])
 
     def test_timeline_unknown_run_404(self) -> None:

@@ -74,10 +74,10 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
     import subprocess
 
     from conxa_core.config import settings
-    from conxa_core.models.plugin import Plugin, PluginBuild
+    from conxa_core.models.workflow import SkillPack, SkillPackBuild
     from conxa_compile import installer_builder
-    from conxa_compile import plugin_builder
-    from conxa_core.storage import plugin_store
+    from conxa_compile import skill_package_builder
+    from conxa_core.storage import skill_pack_store
 
     skill_pack = tmp_path / "skill-packs" / "render"
     skill_pack.mkdir(parents=True)
@@ -86,18 +86,15 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
         encoding="utf-8",
     )
 
-    plugin = Plugin(
-        id="plugin-1",
-        slug="render",
-        name="Render",
+    pack = SkillPack(
         workspace_id="ws-1",
-        target_url="https://dashboard.render.com/login",
-        status="ready",
-        build=PluginBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
+        company_slug="render",
+        company_name="Render",
+        build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
     )
 
     def fail_rebuild(*args, **kwargs):
-        raise AssertionError("build_installer must not rebuild the plugin")
+        raise AssertionError("build_installer must not rebuild the skill package")
 
     studio_runtime_dir = tmp_path / ".conxa-build-studio" / "deps" / "conxa-runtime" / "runtime-v-local"
     studio_runtime_dir.mkdir(parents=True)
@@ -115,9 +112,9 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(plugin_builder, "build_plugin", fail_rebuild)
-    monkeypatch.setattr(plugin_store, "get_plugin", lambda plugin_id: plugin)
-    monkeypatch.setattr(plugin_store, "set_installer", lambda *args, **kwargs: None)
+    monkeypatch.setattr(skill_package_builder, "build_skill_package", fail_rebuild)
+    monkeypatch.setattr(skill_pack_store, "get_skill_pack", lambda workspace_id: pack)
+    monkeypatch.setattr(skill_pack_store, "set_installer", lambda *args, **kwargs: None)
     monkeypatch.setattr(installer_builder, "_find_makensis", lambda: "makensis")
     monkeypatch.setattr(installer_builder, "_find_studio_cache_runtime_dir", lambda: studio_runtime_dir)
     monkeypatch.setattr(installer_builder, "_stage_runtime_binary", fake_stage_runtime)
@@ -125,7 +122,7 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
 
     logs = []
     result = installer_builder.build_installer(
-        plugin.id,
+        pack.workspace_id,
         company_slug="render",
         realtime_sink=lambda event: logs.append(event["message"]),
     )
@@ -144,10 +141,10 @@ def test_build_installer_allows_missing_sync_token_for_local_dev_endpoint(tmp_pa
     import subprocess
 
     from conxa_core.config import settings
-    from conxa_core.models.plugin import Plugin, PluginBuild
+    from conxa_core.models.workflow import SkillPack, SkillPackBuild
     from conxa_compile import installer_builder
-    from conxa_compile import plugin_builder
-    from conxa_core.storage import plugin_store
+    from conxa_compile import skill_package_builder
+    from conxa_core.storage import skill_pack_store
 
     skill_pack = tmp_path / "skill-packs" / "render"
     skill_pack.mkdir(parents=True)
@@ -157,14 +154,11 @@ def test_build_installer_allows_missing_sync_token_for_local_dev_endpoint(tmp_pa
         encoding="utf-8",
     )
 
-    plugin = Plugin(
-        id="plugin-1",
-        slug="render",
-        name="Render",
+    pack = SkillPack(
         workspace_id="ws-1",
-        target_url="https://dashboard.render.com/login",
-        status="ready",
-        build=PluginBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
+        company_slug="render",
+        company_name="Render",
+        build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
     )
 
     studio_runtime_dir = tmp_path / ".conxa-build-studio-dev" / "deps" / "conxa-runtime" / "runtime-v-local"
@@ -183,15 +177,15 @@ def test_build_installer_allows_missing_sync_token_for_local_dev_endpoint(tmp_pa
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(plugin_builder, "build_plugin", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no rebuild")))
-    monkeypatch.setattr(plugin_store, "get_plugin", lambda plugin_id: plugin)
-    monkeypatch.setattr(plugin_store, "set_installer", lambda *args, **kwargs: None)
+    monkeypatch.setattr(skill_package_builder, "build_skill_package", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no rebuild")))
+    monkeypatch.setattr(skill_pack_store, "get_skill_pack", lambda workspace_id: pack)
+    monkeypatch.setattr(skill_pack_store, "set_installer", lambda *args, **kwargs: None)
     monkeypatch.setattr(installer_builder, "_find_makensis", lambda: "makensis")
     monkeypatch.setattr(installer_builder, "_find_studio_cache_runtime_dir", lambda: studio_runtime_dir)
     monkeypatch.setattr(installer_builder, "_stage_runtime_binary", fake_stage_runtime)
     monkeypatch.setattr(installer_builder.subprocess, "run", fake_run)
 
-    result = installer_builder.build_installer(plugin.id, company_slug="render")
+    result = installer_builder.build_installer(pack.workspace_id, company_slug="render")
 
     assert (tmp_path / "installers" / "Render-Agent-Setup.exe").is_file()
     assert result["version"] == "v9.9.9"
@@ -202,9 +196,9 @@ def test_build_installer_still_requires_sync_token_for_real_cloud_endpoint(tmp_p
     import pytest
 
     from conxa_core.config import settings
-    from conxa_core.models.plugin import Plugin, PluginBuild
+    from conxa_core.models.workflow import SkillPack, SkillPackBuild
     from conxa_compile import installer_builder
-    from conxa_core.storage import plugin_store
+    from conxa_core.storage import skill_pack_store
 
     skill_pack = tmp_path / "skill-packs" / "render"
     skill_pack.mkdir(parents=True)
@@ -214,26 +208,23 @@ def test_build_installer_still_requires_sync_token_for_real_cloud_endpoint(tmp_p
         encoding="utf-8",
     )
 
-    plugin = Plugin(
-        id="plugin-1",
-        slug="render",
-        name="Render",
+    pack = SkillPack(
         workspace_id="ws-1",
-        target_url="https://dashboard.render.com/login",
-        status="ready",
-        build=PluginBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
+        company_slug="render",
+        company_name="Render",
+        build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
     )
 
     studio_runtime_dir = tmp_path / ".conxa-build-studio" / "deps" / "conxa-runtime" / "runtime-v-local"
     studio_runtime_dir.mkdir(parents=True)
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(plugin_store, "get_plugin", lambda plugin_id: plugin)
+    monkeypatch.setattr(skill_pack_store, "get_skill_pack", lambda workspace_id: pack)
     monkeypatch.setattr(installer_builder, "_find_makensis", lambda: "makensis")
     monkeypatch.setattr(installer_builder, "_find_studio_cache_runtime_dir", lambda: studio_runtime_dir)
 
     with pytest.raises(RuntimeError, match="sync_token"):
-        installer_builder.build_installer(plugin.id, company_slug="render")
+        installer_builder.build_installer(pack.workspace_id, company_slug="render")
 
 
 def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeypatch):
@@ -244,10 +235,10 @@ def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeyp
     import subprocess
 
     from conxa_core.config import settings
-    from conxa_core.models.plugin import Plugin, PluginBuild
+    from conxa_core.models.workflow import SkillPack, SkillPackBuild
     from conxa_compile import installer_builder
-    from conxa_compile import plugin_builder
-    from conxa_core.storage import plugin_store
+    from conxa_compile import skill_package_builder
+    from conxa_core.storage import skill_pack_store
 
     skill_pack = tmp_path / "skill-packs" / "render"
     (skill_pack / "deploy").mkdir(parents=True)
@@ -258,10 +249,9 @@ def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeyp
     (skill_pack / "deploy" / "manifest.json").write_text('{"name":"deploy"}', encoding="utf-8")
     (skill_pack / "deploy" / "execution.json").write_text('{"steps":[]}', encoding="utf-8")
 
-    plugin = Plugin(
-        id="plugin-1", slug="render", name="Render", workspace_id="ws-1",
-        target_url="https://dashboard.render.com/login", status="ready",
-        build=PluginBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="0.3.0"),
+    pack = SkillPack(
+        workspace_id="ws-1", company_slug="render", company_name="Render",
+        build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="0.3.0"),
     )
 
     studio_runtime_dir = tmp_path / ".conxa-build-studio" / "deps" / "conxa-runtime" / "runtime-v-local"
@@ -293,15 +283,15 @@ def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeyp
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(plugin_builder, "build_plugin", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no rebuild")))
-    monkeypatch.setattr(plugin_store, "get_plugin", lambda plugin_id: plugin)
-    monkeypatch.setattr(plugin_store, "set_installer", lambda *args, **kwargs: None)
+    monkeypatch.setattr(skill_package_builder, "build_skill_package", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no rebuild")))
+    monkeypatch.setattr(skill_pack_store, "get_skill_pack", lambda workspace_id: pack)
+    monkeypatch.setattr(skill_pack_store, "set_installer", lambda *args, **kwargs: None)
     monkeypatch.setattr(installer_builder, "_find_makensis", lambda: "makensis")
     monkeypatch.setattr(installer_builder, "_find_studio_cache_runtime_dir", lambda: studio_runtime_dir)
     monkeypatch.setattr(installer_builder, "_stage_runtime_binary", fake_stage_runtime)
     monkeypatch.setattr(installer_builder, "_render_nsis_script", spy_render)
     monkeypatch.setattr(installer_builder.subprocess, "run", fake_run)
 
-    installer_builder.build_installer(plugin.id, company_slug="render")
+    installer_builder.build_installer(pack.workspace_id, company_slug="render")
 
     assert captured["staged_entries"] == ["pack.json"]

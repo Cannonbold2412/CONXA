@@ -60,11 +60,11 @@ def test_path_traversal_rejected(backend, bad):
     assert _last(out)["code"] == "invalid_input"
 
 
-def test_missing_plugin_reported(backend):
+def test_missing_workflow_reported(backend):
     b, out = backend
-    b.dispatch({"id": "4", "type": "list_workflows", "payload": {"plugin_id": "ghost"}})
+    b.dispatch({"id": "4", "type": "get_workflow", "payload": {"workflow_id": "ghost"}})
     assert _last(out)["type"] == "error"
-    assert _last(out)["code"] == "plugin_not_found"
+    assert _last(out)["code"] == "workflow_not_found"
 
 
 def test_validation_module():
@@ -285,19 +285,19 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
 
     publish_info = b._publish_skill_pack(
         company_slug="render",
-        plugin=SimpleNamespace(name="Render", target_url="https://dashboard.render.com", protected_url="https://dashboard.render.com/"),
+        company_name="Render",
         version="1.2.3",
         release_notes="Release message",
         sink=logs.append,
     )
 
     rewritten = json.loads((packs_dir / "pack.json").read_text(encoding="utf-8"))
-    # _installer_generation() probes GET /api/v1/plugins/generations first (via the
+    # _installer_generation() probes GET /api/v1/workflows/generations first (via the
     # same mocked urlopen); its GET has no body, so fake_urlopen's req.data.decode()
     # raises inside itself, which _cloud_json converts to _CommandError and
     # _installer_generation() catches, falling back to "v2" — the actual publish
     # POST happens second and is what `seen` reflects by the time we assert.
-    assert seen["url"] == "https://apis.conxa.in/api/v1/plugins/v2/render/skill-packs/upload"
+    assert seen["url"] == "https://apis.conxa.in/api/v1/workflows/v2/render/skill-packs/upload"
     assert seen["auth"] == "Bearer studio-token"
     assert seen["body"]["skill_pack_version"] == "1.2.3"
     assert seen["body"]["release_notes"] == "Release message"
@@ -308,7 +308,7 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
     # (already correctly versioned server-side) rather than reconstructed locally.
     assert rewritten["tracking"]["tracking_url"] == "https://internal.example/api/tracking/render/events"
     assert rewritten["tracking"]["tracking_token"] == "cloud-token"
-    assert rewritten["sync_endpoint"] == "https://apis.conxa.in/api/v1/plugins/v2/render/skill-packs/delta"
+    assert rewritten["sync_endpoint"] == "https://apis.conxa.in/api/v1/workflows/v2/render/skill-packs/delta"
     assert rewritten["sync_token"] == "sync-token"
     assert publish_info["slug"] == "render"
     assert publish_info["version"] == "1.2.3"
@@ -346,7 +346,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
     logs: list[dict] = []
     result = b._publish_skill_pack(
         company_slug="render",
-        plugin=SimpleNamespace(name="Render", target_url="", protected_url=""),
+        company_name="Render",
         version="1.0.0",
         release_notes="",
         sink=logs.append,
@@ -361,7 +361,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
     with pytest.raises(Exception, match="Cloud publish failed"):
         b._publish_skill_pack(
             company_slug="render",
-            plugin=SimpleNamespace(name="Render", target_url="", protected_url=""),
+            company_name="Render",
             version="1.0.0",
             release_notes="",
             sink=lambda _e: None,
@@ -375,12 +375,13 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
     b, _out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import create_plugin
+    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
+    from conxa_core.workspace import LOCAL_WORKSPACE_ID
     from services import installer_builder
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    plugin = create_plugin("Render", "https://dashboard.render.com")
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
 
     packs_dir = tmp_path / "skill-packs" / "render"
     packs_dir.mkdir(parents=True)
@@ -390,14 +391,14 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
 
     seen: dict[str, object] = {}
 
-    def fake_build(plugin_id, **kwargs):
-        seen["build_plugin_id"] = plugin_id
+    def fake_build(workspace_id, **kwargs):
+        seen["build_workspace_id"] = workspace_id
         seen["build"] = kwargs
         return {
-            "installer_path": str(tmp_path / "Render-Agent-Setup.exe"),
-            "filename": "Render-Agent-Setup.exe",
+            "installer_path": str(tmp_path / "Render-Setup.exe"),
+            "filename": "Render-Setup.exe",
             "company": kwargs["company_slug"],
-            "plugin_id": plugin_id,
+            "workspace_id": workspace_id,
             "version": kwargs["version"],
             "runtime_version": "v1.0.0",
             "release_notes": kwargs["release_notes"],
@@ -412,7 +413,6 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
 
     result = b.cmd_build_installer(
         {
-            "plugin_id": plugin.id,
             "company_slug": "render",
             "logo_path": "C:/logo.png",
             "version": "2.0.0",
@@ -434,15 +434,16 @@ def test_cmd_build_installer_requires_published_skill_pack(backend, monkeypatch,
     b, _out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import create_plugin
+    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
+    from conxa_core.workspace import LOCAL_WORKSPACE_ID
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    plugin = create_plugin("Render", "https://dashboard.render.com")
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
 
     with pytest.raises(Exception, match="Publish a skill pack release"):
         b.cmd_build_installer(
-            {"plugin_id": plugin.id, "company_slug": "render", "version": "1.0.0", "release_notes": "notes"},
+            {"company_slug": "render", "version": "1.0.0", "release_notes": "notes"},
             "rid",
         )
 
@@ -453,13 +454,14 @@ def test_cmd_build_installer_non_fatal_when_upload_fails(backend, monkeypatch, t
     b, _out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import create_plugin
+    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
+    from conxa_core.workspace import LOCAL_WORKSPACE_ID
     from handlers.protocol import _CommandError
     from services import installer_builder
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    plugin = create_plugin("Render", "https://dashboard.render.com")
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
 
     packs_dir = tmp_path / "skill-packs" / "render"
     packs_dir.mkdir(parents=True)
@@ -467,12 +469,12 @@ def test_cmd_build_installer_non_fatal_when_upload_fails(backend, monkeypatch, t
         json.dumps({"company": "render", "skills": [], "sync_token": "sync-token"}), encoding="utf-8"
     )
 
-    def fake_build(plugin_id, **kwargs):
+    def fake_build(workspace_id, **kwargs):
         return {
-            "installer_path": str(tmp_path / "Render-Agent-Setup.exe"),
-            "filename": "Render-Agent-Setup.exe",
+            "installer_path": str(tmp_path / "Render-Setup.exe"),
+            "filename": "Render-Setup.exe",
             "company": kwargs["company_slug"],
-            "plugin_id": plugin_id,
+            "workspace_id": workspace_id,
             "version": kwargs["version"],
             "runtime_version": "v1.0.0",
             "release_notes": kwargs["release_notes"],
@@ -485,27 +487,27 @@ def test_cmd_build_installer_non_fatal_when_upload_fails(backend, monkeypatch, t
     monkeypatch.setattr(b, "_upload_installer_for_download", fake_upload_fails)
 
     result = b.cmd_build_installer(
-        {"plugin_id": plugin.id, "company_slug": "render", "version": "1.0.0", "release_notes": "notes"},
+        {"company_slug": "render", "version": "1.0.0", "release_notes": "notes"},
         "rid",
     )
 
     assert result["cloud_upload_error"] == "installer_upload_failed"
     assert "connection refused" in result["cloud_upload_error_message"]
-    assert result["installer_path"] == str(tmp_path / "Render-Agent-Setup.exe")
+    assert result["installer_path"] == str(tmp_path / "Render-Setup.exe")
 
 
-def test_auth_stop_recording_marks_plugin_ready(backend, monkeypatch, tmp_path):
+def test_auth_stop_recording_marks_workflow_ready(backend, monkeypatch, tmp_path):
     b, _out = backend
     globals_ = b.cmd_stop_recording.__globals__
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import create_plugin, get_plugin
+    from conxa_core.storage.workflow_store import create_workflow, get_workflow
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    plugin = create_plugin("Example Plugin", "https://example.test/login")
-    auth_path = tmp_path / "plugins" / plugin.id / "auth" / "auth.json"
+    workflow = create_workflow("Example Workflow", "https://example.test/login")
+    auth_path = tmp_path / "workflows" / workflow.id / "auth" / "auth.json"
 
     class FakeContext:
         def storage_state(self, path: str) -> None:
@@ -541,12 +543,12 @@ def test_auth_stop_recording_marks_plugin_ready(backend, monkeypatch, tmp_path):
     monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
 
     result = b.cmd_stop_recording(
-        {"plugin_id": plugin.id, "session_id": "sess-1", "auth_mode": True},
+        {"workflow_id": workflow.id, "session_id": "sess-1", "auth_mode": True},
         "rid",
     )
 
-    updated = get_plugin(plugin.id)
-    assert result["plugin_status"] == "ready"
+    updated = get_workflow(workflow.id)
+    assert result["workflow_status"] == "ready"
     assert result["storage_state_saved"] is True
     assert result["protected_url"] == "https://example.test/dashboard"
     assert updated is not None
@@ -560,13 +562,13 @@ def test_auth_stop_recording_uses_autosaved_state_after_browser_close(backend, m
     globals_ = b.cmd_stop_recording.__globals__
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import create_plugin, get_plugin
+    from conxa_core.storage.workflow_store import create_workflow, get_workflow
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    plugin = create_plugin("Closed Browser Plugin", "https://example.test/login")
-    auth_path = tmp_path / "plugins" / plugin.id / "auth" / "auth.json"
+    workflow = create_workflow("Closed Browser Workflow", "https://example.test/login")
+    auth_path = tmp_path / "workflows" / workflow.id / "auth" / "auth.json"
     auth_path.parent.mkdir(parents=True)
     auth_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
 
@@ -594,12 +596,12 @@ def test_auth_stop_recording_uses_autosaved_state_after_browser_close(backend, m
     monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
 
     result = b.cmd_stop_recording(
-        {"plugin_id": plugin.id, "session_id": "sess-closed", "auth_mode": True},
+        {"workflow_id": workflow.id, "session_id": "sess-closed", "auth_mode": True},
         "rid",
     )
 
-    updated = get_plugin(plugin.id)
-    assert result["plugin_status"] == "ready"
+    updated = get_workflow(workflow.id)
+    assert result["workflow_status"] == "ready"
     assert result["storage_state_saved"] is True
     assert result["protected_url"] == "https://example.test/app"
     assert updated is not None
@@ -607,52 +609,52 @@ def test_auth_stop_recording_uses_autosaved_state_after_browser_close(backend, m
     assert updated.status == "ready"
 
 
-def test_delete_plugin_removes_metadata_and_artifact_dir(monkeypatch, tmp_path):
+def test_delete_workflow_removes_metadata_and_artifact_dir(monkeypatch, tmp_path):
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import create_plugin, delete_plugin, get_plugin
+    from conxa_core.storage.workflow_store import create_workflow, delete_workflow, get_workflow
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    plugin = create_plugin("Delete Me", "https://example.test")
-    plugin_file = tmp_path / "plugins" / f"{plugin.id}.json"
-    plugin_dir = tmp_path / "plugins" / plugin.id
-    auth_file = plugin_dir / "auth" / "auth.json"
+    workflow = create_workflow("Delete Me", "https://example.test")
+    workflow_file = tmp_path / "workflows" / f"{workflow.id}.json"
+    workflow_dir = tmp_path / "workflows" / workflow.id
+    auth_file = workflow_dir / "auth" / "auth.json"
     auth_file.parent.mkdir(parents=True)
     auth_file.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
 
-    assert plugin_file.is_file()
+    assert workflow_file.is_file()
     assert auth_file.is_file()
 
-    assert delete_plugin(plugin.id) is True
-    assert get_plugin(plugin.id) is None
-    assert not plugin_file.exists()
-    assert not plugin_dir.exists()
-    assert delete_plugin(plugin.id) is False
+    assert delete_workflow(workflow.id) is True
+    assert get_workflow(workflow.id) is None
+    assert not workflow_file.exists()
+    assert not workflow_dir.exists()
+    assert delete_workflow(workflow.id) is False
 
 
-def test_delete_plugin_command_is_idempotent_for_stale_renderer_rows(backend, monkeypatch, tmp_path):
+def test_delete_workflow_command_is_idempotent_for_stale_renderer_rows(backend, monkeypatch, tmp_path):
     b, _out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import create_plugin
+    from conxa_core.storage.workflow_store import create_workflow
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    plugin = create_plugin("Delete Me", "https://example.test")
+    workflow = create_workflow("Delete Me", "https://example.test")
 
-    assert b.cmd_delete_plugin({"plugin_id": plugin.id}, "rid") == {"deleted": True}
-    assert b.cmd_delete_plugin({"plugin_id": plugin.id}, "rid") == {"deleted": False}
+    assert b.cmd_delete_workflow({"workflow_id": workflow.id}, "rid") == {"deleted": True}
+    assert b.cmd_delete_workflow({"workflow_id": workflow.id}, "rid") == {"deleted": False}
 
 
-def test_compile_derives_title_from_plugin_workflow_and_marks_compiled(
+def test_compile_derives_title_from_workflow_and_marks_compiled(
     backend, monkeypatch, tmp_path
 ):
     b, out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import add_workflow, create_plugin, get_plugin
+    from conxa_core.storage.workflow_store import create_workflow, get_workflow, set_recording
     import conxa_compile.compiler.build as compiler_build
     import conxa_compile.pipeline.run as pipeline_run
     import conxa_core.storage.session_events as session_events
@@ -680,9 +682,8 @@ def test_compile_derives_title_from_plugin_workflow_and_marks_compiled(
     monkeypatch.setattr(session_events, "read_session_events", lambda session_id: [{"type": "click"}])
     monkeypatch.setattr(pipeline_run, "run_pipeline", lambda raw: raw)
 
-    plugin = create_plugin("Example Plugin", "https://example.test")
-    added = add_workflow(plugin.id, "Submit Invoice", "sess-compile")
-    assert added is not None
+    workflow = create_workflow("Submit Invoice", "https://example.test")
+    set_recording(workflow.id, "sess-compile")
 
     captured: dict[str, object] = {}
 
@@ -720,20 +721,19 @@ def test_compile_derives_title_from_plugin_workflow_and_marks_compiled(
     monkeypatch.setattr(compiler_build, "compile_skill_package", fake_compile_skill_package)
 
     result = b.cmd_compile(
-        {"plugin_id": plugin.id, "session_id": "sess-compile"},
+        {"workflow_id": workflow.id, "session_id": "sess-compile"},
         "compile-request",
     )
 
     assert result["skill_id"] == "skill_sess-compile"
     assert result["compile_status"] == "ok"
     assert captured["title"] == "Submit Invoice"
-    updated = get_plugin(plugin.id)
+    updated = get_workflow(workflow.id)
     assert updated is not None
-    workflow = updated.workflows[0]
-    assert workflow.status == "compiled"
-    assert workflow.skill_id == "skill_sess-compile"
-    assert workflow.compile_status == "ok"
-    assert workflow.compile_min_confidence == 1.0
+    assert updated.recording_status == "compiled"
+    assert updated.skill_id == "skill_sess-compile"
+    assert updated.compile_status == "ok"
+    assert updated.compile_min_confidence == 1.0
     assert any(
         event.get("type") == "event"
         and event.get("id") == "compile-request"
@@ -749,7 +749,7 @@ def test_recompile_reserves_compile_credit_not_human_edit(backend, monkeypatch, 
     b, out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import add_workflow, create_plugin, save_plugin
+    from conxa_core.storage.workflow_store import create_workflow, set_recording
     import conxa_compile.compiler.build as compiler_build
     import conxa_compile.pipeline.run as pipeline_run
     import conxa_core.storage.session_events as session_events
@@ -799,15 +799,14 @@ def test_recompile_reserves_compile_credit_not_human_edit(backend, monkeypatch, 
         ),
     )
 
-    plugin = create_plugin("Example Plugin", "https://example.test")
-    added = add_workflow(plugin.id, "Submit Invoice", "sess-recompile")
-    assert added is not None
-    plugin, workflow = added
+    workflow = create_workflow("Submit Invoice", "https://example.test")
+    workflow = set_recording(workflow.id, "sess-recompile")
     workflow.skill_id = "skill_sess-recompile"
-    save_plugin(plugin)
+    from conxa_core.storage.workflow_store import save_workflow
+    save_workflow(workflow)
 
     result = b.cmd_compile(
-        {"plugin_id": plugin.id, "session_id": "sess-recompile", "mode": "recompile"},
+        {"workflow_id": workflow.id, "session_id": "sess-recompile", "mode": "recompile"},
         "recompile-request",
     )
 
@@ -818,67 +817,63 @@ def test_recompile_reserves_compile_credit_not_human_edit(backend, monkeypatch, 
 
 
 def test_sign_off_auto_builds_when_all_workflows_ready(backend, monkeypatch, tmp_path):
-    """Sign-off should trigger build_plugin the moment its own gate (every workflow
-    compiled + edited) is satisfied, without a separate Build Plugin page visit."""
+    """Sign-off should trigger build_skill_package the moment its own gate (every
+    workflow in the workspace compiled + edited) is satisfied, without a separate
+    Build Skill Package page visit."""
     b, out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import add_workflow, create_plugin, get_plugin, save_plugin
-    import conxa_compile.plugin_builder as plugin_builder
+    from conxa_core.storage.workflow_store import create_workflow, get_workflow, save_workflow
+    import conxa_compile.skill_package_builder as skill_package_builder
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
     build_calls: list[str] = []
     monkeypatch.setattr(
-        plugin_builder, "build_plugin", lambda plugin_id, **kwargs: build_calls.append(plugin_id)
+        skill_package_builder, "build_skill_package", lambda workspace_id, **kwargs: build_calls.append(workspace_id)
     )
 
-    plugin = create_plugin("Acme", "https://acme.test")
-    added = add_workflow(plugin.id, "Send Invoice", "sess-1")
-    assert added is not None
-
-    p = get_plugin(plugin.id)
-    p.workflows[0].skill_id = "skill_sess-1"
-    p.workflows[0].status = "compiled"
-    save_plugin(p)
+    workflow = create_workflow("Send Invoice", "https://acme.test")
+    workflow = get_workflow(workflow.id)
+    workflow.skill_id = "skill_sess-1"
+    workflow.recording_status = "compiled"
+    save_workflow(workflow)
 
     result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-1")
 
     assert result == {"skill_id": "skill_sess-1", "signed_off": True, "built": True, "waiting_on": []}
-    assert build_calls == [plugin.id]
+    assert build_calls == [workflow.workspace_id]
 
-    updated = get_plugin(plugin.id)
-    assert updated.workflows[0].signed_off is True
-    assert updated.workflows[0].edited_at is not None
+    updated = get_workflow(workflow.id)
+    assert updated.signed_off is True
+    assert updated.edited_at is not None
 
 
 def test_sign_off_reports_waiting_on_other_workflows_without_building(backend, monkeypatch, tmp_path):
-    """Approving one workflow in a multi-workflow plugin must not build until every
-    workflow in the plugin is compiled and signed off."""
+    """Approving one workflow must not build until every workflow in the
+    workspace is compiled and signed off."""
     b, out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import add_workflow, create_plugin, get_plugin, save_plugin
-    import conxa_compile.plugin_builder as plugin_builder
+    from conxa_core.storage.workflow_store import create_workflow, get_workflow, save_workflow
+    import conxa_compile.skill_package_builder as skill_package_builder
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
     build_calls: list[str] = []
     monkeypatch.setattr(
-        plugin_builder, "build_plugin", lambda plugin_id, **kwargs: build_calls.append(plugin_id)
+        skill_package_builder, "build_skill_package", lambda workspace_id, **kwargs: build_calls.append(workspace_id)
     )
 
-    plugin = create_plugin("Acme", "https://acme.test")
-    add_workflow(plugin.id, "Send Invoice", "sess-1")
-    add_workflow(plugin.id, "Cancel Invoice", "sess-2")
+    wf1 = create_workflow("Send Invoice", "https://acme.test")
+    create_workflow("Cancel Invoice", "https://acme.test")  # recorded but never compiled
 
-    p = get_plugin(plugin.id)
-    p.workflows[0].skill_id = "skill_sess-1"
-    p.workflows[0].status = "compiled"
-    # Second workflow recorded but never compiled — no skill_id, no edited_at.
-    save_plugin(p)
+    wf1 = get_workflow(wf1.id)
+    wf1.skill_id = "skill_sess-1"
+    wf1.recording_status = "compiled"
+    save_workflow(wf1)
 
     result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-2")
 
@@ -888,10 +883,10 @@ def test_sign_off_reports_waiting_on_other_workflows_without_building(backend, m
     assert build_calls == []
 
     # The workflow being signed off still gets its own fields set even though the
-    # plugin as a whole isn't ready to build yet.
-    updated = get_plugin(plugin.id)
-    assert updated.workflows[0].signed_off is True
-    assert updated.workflows[0].edited_at is not None
+    # workspace as a whole isn't ready to build yet.
+    updated = get_workflow(wf1.id)
+    assert updated.signed_off is True
+    assert updated.edited_at is not None
 
 
 def test_sign_off_surfaces_build_failure_without_failing_the_sign_off(backend, monkeypatch, tmp_path):
@@ -900,23 +895,22 @@ def test_sign_off_surfaces_build_failure_without_failing_the_sign_off(backend, m
     b, out = backend
 
     from conxa_core.config import settings
-    from conxa_core.storage.plugin_store import add_workflow, create_plugin, get_plugin, save_plugin
-    import conxa_compile.plugin_builder as plugin_builder
+    from conxa_core.storage.workflow_store import create_workflow, get_workflow, save_workflow
+    import conxa_compile.skill_package_builder as skill_package_builder
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    def _boom(plugin_id, **kwargs):
+    def _boom(workspace_id, **kwargs):
         raise ValueError("disk full")
 
-    monkeypatch.setattr(plugin_builder, "build_plugin", _boom)
+    monkeypatch.setattr(skill_package_builder, "build_skill_package", _boom)
 
-    plugin = create_plugin("Acme", "https://acme.test")
-    add_workflow(plugin.id, "Send Invoice", "sess-1")
-    p = get_plugin(plugin.id)
-    p.workflows[0].skill_id = "skill_sess-1"
-    p.workflows[0].status = "compiled"
-    save_plugin(p)
+    workflow = create_workflow("Send Invoice", "https://acme.test")
+    workflow = get_workflow(workflow.id)
+    workflow.skill_id = "skill_sess-1"
+    workflow.recording_status = "compiled"
+    save_workflow(workflow)
 
     result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-3")
 
@@ -924,5 +918,5 @@ def test_sign_off_surfaces_build_failure_without_failing_the_sign_off(backend, m
     assert result["built"] is False
     assert "disk full" in result["build_error"]
 
-    updated = get_plugin(plugin.id)
-    assert updated.workflows[0].signed_off is True
+    updated = get_workflow(workflow.id)
+    assert updated.signed_off is True

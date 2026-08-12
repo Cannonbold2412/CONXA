@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from conxa_core.config import settings
-from conxa_compile import plugin_builder
+from conxa_compile import skill_package_builder_output
 
 
 def _seed_skill_dir(bundle_root, slug: str, *, with_fingerprint: bool) -> None:
@@ -45,13 +45,14 @@ def test_manifest_carries_structural_fingerprint(tmp_path, monkeypatch) -> None:
     bundle_root = tmp_path / "bundle"
     _seed_skill_dir(bundle_root, "checkout", with_fingerprint=True)
 
-    plugin_builder._write_skill_packs_format(
+    skill_package_builder_output._write_skill_packs_format(
         bundle_root=bundle_root,
-        bundle_slug="acme",
-        plugin_name="Acme",
+        company_slug="acme",
+        company_name="Acme",
         target_url="https://acme.test",
         protected_url="",
         skill_slugs=["checkout"],
+        skill_target_urls={"checkout": "https://acme.test"},
         version="1.0.0",
     )
 
@@ -66,13 +67,14 @@ def test_manifest_fingerprint_defaults_empty_when_absent(tmp_path, monkeypatch) 
     bundle_root = tmp_path / "bundle"
     _seed_skill_dir(bundle_root, "login", with_fingerprint=False)
 
-    plugin_builder._write_skill_packs_format(
+    skill_package_builder_output._write_skill_packs_format(
         bundle_root=bundle_root,
-        bundle_slug="acme",
-        plugin_name="Acme",
+        company_slug="acme",
+        company_name="Acme",
         target_url="https://acme.test",
         protected_url="",
         skill_slugs=["login"],
+        skill_target_urls={"login": "https://acme.test"},
         version="1.0.0",
     )
 

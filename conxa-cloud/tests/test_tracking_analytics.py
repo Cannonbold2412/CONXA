@@ -32,12 +32,12 @@ _NOW = 1_760_000_000.0  # fixed epoch seconds so bucket/heatmap assertions are s
 
 def _record(
     company: str = "acme",
-    plugin_id: str = "checkout",
+    workflow_id: str = "checkout",
     events: list[dict] | None = None,
     *,
     status: str = "ok",
     at: float = _NOW,
-    plugin_ver: str = "1.0.0",
+    workflow_ver: str = "1.0.0",
     duration_ms: int = 1000,
     total_steps: int = 3,
     recovered_steps: int = 0,
@@ -49,8 +49,8 @@ def _record(
         "company": company,
         "summary": {
             "run_id": run_id,
-            "plugin_id": plugin_id,
-            "plugin_ver": plugin_ver,
+            "workflow_id": workflow_id,
+            "workflow_ver": workflow_ver,
             "status": status,
             "duration_ms": duration_ms,
             "total_steps": total_steps,
@@ -285,8 +285,8 @@ def test_workflow_analytics_computes_percentiles_and_rates():
 
 def test_workflow_analytics_breaks_down_by_version_newest_first():
     day = 86_400
-    records = [_record(plugin_ver="0.2.0", at=_NOW - (2 * day), run_id=f"old{i}") for i in range(3)]
-    records += [_record(plugin_ver="0.3.0", status="fail", failed_step_id=0, run_id=f"new{i}") for i in range(2)]
+    records = [_record(workflow_ver="0.2.0", at=_NOW - (2 * day), run_id=f"old{i}") for i in range(3)]
+    records += [_record(workflow_ver="0.3.0", status="fail", failed_step_id=0, run_id=f"new{i}") for i in range(2)]
     row = workflow_analytics(records)[0]
     assert [v["version"] for v in row["versions"]] == ["0.3.0", "0.2.0"]
     assert row["versions"][0]["success_rate"] == 0.0
@@ -523,9 +523,9 @@ def _insight_ids(rows: list[dict]) -> set[str]:
 
 def test_insights_flags_a_version_regression():
     day = 86_400
-    records = [_record(plugin_ver="0.2.0", at=_NOW - (2 * day), run_id=f"old{i}") for i in range(6)]
+    records = [_record(workflow_ver="0.2.0", at=_NOW - (2 * day), run_id=f"old{i}") for i in range(6)]
     records += [
-        _record(plugin_ver="0.3.0", status="fail", failed_step_id=0, run_id=f"new{i}")
+        _record(workflow_ver="0.3.0", status="fail", failed_step_id=0, run_id=f"new{i}")
         for i in range(6)
     ]
     workflows = workflow_analytics(records)
@@ -581,8 +581,8 @@ def test_insights_stays_silent_for_a_workspace_with_no_telemetry():
 
 def test_insights_orders_critical_before_warning_before_info():
     day = 86_400
-    records = [_record(plugin_ver="0.2.0", at=_NOW - (2 * day), run_id=f"old{i}") for i in range(6)]
-    records += [_record(plugin_ver="0.3.0", status="fail", failed_step_id=0, run_id=f"n{i}") for i in range(6)]
+    records = [_record(workflow_ver="0.2.0", at=_NOW - (2 * day), run_id=f"old{i}") for i in range(6)]
+    records += [_record(workflow_ver="0.3.0", status="fail", failed_step_id=0, run_id=f"n{i}") for i in range(6)]
     rows = insights(
         workflows=workflow_analytics(records), assertion_rows=[], drift_rows=[],
         failure_rows=[], tier_totals={}, stale_runtimes=3,

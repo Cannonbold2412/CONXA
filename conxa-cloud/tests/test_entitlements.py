@@ -77,7 +77,6 @@ def test_compile_reserve_commit_release_idempotency(monkeypatch, tmp_path):
 
     body = {
         "reservation_id": "cmp_test_one",
-        "plugin_id": "plugin_1",
         "workflow_id": "wf_1",
         "session_id": "sess_1",
     }
@@ -201,19 +200,19 @@ def test_installer_upload_duplicate_version_rejected_but_new_slug_allowed(monkey
     _set_plan("free")
 
     first = client.post(
-        "/api/v1/plugins/slug-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
+        "/api/v1/workflows/slug-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
         content=b"MZfirst",
     )
     duplicate = client.post(
-        "/api/v1/plugins/slug-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=Duplicate",
+        "/api/v1/workflows/slug-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=Duplicate",
         content=b"MZduplicate",
     )
     update = client.post(
-        "/api/v1/plugins/slug-one/installer/upload?filename=Setup.exe&version=1.0.1&release_notes=Second",
+        "/api/v1/workflows/slug-one/installer/upload?filename=Setup.exe&version=1.0.1&release_notes=Second",
         content=b"MZsecond",
     )
     another_slug = client.post(
-        "/api/v1/plugins/slug-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
+        "/api/v1/workflows/slug-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
         content=b"MZother",
     )
 
@@ -226,7 +225,7 @@ def test_installer_upload_duplicate_version_rejected_but_new_slug_allowed(monkey
 
 def _publish(slug: str, version: str, skills: list[str]):
     return client.post(
-        "/api/v1/plugins/publish",
+        "/api/v1/workflows/publish",
         json={"slug": slug, "skill_pack_version": version, "skills": skills, "files": []},
     )
 
@@ -292,11 +291,11 @@ def test_distribution_gating_on_installer_upload(monkeypatch, tmp_path):
     _set_plan("free")
 
     internal_ok = client.post(
-        "/api/v1/plugins/dist-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x",
+        "/api/v1/workflows/dist-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x",
         content=b"MZinternal",
     )
     external_blocked = client.post(
-        "/api/v1/plugins/dist-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
+        "/api/v1/workflows/dist-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
         content=b"MZexternal",
     )
 
@@ -306,18 +305,18 @@ def test_distribution_gating_on_installer_upload(monkeypatch, tmp_path):
 
     _set_plan("starter")
     starter_external_ok = client.post(
-        "/api/v1/plugins/dist-starter/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
+        "/api/v1/workflows/dist-starter/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
         content=b"MZstarterexternal",
     )
     assert starter_external_ok.status_code == 200, starter_external_ok.text
 
     _set_plan("pro")
     external_ok = client.post(
-        "/api/v1/plugins/dist-three/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
+        "/api/v1/workflows/dist-three/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
         content=b"MZexternal2",
     )
     white_label_blocked = client.post(
-        "/api/v1/plugins/dist-four/installer/upload"
+        "/api/v1/workflows/dist-four/installer/upload"
         "?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external&white_label=true",
         content=b"MZbranded",
     )
@@ -328,7 +327,7 @@ def test_distribution_gating_on_installer_upload(monkeypatch, tmp_path):
 
     _set_plan("enterprise", distribution="external", white_label=True)
     white_label_ok = client.post(
-        "/api/v1/plugins/dist-five/installer/upload"
+        "/api/v1/workflows/dist-five/installer/upload"
         "?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external&white_label=true",
         content=b"MZbranded2",
     )

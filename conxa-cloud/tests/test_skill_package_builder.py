@@ -1,4 +1,4 @@
-"""Tests for app/services/plugin_builder.py — Phase 1 (Foundation)."""
+"""Tests for conxa_compile/skill_package_builder.py — Phase 1 (Foundation)."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ import re
 import pytest
 from PIL import Image
 
-from conxa_compile.plugin_builder import build_plugin
-from conxa_compile.plugin_builder_output import (
+from conxa_compile.skill_package_builder import build_skill_package
+from conxa_compile.skill_package_builder_output import (
     _clean_stale_artifacts,
-    _copy_plugin_templates,
+    _copy_skill_package_templates,
     _render_license,
     _render_readme,
 )
 from conxa_compile.editor.action_registry import is_supported_action
-from conxa_compile.plugin_builder_saved_skill import (
+from conxa_compile.skill_package_builder_saved_skill import (
     _build_workflow_from_saved_skill,
     _is_login_step,
     _merge_saved_inputs_with_execution_placeholders,
@@ -34,7 +34,7 @@ from conxa_compile.plugin_builder_saved_skill import (
 # ─────────────────────────────────────────────────
 
 class TestRenderReadme:
-    def test_contains_plugin_name(self):
+    def test_contains_company_name(self):
         md = _render_readme("Render.com", "render_abc", "https://render.com", ["deploy"])
         assert "Render.com" in md
 
@@ -61,12 +61,12 @@ class TestRenderReadme:
         assert "auth" in md.lower()
 
 
-class TestPluginTemplateCopy:
+class TestSkillPackageTemplateCopy:
     def test_does_not_write_credentials_example(self, tmp_path):
-        _copy_plugin_templates(
+        _copy_skill_package_templates(
             tmp_path,
-            plugin_name="Test",
-            plugin_slug="test",
+            company_name="Test",
+            bundle_slug="test",
             target_url="https://example.com",
             version="0.1.0",
             skill_slugs=[],
@@ -357,11 +357,11 @@ class TestBranchStepSerialization:
 
 
 # ─────────────────────────────────────────────────
-# plugin.json structure (integration-level)
+# skill_package.json structure (integration-level)
 # ─────────────────────────────────────────────────
 
-class TestPluginConfigStructure:
-    """Validates the structure that build_plugin would write to plugin.json."""
+class TestSkillPackageConfigStructure:
+    """Validates the structure that build_skill_package would write to skill_package.json."""
 
     def _make_config(
         self,
@@ -703,14 +703,14 @@ class TestSavedSkillJsonBuild:
         ]
 
     def test_saved_skill_recovery_writes_visual_refs_from_saved_step_screenshots(self, tmp_path, monkeypatch):
-        import conxa_compile.plugin_builder_saved_skill as plugin_builder_saved_skill
+        import conxa_compile.skill_package_builder_saved_skill as skill_package_builder_saved_skill
 
         data_dir = tmp_path / "data"
         image_dir = data_dir / "sessions" / "sess_visual" / "images"
         image_dir.mkdir(parents=True)
         source_image = image_dir / "click.jpg"
         Image.new("RGB", (120, 80), "white").save(source_image)
-        monkeypatch.setattr(plugin_builder_saved_skill, "resolve_skill_asset", lambda rel: data_dir / rel)
+        monkeypatch.setattr(skill_package_builder_saved_skill, "resolve_skill_asset", lambda rel: data_dir / rel)
 
         saved_skill = {
             "meta": {
@@ -921,27 +921,22 @@ class TestSavedSkillJsonBuild:
             }
         ]
 
-    def test_build_plugin_prefers_saved_skill_over_original_recording(self, tmp_path, monkeypatch):
+    def test_build_skill_package_prefers_saved_skill_over_original_recording(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
-        import conxa_compile.plugin_builder as plugin_builder
+        import conxa_compile.skill_package_builder as skill_package_builder
 
-        plugin = SimpleNamespace(
-            id="plugin123456",
-            name="Render",
+        workspace_id = "wrk_test"
+        pack = SimpleNamespace(company_slug="render", company_name="Render")
+        workflow = SimpleNamespace(
+            id="wf1",
+            workspace_id=workspace_id,
+            slug="delete_database",
+            name="Delete Database",
+            session_id="workflow-session",
+            skill_id="skill_saved",
+            edited_at=1,
             target_url="https://dashboard.render.com",
             protected_url="https://dashboard.render.com/",
-            protected_url_marker_text="",
-            auth=None,
-            workflows=[
-                SimpleNamespace(
-                    id="wf1",
-                    slug="delete_database",
-                    name="Delete Database",
-                    session_id="workflow-session",
-                    skill_id="skill_saved",
-                    edited_at=1,
-                )
-            ],
         )
         saved_skill = {
             "meta": {
@@ -963,12 +958,13 @@ class TestSavedSkillJsonBuild:
                 }
             ],
         }
-        monkeypatch.setattr(plugin_builder, "get_plugin", lambda _plugin_id: plugin)
-        monkeypatch.setattr(plugin_builder, "read_skill", lambda skill_id: saved_skill if skill_id == "skill_saved" else None)
-        monkeypatch.setattr(plugin_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
-        monkeypatch.setattr(plugin_builder, "set_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, company_name=None: pack)
+        monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [workflow])
+        monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: saved_skill if skill_id == "skill_saved" else None)
+        monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
+        monkeypatch.setattr(skill_package_builder, "set_build", lambda *args, **kwargs: None)
 
-        build_plugin("plugin123456")
+        build_skill_package(workspace_id, company_name="Render")
 
         execution_raw = (tmp_path / "skills" / "delete_database" / "execution.json").read_text(encoding="utf-8")
         assert "{{service_name}}" in execution_raw
@@ -980,16 +976,14 @@ class TestSavedSkillJsonBuild:
         assert not (tmp_path / "sessions").exists()
         assert not any(path.name == "events.jsonl" for path in tmp_path.rglob("*"))
 
-        # v2 manifest fields written by build_plugin
-        manifest = json.loads((tmp_path / "plugin.json").read_text(encoding="utf-8"))
+        # v2 manifest fields written by build_skill_package
+        manifest = json.loads((tmp_path / "skill_package.json").read_text(encoding="utf-8"))
         assert manifest["package_format"] == 2
         assert manifest["id"]  # falls back to bundle slug when package_id unset
-        assert manifest["visibility"] == "private"
-        assert manifest["tags"] == []
         assert manifest["auth_requirements"] == {"kind": "cookie", "manual_login": True}
         assert manifest["runtime_min_version"] == "1.0.0"
 
-        # Per-plugin Claude.md points at the conxa MCP runtime flow, not the deleted npm CLI.
+        # Claude.md points at the conxa MCP runtime flow, not the deleted npm CLI.
         claude_md = (tmp_path / "Claude.md").read_text(encoding="utf-8")
         assert "conxa" in claude_md
         assert "npx -y conxa install" not in claude_md
