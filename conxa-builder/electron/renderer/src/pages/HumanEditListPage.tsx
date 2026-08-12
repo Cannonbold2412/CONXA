@@ -1,7 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { fetchPlugin, type PluginWorkflow } from '@/api/pluginApi'
-import { PluginSwitcher, useSelectedPluginId } from '@/components/PluginSwitcher'
+import { fetchWorkflows, normalizeWorkflowList, type Workflow } from '@/api/workflowsApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { WorkflowStageBadge, type WorkflowStage } from '@/components/StagePath'
 import { Button } from '@/components/ui/button'
@@ -20,7 +19,7 @@ const STAGE_PRIORITY: Record<WorkflowStage, number> = {
   ready_to_compile: 5,
 }
 
-function confidenceLabel(wf: PluginWorkflow): string | null {
+function confidenceLabel(wf: Workflow): string | null {
   if (wf.compile_min_confidence == null) return null
   const pct = Math.round(wf.compile_min_confidence * 100)
   if (wf.compile_status === 'ok') return `${pct}% confidence`
@@ -30,27 +29,24 @@ function confidenceLabel(wf: PluginWorkflow): string | null {
 
 export function HumanEditListPage() {
   const navigate = useNavigate()
-  const pluginId = useSelectedPluginId()
 
   const q = useQuery({
-    queryKey: ['plugin', pluginId],
-    queryFn: () => fetchPlugin(pluginId!),
+    queryKey: ['workflows'],
+    queryFn: fetchWorkflows,
     staleTime: 5_000,
-    enabled: !!pluginId,
   })
 
-  const compiled = (q.data?.plugin.workflows ?? [])
+  const compiled = normalizeWorkflowList(q.data)
     .filter((wf) => wf.skill_id)
     .sort((a, b) => STAGE_PRIORITY[a.stage] - STAGE_PRIORITY[b.stage])
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Human Edit" description="Confirm and repair what Conxa learned, then approve." />
-      <PluginSwitcher />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {!pluginId || q.isLoading ? (
-          <p className="px-6 py-6 text-sm text-zinc-500">{!pluginId ? 'Select an automation above to review its workflows.' : 'Loading…'}</p>
+        {q.isLoading ? (
+          <p className="px-6 py-6 text-sm text-zinc-500">Loading…</p>
         ) : q.isError || !q.data ? (
           <p className="px-6 py-6 text-sm text-red-400">{(q.error as Error)?.message ?? 'Not found'}</p>
         ) : compiled.length === 0 ? (

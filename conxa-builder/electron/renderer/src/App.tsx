@@ -7,20 +7,20 @@ import { LoginOverlay } from '@/components/LoginOverlay'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { BootstrapScreen } from '@/pages/BootstrapScreen'
 import { UpdateRequiredScreen } from '@/pages/UpdateRequiredScreen'
+import { useSelectionStore } from '@/store/selectionStore'
 
 // Pages
-import { PluginDetailPage } from '@/pages/PluginDetailPage'
+import { WorkflowPage } from '@/pages/WorkflowPage'
+import { WorkflowListPage } from '@/pages/WorkflowListPage'
 import { HumanEditPage } from '@/pages/HumanEditPage'
-import { RecordPage } from '@/pages/RecordPage'
 import { CompilePage } from '@/pages/CompilePage'
 import { HumanEditListPage } from '@/pages/HumanEditListPage'
 import { PublishPage } from '@/pages/PublishPage'
 import { BuildInstallerPage } from '@/pages/BuildInstallerPage'
-import { TestPluginPage } from '@/pages/TestPluginPage'
+import { TestSkillPage } from '@/pages/TestSkillPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 
 // Studio-exclusive pages (keep existing)
-import { RecordingFeed } from '@/pages/RecordingFeed'
 import { CompileProgress } from '@/pages/CompileProgress'
 
 function SplashScreen() {
@@ -35,12 +35,21 @@ function DeepLinkHandler() {
   const navigate = useNavigate()
   useEffect(() => {
     return window.conxa.onDeepLink((url) => {
-      const pluginMatch = url.match(/[?&]plugin=([^&]+)/)
-      const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : null
-      navigate(pluginId ? `/plugins/${pluginId}` : '/record')
+      const workflowMatch = url.match(/[?&]workflow=([^&]+)/)
+      const workflowId = workflowMatch ? decodeURIComponent(workflowMatch[1]) : null
+      navigate(workflowId ? `/workflows/${workflowId}` : '/workflows')
     })
   }, [navigate])
   return null
+}
+
+/** `/` has no id to route on — send the user back to whatever workflow they
+ * were last looking at, falling back to the list when there's no persisted
+ * selection (or it no longer exists). */
+function DefaultRedirect() {
+  const selectedWorkflowId = useSelectionStore((s) => s.selectedWorkflowId)
+  if (selectedWorkflowId) return <Navigate to={`/workflows/${selectedWorkflowId}`} replace />
+  return <Navigate to="/workflows" replace />
 }
 
 type DepUpdateBanner =
@@ -161,27 +170,19 @@ export function App() {
         <AppChrome>
           <DeepLinkHandler />
           <Routes>
-            <Route path="/" element={<Navigate to="/record" replace />} />
-            <Route path="/dashboard" element={<Navigate to="/record" replace />} />
-            <Route path="/plugins" element={<Navigate to="/record" replace />} />
-            <Route path="/plugins/:pluginId" element={<PluginDetailPage />} />
-            <Route path="/plugins/:pluginId/record/:workflowName" element={<RecordingFeed />} />
-            <Route path="/plugins/:pluginId/compile/:sessionId" element={<CompileProgress />} />
+            <Route path="/" element={<DefaultRedirect />} />
+            <Route path="/workflows" element={<WorkflowListPage />} />
+            <Route path="/workflows/:workflowId" element={<WorkflowPage />} />
+            <Route path="/workflows/:workflowId/compile/:sessionId" element={<CompileProgress />} />
             <Route path="/edit" element={<HumanEditPage />} />
             <Route path="/edit/:skillId" element={<HumanEditPage />} />
-            <Route path="/record" element={<RecordPage />} />
             <Route path="/compile" element={<CompilePage />} />
             <Route path="/human-edit" element={<HumanEditListPage />} />
-            <Route path="/test" element={<TestPluginPage />} />
+            <Route path="/test" element={<TestSkillPage />} />
             <Route path="/publish" element={<PublishPage />} />
             <Route path="/build-installer" element={<BuildInstallerPage />} />
-            {/* Build Plugin is superseded by auto-build on sign-off (see cmd_sign_off_workflow);
-                Packages moves into the Inspector drawer (T1.4). Both routes redirect rather
-                than 404 for anyone with an old bookmark or deep link. */}
-            <Route path="/build" element={<Navigate to="/record" replace />} />
-            <Route path="/packages" element={<Navigate to="/record" replace />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Navigate to="/record" replace />} />
+            <Route path="*" element={<Navigate to="/workflows" replace />} />
           </Routes>
         </AppChrome>
       </ErrorBoundary>

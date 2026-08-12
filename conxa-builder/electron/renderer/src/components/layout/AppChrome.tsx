@@ -11,27 +11,27 @@ import {
   ChevronRight,
   Cpu,
   Layers,
+  ListChecks,
   LogOut,
   PackageCheck,
   PencilLine,
   PlayCircle,
   Settings,
   UploadCloud,
-  Video,
 } from 'lucide-react'
 
 const SIDEBAR_KEY = 'conxa-sidebar-collapsed'
 
-// One button per stage of Record -> Compile -> Human Edit -> Test Skill ->
+// One button per stage of Workflows -> Compile -> Human Edit -> Test Skill ->
 // Publish Skill Package -> Build Installer, so the sidebar mirrors the flow
-// itself instead of the compiler's internal pipeline stages. Record is the
-// app home — it also owns plugin create/delete/search (folded in from the
-// old standalone Dashboard page) alongside the recording workspace.
+// itself instead of the compiler's internal pipeline stages. Workflows is the
+// app home — it also owns workflow create/delete/search alongside the
+// recording (login + workflow) actions on each workflow's own page.
 const navGroups = [
   {
     label: 'Operate',
     items: [
-      { to: '/record', label: 'Record', icon: Video },
+      { to: '/workflows', label: 'Workflows', icon: ListChecks },
       { to: '/compile', label: 'Compile', icon: Cpu },
       { to: '/human-edit', label: 'Human Edit', icon: PencilLine },
       { to: '/test', label: 'Test Skill', icon: PlayCircle },
@@ -134,7 +134,7 @@ function DesktopSidebar({ collapsed, setCollapsed }: { collapsed: boolean; setCo
       )}
     >
       <div className="flex items-center gap-3 border-b border-white/8 px-4 py-4">
-        <NavLink to="/record" className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
+        <NavLink to="/workflows" className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
           <ProductMark />
           {!collapsed && (
             <div className="min-w-0">

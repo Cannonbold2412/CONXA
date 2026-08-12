@@ -47,7 +47,7 @@ const PIPELINE_STEPS: Omit<CompileStep, "state">[] = [
 ];
 
 export function CompileProgress() {
-  const { pluginId, sessionId } = useParams<{ pluginId: string; sessionId: string }>();
+  const { workflowId, sessionId } = useParams<{ workflowId: string; sessionId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const mode = searchParams.get("mode") === "recompile" ? "recompile" : "compile";
@@ -70,8 +70,8 @@ export function CompileProgress() {
   }, [overallStatus]);
 
   useEffect(() => {
-    if (!pluginId || !sessionId) return;
-    const key = `${pluginId}:${sessionId}:${mode}`;
+    if (!workflowId || !sessionId) return;
+    const key = `${workflowId}:${sessionId}:${mode}`;
     if (firedFor.current === key) return;
     firedFor.current = key;
     setOverallStatus("running");
@@ -87,7 +87,7 @@ export function CompileProgress() {
         endedAt: undefined,
       }))
     );
-    cmd<CompileResult>("compile", { plugin_id: pluginId, session_id: sessionId, mode })
+    cmd<CompileResult>("compile", { workflow_id: workflowId, session_id: sessionId, mode })
       .then((result) => {
         setSkillId(result.skill_id);
         setOverallStatus("done");
@@ -104,7 +104,7 @@ export function CompileProgress() {
           )
         );
       });
-  }, [pluginId, sessionId, mode]);
+  }, [workflowId, sessionId, mode]);
 
   // auto-scroll log panel
   useEffect(() => {
@@ -202,13 +202,13 @@ export function CompileProgress() {
 
   function goToEditor() {
     if (!skillId) return;
-    const fromParam = pluginId ? `?from=${encodeURIComponent(`/plugins/${pluginId}`)}` : "";
+    const fromParam = workflowId ? `?from=${encodeURIComponent(`/workflows/${workflowId}`)}` : "";
     navigate(`/edit/${encodeURIComponent(skillId)}${fromParam}`);
   }
 
-  function goToPlugin() {
-    if (!pluginId) return;
-    navigate(`/plugins/${encodeURIComponent(pluginId)}`);
+  function goToWorkflow() {
+    if (!workflowId) return;
+    navigate(`/workflows/${encodeURIComponent(workflowId)}`);
   }
 
   const doneCount = steps.filter((s) => s.state === "done").length;
@@ -220,7 +220,7 @@ export function CompileProgress() {
       <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid var(--border)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
           <button
-            onClick={goToPlugin}
+            onClick={goToWorkflow}
             style={{
               background: "none",
               border: "1px solid var(--border)",

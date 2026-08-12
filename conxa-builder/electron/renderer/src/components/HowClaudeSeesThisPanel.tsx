@@ -12,7 +12,7 @@ type Props = {
  * descriptions already in the workflow — the same source data a customer's Claude Desktop draws
  * on, but not the exact generated string (that's assembled from `inputs.json`'s own description
  * field when the skill is published — see `runtime/server.js`'s per-skill tool description and
- * `conxa_compile/plugin_builder_output.py`). Deliberately honest about being a summary rather
+ * `conxa_compile/skill_package_builder_output.py`). Deliberately honest about being a summary rather
  * than claiming to be verbatim.
  */
 function synthesizeDescription(steps: WorkflowResponse['steps']): string {

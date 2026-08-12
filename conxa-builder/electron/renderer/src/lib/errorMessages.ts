@@ -63,11 +63,11 @@ export const errorMessages: Record<string, string> = {
 
   // Build / compile / test
   pack_not_built: "Build this skill pack before continuing.",
-  plugin_not_built: "Build the plugin before testing its workflows.",
-  not_built: "This plugin hasn't been built yet.",
+  skill_package_not_built: "Build the skill package before testing its workflows.",
+  not_built: "The skill package hasn't been built yet.",
   workflow_not_compiled: "Compile this workflow before testing it.",
   workflow_test_failed: "The workflow test didn't pass. Review the steps and try again.",
-  invalid_plugin: "This plugin is missing required information and can't be used.",
+  skill_pack_not_found: "No skill package has been built for this workspace yet.",
   invalid_document: "This skill file is missing its skills and can't be opened.",
   invalid_bbox: "That selection isn't a valid region. Try drawing the box again.",
   invalid_selector:
@@ -134,7 +134,6 @@ export const errorMessages: Record<string, string> = {
 
   // Not found
   not_found: "We couldn't find what you were looking for.",
-  plugin_not_found: "That plugin no longer exists.",
   workflow_not_found: "That workflow no longer exists.",
   session_not_found: "That recording session no longer exists.",
   skill_not_found: "That skill no longer exists.",

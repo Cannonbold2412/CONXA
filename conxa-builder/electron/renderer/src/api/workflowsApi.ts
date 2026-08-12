@@ -1,13 +1,28 @@
 import { cmd } from '@/lib/ipc'
 import type { BackendEvent } from '@/lib/ipc'
 
-export type PluginWorkflow = {
+export type WorkflowAuth = {
+  session_id: string
+  captured_at: number
+  storage_state_path: string
+}
+
+export type Workflow = {
   id: string
   slug: string
   name: string
-  session_id: string
-  recorded_at: number
-  status: 'recorded' | 'compiled' | 'error'
+  owner_user_id: string
+  target_url: string
+  protected_url: string
+  protected_url_marker_text: string
+  status: 'needs_auth' | 'ready' | 'error'
+  auth: WorkflowAuth | null
+  created_at: number
+  updated_at: number
+  // The single recording this workflow holds.
+  session_id: string | null
+  recorded_at: number | null
+  recording_status: 'recorded' | 'compiled' | 'error' | null
   skill_id: string | null
   edited_at: number | null
   last_test_at: number | null
@@ -19,21 +34,18 @@ export type PluginWorkflow = {
   compile_min_confidence: number | null
   compile_steps_with_warnings: number | null
   stage: 'recording' | 'ready_to_compile' | 'queued' | 'compiling' | 'needs_review' | 'needs_test' | 'ready' | 'error'
+  step_count?: number
 }
 
-export type PluginAuth = {
-  session_id: string
-  captured_at: number
-  storage_state_path: string
-}
+export type WorkflowsResponse = { workflows: Workflow[] }
 
-export type PluginBuild = {
+export type SkillPackBuild = {
   last_built_at: number
   output_path: string
   version: string
 }
 
-export type PluginInstaller = {
+export type SkillPackInstaller = {
   built_at: number
   installer_path: string
   filename: string
@@ -42,29 +54,23 @@ export type PluginInstaller = {
   release_notes?: string
 }
 
-export type Plugin = {
-  id: string
-  slug: string
-  name: string
-  owner_user_id: string
-  target_url: string
-  protected_url: string
-  protected_url_marker_text: string
-  status: 'needs_auth' | 'ready' | 'building' | 'error'
-  auth: PluginAuth | null
-  workflows: PluginWorkflow[]
-  build: PluginBuild | null
-  installer: PluginInstaller | null
+/** The one shared package every workflow in the workspace compiles into —
+ * see conxa_core.models.workflow.SkillPack. */
+export type SkillPack = {
+  workspace_id: string
+  company_slug: string
+  company_name: string
+  status: 'idle' | 'building' | 'error'
+  build: SkillPackBuild | null
+  installer: SkillPackInstaller | null
   created_at: number
   updated_at: number
 }
 
-export type PluginsResponse = { plugins: Plugin[] }
-
 export type RunEvent = {
   event: 'step_failure' | 'recovery_attempt' | 'run_outcome'
   run_id: string
-  plugin_id: string
+  workflow_id: string
   skill_slug: string
   step_id: string | null
   data: Record<string, unknown>
@@ -81,7 +87,7 @@ export type RunOutcome = {
 
 export type Run = {
   run_id: string
-  plugin_id: string
+  workflow_id: string
   skill_slug: string
   events: RunEvent[]
   outcome: RunOutcome | null
@@ -100,7 +106,7 @@ export type InstallerBuildResult = {
   installer_path: string
   filename: string
   company: string
-  plugin_id: string
+  workspace_id: string
   version: string
   runtime_version: string
   release_notes?: string
@@ -158,8 +164,8 @@ export type TrackingEvent = {
 
 export type TrackingRunSummary = {
   run_id: string
-  plugin_id: string
-  plugin_ver: string
+  workflow_id: string
+  workflow_ver: string
   runtime_ver: string
   uid: string
   wid: string
@@ -178,66 +184,81 @@ export type TrackingRunsResponse = { runs: TrackingRunSummary[]; total: number }
 export type TrackingRunDetail = {
   run_id: string
   company: string
-  plugin_id: string
-  plugin_ver: string
+  workflow_id: string
+  workflow_ver: string
   runtime_ver: string
   uid: string
   wid: string
   timeline: TrackingEvent[]
 }
 
-export function normalizePluginList(data: unknown): Plugin[] {
-  if (Array.isArray(data)) return data as Plugin[]
+export function normalizeWorkflowList(data: unknown): Workflow[] {
+  if (Array.isArray(data)) return data as Workflow[]
   if (data && typeof data === 'object') {
-    const plugins = (data as { plugins?: unknown }).plugins
-    if (Array.isArray(plugins)) return plugins as Plugin[]
+    const workflows = (data as { workflows?: unknown }).workflows
+    if (Array.isArray(workflows)) return workflows as Workflow[]
   }
   return []
 }
 
-export function fetchPlugins(): Promise<PluginsResponse> {
-  return cmd<PluginsResponse>('list_plugins')
+export function fetchWorkflows(): Promise<WorkflowsResponse> {
+  return cmd<WorkflowsResponse>('list_workflows')
 }
 
-export function fetchPlugin(id: string): Promise<{ plugin: Plugin }> {
-  return cmd<{ plugin: Plugin }>('get_plugin', { plugin_id: id })
+export type SkillPackStatusWorkflow = {
+  id: string
+  name: string
+  slug: string
+  skill_id: string | null
+  signed_off: boolean
+  last_test_status: 'passed' | 'failed' | 'never'
 }
 
-export function createPlugin(body: {
+/** Read-only status for the Publish / Build Installer pages — is the
+ * workspace's shared skill package built yet, and what workflows are in it. */
+export function fetchSkillPack(): Promise<{ skill_pack: SkillPack | null; workflows: SkillPackStatusWorkflow[] }> {
+  return cmd('get_skill_pack')
+}
+
+export function fetchWorkflow(id: string): Promise<{ workflow: Workflow }> {
+  return cmd<{ workflow: Workflow }>('get_workflow', { workflow_id: id })
+}
+
+export function createWorkflow(body: {
   name: string
   target_url: string
   protected_url?: string
   protected_url_marker_text?: string
-}): Promise<{ plugin: Plugin }> {
-  return cmd<{ plugin: Plugin }>('create_plugin', body)
+}): Promise<{ workflow: Workflow }> {
+  return cmd<{ workflow: Workflow }>('create_workflow', body)
 }
 
-export function deletePlugin(id: string): Promise<{ deleted: boolean }> {
-  return cmd<{ deleted: boolean }>('delete_plugin', { plugin_id: id })
+export function deleteWorkflowEntity(id: string): Promise<{ deleted: boolean }> {
+  return cmd<{ deleted: boolean }>('delete_workflow', { workflow_id: id })
 }
 
 export function startAuthRecord(
-  pluginId: string,
+  workflowId: string,
   body: { start_url?: string } = {},
 ): Promise<{ session_id: string; start_url: string }> {
   return cmd<{ session_id: string; start_url: string }>('start_recording', {
-    plugin_id: pluginId,
-    workflow_name: '__auth__',
+    workflow_id: workflowId,
+    auth_mode: true,
     ...body,
   })
 }
 
 export function finalizeAuth(
-  pluginId: string,
+  workflowId: string,
   sessionId: string,
-): Promise<{ plugin_status: string; storage_state_saved: boolean; protected_url: string }> {
-  return cmd<{ plugin_status: string; storage_state_saved: boolean; protected_url: string }>(
+): Promise<{ workflow_status: string; storage_state_saved: boolean; protected_url: string }> {
+  return cmd<{ workflow_status: string; storage_state_saved: boolean; protected_url: string }>(
     'stop_recording',
-    { plugin_id: pluginId, session_id: sessionId, auth_mode: true },
+    { workflow_id: workflowId, session_id: sessionId, auth_mode: true },
   )
 }
 
-export function getPluginRecordingStatus(sessionId: string): Promise<{
+export function getWorkflowRecordingStatus(sessionId: string): Promise<{
   session_id: string
   browser_open: boolean
   event_count: number
@@ -250,66 +271,56 @@ export function getPluginRecordingStatus(sessionId: string): Promise<{
   return cmd('get_recording_status', { session_id: sessionId })
 }
 
-export function reRecordAuth(pluginId: string): Promise<{ status: string }> {
-  return cmd<{ status: string }>('re_record_auth', { plugin_id: pluginId })
+export function reRecordAuth(workflowId: string): Promise<{ status: string }> {
+  return cmd<{ status: string }>('re_record_auth', { workflow_id: workflowId })
 }
 
 export function startWorkflowRecord(
-  pluginId: string,
-  name: string,
+  workflowId: string,
   urlVariables?: Record<string, string>,
   captureHover = false,
 ): Promise<{ session_id: string; workflow_id: string }> {
   return cmd<{ session_id: string; workflow_id: string }>('start_recording', {
-    plugin_id: pluginId,
-    workflow_name: name,
+    workflow_id: workflowId,
+    auth_mode: false,
     url_variables: urlVariables ?? {},
     capture_hover: captureHover,
   })
 }
 
 export function finalizeWorkflow(
-  pluginId: string,
   workflowId: string,
   sessionId: string,
-  forceWorkflowKind?: 'login' | 'workflow',
-): Promise<{ status: string; session_id: string; workflow_id: string; workflow_kind: 'login' | 'workflow' }> {
-  return cmd<{ status: string; session_id: string; workflow_id: string; workflow_kind: 'login' | 'workflow' }>(
+): Promise<{ status: string; session_id: string; workflow_id: string; workflow_kind: 'workflow' }> {
+  return cmd<{ status: string; session_id: string; workflow_id: string; workflow_kind: 'workflow' }>(
     'stop_recording',
-    {
-      plugin_id: pluginId,
-      workflow_id: workflowId,
-      session_id: sessionId,
-      ...(forceWorkflowKind ? { force_workflow_kind: forceWorkflowKind } : {}),
-    },
+    { workflow_id: workflowId, session_id: sessionId },
   )
 }
 
 export function cancelRecording(
   sessionId: string,
-  opts: { pluginId?: string; workflowId?: string } = {},
+  workflowId?: string,
 ): Promise<{ ok: boolean }> {
   return cmd<{ ok: boolean }>('cancel_recording', {
     session_id: sessionId,
-    plugin_id: opts.pluginId ?? '',
-    workflow_id: opts.workflowId ?? '',
+    workflow_id: workflowId ?? '',
   })
 }
 
-export function deleteWorkflow(pluginId: string, workflowId: string): Promise<{ deleted: boolean }> {
-  return cmd<{ deleted: boolean }>('delete_workflow', { plugin_id: pluginId, workflow_id: workflowId })
+export function deleteWorkflow(workflowId: string): Promise<{ deleted: boolean }> {
+  return cmd<{ deleted: boolean }>('delete_workflow', { workflow_id: workflowId })
 }
 
 export function updateWorkflow(
-  pluginId: string,
   workflowId: string,
-  body: { skill_id?: string | null },
-): Promise<{ plugin_id: string; workflow_id: string; skill_id: string | null; status: PluginWorkflow['status'] }> {
-  return cmd('update_workflow', { plugin_id: pluginId, workflow_id: workflowId, ...body })
+  body: { skill_id?: string | null; status?: string },
+): Promise<{ workflow_id: string; skill_id: string | null; status: string }> {
+  return cmd('update_workflow', { workflow_id: workflowId, ...body })
 }
 
 /** Subscribes to backend events of a given `kind` and forwards their `message`
- * to `onLog` for the duration of `fn`. Shared by buildPlugin/buildInstaller/
+ * to `onLog` for the duration of `fn`. Shared by buildSkillPackage/buildInstaller/
  * testWorkflow, which all stream progress lines this way. */
 async function withKindLog<T>(kind: string, onLog: (message: string) => void, fn: () => Promise<T>): Promise<T> {
   const unsub = window.conxa.onEvent((ev: BackendEvent) => {
@@ -322,18 +333,20 @@ async function withKindLog<T>(kind: string, onLog: (message: string) => void, fn
   }
 }
 
-export function buildPlugin(
-  pluginId: string,
+/** Workspace-scoped: compiles every signed-off workflow into the one shared
+ * skill package. company_name is only required the first time this workspace
+ * ever builds (nothing to derive it from otherwise). */
+export function buildSkillPackage(
+  companyName?: string,
   version = '0.1.0',
   onLog: (message: string) => void = () => {},
-): Promise<PluginBuild> {
-  return withKindLog('plugin_build', onLog, () =>
-    cmd<PluginBuild>('build_plugin', { plugin_id: pluginId, version }),
+): Promise<SkillPackBuild> {
+  return withKindLog('skill_package_build', onLog, () =>
+    cmd<SkillPackBuild>('build_skill_package', { company_name: companyName, version }),
   )
 }
 
 export function buildInstaller(
-  pluginId: string,
   onLog: (message: string) => void = () => {},
   logoPath?: string | null,
   version?: string,
@@ -341,7 +354,6 @@ export function buildInstaller(
 ): Promise<InstallerBuildResult> {
   return withKindLog('installer_build', onLog, () =>
     cmd<InstallerBuildResult>('build_installer', {
-      plugin_id: pluginId,
       logo_path: logoPath ?? null,
       version,
       release_notes: releaseNotes,
@@ -349,38 +361,35 @@ export function buildInstaller(
   )
 }
 
-/** The primary, mandatory release-management action — publishes a skill-pack
- * release (version + release notes + built skill files) to Conxa Cloud. This
- * is the central Skill Pack Publishing action; Build Installer (above) is now
- * a secondary, advanced action that requires a release to already exist. */
+/** The primary, mandatory release-management action — publishes the workspace's
+ * shared skill-pack release (version + release notes + built skill files) to
+ * Conxa Cloud. Build Installer (above) is a secondary, advanced action that
+ * requires a release to already exist. */
 export function publishSkillPack(
-  pluginId: string,
   version: string,
   releaseNotes: string,
   onLog: (message: string) => void = () => {},
 ): Promise<SkillPackReleaseResult> {
   return withKindLog('skill_pack_publish', onLog, () =>
     cmd<SkillPackReleaseResult>('publish_skill_pack', {
-      plugin_id: pluginId,
       version,
       release_notes: releaseNotes,
     }),
   )
 }
 
-export function fetchSkillPackVersions(pluginId: string): Promise<SkillPackVersionsResponse> {
-  return cmd<SkillPackVersionsResponse>('list_skill_pack_versions', { plugin_id: pluginId })
+export function fetchSkillPackVersions(): Promise<SkillPackVersionsResponse> {
+  return cmd<SkillPackVersionsResponse>('list_skill_pack_versions')
 }
 
 export function getCompiledSkill(
-  pluginId: string,
   skillSlug: string,
-): Promise<{ plugin_id: string; skill_slug: string; files: CompiledSkillFiles }> {
-  return cmd('get_compiled_skill', { plugin_id: pluginId, skill_slug: skillSlug })
+): Promise<{ workspace_id: string; skill_slug: string; files: CompiledSkillFiles }> {
+  return cmd('get_compiled_skill', { skill_slug: skillSlug })
 }
 
-export function fetchRuns(pluginId?: string, since?: number): Promise<RunsResponse> {
-  return cmd<RunsResponse>('list_runs', { plugin_id: pluginId, since })
+export function fetchRuns(workflowId?: string, since?: number): Promise<RunsResponse> {
+  return cmd<RunsResponse>('list_runs', { workflow_id: workflowId, since })
 }
 
 export function fetchRun(runId: string): Promise<{ run: Run }> {
@@ -388,7 +397,6 @@ export function fetchRun(runId: string): Promise<{ run: Run }> {
 }
 
 export function testWorkflow(
-  pluginId: string,
   workflowId: string,
   inputs: Record<string, unknown> = {},
   headless = false,
@@ -396,7 +404,6 @@ export function testWorkflow(
 ): Promise<unknown> {
   return withKindLog('workflow_test', onLog, () =>
     cmd('test_workflow', {
-      plugin_id: pluginId,
       workflow_id: workflowId,
       inputs,
       headless,

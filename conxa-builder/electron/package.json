@@ -1,7 +1,7 @@
 {
   "name": "conxa-build-studio",
   "version": "0.1.0",
-  "description": "Conxa Build Studio — record, compile, and ship automation plugins",
+  "description": "Conxa Build Studio — record, compile, and ship automation workflows",
   "main": "main.js",
   "author": "Conxa",
   "license": "UNLICENSED",

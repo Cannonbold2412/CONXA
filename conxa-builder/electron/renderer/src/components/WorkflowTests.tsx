@@ -4,9 +4,9 @@ import { fetchWorkflow } from '@/api/workflowApi'
 import {
   getCompiledSkill,
   testWorkflow,
-  type Plugin,
-  type PluginWorkflow,
-} from '@/api/pluginApi'
+  type SkillPackBuild,
+  type Workflow,
+} from '@/api/workflowsApi'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -195,7 +195,7 @@ function WorkflowLogSection({
   )
 }
 
-function testStatusBadge(wf: PluginWorkflow) {
+function testStatusBadge(wf: Workflow) {
   if (wf.last_test_status === 'passed') {
     return (
       <Badge variant="outline" className="shrink-0 border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-300">
@@ -217,17 +217,17 @@ function testStatusBadge(wf: PluginWorkflow) {
   )
 }
 
-function isStaleTest(wf: PluginWorkflow, plugin: Plugin) {
+function isStaleTest(wf: Workflow, skillPackBuild: SkillPackBuild | null) {
   return (
     wf.edited_at != null &&
-    plugin.build != null &&
-    wf.edited_at > plugin.build.last_built_at
+    skillPackBuild != null &&
+    wf.edited_at > skillPackBuild.last_built_at
   )
 }
 
-export function workflowTestSummary(plugin: Plugin) {
-  const passed = plugin.workflows.filter((w) => w.last_test_status === 'passed').length
-  const total = plugin.workflows.length
+export function workflowTestSummary(workflows: Workflow[]) {
+  const passed = workflows.filter((w) => w.last_test_status === 'passed').length
+  const total = workflows.length
   return {
     passed,
     total,
@@ -236,12 +236,12 @@ export function workflowTestSummary(plugin: Plugin) {
 }
 
 export function WorkflowTestRow({
-  plugin,
   wf,
+  skillPackBuild,
   onComplete,
 }: {
-  plugin: Plugin
-  wf: PluginWorkflow
+  wf: Workflow
+  skillPackBuild: SkillPackBuild | null
   onComplete: () => void
 }) {
   const [inputs, setInputs] = useState<Record<string, string>>(() =>
@@ -259,7 +259,7 @@ export function WorkflowTestRow({
   const [runDone, setRunDone] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
 
-  const stale = isStaleTest(wf, plugin)
+  const stale = isStaleTest(wf, skillPackBuild)
 
   // Load input specs eagerly so we know which button layout to use.
   useEffect(() => {
@@ -275,7 +275,7 @@ export function WorkflowTestRow({
       let specs: InputSpec[] = []
 
       try {
-        const compiled = await getCompiledSkill(plugin.id, wf.slug)
+        const compiled = await getCompiledSkill(wf.slug)
         specs = inputSpecsFromPayload(compiled.files['input.json'])
         if (specs.length === 0) {
           specs = inputSpecsFromPayload(compiled.files['inputs.json'])
@@ -312,7 +312,7 @@ export function WorkflowTestRow({
     return () => {
       alive = false
     }
-  }, [plugin.id, wf.id, wf.skill_id, wf.slug, wf.last_test_inputs])
+  }, [wf.id, wf.skill_id, wf.slug, wf.last_test_inputs])
 
   async function runTest() {
     setLogs([])
@@ -341,7 +341,7 @@ export function WorkflowTestRow({
       } else {
         for (const [k, v] of Object.entries(inputs)) parsedInputs[k] = v
       }
-      await testWorkflow(plugin.id, wf.id, parsedInputs, false, (msg) => {
+      await testWorkflow(wf.id, parsedInputs, false, (msg) => {
         setLogs((prev) => [...prev, msg])
         setTimeout(() => logRef.current?.scrollTo(0, logRef.current.scrollHeight), 0)
       })
@@ -393,7 +393,7 @@ export function WorkflowTestRow({
               size="sm"
               onClick={() => void runTest()}
               disabled={!canRun}
-              title={stale ? 'Rebuild the plugin first' : undefined}
+              title={stale ? 'Rebuild the skill package first' : undefined}
             >
               {running ? (
                 <Loader2 className="size-3.5 animate-spin" />
@@ -412,7 +412,7 @@ export function WorkflowTestRow({
                 variant="outline"
                 onClick={() => openInputDialog('edit')}
                 disabled={stale || !wf.skill_id}
-                title={stale ? 'Rebuild the plugin first' : undefined}
+                title={stale ? 'Rebuild the skill package first' : undefined}
               >
                 <SlidersHorizontal className="size-3.5" />
                 Inputs
@@ -421,7 +421,7 @@ export function WorkflowTestRow({
                 size="sm"
                 onClick={() => openInputDialog('run')}
                 disabled={!canRun}
-                title={stale ? 'Rebuild the plugin first' : undefined}
+                title={stale ? 'Rebuild the skill package first' : undefined}
               >
                 {running ? (
                   <Loader2 className="size-3.5 animate-spin" />
@@ -555,24 +555,26 @@ export function WorkflowTestRow({
   )
 }
 
-export function PluginWorkflowTests({
-  plugin,
+export function WorkflowTestList({
+  workflows,
+  skillPackBuild,
   onComplete,
 }: {
-  plugin: Plugin
+  workflows: Workflow[]
+  skillPackBuild: SkillPackBuild | null
   onComplete: () => void
 }) {
-  if (plugin.workflows.length === 0) {
+  if (workflows.length === 0) {
     return <p className="py-4 text-xs text-zinc-500">No workflows recorded yet.</p>
   }
 
   return (
     <div className="space-y-2">
-      {plugin.workflows.map((wf) => (
+      {workflows.map((wf) => (
         <WorkflowTestRow
           key={wf.id}
-          plugin={plugin}
           wf={wf}
+          skillPackBuild={skillPackBuild}
           onComplete={onComplete}
         />
       ))}
