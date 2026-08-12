@@ -1,6 +1,7 @@
-import { Check, Loader2 } from 'lucide-react'
+import { Check, Loader2, PackageCheck, Pencil, Play, PlayCircle, Zap, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 /** Mirrors handlers/status.py::derive_workflow_stage — the single source of
  * truth for a workflow's lifecycle stage, replacing the old status/last_test_status/
@@ -98,6 +99,152 @@ export function StagePath({ stage }: { stage: WorkflowStage }) {
             />
           )}
         </div>
+      ))}
+    </div>
+  )
+}
+
+type RailNodeSpec = {
+  label: string
+  icon: LucideIcon
+  enabled: boolean
+  disabledTitle?: string
+  onClick: () => void
+}
+
+function RailNode({ node, done, busy }: { node: RailNodeSpec; done: boolean; busy: boolean }) {
+  const Icon = node.icon
+  const button = (
+    <button
+      type="button"
+      onClick={node.onClick}
+      disabled={!node.enabled}
+      className={cn(
+        'flex flex-col items-center gap-1 rounded-lg px-2 py-1.5 transition-colors',
+        node.enabled ? 'hover:bg-white/[0.06]' : 'cursor-not-allowed opacity-40',
+      )}
+    >
+      <span
+        className={cn(
+          'flex size-8 shrink-0 items-center justify-center rounded-full border',
+          done
+            ? 'border-emerald-500/30 bg-emerald-500/[0.12] text-emerald-400'
+            : busy
+            ? 'border-sky-500/30 bg-sky-500/[0.12] text-sky-400'
+            : node.enabled
+            ? 'border-white/15 bg-white/[0.04] text-zinc-300'
+            : 'border-white/8 bg-white/[0.02] text-zinc-600',
+        )}
+      >
+        {busy ? <Loader2 className="size-3.5 animate-spin" /> : done ? <Check className="size-3.5" /> : <Icon className="size-3.5" />}
+      </span>
+      <span className={cn('whitespace-nowrap text-[10px] font-medium', done ? 'text-emerald-400' : busy ? 'text-sky-400' : node.enabled ? 'text-zinc-300' : 'text-zinc-600')}>
+        {node.label}
+      </span>
+    </button>
+  )
+
+  if (!node.enabled && node.disabledTitle) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+        <TooltipContent>{node.disabledTitle}</TooltipContent>
+      </Tooltip>
+    )
+  }
+  return button
+}
+
+/**
+ * The interactive five-node lifecycle rail for a workflow row: Record → Compile
+ * → Review → Test → Ready to Package. Replaces the read-only StagePath dots on
+ * the group page — each node is the actual action button for that stage,
+ * gated on the previous stage's completion (mirrors the old WorkflowPage's
+ * scattered Compile/Recompile/Edit/Run-test buttons, now unified in one rail).
+ */
+export function WorkflowStageRail({
+  stage,
+  hasRecording,
+  hasSkill,
+  groupReady,
+  packBuilt,
+  stale,
+  onRecord,
+  onCompile,
+  onReview,
+  onToggleTest,
+  onPackage,
+}: {
+  stage: WorkflowStage
+  hasRecording: boolean
+  hasSkill: boolean
+  groupReady: boolean
+  packBuilt: boolean
+  stale: boolean
+  onRecord: () => void
+  onCompile: () => void
+  onReview: () => void
+  onToggleTest: () => void
+  onPackage: () => void
+}) {
+  // nodesDone()'s first slot is hardcoded true — safe for the read-only
+  // StagePath dots (only ever rendered once a recording exists) but wrong
+  // here, where the rail renders for never-recorded workflows too. Use the
+  // real recording flag for that node instead.
+  const done = nodesDone(stage)
+  const packageDone = stage === 'ready'
+  const busyIndex = stage === 'queued' || stage === 'compiling' ? 1 : null
+
+  const nodes: RailNodeSpec[] = [
+    {
+      label: 'Record',
+      icon: Play,
+      enabled: !hasRecording && groupReady,
+      disabledTitle: hasRecording ? undefined : !groupReady ? "Authenticate every app in this workflow's group before recording" : undefined,
+      onClick: onRecord,
+    },
+    {
+      label: 'Compile',
+      icon: Zap,
+      enabled: hasRecording && busyIndex === null,
+      disabledTitle: !hasRecording ? 'Record the workflow first' : busyIndex !== null ? 'Compiling…' : undefined,
+      onClick: onCompile,
+    },
+    {
+      label: 'Review',
+      icon: Pencil,
+      enabled: hasSkill,
+      disabledTitle: hasSkill ? undefined : 'Compile the workflow first',
+      onClick: onReview,
+    },
+    {
+      label: 'Test',
+      icon: PlayCircle,
+      enabled: hasSkill && packBuilt && !stale,
+      disabledTitle: !hasSkill
+        ? 'Compile the workflow first'
+        : !packBuilt
+        ? 'Build the skill package first'
+        : stale
+        ? 'Edited since last build — rebuild before testing'
+        : undefined,
+      onClick: onToggleTest,
+    },
+    {
+      label: 'Ready to Package',
+      icon: PackageCheck,
+      enabled: stage === 'ready',
+      disabledTitle: stage === 'ready' ? undefined : 'Pass a test run first',
+      onClick: onPackage,
+    },
+  ]
+
+  const doneFlags = [hasRecording, done[1], done[2], done[3], packageDone]
+
+  return (
+    <div className="flex items-center gap-1">
+      {nodes.map((node, i) => (
+        <RailNode key={node.label} node={node} done={doneFlags[i]} busy={i === busyIndex} />
       ))}
     </div>
   )

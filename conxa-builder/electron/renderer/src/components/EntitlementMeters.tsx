@@ -25,12 +25,13 @@ function meterText(meter: EntitlementMeter | undefined, key: EntitlementMeterKey
 }
 
 /**
- * Compact toolbar pill for the Human Edit pool — label + used/limit + a thin
- * clay usage bar, with full detail on hover. Designed to sit in a page toolbar.
- * Must render inside a TooltipProvider. Renders nothing if the meter is unavailable.
+ * Compact toolbar pill for a single entitlement meter — label + used/limit + a
+ * thin clay usage bar, with full detail on hover. Designed to sit in a page
+ * toolbar. Must render inside a TooltipProvider. Renders nothing if the meter
+ * is unavailable.
  */
-export function HumanEditPoolBadge({ className }: { className?: string }) {
-  const key: EntitlementMeterKey = 'human_edit_tokens'
+export function MeterBadge({ meterKey, className }: { meterKey: EntitlementMeterKey; className?: string }) {
+  const key = meterKey
   const usageQ = useQuery({
     queryKey: ['entitlements'],
     queryFn: fetchEntitlements,
@@ -58,13 +59,13 @@ export function HumanEditPoolBadge({ className }: { className?: string }) {
         <TooltipTrigger asChild>
           <div
             role="status"
-            aria-label={`Human Edit pool: ${valueText}, ${remainingText}`}
+            aria-label={`${LABELS[key]}: ${valueText}, ${remainingText}`}
             className={cn(
               'hidden h-8 cursor-default items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-2.5 lg:flex',
               className,
             )}
           >
-            <span className="text-[11px] font-medium text-zinc-400">Human edit</span>
+            <span className="text-[11px] font-medium text-zinc-400">{LABELS[key]}</span>
             <span className="text-[11px] font-semibold tabular-nums text-zinc-200">{valueText}</span>
             {!unlimited && (
               <span className="h-1.5 w-10 overflow-hidden rounded-full bg-white/10">
@@ -75,7 +76,7 @@ export function HumanEditPoolBadge({ className }: { className?: string }) {
         </TooltipTrigger>
         <TooltipContent>
           <div className="space-y-0.5">
-            <p className="font-medium text-zinc-100">Human Edit pool</p>
+            <p className="font-medium text-zinc-100">{LABELS[key]}</p>
             <p className="text-zinc-300">
               {valueText}
               {unlimited ? '' : ` · ${remainingText}`}
@@ -86,6 +87,11 @@ export function HumanEditPoolBadge({ className }: { className?: string }) {
       <div className="mx-0.5 hidden h-5 w-px bg-white/10 lg:block" aria-hidden />
     </>
   )
+}
+
+/** Back-compat wrapper — the Human Edit pool badge used across the editor toolbar. */
+export function HumanEditPoolBadge({ className }: { className?: string }) {
+  return <MeterBadge meterKey="human_edit_tokens" className={className} />
 }
 
 export function EntitlementMeters({
