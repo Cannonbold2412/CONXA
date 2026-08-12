@@ -419,6 +419,16 @@ routing. Frontend `npm run lint` and `npm run build` both clean, `/pricing` rend
 
 ---
 
+### ✅ 1.14 Group Page absorbs the Workflow Detail page — DONE 2026-08-13
+
+**What was changed:** The standalone `/workflows/:workflowId` detail page (`WorkflowPage.tsx`, added in 1.13) was removed. Every action it owned — record, compile/recompile, review (Human Edit), test, and (once passing) hand-off to Publish — now lives inline on each workflow's row on its group's page (`GroupPage.tsx`), as a five-node `WorkflowStageRail` (Record → Compile → Review → Test → Ready to Package) replacing the old read-only `StagePath` dots. `RecordWorkflowDialog` and `DeleteWorkflowButton` were extracted into standalone components so the group page's row could reuse them; the Test node expands `WorkflowTestRow` inline instead of navigating to Test Skill. `GroupAuthWizard` gained an `editable` mode (per-app edit/remove) so the group page no longer needs a separate app list. `/workflows/:workflowId` now redirects to the workflow's owning group, keeping existing deep links, the compile page's "← Back", and Human Edit's `?from=` working unchanged. `store/selectionStore.ts` (the removed page's only consumer) was deleted.
+
+**Files:** `conxa-builder/electron/renderer/src/pages/GroupPage.tsx`, `App.tsx`, `components/StagePath.tsx` (`WorkflowStageRail`), `components/RecordWorkflowDialog.tsx` (new), `components/DeleteWorkflowButton.tsx` (new), `components/GroupAuthWizard.tsx`, `components/EntitlementMeters.tsx` (`MeterBadge`); deleted `pages/WorkflowPage.tsx`, `store/selectionStore.ts`. Docs: `docs/UI-UX-Brief.md` §2.3a/§2.8/§2.12, `docs/App-Flow.md` §4.
+
+**Verified:** `npx tsc --noEmit` and `npm run build:renderer` clean, `npm run lint` clean (0 errors, 2 pre-existing unrelated warnings).
+
+---
+
 **Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
 phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10-1.13) is done, superseded, or moot;
 other open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,

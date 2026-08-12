@@ -10,7 +10,7 @@
 1. [User Onboarding](#1-user-onboarding)
 2. [Build Studio Login](#2-build-studio-login)
 3. [Create a Workflow](#3-create-a-workflow)
-4. [Workflow Detail Page (Record Login/Workflow, Compile, Edit)](#4-workflow-detail-page)
+4. [Group Page — Workflow Lifecycle Rail (Record, Compile, Review, Test)](#4-group-page--workflow-lifecycle-rail)
 5. [Pipeline & Compilation](#5-pipeline--compilation)
 6. [Workflow Editing (HumanEdit)](#6-workflow-editing-humanedit)
 7. [Build Skill Package](#7-build-skill-package)
@@ -62,7 +62,7 @@ flowchart TD
 - If on a corporate network, the bootstrap surfaces the exact URLs for IT whitelisting.
 - The update check (step U) is fail-open: if GitHub Releases is unreachable, the app proceeds normally. Updates are mandatory — the app cannot advance past the Update Required screen without installing.
 - On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or Workflow list.
-- The Record page was removed (2026-08): the Workflow List (`/workflows`) is now the primary landing page, and the Workflow Detail page (`/workflows/:id`) contains all recording/auth controls inline. Root `/` redirects to the last-selected workflow or to `/workflows` if none.
+- The Record page was removed (2026-08): the Workflow List (`/workflows`) is now the primary landing page. Its group cards drill into the Group Page (`/groups/:id`), which contains every recording/auth/compile/review/test control for that group's workflows inline — see §4. Root `/` redirects to `/workflows`; the old `/workflows/:id` per-workflow route (removed 2026-08-13) now redirects to the workflow's owning group.
 
 ---
 
@@ -112,13 +112,13 @@ flowchart LR
 
 ---
 
-## 4. Workflow Detail Page
+## 4. Group Page — Workflow Lifecycle Rail
 
-The Workflow Detail page (`/workflows/:workflowId`) is the primary interface for recording and managing a single workflow. All record-login and record-workflow controls are inline on this page.
+The Group Page (`/groups/:groupId`) is the primary interface for recording and managing every workflow in a group — there is no separate per-workflow page (removed 2026-08-13; see `docs/UI-UX-Brief.md` §2.3a). Each workflow's row carries a five-node `WorkflowStageRail` — Record → Compile → Review → Test → Ready to Package — where each node is the action for that stage, gated on the previous one's completion.
 
 ### 4.1 Authentication is set up once per group, not per workflow
 
-As of the Workflow Groups change (see `docs/TRD.md` §5.2a), a workflow no longer records its own login — it inherits its group's app sessions. The Workflow Detail page shows a read-only "Group: Sales · N of M apps connected" card that links to the group's own setup page; there is no Record Login action here anymore.
+As of the Workflow Groups change (see `docs/TRD.md` §5.2a), a workflow no longer records its own login — it inherits its group's app sessions. The same Group Page that hosts the workflow rows also hosts the group's own Applications panel (add/edit/remove apps, connect sessions); a workflow's Record node stays disabled with an explanatory tooltip until every app in its group is authenticated.
 
 ```mermaid
 flowchart TD
@@ -147,8 +147,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["Workflow Detail page, status=ready"] --> B["Shows 'Record Workflow' action (only if no recording yet)"]
-    B --> C[User clicks 'Record Workflow']
+    A["Group page, workflow row, group auth ready"] --> B["Record rail node is enabled (only if no recording yet)"]
+    B --> C[User clicks the Record node]
     C --> D[Backend: cmd_start_recording with workflow_id + auth_mode=false]
     D --> E[Load auth session from auth/auth.json]
     E --> F[Playwright launches with storageState]
@@ -161,7 +161,7 @@ flowchart TD
     L --> L2[Playwright context closes; recording.webm renamed into place]
     L2 --> M[Events saved to sessions/session_id/events.jsonl]
     M --> N[Workflow updated with status=recorded]
-    N --> O[Recording dialog closes, page shows 'Compile' button]
+    N --> O[Recording dialog closes, the row's rail advances to an enabled Compile node]
 ```
 
 **Event types captured by bridge.js:**
