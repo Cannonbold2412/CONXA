@@ -6,7 +6,7 @@ subsystem. It was assembled from a full 2026-07 documentation audit that cross-c
 pass to pull in the business-strategy, go-to-market, ops, and edge-case-reliability documents that
 the first pass had only summarized without mining for concrete action items.
 
-**This file is organized by priority (P0 → P3), not by subsystem.** Each item still carries a
+**This file is organized by priority (P0 → P4), not by subsystem.** Each item still carries a
 **Category:** field showing which part of the platform it belongs to (Product Strategy, Documentation,
 Architecture, Builder, Runtime, Cloud, MCP, Execution & Recovery, Auto Updates, Testing & Cleanup,
 Advanced) — use that to find everything in one subsystem, or just read top-to-bottom for "what's most
@@ -28,14 +28,77 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 **How to use this file:** when you complete an item, mark it done in place — strikethrough the title, add a resolution date and a one-line note — matching the pattern used in `docs/Sales-Blockers.md`/`docs/Security.md`. Don't delete completed items; a backlog with no history of what's been closed is less useful than one that shows velocity. When you discover new open work during a task, add it here rather than leaving it undocumented.
 
-**Priority legend:** P0 = blocking or foundational, do first. P1 = high value, do soon. P2 = valuable, sequence around other work. P3 = low urgency, opportunistic.
+**Priority legend:** P0 = critical and time-sensitive, supersedes every other priority, do immediately. P1 = blocking or foundational, do first. P2 = high value, do soon. P3 = valuable, sequence around other work. P4 = low urgency, opportunistic.
 **Complexity legend:** S = hours. M = ~1-3 days. L = ~1-2 weeks. XL = multi-week, likely needs its own sub-plan.
 **`[DECISION]`** marks items that need a maintainer/founder answer before engineering work can be scoped — don't treat these as already-scoped tasks.
 **`[UNVERIFIED]`** marks items sourced from the research corpus that were *not* individually confirmed against current code (unlike the rest of this file, where every "still open" claim was grep/read-verified) — do a quick check before starting in case it's already been shipped since the source doc was written.
 
 ---
 
-## P0 — Blocking / Foundational (2 items)
+## P0 — Critical / Time-Sensitive (4 items)
+
+**Added 2026-08-09, direct from the founders — supersedes every previously-tracked priority in this file.** The four items below are the reason the rest of this backlog shifted down one tier (old P0 → P1, old P1 → P2, old P2 → P3, old P3 → P4); no other item content changed, only the section labels. See the "Fourth pass" note at the bottom of this file.
+
+### ~~CLOUD-10 — Homepage: rebuild around the new positioning + pricing ladder~~ — **Resolved 2026-08-12**
+- **Resolution:** The homepage now carries the ladder story and the prices. `Hero` leads with the business
+  outcome ("Do the process once. Your AI does it from then on.") and a four-rung strip below the CTAs
+  (prove it on one machine → run it across your team → ship it to your own customers → white-label it);
+  `PricingTable` is mounted on `/` in a new `compact` mode showing all four live tiers, with the four
+  explainer columns staying on `/pricing`. The tier data is still the single server-generated source, so
+  the two pages can't drift. The twelve-section stack was consolidated to ten blocks: `Problem` +
+  `WhyAiNeedsIt` → `TheGap`, `OldVsNew` + `Outcomes` → `Reliability` (which replaces the three hand-drawn
+  SVGs with the real dashboard viz — `ExecutionFlow` showing a run self-healing at Tier 2, and
+  `TierLadder` — labelled illustrative, since there is no customer proof yet), `Architecture` + `Security`
+  → `Trust`. Two adjacent bugs found and fixed while verifying: `/pricing` was never added to `proxy.ts`'s
+  public route matcher, so every anonymous visitor from the nav, the footer, the sitemap, and the new
+  homepage CTAs was redirected to sign-in; and `_plan_features` rendered Enterprise's 0-sentinel limits
+  literally, putting "0 seats / 0 machines / 0K Human Edit tokens" on the public pricing cards.
+- **Category:** Cloud / Frontend (Marketing)
+- **Description:** The 2026-08-09 pricing-ladder rewrite (`e7939b2`) rebuilt the dedicated `/pricing` page, the nav, the FAQ, and the public docs copy around one Free → Starter → Pro → Enterprise growth story — but never touched the homepage (`app/(marketing)/page.tsx`) itself. Confirmed by reading the file: it still renders its pre-existing `Hero` → `Problem` → `OldVsNew` → `HowItWorks` → `Examples` → `WhyAiNeedsIt` → `Outcomes` → `DemoStory` → `Architecture` → `Security` → `Faq` → `FinalCta` section stack, with no pricing section at all. Rewrite the homepage's hero/positioning copy to match the ladder story, and add a pricing preview section (reusing `PricingTable.tsx`'s tier data, linking through to `/pricing`) so a visitor sees who the product is for and what it costs without a second click.
+- **Why required:** the pricing-ladder rewrite was itself triggered by a demo where a prospective customer said the site and app were carrying messaging for two different kinds of customer at once. That rewrite fixed the dedicated pricing page, but a visitor who lands on `/` — the highest-traffic page — still sees neither the new story nor any price.
+- **Business value:** the homepage is the first thing nearly every visitor sees; if it doesn't carry the new positioning and pricing, the ladder rewrite doesn't reach the people it was built to convince.
+- **Technical value:** mostly copy plus one new section component reusing already-shipped tier data (`PricingTable.tsx`) — no new backend work, no schema change.
+- **Dependencies:** none — the pricing ladder data model and page already exist.
+- **Suggested order:** immediate, alongside the other three P0 items.
+- **Complexity:** S–M.
+- **Success criteria:** homepage hero/positioning copy matches the ladder story used on `/pricing`; a pricing section or preview is visible on the homepage itself, not just reachable via nav.
+
+### BUILD-14 — Record/Compile page: workflow-centric counting + folder grouping
+- **Category:** Builder / Cloud
+- **Description:** Build Studio's record/compile screens (`PluginListSidebar.tsx`, `PluginSwitcher.tsx`) and the surrounding UI are built around counting and switching between "plugins" — but a single published plugin/skill pack can bundle many individually recorded workflows, and the cloud's entitlement layer already models that distinction internally (`entitlements.py::ensure_workflow_publishable(principal, plugin_id, workflow_ids)` treats workflows as the countable sub-unit of a plugin). Redesign the Record + Compile page to show and count **workflows**, not plugins, and add folder-style grouping (e.g., "Marketing", "Sales") so a vendor with a growing catalog can organize workflows into named groups. Add the backend support needed for a workflow→folder association as **pure organizational metadata** — a label attached to a workflow record, not a structural change to the compiled `SkillPackage`, its `IdentityBundle`, or anything the runtime reads. Grouping must never touch the skill contract (see `CLAUDE.md`'s Key Invariants and ARCH-3's contract/executor boundary) — moving a workflow between folders must be indistinguishable, from the runtime's perspective, from not moving it at all.
+- **Why required:** the current plugin-centric counting doesn't match how vendors actually think about or are billed on their catalog (by workflow, per the entitlement model's own `workflow_ids` field), and there is no way today to organize a growing list of recorded workflows.
+- **Business value:** keeps Build Studio usable at the scale a vendor with dozens of workflows will actually reach, and surfaces the same unit (workflows) that entitlements already count and gate on, instead of a different unit (plugins) that can undercount or overcount what a customer is actually paying for.
+- **Technical value:** reuses the entitlement model's existing plugin_id/workflow_ids distinction rather than inventing a new counting unit; folder metadata is additive and stored out-of-band from the compiled skill package, which keeps the change low-risk to execution as long as that boundary is respected.
+- **Dependencies:** should land together with an explicit check (a test, per this repo's non-negotiable-invariant convention) proving folder assignment is never read by `runtime/run.js` or by any step of the compiler's build path — this is the same class of contract-boundary discipline ARCH-3 is asking for more broadly.
+- **Suggested order:** immediate, alongside the other three P0 items.
+- **Complexity:** M–L — UI rework of the Record/Compile screens plus a new backend field/endpoint for folder assignment; no change to the skill contract itself.
+- **Success criteria:** the Record/Compile page shows and counts workflows, not plugins, matching what's actually entitled/billed; a workflow can be assigned to a named folder and the list can be filtered by folder; compiling and executing the same workflow before and after a folder move produces byte-identical compiled output and identical runtime behavior.
+
+### ARCH-4 — Migrate installer generation from Build Studio to Conxa Cloud (CDN-hosted, one per workspace, swappable)
+- **Category:** Architecture / Cloud
+- **Description:** The 2026-07-09 publish/installer architecture redesign (tracked informally, not previously in this file) already reframed installers as static, Conxa-owned platform artifacts and explicitly named "migrate installer generation to a cloud build pipeline" as its long-term half, deferred until Conxa had paying customers — that deferral ends now. Move installer *generation* out of Build Studio's local NSIS build (`conxa_compile/installer_builder.py`) into a cloud build pipeline. Each workspace gets exactly **one** installer build, produced automatically either at workspace creation or on first skill-pack publish (whichever happens first), stored in Conxa's CDN for distribution. The installer's content (company identity, branding, endpoints, `{installer_version}`) stays swappable at any time via config inputs — swapping is a re-generate-from-the-same-inputs operation, not a new local build process, consistent with the already-documented design that installers carry only static config and never a skill file tree.
+- **Why required:** vendors currently still run a local, Windows-only NSIS build inside Build Studio for every installer, which the 2026-07-09 redesign always intended to centralize once there were real customers to justify the infrastructure investment — that trigger condition is now met.
+- **Business value:** removes a local build dependency from every vendor's workflow, gives Conxa consistent control over signing/versioning across every installer in the fleet, and turns "update this workspace's branding" into a config change instead of a vendor re-running a local build tool.
+- **Technical value:** builds directly on already-shipped machinery — the versioned `{installer_version}` endpoint scheme, Ed25519 manifest signing, and the installer cloud-upload path that already exists today as optional/best-effort from the local build becomes the only path, no new upload mechanism needed. Directly overlaps CLOUD-2's blob/CDN storage item, since a cloud-built installer needs the same durable object storage CLOUD-2 already flags as a real (not just scalability) requirement.
+- **Dependencies:** should land together with, or immediately ahead of, CLOUD-2's CDN/object-storage work, since the built installer needs a durable home from day one; must preserve every static-config-only invariant already documented in `CLAUDE.md`'s Deployment section (installer never bundles skill file trees, only `pack.json`).
+- **Suggested order:** immediate, alongside the other three P0 items.
+- **Complexity:** L–XL — a real cloud build pipeline (NSIS build + Authenticode signing are currently local-machine-only steps) is significant new cloud infrastructure, not a refactor of existing code.
+- **Success criteria:** creating a workspace, or publishing its first skill pack, produces exactly one installer — built and signed in the cloud and served from Conxa's CDN — with no local Build Studio NSIS step involved; changing a workspace's branding/config produces an updated installer at the same distribution URL without a full local rebuild.
+
+### EXEC-10 — Long-workflow stress test: 30–40 steps, multiple tabs, cross-domain file transfer
+- **Category:** Execution & Recovery / Testing & Cleanup
+- **Description:** Build and pass a real test workflow of 30–40 steps that opens multiple tabs across different domains and moves a file between them end to end — e.g., export/download a file from a page on tab A, switch to tab B on a different domain, and upload that file there. Confirm the runtime actually supports this workflow shape today — sustained execution at this step count, correct cross-tab context switching, and a real file handoff between tabs — and fix whatever breaks. EXEC-5's #43 ("new-tab/new-window landed-context verification so an action can't silently execute in the wrong window") already names part of this gap in the abstract; this item is the concrete stress test that proves it one way or the other instead of leaving it as an inferred risk.
+- **Why required:** this exact shape — long, multi-tab, cross-domain, with a file passed between tabs — is a realistic enterprise pattern (pull a report from one system, upload it into another) that nothing in `runtime/test/` or the CI execution gate (`gate_replay.js`) currently exercises at this length or tab-complexity.
+- **Business value:** this is precisely the kind of workflow that would otherwise fail silently in front of a customer on day one; proving it works — or finding and fixing what doesn't — before a customer discovers it protects the core reliability pitch directly.
+- **Technical value:** likely exercises several already-tracked but unverified gaps at once — multi-tab/window context handling, download/upload verification (EXEC-5 #31/#32), and long-run stability (the recovery-tier ceiling, `RETRY_BUDGET_MAX`) — so it doubles as an integration test for multiple existing backlog items, not just new coverage.
+- **Dependencies:** benefits from EXEC-5's download/upload verification handlers landing first, though this stress test can also be the forcing function that gets them built.
+- **Suggested order:** immediate, alongside the other three P0 items; a natural companion to EXEC-5.
+- **Complexity:** M for the test itself; likely M–L once it surfaces real multi-tab/cross-domain gaps that need runtime fixes — expect it will, since nothing today explicitly exercises this path.
+- **Success criteria:** a recorded 30–40 step workflow spanning at least two tabs on different domains, including a file downloaded in one tab and uploaded in another, compiles and replays successfully end to end; a passing `runtime/test/` fixture (or `gate_replay.js` fixture) captures this scenario going forward so it can't silently regress.
+
+---
+
+## P1 — Blocking / Foundational (2 items)
 
 ### PROD-3 — Safe-action system (Strict Mode, entity binding, dry-run, compensation flows)
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -44,7 +107,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Business value:** this is what makes the "deterministic, auditable, provably safer than a human operator" pitch to finance/HR/payroll teams actually true rather than aspirational — described as unlocking those verticals specifically.
 - **Technical value:** builds on already-shipped machinery (the recovery-ceiling env var, `IdentityBundle` scoring) rather than starting from nothing; the dry-run capability is also a prerequisite for making PROD-1's first-run calibration completely side-effect-free.
 - **Dependencies:** benefits from EXEC-1 (conditional steps, since dry-run needs a way to skip the final committing action cleanly).
-- **Suggested order:** high priority, in parallel with EXEC-1 — this is a P0 in the source ranking specifically because it's what makes selling into destructive-action workflows (finance, HR, payroll) safe at all.
+- **Suggested order:** high priority, in parallel with EXEC-1 — this was ranked P0 in the original source ranking (now P1 in this file, after the 2026-08-09 addition of four higher-urgency P0 items) specifically because it's what makes selling into destructive-action workflows (finance, HR, payroll) safe at all.
 - **Complexity:** L — the individual mechanisms (danger labeling, entity binding, dry-run, compensation workflows) are each moderate, but the combination touches the compiler, the recorder, and the runtime.
 - **Success criteria:** a skill with a destructive final step cannot act on the wrong record even when recovery is invoked; a per-skill safety score is tracked and shown; a dry-run mode exists that never performs the final irreversible action.
 
@@ -62,7 +125,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P1 — High Value, Do Soon (21 items)
+## P2 — High Value, Do Soon (21 items)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -126,7 +189,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Complexity:** S–M — likely just uncommenting the step and confirming `runtime/test/gate-skill/` still passes against the current build output; could be M if the fixture needs updating for since-changed behavior.
 - **Success criteria:** `build-runtime-app.yml` runs `gate_replay.js` on every push and fails the build on a broken element finder; `CLAUDE.md`/`AGENTS.md`/`SHIP-GUIDE.md` are updated to say it's active again.
 
-### ARCH-3 — Executor-agnostic skill contract (schema discipline in `skill_spec.py`)
+### ~~ARCH-3 — Executor-agnostic skill contract (schema discipline in `skill_spec.py`)~~ (done 2026-08-10)
 - **Category:** Architecture
 - **Description:** Define and document an explicit boundary inside the `SkillPackage` schema (`packages/conxa-core/conxa_core/models/skill_spec.py`) between the **skill contract** — the executor-independent specification of the workflow (per-step `intent`, `input_binding`, `IdentityBundle` fingerprints, `ValidationBlock` assertions, `DecisionPolicy`, the intent graph, and PROD-3's future consequence classes / entity bindings) — and **browser-replay implementation detail** (`compiled_selectors` in Playwright grammar, `handler_hints` hover chains, `frame`/`shadow_path`, `snapshot_ref`/`snapshot_dom_hash`). Today the two are interleaved on `SkillStep` with no marked boundary. This is not a refactor or a second executor — it's a documentation-plus-review-discipline item: annotate which fields belong to which layer, record the split in `docs/TRD.md` and `docs/Backend-Schema.md`, and from then on gate schema evolution on it (e.g., EXEC-1's new `if_present`/`try_dismiss`/`wait_for_one_of` primitives must be defined in contract terms — a condition and a branch — with browser-specific evaluation kept on the executor side).
 - **Why required:** the strategic backing (`research-analysis/conxa-critical-analysis.md` §8, P2 — the "backend-agnostic skill contract" NEW idea) is that Conxa's durable position against both official connectors and frontier computer-use agents is owning the governance layer *above* the executor: steps, verifications, entity bindings, audit requirements — with browser replay as merely the first pluggable backend (a graduated connector per PROD-7, or a computer-use model, being later ones). That only stays possible if executor assumptions don't quietly leak into the contract while the schema is still evolving. Doing this now is near-free; unpicking Playwright assumptions from a shipped, fleet-deployed format later is not.
@@ -195,7 +258,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 ### EXEC-9 — Dataset-grade telemetry: structure resolution/drift/repair events for future compile-time priors
 - **Category:** Execution & Recovery
 - **Description:** Redesign the runtime→cloud telemetry events (`runtime/tracker.js` → `tracking_routes.py`) so every element-resolution outcome is captured in a form that can later *train* the fleet durability dataset, not just alert on drift. Per resolved step, that means recording: which `IdentityBundle` signal engine won (testid / role / text / relational / structural), its `orthogonality_class`, how deep the fallback walk went before success, whether `stable_hash` matched, the app's `compat_fingerprint`, and — on repair — which signal class the *replacement* selector came from. Today's telemetry supports the detection/alerting half (the drift queue exists); this item is about making the events rich enough that EXEC-2's flywheel can learn "which signal classes survive which drift types, per app/framework" as compile-time durability priors.
-- **Why required:** the durability dataset (EXEC-2, and `research-analysis/conxa-critical-analysis.md` item 9) is identified across the research corpus as Conxa's only structurally-uncopyable moat — it requires a fleet to exist, so neither a connector vendor nor a frontier lab can backfill it. But the dataset is only as good as the events feeding it, and **every run that executes before the event schema is dataset-grade is training data lost forever**. This is why the schema work is P1 even though the learning pipeline that consumes it (EXEC-2) is sequenced later behind BUILD-1.
+- **Why required:** the durability dataset (EXEC-2, and `research-analysis/conxa-critical-analysis.md` item 9) is identified across the research corpus as Conxa's only structurally-uncopyable moat — it requires a fleet to exist, so neither a connector vendor nor a frontier lab can backfill it. But the dataset is only as good as the events feeding it, and **every run that executes before the event schema is dataset-grade is training data lost forever**. This is why the schema work is P2 even though the learning pipeline that consumes it (EXEC-2) is sequenced later behind BUILD-1.
 - **Business value:** protects the primary compounding asset — and the primary acquisition asset (see PROD-13) — from the silent failure mode of "we had thousands of runs but only logged pass/fail."
 - **Technical value:** small, well-bounded schema work now versus an unfixable data gap later; also directly improves the existing drift queue and PROD-11's health dashboard, which get richer signal for free from the same events.
 - **Dependencies:** none upstream (deliberately decoupled from EXEC-2/BUILD-1 so capture starts before the learning pipeline exists). New event codes must be documented in `docs/Backend-Schema.md` per the doc-maintenance rules.
@@ -278,7 +341,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P2 — Valuable, Sequence Around Other Work (17 items)
+## P3 — Valuable, Sequence Around Other Work (17 items)
 
 ### PROD-2 — Recordability pre-check (green/yellow/red compile-time score)
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -482,7 +545,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P3 — Low Urgency, Opportunistic (17 items)
+## P4 — Low Urgency, Opportunistic (17 items)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -624,7 +687,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** opportunistic, after the higher-priority items in this category (EXEC-1 through EXEC-6) — this is explicitly the "Tier 3: valuable, complete the coverage" tier of the source list, not the critical path.
 - **Complexity:** S–M per item.
 - **Success criteria:** each item ships as an independent, individually-testable refinement; no single success criterion covers the whole set.
-- **Discovered 2026-07-09 (post-condition validation research), updated 2026-07-09:** #50's per-step half now ships — `runtime/run.js::verifyStep` evaluates every assertion on a step (not just up to the first required failure), polls (Playwright-style web-first assertions) instead of sampling once, and emits a full `results` audit as a `verify_result` telemetry event per step. Several of the same research pass's follow-ons have since landed too: ephemeral elements (toasts/cookie banners) are now filtered out of the REQUIRED promotion slot at compile time (`validation_planner.py` + `selector_filters.is_ephemeral_anchor`); a per-step Validation panel now exists in the Human Edit screen (`StepConfigForm.tsx`, shared `components/validation/AssertionEditor.tsx`); and `verify_result` is now aggregated fleet-wide into `assertion_health_by_step` on `GET /api/v1/tracking/dashboard`, rendered as the Dashboard's Assertion health card — the EXEC-9 tie-in above. **Still open for #50:** batching non-fatal failures *across* an entire run into one end-of-run report (today each step's audit is independent). **Deliberately not attempted:** entity-scoped assertions for destructive/commit clicks on repeating rows (ties into PROD-3) — there is no repeating-container/row detection anywhere in the recorder or compiler today; building one from scratch is real, unbuilt P0/XL infra (exactly PROD-3's scope), not a surgical addition to this item, and a heuristic shim would be unsound for destructive-action safety.
+- **Discovered 2026-07-09 (post-condition validation research), updated 2026-07-09:** #50's per-step half now ships — `runtime/run.js::verifyStep` evaluates every assertion on a step (not just up to the first required failure), polls (Playwright-style web-first assertions) instead of sampling once, and emits a full `results` audit as a `verify_result` telemetry event per step. Several of the same research pass's follow-ons have since landed too: ephemeral elements (toasts/cookie banners) are now filtered out of the REQUIRED promotion slot at compile time (`validation_planner.py` + `selector_filters.is_ephemeral_anchor`); a per-step Validation panel now exists in the Human Edit screen (`StepConfigForm.tsx`, shared `components/validation/AssertionEditor.tsx`); and `verify_result` is now aggregated fleet-wide into `assertion_health_by_step` on `GET /api/v1/tracking/dashboard`, rendered as the Dashboard's Assertion health card — the EXEC-9 tie-in above. **Still open for #50:** batching non-fatal failures *across* an entire run into one end-of-run report (today each step's audit is independent). **Deliberately not attempted:** entity-scoped assertions for destructive/commit clicks on repeating rows (ties into PROD-3) — there is no repeating-container/row detection anywhere in the recorder or compiler today; building one from scratch is real, unbuilt P1/XL infra (exactly PROD-3's scope), not a surgical addition to this item, and a heuristic shim would be unsound for destructive-action safety.
 
 ### UPD-2 — `[DECISION]` Installer code-signing certificate procurement
 - **Category:** Auto Updates
@@ -633,7 +696,7 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Business value:** directly gates the ability to close the first enterprise Windows customer.
 - **Technical value:** none remaining — the engineering work is done; this is purely a procurement/ops action.
 - **Dependencies:** none.
-- **Suggested order:** immediate — per `docs/Sales-Blockers.md`'s "Now" recommendation, this is the last thing between the current build and a fleet-deployable, GPO-safe installer. (Its listing under P3 here reflects that no *engineering* work remains, not that it's unimportant — see `docs/Sales-Blockers.md` for the business-priority framing.)
+- **Suggested order:** immediate — per `docs/Sales-Blockers.md`'s "Now" recommendation, this is the last thing between the current build and a fleet-deployable, GPO-safe installer. (Its listing under P4 here reflects that no *engineering* work remains, not that it's unimportant — see `docs/Sales-Blockers.md` for the business-priority framing.)
 - **Complexity:** S — procure a Windows EV code-signing certificate (~$200/yr), install it in the build machine's certificate store, and set the env var. No code changes needed.
 - **Success criteria:** a build produced with the certificate installed passes Windows SmartScreen without an "Unknown Publisher" warning.
 
@@ -809,12 +872,61 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
+## P3 Discovered Items (2026-08-12 Plugin→Workflow/SkillPack refactor)
+
+### TEST-7 — Dev-script renaming cleanup: test_plugin.py, rebuild_plugin.py, plugin_test/ directory
+- **Category:** Testing & Cleanup
+- **Description:** Internal dev/debug tooling scripts (`conxa-cloud/scripts/test_plugin.py`, `rebuild_plugin.py`, `scripts/plugin_test/` directory, `PLUGIN_TEST_README.md`) still carry "plugin" terminology from the pre-refactor entity model. These scripts are confirmed NOT functionally broken (they operate on on-disk bundle-slug lookups, not the Plugin model/API), but their naming is stale and confuses future maintainers. Rename all references to align with post-refactor terminology (plugin → workflow, where applicable; plugin_test/ folder → maybe workflow_test_suite/ or keep generic).
+- **Why required:** stale naming in developer tooling creates confusion and maintenance debt — future engineers reading the codebase will wonder if these scripts are handling the old Plugin entity or the new Workflow model.
+- **Business value:** low — purely developer-facing cleanup.
+- **Technical value:** low — no functional changes, pure naming/documentation alignment.
+- **Dependencies:** none; safe to do anytime.
+- **Suggested order:** opportunistic — next time these scripts are touched, or bundled with the next developer-docs pass.
+- **Complexity:** S — find-and-replace in filenames/content + docstring updates.
+- **Success criteria:** all dev scripts in `conxa-cloud/scripts/` use consistent terminology (workflows, not plugins) in their names and documentation.
+
+### ADV-2 — Orphaned cloud-frontend jobsApi.ts and associated job-queue infrastructure
+- **Category:** Advanced
+- **Description:** `conxa-cloud/frontend/src/api/jobsApi.ts` is a fully-typed fetch wrapper over a cloud-side job-queue API (job status, polling, cancellation) that exists in the type definitions but has zero actual consumers in the current codebase. Discovered during Plugin→Workflow refactor (`grep -r "jobsApi"` found only test stubs and the file itself). This suggests either: (1) the job-queue infrastructure was built but never wired into the cloud backend's `main.py` or any routers, or (2) it was removed from the backend but the frontend stub was left behind. Either way, the client is dead code and should be removed unless it's a stub awaiting future implementation.
+- **Why required:** dead code is a maintenance hazard and obscures the actual API surface the cloud exposes.
+- **Business value:** zero — purely internal cleanup.
+- **Technical value:** low — just deleting unused code. If the job-queue is actually planned, this becomes a different task (implement the backend route), not a cleanup.
+- **Dependencies:** run `grep -r "jobsApi\|job.*queue" conxa-cloud/` to determine if the backend work actually exists (check `app/api/*.py` and `app/services/*.py` for any route or service using Job/queue terminology).
+- **Suggested order:** opportunistic — low-risk cleanup, doesn't block anything.
+- **Complexity:** S — delete the file and any imports; verify no breakage.
+- **Success criteria:** `jobsApi.ts` is removed; `npm run build` in `conxa-cloud/frontend` succeeds with no errors; a search for "job" in the frontend code returns zero API-related results.
+
+### DOC-5 — Comprehensive review and updates to Backend-Schema.md for Workflow/SkillPack split
+- **Category:** Documentation
+- **Description:** Backend-Schema.md underwent routing-level updates during the Plugin→Workflow refactor (all `/api/v1/plugins/` → `/api/v1/workflows/`), but the data models section (§2 Plugin/PluginWorkflow/PluginAuth/PluginBuild/PluginInstaller → Workflow/SkillPack split) and ERD diagrams (§6) still describe the old Plugin entity structure with nested PluginWorkflow lists. The doc needs a comprehensive rewrite of the models section to show: Workflow (flat, 1 recording each), SkillPack (workspace-level, shared build/installer), and the KV namespace updates (`plugins` → `workflows`, new `skill_packs_meta` namespace). The ERD should be redrawn to show the new cardinality (N workflows : 1 SkillPack per workspace).
+- **Why required:** Backend-Schema.md is the source-of-truth doc for the data contract; a stale doc creates confusion during implementation and review.
+- **Business value:** high — prevents future bugs from misunderstanding the current data model.
+- **Technical value:** high — keeps the contract doc accurate.
+- **Dependencies:** depends on this refactor being complete (it is).
+- **Suggested order:** soon — within the next doc-maintenance pass.
+- **Complexity:** M — requires rewriting §2 (models), updating §6 (ERD), updating §7 (KV namespace map), and spot-checking §5 (API examples) to ensure all request/response bodies use updated field names.
+- **Success criteria:** Backend-Schema.md §2–7 accurately describe Workflow/SkillPack models, KV namespaces, and the API contract with no references to the old Plugin entity structure.
+
+### DOC-6 — `docs/cost_model.md` still narrates the business/pricing model in "plugin" terms
+- **Category:** Documentation
+- **Description:** `docs/cost_model.md` uses "plugin" throughout as the business/pricing unit (e.g. "1 plugin, 50 workflows", "Plugin Compilation", "live plugins", per-plugin telemetry, plugin adoption metrics) — this predates the 2026-08-12 Plugin→Workflow/SkillPack entity rename and the term now maps most closely to the new `SkillPack` concept (one company's shared build+installer, containing many workflows). Not fixed as part of that refactor because this doc isn't in CLAUDE.md's mandatory-update table for entity/API changes (it's pricing narrative, not architecture), and because it has ~30+ mentions including dated historical changelog entries (§ version history, e.g. "v14: Replaced visible workflow/plugin caps...") that must NOT be rewritten — those are a historical record of past pricing decisions, not current-state documentation.
+- **Why required:** stale business terminology in the doc that governs LLM unit-economics decisions risks confusing future pricing/product discussions about what a "plugin" actually is post-rename.
+- **Business value:** medium — this doc directly informs pricing/tier decisions.
+- **Technical value:** low — pure terminology, no code changes.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic — next time cost_model.md is substantively revised (it already has a "TODO" version-history habit of batching several changes per revision).
+- **Complexity:** M — requires reading each occurrence in context to distinguish current-state prose (rewrite: "plugin" → "skill package") from historical changelog entries (leave untouched).
+- **Success criteria:** all forward-looking prose in cost_model.md uses "skill package" terminology consistent with the rest of the docs; the version-history log at the bottom is left as an untouched historical record.
+
+---
+
 ## Final Review Notes (from the audits that produced this file)
 
 - Every row in `docs/Security.md`'s security-gaps table (SG-01 through SG-13) has a corresponding item above or is confirmed already fully resolved with no residual work.
 - Every "done" claim corrected during the first audit pass (installer code signing, the `/api/v1` gap, the gate_replay.js CI gate status) was verified directly against code, not assumed from prior docs.
 - **Second pass:** the first pass under-mined the research corpus — it built this file almost entirely from the engineering-gap documents (`gap-analysis.md`, `master-insights.md`, `master-recommendations.md`, `Sales-Blockers.md`) and direct code checks, while only *summarizing* (not extracting action items from) `conxa-critical-analysis.md`, `conxa-solutions-by-problem.md`, `top-50-improvements.md`, `build-order.md`, `agentic-discovery-strategy.md`, the go-to-market folder, `ops/private-repo-migration.md`, the `twelvelabs-video-strategy.md`, and `docs/UI-UX-Brief.md`'s own Priority 2/3 backlog. That pass added the Product Strategy items, BUILD-2, MCP-2/MCP-3, EXEC-5 through EXEC-8, UPD-4, and ADV-1 to close that gap. Items marked `[UNVERIFIED]` above were sourced from the research corpus without an individual code-level check (unlike the rest of this file) — a couple of candidate items from the same source list (top-50 #9 "consume compile-time confidence at runtime" and #21 "wait-enabled/aria-disabled gate") were spot-checked and found to already be shipped, so they were deliberately excluded rather than re-listed as open.
-- **Third pass (this update):** re-sorted the whole file by priority tier (P0–P3) instead of by subsystem category, per user request. No item content changed — each item gained a **Category:** field so the previous category grouping isn't lost, just no longer the primary sort key. The old "Phase 10 — Enterprise Features" section (a pointer-only section with no items of its own) was folded into the file's intro instead of kept as a structural element.
+- **Third pass:** re-sorted the whole file by priority tier (P0–P3) instead of by subsystem category, per user request. No item content changed — each item gained a **Category:** field so the previous category grouping isn't lost, just no longer the primary sort key. The old "Phase 10 — Enterprise Features" section (a pointer-only section with no items of its own) was folded into the file's intro instead of kept as a structural element.
+- **Fourth pass (2026-08-09, this update):** the whole priority ladder shifted down one tier (old P0 → P1, P1 → P2, P2 → P3, P3 → P4) to make room for a new P0 tier of four founder-directed items: `CLOUD-10` (homepage positioning + pricing), `BUILD-14` (workflow-centric Record/Compile page + folder grouping), `ARCH-4` (installer generation migrating from Build Studio to Conxa Cloud), and `EXEC-10` (30–40 step multi-tab cross-domain stress test). No existing item's content changed beyond its section label and the handful of in-body cross-references that named a specific tier number (`PROD-3`'s and `EXEC-7`'s references to PROD-3 being "P0", `EXEC-9`'s reference to its own old-P1 tier, `UPD-2`'s reference to being listed under old-P3) — those were updated to match the new numbering so the file stays internally consistent.
 - `CLAUDE.md`'s documentation table was checked against `ls docs/` post-archival and is current as of the first pass — recheck this after any future archival/rename to avoid the exact drift that pass found and fixed.
 - `docs/Sales-Blockers.md`, `docs/Implementation-Plan.md`, and this file agree on wording for the installer-code-signing item (UPD-2) — all three were updated together in the first pass.
 - New-file discovery: `SHIP-GUIDE.md` was found during the first audit's verification pass despite not appearing in the original per-file research — it was confirmed accurate and just needed one broken cross-reference fixed and a doc-table listing added. Any `.md` file created after this audit began should get the same treatment (read, verify, cross-reference) before being assumed current.

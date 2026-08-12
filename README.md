@@ -34,12 +34,12 @@ conxa-builder/              Build Studio — Windows desktop app
 
 conxa-cloud/                Cloud SaaS — coordination only, no recording or execution
   backend/                  FastAPI (Render) — LLM proxy, auth, billing, skill hosting
-  frontend/                 Next.js 16 dashboard (Vercel) — Dashboard, Plugins, Billing, Team
+  frontend/                 Next.js 16 dashboard (Vercel) — Dashboard, Skill Packages, Billing, Team
 
 runtime/                    Node.js MCP server — ships to ~/.conxa/runtime/ on customer machine
 
 docs/                       Authoritative documentation — read before changing anything
-data/                       Runtime state: sessions, plugins, skills, cache, chromium
+data/                       Runtime state: sessions, workflows, skills, cache, chromium
 ```
 
 ---
@@ -221,7 +221,7 @@ compiler/build.py            compile_skill_package():
     • RecoveryBlock          anchor signals + fallback selectors
     • structural_fingerprint drift baseline for version detection
   ↓
-plugin_builder.py            data-only skill package (auth files never included)
+skill_package_builder.py     data-only skill package (auth files never included)
 ```
 
 ### Runtime — Self-Healing Recovery Cascade
@@ -277,7 +277,7 @@ Tagged `app-v*` push triggers `build-runtime-app.yml`: obfuscates the business-l
 | `runtime/run.js`, `sync.js`, `tracker.js`, `auth_manager.js`, etc. | Tag `app-v*` (rebuilds obfuscated app layer only) |
 | `conxa-builder/` (Electron shell, Python backend, compiler) | Tag `studio-v*` |
 | `packages/conxa-core/` — models, config, db, llm | Push to Render **and** tag `studio-v*` |
-| `packages/conxa-core/` — NSIS template, plugin/installer builder | Tag `studio-v*` only (cloud never builds installers) |
+| `packages/conxa-core/` — NSIS template, skill package/installer builder | Tag `studio-v*` only (cloud never builds installers) |
 
 > **Rule of thumb:** code that runs on the *customer's machine* → runtime tags (`host-v*` or `app-v*`). Code the *SaaS vendor* uses in the desktop app → `studio-v*`. Code the *Render API* executes → push to Render. `conxa-core` is shared — check which consumers you actually changed.
 
@@ -287,7 +287,7 @@ Tagged `app-v*` push triggers `build-runtime-app.yml`: obfuscates the business-l
 
 These are non-negotiable.
 
-- **Auth files never enter build output.** `auth/auth.json`, Playwright storageState, and credentials are local runtime state only. `plugin_builder.py` enforces this.
+- **Auth files never enter build output.** `auth/auth.json`, Playwright storageState, and credentials are local runtime state only. `skill_package_builder.py` enforces this.
 - **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. No silent LLM fallbacks in compiled-selector or a11y paths.
 - **Iframe chain is preserved verbatim** from recording through compile through execution. Bounding boxes are page-level (offsets accumulated up the parent chain).
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** Never retried.

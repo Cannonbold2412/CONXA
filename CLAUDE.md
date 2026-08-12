@@ -74,8 +74,8 @@ packages/conxa-core/        Shared Python foundation — pip package `conxa_core
   conxa_core/               Installed by BOTH cloud backend and Build Studio
     config.py               Pydantic settings (env_prefix=SKILL_)
     db.py                   Dual store: Postgres (cloud) / filesystem (Studio) + healthcheck()
-    models/                 Pydantic schemas: SkillPackage, RecordedEvent, Plugin
-    storage/                JSON/SQLite stores, snapshots, plugin_store, skill_packages.py
+    models/                 Pydantic schemas: SkillPackage, RecordedEvent, Workflow, SkillPack
+    storage/                JSON/SQLite stores, snapshots, workflow_store, skill_pack_store, skill_packages.py
                             (read/list side only — generation lives in conxa_compile, see below)
     llm/                    Router protocol + get/set_router singleton + shared OpenAI-compatible
                             HTTP/prompt-building engine (client.py) — the cloud's own provider
@@ -110,10 +110,10 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
       storage/              skill_packages_build.py — bundle generation/write/delete/rename
                             (read/list side is conxa_core.storage.skill_packages); formatters,
                             templates
-      plugin_templates/, installer_templates/   Templates copied into generated bundles/installers
+      skill_package_templates/, installer_templates/   Templates copied into generated bundles/installers
       skill_pack_build_log.py  Request-scoped build log for skill-pack writes
       anchors/, confidence/, policy/
-      plugin_builder.py, installer_builder.py, conxa_runtime.py
+      skill_package_builder.py, installer_builder.py, conxa_runtime.py
   pyinstaller.spec          Bundles conxa_core + conxa_compile into dist/backend/
 
 conxa-cloud/                Thin cloud SaaS — proxy / auth / billing / dashboard / hosting
@@ -121,12 +121,12 @@ conxa-cloud/                Thin cloud SaaS — proxy / auth / billing / dashboa
     app/
       main.py               Routers + fail-fast prod config validation + /healthz, /readyz
       api/                  llm_proxy, cashfree, product, publish, skillpack_update,
-                            updates, tracking, job, plugins, security, entitlement_routes,
+                            updates, tracking, job, workflows, security, entitlement_routes,
                             manifest_signer, installer_storage, skillpack_storage
       llm/router.py         Multi-provider pool: Groq, Google AI Studio, NVIDIA NIM
       services/             saas, rbac, llm_metering, jobs
     requirements.txt, build.sh, start.sh, Dockerfile, ROUTER_SETUP.md
-  frontend/                 Next.js 16 dashboard (Dashboard, Plugins, Billing, Team, Settings)
+  frontend/                 Next.js 16 dashboard (Dashboard, Skill Packages, Billing, Team, Settings)
     package.json            Clerk, TanStack Query, Tailwind 4, shadcn/ui, Framer Motion
   scripts/                  recompile_session.py, test_plugin.py
   tests/                    pytest suite (core + compile + cloud)
@@ -150,7 +150,7 @@ runtime/                    Node.js MCP server — ships to ~/.conxa/ on custome
   test/                     Unit + integration tests: test_resolver.js, test_resolve_adapter.js,
                             test_recovery.js, gate_replay.js (execution gate CI fixture)
 
-data/                       Runtime state: sessions/, plugins/, skills/, saas/, cache/, chromium/
+data/                       Runtime state: sessions/, workflows/, skills/, saas/, cache/, chromium/
 
 .github/workflows/
   build-runtime-host.yml    CI: builds host exe (--no-bytecode), tags host-vX.Y.Z releases
@@ -259,7 +259,7 @@ The full technical reference — pipeline stages, runtime filesystem layout, all
 
 Quick orientation:
 
-- **Build Studio** (`conxa-builder/python/conxa_compile/`): `bridge.js` → `session.py` → `pipeline/run.py` → `compiler/build.py` → `plugin_builder.py`. All local. Cloud is not involved. Compiler uses `IdentityBundle` as sole identity source on the primary compile path — LLM writes selector strings only via the 1-click fix API's re-compile path (see Key Invariants); otherwise LLM is limited to intent, vision anchors, recovery, and the intent graph.
+- **Build Studio** (`conxa-builder/python/conxa_compile/`): `bridge.js` → `session.py` → `pipeline/run.py` → `compiler/build.py` → `skill_package_builder.py`. All local. Cloud is not involved. Compiler uses `IdentityBundle` as sole identity source on the primary compile path — LLM writes selector strings only via the 1-click fix API's re-compile path (see Key Invariants); otherwise LLM is limited to intent, vision anchors, recovery, and the intent graph.
 - **Cloud** (`conxa-cloud/`): coordination only — LLM proxy, skill pack hosting, telemetry ingest, billing. Does not record, compile, or execute.
 - **Runtime** (`runtime/`): two-layer architecture on the customer's machine.
   - **Host exe** (`@yao-pkg/pkg`, built `--no-bytecode`): bundles `bootstrap.js` + `_pkg_stubs.js` only. Provides `__hostRequire` so disk-loaded app code can use Playwright etc. Built with `build-runtime-host.yml`, tagged `host-vX.Y.Z`.
@@ -279,11 +279,11 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Runtime element resolution | `runtime/resolver.js` (pure, unit-testable) + `runtime/resolve_adapter.js` (Playwright adapter) |
 | Runtime recovery cascade | `runtime/recovery.js` — L1 exception ladder + L2 re-hover/a11y (Tier 1–2, zero tokens) |
 | Assertions / outcome validation | `conxa_compile/compiler/validation_planner.py`; runtime `verifyAssertions()` in `run.js` |
-| Plugin packaging | `conxa_compile/plugin_builder.py` (data-only output, auth excluded) |
+| Skill package building | `conxa_compile/skill_package_builder.py` (data-only output, auth excluded) |
 | LLM calls (compile side) | task clients in `conxa_compile/llm/` → `conxa_core.llm.get_router()` → cloud proxy |
 | LLM provider pool (cloud) | `conxa-cloud/backend/app/llm/router.py` behind `POST /api/v1/llm/proxy/{text,vision}` |
 | Frame / iframe handling | `docs/TRD.md` § "Iframe Pipeline"; `bridge.js`, `session.py`, `build.py`, `run.js` |
-| Shared data models | `packages/conxa-core/conxa_core/models/` — SkillPackage, RecordedEvent, Plugin |
+| Shared data models | `packages/conxa-core/conxa_core/models/` — SkillPackage, RecordedEvent, Workflow, SkillPack |
 | Auth (Build Studio) | `conxa-builder/python/services/auth_service.py` — Clerk PKCE → OS keyring |
 | Auth (Runtime) | `runtime/auth_manager.js` — per-company token in keytar; AES-256-GCM session |
 | Auth (Cloud API) | `conxa-cloud/backend/app/api/security.py` — Clerk JWT via PyJWT + JWKS |
@@ -294,7 +294,7 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Host / app update manifests | `conxa-cloud/backend/app/api/updates_routes.py` (manifest_version 2; deps: `conxa-runtime`, `conxa-app`) |
 | Studio sandbox for workflow tests | `conxa-builder/python/conxa_compile/conxa_runtime.py` — stages host exe + app layer under `sandbox/.conxa/` |
 | CI execution gate | `runtime/test/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay, **active** in both `build-runtime-host.yml` (vs. the freshly built exe) and `build-runtime-app.yml` (vs. the `MIN_HOST` exe). A red app-layer gate usually means `MIN_HOST` is stale, not that the gate is wrong |
-| Frontend screens | `conxa-cloud/frontend/src/` — Dashboard, Plugins, Billing, Team, Settings |
+| Frontend screens | `conxa-cloud/frontend/src/` — Dashboard, Skill Packages, Billing, Team, Settings |
 
 ---
 
@@ -318,12 +318,12 @@ Self-updates poll `/api/v1/updates/runtime-manifest` (manifest_version 2; deps k
 
 These are non-negotiable. Do not work around them.
 
-- **Auth files never enter build output.** `auth/auth.json`, Playwright storageState, and credentials are local runtime state only. `plugin_builder.py` enforces this — the check must remain.
+- **Auth files never enter build output.** `auth/auth.json`, Playwright storageState, and credentials are local runtime state only. `skill_package_builder.py` enforces this — the check must remain.
 - **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. Do not introduce silent LLM fallbacks into compiled-selector or a11y resolution paths. `recovery.js` implements L1/L2; `run.js` escalates to Tier 3+ only after both are exhausted.
 - **Iframe chain is preserved verbatim** from recording through compile and execution. Bounding boxes are page-level (offsets accumulated up the parent chain in `session.py`).
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** These are navigation markers, not interactable elements. They are never retried.
-- **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. Do not route anything else there. **Documented permanent exception:** `tracking_routes.py`'s public telemetry-ingest endpoint is also served bare at `/api/tracking/{company}/events` (in addition to `/api/v1/tracking/...` and the versioned `/api/v1/plugins/{installer_version}/{company}/tracking/events`). This is a deliberate, permanent back-compat alias for already-deployed runtimes whose installer-baked `pack.json.tracking.tracking_url` points at the bare path — it cannot be removed without breaking those installs, and it is not sanctioned as a precedent for adding further routes outside `/api/v1` by analogy.
-- **The cloud does not compile or execute.** Recording, compilation, plugin building, and skill execution are local-only. Keep them that way.
+- **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. Do not route anything else there. **Documented permanent exception:** `tracking_routes.py`'s public telemetry-ingest endpoint is also served bare at `/api/tracking/{company}/events` (in addition to `/api/v1/tracking/...` and the versioned `/api/v1/workflows/{installer_version}/{company}/tracking/events`). This is a deliberate, permanent back-compat alias for already-deployed runtimes whose installer-baked `pack.json.tracking.tracking_url` points at the bare path — it cannot be removed without breaking those installs, and it is not sanctioned as a precedent for adding further routes outside `/api/v1` by analogy.
+- **The cloud does not compile or execute.** Recording, compilation, skill package building, and skill execution are local-only. Keep them that way.
 - **Host exe built `--no-bytecode`.** V8 bytecode (.jsc) masks the Node version and causes the Playwright selector engine to segfault in pkg-bundled binaries. Never re-enable bytecode for the host exe.
 - **Resolver never blindly picks `candidate[0]`.** `resolver.js` requires the winning candidate's margin over the runner-up to clear `uniqueMargin` (default 0.15); otherwise it falls through to the next signal. Do not add shortcut paths that skip this gate.
 - **LLM does not write selector strings on the primary compile path.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators when a workflow is first compiled. LLM is retained for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph. Two narrow, user-initiated re-compile exceptions exist, neither part of the primary compiler: the 1-click fix API (`compiler/patch.py::_regenerate_compiled_selectors`, via `llm/selector_regeneration.py`), which re-runs LLM-assisted selector generation against the original DOM snapshot when a user manually re-targets a step's element in the editor; and the Human Edit re-target wizard's "draw a new region" path (`editor/retarget.py` → `llm/region_selector_vision.py`, task `region_selector`), which uses a vision LLM — screenshot with the drawn region highlighted, plus the recorded DOM — because no recording stores per-element geometry a text prompt could resolve a drawn region against.
@@ -375,7 +375,7 @@ Keep appending to `FIX.md` after every prompt as usual. When `FIX.md` crosses a 
 `docs/PRD.md` is a strategic document. It reflects the company's vision, product positioning, competitive analysis, and multi-year roadmap. It should only change when something fundamentally shifts at the company level:
 
 - A new target market or customer segment is adopted.
-- The business model changes (e.g., from per-plugin to platform licensing).
+- The business model changes (e.g., from per-skill-package to platform licensing).
 - The distribution model changes significantly (e.g., moving beyond MCP).
 - The core value proposition shifts (e.g., adding a cloud execution tier).
 - A new phase is added to the roadmap after completing a major milestone.

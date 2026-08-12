@@ -108,7 +108,7 @@ output/
 **/data/skill-packs/
 **/data/saas/
 **/data/cache/
-**/data/plugins/
+**/data/workflows/
 **/data/skills/
 **/data/executions/
 **/data/runs/
