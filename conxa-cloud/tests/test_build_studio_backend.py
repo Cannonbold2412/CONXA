@@ -496,117 +496,90 @@ def test_cmd_build_installer_non_fatal_when_upload_fails(backend, monkeypatch, t
     assert result["installer_path"] == str(tmp_path / "Render-Setup.exe")
 
 
-def test_auth_stop_recording_marks_workflow_ready(backend, monkeypatch, tmp_path):
+def test_finish_group_app_auth_marks_group_and_workflows_ready(backend, monkeypatch, tmp_path):
+    """Superseded test_auth_stop_recording_marks_workflow_ready — auth is now
+    captured once per group app (cmd_finish_group_app_auth), not per workflow."""
     b, _out = backend
-    globals_ = b.cmd_stop_recording.__globals__
+    globals_ = b.cmd_finish_group_app_auth.__globals__
 
     from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app
     from conxa_core.storage.workflow_store import create_workflow, get_workflow
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    workflow = create_workflow("Example Workflow", "https://example.test/login")
-    auth_path = tmp_path / "workflows" / workflow.id / "auth" / "auth.json"
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "https://example.test/dashboard")
+    app_id = group.apps[0].id
+    workflow = create_workflow("Example Workflow", "https://example.test", group_id=group.id)
 
-    class FakeContext:
-        def storage_state(self, path: str) -> None:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump({"cookies": [], "origins": []}, fh)
-
-    class FakePage:
-        url = "https://example.test/dashboard"
+    auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
 
     class FakeSession:
-        current_url = "https://example.test/dashboard"
-        _context = FakeContext()
-
-        def _active_page_sync(self):
-            return FakePage()
-
-        def _remember_page_url_sync(self, _page):
-            self.current_url = "https://example.test/dashboard"
-
-        def snapshot_events(self):
-            return []
-
         async def stop(self):
             # Mirrors RecordingSession.stop(): the recorder thread forces a final
             # storage_state autosave right before it tears down (session.py L1074).
             auth_path.parent.mkdir(parents=True, exist_ok=True)
-            self._context.storage_state(path=str(auth_path))
+            auth_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
 
     class FakeRegistry:
         def get(self, session_id: str):
             return FakeSession() if session_id == "sess-1" else None
 
+        def pop(self, session_id: str):
+            return None
+
     monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
 
-    result = b.cmd_stop_recording(
-        {"workflow_id": workflow.id, "session_id": "sess-1", "auth_mode": True},
+    result = b.cmd_finish_group_app_auth(
+        {"session_id": "sess-1", "group_id": group.id, "app_id": app_id},
         "rid",
     )
 
+    assert result["auth"]["ready"] is True
+    assert result["auth"]["apps_authenticated"] == 1
     updated = get_workflow(workflow.id)
-    assert result["workflow_status"] == "ready"
-    assert result["storage_state_saved"] is True
-    assert result["protected_url"] == "https://example.test/dashboard"
     assert updated is not None
-    assert updated.auth is not None
-    assert updated.auth.session_id == "sess-1"
     assert updated.status == "ready"
 
 
-def test_auth_stop_recording_uses_autosaved_state_after_browser_close(backend, monkeypatch, tmp_path):
+def test_finish_group_app_auth_fails_when_browser_closed_before_save(backend, monkeypatch, tmp_path):
+    """Superseded test_auth_stop_recording_uses_autosaved_state_after_browser_close."""
     b, _out = backend
-    globals_ = b.cmd_stop_recording.__globals__
+    globals_ = b.cmd_finish_group_app_auth.__globals__
 
     from conxa_core.config import settings
-    from conxa_core.storage.workflow_store import create_workflow, get_workflow
+    from conxa_core.storage.group_store import create_group, add_app
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    workflow = create_workflow("Closed Browser Workflow", "https://example.test/login")
-    auth_path = tmp_path / "workflows" / workflow.id / "auth" / "auth.json"
-    auth_path.parent.mkdir(parents=True)
-    auth_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
-
-    class ClosedContext:
-        def storage_state(self, path: str) -> None:
-            raise RuntimeError("Target page, context or browser has been closed")
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "https://example.test/dashboard")
+    app_id = group.apps[0].id
 
     class FakeSession:
-        current_url = "https://example.test/app"
-        _context = ClosedContext()
-
-        def _active_page_sync(self):
-            return None
-
-        def snapshot_events(self):
-            return []
-
         async def stop(self):
-            return None
+            return None  # no auth file ever written — browser closed before login completed
 
     class FakeRegistry:
         def get(self, session_id: str):
             return FakeSession() if session_id == "sess-closed" else None
 
+        def pop(self, session_id: str):
+            return None
+
     monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
 
-    result = b.cmd_stop_recording(
-        {"workflow_id": workflow.id, "session_id": "sess-closed", "auth_mode": True},
-        "rid",
-    )
+    from handlers.protocol import _CommandError
 
-    updated = get_workflow(workflow.id)
-    assert result["workflow_status"] == "ready"
-    assert result["storage_state_saved"] is True
-    assert result["protected_url"] == "https://example.test/app"
-    assert updated is not None
-    assert updated.auth is not None
-    assert updated.status == "ready"
+    with pytest.raises(_CommandError) as exc_info:
+        b.cmd_finish_group_app_auth(
+            {"session_id": "sess-closed", "group_id": group.id, "app_id": app_id},
+            "rid",
+        )
+    assert exc_info.value.code == "auth_capture_failed"
 
 
 def test_delete_workflow_removes_metadata_and_artifact_dir(monkeypatch, tmp_path):

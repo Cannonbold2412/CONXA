@@ -930,6 +930,7 @@ class TestSavedSkillJsonBuild:
         workflow = SimpleNamespace(
             id="wf1",
             workspace_id=workspace_id,
+            group_id="",
             slug="delete_database",
             name="Delete Database",
             session_id="workflow-session",

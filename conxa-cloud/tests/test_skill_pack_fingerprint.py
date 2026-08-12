@@ -37,7 +37,9 @@ def _seed_skill_dir(bundle_root, slug: str, *, with_fingerprint: bool) -> None:
 
 
 def _manifest(tmp_path, slug: str) -> dict:
-    return json.loads((tmp_path / "skill-packs" / "acme" / slug / "manifest.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (tmp_path / "skill-packs" / "acme" / "_default" / slug / "manifest.json").read_text(encoding="utf-8")
+    )
 
 
 def test_manifest_carries_structural_fingerprint(tmp_path, monkeypatch) -> None:
