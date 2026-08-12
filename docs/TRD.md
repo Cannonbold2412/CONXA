@@ -77,8 +77,8 @@ not in the execution hot path. The cloud is a coordination + telemetry layer.
 ┌────────────────▼─────────────────────────────┐
 │  React Renderer (Vite + TypeScript)          │
 │  electron/renderer/src/                      │
-│  Pages: Dashboard, Plugins, Record,          │
-│  HumanEdit, Compile, Build, Settings         │
+│  Pages: Dashboard, Workflows, HumanEdit,     │
+│  Compile, Publish, BuildInstaller, Settings  │
 │  State: Zustand (editorStore.ts)             │
 └────────────────┬─────────────────────────────┘
                  │ lib/ipc.ts → window.conxa.send()
@@ -110,9 +110,9 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 | `get_recording_status` | Live event count |
 | `run_pipeline` | Normalize raw events |
 | `compile` | Full compile → SkillPackage |
-| `create_plugin` / `list_plugins` / `get_plugin` / `delete_plugin` | Plugin CRUD |
-| `list_workflows` / `update_workflow` / `delete_workflow` | Workflow management |
-| `build_plugin` | Build data-only plugin folder |
+| `create_workflow` / `list_workflows` / `get_workflow` / `delete_workflow` | Workflow CRUD |
+| `get_skill_pack` | Get workspace's SkillPack + workflow list |
+| `build_skill_package` | Build workspace-scoped skill package |
 | `build_installer` | NSIS installer + cloud publish + upload |
 | `test_workflow` | Local runtime test |
 | `publish` | Push skill pack to cloud |
@@ -127,11 +127,11 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 
 ```
 ~/.conxa/              (or SKILL_DATA_DIR)
-├── plugins/
-│   └── {plugin_id}/
-│       ├── plugin.json        (Plugin model)
+├── workflows/
+│   └── {workflow_id}/
+│       ├── workflow.json       (Workflow model)
 │       └── auth/
-│           └── auth.json      (Playwright storageState — NEVER in build output)
+│           └── auth.json       (Playwright storageState — NEVER in build output)
 ├── sessions/
 │   └── {session_id}/
 │       ├── events.jsonl       (raw RecordedEvent stream)
@@ -148,7 +148,7 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 │           ├── recovery.json
 │           └── inputs.json
 ├── runs/
-│   └── {plugin_id}.jsonl
+│   └── {workflow_id}.jsonl
 ├── cache/
 │   └── sessions/              (staged auth for runtime test)
 ├── deps/
@@ -204,17 +204,17 @@ All under `/api/v1/` except health endpoints:
 | `POST /api/v1/usage/compile/release` | Release an uncommitted compile reservation | Clerk JWT |
 | `GET \| PUT \| DELETE /api/v1/workspace/llm-key` | Enterprise BYOK (Azure OpenAI) key config — GET never returns the key | Clerk JWT, owner/admin |
 | `GET /api/v1/subscriptions/plans` | Public price sheet — the four tiers, derived from `PLAN_LIMITS` so it can't drift; excludes the credit add-on | Public |
-| `POST /api/v1/plugins/publish` | Skill pack publish (legacy, permanent) — **mandatory**, fails the whole publish on cloud error | Clerk JWT |
-| `POST /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/upload` | Skill pack publish (versioned equivalent, §17 row) — same contract/mandatory semantics | Clerk JWT |
-| `GET /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions` | Skill-pack release history (version, release notes, `is_latest`) — the Skill Pack Publishing page's changelog | Clerk JWT |
-| `POST /api/v1/plugins/{slug}/installer/upload` | Upload .exe (legacy, permanent) — **optional**, failure never fails the build (only surfaced as a `cloud_upload_error` field) | Clerk JWT |
-| `POST /api/v1/plugins/{installer_version}/{company_slug}/installer/upload` | Upload .exe (versioned equivalent) — same optional semantics | Clerk JWT |
-| `GET /api/v1/plugins/generations` | `{current, supported, deprecated}` installer generations — Build Studio stamps `current` into new publishes/builds | Public |
-| `POST /api/v1/admin/plugins/generations` | Flip the default generation stamped into new builds (never affects already-installed runtimes) | Bearer: `CONXA_ADMIN_TOKEN` |
+| `POST /api/v1/workflows/publish` | Skill pack publish (legacy, permanent) — **mandatory**, fails the whole publish on cloud error | Clerk JWT |
+| `POST /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/upload` | Skill pack publish (versioned equivalent, §17 row) — same contract/mandatory semantics | Clerk JWT |
+| `GET /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions` | Skill-pack release history (version, release notes, `is_latest`) — the Skill Pack Publishing page's changelog | Clerk JWT |
+| `POST /api/v1/workflows/{slug}/installer/upload` | Upload .exe (legacy, permanent) — **optional**, failure never fails the build (only surfaced as a `cloud_upload_error` field) | Clerk JWT |
+| `POST /api/v1/workflows/{installer_version}/{company_slug}/installer/upload` | Upload .exe (versioned equivalent) — same optional semantics | Clerk JWT |
+| `GET /api/v1/workflows/generations` | `{current, supported, deprecated}` installer generations — Build Studio stamps `current` into new publishes/builds | Public |
+| `POST /api/v1/admin/workflows/generations` | Flip the default generation stamped into new builds (never affects already-installed runtimes) | Bearer: `CONXA_ADMIN_TOKEN` |
 | `GET /api/v1/installers/{slug}` | Installer download | Public if `SKILL_INSTALLER_SIGNING_KEY` unset (dev); otherwise requires `ts`+`sig` query params, HMAC-SHA256 signed, 10-min default window (SG-07) |
 | `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync — per-skill delta (see below), legacy permanent route | Rate-limited; token optional |
-| `GET /api/v1/plugins/{installer_version}/{company}/skill-packs/delta` | Runtime skill sync, versioned equivalent — identical contract | Rate-limited; token optional |
-| `POST /api/tracking/{co}/events` | Telemetry ingest — permanent back-compat alias (also served at `/api/v1/tracking/...` and the versioned `/api/v1/plugins/{installer_version}/{co}/tracking/events`) | Package tracking token |
+| `GET /api/v1/workflows/{installer_version}/{company}/skill-packs/delta` | Runtime skill sync, versioned equivalent — identical contract | Rate-limited; token optional |
+| `POST /api/tracking/{co}/events` | Telemetry ingest — permanent back-compat alias (also served at `/api/v1/tracking/...` and the versioned `/api/v1/workflows/{installer_version}/{co}/tracking/events`) | Package tracking token |
 | `GET /api/v1/tracking/companies` | Company list — not ops_tier-gated (navigation lookup, not analytics content) | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs` | Run summaries — `ops_tier` "basic"+ (§13.4) | Clerk JWT |
 | `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline — `ops_tier` "basic"+ | Clerk JWT |
@@ -232,12 +232,13 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — `since` is a JSON map of `{skill_slug: last_known_version}`; response is `{skills: [{name, action: "update"|"no_change", version?, files?}]}`. Each skill is compared and shipped independently — republishing one skill never triggers a re-download of the others. Authenticated by installer-embedded sync_token. | Bearer: `pack.json.sync_token`; 401 if invalid |
 | `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
-| `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, plugin create/delete) — `ops_tier` "basic"+; export is a documented follow-up, not yet a separate endpoint | Clerk JWT |
+| `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, workflow create/delete) — `ops_tier` "basic"+; export is a documented follow-up, not yet a separate endpoint | Clerk JWT |
 | `POST /api/v1/subscriptions/create` | Create Cashfree subscription (`subscription_id`, `auth_link`, `plan_id`) | Clerk JWT |
 | `POST /api/v1/subscriptions/webhooks/cashfree` | Cashfree webhook | Webhook secret HMAC over sorted `cf_`-prefixed fields |
 | `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
-| `GET /api/v1/plugins` | Plugin list | Clerk JWT |
-| `GET /api/v1/runs` | Run list (local) | Clerk JWT |
+| `GET /api/v1/workflows` | Workflow list + skill pack status | Clerk JWT |
+| `GET /api/v1/workflows/skill-packs` | SkillPack list (dashboard) | Clerk JWT |
+| `GET /api/v1/workflows/skill-packs/{company_slug}` | SkillPack detail (dashboard) | Clerk JWT |
 | `GET /api/v1/jobs/{job_id}` | Job status | Clerk JWT |
 
 ### 3.3 Authentication Middleware
@@ -245,14 +246,14 @@ All under `/api/v1/` except health endpoints:
 `app/api/security.py` — `ProductionRequestMiddleware`:
 
 1. Attaches a request ID to every request.
-2. Enforces body size limits (1MB general; 250MB for the `BUILD_ARTIFACT_UPLOAD_PATHS` set — `/api/v1/plugins/publish`, any `/installer/upload`, any `/skill-packs/upload`). A path missing from that set is silently held to the 1MB general limit, which is how versioned skill-pack publishes were being rejected until 2026-08-01.
+2. Enforces body size limits (1MB general; 250MB for the `BUILD_ARTIFACT_UPLOAD_PATHS` set — `/api/v1/workflows/publish`, any `/installer/upload`, any `/skill-packs/upload`). A path missing from that set is silently held to the 1MB general limit, which is how versioned skill-pack publishes were being rejected until 2026-08-01.
 3. When `SKILL_AUTH_REQUIRED=true`:
    - Extracts `Authorization: Bearer <token>`.
    - Verifies against Clerk JWKS (`SKILL_CLERK_JWKS_URL`).
    - Attaches `request.state.auth` with subject, org_id, claims.
 4. Public paths bypass auth: health endpoints, installer downloads, update manifests (including the signed `/api/v1/manifest.json`, polled by every installed runtime before any Clerk session exists), telemetry ingest, skill-pack delta GETs.
 
-   The **versioned** runtime endpoints nested under `/api/v1/plugins/{installer_version}/{company}/…` are exempted by *suffix*, not by prefix — `PUBLIC_VERSIONED_PLUGIN_SUFFIXES_GET = ("/skill-packs/delta",)` and `PUBLIC_VERSIONED_PLUGIN_SUFFIXES_POST = ("/tracking/events",)`. A blanket `/api/v1/plugins/` prefix exemption would also unauthenticate `plugin_routes.py`'s Clerk-protected dashboard endpoints (list/create/delete), which share that path segment. Both exempted sub-paths are package-token guarded in their own handlers.
+   The **versioned** runtime endpoints nested under `/api/v1/workflows/{installer_version}/{company}/…` are exempted by *suffix*, not by prefix — `PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_GET = ("/skill-packs/delta",)` and `PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST = ("/tracking/events",)`. A blanket `/api/v1/workflows/` prefix exemption would also unauthenticate `workflow_routes.py`'s Clerk-protected dashboard endpoints (list/create/delete), which share that path segment. Both exempted sub-paths are package-token guarded in their own handlers.
 
 ### 3.4 Workspace / Principal Model
 
@@ -278,7 +279,7 @@ In local dev (`SKILL_AUTH_REQUIRED=false`), all requests are treated as a synthe
 principal has **no active Clerk org**, they are in their own personal workspace
 (`personal_{user_id}`) — a workspace nobody else can reach, of which they are the sole member — so
 the empty role normalizes to `"owner"`, not `"basic_member"`. Defaulting them to `basic_member`
-locked every solo user out of all `require_admin` routes: publish, plugin create/delete, subscribe.
+locked every solo user out of all `require_admin` routes: publish, workflow create/delete, subscribe.
 Both identity paths (trusted proxy and Clerk JWT) pass `personal_workspace=not org_id`. Tested in
 `tests/test_llm_proxy_and_publish.py`.
 
@@ -442,7 +443,7 @@ that works without requiring admin rights or Developer Mode.
     ├── executions/{id}/
     │   ├── state.json
     │   └── checkpoint.json
-    └── runs/{plugin}.jsonl
+    └── runs/{workflow_id}.jsonl
 ```
 
 ---
@@ -510,7 +511,7 @@ The sync token is a `secrets.token_urlsafe(32)` string minted **at publish time*
 
 ```
 Build Studio publishes skill pack (Publish Skill Package — mandatory, primary action)
-  → POST /api/v1/plugins/publish (legacy) or /api/v1/plugins/{installer_version}/{slug}/skill-packs/upload (versioned)
+  → POST /api/v1/workflows/publish (legacy) or /api/v1/workflows/{installer_version}/{slug}/skill-packs/upload (versioned)
   → cloud mints sync_token (publish_routes._sync_token())
   → sync_token + installer_version written into cloud-side pack.json
   → publish response returns sync_token
@@ -561,19 +562,19 @@ sequenceDiagram
     Note over Studio: After build_installer command
     Backend->>Backend: read skill-packs/{slug}/pack.json
     Backend->>Backend: collect all files as base64
-    Backend->>Cloud: POST /api/v1/plugins/publish
-    Note over Backend,Cloud: Bearer Clerk JWT<br/>body: {slug, files[], skill_pack_version, skills[]}
+    Backend->>Cloud: POST /api/v1/workflows/publish
+    Note over Backend,Cloud: Bearer Clerk JWT<br/>body: {company_slug, files[], skill_pack_version, skills[]}
     
-    Cloud->>Cloud: _assert_owner(slug, workspace_id)
-    Note over Cloud: First publish claims slug ownership.<br/>Subsequent publishes from same workspace only.
-    Cloud->>Cloud: write files to data/skill-packs/{slug}/
+    Cloud->>Cloud: _assert_owner(company_slug, workspace_id)
+    Note over Cloud: First publish claims company_slug ownership.<br/>Subsequent publishes from same workspace only.
+    Cloud->>Cloud: write files to data/skill-packs/{company_slug}/
     Cloud->>Cloud: generate tracking token (secrets.token_urlsafe(32))
-    Cloud->>Cloud: store tracking_tokens[slug] in kv_store
-    Cloud->>Cloud: upsert Plugin record in kv_store
+    Cloud->>Cloud: store tracking_tokens[company_slug] in kv_store
+    Cloud->>Cloud: upsert SkillPack record in kv_store
     Cloud-->>Backend: {tracking: {tracking_token, tracking_url}, sync_url}
     
     Backend->>Backend: rewrite pack.json with tracking + sync_endpoint
-    Backend->>Cloud: POST /api/v1/plugins/{slug}/installer/upload
+    Backend->>Cloud: POST /api/v1/workflows/{slug}/installer/upload
     Note over Backend,Cloud: Bearer Clerk JWT<br/>body: raw .exe bytes
     Cloud->>Cloud: store to data/installers/{slug}/installer.exe
     Cloud->>Cloud: store meta.json (sha256, filename, version)
@@ -686,8 +687,8 @@ sequenceDiagram
 
 | Data | Owner | Storage Location |
 |---|---|---|
-| Plugin metadata (local) | Build Studio | `data/plugins/{id}/plugin.json` |
-| Auth session (Playwright state) | Build Studio (LOCAL ONLY) | `data/plugins/{id}/auth/auth.json` |
+| Workflow metadata (local) | Build Studio | `data/workflows/{id}/workflow.json` |
+| Auth session (Playwright state) | Build Studio (LOCAL ONLY) | `data/workflows/{id}/auth/auth.json` |
 | Raw recorded events | Build Studio | `data/sessions/{id}/events.jsonl` |
 | Compiled skills | Build Studio | `data/skills/{id}/skill.json` |
 | Built skill packs | Build Studio | `data/skill-packs/{co}/` |
@@ -835,19 +836,45 @@ SkillPackage:
   compile_report: dict                  # status, steps_total, min_confidence
 ```
 
+### 7.3a Contract vs. Executor Boundary (ARCH-3 design note)
+
+Browser replay is the first pluggable executor backend, not the permanent one — the plan is
+to graduate individual skills onto a native API connector where one exists (PROD-7) and,
+longer-term, to support a computer-use-style agent executor. Conxa's defensible position is
+the layer *above* the executor: per-step intent, verification, entity bindings, and audit
+requirements. That position only survives if the skill schema keeps those two concerns
+separated as it evolves, rather than letting Playwright/DOM assumptions bleed into fields that
+are supposed to describe intent and success criteria.
+
+`skill_spec.py` now tags every field `[contract]` (executor-independent — must hold for any
+future executor) or `[executor]` (browser-replay implementation detail — free to change per
+backend). The full per-class breakdown lives in `docs/Backend-Schema.md` §3.0; that table is
+the source of truth and must be kept in sync with the code. Two consequences for future schema
+work:
+
+- **EXEC-1's branch primitives** (`if_present`/`try_dismiss`/`wait_for_one_of`) must define
+  their condition in contract terms (an identity/state check) with browser-specific evaluation
+  kept on the executor side — see the `branch` row in Backend-Schema.md §3.0.
+- **Any new `SkillStep`/`SkillPackage` field** must be tagged at introduction and the
+  Backend-Schema.md §3.0 table updated in the same change; an untagged field is a review
+  omission.
+
+This is a documentation-and-review-discipline item, not a refactor — no runtime behavior
+changed. See `TODO.md` ARCH-3.
+
 ---
 
 ## 8. Skill Packaging Pipeline
 
-**Location:** `conxa-builder/python/conxa_compile/plugin_builder.py`
+**Location:** `conxa-builder/python/conxa_compile/skill_package_builder.py`
 
-After compilation, `build_plugin()` produces a data-only plugin folder:
+After compilation, `build_skill_package(workspace_id)` gathers all workflows in the workspace and produces a data-only skill package folder:
 
 ```
-output/skill_package/{company}-plugin/
-├── plugin.json          (manifest: slug, name, target_url, skills[])
-├── CLAUDE.md            (rendered from plugin_templates/plugin/Claude.md.tmpl)
-├── index.md             (rendered from plugin_templates/plugin/index.md.tmpl)
+output/skill_package/{company_slug}-skill-package/
+├── skill_package.json   (manifest: company_slug, company_name, skills[])
+├── CLAUDE.md            (rendered from skill_package_templates/skill_package/Claude.md.tmpl)
+├── index.md             (rendered from skill_package_templates/skill_package/index.md.tmpl)
 ├── pack.json            (version manifest)
 └── skills/
     └── {skill_slug}/
@@ -918,10 +945,10 @@ steps are therefore always parameterised, end to end:
 | Clean | An `upload`/`upload_intent` on a file input **supersedes the preceding click/focus on the same target**, exactly the way `type` supersedes a text field's prep click. Replay must never see that click — clicking a file input reopens an OS dialog nothing can drive unattended | `compiler/step_anchors.py::clean_steps` |
 | Compile | A file input is **not** an "editable target", so the click→focus rewrite never fires on it (the runtime's `focus` handler clicks before it focuses, which would reopen the dialog) | `compiler/action_semantics.py::is_editable_target` |
 | Bind | Uploads always bind to the input name `file_path`, never a label-derived name — otherwise "File Uploader" / "Attach document" / "Upload CSV" would each yield a differently named input for the same concept | `compiler/input_binding.py::derive_input_binding` |
-| Package | Recorded file *metadata* is recognised explicitly (it is truthy JSON, so an `or` fallback would pass it through as if it were a path) and replaced with `{{file_path}}`; a literal path or custom placeholder typed by hand in Human Edit is preserved as authored. The auto-declared input's description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk file is expected | `plugin_builder_saved_skill.py` |
+| Package | Recorded file *metadata* is recognised explicitly (it is truthy JSON, so an `or` fallback would pass it through as if it were a path) and replaced with `{{file_path}}`; a literal path or custom placeholder typed by hand in Human Edit is preserved as authored. The auto-declared input's description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk file is expected | `skill_package_builder_saved_skill.py` |
 | Execute | `interpolate()` → `trim()` → strip one matching pair of surrounding double quotes (Windows Explorer's "Copy as path" quotes any path containing spaces, and Node only treats a bare drive letter as absolute — a quoted path would be silently joined onto the runtime's CWD) → `locator.setInputFiles()`. An empty resolved path **throws** rather than skipping: silently not uploading a document while reporting success is this action's worst failure mode. `server.js`'s required-input gate should already have rejected it; this is defence in depth | `runtime/run.js::HANDLERS.upload` |
 
-Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_plugin_builder.py`, `test_phases.py`,
+Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_skill_package_builder.py`, `test_phases.py`,
 `test_recorder_session.py`.
 
 ---
@@ -1107,20 +1134,20 @@ admin-reviewed, manually published re-sign (see §10.5).
 
 `repair_event`s ingest via `POST /tracking/{company}/events` and aggregate into an admin review
 queue at **`GET /api/v1/tracking/{company}/drift`** (`_drift_review_queue`), keyed by
-(plugin, version, step). **Detection is automatic and fleet-wide; publishing is always
+(workflow, version, step). **Detection is automatic and fleet-wide; publishing is always
 admin-approved, never automatic** — the endpoint surfaces evidence only and marks entries
 `needs_review`. No re-sign or fleet push happens without an explicit admin action.
 
 ### 10.6 Pre-Execution Drift Gate (advisory)
 
 Each pack carries a compiled `structural_fingerprint` (the first ~3 interactive "landmarks" — see
-compiler `_build_structural_fingerprint`), plumbed through `plugin_builder.py` into the runtime
+compiler `_build_structural_fingerprint`), plumbed through `skill_package_builder.py` into the runtime
 `manifest.json`. Before executing step 0, `runPlan` calls `runtime/drift.js` `detectPreExecDrift`,
 which locates each landmark on the live page (testid → aria-label → primary selector → text) and
 scores it with the **pure resolver** (`scoreCandidate`, zero LLM). If a majority of landmarks are
 missing (default: ≥50% below a 0.5 agreement threshold) it emits a **`drift_detected`** event.
 This is **warn-not-block** — execution always proceeds and per-step recovery still applies (consistent
-with the zero-token Tier 1/2 rule). The cloud aggregates these per (plugin, version) via
+with the zero-token Tier 1/2 rule). The cloud aggregates these per (workflow, version) via
 `_pre_exec_drift_queue` and returns them under `pre_exec` in the `/drift` response.
 
 ### 10.3 Dialog-Scoped Recovery
@@ -1159,7 +1186,7 @@ if none exist.
 **Version gate**: an older runtime silently no-ops an unrecognized step `type` (see `executeStep`),
 which for a branch step means skipping its entire nested body — for `wait_for_one_of` gating an
 MFA step, that's a correctness bug, not a graceful degrade. `SkillMeta.required_runtime` (enforced
-at execute time via `semver.satisfies`) is the existing guard; `plugin_builder_output.py`'s
+at execute time via `semver.satisfies`) is the existing guard; `skill_package_builder_output.py`'s
 `CONXA_REQUIRED_RUNTIME` floor (default `>=1.0.3`, applied pack-wide — see the `NOTE(branch-steps)`
 comment there) must be bumped to the app-layer version that first ships these handlers once that
 version is tagged (same manual-coordination pattern as `MIN_HOST` in `build-runtime-app.yml`).
@@ -1170,7 +1197,7 @@ the floor until it lands in one, or every pack (branch steps or not) would refus
 **Compiler / schema** (`packages/conxa-core/conxa_core/models/skill_spec.py`): `SkillStep.branch`
 (`dict`) holds `steps` (`if_present`), `candidates` (`try_dismiss`), `options` (`wait_for_one_of`),
 `timeout_ms`, `required`. Nested step entries are raw dicts in the same shape as a saved `SkillStep`
-(`action`/`target`/`identity_bundle`/`branch`/...) — `plugin_builder_saved_skill.py`'s
+(`action`/`target`/`identity_bundle`/`branch`/...) — `skill_package_builder_saved_skill.py`'s
 `_saved_step_to_execution_step` recursively serializes each one (and each `wait_for_one_of` option's
 `steps`) into the flat runtime step shape above. `action_policy.NO_RECOVERY_ACTION_TYPES` and
 `action_registry.SELECTOR_ACTIONS` register the three kinds; they are **not** in `MARKER_ACTIONS`
@@ -1283,8 +1310,8 @@ Emitted by `runtime/tracker.js`:
 ```json
 {
   "rid": "run_id",
-  "pid": "plugin_id",
-  "pv": "plugin_version",
+  "wfid": "workflow_id",
+  "wfv": "workflow_version",
   "rv": "runtime_version",
   "uid": "user_id_hash",
   "wid": "workspace_id",
@@ -1408,7 +1435,7 @@ LLM-assisted Human Edit:
 - Those calls use `usage_class="human_edit"`. Deterministic editor actions stay available when the Human Edit pool is exhausted.
 - The LLM proxy also enforces trial expiry and machine registration on every call (`app/api/llm_proxy_routes.py::_meter_and_call`), and routes to the workspace's `compile_pool` (or a BYOK entry — §13.5 — when configured).
 
-Persistent workflow-slot ledger (added 2026-08-09) — closes the one gap the reservation flow above doesn't cover: `compile_credits` resets every billing period, so it never reclaims access to workflows a workspace already published while on a higher tier. `record_published_workflow` (`entitlements.py`) writes one never-resetting entry per distinct `(plugin_id, workflow_id)` to the `entitlement_workflows` KV namespace on first publish (`publish_routes.py::_publish_skill_pack_impl`). `_reconcile_workflow_locks`, re-run on every read of `GET /api/v1/entitlements/current` (exposed as the `workflow_lock` field) and on every publish, reuses the plan's current `compile_credits` number as a standing cap on how many published workflows may stay **active**, keeping the most-recently-published `limit` unlocked and locking the rest oldest-first — self-healing, no separate downgrade migration step. `ensure_workflow_publishable` enforces the same cap at publish time: republishing an already-active workflow (new version) is always allowed, republishing a **locked** one 402s `workflow_locked`, and publishing a brand-new workflow once already at the cap 402s `workflow_limit_exceeded`. Scope is company-side only by design — it never touches `skillpack_update_routes.py`'s delta-sync, so an end customer who already has a workflow installed keeps syncing and running it regardless of the SaaS company's current plan.
+Persistent workflow-slot ledger (added 2026-08-09) — closes the one gap the reservation flow above doesn't cover: `compile_credits` resets every billing period, so it never reclaims access to workflows a workspace already published while on a higher tier. `record_published_workflow` (`entitlements.py`) writes one never-resetting entry per distinct `(workspace_id, company_slug, workflow_id)` to the `entitlement_workflows` KV namespace on first publish (`publish_routes.py::_publish_skill_pack_impl`). `_reconcile_workflow_locks`, re-run on every read of `GET /api/v1/entitlements/current` (exposed as the `workflow_lock` field) and on every publish, reuses the plan's current `compile_credits` number as a standing cap on how many published workflows may stay **active**, keeping the most-recently-published `limit` unlocked and locking the rest oldest-first — self-healing, no separate downgrade migration step. `ensure_workflow_publishable` enforces the same cap at publish time: republishing an already-active workflow (new version) is always allowed, republishing a **locked** one 402s `workflow_locked`, and publishing a brand-new workflow once already at the cap 402s `workflow_limit_exceeded`. Scope is company-side only by design — it never touches `skillpack_update_routes.py`'s delta-sync, so an end customer who already has a workflow installed keeps syncing and running it regardless of the SaaS company's current plan.
 
 Distribution (replaces installer slots, removed 2026-08-08):
 - No limit on how many product slugs a workspace publishes under, or on skill-pack publish.
@@ -1517,11 +1544,11 @@ picks the served installer's filename by plan when the caller doesn't pass an ex
 Free gets a random 10-letter name (`_random_installer_name()`, no branding signal); paid plans
 (Starter/Pro/Enterprise) use the workspace's stored, *unverified* "installer domain"
 (`entitlements.get_installer_domain`/`set_installer_domain`, `GET`/`POST /entitlements/installer-domain`,
-admin-only) if one is set, falling back to the previous `{slug}-Plugin-Setup.exe` otherwise. There is no
+admin-only) if one is set, falling back to the previous `{slug}-Setup.exe` otherwise. There is no
 proof the workspace actually owns that domain yet — see `TODO.md` PROD-6, which this field is meant to
 be gated on once domain-ownership verification ships. Separately, the installer's `.exe` icon (embedded
 locally by `conxa_compile.installer_builder._stage_logo_icon` at build time, before anything is
-uploaded) is plan-gated in Build Studio itself: `handlers/plugins.py::cmd_build_installer` calls
+uploaded) is plan-gated in Build Studio itself: `handlers/workflows.py::cmd_build_installer` calls
 `GET /entitlements/current` and drops any supplied `logo_path` when the plan is Free (or the call
 fails — fail-safe defaults to no icon). This is distinct from `ensure_white_label_allowed`
 (`white_label`), which stays Enterprise-only for whatever else custom branding covers — see
@@ -1581,13 +1608,14 @@ Mode 2: Filesystem (no SKILL_DATABASE_URL)
 ```
 
 Key namespaces in use:
-- `plugins` — Plugin model JSON
+- `workflows` — Workflow model JSON
+- `skill_packs_meta` — SkillPack model JSON, keyed by company_slug
 - `entitlement_usage` — monthly usage row keyed by `workspace_id:YYYY-MM`
 - `compile_reservations` — compile-credit reservations keyed by reservation id
-- `publish_owners` — slug → workspace_id ownership
-- `tracking_tokens` — company → {token, workspace_id, ...}
+- `publish_owners` — company_slug → workspace_id ownership
+- `tracking_tokens` — company_slug → {token, workspace_id, ...}
 - `tracking/{company}` — run_id → [event batches]
-- `runs` — plugin_id → [run records]
+- `runs` — workflow_id → [run records]
 - `selector_cache` — DOM hash → selector candidates
 
 ### 14.2 Additional File Storage
@@ -1596,7 +1624,7 @@ Beyond the KV store:
 - `data/sessions/{id}/events.jsonl` — raw event stream (append-only)
 - `data/sessions/{id}/screenshots/` — PNG screenshots per step
 - `data/skills/{id}/skill.json` — compiled SkillPackage
-- `data/skill-packs/{co}/` — built plugin folder
+- `data/skill-packs/{co}/` — built skill package folder
 - `data/installers/{co}/installer.exe` — uploaded installer binary
 
 ### 14.3 Production Database Requirements
@@ -1672,7 +1700,7 @@ Production only ever receives releases promoted from Dev.
 plus the isolated path roots, then launches the target.
 
 **pack.json invariant:** `sync_endpoint` and `tracking_url` are frozen into each pack at
-publish time from the cloud's `SKILL_API_BASE_URL` (`plugin_builder.py`). Because Dev
+publish time from the cloud's `SKILL_API_BASE_URL` (`skill_package_builder.py`). Because Dev
 publishes against the dev cloud, dev-built installers embed dev URLs — a dev installer
 never phones home to prod. Both sync and tracking now derive from one env-consistent base.
 
@@ -1763,13 +1791,13 @@ MCP registration is done by `conxa-runtime.exe register-mcp` itself (see §4.2a)
 | ~~Rate limit cache in-memory~~ **RESOLVED** | `rate_limits` KV namespace | — | Persisted in `conxa_core.db`; survives restarts, shared across instances (in-memory fallback in local dev) |
 | ~~Stripe fields in config~~ **RESOLVED** | removed | — | Stripe fully removed (config, endpoints, dep, frontend flag); Cashfree is the wired gateway (switched from Razorpay 2026-06-30) |
 | ~~No device/runtime registration~~ **RESOLVED** | `telemetry_routes.py` `/runtime-start`, `runtime/drift.js` | — | Runtime-start telemetry + pre-execution structural-fingerprint drift gate give visibility into active runtimes and redesign detection (Implementation-Plan §2.1/§2.2) |
-| ~~No enterprise RBAC enforcement~~ **PARTIAL** | `app/services/rbac.py` | Medium | `require_admin` enforced on publish, plugin create/delete, bundle release; fine-grained per-skill/analyst roles still Phase 3 |
+| ~~No enterprise RBAC enforcement~~ **PARTIAL** | `app/services/rbac.py` | Medium | `require_admin` enforced on publish, workflow create/delete, bundle release; fine-grained per-skill/analyst roles still Phase 3 |
 | Runtime auth per-company only | `auth_manager.js` | Medium | No per-user identity at runtime |
 | ~~Installer download fully public~~ **RESOLVED** | `publish_routes.py:get_installer` | — | Requires signed, time-limited `ts`+`sig` when `SKILL_INSTALLER_SIGNING_KEY` is set; public download preserved only in dev (SG-07) |
 | ~~`research/frontend/` is a dead prototype~~ **N/A** | — | — | Directory does not exist in the repo |
 | ~~Aptfile has Playwright deps~~ **N/A** | — | — | `conxa-cloud/backend/Aptfile` does not exist in the current repo — removed at some point after this gap was first logged, not merely unused |
 | ~~`worker.py` scaffold~~ **N/A** | — | — | `app/worker.py` does not exist in the current repo — the job-queue scaffold described here was never committed (or was removed); see `TODO.md` for the actual durable-queue gap |
-| ~~`tracking_routes.py` public ingest endpoint bypasses `/api/v1`~~ **RESOLVED (reframed) 2026-07-09** | `app/api/tracking_routes.py`, `main.py` | — | The public telemetry-ingest route at `/api/tracking/{company}/events` is now a documented, **permanent** back-compat alias (installer-baked `pack.json.tracking.tracking_url` for already-deployed runtimes points at it and can never be migrated remotely — see the versioned-installer-architecture's `{installer_version}`-frozen-at-build-time rule). `/api/v1/tracking/...` and the new versioned `/api/v1/plugins/{installer_version}/{company}/tracking/events` both exist alongside it, all three calling the same `_ingest_events_impl()`. See `TODO.md` ARCH-1 and `CLAUDE.md` Key Invariants. |
+| ~~`tracking_routes.py` public ingest endpoint bypasses `/api/v1`~~ **RESOLVED (reframed) 2026-07-09** | `app/api/tracking_routes.py`, `main.py` | — | The public telemetry-ingest route at `/api/tracking/{company}/events` is now a documented, **permanent** back-compat alias (installer-baked `pack.json.tracking.tracking_url` for already-deployed runtimes points at it and can never be migrated remotely — see the versioned-installer-architecture's `{installer_version}`-frozen-at-build-time rule). `/api/v1/tracking/...` and the new versioned `/api/v1/workflows/{installer_version}/{company}/tracking/events` both exist alongside it, all three calling the same `_ingest_events_impl()`. See `TODO.md` ARCH-1 and `CLAUDE.md` Key Invariants. |
 | No CDN/multi-region blob storage | `blob_read_write_token` config | Low | Config field still unwired, but durability gap is closed: installer versions and skill-pack files now persist to Postgres (`installer_versions__{slug}`, `skillpack_files__{slug}` KV namespaces), surviving Render disk wipes. Base64-in-Postgres doesn't scale indefinitely — revisit if installers approach `build_artifact_upload_max_bytes` (250 MB) regularly or DB storage cost/limits become an issue. |
 | ~~`selector_cache_ttl_days` has no GC scheduler~~ **RESOLVED** | Config | — | Duplicate of the "Selector cache GC unscheduled" row above, which was resolved — the background loop honours this TTL. Kept only so the stale claim isn't re-derived from an older copy of this table. |
 | ~~CI execution gate disabled~~ **RESOLVED 2026-08-04** | `.github/workflows/build-runtime-app.yml`, `runtime/test/gate_replay.js` | — | Real-skill replay against the declared `MIN_HOST` exe runs before zip/release/publish and blocks the build on failure. Its first run caught a stale `MIN_HOST` (`host-v1.1.2` → `host-v2.0.0`): every app layer published since 2026-07-30 had been claiming a `min_host` it could not actually run under. A red app-layer gate usually means `MIN_HOST` is stale, not that the gate is wrong. |

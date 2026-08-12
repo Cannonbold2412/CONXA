@@ -9,13 +9,12 @@
 
 1. [User Onboarding](#1-user-onboarding)
 2. [Build Studio Login](#2-build-studio-login)
-3. [Create a Plugin](#3-create-a-plugin)
-4. [Record Authentication Session](#4-record-authentication-session)
-5. [Record a Workflow](#5-record-a-workflow)
-6. [Pipeline & Compilation](#6-pipeline--compilation)
-7. [Workflow Editing (HumanEdit)](#7-workflow-editing-humanedit)
-8. [Build Plugin](#8-build-plugin)
-9. [Build Installer & Publish](#9-build-installer--publish)
+3. [Create a Workflow](#3-create-a-workflow)
+4. [Workflow Detail Page (Record Login/Workflow, Compile, Edit)](#4-workflow-detail-page)
+5. [Pipeline & Compilation](#5-pipeline--compilation)
+6. [Workflow Editing (HumanEdit)](#6-workflow-editing-humanedit)
+7. [Build Skill Package](#7-build-skill-package)
+8. [Publish & Build Installer](#8-publish--build-installer)
 10. [End-User Installation](#10-end-user-installation)
 11. [Runtime Registration & First Sync](#11-runtime-registration--first-sync)
 12. [MCP Skill Execution](#12-mcp-skill-execution)
@@ -62,8 +61,8 @@ flowchart TD
 - All downloads are SHA-256 verified against values from the cloud manifest.
 - If on a corporate network, the bootstrap surfaces the exact URLs for IT whitelisting.
 - The update check (step U) is fail-open: if GitHub Releases is unreachable, the app proceeds normally. Updates are mandatory — the app cannot advance past the Update Required screen without installing.
-- On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or Record.
-- The standalone Dashboard page was merged into Record (2026-07): Record's left rail now owns plugin create/delete/search, so `/dashboard` and `/` redirect straight to `/record` (see `docs/UI-UX-Brief.md` §2.3, §2.5).
+- On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or Workflow list.
+- The Record page was removed (2026-08): the Workflow List (`/workflows`) is now the primary landing page, and the Workflow Detail page (`/workflows/:id`) contains all recording/auth controls inline. Root `/` redirects to the last-selected workflow or to `/workflows` if none.
 
 ---
 
@@ -96,54 +95,57 @@ sequenceDiagram
 
 ---
 
-## 3. Create a Plugin
+## 3. Create a Workflow
 
 ```mermaid
 flowchart LR
-    A[User on Record] --> B[Click 'New Plugin']
-    B --> C[Enter plugin name + target URL]
-    C --> D[Backend: cmd_create_plugin]
-    D --> E[Create Plugin record in plugin_store]
-    E --> F[Plugin ID assigned]
-    F --> G[Plugin appears in list with status: needs_auth]
+    A[User on Record] --> B[Click 'New Workflow']
+    B --> C[Enter workflow name + target URL]
+    C --> D[Backend: cmd_create_workflow]
+    D --> E[Create Workflow record in workflow_store]
+    E --> F[Workflow ID assigned]
+    F --> G[Workflow appears in list with status: needs_auth]
 ```
 
-**Data created:** `Plugin` model with `status="needs_auth"`, `auth=null`, `workflows=[]`.  
-**Storage:** `data/plugins/{id}/plugin.json`
+**Data created:** `Workflow` model with `status="needs_auth"`, `auth=null`, `workflows=[]`.  
+**Storage:** `data/workflows/{id}/workflow.json`
 
 ---
 
-## 4. Record Authentication Session
+## 4. Workflow Detail Page
+
+The Workflow Detail page (`/workflows/:workflowId`) is the primary interface for recording and managing a single workflow. All record-login and record-workflow controls are inline on this page.
+
+### 4.1 Record Authentication Session (inline action)
 
 ```mermaid
 flowchart TD
-    A[Plugin with status=needs_auth] --> B[User clicks 'Record Auth']
-    B --> C[Backend: cmd_start_recording with auth_mode=true]
-    C --> D[Playwright launches Chromium]
-    D --> E[Opens plugin.target_url]
-    E --> F[User logs into the target website, closes the browser when done]
-    F --> G[User clicks 'Save Session Now' in Build Studio]
-    G --> H[Backend: cmd_stop_recording with auth_mode=true]
-    H --> I[Playwright saves storageState to auth/auth.json]
-    I --> J[Detect final URL as protected_url]
-    J --> K[Plugin status updated to 'ready']
-    K --> L[Plugin shows auth captured]
+    A[Workflow with status=needs_auth] --> B["Workflow Detail page shows 'Record Login' action"]
+    B --> C[User clicks 'Record Login']
+    C --> D[Backend: cmd_start_recording with auth_mode=true]
+    D --> E[Playwright launches Chromium]
+    E --> F[Opens workflow.target_url]
+    F --> G[User logs into the target website, closes the browser when done]
+    G --> H[User clicks 'Save Session Now' in the recording dialog]
+    H --> I[Backend: cmd_stop_recording with auth_mode=true]
+    I --> J[Playwright saves storageState to auth/auth.json]
+    J --> K[Detect final URL as protected_url]
+    K --> L[Workflow status updated to 'ready']
+    L --> M[Recording dialog closes, page shows 'Record Workflow' action]
 ```
 
-**Key invariant:** `auth.json` lives at `data/plugins/{id}/auth/auth.json`. It is NEVER copied into the skill pack build output.
+**Key invariant:** `auth.json` lives at `data/workflows/{id}/auth/auth.json`. It is NEVER copied into the skill pack build output.
 
----
-
-## 5. Record a Workflow
+### 4.2 Record a Workflow (inline action)
 
 ```mermaid
 flowchart TD
-    A[Plugin with status=ready] --> B[User clicks 'New Workflow']
-    B --> C[Enter workflow name]
-    C --> D[Backend: cmd_start_recording with plugin_id + workflow_name]
+    A["Workflow Detail page, status=ready"] --> B["Shows 'Record Workflow' action (only if no recording yet)"]
+    B --> C[User clicks 'Record Workflow']
+    C --> D[Backend: cmd_start_recording with workflow_id + auth_mode=false]
     D --> E[Load auth session from auth/auth.json]
     E --> F[Playwright launches with storageState]
-    F --> G[Navigate to plugin.protected_url]
+    F --> G[Navigate to workflow.protected_url]
     G --> H[bridge.js injected into all frames]
     H --> I[User performs workflow steps in browser]
     I --> J[Events captured: click, fill, select, navigate, etc.]
@@ -151,15 +153,15 @@ flowchart TD
     K --> L[Backend: cmd_stop_recording]
     L --> L2[Playwright context closes; recording.webm renamed into place]
     L2 --> M[Events saved to sessions/session_id/events.jsonl]
-    M --> N[PluginWorkflow created with status=recorded]
-    N --> O[Workflow appears in plugin list]
+    M --> N[Workflow updated with status=recorded]
+    N --> O[Recording dialog closes, page shows 'Compile' button]
 ```
 
 **Event types captured by bridge.js:**
 `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.
 
 Stop-recording no longer waits on video frame extraction — it only renames Playwright's raw `.webm` to
-`recording.webm` and returns. Frame extraction (for vision anchors) now runs at compile time, see §6.
+`recording.webm` and returns. Frame extraction (for vision anchors) now runs at compile time, see §5.
 
 **Recording a file upload** works exactly like any other step from the user's point of view: click the
 page's upload control, pick a file in the normal Windows dialog, done. Under the hood the recorder
@@ -170,7 +172,7 @@ calling agent must supply at run time. See `docs/TRD.md` §9.3.
 
 ---
 
-## 6. Pipeline & Compilation
+## 5. Pipeline & Compilation
 
 ```mermaid
 flowchart TD
@@ -195,7 +197,7 @@ flowchart TD
     Q -->|Yes| K
     Q -->|No| R[Assemble SkillPackage]
     R --> S[Save to data/skills/skill_id/skill.json]
-    S --> T[Update PluginWorkflow: status=compiled, skill_id set]
+    S --> T[Update WorkflowWorkflow: status=compiled, skill_id set]
     T --> U[Compile complete — step count shown to user]
 ```
 
@@ -223,7 +225,7 @@ re-attempts only the events still missing frames.
 
 ---
 
-## 7. Workflow Editing (HumanEdit)
+## 6. Workflow Editing (HumanEdit)
 
 ```mermaid
 flowchart TD
@@ -243,9 +245,9 @@ flowchart TD
     E --> U3[Edit nested branch-body step field] --> U4[cmd_patch_step with path='branch.steps N ']
     E --> U5["Confirm 'treat as optional?' suggestion"] --> U6[cmd_confirm_optional_interstitial → step becomes try_dismiss branch]
     E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true, edited_at=now]
-    W --> X{Every workflow in the plugin now compiled + signed off?}
+    W --> X{Every workflow in this skill-pack workspace now compiled + signed off?}
     X -->|No| Y[Return waiting_on: names of remaining workflows]
-    X -->|Yes| Z[Auto-invoke plugin_builder.build_plugin — see §8] --> AA[Return built=true; editor navigates to Test Skill]
+    X -->|Yes| Z[Auto-invoke skill_package_builder.build_skill_package — see §7] --> AA[Return built=true; skill package built]
 ```
 
 **Patch gate:** Each edit increments the skill version. `revalidate_step()` checks that selector and intent remain coherent after the patch.
@@ -278,7 +280,7 @@ way a branch step gets created from a live recording without hand-editing JSON: 
 converts a flagged step on its own, honoring "branch steps compile only from observed states +
 human confirmation."
 
-**Auto-build on sign-off (2026-07 workflow redesign, Phase 1):** sign-off no longer just flips a flag. `cmd_sign_off_workflow` re-checks, after persisting `signed_off`/`edited_at`, whether every workflow belonging to the plugin is compiled and signed off — the same condition `plugin_builder.build_plugin` already gates on (§8). If so, it calls `build_plugin` itself, so the package exists the moment the gate is satisfied instead of requiring a separate visit to a build page (there is no such page anymore — see §8). The gate itself is unchanged; this only moves *when* the already-existing build call happens to fire.
+**Auto-build on sign-off (2026-07 workflow redesign, Phase 1):** sign-off no longer just flips a flag. `cmd_sign_off_workflow` re-checks, after persisting `signed_off`/`edited_at`, whether every workflow belonging to the workflow is compiled and signed off — the same condition `workflow_builder.build_workflow` already gates on (§8). If so, it calls `build_workflow` itself, so the package exists the moment the gate is satisfied instead of requiring a separate visit to a build page (there is no such page anymore — see §8). The gate itself is unchanged; this only moves *when* the already-existing build call happens to fire.
 
 **Re-target wizard (replaces the old direct "update visual bbox" flow):** `cmd_update_visual_bbox` still exists (bbox + vision-anchor regeneration only, no selector change) but the primary re-target entry point is the 3-phase wizard — Pick element → Review selectors → **Validation**. `cmd_retarget_preview` is read-only (generates and scores candidates + a validation diff without persisting); `cmd_retarget_apply` is the only command that writes, composing bbox + `target.primary_selector`/`fallback_selectors` + rebuilt `identity_bundle` + (optionally) regenerated `validation.wait_for`/`assertions` into a single document mutation and a single undo entry. See `docs/UI-UX-Brief.md` §2.8 for the UI.
 
@@ -298,26 +300,26 @@ Deterministic Human Edit actions are available without quota: patch, reorder, de
 
 ---
 
-## 8. Build Plugin
+## 7. Build Skill Package
 
-**Trigger (revised 2026-07):** there is no longer a "Build Plugin" page or button. `cmd_build_plugin` (and the `plugin_builder.build_plugin` call it wraps) fires automatically the moment sign-off's gate check passes (§7), or manually via the Inspector drawer's "Rebuild package" action (`docs/UI-UX-Brief.md` §2.13) — both call the exact same handler shown below.
+**Trigger (revised 2026-08):** there is no longer a "Build Skill Package" page or button. `cmd_build_skill_package` (and the `skill_package_builder.build_skill_package` call it wraps) fires automatically the moment sign-off's gate check passes — i.e., when every workflow in the workspace that targets this company is compiled and signed off — or manually via the Publish page's "Rebuild" action. This is a **workspace-scoped** operation that bundles every signed-off workflow into a single skill package (one per company/workspace pair).
 
 ```mermaid
 flowchart TD
-    A[Sign-off completes the gate, or user clicks Rebuild package in the Inspector] --> B[Backend: cmd_build_plugin]
-    B --> C[Read all compiled skills for plugin]
-    C --> D[plugin_builder.build_plugin]
-    D --> E["Create output/{company}-plugin/ folder"]
-    E --> F[Write plugin.json manifest]
+    A[Sign-off completes the gate for this company, or user visits Publish page and clicks Rebuild] --> B[Backend: cmd_build_skill_package]
+    B --> C[Read ALL compiled + signed-off workflows in workspace for this company]
+    C --> D[skill_package_builder.build_skill_package]
+    D --> E["Create output/{company_slug}-skill-package/ folder"]
+    E --> F[Write skill_package.json manifest]
     E --> G[Render CLAUDE.md from template]
     E --> H[Render index.md from template]
     E --> I[For each workflow:]
-    I --> J["Write skills/{slug}/execution.json"]
-    I --> K["Write skills/{slug}/recovery.json"]
-    I --> L["Write skills/{slug}/inputs.json"]
-    J & K & L --> M["Copy to data/skill-packs/{company}/"]
+    I --> J["Write {skill_slug}/execution.json"]
+    I --> K["Write {skill_slug}/recovery.json"]
+    I --> L["Write {skill_slug}/inputs.json"]
+    J & K & L --> M["Copy to data/skill-packs/{company_slug}/"]
     M --> N[Write pack.json with version + skills list]
-    N --> O[Plugin build record saved: PluginBuild]
+    N --> O[Skill package build record saved]
     O --> P[Build complete — version shown]
 ```
 
@@ -325,55 +327,60 @@ flowchart TD
 
 ---
 
-## 9. Build Installer & Publish
+## 8. Publish & Build Installer
+
+**Publish is the primary, mandatory release action.** Build Installer is a secondary, optional action for distributing an already-published skill package as a standalone `.exe`.
+
+### 8.1 Publish Skill Package (Primary)
 
 ```mermaid
 flowchart TD
-    A[User clicks Build Installer] --> B[Backend: cmd_build_installer]
-    B --> C[Validate skill pack dir exists]
-    C --> D[Check no auth.json in build input]
-    D --> E[_publish_skill_pack_for_installer]
+    A[Skill package built; user visits Publish page] --> B[User enters release notes + clicks Publish]
+    B --> C[Backend: cmd_publish_skill_pack]
+    C --> D["Read all files from data/skill-packs/{company_slug}/"]
+    D --> E["POST /api/v1/workflows/publish to Cloud"]
+    E --> F[Cloud: claim slug ownership]
+    F --> G[Cloud: write skill pack files]
+    G --> H[Cloud: generate tracking token]
+    H --> I["Cloud: return {tracking_token, sync_url}"]
+    I --> J[Rewrite pack.json with tracking + sync_endpoint]
+    J --> K[Version record created on Cloud]
+    K --> L[Studio shows Published version + download URL for manual installer build]
+```
+
+### 8.2 Build Installer (Secondary, Optional)
+
+```mermaid
+flowchart TD
+    A[Skill package published; user visits Build Installer page] --> B[User enters release notes + logo path + clicks Build]
+    B --> C[Backend: cmd_build_installer]
+    C --> D[Validate skill pack published]
+    D --> E[build_installer via NSIS]
+    E --> F[".exe created at output/{company_slug}-Setup.exe"]
     
-    E --> F["Read all files from data/skill-packs/{company}/"]
-    F --> G[POST /api/v1/plugins/publish to Cloud]
-    G --> H[Cloud: claim slug ownership]
-    H --> I[Cloud: write skill pack files]
-    I --> J[Cloud: generate tracking token]
-    J --> K["Cloud: return {tracking_token, sync_url}"]
-    K --> L[Rewrite pack.json with tracking + sync_endpoint]
-    
-    L --> M[build_installer via NSIS]
-    M --> N[".exe created at output/{company}-Plugin-Setup.exe"]
-    
-    N --> O[_upload_installer_for_download]
-    O --> P["POST /api/v1/plugins/{slug}/installer/upload"]
-    P --> Q{Slug already has installer?}
-    Q -->|Yes| R[Allow newer version upload]
-    Q -->|No| S{Installer slot remaining?}
-    S -->|No| T[Block: installer_limit_exceeded]
-    S -->|Yes| R
-    R --> U[Cloud stores installer.exe + meta.json]
-    U --> V[Cloud returns download_url]
-    
-    V --> W[Show installer path + cloud download URL to user]
+    F --> G{User clicks Upload to Cloud?}
+    G -->|Yes| H["POST /api/v1/workflows/{slug}/installer/upload"]
+    G -->|No| I[Save installer locally, optionally skip cloud upload]
+    H --> J[Cloud stores installer.exe + meta.json]
+    J --> K[Cloud returns download_url]
+    K --> L[Show installer path + cloud download URL to user]
 ```
 
 **Installer contents:**
-- `skill-packs/{company}/` (pack.json with tracking config embedded)
+- `skill-packs/{company_slug}/` (pack.json with tracking config embedded)
 - `runtime.exe` + `keytar.node` + `version.json`
 - Chromium browser (fetched at install time via `runtime.exe --install-playwright`, not bundled)
 
 **Customer-visible meters shown during this flow:**
-- Settings/Billing: seats, installer slots, compile credits, Human Edit pool.
-- Compile: compile credits for first compile and Human Edit pool for recompile.
-- Human Edit: Human Edit pool only for LLM-assisted actions.
-- Build Installer / Plugins: installer slots; same-slug version uploads are shown as existing-slot updates.
+- Settings/Billing: seats, machines, compile credits, Human Edit pool.
+- Publish: compile credits (paid monthly tier only).
+- Build Installer: optional cloud upload; no metering (upload can be skipped entirely).
 
-Workflow recording and local plugin creation remain unlimited.
+Workflow recording and local workflow creation remain unlimited.
 
 ---
 
-## 10. End-User Installation
+## 9. End-User Installation
 
 ```mermaid
 flowchart TD
@@ -402,7 +409,7 @@ flowchart TD
 
 ---
 
-## 11. Runtime Registration & First Sync
+## 10. Runtime Registration & First Sync
 
 ```mermaid
 flowchart TD
@@ -429,7 +436,7 @@ flowchart TD
 
 ---
 
-## 12. MCP Skill Execution
+## 11. MCP Skill Execution
 
 ```mermaid
 sequenceDiagram
@@ -477,7 +484,7 @@ signed in — see `docs/Auth-and-Updater.md` §1.3.
 
 ---
 
-## 13. Execution with Recovery
+## 12. Execution with Recovery
 
 Before step 0, the runtime runs an **advisory pre-execution drift check** (`runtime/drift.js`):
 it looks for the pack's recorded structural landmarks on the live page and, if most are gone
@@ -529,14 +536,14 @@ See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify
 
 ---
 
-## 14. Skill Pack Update (Company Side)
+## 13. Skill Pack Update (Company Side)
 
 ```mermaid
 flowchart TD
     A[Company re-records or edits a workflow] --> B[Compile new version]
-    B --> C[Build plugin with new version string]
+    B --> C[Build workflow with new version string]
     C --> D[Build installer — OR — publish only]
-    D --> E[POST /api/v1/plugins/publish]
+    D --> E[POST /api/v1/workflows/publish]
     E --> F["Cloud writes new files to skill-packs/{co}/"]
     F --> G[Cloud updates pack.json skill_pack_version]
     G --> H[Customer runtimes detect version change on next sync]
@@ -548,7 +555,7 @@ flowchart TD
 
 ---
 
-## 15. Skill Sync (Runtime Side)
+## 14. Skill Sync (Runtime Side)
 
 ```mermaid
 flowchart TD
@@ -573,7 +580,7 @@ Each skill is compared and activated **independently** — republishing one skil
 
 ---
 
-## 16. Runtime Self-Update
+## 15. Runtime Self-Update
 
 ```mermaid
 flowchart TD
@@ -606,7 +613,7 @@ The two legs are timed differently on purpose. The app layer is checked *before*
 
 ---
 
-## 17. Failure Recovery (End User)
+## 16. Failure Recovery (End User)
 
 ```mermaid
 flowchart TD
@@ -626,7 +633,7 @@ flowchart TD
 
 ---
 
-## 18. Entitlement Gates (Trial, Machines, Distribution, BYOK)
+## 17. Entitlement Gates (Trial, Machines, Distribution, BYOK)
 
 Added 2026-08-08 for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.4). These gates sit in
 front of steps 6 (Pipeline & Compilation) and 9 (Build Installer & Publish) above — they don't replace
@@ -660,7 +667,7 @@ flowchart TD
     AE -->|No, plan = free| AG[Random unbranded filename]
     AE -->|No, plan != free| AH{Installer domain set?}
     AH -->|Yes| AI[Use domain-based filename]
-    AH -->|No| AJ["Fallback: slug-Plugin-Setup.exe"]
+    AH -->|No| AJ["Fallback: slug-Workflow-Setup.exe"]
 
     B -->|Dashboard / audit / drift route| T{Workspace ops_tier vs. route's requirement}
     T -->|Below requirement| U[403 ops_tier_required]
@@ -704,8 +711,8 @@ custom icon.
 |---|---|---|---|
 | Onboarding | First Build Studio launch | Build Studio, Cloud | ~5 min |
 | Login | User clicks Sign In | Build Studio, Clerk | <30s |
-| Record auth | Plugin setup | Build Studio, Target website | 2–5 min |
-| Record workflow | Plugin setup | Build Studio, Target website | 5–30 min |
+| Record auth | Workflow setup | Build Studio, Target website | 2–5 min |
+| Record workflow | Workflow setup | Build Studio, Target website | 5–30 min |
 | Compile | After recording | Build Studio, Cloud LLM proxy | 1–10 min |
 | Build installer | After compile | Build Studio, Cloud | 1–5 min |
 | Customer install | .exe runs | Runtime, Claude Desktop | 2–5 min |

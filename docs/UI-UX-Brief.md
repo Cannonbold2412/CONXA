@@ -1,6 +1,6 @@
 # UI/UX Brief
 
-**Status:** Current as of 2026-08-08 (capability-ladder pricing restructure: new `/pricing` page, removed skill-pack-slot meter — see `docs/PRD.md` §11; Build Studio workflow-redesign Phase 1 from 2026-07-07: stage-shaped sidebar, shared plugin selection, Inspector drawer)
+**Status:** Current as of 2026-08-12 (Plugin→Workflow/SkillPack refactor: Record page removed, Workflows list/detail are the primary Build Studio screens, Cloud dashboard's Plugins screen renamed to Skill Packages at `/packages`; capability-ladder pricing restructure from 2026-08-08: new `/pricing` page, removed skill-pack-slot meter — see `docs/PRD.md` §11)
 **Scope:** Build Studio (Electron) + Cloud Dashboard (Next.js)
 
 ---
@@ -73,72 +73,50 @@ The production source of truth is:
 
 ---
 
-### 2.3 Dashboard — merged into Record (2026-07)
+### 2.3 Workflow List Page (`/workflows`)
 
-`Dashboard.tsx` (the standalone plugin catalog: list/search/filter, create, delete) was
-removed. The app had two competing "plugin home" surfaces — Dashboard for
-management, Record for the actual recording workspace — which forced a re-selection
-shuffle (pick a plugin on Dashboard, open its detail page, click through to Record,
-pick the same plugin again on Record's own rail). Record already had the more
-capable, enterprise-shaped layout (persistent master–detail rail, loading skeletons,
-error/retry, `StagePath` progress), so Dashboard's plugin management was folded into
-Record's left rail instead of keeping a second page. See **§2.5 Record** for the
-merged screen. The sidebar no longer has a "Dashboard" entry; `/dashboard`, `/`, and
-unknown routes all redirect to `/record`.
+**Purpose:** Primary landing page: browse/search/filter workflows, create a new workflow.
+**Inputs:** Workspace context; no workflow selection required to load this page.
+**Outputs:** A created workflow, a deleted workflow, or navigation to a specific workflow detail.
+**User goal:** See all recordings at a glance, and start a new one.
 
----
+**Layout:** Empty-state welcome card (if no workflows yet) or searchable list with:
+- Search box (filters by workflow name, target URL)
+- Status filter chips (needs_auth, ready, error)
+- Workflow rows: name, target URL, status badge, creation date, delete button
+- "+ New Workflow" button (top-right) opening `CreateWorkflowDialog`
+- Click a row to navigate to the Workflow Detail page for that workflow
 
-### 2.4 Plugin Overview (`PluginDetailPage.tsx`)
-
-**Purpose:** Per-plugin summary: auth/workflow/credit stats, the workflow list with its unified stage badge, and an entry point into the Inspector.
-**Inputs:** Plugin ID from route params (also updates the shared selection, so a deep link or manual nav here carries to every stage page).
-**Outputs:** Workflow list with `stage` (see `handlers/status.py::derive_workflow_stage`), an "Inspector" button opening `InspectorDrawer.tsx`.
-**User goal:** See what needs attention next, then jump to the matching stage page.
-
-Revised 2026-07 (workflow redesign Phase 1): recording (auth + new workflow) moved out to the dedicated **Record** page; the four-stage `Recorded → Compiled → Tested → Installed` bar (whose "Installed" node was permanently `done: false`) was replaced by `StagePath`/`WorkflowStageBadge`, driven by one backend-derived stage instead of three separate, inconsistent status fields.
+**Components:** `WorkflowListPage`, `CreateWorkflowDialog`, workflow row with delete action.
 
 **UX issues:**
-- No bulk action (e.g. compile all workflows at once).
-- Per-automation distribution status (published/installer-built) isn't shown yet here — lands with Phase 4 (Publish/Installer split).
+- None known at launch.
 
 ---
 
-### 2.5 Record (`RecordPage.tsx`) — now the app home
+### 2.4 Workflow Detail Page (`/workflows/:workflowId`)
 
-**Purpose:** The single plugin home: browse/search/create/delete plugins, and record a
-login session or a new workflow — the "show it once" step of the redesigned flow.
-**Inputs:** Plugin selection via its own left rail (see layout note below), which also
-writes to the shared `selectionStore` so other stage pages stay in sync.
-**Outputs:** A created/deleted plugin, a captured auth session, or a new `PluginWorkflow`.
-**User goal:** Get a task recorded, or manage which automations exist, without hunting
-for the right page.
+**Purpose:** The primary per-workflow page: record login/workflow, compile, edit, test, sign-off.
+**Inputs:** Workflow ID from route params; loads the workflow + its recording session.
+**Outputs:** Updated auth session, new recording, compiled skill, edited step, test run, sign-off.
+**User goal:** See everything needed for one automation: what's done, what's left, and how to do it.
 
-**Layout (revised 2026-07, merged with Dashboard):** left plugin rail (272px) with a
-header (plugin count + **New Plugin** button opening the create dialog), a search box
-and status-filter chips, then one row per matching plugin (status dot, workflow count,
-auth status) + right workspace (plugin header with status badge and a **Delete**
-button for the selected plugin, an action row with **Record Login**/**Re-record
-Login** and **Create Workflow**, an amber notice when auth is still required, and a
-scrollable "Recorded workflows" list below showing each workflow's `StagePath` and an
-"Open" link to the plugin overview). Record keeps its own always-visible plugin list
-(now the only one in the app) because picking which automation to work on is the
-primary action on this page, not a secondary one; the old `PluginSwitcher`-style
-dropdown used on other stage pages isn't a fit here.
+**Layout (2026-08 redesign):**
+- Header: workflow name + delete button + Inspector button (→ `InspectorDrawer`)
+- Stat cards: auth status (Not captured / Captured at …), compile status (Not compiled / Compiled with N% min confidence / Needs review / Failed), last test (Never / Passed at … / Failed at …)
+- Inline Record Login action: `RecordLoginDialog` (only shown when `status=needs_auth`)
+- Inline Record Workflow action: `RecordWorkflowDialog` (only shown when `status=ready` and `recording_status != "recorded"`)
+- Recording panel (if recording exists): shows session date, "Compile" button, "Recompile" button, "Edit" link to Human Edit page
+- Below recording: stat badges (step count, confidence, warnings if any)
 
-**Components:** `AuthRecordDialog` and `NewWorkflowDialog` (moved here from
-`PluginDetailPage.tsx` in the 2026-07 redesign — same guided-steps UI, same mutations,
-now scoped to whichever plugin is selected in the rail). `CreatePluginDialog` and
-`DeletePluginButton` (ported from the removed `Dashboard.tsx` — same mutations,
-`create_plugin`/`delete_plugin`, unchanged).
+**Components:** `WorkflowPage`, `RecordLoginDialog`, `RecordWorkflowDialog`, recording panel with action buttons, stat cards.
 
 **UX issues:**
-- No "re-record workflow" action (only auth has a re-record path) — a stale workflow recording must be deleted and re-created.
-- This page's plugin rail is independent of the `PluginSwitcher` dropdown used elsewhere — selecting a plugin here updates the shared selection, but the two pickers look and behave differently, which the rest of the stage pages don't do.
-- No per-plugin run stats (`cmd_get_metrics` only counts skills and packs); no execution history in the studio (runs are in the Cloud Dashboard) — carried over from the removed Dashboard page.
+- None known at launch.
 
 ---
 
-### 2.6 Recording Feed (`RecordingFeed.tsx`)
+### 2.5 Recording Feed (`RecordingFeed.tsx`)
 
 **Purpose:** Live view of captured events during recording.  
 **Inputs:** Active recording session.  
@@ -153,18 +131,18 @@ now scoped to whichever plugin is selected in the rail). `CreatePluginDialog` an
 
 ---
 
-### 2.7 Human Edit list (`HumanEditListPage.tsx`)
+### 2.6 Human Edit list (`HumanEditListPage.tsx`)
 
 **Purpose:** Entry point for reviewing the selected automation's compiled workflows, needs-review-first.
-**Inputs:** The shared plugin selection.
+**Inputs:** The shared workflow selection.
 **Outputs:** A row per compiled workflow with its confidence summary (`compile_status`/`compile_min_confidence`, computed at compile time by `_build_compile_report` and persisted onto the workflow in `handlers/compile.py`) and a "Review" link into the per-skill editor below.
 **User goal:** See which workflows most need a human look, in one glance, without opening each one.
 
-New in the 2026-07 redesign (Phase 1) — previously the only way to reach a compiled workflow was via the plugin overview or a direct `/edit/:skillId` link.
+New in the 2026-07 redesign (Phase 1) — previously the only way to reach a compiled workflow was via the workflow page or a direct `/edit/:skillId` link.
 
 ---
 
-### 2.8 Human Edit editor (`HumanEditPage.tsx`)
+### 2.7 Human Edit editor (`HumanEditPage.tsx`)
 
 **Purpose:** Review and edit compiled workflow steps before signing off.  
 **Inputs:** Compiled skill ID.  
@@ -201,7 +179,7 @@ Nothing persists until Apply (on the confirm route), which calls `cmd_retarget_a
 
 All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, the Tools `<aside>`) share one gradient-fill depth treatment (`linear-gradient(180deg,rgba(17,24,39,0.9),rgba(7,10,16,0.95))` + `ring-1 ring-inset ring-white/[0.03]`) applied inline rather than via the reusable `components/ui/panel-chrome.tsx` `PanelChrome` component, because these are flush grid columns against the pane resizer, not floating/inset panels — `PanelChrome`'s rounded corners + outer shadow are reserved for panels with margin around them (e.g. `StepConfigForm.tsx`'s cards use `PanelChrome`-equivalent styling via a shared `PANEL_CARD_CLASS`). Status colors (`--status-ok/warn/error`, `globals.css`) replace what were previously hardcoded emerald/amber/red/sky classes in `BuildPipelineStepper.tsx`, `RetargetPhaseSelectors.tsx`'s uniqueness badges, and `SuggestionsPanel.tsx`'s severity badges — surfaced as `Badge`'s new `success`/`warning` variants (`destructive` already existed) and a new `Button` `brand` variant, both in `components/ui/`.
 
-**Sign-off behavior (revised 2026-07):** **Approve** (renamed from "Finish editing," redesign doc §12 Phase 3) awaits `sign_off_workflow` and surfaces failure as a toast instead of silently swallowing it. If signing off completes the plugin's build gate — every workflow compiled and signed off — `cmd_sign_off_workflow` auto-builds the package (no separate Build Plugin page visit) and the editor navigates straight to Test Skill; otherwise it reports how many other workflows are still pending.
+**Sign-off behavior (revised 2026-07):** **Approve** (renamed from "Finish editing," redesign doc §12 Phase 3) awaits `sign_off_workflow` and surfaces failure as a toast instead of silently swallowing it. If signing off completes the workspace's build gate — every workflow compiled and signed off — `cmd_sign_off_workflow` auto-builds the shared skill package (no separate Build Skill Package page visit) and the editor navigates straight to Test Skill; otherwise it reports how many other workflows are still pending.
 
 **Two-tier contextual help (`InfoHint` + `Tooltip`):** Every "i" affordance is a themed click-to-open popover (`components/ui/info-hint.tsx`) showing a plain-language **summary** for non-technical users plus an expandable **"Technical details"** section for power users. Help copy is centralized in `lib/editorHelp.tsx`. Short icon-button labels use a themed `Tooltip` (`components/ui/tooltip.tsx`) instead of native `title=`. Both build on Radix (`components/ui/popover.tsx`) and animate via the `.anim-pop` CSS layer in `globals.css`, degrading to instant under `prefers-reduced-motion`. The clay brand accent is the `--brand*` token set in `globals.css`.
 
@@ -218,12 +196,12 @@ All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, 
 
 ---
 
-### 2.9 Compile (`CompilePage.tsx` + `CompileProgress.tsx`)
+### 2.8 Compile (`CompilePage.tsx` + `CompileProgress.tsx`)
 
 **Purpose:** Turn a recording into a skill — the user decides when to spend a compile credit.
-**Inputs:** The shared plugin selection; per-workflow session ID.
+**Inputs:** The shared workflow selection; per-workflow session ID.
 **Outputs:** Compiled skill ID + step count + the compile-confidence summary (see §2.7).
-**User goal:** Compile (or recompile) a specific workflow without hunting for it on a per-plugin build page.
+**User goal:** Compile (or recompile) a specific workflow without hunting for it.
 
 Rewritten 2026-07 (Phase 1) as a real top-level page — previously "Compile Page" only described the drill-in (`CompileProgress.tsx`) and this section documented an aspirational `CompilePage.tsx` that didn't exist. `CompilePage.tsx` now lists every workflow of the selected automation with its stage badge and a Compile/Recompile action (Recompile keeps its original `AlertDialog` confirmation, including the "uses the Human Edit pool, not a compile credit" warning); triggering either still navigates to the existing `CompileProgress.tsx` drill-in, unchanged, which runs the synchronous `cmd_compile` RPC and shows the 7-phase progress.
 
@@ -238,14 +216,14 @@ Rewritten 2026-07 (Phase 1) as a real top-level page — previously "Compile Pag
 
 ---
 
-### 2.10 Build Installer Page (`BuildInstallerPage.tsx`)
+### 2.9 Build Installer Page (`BuildInstallerPage.tsx`)
 
 **Purpose:** Advanced/secondary action — package an already-published skill pack release into a distributable NSIS installer. Most routine updates never need this at all; **Publish Skill Package** (§2.12) is the primary release action.
-**Inputs:** Plugin ID, company slug, logo. Version and release notes are no longer collected here — they're read from the plugin's latest published skill-pack release (via `fetchSkillPackVersions`).
+**Inputs:** Company slug, logo — no per-workflow selector; the page acts on the workspace's one shared skill pack, fetched via `fetchSkillPack()`. Version and release notes are no longer collected here — they're read from the workspace's latest published skill-pack release (via `fetchSkillPackVersions`).
 **Outputs:** Installer path, cloud download URL (when the optional cloud upload succeeds).
 **User goal:** Produce a distributable `.exe` for a release that's already shipped via Publish Skill Package.
 
-**Gating (redesigned 2026-07, Phase 4):** the Build button is disabled — with an inline banner linking to Publish Skill Package — until a skill-pack release exists for the selected plugin (`cmd_build_installer` raises `skill_pack_not_published` server-side if `pack.json` has no `sync_token`, i.e. nothing has ever been published). This replaced the old flow where clicking "Build Installer" silently published the skill pack as a side effect via `Backend._publish_skill_pack_for_installer`.
+**Gating (redesigned 2026-07, Phase 4):** the Build button is disabled — with an inline banner linking to Publish Skill Package — until a skill-pack release exists for the workspace (`cmd_build_installer` raises `skill_pack_not_published` server-side if `pack.json` has no `sync_token`, i.e. nothing has ever been published). This replaced the old flow where clicking "Build Installer" silently published the skill pack as a side effect via `Backend._publish_skill_pack_for_installer`.
 
 **Cloud upload is optional (2026-07 redesign):** `cmd_build_installer` now catches any installer-upload failure and returns it as a non-fatal `cloud_upload_error`/`cloud_upload_error_message` field on the result — the page renders it as an amber warning banner, not a build failure, since the local installer was already built successfully and installer hosting will eventually move to Conxa's own cloud build pipeline.
 
@@ -258,14 +236,14 @@ Rewritten 2026-07 (Phase 1) as a real top-level page — previously "Compile Pag
 
 ---
 
-### 2.11 Test Skill (`TestPluginPage.tsx`)
+### 2.10 Test Skill (`TestSkillPage.tsx`)
 
 **Purpose:** Run a compiled workflow against the local runtime for validation.
-**Inputs:** The shared plugin selection; test inputs.
+**Inputs:** No selector — the page is workspace-scoped, fetching every workflow (`fetchWorkflows()`) and the shared skill pack (`fetchSkillPack()`) in parallel; test inputs per workflow row.
 **Outputs:** Pass/fail result, runtime output text.
 **User goal:** Confirm the workflow works end-to-end before shipping to customers.
 
-Revised 2026-07 (Phase 1): dropped its own local "Built Plugins" rail in favor of the shared `PluginSwitcher`/selection store, matching every other stage page — `PluginWorkflowTests.tsx` and `workflowTestSummary()` are reused unchanged.
+Renamed from `TestPluginPage.tsx` in the 2026-08-12 Plugin→Workflow/SkillPack refactor, dropping the per-automation selector entirely in favor of listing every workflow in the workspace at once via `WorkflowTestList` (renamed from `PluginWorkflowTests.tsx`); `workflowTestSummary()` now takes the full `Workflow[]` list directly instead of a single automation's nested workflows.
 
 **UX issues:**
 - Runtime must be installed locally for testing — there's no inline message when it's not found (just `runtime_not_found` error code).
@@ -274,16 +252,16 @@ Revised 2026-07 (Phase 1): dropped its own local "Built Plugins" rail in favor o
 
 ---
 
-### 2.12 Publish Skill Package (`PublishPage.tsx`)
+### 2.11 Publish Skill Package (`PublishPage.tsx`)
 
 **Purpose:** The primary, mandatory, version-controlled release-management action — ship a skill-pack update to customers who already have Conxa installed, via the runtime's delta-sync, with zero installer rebuild required.
-**Inputs:** Version (semver), release notes, the shared plugin selection.
+**Inputs:** Version (semver), release notes — no per-workflow selector; the page acts on the workspace's one shared skill pack, fetched via `fetchSkillPack()`.
 **Outputs:** Release history (version, release notes, publish timestamp, `is_latest`), sync endpoint, tracking URL, workspace ID.
 **User goal:** Ship a skill-pack change to customers as fast as possible.
 
 **Shipped 2026-07 (Phase 4)**, replacing the Phase-1 stub. `Backend._publish_skill_pack_for_installer` was renamed to `_publish_skill_pack` and extracted from Build Installer's call chain into the new mandatory `cmd_publish_skill_pack` RPC, which this page calls via `publishSkillPack()`. Skill-pack upload is **mandatory** — publish fails the whole action if the cloud upload fails (`_CommandError("cloud_publish_failed", ...)`), by design (per the versioned-installer-architecture requirement).
 
-**Version history:** new `SkillPackVersionHistory`-style list (calling `fetchSkillPackVersions()` → `GET /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions`) — the version/release-comment/publishing-limit surface that moved here from Build Installer, per the original design brief. Republishing an already-used version number is rejected with `skill_pack_version_exists` (409) rather than silently overwriting history.
+**Version history:** new `SkillPackVersionHistory`-style list (calling `fetchSkillPackVersions()` → `GET /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions`) — the version/release-comment/publishing-limit surface that moved here from Build Installer, per the original design brief. Republishing an already-used version number is rejected with `skill_pack_version_exists` (409) rather than silently overwriting history.
 
 **Meter behavior:** the header pill was repurposed 2026-08-08 from the now-removed skill-pack-slot meter
 to compile credits remaining — there is no longer any limit on how many distinct product slugs a
@@ -291,26 +269,26 @@ workspace may publish under (`docs/PRD.md` §11). Trial-expired, machine-limit, 
 white-label errors from a publish or installer-upload attempt surface through the same error-message
 map as every other entitlement code (`lib/errorMessages.ts`) — no dedicated UI state per code yet.
 
-**Shared components:** the "Built Packages" sidebar list (`components/PluginListSidebar.tsx`) and the log/result-card UI (`components/BuildLogUi.tsx`) are shared with Build Installer (§2.10) to prevent the two pages' visual language drifting apart, per Recommended Improvement (closed) below.
+**Shared components:** the log/result-card UI (`components/BuildLogUi.tsx`) is shared with Build Installer (§2.9) to prevent the two pages' visual language drifting apart. The "Built Packages" sidebar list (`components/PluginListSidebar.tsx`) this section used to reference was removed in the 2026-08-12 refactor — both pages became workspace-scoped with no per-automation selector, so there's nothing left to switch between.
 
 ---
 
-### 2.13 Inspector (`InspectorDrawer.tsx`)
+### 2.12 Inspector (`InspectorDrawer.tsx`)
 
 **Purpose:** On-demand package-file browser and internals viewer for the selected automation — the demoted home for what used to be the top-level Packages page.
-**Inputs:** The plugin passed in from wherever it's opened (currently the Plugin Overview's "Inspector" button); matches it to a built package by intersecting workflow slugs (the only link `list_skill_packages`/`list_skill_package_files` expose between "plugin" and "package").
-**Outputs:** Read-only file tree + preview; "Open in Explorer"; a "Rebuild package" action (calls `cmd_build_plugin` directly — the manual escape hatch now that Build Plugin has no page of its own, since sign-off auto-builds in the normal case).
+**Inputs:** The workflow passed in from wherever it's opened (currently the Workflow page's "Inspector" button); matches it to the built skill package by comparing the workflow's own slug against each packaged skill's `workflow_slug` (the link `list_skill_packages`/`list_skill_package_files` expose between a workflow and the shared package).
+**Outputs:** Read-only file tree + preview; "Open in Explorer"; a "Rebuild package" action (calls `buildSkillPackage()`, workspace-scoped — the manual escape hatch now that building has no page of its own, since sign-off auto-builds in the normal case).
 **User goal:** Audit built package contents when something needs a closer look — not part of the everyday flow.
 
-Replaces `SkillPackagesPage.tsx` (2026-07, Phase 1), reusing its `PanelChrome`/`StructureTrieRows` tree components and `lib/skillPackageTree` helpers unchanged. Deliberately scoped down from the original page: no rename/delete, no resizable panes, no cross-plugin package list — those were package-*management* features for engineers auditing the whole `data/skill-packages/` tree, not part of what an Inspector needs to do for a single automation. The bundle_root path and per-file paths now live only in this drawer, never on a default surface.
+Replaces `SkillPackagesPage.tsx` (2026-07, Phase 1), reusing its `PanelChrome`/`StructureTrieRows` tree components and `lib/skillPackageTree` helpers unchanged. Deliberately scoped down from the original page: no rename/delete, no resizable panes, no cross-workflow package list — those were package-*management* features for engineers auditing the whole `data/skill-packages/` tree, not part of what an Inspector needs to do for a single workflow. The bundle_root path and per-file paths now live only in this drawer, never on a default surface.
 
 **UX issues (carried over):**
 - Rebuild has no confirmation step (it's cheap and idempotent, but a stray click could surprise a user mid-review).
-- No connection back to which workflow within the plugin produced which file — the tree is package-wide, not workflow-scoped.
+- No connection back to which workflow in the workspace produced which file — the tree is package-wide (shared across every workflow that compiles into it), not workflow-scoped.
 
 ---
 
-### 2.14 Settings Page (`SettingsPage.tsx`)
+### 2.13 Settings Page (`SettingsPage.tsx`)
 
 **Purpose:** Configure Build Studio (cloud API URL, auth, proxy settings).  
 **Inputs:** Form fields.  
@@ -332,28 +310,63 @@ Source: `conxa-cloud/frontend/`
 **Path:** `app/(marketing)/page.tsx`  
 **Purpose:** Public landing page for Conxa. Rebuilt 2026-08-06 as a **communication-first scroll story** for enterprise buyers (CEO/CTO/CIO/VP Eng/Ops) — the prior version was feature-led and never explained the problem before listing capabilities. Each section lands one idea and answers the question the previous one raised, at plain-language reading level.
 
+**Rebuilt again 2026-08-12** around the pricing ladder (TODO.md CLOUD-10). The 2026-08-09 ladder rewrite
+(`e7939b2`) had updated `/pricing`, the nav, the FAQ and the docs, but left this page carrying the old
+positioning and no price at all. Two changes: the hero now leads with the business outcome and names the
+four rungs, and `PricingTable` is mounted on the page itself. Twelve sections became ten — `Problem` +
+`WhyAiNeedsIt` were one argument told twice, as were `OldVsNew` + `Outcomes`.
+
 **Section order (`src/components/marketing/sections/`, plus `hero/Hero.tsx`):**
 
 | # | id | Answers | Component |
 |---|----|---------|-----------|
-| 1 | — | What is Conxa? | `hero/Hero.tsx` (live chat + browser simulation) |
-| 2 | `problem` | Why is this hard? | `Problem.tsx` + `diagrams/PathVsGuesswork.tsx` |
-| 3 | `old-vs-new` | Why not RPA / APIs / raw agents? | `OldVsNew.tsx` |
+| 1 | — | What outcome do I get? | `hero/Hero.tsx` (live chat + browser simulation, plus the four-rung ladder strip) |
+| 2 | `demo` | What does using it look like? | `DemoStory.tsx` (click-to-play YouTube embed) |
+| 3 | `the-gap` | Why is this hard, and why does AI need it? | `TheGap.tsx` + `diagrams/PathVsGuesswork.tsx` (merges the former `Problem` and `WhyAiNeedsIt`) |
 | 4 | `how-it-works` | How does it work? | `HowItWorks.tsx` (sticky scroll-scrub ≥1024px, stacked below / reduced motion) |
-| 5 | `examples` | Does it work on my software? | `Examples.tsx` |
-| 6 | `why-ai-needs-it` | Why does AI need this? | `WhyAiNeedsIt.tsx` (animated SVG delegation diagram) |
-| 7 | `outcomes` | So what, for my business? | `Outcomes.tsx` |
-| 8 | `demo` | What does using it look like? | `DemoStory.tsx` (click-to-play YouTube embed) |
-| 9 | `architecture` | Where does this run? | `Architecture.tsx` |
-| 10 | `security` | Can I trust it? | `Security.tsx` |
-| 11 | `faq` | Everything else pre-demo | `Faq.tsx` (native `<details>`) |
-| 12 | `cta` | What now? | `FinalCta.tsx` |
+| 5 | `examples` | Does it work on my software, and what is it worth? | `Examples.tsx` (six named processes with the department that buys each, plus the dashboard's ROI arithmetic) |
+| 6 | `reliability` | Will it still work in six months? | `Reliability.tsx` (merges the former `OldVsNew` and `Outcomes`) |
+| 7 | `comparison` | Why not use X instead? | `Comparison.tsx` (competitor matrix, mirrors `docs/PRD.md` §10) |
+| 8 | `security` | Where does it run, and can I trust it? | `Trust.tsx` (merges the former `Architecture` and `Security`; keeps the `security` id the nav and footer link to) |
+| 9 | `pricing` | What does it cost? | `PricingTable.tsx` with `compact` |
+| 10 | `faq` | Everything else pre-demo | `Faq.tsx` (native `<details>`) |
+| 11 | `cta` | What now? | `FinalCta.tsx` |
+
+**Competitor matrix (`comparison`, added 2026-08-12 by request).** `DESIGN.md` §6 lists dense
+feature-matrix tables as a Don't — the legacy-RPA anti-reference. This section is a deliberate,
+requested exception, kept narrow to avoid what that rule guards against: six capability columns, not
+twenty, and every row carries a **"Beats us at:" concession** taken from `docs/PRD.md` §10. Keep both
+properties. A matrix where one column wins every row reads as marketing and gets discounted wholesale;
+the concessions are what make the rest of the table credible to a technical buyer, and they are also
+what the sales material is built on ("a salesperson who can name a competitor's strength is trusted on
+everything else they say"). Cells accept `Partly` / `n/a` / prose — do not force every cell into a tick
+or a cross, because that overstates the claim. The PRD's separate rows for live-UI agents and browser
+assistants are collapsed into one; that distinction matters in a sales conversation, not here. It
+replaced the three "what breaks" cards that used to close `Reliability.tsx`, which made the same
+argument in weaker form.
+
+Two layout constraints on that table, both load-bearing: the scroll container must stay
+`relative`, because the `sr-only` cells are `position: absolute` and would otherwise resolve their
+containing block to the `relative` `<section>`, escape the scroller at their static position, and widen
+the entire page on mobile; and the first column narrows below `sm` so a phone shows more than one data
+column. A visible "scroll sideways" hint appears below `lg`.
+
+**Telemetry visuals (`reliability`):** this section reuses the **real dashboard viz components** rather
+than drawing marketing approximations of them — `viz/ExecutionFlow.tsx` for a run whose certificate-upload
+step self-heals at Tier 2, and `viz/TierLadder.tsx` for where recovery finishes. It replaces three
+hand-drawn static SVGs (`MaintenanceChart` / `LockMark` / `CostChart`) that used to live in `Outcomes.tsx`.
+Two rules apply and must not regress: (1) the figures are **explicitly labelled illustrative** in visible
+body text — there is no customer proof yet (`PRODUCT.md`; `docs/PRD.md` §8, "this is a diagram, not a
+moat"), so they may never be captioned as measured results; (2) the dashboard components are used
+**as-is**, wrapped for scale, never edited for marketing — the one change made was an additive
+`showFootnote` prop on `TierLadder`, because its built-in footnote is `text-zinc-600` on Panel Black,
+which is below the 4.5:1 body-text floor for this surface.
 
 **Copy constraints (do not regress):** no SOC 2 / HIPAA / GDPR / ITAR / certification claims; recovery Tiers 3–5 are described as *assisted*, never "fully autonomous" or "never breaks"; no invented metrics, customer logos, or testimonials; Windows-only runtime, macOS as roadmap. Allowed claims are the shipped ones — local execution, AES-256-GCM sessions in the OS keychain, credentials never in published skills, Ed25519-signed updates, admin-only publishing plus audit log, telemetry limited to event codes, unlimited free executions.
 
 **Assets:** `DemoStory.tsx` embeds the product demo video (YouTube, click-to-play — the iframe is only injected on click, so it costs nothing at page load). Real product screenshots live in `public/marketing/screenshots/`, wired through `primitives/ShotFrame.tsx`: the four `shot_*.png` files are **cropped derivatives** of the originals — cropped both to stay legible at column width and, in the case of `shot_execution.png`, to remove the personal chat-history rail from the Claude Desktop capture. Keep the originals; re-crop rather than swapping in a raw full-window capture. `public/marketing/examples-stack.png` is an AI-generated illustration (Codex `image_gen`) whose background is exactly `#06080b`, so it composites seamlessly on the Void Black canvas — match that background on any replacement.
 
-**Deliberately not used:** the dashboard capture (`dashboard.png`) shows a red "Attention needed" state, a 36% success rate, and single-digit workspace counts from a dev workspace. It is not on the page; the Outcomes section carries its own code-built charts instead. Only put a dashboard screenshot on the homepage once its numbers represent real, healthy usage.
+**Deliberately not used:** the dashboard capture (`dashboard.png`) shows a red "Attention needed" state, a 36% success rate, and single-digit workspace counts from a dev workspace. It is not on the page; the Reliability section renders the live viz components with illustrative data instead. Only put a dashboard screenshot on the homepage once its numbers represent real, healthy usage.
 
 **Status:** Implemented with Framer Motion + Lenis. The Three.js `OrchestrationScene` was removed from the page (decorative only, no communication value); `3d/SplineScene.tsx` remains unused.
 
@@ -381,8 +394,30 @@ matching the pricing sheet the restructuring was based on. Feature lists come st
 response, itself derived from `PLAN_LIMITS`, so the page cannot show a number that isn't actually
 enforced.
 
-**Status:** Implemented and linked from the marketing nav. Loading/error states covered (skeleton cards,
-inline error banner). Not yet built: a dedicated Enterprise "contact us" form (routes to
+**One component, two hosts (2026-08-12).** `PricingTable` takes a `compact` flag. `/pricing` renders it
+without: full cards plus the four explainer columns (compile credit, unlimited runs, model access by tier,
+Human Edit credit). The homepage renders it with `compact`: the same four live tiers, but the explainer
+columns are replaced by a "Compare every tier in full" link back here, so the homepage doesn't carry the
+whole billing FAQ. **Do not fork the component** — the prices and feature strings are server-generated,
+and a second copy drifts from the backend the day either changes. Both hosts share the TanStack query key
+`['public-plans']`, so a visitor moving from `/` to `/pricing` costs no extra request.
+
+**Two bugs fixed 2026-08-12** while verifying the homepage rebuild, both of which had shipped with the
+original pricing page:
+
+- `/pricing` was never added to `proxy.ts`'s `isPublic` route matcher, so Clerk middleware redirected
+  every anonymous visitor to `/sign-in` — from the nav link, the footer, and the `sitemap.xml` entry the
+  same commit added. The page was public in intent and in its static build output, but not in routing.
+- `_plan_features` rendered Enterprise's numeric limits literally. Enterprise carries `0` in `PLAN_LIMITS`
+  as a sentinel meaning "agreed per contract" (the real values live in billing metadata as contractual
+  overrides), so the public card advertised "0 seats", "0 machines" and "0K Human Edit tokens". `0` now
+  renders as contract language. Anything that formats a plan limit for display must handle this sentinel.
+
+Also 2026-08-12: a feature the tier *withholds* ("No ops dashboard", "No analytics retention") now renders
+with a muted dash instead of a cyan tick — a tick beside a negative statement read as "included".
+
+**Status:** Implemented and linked from the marketing nav and the homepage. Loading/error states covered
+(skeleton cards, inline error banner). Not yet built: a dedicated Enterprise "contact us" form (routes to
 `/docs/support` instead) and inline plan-comparison tooltips explaining each capability row.
 
 ---
@@ -420,23 +455,23 @@ inline error banner). Not yet built: a dedicated Enterprise "contact us" form (r
 
 ---
 
-### 3.3 Plugins Page (`app/(protected)/plugins/page.tsx`)
+### 3.3 Skill Packages Page (`app/(protected)/packages/page.tsx`)
 
-**Purpose:** List all published plugins.  
+**Purpose:** List all published skill packages per company.
 **Inputs:** Clerk auth.  
-**Outputs:** Enterprise plugin cards with status, current version, workflow count, installer state, and navigation to release history.
-**User goal:** Open a plugin's release/version history and manage installer downloads.
+**Outputs:** Skill Package cards (one per company_slug) with status (idle/building/error), latest published version, installer version, build/update timestamp, and navigation to version history.
+**User goal:** Find a published skill package and review its version history or installer downloads.
 
-**Meter behavior:** Shows installer slots. Plugin cards with installers count toward this meter; same slug version history is an existing-slot update.
+**Note:** A skill package is workspace-scoped and company-scoped — one per workspace/company pair. All workflows targeting that company/slug compile together into this single package, not individual packages per workflow.
 
 ---
 
-### 3.4 Plugin Detail Page (`app/(protected)/plugins/[id]/page.tsx`)
+### 3.4 Skill Package Versions Page (`app/(protected)/packages/[slug]/page.tsx`)
 
-**Purpose:** Installer version history and workflow breakdown for one plugin.
-**Inputs:** Plugin ID.  
-**Outputs:** Previous installer versions, release comments, version-specific download buttons, plugin workflow count, and workflow coverage.
-**User goal:** Audit release history and download the correct installer version.
+**Purpose:** Version history and installer release management for one skill package.
+**Inputs:** Company slug (not workspace ID — derived from the authenticated workspace context).
+**Outputs:** Skill package versions (release notes, publish timestamp, skill list, file count), installer versions (if any) with download buttons, and version-specific metadata.
+**User goal:** Audit release history, download previous versions, compare versions.
 
 **UX issues:**
 - No filter by status (ok/fail).
@@ -445,10 +480,9 @@ inline error banner). Not yet built: a dedicated Enterprise "contact us" form (r
 
 ---
 
-### 3.5 Compile Page (Cloud) (`app/(protected)/plugins/[id]/workflows/[workflowId]/compile/page.tsx`)
+### 3.5 Compile Page (Cloud) — removed
 
-**Purpose:** Trigger re-compilation of a published workflow.  
-**Status:** Listed in routes but functionality depends on cloud compilation — which is **not implemented** (cloud has no compiler). This is a future feature or a placeholder.
+**Purpose (historical):** Trigger re-compilation of a published workflow. This route (`app/(protected)/plugins/[id]/workflows/[workflowId]/compile/page.tsx`) never had working functionality behind it — cloud compilation is **not implemented** (cloud has no compiler, see CLAUDE.md's "cloud does not compile or execute" invariant) — and the placeholder file itself no longer exists on disk after the 2026-08-12 `/plugins` → `/packages` rename. Recompiling a workflow remains a Build Studio–only action (§2.8).
 
 ---
 
@@ -496,7 +530,7 @@ yet. Tracked in `TODO.md`.
 **Inputs:** Clerk auth context and `GET /api/v1/audit-events`.
 **Outputs:** Summary counters, actor/resource coverage, latest event status, searchable and action-filtered audit table, metadata preview, and CSV export of the filtered result set.
 **User goal:** Review who performed operational actions, when they happened, and which workspace resources were affected.
-**Status:** Implemented as a protected route with a sidebar entry directly below Plugins.
+**Status:** Implemented as a protected route with a sidebar entry directly below Skill Packages.
 
 ---
 
@@ -512,45 +546,33 @@ yet. Tracked in `TODO.md`.
 
 ### Build Studio
 
-One button per stage of the Record -> Compile -> Human Edit -> Test Skill ->
-Publish Skill Package -> Build Installer flow (2026-07 workflow redesign,
-Phase 1), replacing the earlier compiler-stage-shaped sidebar
-(Dashboard/Build Plugin/Packages/Test Plugin/Build Installer). Every stage
-page reads one shared "current automation" selection (`store/selectionStore.ts`,
-via `components/PluginSwitcher.tsx`) instead of keeping its own plugin rail —
-picking a plugin once on any page carries it to every other stage page.
-**Record is the exception and the app home** (2026-07, second pass): the
-standalone Dashboard page was removed and its plugin create/delete/search
-management was folded into Record's own left rail (see §2.3, §2.5), so Record
-keeps its own always-visible plugin picker instead of the shared `PluginSwitcher`.
+One button per stage of the Workflows -> Compile -> Human Edit -> Test Skill ->
+Publish Skill Package -> Build Installer flow (2026-08 workflow redesign), replacing
+the earlier Record-centric sidebar (Record/Dashboard/Plugins/etc). The Workflows
+page is now the primary landing page and entry point for all recording/editing.
 
 ```
 AppChrome (layout)
 ├── Sidebar
-│   ├── Record (RecordPage.tsx — app home: plugin create/delete/search in the
-│   │   left rail (merged in from the removed Dashboard.tsx), auth + workflow
-│   │   recording in the right workspace)
-│   │   └── [Plugin ID] (PluginDetailPage.tsx — per-plugin overview;
-│   │       "Inspector" opens InspectorDrawer.tsx for package files)
-│   │       └── /plugins/[id]/record/[workflowName] (RecordingFeed — live recording drill-in)
-│   │       └── /plugins/[id]/compile/[sessionId] (CompileProgress — live compile drill-in)
-│   ├── Compile (CompilePage.tsx — per-workflow Compile/Recompile, shared selection)
+│   ├── Workflows (WorkflowListPage.tsx — app home and default route: create/search/
+│   │   delete workflows, navigate to detail)
+│   │   └── [Workflow ID] (WorkflowPage.tsx — per-workflow detail: auth recording +
+│   │       workflow recording + compile/edit controls, inline on same page)
+│   │       └── /compile/[sessionId] (CompileProgress — live compile drill-in)
+│   ├── Compile (CompilePage.tsx — per-workflow Compile/Recompile)
 │   ├── Human Edit (HumanEditListPage.tsx — compiled workflows, needs-review-first,
-│   │   → /edit/[skillId] HumanEditPage.tsx, the per-skill editor — see §2.8, incl. the
-│   │   2026-07-10 three-tier Review/Reliability/Diagnostics redesign)
-│   ├── Test Skill (TestPluginPage.tsx — shared selection, reuses PluginWorkflowTests)
-│   ├── Publish Skill Package (PublishPage.tsx — primary release action, shipped Phase 4)
-│   ├── Build Installer (BuildInstallerPage.tsx — secondary/advanced, requires a published release)
+│   │   → /edit/[skillId] HumanEditPage.tsx, the per-skill editor — see §2.7)
+│   ├── Test Skill (TestSkillPage.tsx — test workflows)
+│   ├── Publish Skill Package (PublishPage.tsx — primary release action: workspace-scoped)
+│   ├── Build Installer (BuildInstallerPage.tsx — secondary/optional, requires a published release)
 │   └── Settings
 └── WindowTitleBar (custom Electron title bar)
 ```
 
-`/dashboard`, `/`, `/plugins`, `/build` (Build Plugin), `/packages` (Skill Packages),
-and unknown routes all redirect to `/record`: Dashboard was merged into Record (see
-§2.3); Build Plugin is superseded by auto-build-on-sign-off (`cmd_sign_off_workflow`
-now builds the package the moment every workflow is compiled + signed off; a
-manual "Rebuild package" escape hatch lives in the Inspector drawer instead),
-and Skill Packages' file browser moved into that same Inspector drawer.
+`/`, `/record`, `/plugins`, `/build`, and unknown routes all redirect to `/workflows`:
+the Record page was removed (2026-08); all its controls are now inline on the Workflow
+Detail page. The Workflow List page is the new home for workflow management. Build
+Installer is secondary and only offered after a skill package is published.
 
 ### Cloud Dashboard
 
@@ -562,9 +584,8 @@ and Skill Packages' file browser moved into that same Inspector drawer.
 
 (protected)/  [requires Clerk auth]
 ├── /dashboard
-├── /plugins
-│   └── /plugins/[id]
-│       └── /plugins/[id]/workflows/[workflowId]/compile
+├── /packages
+│   └── /packages/[slug]
 ├── /audit
 ├── /billing
 ├── /team
@@ -583,7 +604,7 @@ and Skill Packages' file browser moved into that same Inspector drawer.
 
 1. Downloads Build Studio. Runs setup wizard.
 2. Signs in with Clerk (browser pop-up).
-3. Creates first plugin (name + URL).
+3. Creates first workflow (name + URL).
 4. Records auth session (1–3 min).
 5. Records first workflow (5–15 min).
 6. Compiles (2–5 min — waits on LLM).
@@ -601,7 +622,7 @@ and Skill Packages' file browser moved into that same Inspector drawer.
 ### Journey 2: Returning company engineer (update a workflow)
 
 1. Opens Build Studio.
-2. Navigates to existing plugin.
+2. Navigates to existing workflow.
 3. Re-records a workflow (auth is still valid).
 4. Compiles new version.
 5. Signs off.
@@ -639,7 +660,7 @@ and Skill Packages' file browser moved into that same Inspector drawer.
 | Build → installer | Two steps not explained | Users confused about why two actions needed |
 | Test workflow | Requires local runtime installed | No feedback when runtime missing |
 | Compile quota | Quota exceeded shows as unreachable | Misleading error |
-| ~~Workflow status~~ | ~~No pipeline visualization~~ | **Resolved 2026-07** — `handlers/status.py::derive_workflow_stage` + `StagePath`/`WorkflowStageBadge` replaced the three separate, inconsistent status fields with one derived stage rendered consistently across the plugin overview and every stage page |
+| ~~Workflow status~~ | ~~No pipeline visualization~~ | **Resolved 2026-07** — `handlers/status.py::derive_workflow_stage` + `StagePath`/`WorkflowStageBadge` replaced the three separate, inconsistent status fields with one derived stage rendered consistently across the workflow page and every stage page |
 
 ---
 
@@ -667,15 +688,15 @@ The Setup Wizard has no persistent state. If the app is closed mid-bootstrap, it
 
 ### 7.6 Installer Version History
 
-**Partially resolved 2026-07:** Skill Pack Publishing (§2.12) now shows a full release history (version, release notes, publish timestamp, `is_latest`) — that's the primary changelog surface now, per the redesign making skill packs the version-controlled artifact. Pure installer-build history (the backend has always tracked `installer_versions__{slug}` and served it at `GET /api/v1/plugins/{slug}/installer/versions`) is still not surfaced as a UI list on the Build Installer page itself — see Recommended Improvement #10.
+**Partially resolved 2026-07:** Skill Pack Publishing (§2.11) now shows a full release history (version, release notes, publish timestamp, `is_latest`) — that's the primary changelog surface now, per the redesign making skill packs the version-controlled artifact. Pure installer-build history (the backend has always tracked `installer_versions__{slug}` and served it at `GET /api/v1/workflows/{slug}/installer/versions`) is still not surfaced as a UI list on the Build Installer page itself — see Recommended Improvement #10.
 
-### 7.7 Multi-Plugin Build
+### 7.7 Multi-SkillPack Build
 
-Companies with 5+ plugins have no batch build/publish flow. Each plugin must be built and published individually.
+A workspace can publish under many distinct company slugs (e.g. an agency running several clients), each with its own skill pack — there is no batch build/publish flow across them. Each company's skill pack must still be built and published individually.
 
 ### 7.8 Test Results Persistence
 
-Test results (`last_test_status`, `last_test_error`) are saved to the plugin model but not surfaced prominently in the workflow list or dashboard.
+Test results (`last_test_status`, `last_test_error`) are saved to the workflow model but not surfaced prominently in the workflow list or dashboard.
 
 ### 7.9 Claude Dashboard Integration
 
@@ -706,7 +727,7 @@ Bootstrap surfaces download URLs for IT whitelisting, which is good. However, th
 
 ### 8.5 Role-Based Access in Dashboard — Partially Resolved
 
-`require_admin` is now enforced on publish, plugin create/delete, and bundle-release routes (`app/services/rbac.py`; Implementation-Plan §1.6). Fine-grained per-skill ACLs and a read-only analyst role for enterprise customers are still open — Phase 3, tracked in `TODO.md`.
+`require_admin` is now enforced on publish, workflow create/delete, and bundle-release routes (`app/services/rbac.py`; Implementation-Plan §1.6). Fine-grained per-skill ACLs and a read-only analyst role for enterprise customers are still open — Phase 3, tracked in `TODO.md`.
 
 ---
 
@@ -736,8 +757,8 @@ Bootstrap surfaces download URLs for IT whitelisting, which is good. However, th
 
 9. **Bulk compile.** Allow selecting multiple recorded workflows and compiling them all in sequence with a progress bar for each.
 
-10. **Installer version history.** Store installer builds with version, date, sha256 and show them in a list on the Build Installer page. (The backend has carried `GET /api/v1/plugins/{slug}/installer/versions` — now also `.../{installer_version}/{slug}/installer/versions` — since before this note was written; still not surfaced as a UI list on Build Installer. Still open.)
+10. **Installer version history.** Store installer builds with version, date, sha256 and show them in a list on the Build Installer page. (The backend has carried `GET /api/v1/workflows/{slug}/installer/versions` — now also `.../{installer_version}/{slug}/installer/versions` — since before this note was written; still not surfaced as a UI list on Build Installer. Still open.)
 
-11. ~~**Publish without installer rebuild.**~~ **Resolved 2026-07.** Publish Skill Package (§2.12) publishes the updated skill pack directly via `cmd_publish_skill_pack`; Build Installer is now a fully separate, optional, secondary action gated on a release already existing. The runtime's delta sync handles delivery with zero installer rebuild.
+11. ~~**Publish without installer rebuild.**~~ **Resolved 2026-07.** Publish Skill Package (§2.11) publishes the updated skill pack directly via `cmd_publish_skill_pack`; Build Installer is now a fully separate, optional, secondary action gated on a release already existing. The runtime's delta sync handles delivery with zero installer rebuild.
 
-12. **Execution dashboard widget in Build Studio.** Embed a mini execution dashboard in the Build Studio showing the last 10 runs across all deployed plugins, fetched from the Cloud API.
+12. **Execution dashboard widget in Build Studio.** Embed a mini execution dashboard in the Build Studio showing the last 10 runs across every workflow in the workspace, fetched from the Cloud API.

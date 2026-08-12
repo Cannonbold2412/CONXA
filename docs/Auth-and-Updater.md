@@ -120,7 +120,7 @@ All Conxa Cloud API endpoints except a small public allowlist require a valid Cl
 - `POST /api/v1/tracking/{co}/events` — telemetry ingestion (package token, not Clerk)
 
 **Protected (Clerk JWT required):**
-Everything else — LLM proxy, plugin publishing, billing, dashboard.
+Everything else — LLM proxy, skill pack publishing, billing, dashboard.
 
 Verification (`app/api/security.py`):
 1. Extract `Authorization: Bearer {token}` header
@@ -394,7 +394,7 @@ The manifest is fetched from `GET /api/v1/updates/deps-manifest` (public — cal
 ```
 Token                     Lives in                  Used for
 ───────────────────────   ──────────────────────    ────────────────────────────────────────
-Clerk access token        OS keyring (Python)       Cloud LLM proxy, plugin publish, billing
+Clerk access token        OS keyring (Python)       Cloud LLM proxy, skill pack publish, billing
 Clerk refresh token       OS keyring (Python)       Refreshing the access token silently
 Sync token                pack.json (per company)    Skill-pack delta sync (TRD.md §5.4) — no keychain, no refresh
 Per-company session key   OS keyring (Node/keytar)  Encrypting Playwright storageState at rest

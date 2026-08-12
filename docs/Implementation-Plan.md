@@ -389,10 +389,40 @@ routing. Frontend `npm run lint` and `npm run build` both clean, `/pricing` rend
 
 ---
 
+### ✅ 1.13 Plugin → Workflow/SkillPack Data Model Rename — DONE 2026-08-12
+
+**What was changed:** The core data model and API contracts were fundamentally restructured to reflect the new cardinality: N Workflows per Workspace : 1 SkillPack per Company.
+
+**Old model:** One `Plugin` per company, holding a list of `PluginWorkflow` children and shared `build`/`installer` metadata. Multiple recordings per automation required cloning the Plugin entity.
+
+**New model:**
+- **`Workflow`** — flat, exactly ONE login session + ONE recording + ONE compiled skill per workflow entity. Fields: id, slug, name, status (needs_auth/ready/error), auth (optional WorkflowAuth), recording_status (recorded/compiled/error), skill_id, compile_status, etc. Stored per-workflow.
+- **`SkillPack`** — workspace-scoped, company-scoped (keyed by workspace_id + company_slug), shared across all workflows targeting that company. Holds the single build + installer metadata. One per company/workspace pair, not per-workflow.
+
+**What shipped (2026-08-12):**
+- **Core models:** `packages/conxa-core/conxa_core/models/workflow.py` (new `Workflow`, `WorkflowAuth`, `SkillPack`, `SkillPackBuild`, `SkillPackInstaller`); old `plugin.py` deleted.
+- **Storage:** `workflow_store.py` (replaces `plugin_store.py`, KV namespace `workflows`), `skill_pack_store.py` (new, KV namespace `skill_packs_meta`, keyed by company_slug for multi-tenancy).
+- **Studio Python backend:** `handlers/workflows.py` (replaces `handlers/plugins.py`), `skill_package_builder.py` (replaces `plugin_builder.py`), updated `handlers/compile.py`, `handlers/session.py`, `handlers/runs.py`.
+- **Cloud backend:** `/api/v1/workflows/*` routes (replace `/api/v1/plugins/*`), telemetry field renames (`plugin_id`/`plugin_ver` → `workflow_id`/`workflow_ver` in wire format `wfid`/`wfv`), updated `tracking_routes.py`, `publish_routes.py`, `skillpack_update_routes.py`, `entitlements.py`.
+- **Runtime:** telemetry wire format `wfid`/`wfv` (was `pid`/`pv`), server.js MCP tools updated, tracker.js + test fixtures.
+- **Studio UI:** `/workflows` (Workflow List) replaces `/record`, `/workflows/:id` (Workflow Detail) replaces Plugin Detail + Record, inline auth + recording actions, deleted Record page entirely. `WorkflowSwitcher` replaces `PluginSwitcher`.
+- **Cloud dashboard:** `/packages` (Skill Packages List, replaces `/plugins`) `/packages/:slug` (Skill Package Versions, replaces Plugin Detail), scoped to company_slug not workspace_id.
+- **Docs:** `docs/Backend-Schema.md` §2 (data models), §6.1 (ERD), §7 (KV namespaces) rewritten; `docs/App-Flow.md` restructured (Workflow Detail inline actions); `docs/UI-UX-Brief.md` redesigned (Workflow List/Detail specs); `docs/Implementation-Plan.md` updated; `CLAUDE.md` updated for new file/symbol references.
+
+**Files (non-exhaustive):** `packages/conxa-core/conxa_core/models/workflow.py`, `storage/workflow_store.py`, `storage/skill_pack_store.py`, `conxa-builder/python/handlers/workflows.py`, `conxa_compile/skill_package_builder.py`, `conxa-cloud/backend/app/api/workflow_routes.py`, `publish_routes.py`, `skillpack_update_routes.py`, `tracking_routes.py`, `conxa-builder/electron/renderer/src/pages/WorkflowListPage.tsx`, `WorkflowPage.tsx`, `api/workflowsApi.ts`, `conxa-cloud/frontend/src/SkillPackagesPage.tsx`, `docs/*.md`.
+
+**Tests:** 721/722 backend tests passing, 54/54 runtime tests passing, Studio UI tsc clean, cloud frontend lint + build clean. One pre-existing external-API test skipped.
+
+**Breaking change (customer impact):** API routes moved from `/api/v1/plugins/...` to `/api/v1/workflows/...`. Old installed customer runtimes (using baked-in `/api/v1/plugins/...` endpoints) will break until reinstalled. This was an explicit accepted tradeoff per the design decision — no backward-compat support.
+
+**Deferred (still open):** End-to-end UI/backend functional tests (e2e: create workflow → record login → record workflow → compile → edit → sign-off → build skill package, confirming two workflows share one skill package + installer). Tracked in `TODO.md`.
+
+---
+
 **Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
-phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10, 1.12) is done, superseded, or moot;
+phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10-1.13) is done, superseded, or moot;
 other open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
-billing enforcement, error-message UX).
+billing enforcement, error-message UX) and new discoveries (e2e testing, orphaned dev scripts).
 
 ---
 

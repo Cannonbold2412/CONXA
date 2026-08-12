@@ -142,11 +142,11 @@ Unsigned `.exe` triggers Windows SmartScreen: "Unknown Publisher — Windows pro
 
 #### ✅ 2.3 Audit Log — DONE (2026-06-02)
 
-`audit_routes.py` writes `audit_log` entries on publish, installer upload, plugin create, and plugin delete, with `user_id`, `workspace_id`, `action`, `resource_id`, `ip`, `created_at`. `GET /api/v1/audit-events` (Clerk-authed, workspace-scoped) backs the Settings page. The security-checklist boilerplate item is covered.
+`audit_routes.py` writes `audit_log` entries on publish, installer upload, workflow create, and workflow delete, with `user_id`, `workspace_id`, `action`, `resource_id`, `ip`, `created_at`. `GET /api/v1/audit-events` (Clerk-authed, workspace-scoped) backs the Settings page. The security-checklist boilerplate item is covered.
 
 #### ✅ 1.6 Wire RBAC to API Routes — DONE (2026-07-01)
 
-`require_admin(principal)` (admin/owner → allow, else HTTP 403) is enforced on the previously-unguarded write routes (`plugin_create`, `plugin_delete`, `patch_bundle_release`), matching the existing publish/subscription guards. "Who can publish?" now has an enforced answer.
+`require_admin(principal)` (admin/owner → allow, else HTTP 403) is enforced on the previously-unguarded write routes (`workflow_create`, `workflow_delete`, `patch_bundle_release`), matching the existing publish/subscription guards. "Who can publish?" now has an enforced answer.
 
 ---
 
@@ -168,7 +168,7 @@ Sync rate limit persisted in the KV store (`rate_limits` namespace), shared acro
 
 #### ✅ 2.2 Drift Detection — DONE (2026-07-01)
 
-`structural_fingerprint` is plumbed from `SkillMeta` into runtime `manifest.json` and checked at run start in `runtime/drift.js` (from `runPlan`). It scores recorded landmarks against the live page with the pure resolver (no LLM) and emits `drift_detected` — warn only, never blocks. Cloud aggregates per plugin version at `GET /drift`.
+`structural_fingerprint` is plumbed from `SkillMeta` into runtime `manifest.json` and checked at run start in `runtime/drift.js` (from `runPlan`). It scores recorded landmarks against the live page with the pure resolver (no LLM) and emits `drift_detected` — warn only, never blocks. Cloud aggregates per skill package version at `GET /drift`.
 
 #### ✅ 2.6 Selector Cache GC — DONE (2026-07-01)
 

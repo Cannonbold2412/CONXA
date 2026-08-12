@@ -67,7 +67,7 @@ Large or time-series data lives in flat files, not the KV store:
 | Compiled skills | `data/skills/{id}/skill.json` | JSON (SkillPackage) |
 | Skill screenshots | `data/sessions/{id}/screenshots/` | PNG |
 | Step thumbnails | `data/skills/{id}/assets/` | PNG |
-| Run logs (local) | `data/runs/{plugin_id}.jsonl` | JSONL |
+| Run logs (local) | `data/runs/{workflow_id}.jsonl` | JSONL |
 | Published skill packs | `data/skill-packs/{co}/` | Directory tree |
 | Installer binaries | `data/installers/{co}/installer.exe` | Binary |
 | Installer metadata | `data/installers/{co}/meta.json` | JSON |
@@ -77,47 +77,30 @@ Large or time-series data lives in flat files, not the KV store:
 
 ## 2. Core Data Models
 
-All models are Pydantic. Source: `packages/conxa-core/conxa_core/models/plugin.py`
+All models are Pydantic. Source: `packages/conxa-core/conxa_core/models/workflow.py`
 
-### 2.1 Plugin
+**Cardinality: N Workflows per Workspace : 1 SkillPack per Workspace/Company**
+
+Each workflow holds one login session + one recording. A workspace's SkillPack bundles every signed-off workflow into a single skill package; republishing a second workflow does not create a second installer or duplicate the build. This enables efficient multi-automation packaging within a single company workspace.
+
+### 2.1 Workflow
 
 ```python
-class Plugin(BaseModel):
-    id: str                    # UUID-like, e.g. "plugin_abc123"
-    slug: str                  # URL-safe company identifier, e.g. "acme-corp"
+class Workflow(BaseModel):
+    id: str                    # UUID-like, e.g. "wf_abc123"
+    slug: str                  # URL-safe workflow name, e.g. "expense-submit"
     name: str                  # Display name
     owner_user_id: str         # Clerk user ID or "local"
     workspace_id: str          # Clerk org ID or "ws_local"
     target_url: str            # Entry URL for the target website
     protected_url: str         # URL captured after auth (e.g. dashboard URL)
     protected_url_marker_text: str  # Text that marks the protected area
-    status: Literal["needs_auth", "ready", "building", "error"]
-    auth: PluginAuth | None    # Captured browser session reference
-    workflows: list[PluginWorkflow]
-    build: PluginBuild | None  # Most recent build metadata
-    installer: PluginInstaller | None
-    created_at: float          # Unix timestamp
-    updated_at: float
-```
-
-**Status transitions:**
-```
-needs_auth → ready (after auth recording)
-ready → building (during build)
-building → ready (build success)
-building → error (build failure)
-```
-
-### 2.2 PluginWorkflow
-
-```python
-class PluginWorkflow(BaseModel):
-    id: str                    # UUID
-    slug: str                  # URL-safe workflow name
-    name: str                  # Display name
-    session_id: str            # Recording session this workflow came from
-    recorded_at: float         # Unix timestamp
-    status: Literal["recorded", "compiled", "error"]
+    status: Literal["needs_auth", "ready", "error"]
+    auth: WorkflowAuth | None  # Captured browser session reference
+    # Single recording per workflow (inlined — no nested list).
+    session_id: str | None     # Recording session ID for this workflow
+    recorded_at: float | None  # Unix timestamp
+    recording_status: Literal["recorded", "compiled", "error"] | None
     skill_id: str | None       # "skill_{session_id}" after compilation
     edited_at: float | None    # Last edit timestamp
     last_test_at: float | None
@@ -125,35 +108,64 @@ class PluginWorkflow(BaseModel):
     last_test_error: str | None
     last_test_inputs: dict     # Inputs used in last test
     signed_off: bool           # Human review complete
+    compile_status: Literal["ok", "review_needed", "failed"] | None
+    compile_min_confidence: float | None
+    compile_steps_with_warnings: int | None
+    created_at: float          # Unix timestamp
+    updated_at: float
 ```
 
-### 2.3 PluginAuth
+**Status transitions:**
+```
+needs_auth → ready (after auth recording)
+ready → error (auth lost or auth re-recording failed)
+ready → (any recording_status) (during workflow recording/compilation)
+```
+
+### 2.2 WorkflowAuth
 
 ```python
-class PluginAuth(BaseModel):
+class WorkflowAuth(BaseModel):
     session_id: str            # Recording session used for auth capture
-    captured_at: float
+    captured_at: float         # Unix timestamp
     storage_state_path: str    # Absolute path to auth.json (local only)
 ```
 
-### 2.4 PluginBuild
+### 2.3 SkillPack (Workspace-Level, Shared)
 
 ```python
-class PluginBuild(BaseModel):
+class SkillPack(BaseModel):
+    workspace_id: str          # Clerk org ID or "ws_local" (keyed by this + company_slug)
+    company_slug: str          # URL-safe company identifier, globally unique, e.g. "acme-corp"
+    company_name: str          # Display name
+    status: Literal["idle", "building", "error"]
+    build: SkillPackBuild | None  # Most recent build metadata
+    installer: SkillPackInstaller | None
+    created_at: float          # Unix timestamp
+    updated_at: float
+```
+
+**Note:** This is a workspace-level entity, not a per-workflow entity. All workflows in a workspace that are `signed_off=true` compile together into this single skill package. A multi-tenant workspace may own multiple company slugs, each with its own SkillPack row.
+
+### 2.4 SkillPackBuild
+
+```python
+class SkillPackBuild(BaseModel):
     last_built_at: float
-    output_path: str           # Path to {company}-plugin/ folder
+    output_path: str           # Path to {company_slug}-skill-package/ folder
     version: str               # Semver, e.g. "0.1.0"
 ```
 
-### 2.5 PluginInstaller
+### 2.5 SkillPackInstaller
 
 ```python
-class PluginInstaller(BaseModel):
+class SkillPackInstaller(BaseModel):
     built_at: float
     installer_path: str        # Local path to .exe
-    filename: str              # e.g. "Acme-Plugin-Setup.exe"
-    version: str
+    filename: str              # e.g. "acme-corp-Setup.exe" or branded per plan
+    version: str               # Installer version
     runtime_version: str       # Version of bundled runtime
+    release_notes: str = ""    # User-provided release notes
 ```
 
 ### 2.6 EntitlementUsage
@@ -186,8 +198,7 @@ class CompileReservation(TypedDict):
     period: str
     amount: int                         # currently always 1
     status: Literal["reserved", "committed", "released", "expired"]
-    plugin_id: str
-    workflow_id: str
+    workflow_id: str                    # The workflow being compiled
     session_id: str
     idempotency_key: str
     created_at: str
@@ -202,6 +213,53 @@ Production enforcement uses database transactions plus a Postgres advisory trans
 ## 3. Skill Package Schema
 
 Source: `packages/conxa-core/conxa_core/models/skill_spec.py`
+
+### 3.0 Contract vs. Executor Boundary (ARCH-3)
+
+Conxa's durable position is owning the governance layer *above* whichever execution
+technology actually runs a step — browser replay today, a graduated API connector (PROD-7)
+or a computer-use agent later. That only holds if executor assumptions don't quietly leak
+into the skill format while the schema is still cheap to change. Every field in `skill_spec.py`
+is tagged in code and below as one of:
+
+| Tag | Meaning |
+|---|---|
+| **contract** | Executor-independent. Describes *what* the step does and *how success is judged* — must survive a swap to a non-browser executor unchanged. |
+| **executor** | Browser-replay implementation detail — Playwright selector grammar, DOM/iframe/shadow-DOM structure, hover chains. Free to change per executor backend. |
+| **mixed** | The class holds both; sub-fields are tagged individually below. |
+
+| Class | Contract fields | Executor fields |
+|---|---|---|
+| `SkillMeta` | `id`, `version`, `title`, `created_at`, `source_session_id`, `compiler_policy_version`, `compiler_policy_hash` | `required_runtime`, `structural_fingerprint` |
+| `SkillPolicies` | all | — |
+| `RecoveryBlock` | `intent`, `final_intent`, `strategies`, `confidence_threshold`, `max_attempts`, `require_diverse_attempts` | `anchors` |
+| `Assertion` | all | — |
+| `ValidationBlock` | `assertions` | `wait_for`, `success_conditions` (legacy) |
+| `DecisionPolicy` | all | — |
+| `ElementFingerprint` | all | — |
+| `IdentitySignal` | — | all (Playwright grammar) |
+| `FrameFingerprint` | — | all |
+| `ShadowHost` | — | all |
+| `IdentityBundle` | `fingerprint`, `stable_hash`, `destructive` | `signals`, `frame_chain`, `shadow_path`, `compat_fingerprint`, `guid_like_attrs` |
+| `HandlerHints` | — | all |
+| `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `optional_hint` | `frame`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
+| `SkillStep.branch` | — (mixed today; see below) | — |
+| `WorkflowIntentGraph` / `WorkflowIntentStep` | all | — |
+| `SkillPackage` | `meta`, `inputs`, `policies`, `llm`, `intent_graph`, `compile_report` | — |
+
+\* `identity_bundle` is itself mixed — see the `IdentityBundle` row.
+
+**`SkillStep.branch` (EXEC-1)** is the one place today's schema still leaks executor detail
+into what should be contract terms: its `if_present`/`try_dismiss`/`wait_for_one_of` payloads
+carry raw selector strings and nested raw-dict steps (§3.4c). New branch primitives should
+define the *condition* itself in contract terms (e.g. "an interstitial matching this identity
+is present") and keep browser-specific evaluation strictly on the executor side — this is the
+gate EXEC-1's schema work must pass before it ships.
+
+**Review rule going forward:** any new field added to `skill_spec.py` must be tagged
+`[contract]`/`[executor]`/`[mixed]` in its own comment at the point of introduction, and this
+table updated in the same change. A field with no tag is a review-blocking omission, not an
+acceptable default.
 
 ### 3.1 SkillPackage (top-level)
 
@@ -233,7 +291,7 @@ class SkillInputVariable(BaseModel):
                                # set is always effectively optional regardless of this flag.
 ```
 
-`optional` is excluded from the packaged manifest's `inputs_required` (`plugin_builder_output.py::_compute_inputs_required`), which is what the runtime's pre-execution gate and the MCP tool's `inputSchema.required` both read (`runtime/server.js`).
+`optional` is excluded from the packaged manifest's `inputs_required` (`skill_package_builder_output.py::_compute_inputs_required`), which is what the runtime's pre-execution gate and the MCP tool's `inputSchema.required` both read (`runtime/server.js`).
 
 **Auto-declared inputs.** Any `{{placeholder}}` present in the execution steps but absent from the declared input list is appended automatically at package time. One is special-cased: **every upload step binds to `file_path`**, regardless of the picker element's label — a recording can only ever capture a file's *name*, never a path, so the real path must arrive as a runtime input. Its description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk path is expected rather than a filename. See `docs/TRD.md` §9.3.
 
@@ -362,7 +420,7 @@ conditional/branch action kinds — `if_present`, `try_dismiss`, `wait_for_one_o
 | `wait_for_one_of` | `options` (`[{selector, steps?}]`), `timeout_ms`, `required` | each option's `selector` |
 
 Nested `steps` entries are raw dicts in the same shape as a saved `SkillStep`
-(`action`/`target`/`identity_bundle`/`branch`/...) — `plugin_builder_saved_skill.py`'s
+(`action`/`target`/`identity_bundle`/`branch`/...) — `skill_package_builder_saved_skill.py`'s
 `_saved_step_to_execution_step` recursively serializes each one into the flat runtime step
 shape below.
 
@@ -509,8 +567,8 @@ class WorkflowIntentGraph(BaseModel):
 ```json
 {
   "rid": "run_abc123",      // run_id
-  "pid": "acme",            // plugin/company slug
-  "pv": "0.2.0",            // plugin version
+  "wfid": "acme",           // workflow/company slug
+  "wfv": "0.2.0",           // workflow version
   "rv": "1.0.0",            // runtime version
   "uid": "user_hash",       // anonymized user identifier
   "wid": "ws_xyz",          // workspace identifier
@@ -544,13 +602,13 @@ class WorkflowIntentGraph(BaseModel):
 
 **`repair_event` is ephemeral per-run telemetry** — it never mutates the signed local pack.
 It aggregates into the admin drift-review queue at `GET /api/v1/tracking/{company}/drift`
-(keyed by plugin/version/step). Detection is automatic and fleet-wide; a durable fix is always
+(keyed by workflow/version/step). Detection is automatic and fleet-wide; a durable fix is always
 an admin-reviewed, manually published re-sign — publishing is never automatic.
 
 **`drift_detected`** is emitted by the runtime before step 0 when most of a pack's recorded
 structural landmarks are no longer present on the live page (a redesign signal). It is advisory —
 execution proceeds and per-step recovery still applies. `GET /api/v1/tracking/{company}/drift`
-returns these separately under `pre_exec` (aggregated per plugin/version by `_pre_exec_drift_queue`),
+returns these separately under `pre_exec` (aggregated per workflow/version by `_pre_exec_drift_queue`),
 alongside the per-step `repair_event` `queue`.
 
 ### 4.2 Stored Event Batch (Cloud)
@@ -561,8 +619,8 @@ After enrichment, stored in `kv_store` under `tracking/{company}` → `run_id`:
 {
   "run_id": "run_abc123",
   "company": "acme",
-  "plugin_id": "acme",
-  "plugin_ver": "0.2.0",
+  "workflow_id": "acme",
+  "workflow_ver": "0.2.0",
   "runtime_ver": "1.0.0",
   "uid": "user_hash",
   "wid": "ws_xyz",
@@ -595,7 +653,7 @@ Stored in `kv_store` under `tracking_tokens` → `company_slug`:
 
 ### 5.1 Publish Skill Pack
 
-**POST /api/v1/plugins/publish**
+**POST /api/v1/workflows/publish**
 
 Request:
 ```json
@@ -645,19 +703,19 @@ Duplicate-version publish → **409** `skill_pack_version_exists` (a given `skil
 Skill Pack Publishing is the primary, version-controlled release surface; installers are a stable, Conxa-owned platform artifact. To let Conxa evolve the installer/runtime wire contract without ever requiring vendors to rebuild for routine skill-pack updates, every per-company endpoint has a versioned equivalent nested under a Conxa-owned `{installer_version}` path segment (`publish_routes.SUPPORTED_INSTALLER_GENERATIONS`, currently `("v1", "v2")`):
 
 ```
-POST /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/upload      # same body/response as §5.1
-GET  /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions   # release history — see §5.1a below
-GET  /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/delta      # same as §5.9
-POST /api/v1/plugins/{installer_version}/{company_slug}/installer/upload       # same as §5.1b below
-GET  /api/v1/plugins/{installer_version}/{company_slug}/installer/versions     # same as §5.1b below
-POST /api/v1/plugins/{installer_version}/{company_slug}/tracking/events        # same as §5.6
-GET  /api/v1/plugins/generations                                              # {current, supported, deprecated}
-POST /api/v1/admin/plugins/generations                                        # admin flip (Bearer CONXA_ADMIN_TOKEN)
+POST /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/upload      # same body/response as §5.1
+GET  /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions   # release history — see §5.1a below
+GET  /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/delta      # same as §5.9
+POST /api/v1/workflows/{installer_version}/{company_slug}/installer/upload       # same as §5.1b below
+GET  /api/v1/workflows/{installer_version}/{company_slug}/installer/versions     # same as §5.1b below
+POST /api/v1/workflows/{installer_version}/{company_slug}/tracking/events        # same as §5.6
+GET  /api/v1/workflows/generations                                              # {current, supported, deprecated}
+POST /api/v1/admin/workflows/generations                                        # admin flip (Bearer CONXA_ADMIN_TOKEN)
 ```
 
-Every versioned route validates `{installer_version}` against the allow-list (400 `unsupported_installer_version` otherwise) and delegates to the exact same shared implementation function as its legacy, unversioned counterpart — behavior is identical across generations. **`{installer_version}` is frozen into an installer at build time** (stamped into `pack.json.installer_version` at publish time by Build Studio, read from `GET /api/v1/plugins/generations`'s `current` field) and is never reassigned remotely for an already-installed runtime. "Migrating customers to a new generation" means Conxa flips the *default* generation that **new** installer builds stamp (`POST /api/v1/admin/plugins/generations`) — it does not, and cannot, change the URLs already baked into a customer's machine. The legacy, unversioned routes (`/api/v1/plugins/publish`, `/api/v1/plugins/{slug}/installer/upload`, `/api/v1/skill-packs/{company}/delta`, `/api/tracking/{company}/events`) are kept mounted **permanently** as the implicit "v1" behavior for every already-deployed installer — never removed.
+Every versioned route validates `{installer_version}` against the allow-list (400 `unsupported_installer_version` otherwise) and delegates to the exact same shared implementation function as its legacy, unversioned counterpart — behavior is identical across generations. **`{installer_version}` is frozen into an installer at build time** (stamped into `pack.json.installer_version` at publish time by Build Studio, read from `GET /api/v1/workflows/generations`'s `current` field) and is never reassigned remotely for an already-installed runtime. "Migrating customers to a new generation" means Conxa flips the *default* generation that **new** installer builds stamp (`POST /api/v1/admin/workflows/generations`) — it does not, and cannot, change the URLs already baked into a customer's machine. The legacy, unversioned routes (`/api/v1/workflows/publish`, `/api/v1/workflows/{slug}/installer/upload`, `/api/v1/skill-packs/{company}/delta`, `/api/tracking/{company}/events`) are kept mounted **permanently** as the implicit "v1" behavior for every already-deployed installer — never removed.
 
-**GET /api/v1/plugins/{installer_version}/{company_slug}/skill-packs/versions** — release history for the Skill Pack Publishing page (version, release notes, publish timestamp, `is_latest`), the version/release-comment/publishing-limit surface that moved here from Build Installer:
+**GET /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions** — release history for the Skill Pack Publishing page (version, release notes, publish timestamp, `is_latest`), the version/release-comment/publishing-limit surface that moved here from Build Installer:
 ```json
 {
   "slug": "acme",
@@ -675,7 +733,7 @@ Every versioned route validates `{installer_version}` against the allow-list (40
 
 ### 5.1b Installer Upload + History (installer becomes a secondary, advanced artifact)
 
-**POST /api/v1/plugins/{slug}/installer/upload?filename=...&version=...&release_notes=...** (raw octet-stream body) — uploads a built installer `.exe`. No product/skill-pack-slot entitlement check here (that gate lives on skill-pack publish only, §5.1/§5.3 — installer upload is optional and unmetered, matching the requirement that a failed/skipped installer upload never fails a Build Installer run). Duplicate-version upload → 409 `installer_version_exists`. Response:
+**POST /api/v1/workflows/{slug}/installer/upload?filename=...&version=...&release_notes=...** (raw octet-stream body) — uploads a built installer `.exe`. No product/skill-pack-slot entitlement check here (that gate lives on skill-pack publish only, §5.1/§5.3 — installer upload is optional and unmetered, matching the requirement that a failed/skipped installer upload never fails a Build Installer run). Duplicate-version upload → 409 `installer_version_exists`. Response:
 ```json
 {
   "slug": "acme", "version": "1.2.0", "sha256": "abc123...", "size": 20480000,
@@ -683,7 +741,7 @@ Every versioned route validates `{installer_version}` against the allow-list (40
 }
 ```
 
-**GET /api/v1/plugins/{slug}/installer/versions** — authenticated installer release history for the dashboard (version, release notes, sha256, size, `is_latest`, signed `download_url`).
+**GET /api/v1/workflows/{slug}/installer/versions** — authenticated installer release history for the dashboard (version, release notes, sha256, size, `is_latest`, signed `download_url`).
 
 **KV namespace:** `installer_versions__{slug}` — one row per version, binary mirrored separately in Postgres (`installer_storage.load_installer_from_db`) since Render's disk is ephemeral.
 
@@ -691,7 +749,7 @@ Every versioned route validates `{installer_version}` against the allow-list (40
 
 When `?filename=` is omitted from the upload call above, the served filename now depends on plan:
 Free gets a random 10-letter unbranded name; paid plans (Starter/Pro/Enterprise) use the workspace's
-stored **installer domain** if one is set, else fall back to the previous `{slug}-Plugin-Setup.exe`.
+stored **installer domain** if one is set, else fall back to the previous `{slug}-Setup.exe`.
 The installer domain is plain text and unverified — no DNS proof of ownership yet (see `TODO.md`
 PROD-6, which this field is meant to be gated on once that ships).
 
@@ -747,14 +805,14 @@ Response:
     "active": 200,
     "locked": 12,
     "workflows": [
-      {"workspace_id": "org_123", "plugin_id": "acme", "workflow_id": "wf1", "created_at": "2026-06-01T00:00:00Z", "locked": true}
+      {"workspace_id": "org_123", "company_slug": "acme", "workflow_id": "wf1", "created_at": "2026-06-01T00:00:00Z", "locked": true}
     ]
   }
 }
 ```
 (Free is the only plan carrying `"distribution": "internal"`, enforced by `ensure_distribution_allowed` at installer-upload time — see §5.1b below.)
 
-**Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(plugin_id, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
+**Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(company_slug, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
 
 For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`). `trial_ends_at`/`trial_expired` are non-null only for the `free` plan.
 
@@ -767,8 +825,7 @@ For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_
 Request:
 ```json
 {
-  "reservation_id": "cmp_org_123_plugin_wf_session_attempt",
-  "plugin_id": "plugin_123",
+  "reservation_id": "cmp_org_123_wf_123_sess_123",
   "workflow_id": "wf_123",
   "session_id": "sess_123"
 }
@@ -778,7 +835,7 @@ Also registers the `X-Conxa-Machine` header (§TRD 13.4a) and checks trial expir
 Response:
 ```json
 {
-  "reservation_id": "cmp_org_123_plugin_wf_session_attempt",
+  "reservation_id": "cmp_org_123_wf_123_sess_123",
   "status": "reserved",
   "remaining_compile_credits": 157
 }
@@ -788,14 +845,14 @@ Response:
 
 Request:
 ```json
-{"reservation_id": "cmp_org_123_plugin_wf_session_attempt"}
+{"reservation_id": "cmp_org_123_wf_123_sess_123"}
 ```
 
 **POST /api/v1/usage/compile/release**
 
 Request:
 ```json
-{"reservation_id": "cmp_org_123_plugin_wf_session_attempt"}
+{"reservation_id": "cmp_org_123_wf_123_sess_123"}
 ```
 
 Stable entitlement error details (returned as HTTP `402` for quota-exhausted, `403`/`503` for
@@ -906,7 +963,7 @@ Response when up-to-date:
 
 ### 5.6 Telemetry Ingest
 
-**POST /api/tracking/{company}/events** (also served at `/api/v1/tracking/{company}/events` — both are permanent back-compat aliases, see CLAUDE.md Key Invariants) and its versioned equivalent **POST /api/v1/plugins/{installer_version}/{company}/tracking/events** (§5.1a).
+**POST /api/tracking/{company}/events** (also served at `/api/v1/tracking/{company}/events` — both are permanent back-compat aliases, see CLAUDE.md Key Invariants) and its versioned equivalent **POST /api/v1/workflows/{installer_version}/{company}/tracking/events** (§5.1a).
 **Header: X-Tracking-Token: {token}**
 
 Request: See §4.1 above.
@@ -927,8 +984,8 @@ Response:
   "runs": [
     {
       "run_id": "run_abc123",
-      "plugin_id": "acme",
-      "plugin_ver": "0.2.0",
+      "workflow_id": "acme",
+      "workflow_ver": "0.2.0",
       "runtime_ver": "1.0.0",
       "uid": "...",
       "wid": "...",
@@ -985,7 +1042,7 @@ Returns the pre-existing keys (`metrics`, `recovery_type_usage`, `recovery_usage
 | `series[]` | `{bucket, at, executions, successful, failed, recovered, success_rate, avg_duration}` — pre-seeded so quiet periods are zeros, not gaps. `success_rate` is `null` when nothing completed, which is distinct from a genuine 0% |
 | `kpis[]` | `{key, label, unit, direction, value, previous, delta, delta_pct, series[]}`. `direction` (`up_good`/`down_good`) tells the UI which way is an improvement per metric |
 | `health` | `{score, grade, factors[], summary}`. `score` is `null` (grade `"No telemetry"`) for a workspace with no runs — never 0. Factor weights sum to 100: success rate 40, assertion pass rate 20, drift resistance 15, zero-token healing 15, runtime freshness 10 |
-| `workflows[]` | Per-skill rollups grouped by `(company, plugin_id)` — runs, success rate, `success_rate_delta` vs the previous equal period, recovery/unattended rate, p50/p95 duration, and a nested `versions[]` breakdown |
+| `workflows[]` | Per-skill rollups grouped by `(company, workflow_id)` — runs, success rate, `success_rate_delta` vs the previous equal period, recovery/unattended rate, p50/p95 duration, and a nested `versions[]` breakdown |
 | `recovery_cascade` | Sankey `{nodes, links}` over `Entered recovery → Tier 1…4 → Healed \| Failed`, plus `entered_recovery`, `healed`, `failed`, `heal_rate`, `resolved_directly`, `tier_touch[]`, `zero_token_heals`, `agent_assisted` |
 | `reliability_heatmap` | `{cells[{weekday, hour, runs, successful, failed, success_rate}], max_runs}`, UTC |
 | `failure_codes[]` | `{code, count, last_seen, workflow_count}` |
@@ -1071,7 +1128,7 @@ Response (`packages/conxa-core/conxa_core/models/manifest.py:UnifiedManifest`):
 
 ### 5.9 Skill-Pack Delta Sync
 
-**GET /api/v1/skill-packs/{company}/delta?since={json-map}** (legacy, permanent) and **GET /api/v1/plugins/{installer_version}/{company}/skill-packs/delta?since={json-map}** (versioned, §5.1a) — identical contract, both delegate to `_delta_impl()`/`_build_delta()`. `{installer_version}` is validated but not yet branched on — reserved for a future skill-pack wire-format generation, not dead code.
+**GET /api/v1/skill-packs/{company}/delta?since={json-map}** (legacy, permanent) and **GET /api/v1/workflows/{installer_version}/{company}/skill-packs/delta?since={json-map}** (versioned, §5.1a) — identical contract, both delegate to `_delta_impl()`/`_build_delta()`. `{installer_version}` is validated but not yet branched on — reserved for a future skill-pack wire-format generation, not dead code.
 
 `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (URL-encoded), letting each skill be compared and shipped independently instead of one shared pack-wide version — republishing one skill never triggers a redownload of the others (see `_skill_version()`/`_build_delta()` in `skillpack_update_routes.py`).
 
@@ -1124,7 +1181,7 @@ mechanism was removed the same day — see §5.1c and `docs/TRD.md` §13.4.
 
 Request:
 ```json
-{"id": "req_abc", "type": "compile", "payload": {"session_id": "...", "plugin_id": "...", "skill_title": "Submit Expense"}}
+{"id": "req_abc", "type": "compile", "payload": {"session_id": "...", "workflow_id": "...", "skill_title": "Submit Expense"}}
 ```
 
 Result:
@@ -1146,43 +1203,41 @@ Streaming event:
 
 ## 6. Entity Relationship Diagrams
 
-### 6.1 Plugin Domain
+### 6.1 Workflow & SkillPack Domain
 
 ```mermaid
 erDiagram
-    Plugin {
+    SkillPack {
+        string workspace_id PK
+        string company_slug PK
+        string company_name
+        string status
+        float created_at
+        float updated_at
+    }
+    Workflow {
         string id PK
         string slug
         string name
-        string owner_user_id FK
         string workspace_id FK
+        string company_slug FK
         string target_url
         string protected_url
         string status
         float created_at
         float updated_at
     }
-    PluginWorkflow {
-        string id PK
-        string slug
-        string name
-        string session_id
-        float recorded_at
-        string status
-        string skill_id FK
-        bool signed_off
-    }
-    PluginAuth {
+    WorkflowAuth {
         string session_id
         float captured_at
         string storage_state_path
     }
-    PluginBuild {
+    SkillPackBuild {
         float last_built_at
         string output_path
         string version
     }
-    PluginInstaller {
+    SkillPackInstaller {
         float built_at
         string installer_path
         string filename
@@ -1201,13 +1256,15 @@ erDiagram
         string source_session_id FK
     }
 
-    Plugin ||--o{ PluginWorkflow : "has many"
-    Plugin ||--o| PluginAuth : "has one"
-    Plugin ||--o| PluginBuild : "has one"
-    Plugin ||--o| PluginInstaller : "has one"
-    PluginWorkflow ||--o| RecordingSession : "captured from"
-    PluginWorkflow ||--o| SkillPackage : "compiled to"
+    SkillPack ||--o| SkillPackBuild : "has one"
+    SkillPack ||--o| SkillPackInstaller : "has one"
+    SkillPack ||--o{ Workflow : "owns many"
+    Workflow ||--o| WorkflowAuth : "has one"
+    Workflow ||--o| RecordingSession : "captured from"
+    Workflow ||--o| SkillPackage : "compiled to"
 ```
+
+**Cardinality:** One SkillPack (identified by `workspace_id` + `company_slug`) owns many Workflows. Each Workflow represents one recorded automation with one login session and one recording. When a workspace publishes, all `signed_off=true` workflows in that company compile together into the single SkillPack's shared build and installer.
 
 ### 6.2 Skill Package Domain
 
@@ -1289,7 +1346,7 @@ erDiagram
         string role
         float created_at
     }
-    PublishedPlugin {
+    PublishedSkillPack {
         string slug PK
         string workspace_id FK
         string owner_user_id FK
@@ -1315,8 +1372,8 @@ erDiagram
 
     Workspace ||--o{ Membership : "has"
     User ||--o{ Membership : "belongs to"
-    Workspace ||--o{ PublishedPlugin : "owns"
-    PublishedPlugin ||--|| TrackingToken : "has"
+    Workspace ||--o{ PublishedSkillPack : "owns"
+    PublishedSkillPack ||--|| TrackingToken : "has"
     TrackingToken ||--o{ RunRecord : "tracks"
 ```
 
@@ -1326,7 +1383,8 @@ erDiagram
 
 | Namespace | Key | Value | Used by |
 |---|---|---|---|
-| `plugins` | `{plugin_id}` | `Plugin` JSON | Build Studio, Cloud |
+| `workflows` | `{workflow_id}` | `Workflow` JSON | Build Studio, Cloud |
+| `skill_packs_meta` | `{company_slug}` | `SkillPack` JSON (workspace-scoped; cloud side, keyed by the globally-unique company_slug; Studio typically has only one) | Build Studio, Cloud |
 | `entitlement_usage` | `{workspace_id}:{YYYY-MM}` | Monthly compile/Human Edit usage row | Cloud entitlements |
 | `compile_reservations` | `{reservation_id}` | Compile reservation row | Cloud entitlements |
 | `publish_owners` | `{slug}` | `{workspace_id, claimed_at}` | Cloud publish |
@@ -1336,7 +1394,7 @@ erDiagram
 | `installer_versions__{slug}` | `{version}` | Installer `meta.json` fields + `content_base64` (full .exe) | Cloud publish — durable backing for installer history; Render's free-tier disk is ephemeral, this KV namespace (Postgres in prod) is the source of truth, local disk is a rehydratable cache |
 | `skillpack_files__{slug}` | `{relative_path}` (e.g. `pack.json`, `{skill}/execution.json`) | `{path, content_base64}` | Cloud publish, skill-pack sync — durable backing for published skill-pack files, same disk-wipe rationale as above. `path` is stored explicitly because the fs-fallback KV implementation keys files by a hash of the original key, not the literal string |
 | `tracking/{company}` | `{run_id}` | `[event_batch, ...]` | Runtime, Cloud dashboard |
-| `runs` | `{plugin_id}` | `[run_record, ...]` | Cloud, Build Studio |
+| `runs` | `{workflow_id}` | `[run_record, ...]` | Cloud, Build Studio |
 | `selector_cache` | `{dom_hash}:{bbox}:{model}` | Selector candidates | Compiler |
 | `runtime_registrations` | `{company}:{platform}` | `{company, platform, runtime_version, workspace_id, last_seen, first_seen}` | 2.1 device registration |
 | `audit_log` | `{workspace_id}` | `[{id, user_id, action, resource_type, resource_id, metadata, created_at, ip}, ...]` | 2.3 audit trail |
@@ -1356,7 +1414,7 @@ erDiagram
 ```
 ~/.conxa/  (SKILL_DATA_DIR or data/)
 ├── kv/                           ← filesystem KV fallback
-│   ├── plugins/{sha256}.json
+│   ├── workflows/{sha256}.json
 │   ├── publish_owners/{sha256}.json
 │   └── tracking_tokens/{sha256}.json
 ├── sessions/{session_id}/
@@ -1365,8 +1423,8 @@ erDiagram
 ├── skills/{skill_id}/
 │   ├── skill.json                ← SkillPackage (canonical)
 │   └── assets/{step_n}.png
-├── plugins/{plugin_id}/
-│   ├── plugin.json               ← Plugin model
+├── workflows/{workflow_id}.json  ← Workflow model (flat, one file per workflow)
+├── workflows/{workflow_id}/
 │   └── auth/
 │       └── auth.json             ← Playwright storageState (LOCAL ONLY, never published)
 ├── skill-packs/{company}/
@@ -1375,7 +1433,7 @@ erDiagram
 │       ├── execution.json
 │       ├── recovery.json
 │       └── inputs.json
-├── runs/{plugin_id}.jsonl
+├── runs/{workflow_id}.jsonl
 ├── saas/metadata.json            ← local workspace metadata
 └── deps/
     ├── nsis/makensis.exe
@@ -1445,13 +1503,13 @@ The platform has a basic workspace model:
 - **Workspace** = Clerk organization (`org_id`) or personal (`personal_{user_id}`)
 - **Slug ownership** = first publisher claims the slug for their workspace. Subsequent publishes to the same slug from a different workspace return HTTP 403.
 - **Tracking scoping** = telemetry events carry `workspace_id`. Dashboard queries filter by `visible_workspace_ids_for(principal)`.
-- **Plugin visibility** = plugins are scoped to `workspace_id`. Local dev uses `ws_local`.
+- **Workflow visibility** = workflows are scoped to `workspace_id`. Local dev uses `ws_local`.
 
 ### Current Gaps
 
 - **No team-level publishing** — only the initial slug owner can publish updates.
-- **Member roles enforced on write routes** — `rbac.py`'s `require_admin` guards publish, plugin create/delete, and bundle release (403 for non-admin/owner). Not yet fine-grained (per-skill / read-only analyst roles are Phase 3).
-- **No cross-workspace sharing** — a company cannot share a plugin with another workspace.
+- **Member roles enforced on write routes** — `rbac.py`'s `require_admin` guards publish, workflow create/delete, and bundle release (403 for non-admin/owner). Not yet fine-grained (per-skill / read-only analyst roles are Phase 3).
+- **No cross-workspace sharing** — a company cannot share a skill package with another workspace.
 - **Runtime auth is per-company** — there is no per-user runtime token. The same skill pack serves all users on the same machine.
 
 ### Future State (Planned)
