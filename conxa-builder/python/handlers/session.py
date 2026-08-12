@@ -8,7 +8,7 @@ from typing import Any
 
 from services import bootstrap as _bootstrap_pkg
 from conxa_compile.recorder.session import registry as _recorder_registry
-from conxa_core.storage.plugin_store import get_plugin as _get_plugin
+from conxa_core.storage.workflow_store import get_workflow as _get_workflow
 from handlers.protocol import _CommandError, _event_sink, _is_rejected_protected_url, _safe_id
 
 class SessionMixin:
@@ -71,31 +71,27 @@ class SessionMixin:
                     _recorder_registry.pop(self._active_recording)
                 self._active_recording = None
 
-            plugin_id_raw = payload.get("plugin_id")
-            plugin_id = _safe_id(plugin_id_raw, "plugin_id") if plugin_id_raw else ""
-            workflow_name = payload.get("workflow_name")
+            workflow_id_raw = payload.get("workflow_id")
+            workflow_id = _safe_id(workflow_id_raw, "workflow_id") if workflow_id_raw else ""
+            auth_mode = bool(payload.get("auth_mode"))
 
-            if plugin_id:
-                plugin = _get_plugin(plugin_id)
-                if not plugin:
-                    raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
-                auth_mode = (workflow_name == "__auth__")
-                plugin_dir = Path(_settings.data_dir) / "plugins" / plugin_id
-                auth_state_path = str(plugin_dir / "auth" / "auth.json")
+            if workflow_id:
+                workflow = _get_workflow(workflow_id)
+                if not workflow:
+                    raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
+                workflow_dir = Path(_settings.data_dir) / "workflows" / workflow_id
+                auth_state_path = str(workflow_dir / "auth" / "auth.json")
                 storage_state_path = auth_state_path
-                storage_state_autosave = str(plugin_dir / "auth" / "auth.json") if auth_mode else ""
+                storage_state_autosave = str(workflow_dir / "auth" / "auth.json") if auth_mode else ""
                 if auth_mode:
-                    start_url = str(plugin.target_url or "about:blank")
+                    start_url = str(workflow.target_url or "about:blank")
                 else:
-                    workflow_name = str(workflow_name or "").strip()
-                    if not workflow_name:
-                        raise _CommandError("invalid_input", "workflow_name is required")
-                    if plugin.status != "ready" or plugin.auth is None:
-                        raise _CommandError("auth_required", "Record auth before creating workflows.")
-                    storage_state_path = str(plugin.auth.storage_state_path or auth_state_path)
+                    if workflow.status != "ready" or workflow.auth is None:
+                        raise _CommandError("auth_required", "Record login before recording this workflow.")
+                    storage_state_path = str(workflow.auth.storage_state_path or auth_state_path)
                     if not Path(storage_state_path).is_file():
-                        raise _CommandError("auth_required", "Saved auth session is missing. Re-record auth first.")
-                    start_url = str((plugin.protected_url or plugin.target_url or "about:blank")).strip()
+                        raise _CommandError("auth_required", "Saved login session is missing. Re-record login first.")
+                    start_url = str((workflow.protected_url or workflow.target_url or "about:blank")).strip()
                     url_variables = payload.get("url_variables")
                     if isinstance(url_variables, dict) and url_variables:
                         pattern = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}")
@@ -105,7 +101,6 @@ class SessionMixin:
                         )
             else:
                 start_url = str(payload.get("start_url") or "about:blank")
-                auth_mode = bool(payload.get("auth_mode"))
                 storage_state_path = str(payload.get("storage_state_path") or "")
                 storage_state_autosave = str(payload.get("storage_state_autosave_path") or "")
 
@@ -122,16 +117,15 @@ class SessionMixin:
                 _recorder_registry.pop(sess.session_id)
                 raise _CommandError("recorder_launch_failed", str(exc)) from exc
             result = {"session_id": sess.session_id, "start_url": start_url}
-            if plugin_id and not auth_mode:
-                from conxa_core.storage.plugin_store import add_workflow
+            if workflow_id and not auth_mode:
+                from conxa_core.storage.workflow_store import set_recording
 
-                added = add_workflow(plugin_id, str(workflow_name), sess.session_id)
-                if added is None:
+                updated = set_recording(workflow_id, sess.session_id)
+                if updated is None:
                     self._loop.run(sess.stop())
                     _recorder_registry.pop(sess.session_id)
-                    raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
-                _plugin, workflow = added
-                result["workflow_id"] = workflow.id
+                    raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
+                result["workflow_id"] = updated.id
             self._active_recording = sess.session_id
             return result
 
@@ -158,12 +152,11 @@ class SessionMixin:
             if self._active_recording == session_id:
                 self._active_recording = None
 
-        plugin_id_raw = str(payload.get("plugin_id") or "").strip()
         workflow_id_raw = str(payload.get("workflow_id") or "").strip()
-        if plugin_id_raw and workflow_id_raw:
-            from conxa_core.storage.plugin_store import remove_workflow
+        if workflow_id_raw:
+            from conxa_core.storage.workflow_store import clear_recording
 
-            remove_workflow(_safe_id(plugin_id_raw, "plugin_id"), _safe_id(workflow_id_raw, "workflow_id"))
+            clear_recording(_safe_id(workflow_id_raw, "workflow_id"))
         return {"ok": True}
 
     def cmd_stop_recording(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -173,20 +166,20 @@ class SessionMixin:
         sess = registry.get(session_id)
         if sess is None:
             raise _CommandError("session_not_found", f"No session {session_id}")
-        plugin_id = str(payload.get("plugin_id") or "").strip()
+        workflow_id = str(payload.get("workflow_id") or "").strip()
         auth_mode = bool(payload.get("auth_mode"))
         storage_state_path = ""
         if auth_mode:
-            if not plugin_id:
-                raise _CommandError("invalid_input", "plugin_id is required")
-            plugin_id = _safe_id(plugin_id, "plugin_id")
-            plugin = _get_plugin(plugin_id)
-            if plugin is None:
-                raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
+            if not workflow_id:
+                raise _CommandError("invalid_input", "workflow_id is required")
+            workflow_id = _safe_id(workflow_id, "workflow_id")
+            workflow = _get_workflow(workflow_id)
+            if workflow is None:
+                raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
 
             from conxa_core.config import settings as _settings
 
-            storage_state_path = str(Path(_settings.data_dir) / "plugins" / plugin_id / "auth" / "auth.json")
+            storage_state_path = str(Path(_settings.data_dir) / "workflows" / workflow_id / "auth" / "auth.json")
 
         # sess.stop() joins the recorder's background thread, which owns Playwright's
         # sync API on its own thread — Playwright's sync driver only allows the thread
@@ -202,30 +195,28 @@ class SessionMixin:
                 self._active_recording = None
         final_url = str(getattr(sess, "current_url", "") or "")
         if auth_mode:
-            from conxa_core.storage.plugin_store import set_plugin_auth
+            from conxa_core.storage.workflow_store import set_workflow_auth
 
             storage_state_saved = Path(storage_state_path).is_file()
             if not storage_state_saved:
-                raise _CommandError("auth_capture_failed", "Auth browser closed before a session could be saved.")
+                raise _CommandError("auth_capture_failed", "Login browser closed before a session could be saved.")
             protected_url = final_url if not _is_rejected_protected_url(final_url) else None
-            updated = set_plugin_auth(plugin_id, session_id, storage_state_path, protected_url=protected_url)
+            updated = set_workflow_auth(workflow_id, session_id, storage_state_path, protected_url=protected_url)
             if updated is None:
-                raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
+                raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
             return {
                 "session_id": session_id,
                 "event_count": len(events),
-                "plugin_status": updated.status,
+                "workflow_status": updated.status,
                 "storage_state_saved": storage_state_saved,
                 "protected_url": updated.protected_url,
             }
-        workflow_id = str(payload.get("workflow_id") or "").strip()
-        if plugin_id and workflow_id:
-            from conxa_core.storage.plugin_store import remove_workflow
+        if workflow_id:
+            from conxa_core.storage.workflow_store import clear_recording
 
-            plugin_id = _safe_id(plugin_id, "plugin_id")
             workflow_id = _safe_id(workflow_id, "workflow_id")
             if len(events) == 0:
-                remove_workflow(plugin_id, workflow_id)
+                clear_recording(workflow_id)
                 raise _CommandError("empty_recording", "No workflow actions were recorded.")
             return {
                 "session_id": session_id,

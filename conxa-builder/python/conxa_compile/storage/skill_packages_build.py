@@ -23,9 +23,9 @@ from conxa_compile.skill_pack_build_log import (
 from conxa_compile.storage.skill_package_formatters import (
     format_auth_json_text as _format_auth_json_text,
     format_credentials_example_json_text as _format_credentials_example_json_text,
-    format_plugin_claude_md_text as _format_plugin_claude_md_text,
-    format_plugin_index_json as _format_plugin_index_json,
-    format_plugin_readme_text as _format_plugin_readme_text,
+    format_skill_package_claude_md_text as _format_plugin_claude_md_text,
+    format_skill_package_index_json as _format_plugin_index_json,
+    format_skill_package_readme_text as _format_plugin_readme_text,
     format_test_cases_stub_json_text as _format_test_cases_stub_json_text,
     infer_auth_config as _infer_auth_config,
 )
@@ -478,7 +478,7 @@ def _bundle_has_workflows(bundle_root: Path) -> bool:
 
 
 def _bundle_runtime_file_keys(bundle_slug: str) -> list[str]:
-    return ["plugin.json", "README.md", "CLAUDE.md", "package.json", *BUNDLE_RUNTIME_FILES]
+    return ["skill_package.json", "README.md", "CLAUDE.md", "package.json", *BUNDLE_RUNTIME_FILES]
 
 
 def _read_text_file_if_present(path: Path) -> str | None:

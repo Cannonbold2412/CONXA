@@ -1,7 +1,7 @@
-"""Plugin output-directory scaffolding: skill-packs format, templates, docs.
+"""Skill-package output-directory scaffolding: skill-packs format, templates, docs.
 
-Split out of plugin_builder.py: writing the skill-packs/{company}/ output
-layout, resolving/cleaning the plugin's output directory, copying its
+Split out of skill_package_builder.py: writing the skill-packs/{company}/ output
+layout, resolving/cleaning the shared package's output directory, copying its
 template files, and rendering the generated README/LICENSE.
 """
 
@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from conxa_compile.plugin_builder_saved_skill import _to_bundle_slug
 from conxa_core.sanitize import dumps_safe
 
 
@@ -52,11 +51,12 @@ def _compute_inputs_required(idata: dict[str, Any]) -> list[str]:
 def _write_skill_packs_format(
     *,
     bundle_root: Path,
-    bundle_slug: str,
-    plugin_name: str,
+    company_slug: str,
+    company_name: str,
     target_url: str,
     protected_url: str,
     skill_slugs: list[str],
+    skill_target_urls: dict[str, str],
     version: str,
     conxa_api_url: str = "",
     required_runtime: str = "",
@@ -65,11 +65,16 @@ def _write_skill_packs_format(
 
     This format is consumed by conxa-runtime.exe (the installer-distributed MCP server).
     The legacy skills/ layout is kept untouched for backward compatibility.
+
+    target_url/protected_url are the company-level display defaults (from the first
+    workflow, best-effort) — each skill's own manifest.json carries its own accurate
+    target_url from skill_target_urls, since different workflows in one shared package
+    may automate different pages on the company's site.
     """
     from conxa_core.config import active_environment
     from conxa_core.config import settings
 
-    company      = bundle_slug
+    company      = company_slug
     # Resolve the public base that gets FROZEN into pack.json (sync + tracking) from
     # the active environment, so a dev-built installer embeds the dev cloud and a
     # prod-built one embeds prod — consistently across BOTH sync_endpoint and
@@ -182,7 +187,7 @@ def _write_skill_packs_format(
             # uses branch steps.
             "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3"),
             "company":          company,
-            "target_url":       target_url,
+            "target_url":       skill_target_urls.get(slug, target_url),
             "inputs_required":  inputs_required,
             "structural_fingerprint": structural_fp,
             "checksum":         checksums,
@@ -196,7 +201,7 @@ def _write_skill_packs_format(
     _req_rt = required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3")
     pack = {
         "company":            company,
-        "company_display":    plugin_name,
+        "company_display":    company_name,
         "skill_pack_version": version,
         "required_runtime":   _req_rt,
         "target_url":         target_url,
@@ -236,12 +241,8 @@ def _write_skill_packs_format(
 
 
 # ─────────────────────────────────────────────────
-# Plugin output directory helpers
+# Skill-package output directory helpers
 # ─────────────────────────────────────────────────
-
-def _plugin_bundle_slug(plugin_id: str, plugin_name: str) -> str:
-    return _to_bundle_slug(plugin_name)
-
 
 def _bundle_root(bundle_slug: str) -> Path:
     from conxa_core.storage.skill_packages import bundle_root_dir
@@ -260,44 +261,44 @@ def _templates_dir() -> Path:
     # Templates ship alongside this module in conxa_compile (bundled by PyInstaller
     # via the source-glob collector in pyinstaller.spec, which walks conxa_compile
     # for *.tmpl/*.gitignore files).
-    return Path(__file__).parent / "plugin_templates"
+    return Path(__file__).parent / "skill_package_templates"
 
 
-def _render_plugin_template(name: str, **subs: str) -> str:
-    tmpl = (_templates_dir() / "plugin" / name).read_text(encoding="utf-8")
+def _render_skill_package_template(name: str, **subs: str) -> str:
+    tmpl = (_templates_dir() / "skill_package" / name).read_text(encoding="utf-8")
     for k, v in subs.items():
         tmpl = tmpl.replace("{{" + k + "}}", v)
     return tmpl
 
 
-def _copy_plugin_templates(
+def _copy_skill_package_templates(
     bundle_root: Path,
     *,
-    plugin_name: str,
-    plugin_slug: str,
+    company_name: str,
+    bundle_slug: str,
     target_url: str,
     version: str,
     skill_slugs: list[str],
     package_id: str | None = None,
 ) -> None:
-    """Copy plugin-side templates into bundle_root with substitutions."""
+    """Copy skill-package-side templates into bundle_root with substitutions."""
     templates = _templates_dir()
 
     # .gitignore
-    tmpl_gi = templates / "plugin" / ".gitignore"
+    tmpl_gi = templates / "skill_package" / ".gitignore"
     if tmpl_gi.exists():
         (bundle_root / ".gitignore").write_text(tmpl_gi.read_text(encoding="utf-8"), encoding="utf-8")
 
-    install_id = package_id or plugin_slug
+    install_id = package_id or bundle_slug
 
     # Claude.md (from template)
     skills_list = "\n".join(f"- `{s}`" for s in skill_slugs)
     (bundle_root / "Claude.md").write_text(
-        _render_plugin_template(
+        _render_skill_package_template(
             "Claude.md.tmpl",
-            plugin_name=plugin_name,
-            slug=plugin_slug,
-            plugin_id=install_id,
+            company_name=company_name,
+            slug=bundle_slug,
+            package_id=install_id,
             target_url=target_url,
             skills_list=skills_list,
         ),
@@ -307,10 +308,10 @@ def _copy_plugin_templates(
     # index.md (from template)
     skills_catalog = "\n".join(f"- `{s}` — see `skills/{s}/SKILL.md`" for s in skill_slugs)
     (bundle_root / "index.md").write_text(
-        _render_plugin_template(
+        _render_skill_package_template(
             "index.md.tmpl",
-            plugin_name=plugin_name,
-            slug=plugin_slug,
+            company_name=company_name,
+            slug=bundle_slug,
             target_url=target_url,
             skills_catalog=skills_catalog,
         ),
@@ -321,14 +322,12 @@ def _copy_plugin_templates(
     # Windows installer flow, not by an npm CLI package.
 
 
-
-
 def _clean_stale_artifacts(bundle_root: Path) -> None:
     """Remove files from old build architectures before rebuilding."""
     stale_files = [
         "server.js", "run.js", "browser.js", "config.js", "runtime.js",
         "package.json", "package-lock.json", ".mcp.json",
-        "plugin.config.json",  # renamed to plugin.json
+        "plugin.json", "plugin.config.json",  # pre-workflow-collapse manifest filename
         "schema.json",         # removed from build output
         "auth/credentials.example.json",
         "auth/credentials.json",
@@ -346,7 +345,7 @@ def _clean_stale_artifacts(bundle_root: Path) -> None:
         p = bundle_root / name
         if p.is_dir():
             shutil.rmtree(p)
-    # Remove hash-suffixed per-plugin registry json files (e.g. render_c759c810.json)
+    # Remove hash-suffixed per-workflow registry json files (e.g. render_c759c810.json)
     for p in bundle_root.glob("*_*.json"):
         p.unlink()
 
@@ -357,16 +356,16 @@ def _clean_stale_artifacts(bundle_root: Path) -> None:
 
 
 def _render_readme(
-    plugin_name: str,
-    plugin_slug: str,
+    company_name: str,
+    bundle_slug: str,
     target_url: str,
     skill_slugs: list[str],
     package_id: str | None = None,
 ) -> str:
     skills_md = "\n".join(f"- `{s}` — see `skills/{s}/SKILL.md`" for s in skill_slugs)
-    install_id = package_id or plugin_slug
+    install_id = package_id or bundle_slug
     return f"""\
-# {plugin_name}
+# {company_name}
 
 Automate [{target_url}]({target_url}) with Claude using this Conxa skill pack.
 
@@ -419,5 +418,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
-
-

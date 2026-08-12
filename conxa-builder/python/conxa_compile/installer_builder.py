@@ -7,7 +7,7 @@ The installer bundles:
 
 Usage:
     from conxa_compile.installer_builder import build_installer
-    result = build_installer(plugin_id, company_slug="acme")
+    result = build_installer(workspace_id, company_slug="acme")
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ def _stage_logo_icon(src: Path, tmp: Path, log: Callable[[str], None]) -> Path:
 
 
 def build_installer(
-    plugin_id: str,
+    workspace_id: str,
     *,
     company_slug: str,
     logo_path: str | None = None,
@@ -111,16 +111,18 @@ def build_installer(
     release_notes: str = "",
     realtime_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Package an already-built plugin into a Windows installer EXE.
+    """Package the workspace's already-built shared skill pack into a Windows installer EXE.
 
-    Returns dict with keys: installer_path, filename, company, plugin_id, version.
+    Returns dict with keys: installer_path, filename, company, workspace_id, version.
     Raises ValueError / RuntimeError on build failure.
     """
-    from conxa_core.storage.plugin_store import get_plugin, set_installer
+    from conxa_core.storage.skill_pack_store import get_skill_pack, set_installer
 
-    plugin = get_plugin(plugin_id)
-    if plugin is None:
-        raise ValueError(f"Plugin {plugin_id!r} not found.")
+    # Named pack_meta (not `pack`) — the local variable further down holds the
+    # parsed pack.json dict, and both are needed at once.
+    pack_meta = get_skill_pack(workspace_id)
+    if pack_meta is None:
+        raise ValueError(f"No skill pack built yet for workspace {workspace_id!r}.")
 
     def _log(msg: str, **extra: Any) -> None:
         if realtime_sink:
@@ -138,23 +140,23 @@ def build_installer(
     _log(f"Found makensis at: {makensis}")
 
     # ── 1. Use the existing built skill pack ───────────────────────────────────
-    if plugin.build is None:
+    if pack_meta.build is None:
         raise RuntimeError(
-            "Plugin must be built before building the installer. "
-            "Run Build Plugin, then Test Plugin, then Build Installer."
+            "The skill package must be built before building the installer. "
+            "Run Build Skill Package, then Test Skill, then Build Installer."
         )
 
     skill_pack_dir = settings.data_dir / "skill-packs" / company_slug
     if not skill_pack_dir.is_dir():
         raise RuntimeError(
             f"Built skill pack not found: skill-packs/{company_slug}. "
-            "Run Build Plugin before building the installer."
+            "Run Build Skill Package before building the installer."
         )
     pack_json_path = skill_pack_dir / "pack.json"
     if not pack_json_path.is_file():
         raise RuntimeError(
             f"Built skill pack is missing pack.json: skill-packs/{company_slug}/pack.json. "
-            "Run Build Plugin before building the installer."
+            "Run Build Skill Package before building the installer."
         )
     try:
         pack = json.loads(pack_json_path.read_text(encoding="utf-8"))
@@ -183,7 +185,7 @@ def build_installer(
         )
 
     skills = [str(skill) for skill in pack.get("skills", []) if skill]
-    installer_version = str(version or pack.get("skill_pack_version") or plugin.build.version or runtime_version)
+    installer_version = str(version or pack.get("skill_pack_version") or pack_meta.build.version or runtime_version)
     # backend.py's _publish_skill_pack already stamps installer_version and the
     # correctly versioned sync_endpoint/tracking.tracking_url into pack.json at
     # publish time — this module has no cloud access of its own (conxa_compile
@@ -229,7 +231,7 @@ def build_installer(
                 _log(f"Warning: could not process logo ({exc}); proceeding without custom icon.")
 
         # ── 4. Render NSIS script ─────────────────────────────────────────────
-        company_name = plugin.name
+        company_name = pack_meta.company_name
         _log(f"Rendering NSIS script (company={company_slug!r}, version={installer_version})…")
         nsi_path = _render_nsis_script(
             tmp,
@@ -293,7 +295,7 @@ def build_installer(
     # Persist installer record
     try:
         set_installer(
-            plugin_id,
+            workspace_id,
             installer_path=str(dest),
             filename=installer_name,
             version=installer_version,
@@ -307,7 +309,7 @@ def build_installer(
         "installer_path": str(dest),
         "filename":       installer_name,
         "company":        company_slug,
-        "plugin_id":      plugin_id,
+        "workspace_id":   workspace_id,
         "version":        installer_version,
         "runtime_version": runtime_version,
         "release_notes":   release_notes,

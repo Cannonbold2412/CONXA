@@ -95,11 +95,11 @@ class CancelRecordingTests(unittest.TestCase):
         self.registry.add(sess)
         backend._active_recording = "sess-2"
 
-        with patch("conxa_core.storage.plugin_store.remove_workflow") as mock_remove:
+        with patch("conxa_core.storage.workflow_store.clear_recording") as mock_clear:
             backend.cmd_cancel_recording(
-                {"session_id": "sess-2", "plugin_id": "plugin-1", "workflow_id": "wf-1"}, "rid-2"
+                {"session_id": "sess-2", "workflow_id": "wf-1"}, "rid-2"
             )
-            mock_remove.assert_called_once_with("plugin-1", "wf-1")
+            mock_clear.assert_called_once_with("wf-1")
 
     def test_cancel_is_a_noop_when_session_already_gone(self) -> None:
         """Simulates the exact repro: browser closed, session already reaped by

@@ -42,17 +42,17 @@ from services import bootstrap as _bootstrap_pkg  # noqa: E402
 # without this, launches on a non-bootstrap startup fail with "Executable doesn't exist".
 _bootstrap_pkg.configure_playwright_browsers_path()
 
-# Pre-import the recorder, plugin store, and command handlers at startup (main
+# Pre-import the recorder, workflow store, and command handlers at startup (main
 # thread, before serve() starts blocking on stdin). Importing these lazily in a
 # dispatch thread causes a deadlock: two simultaneous record clicks hit Python's
 # per-module import lock while conxa_core.config.Settings() tries to read the
 # repo .env from a piped-stdin context. The handlers.* imports below transitively
-# import conxa_compile.recorder.session and conxa_core.storage.plugin_store, so
+# import conxa_compile.recorder.session and conxa_core.storage.workflow_store, so
 # this ordering also pre-warms those modules.
 from handlers.protocol import _CommandError, _write  # noqa: E402
 from handlers.session import SessionMixin  # noqa: E402
 from handlers.compile import CompileMixin  # noqa: E402
-from handlers.plugins import PluginsMixin  # noqa: E402
+from handlers.workflows import WorkflowsMixin  # noqa: E402
 from handlers.workflow_editor import WorkflowEditorMixin  # noqa: E402
 from handlers.visual import VisualMixin  # noqa: E402
 from handlers.skill_packages import SkillPackagesMixin  # noqa: E402
@@ -101,7 +101,7 @@ class _Loop:
 class Backend(
     SessionMixin,
     CompileMixin,
-    PluginsMixin,
+    WorkflowsMixin,
     WorkflowEditorMixin,
     VisualMixin,
     SkillPackagesMixin,
@@ -193,7 +193,7 @@ class Backend(
         if self._installer_generation_cache is not None:
             return self._installer_generation_cache
         try:
-            payload = self._cloud_json("/api/v1/plugins/generations")
+            payload = self._cloud_json("/api/v1/workflows/generations")
             generation = str(payload.get("current") or "").strip() or "v2"
         except Exception:
             generation = "v2"
@@ -259,15 +259,14 @@ class Backend(
         }
         return messages.get(code, code)
 
-    def _compile_reservation_id(self, rid: str, plugin_id: str, workflow_id: str, session_id: str) -> str:
-        raw = f"cmp_{rid}_{plugin_id}_{workflow_id}_{session_id}"
+    def _compile_reservation_id(self, rid: str, workflow_id: str, session_id: str) -> str:
+        raw = f"cmp_{rid}_{workflow_id}_{session_id}"
         return re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)[:240]
 
     def _reserve_compile_credit(
         self,
         *,
         reservation_id: str,
-        plugin_id: str,
         workflow_id: str,
         session_id: str,
     ) -> dict[str, Any]:
@@ -276,7 +275,6 @@ class Backend(
             method="POST",
             body={
                 "reservation_id": reservation_id,
-                "plugin_id": plugin_id,
                 "workflow_id": workflow_id,
                 "session_id": session_id,
             },
@@ -303,7 +301,7 @@ class Backend(
         self,
         *,
         company_slug: str,
-        plugin: Any,
+        company_name: str,
         version: str,
         release_notes: str,
         sink: Callable[[dict[str, Any]], None],
@@ -344,9 +342,9 @@ class Backend(
         body = json.dumps(
             {
                 "slug": company_slug,
-                "display_name": str(getattr(plugin, "name", "") or company_slug),
-                "target_url": str(getattr(plugin, "target_url", "") or pack.get("target_url") or ""),
-                "protected_url": str(getattr(plugin, "protected_url", "") or pack.get("protected_url") or ""),
+                "display_name": company_name or company_slug,
+                "target_url": str(pack.get("target_url") or ""),
+                "protected_url": str(pack.get("protected_url") or ""),
                 "skill_pack_version": version,
                 "release_notes": release_notes,
                 "skills": list(pack.get("skills") or []),
@@ -356,7 +354,7 @@ class Backend(
         sink({"kind": "skill_pack_publish", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
         try:
             req = urllib.request.Request(
-                f"{cloud_api}/api/v1/plugins/{generation}/{quote(company_slug)}/skill-packs/upload",
+                f"{cloud_api}/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/upload",
                 data=body,
                 method="POST",
             )
@@ -424,7 +422,7 @@ class Backend(
 
         # sync_url/tracking_url are already correctly versioned by the cloud (see
         # publish_routes._publish_skill_pack_impl) — just qualify the relative sync_url.
-        sync_url = str(published.get("sync_url") or f"/api/v1/plugins/{generation}/{company_slug}/skill-packs/delta")
+        sync_url = str(published.get("sync_url") or f"/api/v1/workflows/{generation}/{company_slug}/skill-packs/delta")
         pack["tracking"] = tracking
         pack["sync_endpoint"] = f"{cloud_api}{sync_url}"
         pack["sync_token"] = sync_token
@@ -484,7 +482,7 @@ class Backend(
                 "release_notes": release_notes,
             }
         )
-        url = f"{cloud_api}/api/v1/plugins/{generation}/{quote(company_slug)}/installer/upload?{params}"
+        url = f"{cloud_api}/api/v1/workflows/{generation}/{quote(company_slug)}/installer/upload?{params}"
         req = urllib.request.Request(url, data=installer_path.read_bytes(), method="POST")
         req.add_header("Content-Type", "application/octet-stream")
         req.add_header("Authorization", f"Bearer {self._cloud_token()}")

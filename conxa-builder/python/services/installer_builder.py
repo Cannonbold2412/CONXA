@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 
 def build_installer(
-    plugin_id: str,
+    workspace_id: str,
     *,
     company_slug: str,
     logo_path: str | None = None,
@@ -64,7 +64,7 @@ def build_installer(
     from conxa_compile.installer_builder import build_installer as _build
 
     return _build(
-        plugin_id,
+        workspace_id,
         company_slug=company_slug,
         logo_path=logo_path,
         version=version,

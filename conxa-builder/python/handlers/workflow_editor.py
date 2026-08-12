@@ -463,30 +463,29 @@ class WorkflowEditorMixin:
 
     def cmd_sign_off_workflow(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         import time
-        from conxa_core.storage.plugin_store import list_plugins, save_plugin
+        from conxa_core.storage.workflow_store import list_workflows, save_workflow
+        from conxa_core.workspace import LOCAL_WORKSPACE_ID
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
-        target_plugin = None
-        for plugin in list_plugins():
-            for wf in plugin.workflows:
-                if wf.skill_id == skill_id:
-                    wf.edited_at = time.time()
-                    wf.signed_off = True
-                    save_plugin(plugin)
-                    target_plugin = plugin
-                    break
-            if target_plugin is not None:
+        workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
+        target_workflow = None
+        for wf in list_workflows(workspace_id):
+            if wf.skill_id == skill_id:
+                wf.edited_at = time.time()
+                wf.signed_off = True
+                save_workflow(wf)
+                target_workflow = wf
                 break
 
-        if target_plugin is None:
+        if target_workflow is None:
             return {"skill_id": skill_id, "signed_off": True, "built": False, "waiting_on": []}
 
-        # Sign-off gates the build (plugin_builder.py's raise-on-uncompiled/unedited is
-        # the enforcement point); auto-build simply fires the moment that gate is
-        # satisfied for every workflow in the plugin, so the user never has to visit
+        # Sign-off gates the build (skill_package_builder.py's raise-on-uncompiled/unedited
+        # is the enforcement point); auto-build simply fires the moment that gate is
+        # satisfied for every workflow in the workspace, so the user never has to visit
         # a separate build page after approving the last one.
         waiting_on = [
-            wf.name for wf in target_plugin.workflows if not wf.skill_id or not wf.edited_at
+            wf.name for wf in list_workflows(workspace_id) if not wf.skill_id or not wf.edited_at
         ]
         if waiting_on:
             return {
@@ -496,14 +495,17 @@ class WorkflowEditorMixin:
                 "waiting_on": waiting_on,
             }
 
-        from conxa_compile.plugin_builder import build_plugin
+        from conxa_compile.skill_package_builder import build_skill_package
 
         sink = _event_sink(rid)
         try:
-            build_plugin(target_plugin.id, realtime_sink=sink)
+            # company_name is only used the first time this workspace ever builds a
+            # skill package (SkillPack.get_or_create) — falls back to this workflow's
+            # own name, matching the old company_name = plugin.name default.
+            build_skill_package(workspace_id, company_name=target_workflow.name, realtime_sink=sink)
             return {"skill_id": skill_id, "signed_off": True, "built": True, "waiting_on": []}
         except Exception as exc:
-            sink({"kind": "plugin_build", "message": f"Auto-build failed: {exc}"})
+            sink({"kind": "skill_package_build", "message": f"Auto-build failed: {exc}"})
             return {
                 "skill_id": skill_id,
                 "signed_off": True,

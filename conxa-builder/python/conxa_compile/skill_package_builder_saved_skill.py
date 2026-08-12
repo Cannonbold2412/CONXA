@@ -1,10 +1,10 @@
 """Convert a saved/user-edited skill's steps into an executable workflow.
 
-Split out of plugin_builder.py: this is the "session -> JSON payload"
+Split out of skill_package_builder.py: this is the "session -> JSON payload"
 conversion pipeline (step shape, input placeholders, selector/recovery
 repair) that turns a compiled skill's saved steps into the execution-ready
-form written into a plugin's skills/{workflow_slug}/ output, plus the
-login-step stripping applied before that conversion runs.
+form written into the shared skill package's skills/{workflow_slug}/ output,
+plus the login-step stripping applied before that conversion runs.
 """
 
 from __future__ import annotations

@@ -107,29 +107,8 @@ def _runtime_result_text(result: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def _plugin_company_slug(plugin: Any) -> str:
-    build = getattr(plugin, "build", None)
-    output_path = str(getattr(build, "output_path", "") or "")
-    if output_path:
-        plugin_json = Path(output_path) / "plugin.json"
-        if plugin_json.is_file():
-            try:
-                payload = json.loads(plugin_json.read_text(encoding="utf-8"))
-                slug = str(payload.get("slug") or "").strip()
-                if slug:
-                    return slug
-            except Exception:
-                pass
-        folder = Path(output_path).name
-        if folder.endswith("-plugin"):
-            return folder[:-7]
-        if folder:
-            return folder
-    return str(getattr(plugin, "slug", "") or getattr(plugin, "id", "")).strip()
-
-
-def _stage_runtime_auth(plugin: Any, company: str, data_dir: Path) -> None:
-    auth = getattr(plugin, "auth", None)
+def _stage_runtime_auth(workflow: Any, company: str, data_dir: Path) -> None:
+    auth = getattr(workflow, "auth", None)
     storage_state_path = Path(str(getattr(auth, "storage_state_path", "") or ""))
     if not storage_state_path.is_file():
         return
@@ -141,7 +120,7 @@ def _stage_runtime_auth(plugin: Any, company: str, data_dir: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(storage_state_path, sessions_dir / f"{company}_raw_state.json")
 
-    protected_url = str(getattr(plugin, "protected_url", "") or getattr(plugin, "target_url", "") or "").strip()
+    protected_url = str(getattr(workflow, "protected_url", "") or getattr(workflow, "target_url", "") or "").strip()
     if protected_url:
         meta_path = sessions_dir / f"{company}_auth_meta.json"
         meta = {}

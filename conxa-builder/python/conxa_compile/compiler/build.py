@@ -718,7 +718,7 @@ def _build_target(
         selector_confidence = _confidence_from_identity_bundle(identity_bundle)
 
     # Promote the IdentityBundle's top signal as the authoritative primary selector so
-    # plugin_builder._step_selector writes the same durable selector the editor displays.
+    # skill_package_builder._step_selector writes the same durable selector the editor displays.
     # The legacy `score_selector_row`-elected primary is demoted into the fallback pool so
     # it remains available to the recovery cascade but does not pollute execution.json.
     # Never promote relational or xpath signals as primary — they are recovery-tier only.

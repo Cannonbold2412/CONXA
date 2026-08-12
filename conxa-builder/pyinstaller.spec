@@ -91,7 +91,7 @@ a = Analysis(
             "handlers.protocol",
             "handlers.session",
             "handlers.compile",
-            "handlers.plugins",
+            "handlers.workflows",
             "handlers.workflow_editor",
             "handlers.visual",
             "handlers.skill_packages",

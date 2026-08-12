@@ -25,23 +25,21 @@ class CompileMixin:
         from conxa_compile.compiler.build import compile_skill_package
         from conxa_compile.pipeline.run import run_pipeline
         from conxa_core.storage.json_store import read_skill, write_skill
-        from conxa_core.storage.plugin_store import get_plugin, save_plugin
+        from conxa_core.storage.workflow_store import get_workflow, save_workflow
         from conxa_core.storage.session_events import read_session_events, session_events_path
         from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
         registry = _recorder_registry
 
         session_id = _safe_id(payload.get("session_id"), "session_id")
-        plugin_id = str(payload.get("plugin_id") or "").strip()
-        plugin = None
+        workflow_id = str(payload.get("workflow_id") or "").strip()
         workflow = None
-        if plugin_id:
-            plugin_id = _safe_id(plugin_id, "plugin_id")
-            plugin = get_plugin(plugin_id)
-            if plugin is None:
-                raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
-            workflow = next((wf for wf in plugin.workflows if wf.session_id == session_id), None)
+        if workflow_id:
+            workflow_id = _safe_id(workflow_id, "workflow_id")
+            workflow = get_workflow(workflow_id)
             if workflow is None:
-                raise _CommandError("workflow_not_found", f"No workflow recorded for session {session_id}")
+                raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
+            if workflow.session_id != session_id:
+                raise _CommandError("workflow_not_found", f"Workflow {workflow_id} has no recording for session {session_id}")
 
         title = str(payload.get("skill_title") or "").strip()
         if not title and workflow is not None:
@@ -58,12 +56,10 @@ class CompileMixin:
         def _log(message: str, level: str = "info") -> None:
             sink({"phase": "compile_log", "message": message, "level": level, "ts": _time.time()})
 
-        workflow_id = str(getattr(workflow, "id", "") or "")
-        reservation_id = self._compile_reservation_id(rid, plugin_id, workflow_id, session_id)
+        reservation_id = self._compile_reservation_id(rid, workflow_id, session_id)
         _log("Reserving one compile credit...")
         reserve = self._reserve_compile_credit(
             reservation_id=reservation_id,
-            plugin_id=plugin_id,
             workflow_id=workflow_id,
             session_id=session_id,
         )
@@ -183,13 +179,13 @@ class CompileMixin:
             sink({"phase": "compile_step", "step": step, "status": "done"})
             _log(f"Completed: {step}")
         compile_report = package.compile_report or {}
-        if plugin is not None and workflow is not None:
+        if workflow is not None:
             workflow.skill_id = skill_id
-            workflow.status = "compiled"
+            workflow.recording_status = "compiled"
             workflow.compile_status = compile_report.get("status")
             workflow.compile_min_confidence = compile_report.get("min_confidence")
             workflow.compile_steps_with_warnings = compile_report.get("steps_with_warnings")
-            save_plugin(plugin)
+            save_workflow(workflow)
         _log(f"Skill packaged: {skill_id} (version {version}, {step_count} steps)")
         sink({"phase": "compile_done", "skill_id": skill_id, "version": version, "step_count": step_count})
         return {

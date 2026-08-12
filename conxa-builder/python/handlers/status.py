@@ -1,9 +1,9 @@
 """Single source of truth for a workflow's user-facing lifecycle stage.
 
 Replaces the three separate status vocabularies previously scattered across
-the renderer (PluginWorkflow.status, last_test_status, and an inferred
-sign-off state) with one derived value: recording, ready_to_compile, queued,
-compiling, needs_review, needs_test, ready, or error.
+the renderer (the workflow's recording_status, last_test_status, and an
+inferred sign-off state) with one derived value: recording, ready_to_compile,
+queued, compiling, needs_review, needs_test, ready, or error.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def derive_workflow_stage(wf: Any, active_job: dict[str, Any] | None = None) -> 
         if active_job.get("status") == "running":
             return "compiling"
 
-    if wf.status == "error":
+    if wf.recording_status == "error":
         return "error"
 
     if not wf.skill_id:
