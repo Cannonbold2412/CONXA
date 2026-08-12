@@ -48,13 +48,23 @@ def _redact_sensitive_test_inputs(skill_id: str, inputs: dict[str, Any]) -> dict
 
 class WorkflowsMixin:
     def cmd_create_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        from conxa_core.storage.group_store import ensure_default_group, get_group
         from conxa_core.storage.workflow_store import create_workflow as _create
 
         name = str(payload.get("name") or "").strip()
         if not name:
             raise _CommandError("invalid_input", "name is required")
         target_url = str(payload.get("target_url") or "about:blank").strip()
-        workflow = _create(name=name, target_url=target_url)
+
+        group_id = str(payload.get("group_id") or "").strip()
+        if group_id:
+            group_id = _safe_id(group_id, "group_id")
+            if get_group(group_id) is None:
+                raise _CommandError("group_not_found", f"No group {group_id}")
+        else:
+            group_id = ensure_default_group().id
+
+        workflow = _create(name=name, target_url=target_url, group_id=group_id)
         return {"workflow": workflow.model_dump(mode="json")}
 
     def cmd_list_workflows(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -443,31 +453,8 @@ class WorkflowsMixin:
         workflow_id = _safe_id(payload.get("workflow_id"), "workflow_id")
         return {"deleted": bool(delete_workflow(workflow_id))}
 
-    def cmd_re_record_auth(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        """Clear a workflow's captured auth so the user can record a fresh session.
-
-        Drops the stored ``auth.json`` and resets the workflow back to the
-        ``needs_auth`` state; the renderer then drives a new auth recording.
-        """
-        from pathlib import Path
-        from conxa_core.config import settings as _settings
-        from conxa_core.storage.workflow_store import get_workflow, save_workflow
-
-        workflow_id = _safe_id(payload.get("workflow_id"), "workflow_id")
-        workflow = get_workflow(workflow_id)
-        if workflow is None:
-            raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
-
-        workflow.auth = None
-        workflow.status = "needs_auth"
-        save_workflow(workflow)
-
-        auth_file = Path(_settings.data_dir) / "workflows" / workflow_id / "auth" / "auth.json"
-        if auth_file.is_file():
-            auth_file.unlink()
-        return {"status": "needs_auth"}
-
     def cmd_update_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        from conxa_core.storage.group_store import get_group
         from conxa_core.storage.workflow_store import get_workflow, save_workflow
 
         workflow_id = _safe_id(payload.get("workflow_id"), "workflow_id")
@@ -478,8 +465,22 @@ class WorkflowsMixin:
             workflow.skill_id = payload["skill_id"]
         if "status" in payload:
             workflow.status = payload["status"]
+        if "name" in payload:
+            name = str(payload["name"] or "").strip()
+            if not name:
+                raise _CommandError("invalid_input", "name cannot be empty")
+            workflow.name = name  # slug is frozen at creation — it's the runtime skill key
+        if "group_id" in payload:
+            group_id = _safe_id(payload["group_id"], "group_id")
+            group = get_group(group_id)
+            if group is None:
+                raise _CommandError("group_not_found", f"No group {group_id}")
+            workflow.group_id = group_id
+            workflow.status = "ready" if all(a.captured_at for a in group.apps) and group.apps else (
+                "needs_auth" if group.apps else workflow.status
+            )
         save_workflow(workflow)
-        return {"workflow_id": workflow_id, "skill_id": workflow.skill_id, "status": workflow.status}
+        return {"workflow_id": workflow_id, "skill_id": workflow.skill_id, "status": workflow.status, "group_id": workflow.group_id, "name": workflow.name}
 
     # ─── recording status ────────────────────────────────────────────────────
 

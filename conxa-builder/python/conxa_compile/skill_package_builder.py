@@ -79,6 +79,7 @@ def build_skill_package(
     # ── 1. Build every workflow's skill ────────────────────────────────────
     skill_slugs: list[str] = []
     skill_target_urls: dict[str, str] = {}
+    skill_group_ids: dict[str, str] = {}
     for wf in workflows:
         saved_skill = read_skill(wf.skill_id) if wf.skill_id else None
         if saved_skill is not None:
@@ -90,6 +91,7 @@ def build_skill_package(
             )
             skill_slugs.append(wf.slug)
             skill_target_urls[wf.slug] = wf.target_url
+            skill_group_ids[wf.slug] = wf.group_id
             _log(f"Workflow {wf.name!r} compiled from saved skill JSON")
             continue
 
@@ -149,6 +151,22 @@ def build_skill_package(
         _log("Written LICENSE")
 
     # ── 5. Write skill-packs/{company}/ format (for installer runtime) ────────
+    from conxa_core.storage.group_store import get_group as _get_group
+
+    groups_payload = []
+    for group_id in {gid for gid in skill_group_ids.values() if gid}:
+        group = _get_group(group_id)
+        if group is None:
+            continue
+        groups_payload.append({
+            "id": group.id,
+            "name": group.name,
+            "apps": [
+                {"id": a.id, "name": a.name, "login_url": a.login_url, "success_url": a.success_url}
+                for a in group.apps
+            ],
+        })
+
     try:
         _write_skill_packs_format(
             bundle_root=bundle_root,
@@ -158,6 +176,8 @@ def build_skill_package(
             protected_url=primary.protected_url,
             skill_slugs=skill_slugs,
             skill_target_urls=skill_target_urls,
+            skill_group_ids=skill_group_ids,
+            groups=groups_payload,
             version=version,
         )
         _log("Written skill-packs format", company=bundle_slug, skills=skill_slugs)

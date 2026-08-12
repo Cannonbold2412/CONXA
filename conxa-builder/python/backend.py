@@ -53,6 +53,7 @@ from handlers.protocol import _CommandError, _write  # noqa: E402
 from handlers.session import SessionMixin  # noqa: E402
 from handlers.compile import CompileMixin  # noqa: E402
 from handlers.workflows import WorkflowsMixin  # noqa: E402
+from handlers.groups import GroupsMixin  # noqa: E402
 from handlers.workflow_editor import WorkflowEditorMixin  # noqa: E402
 from handlers.visual import VisualMixin  # noqa: E402
 from handlers.skill_packages import SkillPackagesMixin  # noqa: E402
@@ -102,6 +103,7 @@ class Backend(
     SessionMixin,
     CompileMixin,
     WorkflowsMixin,
+    GroupsMixin,
     WorkflowEditorMixin,
     VisualMixin,
     SkillPackagesMixin,
@@ -348,6 +350,7 @@ class Backend(
                 "skill_pack_version": version,
                 "release_notes": release_notes,
                 "skills": list(pack.get("skills") or []),
+                "skill_groups": dict(pack.get("skill_groups") or {}),
                 "files": files,
             }
         ).encode("utf-8")

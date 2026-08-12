@@ -9,7 +9,7 @@ from typing import Any
 from services import bootstrap as _bootstrap_pkg
 from conxa_compile.recorder.session import registry as _recorder_registry
 from conxa_core.storage.workflow_store import get_workflow as _get_workflow
-from handlers.protocol import _CommandError, _event_sink, _is_rejected_protected_url, _safe_id
+from handlers.protocol import _CommandError, _event_sink, _safe_id
 
 class SessionMixin:
     def cmd_ping(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -73,32 +73,45 @@ class SessionMixin:
 
             workflow_id_raw = payload.get("workflow_id")
             workflow_id = _safe_id(workflow_id_raw, "workflow_id") if workflow_id_raw else ""
-            auth_mode = bool(payload.get("auth_mode"))
 
             if workflow_id:
+                # Workflow recording (auth is captured once at the group level —
+                # see handlers/groups.py's cmd_start_group_app_auth — so this
+                # path only ever records the workflow itself, seeded with the
+                # group's merged session).
+                from conxa_core.storage.group_store import get_group
+                from conxa_core.storage.storage_state import merge_storage_states
+
                 workflow = _get_workflow(workflow_id)
                 if not workflow:
                     raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
+                group = get_group(workflow.group_id) if workflow.group_id else None
+                if group is None or not group.apps or any(not a.captured_at for a in group.apps):
+                    raise _CommandError("auth_required", "Authenticate every app in this workflow's group before recording.")
+
+                states = []
+                for app in group.apps:
+                    if app.storage_state_path and Path(app.storage_state_path).is_file():
+                        import json as _json
+                        states.append(_json.loads(Path(app.storage_state_path).read_text(encoding="utf-8")))
+                merged = merge_storage_states(states)
+
+                import json as _json
                 workflow_dir = Path(_settings.data_dir) / "workflows" / workflow_id
-                auth_state_path = str(workflow_dir / "auth" / "auth.json")
-                storage_state_path = auth_state_path
-                storage_state_autosave = str(workflow_dir / "auth" / "auth.json") if auth_mode else ""
-                if auth_mode:
-                    start_url = str(workflow.target_url or "about:blank")
-                else:
-                    if workflow.status != "ready" or workflow.auth is None:
-                        raise _CommandError("auth_required", "Record login before recording this workflow.")
-                    storage_state_path = str(workflow.auth.storage_state_path or auth_state_path)
-                    if not Path(storage_state_path).is_file():
-                        raise _CommandError("auth_required", "Saved login session is missing. Re-record login first.")
-                    start_url = str((workflow.protected_url or workflow.target_url or "about:blank")).strip()
-                    url_variables = payload.get("url_variables")
-                    if isinstance(url_variables, dict) and url_variables:
-                        pattern = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}")
-                        start_url = pattern.sub(
-                            lambda m: str(url_variables.get(m.group(1)) or m.group(0)),
-                            start_url,
-                        )
+                workflow_dir.mkdir(parents=True, exist_ok=True)
+                merged_path = workflow_dir / "merged_group_state.json"
+                merged_path.write_text(_json.dumps(merged), encoding="utf-8")
+                storage_state_path = str(merged_path)
+                storage_state_autosave = ""
+
+                start_url = str((workflow.protected_url or workflow.target_url or "about:blank")).strip()
+                url_variables = payload.get("url_variables")
+                if isinstance(url_variables, dict) and url_variables:
+                    pattern = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}")
+                    start_url = pattern.sub(
+                        lambda m: str(url_variables.get(m.group(1)) or m.group(0)),
+                        start_url,
+                    )
             else:
                 start_url = str(payload.get("start_url") or "about:blank")
                 storage_state_path = str(payload.get("storage_state_path") or "")
@@ -108,7 +121,6 @@ class SessionMixin:
                 start_url=start_url,
                 storage_state_path=storage_state_path,
                 storage_state_autosave_path=storage_state_autosave,
-                auth_mode=auth_mode,
                 capture_hover=bool(payload.get("capture_hover")),
             )
             try:
@@ -117,7 +129,7 @@ class SessionMixin:
                 _recorder_registry.pop(sess.session_id)
                 raise _CommandError("recorder_launch_failed", str(exc)) from exc
             result = {"session_id": sess.session_id, "start_url": start_url}
-            if workflow_id and not auth_mode:
+            if workflow_id:
                 from conxa_core.storage.workflow_store import set_recording
 
                 updated = set_recording(workflow_id, sess.session_id)
@@ -167,19 +179,6 @@ class SessionMixin:
         if sess is None:
             raise _CommandError("session_not_found", f"No session {session_id}")
         workflow_id = str(payload.get("workflow_id") or "").strip()
-        auth_mode = bool(payload.get("auth_mode"))
-        storage_state_path = ""
-        if auth_mode:
-            if not workflow_id:
-                raise _CommandError("invalid_input", "workflow_id is required")
-            workflow_id = _safe_id(workflow_id, "workflow_id")
-            workflow = _get_workflow(workflow_id)
-            if workflow is None:
-                raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
-
-            from conxa_core.config import settings as _settings
-
-            storage_state_path = str(Path(_settings.data_dir) / "workflows" / workflow_id / "auth" / "auth.json")
 
         # sess.stop() joins the recorder's background thread, which owns Playwright's
         # sync API on its own thread — Playwright's sync driver only allows the thread
@@ -187,30 +186,12 @@ class SessionMixin:
         # from this (RPC) thread before that join completes throws "Cannot switch to
         # a different thread". Join first; the thread's own final storage_state save
         # (session.py's forced autosave right before its teardown) already wrote
-        # auth.json on the correct thread, so nothing else needs to touch it here.
+        # the file on the correct thread, so nothing else needs to touch it here.
         events = sess.snapshot_events()
         self._loop.run(sess.stop())
         with self._rec_lock:
             if self._active_recording == session_id:
                 self._active_recording = None
-        final_url = str(getattr(sess, "current_url", "") or "")
-        if auth_mode:
-            from conxa_core.storage.workflow_store import set_workflow_auth
-
-            storage_state_saved = Path(storage_state_path).is_file()
-            if not storage_state_saved:
-                raise _CommandError("auth_capture_failed", "Login browser closed before a session could be saved.")
-            protected_url = final_url if not _is_rejected_protected_url(final_url) else None
-            updated = set_workflow_auth(workflow_id, session_id, storage_state_path, protected_url=protected_url)
-            if updated is None:
-                raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
-            return {
-                "session_id": session_id,
-                "event_count": len(events),
-                "workflow_status": updated.status,
-                "storage_state_saved": storage_state_saved,
-                "protected_url": updated.protected_url,
-            }
         if workflow_id:
             from conxa_core.storage.workflow_store import clear_recording
 

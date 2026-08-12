@@ -58,6 +58,8 @@ def _write_skill_packs_format(
     skill_slugs: list[str],
     skill_target_urls: dict[str, str],
     version: str,
+    skill_group_ids: dict[str, str] | None = None,
+    groups: list[dict[str, Any]] | None = None,
     conxa_api_url: str = "",
     required_runtime: str = "",
 ) -> None:
@@ -99,9 +101,11 @@ def _write_skill_packs_format(
     skill_packs.mkdir(parents=True, exist_ok=True)
 
     written_slugs: list[str] = []
+    skill_groups: dict[str, str] = {}
     for slug in skill_slugs:
         src_dir  = bundle_root / "skills" / slug
-        dest_dir = skill_packs / slug
+        group_id = (skill_group_ids or {}).get(slug) or "_default"
+        dest_dir = skill_packs / group_id / slug
         if not src_dir.is_dir():
             continue
 
@@ -188,6 +192,7 @@ def _write_skill_packs_format(
             "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3"),
             "company":          company,
             "target_url":       skill_target_urls.get(slug, target_url),
+            "group_id":         group_id,
             "inputs_required":  inputs_required,
             "structural_fingerprint": structural_fp,
             "checksum":         checksums,
@@ -196,6 +201,7 @@ def _write_skill_packs_format(
             dumps_safe(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         written_slugs.append(slug)
+        skill_groups[slug] = group_id
 
     # pack.json at company root
     _req_rt = required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3")
@@ -207,6 +213,8 @@ def _write_skill_packs_format(
         "target_url":         target_url,
         "protected_url":      protected_url,
         "skills":             written_slugs,
+        "skill_groups":       skill_groups,
+        "groups":             groups or [],
         "sync_endpoint":      f"{api_base}/skill-packs/{company}/delta",
         "built_at":           datetime.now(timezone.utc).isoformat(),
     }
