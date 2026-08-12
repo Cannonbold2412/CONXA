@@ -116,25 +116,32 @@ flowchart LR
 
 The Workflow Detail page (`/workflows/:workflowId`) is the primary interface for recording and managing a single workflow. All record-login and record-workflow controls are inline on this page.
 
-### 4.1 Record Authentication Session (inline action)
+### 4.1 Authentication is set up once per group, not per workflow
+
+As of the Workflow Groups change (see `docs/TRD.md` §5.2a), a workflow no longer records its own login — it inherits its group's app sessions. The Workflow Detail page shows a read-only "Group: Sales · N of M apps connected" card that links to the group's own setup page; there is no Record Login action here anymore.
 
 ```mermaid
 flowchart TD
-    A[Workflow with status=needs_auth] --> B["Workflow Detail page shows 'Record Login' action"]
-    B --> C[User clicks 'Record Login']
-    C --> D[Backend: cmd_start_recording with auth_mode=true]
-    D --> E[Playwright launches Chromium]
-    E --> F[Opens workflow.target_url]
-    F --> G[User logs into the target website, closes the browser when done]
-    G --> H[User clicks 'Save Session Now' in the recording dialog]
-    H --> I[Backend: cmd_stop_recording with auth_mode=true]
-    I --> J[Playwright saves storageState to auth/auth.json]
-    J --> K[Detect final URL as protected_url]
-    K --> L[Workflow status updated to 'ready']
-    L --> M[Recording dialog closes, page shows 'Record Workflow' action]
+    A[Group has apps with missing/expired sessions] --> B["Group page shows 'Connect' per app"]
+    B --> C[User clicks Connect on an app]
+    C --> D[Backend: cmd_start_group_app_auth]
+    D --> E[Playwright launches Chromium at app.login_url]
+    E --> F[User logs into the target website]
+    F --> G["Recorder self-detects app.success_url (wait_for_url) and closes the browser"]
+    G --> H[Renderer polls get_recording_status, sees reached_wait_url]
+    H --> I[Backend: cmd_finish_group_app_auth]
+    I --> J[Playwright's storageState saved to data/groups/{group_id}/auth/{app_id}.json]
+    J --> K[Every workflow in the group flips to status=ready once all its apps are authenticated]
+    K --> L{More unauthenticated apps in the group?}
+    L -->|Yes| B
+    L -->|No| M[Group ready — every workflow in it can record/run immediately]
 ```
 
-**Key invariant:** `auth.json` lives at `data/workflows/{id}/auth/auth.json`. It is NEVER copied into the skill pack build output.
+**Key invariant:** each app's captured session lives at `data/groups/{group_id}/auth/{app_id}.json`. It is NEVER copied into the skill pack build output.
+
+### 4.1a Recording a workflow starts pre-authenticated to every app in its group
+
+`cmd_start_recording` merges every authenticated app's storageState in the workflow's group into one seeded Playwright context (`conxa_core.storage.storage_state.merge_storage_states`) before opening the recorder — so a recording that crosses several of the group's apps starts signed in to all of them, with no per-site login step during the recording itself.
 
 ### 4.2 Record a Workflow (inline action)
 

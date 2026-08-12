@@ -63,6 +63,11 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Complexity:** S–M.
 - **Success criteria:** homepage hero/positioning copy matches the ladder story used on `/pricing`; a pricing section or preview is visible on the homepage itself, not just reachable via nav.
 
+### ~~BUILD-14 — Record/Compile page: workflow-centric counting + folder grouping~~ — done 2026-08-12
+Landed as **Workflow Groups**, with wider scope than originally described here: groups turned out to need to own shared multi-app authentication too (a real cross-app business workflow needs N apps signed in, not one), so group membership is no longer "pure organizational metadata" invisible to the runtime — `pack.json` carries a `groups` block and each skill's `manifest.json` carries `group_id`, both read by `runtime/browser.js` to resolve which sessions to load. That is a deliberate, explicit widening of this item's original invariant, made because the user's actual request required it; see `docs/TRD.md`'s Workflow Groups section for the resulting contract. The Compile page was also removed as part of this change (compiling now lives only on each workflow's own page). Follow-ups not done in this pass: `runtime/test/gate-skill`'s CI fixture pack still uses the pre-Groups format and doesn't exercise the new path (a `groups` block was deliberately not added to it in this pass — untangling that from the existing gate fixtures needs its own change, not to be rushed).
+
+<details><summary>Original description</summary>
+
 ### BUILD-14 — Record/Compile page: workflow-centric counting + folder grouping
 - **Category:** Builder / Cloud
 - **Description:** Build Studio's record/compile screens (`PluginListSidebar.tsx`, `PluginSwitcher.tsx`) and the surrounding UI are built around counting and switching between "plugins" — but a single published plugin/skill pack can bundle many individually recorded workflows, and the cloud's entitlement layer already models that distinction internally (`entitlements.py::ensure_workflow_publishable(principal, plugin_id, workflow_ids)` treats workflows as the countable sub-unit of a plugin). Redesign the Record + Compile page to show and count **workflows**, not plugins, and add folder-style grouping (e.g., "Marketing", "Sales") so a vendor with a growing catalog can organize workflows into named groups. Add the backend support needed for a workflow→folder association as **pure organizational metadata** — a label attached to a workflow record, not a structural change to the compiled `SkillPackage`, its `IdentityBundle`, or anything the runtime reads. Grouping must never touch the skill contract (see `CLAUDE.md`'s Key Invariants and ARCH-3's contract/executor boundary) — moving a workflow between folders must be indistinguishable, from the runtime's perspective, from not moving it at all.
@@ -73,6 +78,16 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 - **Suggested order:** immediate, alongside the other three P0 items.
 - **Complexity:** M–L — UI rework of the Record/Compile screens plus a new backend field/endpoint for folder assignment; no change to the skill contract itself.
 - **Success criteria:** the Record/Compile page shows and counts workflows, not plugins, matching what's actually entitled/billed; a workflow can be assigned to a named folder and the list can be filtered by folder; compiling and executing the same workflow before and after a folder move produces byte-identical compiled output and identical runtime behavior.
+
+</details>
+
+### Workflow Groups CI gate coverage
+- **Category:** Runtime / CI
+- **Description:** `runtime/test/gate-skill/skill-pack/gate/pack.json` (the fixture `gate_replay.js` replays against a real host exe in CI) predates Workflow Groups and has no `groups` block, so the group-aware path in `runtime/browser.js` (`_resolveGroup`, `getGroupAuthContext`) is exercised by `runtime/test/test_group_auth.js`'s unit tests but never by the execution gate. Add a second gate fixture (or extend the existing one) with a one-app group and a matching `{company}__{appId}_raw_state.json`, and confirm `gate_replay.js` passes against it before the app-layer CI gate is considered to cover Workflow Groups.
+- **Why required:** the execution gate is what actually blocks a bad app-layer release; a code path it doesn't exercise isn't really protected by CI.
+- **Dependencies:** none — the underlying group-auth code already ships.
+- **Complexity:** S.
+- **Update (2026-08-12):** skill-pack directories now nest under `{group_id}/` on disk (`skill-packs/{company}/{group_id}/{skill_slug}/`, see `docs/TRD.md` §5.2a/§11.1) — `skill_loader.js` requires this layout unconditionally, so `gate_replay.js`'s fixture-staging loop was updated to stage `gate-skill` under a `_default/` folder (matching the fallback `skill_loader.js` uses when a pack has no `skill_groups` map), keeping the gate green. That's the minimum fix to not break the gate — this item's original, broader scope (a real `groups` array + group-scoped app auth in the fixture, so `_resolveGroup`/`getGroupAuthContext` get exercised too, not just path resolution) is still open.
 
 ### ARCH-4 — Migrate installer generation from Build Studio to Conxa Cloud (CDN-hosted, one per workspace, swappable)
 - **Category:** Architecture / Cloud

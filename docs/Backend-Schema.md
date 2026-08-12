@@ -92,11 +92,11 @@ class Workflow(BaseModel):
     name: str                  # Display name
     owner_user_id: str         # Clerk user ID or "local"
     workspace_id: str          # Clerk org ID or "ws_local"
+    group_id: str              # Owning WorkflowGroup — see 2.2. Every workflow has exactly one.
     target_url: str            # Entry URL for the target website
     protected_url: str         # URL captured after auth (e.g. dashboard URL)
     protected_url_marker_text: str  # Text that marks the protected area
-    status: Literal["needs_auth", "ready", "error"]
-    auth: WorkflowAuth | None  # Captured browser session reference
+    status: Literal["needs_auth", "ready", "error"]  # Derived from the owning group's app auth readiness
     # Single recording per workflow (inlined — no nested list).
     session_id: str | None     # Recording session ID for this workflow
     recorded_at: float | None  # Unix timestamp
@@ -122,14 +122,47 @@ ready → error (auth lost or auth re-recording failed)
 ready → (any recording_status) (during workflow recording/compilation)
 ```
 
-### 2.2 WorkflowAuth
+### 2.2 WorkflowGroup / GroupApp
+
+A business-domain folder ("Sales") that owns both a set of Workflows and the
+applications those workflows sign in to. Auth is captured **once per app, at
+the group level** — this replaced the old per-workflow `WorkflowAuth` field
+(auth was previously captured once per workflow; now every workflow in a
+group shares the group's app sessions). See `docs/TRD.md` §5.2a for the full
+setup/recording/execution flow.
 
 ```python
-class WorkflowAuth(BaseModel):
-    session_id: str            # Recording session used for auth capture
-    captured_at: float         # Unix timestamp
-    storage_state_path: str    # Absolute path to auth.json (local only)
+class GroupApp(BaseModel):
+    id: str                    # Stable slug, e.g. "salesforce"
+    name: str
+    login_url: str
+    success_url: str           # Reaching this host = authenticated; "" = unset
+    captured_at: float | None  # Unix timestamp, None until authenticated
+    storage_state_path: str    # Absolute path to this app's captured session (local only)
+    last_error: str            # Most recent capture failure, if any
+
+class WorkflowGroup(BaseModel):
+    id: str
+    slug: str
+    name: str                  # "Default" is the migration target for ungrouped workflows
+    workspace_id: str
+    apps: list[GroupApp]
+    created_at: float
+    updated_at: float
 ```
+
+Storage: `data/groups/{group_id}.json` (dual DB+file, same pattern as
+Workflow) via `conxa_core/storage/group_store.py`; each app's captured
+session lives at `data/groups/{group_id}/auth/{app_id}.json`.
+
+**Compiled skill-pack layout:** a WorkflowGroup's `id` also decides *where a
+skill's files live on disk* — `pack.json` carries a `skill_groups` field
+(`{skill_slug: group_id}`, distinct from the `groups` array above — `groups`
+is auth-app metadata, `skill_groups` is the path index) and each skill is
+written to `skill-packs/{company}/{group_id}/{skill_slug}/` (the sentinel
+`"_default"` when a workflow's `group_id` is empty), both in Build Studio's
+local build output and after the real runtime syncs. See `docs/TRD.md` §5.2a
+and §11.1 for the full on-disk layout and delta-sync wire format.
 
 ### 2.3 SkillPack (Workspace-Level, Shared)
 
@@ -1143,12 +1176,14 @@ Response:
 ```json
 {
   "skills": [
-    {"name": "invoice-automation", "version": "v1.2.0", "action": "update",
+    {"name": "invoice-automation", "version": "v1.2.0", "action": "update", "group": "grp_a1b2c3",
      "files": [{"path": "execution.json", "sha256": "abc123...", "content_base64": "..."}]},
-    {"name": "approval-workflow", "action": "no_change"}
+    {"name": "approval-workflow", "action": "no_change", "group": "_default"}
   ]
 }
 ```
+
+`group` is the skill's `group_id` from `pack.json`'s `skill_groups` map (falling back to `"_default"`), telling `runtime/sync.js` which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to write into (§2.2, `docs/TRD.md` §5.2a) — present on both `"update"` and `"no_change"` entries since a "no_change" skill on a company that hasn't republished since group-nesting shipped still needs its group reported so the client's next `since` computation stays correct. `_build_delta()` falls back to a company's old flat `skill-packs/{company}/{skill_slug}/` cloud-storage location if the nested one doesn't exist yet (packs published before this feature), so already-published companies keep syncing without needing to republish.
 
 Each skill's version is read from `component_versions` KV (`skill_packs:{company}:{skill}`, written at publish time), falling back to the shared `pack.json.skill_pack_version` for packs published before independent per-skill versioning existed.
 
@@ -1428,11 +1463,12 @@ erDiagram
 │   └── auth/
 │       └── auth.json             ← Playwright storageState (LOCAL ONLY, never published)
 ├── skill-packs/{company}/
-│   ├── pack.json                 ← manifest with sync_endpoint + tracking
-│   └── {skill_slug}/
-│       ├── execution.json
-│       ├── recovery.json
-│       └── inputs.json
+│   ├── pack.json                 ← manifest with sync_endpoint, tracking, skill_groups
+│   └── {group_id}/                ← workflow's group_id, or "_default" (§2.2)
+│       └── {skill_slug}/
+│           ├── execution.json
+│           ├── recovery.json
+│           └── inputs.json
 ├── runs/{workflow_id}.jsonl
 ├── saas/metadata.json            ← local workspace metadata
 └── deps/
@@ -1446,11 +1482,15 @@ erDiagram
 data/  (SKILL_DATA_DIR on Render, or cloud blob storage)
 ├── skill-packs/{company}/
 │   ├── pack.json
-│   └── {skill_slug}/
-│       ├── execution.json
-│       ├── recovery.json
-│       ├── inputs.json
-│       └── manifest.json
+│   └── {group_id}/                ← workflow's group_id, or "_default" (§2.2); packs
+│       │                            published before group-nesting existed still have
+│       │                            skills directly here instead — _build_delta() falls
+│       │                            back to that flat layout when the nested one is absent
+│       └── {skill_slug}/
+│           ├── execution.json
+│           ├── recovery.json
+│           ├── inputs.json
+│           └── manifest.json
 └── installers/{company}/
     ├── installer.exe
     └── meta.json
@@ -1475,10 +1515,11 @@ a different V8 than official nodejs.org Node, causing silent deserialization seg
 ├── manifest.json                  ← cached last Ed25519-verified signed manifest
 ├── chromium/                      ← Playwright browser (unversioned, external)
 ├── skill-packs/{company}/
-│   ├── pack.json                  ← sync_endpoint + sync_token + tracking config (no shared version)
-│   └── {skill_slug}/
-│       ├── v1.0.0/, v1.1.0/       ← execution.json, recovery.json, inputs.json, manifest.json, version.json each
-│       └── current                 ← directory junction, independent per skill
+│   ├── pack.json                  ← sync_endpoint + sync_token + tracking + skill_groups (no shared version)
+│   └── {group_id}/                ← workflow's group_id, or "_default" (§2.2)
+│       └── {skill_slug}/
+│           ├── v1.0.0/, v1.1.0/   ← execution.json, recovery.json, inputs.json, manifest.json, version.json each
+│           └── current             ← directory junction, independent per skill
 └── logs/
     ├── runtime.log
     └── recovery.log

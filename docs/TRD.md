@@ -110,7 +110,10 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 | `get_recording_status` | Live event count |
 | `run_pipeline` | Normalize raw events |
 | `compile` | Full compile → SkillPackage |
-| `create_workflow` / `list_workflows` / `get_workflow` / `delete_workflow` | Workflow CRUD |
+| `create_workflow` / `list_workflows` / `get_workflow` / `update_workflow` / `delete_workflow` | Workflow CRUD (`update_workflow` also renames and re-groups) |
+| `list_groups` / `get_group` / `create_group` / `rename_group` / `delete_group` | WorkflowGroup CRUD — see §5.2a |
+| `add_group_app` / `update_group_app` / `remove_group_app` | Group's app list CRUD |
+| `get_group_auth_status` / `start_group_app_auth` / `finish_group_app_auth` / `cancel_group_app_auth` | Per-app auth capture — see §5.2a |
 | `get_skill_pack` | Get workspace's SkillPack + workflow list |
 | `build_skill_package` | Build workspace-scoped skill package |
 | `build_installer` | NSIS installer + cloud publish + upload |
@@ -142,11 +145,12 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 │       └── assets/            (screenshot thumbnails)
 ├── skill-packs/
 │   └── {company_slug}/
-│       ├── pack.json          (manifest with sync_endpoint, tracking)
-│       └── {skill_slug}/
-│           ├── execution.json
-│           ├── recovery.json
-│           └── inputs.json
+│       ├── pack.json          (manifest with sync_endpoint, tracking, skill_groups — see §5.2a)
+│       └── {group_id}/        (workflow's group_id, or "_default" — see §5.2a)
+│           └── {skill_slug}/
+│               ├── execution.json
+│               ├── recovery.json
+│               └── inputs.json
 ├── runs/
 │   └── {workflow_id}.jsonl
 ├── cache/
@@ -229,7 +233,7 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/updates/conxa-runtime-manifest` | **Deprecated** — thin shim reading the same `component_versions` KV data, kept only for runtimes that haven't picked up the manifest-driven self-updater. | Public |
 | `GET /api/v1/updates/conxa-app-manifest` | **Deprecated** — same shim pattern as above. | Public |
 | `GET /api/v1/updates/studio-manifest` | Studio download info | Public |
-| `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — `since` is a JSON map of `{skill_slug: last_known_version}`; response is `{skills: [{name, action: "update"|"no_change", version?, files?}]}`. Each skill is compared and shipped independently — republishing one skill never triggers a re-download of the others. Authenticated by installer-embedded sync_token. | Bearer: `pack.json.sync_token`; 401 if invalid |
+| `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — `since` is a JSON map of `{skill_slug: last_known_version}`; response is `{skills: [{name, action: "update"|"no_change", group, version?, files?}]}`. Each skill is compared and shipped independently — republishing one skill never triggers a re-download of the others. `group` is the skill's `group_id` (or `"_default"`), telling the runtime which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to sync into (§5.2a). Authenticated by installer-embedded sync_token. | Bearer: `pack.json.sync_token`; 401 if invalid |
 | `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
 | `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, workflow create/delete) — `ops_tier` "basic"+; export is a documented follow-up, not yet a separate endpoint | Clerk JWT |
@@ -314,7 +318,7 @@ conxa-runtime.exe  ← host layer (Node.js + all npm deps + bootstrap.js, ~85 MB
         └── tracker.js                (telemetry event emission)
 ```
 
-`bootstrap.js` (bundled in host): resolves `conxa-app/current` (a directory junction — see §4.4) via `version_manager.resolveCurrent()`, checks that version's `version.json` for `min_host` compatibility, then loads its `server.js`. On failure, calls `version_manager.rollback()` to flip `current` back to the previously-retained version and retries — no re-download needed, since old versions are never deleted until pruned by retention. App-layer files are obfuscated JS (self-defending, string-array rc4) — not human-readable on disk, but no V8 bytecode dependency on the host's exact Node build.
+`bootstrap.js` (bundled in host) first applies `env.js`, which normalizes the install, data, app, API, and update-channel paths for every subsequently loaded module. The `register-mcp` and `unregister-mcp` host-layer commands then exit before any app-layer work. For a normal MCP launch, bootstrap fetches and verifies the signed manifest and may activate a compatible app-layer update; it then resolves `conxa-app/current` (a directory junction — see §4.4) via `version_manager.resolveCurrent()`, checks that version's `version.json` for `min_host` compatibility, and loads its `server.js`. On failure, it calls `version_manager.rollback()` to flip `current` back to the previously-retained version and retries — no re-download needed, since old versions are never deleted until pruned by retention. App-layer files are obfuscated JS (self-defending, string-array rc4) — not human-readable on disk, but no V8 bytecode dependency on the host's exact Node build.
 
 `page_scripts.js` is the one app-layer file obfuscated **without** `--self-defending`/`--string-array` (mangled identifiers only). Every function it exports is one Playwright ships into the browser page via `page.evaluate()`/`locator.evaluate()` (`Function.prototype.toString()`, re-parsed and run outside this Node process). Both of those transforms rewrite a function body to call back into a module-scope decoder/self-defending guard — invisible once the source is re-parsed in the browser realm, so a full-strength build throws `ReferenceError: <mangled-name> is not defined` at the first evaluate() call that runs (silent for evaluate() sites wrapped in try/catch, fatal for `run.js`'s scroll handler, which is not). `run.js`, `server.js`, `resolve_adapter.js`, and `drift.js` call into `page_scripts.js` rather than defining browser-context functions inline — keep it that way; a new inline arrow passed to `page.evaluate()`/`locator.evaluate()` anywhere else in the app layer will reproduce this bug.
 
@@ -370,6 +374,10 @@ sequenceDiagram
     participant Cloud as Conxa Cloud
 
     CD->>RT: spawn conxa-runtime/current/conxa-runtime.exe (MCP stdio)
+    RT->>RT: env.apply() → normalize CONXA_DIR, CONXA_DATA_DIR, CONXA_APP_DIR, API URL, channel
+    alt register-mcp or unregister-mcp
+        RT->>RT: run host-layer command and exit
+    else normal MCP launch
     RT->>Cloud: GET /api/v1/manifest.json (no local TTL — every launch fetches; Ed25519-verified against baked-in public key)
     Cloud-->>RT: {conxa_runtime, conxa_app, skill_packs, minimum_versions, signature}
     RT->>RT: manifest_manager.checkForUpdates(components: ["conxa_app"]) — version, min_host, rollout %, min_versions
@@ -377,7 +385,7 @@ sequenceDiagram
     Note over RT: pre-load — server.js is NOT require()'d yet, so this activation is live for THIS launch
     RT->>RT: version_manager.resolveCurrent(conxa-app) again → check min_host compatibility
     RT->>App: require conxa-app/current/server.js (or rollback to previous version)
-    App->>App: resolve CONXA_DIR, CONXA_DATA_DIR
+    App->>App: read normalized paths; configure Playwright and handle app-layer CLI flags
     App->>App: load skill index from cache (SKILL_PACKS_DIR)
     App->>CD: MCP connect (StdioServerTransport)
     par Startup sync (parallel)
@@ -387,10 +395,13 @@ sequenceDiagram
         App->>Cloud: GET /skill-packs/{co}/delta?since={per-skill version map} (skipped if synced <5min ago)
         Cloud-->>App: {skills: [{name, action, version?, files?}]}
         App->>App: per changed skill → parallel file downloads → write to <skill>/<version>/ → activate()
+        and
+        App->>App: re-encrypt plaintext session files (best effort)
     end
     App->>App: syncState.complete = true; reload skill index
     App->>CD: sendToolListChanged()
     App->>Cloud: POST /api/v1/telemetry/runtime-start (fire-and-forget)
+    end
 ```
 
 **Execution gate:** `execute_skill` awaits `startupSync` before running. Both skill-pack sync and the conxa_runtime manifest check must complete (or fail gracefully) before any workflow executes. On a normal connection this resolves in under 1 second. Failures fall through to cached data — the user is never permanently blocked. Manifest signature failures are treated identically to network failures: the last previously-verified cached manifest is used, or the check is skipped entirely on first run.
@@ -423,11 +434,13 @@ that works without requiring admin rights or Developer Mode.
 ├── chromium/                   (Playwright browser — unversioned, external)
 ├── skill-packs/
 │   └── {company}/
-│       ├── pack.json           (company metadata: sync_endpoint, sync_token — no shared version)
-│       └── {skill_slug}/
-│           ├── v1.0.0/, v1.1.0/  (each: execution.json, recovery.json, inputs.json,
-│           │                      manifest.json, validation.json, version.json)
-│           └── current           (directory junction, independent per skill)
+│       ├── pack.json           (company metadata: sync_endpoint, sync_token, groups[],
+│       │                        skill_groups {slug: group_id} — see §5.2a)
+│       └── {group_id}/         (workflow's group_id, or "_default" — see §5.2a)
+│           └── {skill_slug}/
+│               ├── v1.0.0/, v1.1.0/  (each: execution.json, recovery.json, inputs.json,
+│               │                      manifest.json [carries group_id], validation.json, version.json)
+│               └── current           (directory junction, independent per skill)
 └── logs/
     ├── runtime.log             (JSONL, rotated at 10MB)
     └── recovery.log            (recovery event log, rotated at 10MB)
@@ -435,8 +448,10 @@ that works without requiring admin rights or Developer Mode.
 %APPDATA%/Conxa/               (CONXA_DATA_DIR)
 ├── cache/
 │   ├── sessions/
-│   │   ├── {co}_state.json             (AES-256-GCM encrypted storageState)
-│   │   ├── {co}_raw_state.json         (plaintext fallback)
+│   │   ├── {co}_state.json             (AES-256-GCM encrypted storageState — legacy single-session pack)
+│   │   ├── {co}_raw_state.json         (plaintext fallback — legacy single-session pack)
+│   │   ├── {co}__{appId}_state.json    (per-app, for a pack.json with a `groups` block — see §5.2a)
+│   │   ├── {co}__{appId}_raw_state.json
 │   │   └── {co}_auth_meta.json
 │   └── manifests.json                  (skill index fast-load cache)
 └── data/
@@ -489,6 +504,24 @@ sequenceDiagram
 ```
 
 **Token lifecycle:** Tokens are refreshed transparently in `auth_service.get_token()` when within 60 seconds of expiry using the stored `refresh_token`. Stored in OS credential manager (Windows Credential Manager / macOS Keychain / Linux Secret Service via the `keyring` Python library).
+
+### 5.2a Workflow Groups: Shared Multi-App Authentication
+
+A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `conxa_core/storage/group_store.py`) is a business-domain folder — "Sales", "Marketing" — that owns both a set of Workflows and the target-platform applications those workflows sign in to (`GroupApp`: name, `login_url`, `success_url`, captured session path). Every workflow belongs to exactly one group (`Workflow.group_id`); a workspace's `Default` group catches workflows that were never explicitly grouped, including ones migrated from before this model existed (`workflow_store._migrate_workspace` assigns `group_id` on read if missing). Auth is captured **once per app, at the group level** — the old per-workflow `Workflow.auth`/`WorkflowAuth` field and its Record Login dialog are gone.
+
+**Setup (Build Studio):** `cmd_start_group_app_auth` launches the existing recorder in `auth_mode` at the app's `login_url`, passing `wait_for_url=app.success_url` — the recorder's `RecordingSession.wait_for_url`/`reached_wait_url` fields (previously unused by any caller) self-detect success and the renderer polls `get_recording_status` (1s) to auto-close and advance to the next app, mirroring the "authenticate once → organize by group → run seamlessly" flow. `cmd_finish_group_app_auth` persists the captured state to `data/groups/{group_id}/auth/{app_id}.json` and flips every workflow in the group to `status=ready` once all its apps are authenticated.
+
+**Recording a workflow:** `cmd_start_recording` merges every authenticated app's storageState in the workflow's group (`conxa_core.storage.storage_state.merge_storage_states` — cookie union, per-origin localStorage merge, later wins on key conflicts) into one seeded Playwright context, so a recording that crosses N apps starts already signed in to all of them.
+
+**Compiled pack contract:** `pack.json` gains a `groups` array (`[{id, name, apps: [{id, name, login_url, success_url}]}]`); each skill's `manifest.json` gains `group_id`. A pack with no `groups` key is untouched — it's the pre-Groups format and takes the legacy single-session path everywhere below.
+
+**On-disk skill layout:** `pack.json` also gains a `skill_groups` field (`{skill_slug: group_id}`, distinct from `groups` above — `groups` is auth-app metadata, `skill_groups` is the path index) and each skill's directory nests under its `group_id` (or the sentinel `"_default"` when a workflow's `group_id` is empty) — `skill-packs/{company}/{group_id}/{skill_slug}/`, both in Build Studio's local build output and on the real runtime after sync. The delta-sync response's per-skill entries (§11.1) also carry a `"group"` field so `runtime/sync.js` knows which nested path to write into; its version-comparison lookup only ever consults the nested path, so a skill previously synced under the pre-nesting flat layout (`skill-packs/{company}/{skill_slug}/`) is treated as never-synced and freshly redownloaded into its nested location on the runtime's next sync — a one-time, self-healing migration with no separate migration pass. The cloud's `_build_delta` (`skillpack_update_routes.py`) mirrors this on its own storage: if a company's files still sit at the old flat cloud-storage path (published before this nested-path support existed), it serves from there while still reporting the resolved `group_id`, so already-published companies keep syncing without needing to republish.
+
+**Runtime resolution (`runtime/browser.js`):** `getAuthContext(company, authManager, {groupId})` calls `_resolveGroup(company, groupId)` against `pack.json`; if the pack has a matching group, `getGroupAuthContext` validates every app's session (keyed `${company}__${appId}`, same encrypt/raw/keytar machinery as the single-session path in `auth_manager.js` — every function there already takes the session key as its first argument, so this is purely a call-site convention) and merges the valid ones via `mergeStorageStates` (JS twin of the Python function above). Any missing/expired app opens a non-blocking login window via the existing `beginInteractiveAuth` contract, with the message leading:
+
+> This workflow belongs to the Sales group and requires authentication to 5 applications. Sign in to Salesforce in the window that just opened, then run the skill again.
+
+Each re-run of `execute_skill` advances one app until the group is fully authenticated, then executes — the same request/response shape MCP already uses for the single-app case, so this ships to Claude Desktop with no new interaction primitive. Mid-execution auth failures (`captureReAuth`) pick the app whose `success_url` host matches the failing page, so re-auth targets that app's own session key instead of clobbering the group.
 
 ### 5.3 Cloud API Authentication
 
@@ -1260,7 +1293,9 @@ quality-gated the same way as `target.primary_selector`) but have no dedicated a
 
 **Endpoint:** `GET /api/v1/skill-packs/{company}/delta?since={json-map}`
 
-**Current state:** `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (see §5.9 for the full contract and §5.6 for the sequence). Each skill is compared against its own version independently — `_build_delta()` in `skillpack_update_routes.py` returns `{"name": slug, "action": "no_change"}` for unchanged skills and `{"name": slug, "version", "action": "update", "files": [...]}` for changed ones. Republishing one skill never triggers a re-download of the others. Within a changed skill, all of that skill's files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) are still sent — there is no per-file checksum comparison *within* a single skill, which remains a real but low-impact gap (a handful of small JSON files, not a whole company pack). Rate-limiting is KV-backed (`rate_limits` namespace in `conxa_core.db`), persisted across restarts and shared across instances — not the in-memory dict this section used to describe, and Redis was deliberately not introduced (see `docs/Security.md` SG-04).
+**Current state:** `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (see §5.9 for the full contract and §5.6 for the sequence). Each skill is compared against its own version independently — `_build_delta()` in `skillpack_update_routes.py` returns `{"name": slug, "action": "no_change", "group": group_id}` for unchanged skills and `{"name": slug, "version", "action": "update", "group": group_id, "files": [...]}` for changed ones, where `group_id` comes from `pack.json`'s `skill_groups` map (falling back to `"_default"`). Republishing one skill never triggers a re-download of the others. Within a changed skill, all of that skill's files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) are still sent — there is no per-file checksum comparison *within* a single skill, which remains a real but low-impact gap (a handful of small JSON files, not a whole company pack). Rate-limiting is KV-backed (`rate_limits` namespace in `conxa_core.db`), persisted across restarts and shared across instances — not the in-memory dict this section used to describe, and Redis was deliberately not introduced (see `docs/Security.md` SG-04).
+
+`group` in the response is what lets `runtime/sync.js` write each skill's files into its nested `skill-packs/{company}/{group_id}/{skill_slug}/` directory (§5.2a) instead of the pre-Groups flat layout — the client's own version-comparison lookup only ever checks the nested path, so upgrading to this changes nothing observable except that every skill gets freshly redownloaded into its nested location exactly once, the next time each runtime syncs.
 
 ### 11.2 Atomic File Updates
 

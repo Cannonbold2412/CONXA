@@ -75,19 +75,33 @@ The production source of truth is:
 
 ### 2.3 Workflow List Page (`/workflows`)
 
-**Purpose:** Primary landing page: browse/search/filter workflows, create a new workflow.
-**Inputs:** Workspace context; no workflow selection required to load this page.
-**Outputs:** A created workflow, a deleted workflow, or navigation to a specific workflow detail.
-**User goal:** See all recordings at a glance, and start a new one.
+**Purpose:** Primary landing page: browse Workflow Groups (business-domain folders — "Sales", "Marketing"), create a new group. Workflow-level create/search/delete moved to each group's own page (§2.3a).
+**Inputs:** Workspace context; no selection required to load this page.
+**Outputs:** A created group, or navigation to a specific group's page.
+**User goal:** See the business domains at a glance and how far along each one's app logins are.
 
-**Layout:** Empty-state welcome card (if no workflows yet) or searchable list with:
-- Search box (filters by workflow name, target URL)
-- Status filter chips (needs_auth, ready, error)
-- Workflow rows: name, target URL, status badge, creation date, delete button
-- "+ New Workflow" button (top-right) opening `CreateWorkflowDialog`
-- Click a row to navigate to the Workflow Detail page for that workflow
+**Layout:** Empty-state welcome card (if no groups yet) or a responsive card grid with one card per group — folder icon, name, workflow count, and a shape-plus-color auth readiness line ("● 5 of 5 apps connected" / "▲ 3 of 5 apps connected", per `DESIGN.md` §6's StatusDot convention). "+ New Group" button (top-right) opens `NewGroupDialog`. Clicking a card navigates to that group's page.
 
-**Components:** `WorkflowListPage`, `CreateWorkflowDialog`, workflow row with delete action.
+**Components:** `WorkflowListPage`, `NewGroupDialog`, `GroupCard`.
+
+**UX issues:**
+- None known at launch.
+
+---
+
+### 2.3a Group Page (`/groups/:groupId`)
+
+**Purpose:** A group's home: manage its apps and their auth state, and manage the workflows inside it.
+**Inputs:** Group ID from route params.
+**Outputs:** Added/removed/renamed apps, connected sessions, created/deleted workflows, renamed/deleted group.
+**User goal:** Get every app in the group signed in once, then work with the group's workflows without re-authenticating.
+
+**Layout:**
+- Header: group name, Rename, Delete (hidden for the `Default` group), "+ New Workflow" (scoped to this group)
+- Applications panel: `GroupAuthWizard` — one row per app (Connect/Retry/Skip per app, walks unauthenticated apps in sequence, auto-closes each login window on success), "Add app" dialog (name, login URL, success URL)
+- Workflow list: same row layout the old Workflow List Page used (name, stage badge, target URL, stage path, updated date), scoped to this group
+
+**Components:** `GroupPage`, `GroupAuthWizard`, `AddAppDialog`, `NewWorkflowDialog` (group-scoped).
 
 **UX issues:**
 - None known at launch.
@@ -96,20 +110,20 @@ The production source of truth is:
 
 ### 2.4 Workflow Detail Page (`/workflows/:workflowId`)
 
-**Purpose:** The primary per-workflow page: record login/workflow, compile, edit, test, sign-off.
+**Purpose:** The primary per-workflow page: record workflow, compile, edit, test, sign-off. Login is no longer recorded here — see §2.3a.
 **Inputs:** Workflow ID from route params; loads the workflow + its recording session.
-**Outputs:** Updated auth session, new recording, compiled skill, edited step, test run, sign-off.
+**Outputs:** New recording, compiled skill, edited step, test run, sign-off.
 **User goal:** See everything needed for one automation: what's done, what's left, and how to do it.
 
 **Layout (2026-08 redesign):**
 - Header: workflow name + delete button + Inspector button (→ `InspectorDrawer`)
-- Stat cards: auth status (Not captured / Captured at …), compile status (Not compiled / Compiled with N% min confidence / Needs review / Failed), last test (Never / Passed at … / Failed at …)
-- Inline Record Login action: `RecordLoginDialog` (only shown when `status=needs_auth`)
-- Inline Record Workflow action: `RecordWorkflowDialog` (only shown when `status=ready` and `recording_status != "recorded"`)
+- Stat cards: **group auth status** (`GroupAuthStrip` — group name, "N of M apps connected", links to the group page), compile status (Not compiled / Compiled with N% min confidence / Needs review / Failed), last test (Never / Passed at … / Failed at …)
+- Inline Record Workflow action: `RecordWorkflowDialog` (only shown when `status=ready` — i.e. the group's apps are all authenticated — and `recording_status != "recorded"`)
 - Recording panel (if recording exists): shows session date, "Compile" button, "Recompile" button, "Edit" link to Human Edit page
 - Below recording: stat badges (step count, confidence, warnings if any)
+- Test Skill's run action is gated behind `RunGateDialog` ("This workflow belongs to the Sales group and requires authentication to N applications") whenever the group isn't fully authenticated
 
-**Components:** `WorkflowPage`, `RecordLoginDialog`, `RecordWorkflowDialog`, recording panel with action buttons, stat cards.
+**Components:** `WorkflowPage`, `GroupAuthStrip`, `RecordWorkflowDialog`, `RunGateDialog`, recording panel with action buttons, stat cards.
 
 **UX issues:**
 - None known at launch.
@@ -196,14 +210,14 @@ All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, 
 
 ---
 
-### 2.8 Compile (`CompilePage.tsx` + `CompileProgress.tsx`)
+### 2.8 Compile (`CompileProgress.tsx`) — no standalone page, removed 2026-08-12
 
 **Purpose:** Turn a recording into a skill — the user decides when to spend a compile credit.
-**Inputs:** The shared workflow selection; per-workflow session ID.
+**Inputs:** The Workflow Detail page's own Compile/Recompile buttons (`WorkflowPage.tsx` — see §2.4); per-workflow session ID.
 **Outputs:** Compiled skill ID + step count + the compile-confidence summary (see §2.7).
 **User goal:** Compile (or recompile) a specific workflow without hunting for it.
 
-Rewritten 2026-07 (Phase 1) as a real top-level page — previously "Compile Page" only described the drill-in (`CompileProgress.tsx`) and this section documented an aspirational `CompilePage.tsx` that didn't exist. `CompilePage.tsx` now lists every workflow of the selected automation with its stage badge and a Compile/Recompile action (Recompile keeps its original `AlertDialog` confirmation, including the "uses the Human Edit pool, not a compile credit" warning); triggering either still navigates to the existing `CompileProgress.tsx` drill-in, unchanged, which runs the synchronous `cmd_compile` RPC and shows the 7-phase progress.
+`CompilePage.tsx` and its sidebar entry were removed as part of the Workflow Groups redesign — it only ever duplicated the Compile/Recompile buttons that already live on the Workflow Detail page (`WorkflowPage.tsx:731`), which is now the sole entry point. Triggering Compile or Recompile navigates to the unchanged `CompileProgress.tsx` drill-in, which runs the synchronous `cmd_compile` RPC and shows the 7-phase progress.
 
 **Meter behavior:**
 - First compile consumes 1 compile credit.
@@ -546,23 +560,26 @@ yet. Tracked in `TODO.md`.
 
 ### Build Studio
 
-One button per stage of the Workflows -> Compile -> Human Edit -> Test Skill ->
-Publish Skill Package -> Build Installer flow (2026-08 workflow redesign), replacing
-the earlier Record-centric sidebar (Record/Dashboard/Plugins/etc). The Workflows
-page is now the primary landing page and entry point for all recording/editing.
+One button per stage of the Workflows -> Human Edit -> Test Skill -> Publish
+Skill Package -> Build Installer flow (2026-08 Workflow Groups redesign),
+replacing the earlier Record-centric sidebar (Record/Dashboard/Plugins/etc).
+The Workflows page (a grid of Workflow Groups) is the primary landing page
+and entry point for all recording/editing. **Compile has no sidebar entry or
+standalone page** — it lives only on each workflow's own detail page.
 
 ```
 AppChrome (layout)
 ├── Sidebar
-│   ├── Workflows (WorkflowListPage.tsx — app home and default route: create/search/
-│   │   delete workflows, navigate to detail)
-│   │   └── [Workflow ID] (WorkflowPage.tsx — per-workflow detail: auth recording +
-│   │       workflow recording + compile/edit controls, inline on same page)
-│   │       └── /compile/[sessionId] (CompileProgress — live compile drill-in)
-│   ├── Compile (CompilePage.tsx — per-workflow Compile/Recompile)
+│   ├── Workflows (WorkflowListPage.tsx — app home and default route: browse/
+│   │   create groups; §2.3)
+│   │   └── [Group ID] (GroupPage.tsx — group's apps + auth + its workflows;
+│   │       create/search/delete workflows here; §2.3a)
+│   │       └── [Workflow ID] (WorkflowPage.tsx — per-workflow detail: workflow
+│   │           recording + compile/edit controls, inline on same page)
+│   │           └── /compile/[sessionId] (CompileProgress — live compile drill-in)
 │   ├── Human Edit (HumanEditListPage.tsx — compiled workflows, needs-review-first,
 │   │   → /edit/[skillId] HumanEditPage.tsx, the per-skill editor — see §2.7)
-│   ├── Test Skill (TestSkillPage.tsx — test workflows)
+│   ├── Test Skill (TestSkillPage.tsx — test workflows, gated by RunGateDialog)
 │   ├── Publish Skill Package (PublishPage.tsx — primary release action: workspace-scoped)
 │   ├── Build Installer (BuildInstallerPage.tsx — secondary/optional, requires a published release)
 │   └── Settings

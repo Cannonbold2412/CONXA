@@ -4,6 +4,18 @@
 
 ---
 
+## Each customer's downloaded skills are now sorted into their group's own folder — 2026-08-12
+When a customer installs a company's automations, every one of those automations used to land in one flat pile on their computer, with no sign of which group ("Sales", "Marketing", and so on) each one belonged to — even though groups were just added to keep logins organized. Now each customer's copy is organized the same way the company organizes them: every group gets its own folder, and each automation sits inside its group's folder instead of all being mixed together. Existing customers don't need to do anything — the next time their copy checks in for updates, it quietly re-downloads everything into the newly organized folders, one time only, and nothing breaks in the meantime.
+ — 2026-08-12
+
+## Corrected the runtime startup guide — 2026-08-12
+The runtime guide now shows the real order of events when it starts. It first chooses the right environment and folders, then handles the install or removal command if that was requested, and only then checks for a new app version. The guide also makes clear that the app reads those already-prepared settings, opens its connection after loading the saved skill list, and finishes its update, skill-sync, and session-protection tasks in parallel. This prevents the documentation from sending someone looking in the wrong layer when a startup issue occurs.
+ — 2026-08-12
+
+## Workflows are now organized into groups, and logins are set up once per group — 2026-08-12
+Every workflow used to have its own separate login — so a sales process touching five different websites meant five separate "record my login" steps repeated over and over. Now workflows live inside a named group, like "Sales" or "Marketing", and you log in to every app that group needs just once. Opening the Workflows page shows folders instead of one long list; open a folder to add the apps it needs, connect them one after another (each login window closes itself once you're signed in and the next one opens), and every workflow inside that folder is ready to use immediately. Before running a workflow, you'll see a plain message like "This workflow belongs to the Sales group and requires authentication to 5 applications" so it's never a surprise, and the same message and login flow now also work on a customer's installed copy, not just inside the Studio. The old "Compile" page in the side menu is gone — compiling a workflow now happens right on that workflow's own page, where it already belonged. A fresh developer setup also now comes with sample folders and workflows already in place, so there's something to look at on day one instead of an empty screen.
+ — 2026-08-12
+
 ## Removed the Record page and restructured the Studio around Workflows — 2026-08-12
 We used to make you click "Record" to get to your workflows, then "New Workflow" to record one. Now the Workflow list is the first page you see after logging in — you choose an existing workflow to run it, or hit "New" to record a fresh one. Login takes you straight to your workflows; the separate Record page is gone. Behind the scenes, we simplified the data model: a Workflow now holds one recording each, and all workflows in your workspace share a single built package that the runtime downloads once at startup — so adding a second workflow to a company costs almost nothing instead of duplicating the entire installation. The old `/api/v1/plugins/` API routes became `/api/v1/workflows/`, and already-installed customer runtimes using the old routes will break until they reinstall — that's a known tradeoff we made on purpose to keep things clean instead of maintaining two decades of backwards-compatible wiring.
  — 2026-08-12
