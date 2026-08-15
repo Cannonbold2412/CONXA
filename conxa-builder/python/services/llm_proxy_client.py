@@ -128,13 +128,14 @@ class LLMProxyClient:
                 )
             if exc.code == 429:
                 raise QuotaExceeded("Monthly LLM quota reached") from exc
-            detail = ""
+            detail: Any = ""
             try:
                 error_body = json.loads(exc.read().decode("utf-8"))
-                detail = str(error_body.get("detail") or "")
+                detail = error_body.get("detail")
             except Exception:
                 detail = ""
-            if detail in {
+            detail_str = detail if isinstance(detail, str) else ""
+            if detail_str in {
                 "compile_credit_limit_exceeded",
                 "human_edit_pool_exceeded",
                 "machine_limit_exceeded",
@@ -142,9 +143,19 @@ class LLMProxyClient:
                 "entitlements_unavailable",
                 "invalid_usage_class",
             }:
-                raise EntitlementBlocked(detail) from exc
+                raise EntitlementBlocked(detail_str) from exc
             if error_detail is not None:
-                error_detail.append(f"proxy HTTP {exc.code}")
+                # 502 llm_all_providers_failed carries {"message": ..., "error_detail": [...]}
+                # (llm_proxy_routes.py) — surface the provider's real failure reason instead
+                # of just the HTTP status, so a 429 doesn't look identical to every other 502.
+                if isinstance(detail, dict):
+                    message = str(detail.get("message") or "")
+                    error_detail.append(f"proxy HTTP {exc.code}: {message}" if message else f"proxy HTTP {exc.code}")
+                    nested = detail.get("error_detail")
+                    if isinstance(nested, list):
+                        error_detail.extend(str(item) for item in nested)
+                else:
+                    error_detail.append(f"proxy HTTP {exc.code}")
             return None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             # urllib wraps connect/header timeouts in URLError; Windows raises the
