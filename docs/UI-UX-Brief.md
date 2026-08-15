@@ -1,6 +1,6 @@
 # UI/UX Brief
 
-**Status:** Current as of 2026-08-13 (Group Page absorbed the Workflow Detail page — every workflow's record/compile/review/test/ready-to-package lifecycle now runs from its group's page via `WorkflowStageRail`, and the standalone per-workflow route was removed; Plugin→Workflow/SkillPack refactor 2026-08-12: Record page removed, Cloud dashboard's Plugins screen renamed to Skill Packages at `/packages`; capability-ladder pricing restructure from 2026-08-08: new `/pricing` page, removed skill-pack-slot meter — see `docs/PRD.md` §11)
+**Status:** Current as of 2026-08-15 (multi-tab recording: `WorkflowViewer.tsx` now renders a tab-boundary divider wherever a step's tab changes — see §2.7; Group Page absorbed the Workflow Detail page — every workflow's record/compile/review/test/ready-to-package lifecycle now runs from its group's page via `WorkflowStageRail`, and the standalone per-workflow route was removed; Plugin→Workflow/SkillPack refactor 2026-08-12: Record page removed, Cloud dashboard's Plugins screen renamed to Skill Packages at `/packages`; capability-ladder pricing restructure from 2026-08-08: new `/pricing` page, removed skill-pack-slot meter — see `docs/PRD.md` §11)
 **Scope:** Build Studio (Electron) + Cloud Dashboard (Next.js)
 
 ---
@@ -80,14 +80,21 @@ The production source of truth is:
 **Outputs:** A created group, or navigation to a specific group's page.
 **User goal:** See the business domains at a glance and how far along each one's app logins are.
 
-**Layout:** Empty-state welcome card (if no groups yet) or a responsive card grid with one card per group — folder icon, name, workflow count, and a shape-plus-color auth readiness line ("● 5 of 5 apps connected" / "▲ 3 of 5 apps connected", per `DESIGN.md` §6's StatusDot convention). "+ New Group" button (top-right) opens `NewGroupDialog`. Clicking a card navigates to that group's page.
+**Layout (2026-08-15 redesign):**
+- Action strip: the **Compile credits** and **Human Edit pool** usage cards on the left (`UsageCards`, §2.3b), "+ New Group" on the right — the one clay-accented control on the page
+- Empty-state panel (if no groups yet), otherwise a **folder grid**: a two-column grid whose rows are sized against the scroll container's own height (`.folder-grid`, `grid-auto-rows: minmax(260px, calc((100cqh − gap − padding) / 2))`), so **exactly four folders fill the viewport** and the rest are reached by scrolling. One column below the `sm` breakpoint.
+- Each group renders as an actual **folder silhouette**, not a rectangle: a tab notch with an angled shoulder is cut out of the card via `clip-path` (`.folder-card`), with a second layer inset 1px (`.folder-card-inner`) supplying the hairline outline that follows the folder edge — `border` cannot follow a clip-path. Flat, no shadow, per `DESIGN.md` §4.
+- Folder contents: the workflow count on the tab; group name; up to **three workflow names** with a shape-plus-color stage glyph and stage label, plus a "+N more" line (`workflow_preview`, capped server-side by `WORKFLOW_PREVIEW_LIMIT`); a one-line lifecycle summary covering *all* the group's workflows ("7 ready · 3 need review · 2 failed", from the `stages` map); and the auth readiness line ("● 5 of 5 apps connected" / "▲ 3 of 5 apps connected", per `DESIGN.md` §6's StatusDot convention).
+- Hover lifts the folder 2px and brightens its outline; focus thickens the outline to a 2px clay trace (a clipped card cannot take a ring). Both have `prefers-reduced-motion` fallbacks.
+- Clicking a folder navigates to that group's page.
 
-**Components:** `WorkflowListPage`, `NewGroupDialog`, `GroupCard`.
+**Components:** `WorkflowListPage`, `NewGroupDialog`, `FolderCard`, `FolderContents`, `StageBreakdown`, `UsageCards`.
 
 **UX issues:**
-- None known at launch.
+- The three previewed workflows are the first three in storage order, not the three most in need of attention. The lifecycle summary line covers the remainder, and the group page has the full list.
 
 ---
+
 
 ### 2.3a Group Page (`/groups/:groupId`) — absorbed the Workflow Detail page, 2026-08-13
 
@@ -96,22 +103,42 @@ The production source of truth is:
 **Outputs:** Added/removed/renamed apps, connected sessions, created/deleted workflows, renamed/deleted group, new recordings, compiled skills, sign-offs, test runs.
 **User goal:** Get every app in the group signed in once, then take a workflow through its whole lifecycle from one screen.
 
-**Layout (2026-08-13 redesign):**
-- Header: group name, live "N apps · N connected" subtitle, compile-credit and Human-Edit-pool meter pills, Rename, Delete (hidden for the `Default` group), "+ New Workflow" (scoped to this group)
-- Two-column body: **Applications** column (left) and **Workflows** column (right, flexes to fill)
-- Applications column: `GroupAuthWizard` in `editable` mode — one row per app (Connect/Retry/Skip walks unauthenticated apps in sequence, auto-closes each login window on success), plus a pencil (edit name/login URL/success URL) and trash (confirm-then-remove) icon pair per row; a "+" icon button opens `AddAppDialog`
-- Workflows column: one row per workflow — name, stage badge, target URL, then `WorkflowStageRail` (see below), then Inspector and Delete icon buttons
-- `WorkflowStageRail` — five icon buttons with a label underneath, replacing the old read-only `StagePath` dots: **Record → Compile → Review → Test → Ready to Package**. Each node *is* the action for that stage, enabled only once its prerequisite is met (disabled nodes carry a tooltip explaining what's missing):
+**Layout (2026-08-13 redesign; refreshed 2026-08-15):**
+- Action strip: the **Compile credits** and **Human Edit pool** usage cards on the left (§2.3b — these replaced the old hover-only meter pills), Rename, Delete (hidden for the `Default` group) and "+ New Workflow" on the right
+- Top-bar subtitle: "N of N apps connected · N workflows", plus "sign in to start recording" while the group is not fully authenticated
+- Two-column body: **Applications** column (left, hugs its content) and **Workflows** column (right, flexes to fill)
+- Applications column: a connection summary line ("All apps connected" / "2 of 4 still need signing in") above `GroupAuthWizard` in `editable` mode — one row per app (Connect/Retry/Skip walks unauthenticated apps in sequence, auto-closes each login window on success), plus a pencil (edit name/login URL/success URL) and trash (confirm-then-remove) icon pair per row; a "+" icon button opens `AddAppDialog`. Success URLs support a literal `{}` wildcard (e.g. `vercel.com/{}` matches any path reached after login)
+- Session freshness (2026-08-15): opening the group page does **not** re-verify saved sessions — an earlier version fired a headless-Chrome recheck of every captured app on every page open, but that background probe had no timeout on most of its own steps and could wedge the whole backend (see `FIX.md`, same date). Freshness is now checked once, server-side, at the point it actually gates something: `cmd_start_recording` bounds the same probe to a hard 20s deadline per app and runs every app's check concurrently before a recording starts. An app the probe finds expired gets `last_error` set, which flips its row from the ready-green treatment to a red "Session expired — sign in again" state with a **Reconnect** button (same re-auth flow as Connect); the group summary line and `groupReady` gate both count an expired app as not-ready, same as a never-connected one — but this only becomes visible after the next Record attempt, not the moment the session actually expires.
+- Workflows column: **two lines per workflow** — name, stage badge, small pill badges naming the app(s) the workflow targets (matched by hostname against the group's apps — replaced the old raw target-URL text), Inspector and Delete icon buttons on the first; the full-width `WorkflowStageRail` on the second. (Sharing one line is what made the rail read as five loose buttons instead of a pipeline.)
+- `WorkflowStageRail` — five nodes joined by connector segments that fill with state: **Record → Compile → Human Edit → Test → Ready to Package**. Each node *is* the action for that stage, enabled only once its prerequisite is met (disabled nodes carry a tooltip explaining what's missing, and use `aria-disabled` rather than `disabled` so that tooltip stays reachable by mouse and keyboard). The single node that is actionable right now carries the clay accent — the one place clay is spent on the row:
   - **Record** — enabled once the group is fully authenticated and the workflow has no recording yet; opens `RecordWorkflowDialog` inline
-  - **Compile** — enabled once a recording exists; navigates to `CompileProgress`. Once a skill already exists, the same node instead opens a "Recompile?" confirm (uses the Human Edit pool) before navigating with `?mode=recompile`
-  - **Review** — enabled once a skill exists; navigates to `/edit/:skillId?from=/groups/:groupId`
+  - **Compile** — enabled once a recording exists; navigates to `CompileProgress`. Once a skill already exists, the same node instead opens a "Recompile?" confirm (uses the Human Edit pool) before navigating with `?mode=recompile`. While another workflow is compiling the click is refused with a toast, since only one compile is tracked at a time (§2.8)
+  - **Human Edit** — enabled once a skill exists; navigates to `/edit/:skillId?from=/groups/:groupId`. Renamed from "Review" on 2026-08-15 so the rail, the sidebar and the usage card all use one word for the same thing
   - **Test** — enabled once a skill exists, the shared skill package has been built, and the workflow isn't stale (edited since the last build); toggles an inline panel under the row that mounts `WorkflowTestRow` wholesale (same input dialog, group-auth gate, live log, and pass/fail badge as Test Skill's own list)
   - **Ready to Package** — enabled once the workflow's stage is `ready`; navigates to Publish Skill Package
 
-**Components:** `GroupPage`, `GroupAuthWizard` (now with row-level edit/remove), `AddAppDialog`, `NewWorkflowDialog` (group-scoped), `WorkflowStageRail`, `RecordWorkflowDialog`, `DeleteWorkflowButton`, `WorkflowTestRow` (reused inline), `InspectorDrawer`, `MeterBadge`.
+**Components:** `GroupPage`, `GroupAuthWizard` (now with row-level edit/remove), `AddAppDialog`, `NewWorkflowDialog` (group-scoped), `WorkflowStageRail`, `RecordWorkflowDialog`, `DeleteWorkflowButton`, `WorkflowTestRow` (reused inline), `InspectorDrawer`, `UsageCards`.
 
 **UX issues:**
-- None known at launch.
+- None known.
+
+---
+
+### 2.3b Usage cards (`UsageCards` / `MeterCard`) — added 2026-08-15
+
+**Purpose:** Make the two metered resources the product bills on — **compile credits** and the **Human Edit token pool** — visible wherever workflow work happens, instead of only as hover-only pills on the group page.
+**Inputs:** `get_usage` (`fetchEntitlements`), cached 30 s.
+**Outputs:** None — read-only.
+**User goal:** Answer "how much do I have left?" without hovering anything.
+
+**Layout:** Two cards side by side in the action strip of the Workflows page and the Group page. Each leads with **remaining** as the largest figure ("20 left"), with used/limit secondary ("30 of 50"), a usage bar, and a "Resets 1 Sep · Team plan" footer. Unlimited meters read "Unlimited" with no bar.
+
+**Behaviour:**
+- Bar fill is neutral while healthy, **Caution Amber ≥ 75%**, **Alert Red ≥ 90%**; at ≥ 90% the footer is replaced by a plain-language warning ("Running low — 5 compiles left"). Clay is deliberately *not* used — it stays reserved for the page's primary action (`DESIGN.md` §2, The One Accent Rule).
+- The cards refresh the moment a credit is spent: `AppChrome`'s compile event bridge invalidates the `entitlements` query on every backend `quota` event.
+- When entitlements are unavailable the card says "Usage unavailable" rather than disappearing, so the strip does not collapse. (The compact `MeterBadge` pill, still used in the Human Edit toolbar, keeps its old vanish-on-unavailable behaviour.)
+
+**Components:** `UsageCards`, `MeterCard`, `MeterCardShell` (all in `EntitlementMeters.tsx`).
 
 ---
 
@@ -149,7 +176,7 @@ New in the 2026-07 redesign (Phase 1) — previously the only way to reach a com
 **User goal:** Verify each step is correct and parameterize inputs.
 
 **Components:**
-- `WorkflowViewer.tsx` — step list with action/intent display; each row also renders a `BranchSummaryBadge` and safety badges (`allow_forced_action`/hover-chain — 2026-07-10) via `StepBadges`, and an indented collapsible `BranchSubList.tsx` under any `if_present` step, previewing its nested body (clicking a nested row selects the parent step and focuses that nested index — `editorStore.focusedBranchIndex`)
+- `WorkflowViewer.tsx` — step list with action/intent display; each row also renders a `BranchSummaryBadge` and safety badges (`allow_forced_action`/hover-chain — 2026-07-10) via `StepBadges`, and an indented collapsible `BranchSubList.tsx` under any `if_present` step, previewing its nested body (clicking a nested row selects the parent step and focuses that nested index — `editorStore.focusedBranchIndex`). **Tab-boundary dividers (2026-08-15, multi-tab recording):** `workflowViewer/TabDivider.tsx` renders a labeled rule ("Tab 2 — example.com") wherever consecutive steps' `StepEditorDTO.tab.id` differs, so a workflow that opens a new tab mid-recording reads as visibly crossing tabs instead of looking like one continuous page. Backend-only otherwise: `tab_open`/`tab_switch` markers already had labels in `describe.py`, unchanged.
 - `InlineRetargetFlow.tsx` — center pane: embeds the re-target wizard and `StepConfigForm.tsx` together (retired the standalone `StepEditorPanel.tsx`). Branch steps (`if_present`/`try_dismiss`/`wait_for_one_of`) skip the wizard entirely — their bbox-driven model doesn't fit a candidate list or option set — and render `StepConfigForm` plus, for `if_present` only, `components/branch/BranchBodyEditor.tsx` (2026-07-10).
 - `StepConfigForm.tsx` — edit intent, selectors, assertions for a step. **Validation card (2026-07, post-condition validation):** a self-contained "Validation" card (read-only wait-for description + the editable assertion list, via the shared `components/validation/AssertionEditor.tsx` — the same row editor `RetargetPhaseValidation.tsx` uses) with its own "Save validation" action, independent of the rest of the step form's single "Save step" submit. Hidden for scroll/marker steps (`editable_fields.validation`). Backed by `StepEditorDTO.validation.assertions`, newly surfaced by `step_to_dto` (previously only `wait_for`/`success_conditions` reached the client). Saved edits are gated by `conxa_compile/editor/patch_gate.py::validate_editor_patch`, now wired into `cmd_patch_step` — a manual edit that would drop a consequential step's only required assertion is rejected before it's persisted, not just flagged after the fact. **Reliability collapsible (2026-07-10):** a "Show reliability details" section (hidden by default, hidden entirely during the wizard's Phase 2 / for marker steps) mounting `StepIdentitySummary.tsx` (closes the `BUILD-4` gap — was built but never rendered), `RecoveryBehaviorCard.tsx` (plain-language recovery ladder from `StepEditorDTO.recovery_view`), and `ElementFingerprintCard.tsx` (`StepEditorDTO.fingerprint` — role/text/labels/testid/position + frame/shadow depth).
 - `branch/BranchBodyEditor.tsx` (2026-07-10) — add/remove/reorder + per-step inline editing for an `if_present` step's nested body. Deliberately not built on `StepConfigForm` (whose `patchStep` calls are hardcoded to the top-level `step_index`); a standalone, path-aware editor instead, visually consistent with `StepConfigForm`'s card idiom. Reorder is up/down buttons, not drag-and-drop.
@@ -202,16 +229,22 @@ All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, 
 **Outputs:** Compiled skill ID + step count + the compile-confidence summary (see §2.7).
 **User goal:** Compile (or recompile) a specific workflow without hunting for it.
 
-`CompilePage.tsx` and its sidebar entry were removed as part of the Workflow Groups redesign — it only ever duplicated the Compile/Recompile buttons that already lived on the per-workflow page. Those buttons themselves were folded into the Group Page's `WorkflowStageRail` on 2026-08-13 when the standalone Workflow Detail page was removed. Triggering Compile or Recompile navigates to the unchanged `CompileProgress.tsx` drill-in, which runs the synchronous `cmd_compile` RPC and shows the 7-phase progress; its "← Back" returns via a `/workflows/:workflowId` redirect that resolves the workflow's group and forwards there.
+`CompilePage.tsx` and its sidebar entry were removed as part of the Workflow Groups redesign — it only ever duplicated the Compile/Recompile buttons that already lived on the per-workflow page. Those buttons themselves were folded into the Group Page's `WorkflowStageRail` on 2026-08-13 when the standalone Workflow Detail page was removed. Triggering Compile or Recompile navigates to the `CompileProgress.tsx` drill-in, which shows the 7-phase progress; its "← Back" returns via a `/workflows/:workflowId` redirect that resolves the workflow's group and forwards there.
+
+**Run ownership (2026-08-15):** the run itself lives in `store/compileStore.ts`, not in the page. `CompileProgress.tsx` is a *view* over it, and `AppChrome` holds the single app-wide subscription to compile events. Consequences:
+- Navigating away no longer loses the run. The backend already ran each command on its own thread (`backend.py`), so the compile kept going; now the UI keeps up with it and reattaches on return.
+- `start()` is idempotent on `workflowId:sessionId:mode`. Before this, remounting the page re-fired `cmd('compile')` — a second concurrent compile on the same recording, and a **second compile credit reserved**.
+- Only one run is tracked at a time. `window.conxa.cmd` never exposes the backend request id, so streamed events carry nothing the renderer could correlate to a specific run; rather than plumb an id through main + preload, a second, different compile is refused while one is in flight (the rail toasts, and the compile page shows an "Another workflow is compiling" state with a link to the live one).
+- Every backend `quota` event invalidates the `entitlements` query, so the usage cards (§2.3b) move as credits are spent.
 
 **Meter behavior:**
 - First compile consumes 1 compile credit.
 - Recompile uses the Human Edit pool.
 
-**UX issues (unchanged from before the redesign — Phase 2 of the redesign addresses these):**
-- Compile still has no explicit background/concurrent job model — triggering it takes over `CompileProgress.tsx`'s full view, and navigating away abandons the in-flight RPC from the UI's perspective (the backend call keeps running).
+**UX issues:**
 - Progress steps (normalize → dedupe → enrich → selectors → assertions → recovery → package) are shown but LLM sub-steps are hidden.
-- No persistent compile history (re-opening the page doesn't show previous compiles).
+- No persistent compile history (only the most recent run is retained, and only for the session).
+- Concurrent compiles are refused rather than queued — see the request-id note above for what would need to change to support them.
 
 ---
 

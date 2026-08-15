@@ -158,7 +158,7 @@ flowchart TD
     I --> J[Events captured: click, fill, select, navigate, etc.]
     J --> K[User closes the browser, clicks 'Save Workflow Now']
     K --> L[Backend: cmd_stop_recording]
-    L --> L2[Playwright context closes; recording.webm renamed into place]
+    L --> L2[Playwright context closes; each tab's recording.webm/recording-tab_N.webm renamed into place]
     L2 --> M[Events saved to sessions/session_id/events.jsonl]
     M --> N[Workflow updated with status=recorded]
     N --> O[Recording dialog closes, the row's rail advances to an enabled Compile node]
@@ -167,8 +167,18 @@ flowchart TD
 **Event types captured by bridge.js:**
 `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.
 
-Stop-recording no longer waits on video frame extraction — it only renames Playwright's raw `.webm` to
-`recording.webm` and returns. Frame extraction (for vision anchors) now runs at compile time, see §5.
+Stop-recording no longer waits on video frame extraction — it only renames Playwright's raw `.webm`
+files into place and returns. Frame extraction (for vision anchors) now runs at compile time, see §5.
+
+**Recording across multiple tabs** works whether the site opens the new tab (a link or button
+that opens `target="_blank"`) or the user does (Ctrl+T): every tab the browser context opens is
+captured, not just the first. Open a new tab, do work there, switch back to the original tab and
+keep going — all of it is recorded, in order, with each event tagged to the tab it happened on.
+Compiling inserts a small marker step ("switched to a new tab" / "switched back to tab 1") at
+each crossing, and at replay time the runtime follows the same tabs the recording did — waiting
+for a tab the site is expected to open, or opening one itself for a tab the user opened manually.
+A file downloaded in one tab can also be picked up and uploaded again in a later tab, in the same
+run, with no extra step required. See `docs/TRD.md` §6.3, §7.1, §9.1a.
 
 **Recording a file upload** works exactly like any other step from the user's point of view: click the
 page's upload control, pick a file in the normal Windows dialog, done. Under the hood the recorder

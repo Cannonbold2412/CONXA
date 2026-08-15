@@ -64,6 +64,7 @@ Large or time-series data lives in flat files, not the KV store:
 | Type | Path | Format |
 |---|---|---|
 | Raw recorded events | `data/sessions/{id}/events.jsonl` | JSONL (append-only) |
+| Per-tab recording videos | `data/sessions/{id}/recording.webm` (tab_0), `recording-{tab_id}.webm` (others), `videos.json` (`{tab_id: {file, start_wall_ms}}`) | WebM + JSON map |
 | Compiled skills | `data/skills/{id}/skill.json` | JSON (SkillPackage) |
 | Skill screenshots | `data/sessions/{id}/screenshots/` | PNG |
 | Step thumbnails | `data/skills/{id}/assets/` | PNG |
@@ -275,7 +276,7 @@ is tagged in code and below as one of:
 | `ShadowHost` | — | all |
 | `IdentityBundle` | `fingerprint`, `stable_hash`, `destructive` | `signals`, `frame_chain`, `shadow_path`, `compat_fingerprint`, `guid_like_attrs` |
 | `HandlerHints` | — | all |
-| `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `optional_hint` | `frame`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
+| `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `optional_hint` | `frame`, `tab`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
 | `SkillStep.branch` | — (mixed today; see below) | — |
 | `WorkflowIntentGraph` / `WorkflowIntentStep` | all | — |
 | `SkillPackage` | `meta`, `inputs`, `policies`, `llm`, `intent_graph`, `compile_report` | — |
@@ -351,6 +352,8 @@ class SkillStep(BaseModel):
     intent: str                # "Click the Submit button"
     url: str                   # Expected URL for this step
     frame: dict                # Iframe chain structural marker (url/url_pattern per level)
+    tab: dict                  # {id, index, opened_by, opener_tab} — empty means tab_0, the
+                                # initial page. Runtime resolves it per step: TRD §9.1a
     target: dict               # Raw recorded target element data
     identity_bundle: IdentityBundle          # REQUIRED — single source of element identity (see §3.4a)
     handler_hints: HandlerHints              # hover_chain, virtualization (see §3.4b)
@@ -513,6 +516,27 @@ optional_hint: dict | None   # {"kind": "try_dismiss", "container_signal": "<sel
   mutation (same shape as `insert_branch_step`, bypasses `patch_gate.py`) that rewrites the step's
   `action` to `try_dismiss`, seeds `branch.candidates` from the step's own recorded selector plus
   the hint's `container_signal`, and clears `optional_hint`.
+
+### 3.4e Multi-Tab Context (TabContext)
+
+`RecordedEvent.tab` (`packages/conxa-core/conxa_core/models/events.py::TabContext`) records which
+browser tab produced an event; `SkillStep.tab` (§3.3) is the compiled twin, carried through
+verbatim from the event that produced the step, empty for `tab_0` (see `docs/TRD.md` §6.3 for how
+the recorder assigns it, §7.1 for compile-time `tab_open`/`tab_switch` marker insertion, §9.1a for
+runtime resolution).
+
+```python
+class TabContext(BaseModel):
+    id: str = "tab_0"
+    index: int = 0
+    opened_by: Literal["initial", "site", "user"] = "initial"
+    opener_tab: str | None = None
+    url: str = ""   # editor display only — dropped from the runtime-facing execution.json copy
+```
+
+Absent on recordings made before multi-tab support existed — same read-new-fallback-old pattern as
+`post_condition` (§3.4d) — so old recordings still validate and old compiled skills replay
+identically (every step resolves to the initial page, exactly as before this field existed).
 
 ### 3.5 RecoveryBlock
 

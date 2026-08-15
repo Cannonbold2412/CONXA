@@ -181,6 +181,14 @@ plugin selection instead of four independent per-page rails.
 - Phase 2 — explicit, asynchronous, concurrent Compile with a background job model (today's
   `cmd_compile` is synchronous; a process-global LLM router (`conxa_core.llm.set_router`)
   must be made concurrency-safe first — see the redesign doc's T0.2).
+  **Partially unblocked 2026-08-15 (renderer side only):** the run now lives in
+  `store/compileStore.ts` with the event subscription in `AppChrome`, so a compile survives
+  navigation and the page reattaches to it. This also fixed a live billing bug — remounting
+  `CompileProgress` used to re-fire `cmd('compile')` and reserve a *second* compile credit for
+  the same recording; `start()` is now idempotent on `workflowId:sessionId:mode`. Still open
+  and unchanged: real concurrency. Only one run is tracked, because `window.conxa.cmd` never
+  exposes the backend request id, so streamed events can't be correlated to a run — plumbing a
+  request id through `main.js` + `preload.js` is the prerequisite, alongside T0.2.
 - Phase 3 — Human Edit/Test Skill polish. ✅ **Confidence banner DONE 2026-07-10** (delivered as
   part of the broader Human Edit vs. Skill Package redesign, not standalone — see §1.11 below):
   `CompileHealthBanner.tsx`, mounted under the page header, shows `compile_report.status`/

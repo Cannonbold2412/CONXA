@@ -113,7 +113,7 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 | `create_workflow` / `list_workflows` / `get_workflow` / `update_workflow` / `delete_workflow` | Workflow CRUD (`update_workflow` also renames and re-groups) |
 | `list_groups` / `get_group` / `create_group` / `rename_group` / `delete_group` | WorkflowGroup CRUD — see §5.2a |
 | `add_group_app` / `update_group_app` / `remove_group_app` | Group's app list CRUD |
-| `get_group_auth_status` / `start_group_app_auth` / `finish_group_app_auth` / `cancel_group_app_auth` | Per-app auth capture — see §5.2a |
+| `get_group_auth_status` / `check_group_session` / `start_group_app_auth` / `finish_group_app_auth` / `cancel_group_app_auth` | Per-app auth capture and (`check_group_session`) live headless session-freshness recheck — see §5.2a |
 | `get_skill_pack` | Get workspace's SkillPack + workflow list |
 | `build_skill_package` | Build workspace-scoped skill package |
 | `build_installer` | NSIS installer + cloud publish + upload |
@@ -513,6 +513,12 @@ A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `conxa_core/sto
 
 **Recording a workflow:** `cmd_start_recording` merges every authenticated app's storageState in the workflow's group (`conxa_core.storage.storage_state.merge_storage_states` — cookie union, per-origin localStorage merge, later wins on key conflicts) into one seeded Playwright context, so a recording that crosses N apps starts already signed in to all of them.
 
+**Success-URL wildcard:** `success_url` may contain a literal `{}` as a wildcard for "anything after this point" (e.g. `vercel.com/{}` matches any path under `vercel.com/`); `conxa_compile.recorder.session.url_matches_pattern(url, pattern, exclude_prefix="")` is the single matcher shared by login self-detection (`RecordingSession._url_matches_wait_target`, which excludes variants of the login page itself via `exclude_prefix`) and the session-freshness probe below.
+
+**Session freshness (2026-08-15):** `captured_at` alone only proves an app was *once* authenticated — it never expires or re-verifies. `check_app_session_sync(app)` (same module) does a short-lived **headless** probe: loads `app.storage_state_path` into a throwaway `headless=True` context, navigates to the success-URL prefix (or `login_url` if no `success_url` is set), and classifies the landed URL as `"ready"` (matches the success pattern), `"expired"` (bounced back to the login page, or the saved state file is missing/corrupt), or — on any navigation error/timeout — falls back to `"ready"` rather than falsely flagging a flaky probe as expired. `group_auth_status(group, probe=...)` takes this probe as an optional parameter: `cmd_get_group_auth_status` calls it unprobed (cheap, `captured_at`-only, for every normal page load); `cmd_check_group_session` calls it *with* the probe and is fired silently by the renderer in the background whenever a group page opens, seeding the same `['group-auth-status', groupId]` query cache `GroupAuthWizard` already reads — an expired app's row switches from the ready-green treatment to a distinct red "expired" state with a Reconnect button, and counts as not-ready in the group's overall `ready` flag exactly like a never-connected app. `cmd_start_recording` also calls `check_app_session_sync` per app before starting (not just the `captured_at` presence check) and raises the same `auth_required` error if any app's session has gone stale, so a workflow can't start recording against a session that's silently expired since the group page was last opened.
+
+**Group summary (`cmd_list_groups`):** each row carries `{id, slug, name, workflow_count, stages, workflow_preview, apps_total, apps_authenticated, ready, created_at, updated_at}`. `stages` is a `{stage: count}` map over `derive_workflow_stage` (keys present only for non-empty stages) and `workflow_preview` is the first `WORKFLOW_PREVIEW_LIMIT` (3) workflows as `{id, name, stage}`. Both are derived from the workflow list the handler already loads — no extra I/O — and exist so the Workflows page can draw each group as a folder showing its contents and lifecycle mix (see `docs/UI-UX-Brief.md` §2.3).
+
 **Compiled pack contract:** `pack.json` gains a `groups` array (`[{id, name, apps: [{id, name, login_url, success_url}]}]`); each skill's `manifest.json` gains `group_id`. A pack with no `groups` key is untouched — it's the pre-Groups format and takes the legacy single-session path everywhere below.
 
 **On-disk skill layout:** `pack.json` also gains a `skill_groups` field (`{skill_slug: group_id}`, distinct from `groups` above — `groups` is auth-app metadata, `skill_groups` is the path index) and each skill's directory nests under its `group_id` (or the sentinel `"_default"` when a workflow's `group_id` is empty) — `skill-packs/{company}/{group_id}/{skill_slug}/`, both in Build Studio's local build output and on the real runtime after sync. The delta-sync response's per-skill entries (§11.1) also carry a `"group"` field so `runtime/sync.js` knows which nested path to write into; its version-comparison lookup only ever consults the nested path, so a skill previously synced under the pre-nesting flat layout (`skill-packs/{company}/{skill_slug}/`) is treated as never-synced and freshly redownloaded into its nested location on the runtime's next sync — a one-time, self-healing migration with no separate migration pass. The cloud's `_build_delta` (`skillpack_update_routes.py`) mirrors this on its own storage: if a company's files still sit at the old flat cloud-storage path (published before this nested-path support existed), it serves from there while still reporting the resolved `group_id`, so already-published companies keep syncing without needing to republish.
@@ -753,7 +759,7 @@ sequenceDiagram
 5. `frame_utils.py`'s `_frame_context_and_offset_sync` walks the iframe parent chain to accumulate page-level bounding box offsets; `session.py` calls it per event.
 5a. **No `filechooser` listener is attached** (`session.py::_bind_page_handlers`). Attaching one makes Playwright intercept the dialog, so the native OS picker never opens, the user can never pick a file, the input's `change` event never fires, and `bridge.js` never emits `upload_intent` — uploads become unrecordable. Recording is always headed, so letting the real dialog through is safe. See §9.3.
 6. Events stream to `session_events.py` which appends to `events.jsonl`.
-7. On stop, `session.py` closes the Playwright context and renames the raw `.webm` to `recording.webm`. It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
+7. On stop, `session.py` closes the Playwright context and renames each tab's raw `.webm` to a stable name (§6.3). It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
 
 ### 6.2 Iframe Chain Preservation
 
@@ -763,6 +769,52 @@ Every recorded event carries a `frame` object with:
 - `parent_chain` — ordered list of parent frame IDs
 
 This chain is preserved verbatim through compile and execution. Bounding boxes are page-level (offsets accumulated up the chain during recording).
+
+### 6.3 Multi-Tab Recording
+
+The recorder instruments every page in the browser context (`_context.on("page", ...)`), so a
+workflow that opens a new tab — whether the site opens it (a `target="_blank"` link, `window.open`)
+or the user does (Ctrl+T) — is captured on both tabs, not just the first. `session.py` assigns each
+page a stable identity as soon as the pump loop notices it (`_register_new_pages_sync`, one loop
+tick, ~0.2s):
+
+- `id` — `tab_0`, `tab_1`, … in discovery order.
+- `opened_by` — `"initial"` (the recording's starting tab), `"site"` (`page.opener()` resolves —
+  a link/`window.open`), or `"user"` (no opener at all — Ctrl+T or similar). This is the field the
+  runtime uses at replay time to decide whether to *wait for* the tab (`"site"`) or *create* it
+  itself (`"user"`) — see §9.1a.
+- `opener_tab` — which tab's action opened this one, when `opened_by` is `"site"`.
+
+Every event (`RecordedEvent.tab`, `packages/conxa-core/conxa_core/models/events.py::TabContext`)
+carries which tab produced it. This is what lets the compiler know a workflow crossed tabs at all
+(§7.1) and what the runtime resolves per step at replay time (§9.1a).
+
+**Video is per-tab.** Playwright records one video file per page in a video-enabled context; a
+two-tab recording produces two `.webm` files. `tab_0`'s keeps the pre-existing name
+(`recording.webm`) so single-tab recordings and every reader of that name are unaffected; every
+other tab is written as `recording-<tab_id>.webm`, with a `videos.json` alongside mapping
+`{tab_id: {file, start_wall_ms}}`. Each tab's `start_wall_ms` is its own page-creation time, not the
+session's — an event's `visual.timestamp_ms` offset (used to cut its 5 anchor frames, §7.1) is
+computed relative to *its own tab's* video start, not always tab_0's, since a second tab's video
+starts recording from zero at whatever moment that tab opened, seconds or minutes into the session.
+`frame_extractor.py` reads `videos.json` to pick the right video per event; a session recorded
+before multi-tab support (no `videos.json`) falls back to `recording.webm` for every event,
+unchanged.
+
+A manually opened tab (Ctrl+T) has nothing that opened it on the recorded page, so `popup` — which
+fires only for a real `window.open`/`target="_blank"` — never fires for it; the tab is still
+discovered and instrumented via the same context-level "page" listener, just classified
+`opened_by: "user"` instead of getting a `popup` synthetic event.
+
+**`download`/`dialog`/`popup` are stamped with the tab whose listener fired them, not whatever
+tab is "active."** `_attach_page_listeners(page)` binds `page` into each handler
+(`page.on("popup", lambda popup: self._on_popup(popup, page))`), and `_enqueue_synthetic` threads
+that page through the pending-payload queue as `src_page` instead of always falling back to
+`_active_page_sync()`. Without this, a popup opened by a click on a background tab (e.g. tab_1)
+gets stamped with whatever tab happened to be `_active_page_sync()` when the pump loop drained the
+event — usually `tab_0` — and `_insert_tab_markers` (§7.1) then inserts a spurious `tab_switch`
+back to `tab_0` before the real `tab_open` for the new tab. At replay, `runtime/tabs.js` follows
+that marker and execution bounces to the wrong tab.
 
 ---
 
@@ -823,6 +875,31 @@ events.jsonl (raw RecordedEvents)
 
 **Frame extraction runs at compile time** (`handlers/compile.py:cmd_compile`), not at recorder shutdown. It used to run once in the recorder thread's `finally` block, all-or-nothing across every event in the session — a single ffmpeg timeout on one event discarded frames for every other event too, permanently, since extraction never ran again. Moving it into `cmd_compile` makes it idempotent and per-event isolated (see diagram above), so a recompile repairs only the events still missing frames.
 
+**Tab markers are inserted at `compile_skill_package()`**, right after `clean_steps`/`fix_step_order`
+(`build.py:_insert_tab_markers`), so the synthetic marker events never have to satisfy those
+functions' assumptions about real recorded event shape. Whenever consecutive events' `tab.id`
+differs, a `tab_open` (first visit to that tab) or `tab_switch` (returning to one already seen —
+including back to `tab_0`) marker event is inserted immediately before the first event on the new
+tab. Every step also carries its own `tab` context (`SkillStep.tab`, mirroring `SkillStep.frame`) —
+`build.py:_build_tab_context`. Both markers and step-level `tab` are empty/`tab_0` for a
+single-tab recording, so nothing about a workflow that never leaves its first tab changes: no
+markers are inserted, and every step's `tab` field is the same empty dict it always was. `tab_open`
+and `tab_switch` compile through the pre-existing `MARKER_ACTIONS` path (`no_recovery_block`,
+same as `frame_enter`/`frame_exit`) — see §10.4.
+
+**A downloaded file can bind to a later upload in the same compiled skill** (EXEC-10/W-2). When a
+recorded `upload` step's filename (browsers only ever expose `File.name`, never a path) matches an
+earlier `download_observed` event's `suggested_filename`, `skill_package_builder_saved_skill.py
+:_bind_downloads_to_uploads` rewrites that upload step's value from the generic `{{file_path}}`
+runtime-input placeholder to `{{downloaded_file}}` (the workflow's only download) or
+`{{downloaded_file_N}}` (Nth download, FIFO-matched per filename, when several downloads share a
+name) — bound only to a download that already happened earlier in the step sequence, since a real
+upload can never precede the download that produced its file. These two placeholders are excluded
+from `_merge_saved_inputs_with_execution_placeholders`'s auto-declared-input scan (they are
+populated automatically at replay time by `run.js`'s `download_observed` handler, never something a
+user/agent supplies) — see §9.1a. An upload with no matching download is left completely
+untouched, still falling back to `{{file_path}}` as before.
+
 ### 7.2 LLM Calls Per Step
 
 All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the router singleton is replaced with `LLMProxyClient` which forwards to the cloud's metered proxy. The cloud proxy itself has the multi-provider pool (Groq, Google AI Studio, NVIDIA NIM, etc.).
@@ -832,6 +909,17 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 | `intent_llm.py` | Per-step intent string + per-workflow intent graph | Low–High |
 | `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
 | `recovery_llm.py` | Per-step recovery block | Medium |
+
+`anchor_vision_llm.py` always downscales the recorder's screenshot to JPEG bounded at 1024px
+on the longest side (`_downscale_and_encode`) before sending it to a vision provider — every
+return path, including a missing/degenerate bbox that skips the target-highlight overlay,
+goes through the same re-encode. A raw full-resolution PNG video frame is never sent. When a
+step's vision call fails for a recoverable reason (see `_RECOVERABLE_VISION_ANCHOR_REASONS`),
+`compile_skill_package` emits one aggregate `vision_anchor_fallback_summary` compile-log event
+after all steps compile — count of steps that fell back, out of the total, plus the first
+distinct reason/hint — in addition to each step's own `vision_anchor_fallback` compile warning,
+so a provider outage degrading many steps in one compile is visible at a glance rather than
+buried per-step.
 
 Selector generation is **fully deterministic** on the primary compile path, with two narrow,
 user-initiated re-compile exceptions: the 1-click-fix API's `selector_regeneration.py` (task
@@ -852,6 +940,7 @@ SkillPackage:
     └── steps: list[SkillStep]
           action: str | dict            # action type + params
           intent: str                   # human-readable intent
+          tab: dict                     # {id, index, opened_by, opener_tab} — empty = tab_0 (§9.1a)
           element_fingerprint: ElementFingerprint
             role, tag, inner_text, aria_label, name,
             placeholder, label_text, data_testid,
@@ -954,6 +1043,96 @@ For each step in `execution.json`:
 7. tracker.emit() — telemetry event
 ```
 
+### 9.1a Multi-Tab Step Resolution
+
+**Location:** `runtime/tabs.js`
+
+Each compiled step's optional `tab` block (`SkillStep.tab` — id/index/opened_by/opener_tab, empty
+means the initial page) is resolved to a live Playwright `Page` fresh on every step, the same
+declarative-per-step pattern `frame_chain` uses for iframes (§10.2a) rather than stateful enter/exit
+handling. `runPlan()` creates one `tabs.js::createTabRegistry(startPage)` per run, binding `tab_0` to
+the run's initial page and registering the browser context's `"page"` listener immediately — before
+any step executes — so a tab opened by an early step is queued even if a later step is the first one
+to ask for it (this is the race a lazily-registered listener would otherwise have).
+
+`resolveStepPage(registry, step)`:
+1. No `tab` (or `tab.id === "tab_0"`) → the initial page. Every skill compiled before multi-tab
+   support has no `tab` on any step, so it takes this path unchanged for every step.
+2. Already bound and still open → that page, reused.
+3. `opened_by === "site"` → drain the queue first, else `context.waitForEvent("page")`
+   (`CONXA_TAB_OPEN_TIMEOUT_MS`, default 30s).
+4. `opened_by === "user"` → nothing on the recorded page ever opens this tab (it was a Ctrl+T at
+   record time), so the runtime creates it itself via `context.newPage()`. The recorded first action
+   on that tab is a `navigate`, which then runs normally against the fresh page.
+5. Unresolvable → throws with `.tabNotFound = true`. **Never falls back to the current page** — the
+   same rule `rootCandidates()`/`isFrameNotFound()` (§10.2a) apply to a missing frame: a
+   same-looking element on the wrong tab is worse than a clean, diagnosable failure.
+
+**The registry never hands out a page it has already bound to a tab.** `createTabRegistry` tracks
+a `bound` set alongside `pendingPages` — seeded with the initial page, and added to every time a
+page is bound to a tab id (drained from the queue, returned by `waitForEvent`, or created via
+`context.newPage()` for an `opened_by: "user"` tab). The step-3 drain and the step-4 `newPage()`
+call both add their result to `bound` before returning. This matters because Playwright fires the
+context's `"page"` event for *every* new page, including ones the registry creates itself — so
+without `bound`, a blank page created for a user-opened tab (step 4) would sit in `pendingPages`
+and could be handed straight back out as a *different*, later, site-opened tab (step 3), pointing
+two different `tab.id`s at the same page. This was the actual defect behind a workflow that opens
+a tab manually (Ctrl+T) and later gets a real popup: the popup step drained the manually-opened
+tab's own blank page instead of waiting for the real popup, and every subsequent step ran against
+the wrong page.
+
+Resolving a named tab also settles it before returning (`_settle`): waits for `domcontentloaded`
+up to `opts.loadTimeoutMs` (the caller, `run.js`, passes `PAGE_LOAD_TIMEOUT_MS` —
+`CONXA_PAGE_LOAD_TIMEOUT_MS`, default 60s), and, **only for a site-opened tab**
+(`opened_by !== "user"`), first waits for the page to leave `about:blank` if it's still there — a
+`target="_blank"` popup is created blank and navigates a beat later, so without this a step could
+fire before the tab has actually loaded anything. This wait is gated on `opened_by` rather than
+running unconditionally: a **user-opened** (Ctrl+T) tab is created blank by this registry itself
+(step 3 above) and stays blank until the compiler's own synthesized `navigate` step runs against
+it — nothing external is ever going to navigate it — so waiting for it to leave `about:blank`
+would just burn the full `loadTimeoutMs` twice for no reason: once resolving the `tab_open` marker
+step, again resolving the `navigate` step that immediately follows it on the same tab. Both waits
+are best-effort; a tab that never leaves `about:blank` still proceeds rather than hard-failing. The
+`navigate` step handler's own `page.goto()` and the runtime's `url_changed`/`url_exact`/
+`url_pattern`/`url` assertion timeouts share this same 60s default — a slow site (e.g. a cold
+Vercel deployment) gets one consistent page-load budget everywhere it matters, not the 15s/8s
+patchwork of hardcoded values this replaced. This does eat into `run.js`'s whole-run wall-clock cap
+(`EXECUTION_DEADLINE_MS` in `server.js`, 210s default, sized to return an actionable failure inside
+Claude Desktop's ~240s MCP client timeout) faster than before on a workflow with several genuinely
+slow navigations; `CONXA_EXECUTION_DEADLINE_MS` remains the escape hatch for Build Studio-only
+testing.
+
+`tab_open`/`tab_switch`/`popup` steps have empty handlers in `run.js` — the tab switch they mark
+already happened via `resolveStepPage()` before `executeStep()` runs for any step, including these
+markers themselves. They are declared explicitly rather than folded into `NOOP_STEP_TYPES`, so "no-op
+step type" isn't read as "nothing happens around this step" for the one category where something very
+much does.
+
+**A tab marker with no `tab` block at all inherits the current page instead of resolving `tab_0`.**
+`tabs.js::stepInheritsPage(step)` is true only for a `tab_open`/`tab_switch`/`popup` step whose
+`tab` field is absent — the shape a mis-stamped recorder event produces (§6.3's `download`/`dialog`/
+`popup` src-page fix addresses the recorder side; this is the runtime-side guard for packs compiled
+before that fix, and any other case the recorder mis-stamp handles miss). `run.js`'s step loop
+checks this before calling `resolveStepPage` and, when true, keeps executing on the page the run
+was already on rather than resolving through the normal (tab_0) path — a genuine step recorded on
+tab_0 is unaffected, since it always carries an explicit path back to tab_0 via the *next* real
+step's own `tab` field, not via the marker.
+
+`server.js` attaches its per-page diagnostics (console errors, failed requests, downloads) to every
+tab opened during a run (`_context.on("page", _attachPageListeners)`), not just the initial one —
+previously a download triggered from a second tab was never captured at all. On a step failure, the
+Tier 3/4 park (§10.1) and the failure response use the tab the failing step actually ran on
+(`runErr.failedPage`), not always the initial page, so the recovery request's DOM fingerprint
+describes the page that failed.
+
+**Extra tabs are closed on every exit path** (`tabs.js::closeExtraTabs`, EXEC-14). A second
+`_context.on("page", ...)` listener feeds a per-call `_openedTabs` set; every exit path — success,
+cancelled, session-expired, non-parkable failure, and the parkable-failure branch (which keeps only
+the tab being parked) — closes everything in that set it isn't keeping. Without this, a tab opened
+mid-run was closed only when `watch: true` closed the whole browser context; in the default headless
+path, whose browser is cached and reused per-company (`browser.js`), an unclosed extra tab would
+otherwise leak for the life of that cache.
+
 ### 9.2 Page-Load Waiting
 
 There is no artificial per-action pacing — steps execute back-to-back as fast as resolution and
@@ -1015,7 +1194,7 @@ When step resolution fails to find the target (and it isn't an auth failure):
 
 **Cross-call page parking (the state-preservation half of the closing edge).** Agent recovery is inherently cross-call (runtime fails → Claude reasons → runtime resumes). If the failed page were torn down, the resume would begin on a blank page and `resume_from` would skip the navigation that established state — so the agent's *correct* selector would act on the wrong page and fail again. On a parkable failure (single run, ceiling ≥ 3, a selector/verify failure that is not auth/cancel), the runtime **parks the live page+context+browser** keyed by skill+company instead of closing it (`server.js:_parkedRecovery`), together with a cheap page-state token (`capturePageFingerprint`: url + interactive-element count + a hash of visible body text), with a TTL (`CONXA_RECOVERY_PARK_TTL_MS`, default 180s) that closes it if the agent never resumes. When the matching resume-with-override arrives, the runtime recomputes the fingerprint and compares it to the one captured at park time — a page that has since navigated or whose interactive-element count shifted materially (a live SPA re-render, a timer, a websocket push) is treated as **diverged**: the park is discarded and the override is refused rather than silently applied to state the agent never actually reasoned about. If no live, state-matching park exists at all (TTL expired, page crashed, or diverged), the runtime refuses the resume outright — it does not fall back to silently opening a fresh page mid-plan — and asks the agent to restart the skill from the beginning. When the park does match, the runtime adopts it and applies the override to the exact DOM the recovery request described. An unrelated/new run discards any stale park first. Headless browsers are reclaimed by `browser.js`'s per-company idle cache; a visible (`watch`) browser is closed on discard. Events: `recovery_park_created` / `recovery_park_resumed` / `recovery_park_discarded` / `recovery_park_state_mismatch` / `recovery_resume_refused`.
 
-Retry budget: `RETRY_BUDGET_MAX = 3` per (skill, step_index). On exhaustion → `retry_budget_exhausted` event logged, escalate.
+Retry budget: `RETRY_BUDGET_MAX = 3` per (skill, step_index). On exhaustion → `retry_budget_exhausted` event logged, escalate. The counters live in a module-level map for the life of the MCP server process, so `runPlan` clears the running skill's slice of it at the **start of every invocation** (in addition to the success-path clear in `server.js`). Without that, a failed run left its counts behind and the next run of the same skill in the same session began already exhausted, silently disabling self-healing until Claude Desktop restarted.
 
 Recovery observability: `mcp_connected`, `execute_start`, and `get_runtime_status` all report `max_recovery_tier`; the recovery log records `recovery_ceiling_reached`, `agent_recovery_requested`, `agent_override_applied`, `agent_override_rejected` (the override validation gate refused a no-match/ambiguous selector), `recovery_park_state_mismatch`, and `recovery_resume_refused` events.
 
@@ -1189,7 +1368,7 @@ If the element is expected inside a dialog, recovery first restricts the search 
 
 ### 10.4 No-Recovery Steps
 
-`frame_enter` and `frame_exit` actions carry `no_recovery_block`. These are structural markers, not interactive steps, and are never retried. `if_present`, `try_dismiss`, and `wait_for_one_of` (§10.7) carry `no_recovery_block` for the same reason — they are best-effort by design, not because they lack a target.
+`frame_enter` and `frame_exit` actions carry `no_recovery_block`. These are structural markers, not interactive steps, and are never retried. `tab_open`, `tab_switch`, and `popup` carry `no_recovery_block` for the same reason — the tab switch they mark already happened via `resolveStepPage()` (§9.1a) before the step's own handler runs, so there is nothing on the marker step itself to retry. `if_present`, `try_dismiss`, and `wait_for_one_of` (§10.7) carry `no_recovery_block` for the same reason — they are best-effort by design, not because they lack a target.
 
 ### 10.7 Conditional / Branch Steps (EXEC-1)
 
@@ -1400,7 +1579,19 @@ compile quality to actually differ from Free; see `ROUTER_SETUP.md`.
 
 ### 13.2 Router Behavior
 
-- Round-robin with cooldown: entries that return 429 are cooled for `llm_router_cooldown_secs` (60s default).
+- Round-robin with cooldown: entries that return 429 are cooled. `LLMRouter` honours the
+  provider's own `Retry-After` header (numeric seconds, capped at 3600) when present;
+  otherwise it falls back to the flat `llm_router_cooldown_secs` (60s default). A provider
+  asking for a 2s backoff no longer costs the pool a full 60s.
+- Bounded wait for a cooled pool: if every entry matching the request (respecting the
+  `for_vision`/`pool` filters) is cooled — not merely absent — `route_text`/`route_vision`
+  sleeps once, capped at `LLMRouter.wait_ceiling_secs` (8s), for the soonest entry to clear,
+  then retries selection. This is what stops a single transient 429 from silently degrading
+  every step compiled in the next minute (vision anchors fall back to keyword anchors per
+  step — see `compiler/build.py::_RECOVERABLE_VISION_ANCHOR_REASONS` — and that fallback used
+  to be effectively guaranteed for the whole cooldown window). If the wait would exceed the
+  ceiling, or no entry matches the request at all (a config gap, e.g. no provider has a
+  `vision_model`), it fails fast as before.
 - Failover: on error, moves to next entry.
 - Max retries: `llm_router_max_retries` (3 default).
 - Fast text preference: when `llm_router_prefer_fast_for_text=true`, text calls prefer low-latency providers.
@@ -1408,6 +1599,14 @@ compile quality to actually differ from Free; see `ROUTER_SETUP.md`.
   caller-supplied `PoolEntry` — used only for BYOK (§13.5), where there's exactly one deployment to
   call and the shared pool's rotate/cool-down/drop-on-401 machinery (built for many interchangeable
   keys) doesn't apply.
+- `error_detail` (an optional `list[str]` every call site can pass) collects a human-readable
+  line per failed attempt — e.g. `HTTPError 429 rate_limited (cooled 2s): <provider body>`.
+  `llm_proxy_routes.py` returns this list (capped at 8 entries) in a 502's
+  `{"message": "llm_all_providers_failed", "error_detail": [...]}` body when every provider
+  fails, and `services/llm_proxy_client.py` (Build Studio's proxy client) unpacks that dict
+  shape into its own `error_detail` list instead of collapsing it to a bare `"proxy HTTP 502"`
+  — so a `VisionAnchorGenerationError`'s `hint` (and the resulting `vision_anchor_fallback`
+  compile warning) names the actual provider failure, not just the HTTP status.
 
 ### 13.3 Build Studio → Cloud Proxy
 
