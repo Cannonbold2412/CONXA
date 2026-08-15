@@ -6,13 +6,14 @@ import {
   deleteGroup,
   fetchGroup,
   renameGroup,
+  type GroupApp,
 } from '@/api/groupsApi'
 import { createWorkflow, fetchSkillPack, type SkillPackBuild, type Workflow } from '@/api/workflowsApi'
 import { GroupAuthWizard } from '@/components/GroupAuthWizard'
 import { RecordWorkflowDialog } from '@/components/RecordWorkflowDialog'
 import { DeleteWorkflowButton } from '@/components/DeleteWorkflowButton'
 import { InspectorDrawer } from '@/components/inspector/InspectorDrawer'
-import { MeterBadge } from '@/components/EntitlementMeters'
+import { UsageCards } from '@/components/EntitlementMeters'
 import { WorkflowTestRow } from '@/components/WorkflowTests'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { WorkflowStageBadge, WorkflowStageRail } from '@/components/StagePath'
@@ -32,6 +33,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { useCompileBusy } from '@/store/compileStore'
+import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
 import { FolderKanban, Layers, Plus, Trash2 } from 'lucide-react'
 
 function AddAppDialog({ groupId }: { groupId: string }) {
@@ -145,6 +149,23 @@ function fmtDate(epoch: number) {
   return new Date(epoch * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return ''
+  }
+}
+
+/** Which of the group's configured apps this workflow targets, matched by
+ * hostname against its target/protected URL — replaces showing the raw URL
+ * on the workflow row. */
+function appsUsedBy(wf: Workflow, apps: GroupApp[]): GroupApp[] {
+  const hosts = new Set([hostnameOf(wf.target_url), hostnameOf(wf.protected_url)].filter(Boolean))
+  if (hosts.size === 0) return []
+  return apps.filter((a) => hosts.has(hostnameOf(a.login_url)))
+}
+
 /** One workflow's whole lifecycle in a single row: name/status on the left,
  * the five-node Record → Compile → Review → Test → Ready to Package rail in
  * the middle, Inspector + Delete on the right. Replaces the old row that only
@@ -154,16 +175,19 @@ function WorkflowRow({
   wf,
   groupId,
   groupReady,
+  apps,
   skillPackBuild,
   onChanged,
 }: {
   wf: Workflow
   groupId: string
   groupReady: boolean
+  apps: GroupApp[]
   skillPackBuild: SkillPackBuild | null
   onChanged: () => void
 }) {
   const navigate = useNavigate()
+  const compileBusy = useCompileBusy()
   const [recordOpen, setRecordOpen] = useState(false)
   const [recompileConfirmOpen, setRecompileConfirmOpen] = useState(false)
   const [testOpen, setTestOpen] = useState(false)
@@ -172,9 +196,16 @@ function WorkflowRow({
   const hasSkill = !!wf.skill_id
   const packBuilt = !!skillPackBuild
   const stale = wf.edited_at != null && skillPackBuild != null && wf.edited_at > skillPackBuild.last_built_at
+  const usedApps = appsUsedBy(wf, apps)
 
   function handleCompileClick() {
     if (!hasRecording) return
+    // Compiles run one at a time (see compileStore) — say so here rather than
+    // letting the user land on the compile page just to be told no.
+    if (compileBusy) {
+      toast.info('Another workflow is compiling. Try again once it finishes.')
+      return
+    }
     if (hasSkill) {
       setRecompileConfirmOpen(true)
       return
@@ -184,39 +215,57 @@ function WorkflowRow({
 
   return (
     <div className="border-b border-white/6 last:border-b-0">
-      <div className="flex items-center gap-4 px-5 py-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-medium text-white">{wf.name}</p>
-            <WorkflowStageBadge stage={wf.stage} />
+      {/* Two lines, deliberately: identity on the first, the lifecycle rail on
+          its own line below. Sharing one line is what made the rail read as five
+          loose buttons rather than a pipeline. */}
+      <div className="px-5 py-4">
+        <div className="flex items-start gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="truncate text-sm font-medium text-white">{wf.name}</p>
+              <WorkflowStageBadge stage={wf.stage} />
+            </div>
+            {usedApps.length > 0 && (
+              <div className="mt-1 flex flex-wrap items-center gap-1">
+                {usedApps.map((a) => (
+                  <span
+                    key={a.id}
+                    className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-zinc-400"
+                  >
+                    {a.name}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
-          <p className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">{wf.target_url}</p>
+
+          <div className="flex shrink-0 items-center gap-1">
+            <InspectorDrawer
+              workflow={wf}
+              trigger={
+                <Button size="icon-sm" variant="outline" title="Inspector" className="border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white">
+                  <FolderKanban className="size-3.5" />
+                </Button>
+              }
+            />
+            <DeleteWorkflowButton workflow={wf} onDeleted={onChanged} iconOnly />
+          </div>
         </div>
 
-        <WorkflowStageRail
-          stage={wf.stage ?? 'ready_to_compile'}
-          hasRecording={hasRecording}
-          hasSkill={hasSkill}
-          groupReady={groupReady}
-          packBuilt={packBuilt}
-          stale={stale}
-          onRecord={() => setRecordOpen(true)}
-          onCompile={handleCompileClick}
-          onReview={() => navigate(`/edit/${encodeURIComponent(wf.skill_id!)}?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
-          onToggleTest={() => setTestOpen((v) => !v)}
-          onPackage={() => navigate('/publish')}
-        />
-
-        <div className="flex shrink-0 items-center gap-1">
-          <InspectorDrawer
-            workflow={wf}
-            trigger={
-              <Button size="icon-sm" variant="outline" title="Inspector" className="border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white">
-                <FolderKanban className="size-3.5" />
-              </Button>
-            }
+        <div className="mt-3.5">
+          <WorkflowStageRail
+            stage={wf.stage ?? 'ready_to_compile'}
+            hasRecording={hasRecording}
+            hasSkill={hasSkill}
+            groupReady={groupReady}
+            packBuilt={packBuilt}
+            stale={stale}
+            onRecord={() => setRecordOpen(true)}
+            onCompile={handleCompileClick}
+            onReview={() => navigate(`/edit/${encodeURIComponent(wf.skill_id!)}?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
+            onToggleTest={() => setTestOpen((v) => !v)}
+            onPackage={() => navigate('/publish')}
           />
-          <DeleteWorkflowButton workflow={wf} onDeleted={onChanged} iconOnly />
         </div>
       </div>
 
@@ -323,11 +372,16 @@ export function GroupPage() {
     <div className="h-full overflow-y-auto">
       <PageHeader
         title={group.name}
-        description={`${auth.apps_total} app${auth.apps_total === 1 ? '' : 's'} · ${auth.apps_authenticated} connected`}
+        description={[
+          `${auth.apps_authenticated} of ${auth.apps_total} app${auth.apps_total === 1 ? '' : 's'} connected`,
+          `${workflows.length} workflow${workflows.length === 1 ? '' : 's'}`,
+          auth.ready ? null : 'sign in to start recording',
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+        leading={<UsageCards />}
         actions={
           <>
-            <MeterBadge meterKey="compile_credits" />
-            <MeterBadge meterKey="human_edit_tokens" />
             {!isDefault && (
               <Dialog open={renaming} onOpenChange={(v) => { setRenaming(v); if (v) setRenameValue(group.name) }}>
                 <DialogTrigger asChild>
@@ -370,11 +424,24 @@ export function GroupPage() {
 
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:flex-row">
         {/* ── Applications column ── */}
-        <section className="shrink-0 rounded-xl border border-white/8 bg-white/[0.02] lg:w-72">
+        <section className="shrink-0 self-start rounded-xl border border-white/8 bg-white/[0.02] lg:w-72">
           <div className="flex items-center justify-between border-b border-white/8 px-4 py-3.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Applications</span>
+            <span className="text-[0.6875rem] font-medium text-zinc-400">Applications</span>
             <AddAppDialog groupId={group.id} />
           </div>
+          {group.apps.length > 0 && (
+            // Answers "is this group blocked?" without counting rows.
+            <div className="flex items-center gap-1.5 border-b border-white/8 px-4 py-2.5 text-xs">
+              <span aria-hidden className={cn('text-[13px] leading-none', auth.ready ? 'text-status-ok' : 'text-status-warn')}>
+                {auth.ready ? '●' : '▲'}
+              </span>
+              <span className={cn(auth.ready ? 'text-status-ok' : 'text-status-warn')}>
+                {auth.ready
+                  ? 'All apps connected'
+                  : `${auth.apps_total - auth.apps_authenticated} of ${auth.apps_total} still need signing in`}
+              </span>
+            </div>
+          )}
           <div className="p-3">
             {group.apps.length === 0 ? (
               <p className="py-4 text-center text-xs text-zinc-600">No applications yet. Add one to start authenticating this group.</p>
@@ -401,8 +468,8 @@ export function GroupPage() {
             ) : (
               <div className="rounded-xl border border-white/8 bg-white/[0.02]">
                 <div className="flex items-center justify-between border-b border-white/8 px-5 py-3.5">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Workflows</span>
-                  <span className="text-[11px] text-zinc-600">Updated {fmtDate(Math.max(...workflows.map((w) => w.updated_at)))}</span>
+                  <span className="text-[0.6875rem] font-medium text-zinc-400">Workflows</span>
+                  <span className="text-[0.6875rem] text-zinc-600">Updated {fmtDate(Math.max(...workflows.map((w) => w.updated_at)))}</span>
                 </div>
                 {workflows.map((wf) => (
                   <WorkflowRow
@@ -410,6 +477,7 @@ export function GroupPage() {
                     wf={wf}
                     groupId={group.id}
                     groupReady={auth.ready}
+                    apps={group.apps}
                     skillPackBuild={packQ.data?.skill_pack?.build ?? null}
                     onChanged={refresh}
                   />

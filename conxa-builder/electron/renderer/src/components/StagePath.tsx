@@ -112,25 +112,44 @@ type RailNodeSpec = {
   onClick: () => void
 }
 
-function RailNode({ node, done, busy }: { node: RailNodeSpec; done: boolean; busy: boolean }) {
+function RailNode({
+  node,
+  done,
+  busy,
+  current,
+}: {
+  node: RailNodeSpec
+  done: boolean
+  busy: boolean
+  /** The one node worth acting on right now — the only place clay is spent
+   * on this row (DESIGN.md §2, The One Accent Rule). */
+  current: boolean
+}) {
   const Icon = node.icon
+  // `aria-disabled` rather than `disabled`: a disabled button takes no pointer
+  // events and no focus, which would make the "why is this off?" tooltip
+  // unreachable for both mouse and keyboard.
   const button = (
     <button
       type="button"
-      onClick={node.onClick}
-      disabled={!node.enabled}
+      onClick={node.enabled ? node.onClick : undefined}
+      aria-disabled={!node.enabled}
+      aria-current={current ? 'step' : undefined}
       className={cn(
-        'flex flex-col items-center gap-1 rounded-lg px-2 py-1.5 transition-colors',
-        node.enabled ? 'hover:bg-white/[0.06]' : 'cursor-not-allowed opacity-40',
+        'group/node flex shrink-0 items-center gap-2 rounded-lg px-2 py-1.5 transition-colors',
+        'focus-visible:ring-brand-ring focus-visible:outline-none focus-visible:ring-2',
+        node.enabled ? 'hover:bg-white/[0.06] active:translate-y-px' : 'cursor-not-allowed',
       )}
     >
       <span
         className={cn(
-          'flex size-8 shrink-0 items-center justify-center rounded-full border',
+          'flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors',
           done
-            ? 'border-emerald-500/30 bg-emerald-500/[0.12] text-emerald-400'
+            ? 'border-status-ok-ring bg-status-ok-subtle text-status-ok'
             : busy
             ? 'border-sky-500/30 bg-sky-500/[0.12] text-sky-400'
+            : current
+            ? 'border-brand bg-brand-subtle text-brand'
             : node.enabled
             ? 'border-white/15 bg-white/[0.04] text-zinc-300'
             : 'border-white/8 bg-white/[0.02] text-zinc-600',
@@ -138,7 +157,20 @@ function RailNode({ node, done, busy }: { node: RailNodeSpec; done: boolean; bus
       >
         {busy ? <Loader2 className="size-3.5 animate-spin" /> : done ? <Check className="size-3.5" /> : <Icon className="size-3.5" />}
       </span>
-      <span className={cn('whitespace-nowrap text-[10px] font-medium', done ? 'text-emerald-400' : busy ? 'text-sky-400' : node.enabled ? 'text-zinc-300' : 'text-zinc-600')}>
+      <span
+        className={cn(
+          'whitespace-nowrap text-[0.6875rem] font-medium',
+          done
+            ? 'text-status-ok'
+            : busy
+            ? 'text-sky-400'
+            : current
+            ? 'text-brand'
+            : node.enabled
+            ? 'text-zinc-300'
+            : 'text-zinc-600',
+        )}
+      >
         {node.label}
       </span>
     </button>
@@ -211,7 +243,7 @@ export function WorkflowStageRail({
       onClick: onCompile,
     },
     {
-      label: 'Review',
+      label: 'Human Edit',
       icon: Pencil,
       enabled: hasSkill,
       disabledTitle: hasSkill ? undefined : 'Compile the workflow first',
@@ -241,10 +273,29 @@ export function WorkflowStageRail({
 
   const doneFlags = [hasRecording, done[1], done[2], done[3], packageDone]
 
+  // The leftmost node that's actionable and not yet finished — the single step
+  // the operator should take next, and the only one that gets the clay accent.
+  const currentIndex = nodes.findIndex((node, i) => node.enabled && !doneFlags[i] && i !== busyIndex)
+
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex w-full items-center" role="group" aria-label="Workflow stages">
       {nodes.map((node, i) => (
-        <RailNode key={node.label} node={node} done={doneFlags[i]} busy={i === busyIndex} />
+        <div key={node.label} className={cn('flex items-center', i < nodes.length - 1 && 'min-w-0 flex-1')}>
+          <RailNode node={node} done={doneFlags[i]} busy={i === busyIndex} current={i === currentIndex} />
+          {i < nodes.length - 1 && (
+            <span
+              aria-hidden
+              className={cn(
+                'mx-1.5 h-px min-w-3 flex-1 transition-colors',
+                doneFlags[i] && doneFlags[i + 1]
+                  ? 'bg-status-ok/50'
+                  : doneFlags[i]
+                  ? 'bg-status-ok/25'
+                  : 'bg-white/8',
+              )}
+            />
+          )}
+        </div>
       ))}
     </div>
   )

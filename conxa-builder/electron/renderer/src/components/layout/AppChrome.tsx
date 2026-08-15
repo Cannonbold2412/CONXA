@@ -1,5 +1,8 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { useBackendEvents } from '@/hooks/usePythonCmd'
+import { useCompileStore } from '@/store/compileStore'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAuth, performLogout } from '@/contexts/AuthContext'
@@ -112,7 +115,7 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
     <nav className="space-y-1.5" aria-label="Primary">
       {navGroups.map((group) => (
         <div key={group.label} className="space-y-1.5">
-          <p className={cn('px-3 pt-3 text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-600', collapsed && 'sr-only')}>
+          <p className={cn('px-3 pt-3 text-[0.6875rem] font-medium text-zinc-500', collapsed && 'sr-only')}>
             {group.label}
           </p>
           {group.items.map((item) => (
@@ -202,8 +205,24 @@ function UserWidget() {
   )
 }
 
+/**
+ * The single app-wide subscription to backend compile events. It lives here, not
+ * on the compile page, so a compile keeps reporting progress after the user
+ * navigates away — and so the usage cards refresh the moment a credit is spent.
+ */
+function useCompileEventBridge() {
+  const qc = useQueryClient()
+  const applyEvent = useCompileStore((s) => s.applyEvent)
+
+  useBackendEvents((ev) => {
+    applyEvent(ev)
+    if (ev.phase === 'quota') qc.invalidateQueries({ queryKey: ['entitlements'] })
+  })
+}
+
 export function AppChrome({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
+  useCompileEventBridge()
 
   useEffect(() => {
     setCollapsed(window.localStorage.getItem(SIDEBAR_KEY) === 'true')
