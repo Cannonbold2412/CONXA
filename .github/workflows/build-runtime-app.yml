@@ -94,7 +94,7 @@ jobs:
           $files = @(
             "server.js", "sync.js", "run.js", "browser.js",
             "skill_loader.js", "tracker.js", "install_identity.js",
-            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
+            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js", "tabs.js",
             "drift.js", "version_manager.js", "manifest_manager.js", "http_client.js",
             # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (see
             # runtime/durable_context.js) — all three must ship in the app layer
@@ -159,7 +159,7 @@ jobs:
           $files = @(
             "server", "sync", "run", "browser",
             "skill_loader", "auth_manager", "tracker", "install_identity",
-            "bootstrap", "recovery", "resolve_adapter", "resolver", "drift", "version_manager",
+            "bootstrap", "recovery", "resolve_adapter", "resolver", "tabs", "drift", "version_manager",
             "manifest_manager", "http_client", "page_scripts",
             "durable_context", "config_edit", "mcp_hosts"
           )

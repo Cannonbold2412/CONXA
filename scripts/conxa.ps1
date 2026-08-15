@@ -32,6 +32,18 @@ if ($Env -eq "dev") {
   if (-not $env:CONXA_APP_DIR)        { $env:CONXA_APP_DIR        = "$env:CONXA_DIR\conxa-app" }
   if (-not $env:CONXA_STUDIO_HOME)    { $env:CONXA_STUDIO_HOME    = "$HOME\.conxa-build-studio-dev" }
   if (-not $env:CONXA_UPDATE_CHANNEL) { $env:CONXA_UPDATE_CHANNEL = "dev" }
+  # No .env.dev ships in the repo, so the standalone cloud backend
+  # (`conxa.ps1 dev backend`) has zero LLM provider keys by default. Without
+  # this, Settings() refuses to even start ("No LLM providers enabled").
+  # Studio's own Python backend already gets this from main.js when Electron
+  # spawns it — set it here too so `conxa.ps1 dev backend` boots standalone
+  # the same way. Dev-only: prod must have real provider keys.
+  if (-not $env:SKILL_ALLOW_NO_PROVIDERS) { $env:SKILL_ALLOW_NO_PROVIDERS = "1" }
+  # Vision-anchor LLM calls on/off switch. Skips the anchor_vision proxy call
+  # entirely and falls straight to DOM-only anchors (existing, already-recoverable
+  # fallback path in build.py) instead of waiting on it. Flip to "0" once the
+  # configured providers are healthy again; leave "1" while they're down/flaky.
+  if (-not $env:CONXA_DISABLE_VISION_ANCHORS) { $env:CONXA_DISABLE_VISION_ANCHORS = "1" }
   # Test Skill always runs the LOCALLY BUILT runtime — never a download, ever, in
   # Dev. Run scripts\build-runtime-local.ps1 and scripts\build-app-local.ps1 (once
   # after cloning, then again after editing bootstrap.js/server.js/etc.) — they
