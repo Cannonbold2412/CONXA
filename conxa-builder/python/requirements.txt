@@ -9,7 +9,7 @@
 
 # Recording + compilation
 playwright==1.59.0
-Pillow>=10.4.0
+Pillow>=11.1.0   # <11.1 imports numpy at runtime (PIL/_typing.py); see FIX.md 2026-08-15
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
 imageio-ffmpeg>=0.5.1

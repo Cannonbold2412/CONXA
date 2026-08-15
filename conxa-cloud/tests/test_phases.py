@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import shutil
 import tempfile
 import unittest
@@ -1289,6 +1291,48 @@ class PhaseTests(unittest.TestCase):
         self.assertIn("Relation direction is TARGET relative to ANCHOR", user_text)
         self.assertIn('"element":"email label","relation":"below"', user_text)
         self.assertIn('"element":"password input","relation":"above"', user_text)
+
+    def test_vision_payload_is_always_bounded_jpeg_even_with_degenerate_bbox(self) -> None:
+        """A missing/zero-size bbox used to skip highlighting AND skip re-encoding,
+        shipping the raw full-resolution PNG video frame straight to the vision LLM.
+        Every path must now produce a bounded-resolution JPEG."""
+        from conxa_compile.llm.anchor_vision_llm import generate_anchors_for_step_or_raise
+        from conxa_compile.policy.bundle import get_policy_bundle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "images").mkdir()
+            # Matches the real recorder frame format/size (1280x720 PNG, see frame_extractor.py).
+            Image.new("RGB", (1280, 720), "white").save(root / "images" / "a.png", "PNG")
+            with (
+                patch.object(settings, "data_dir", root),
+                patch("conxa_core.llm._router", _FakeRouter()),
+                patch("conxa_compile.llm.anchor_vision_llm.supports_multimodal_chat", return_value=True),
+                patch(
+                    "conxa_compile.llm.anchor_vision_llm.call_llm",
+                    return_value={"primary_phrase": "email field", "secondary": []},
+                ) as call,
+            ):
+                generate_anchors_for_step_or_raise(
+                    {
+                        "visual": {
+                            "full_screenshot": "images/a.png",
+                            "bbox": {"x": 0, "y": 0, "w": 0, "h": 0},  # degenerate: skips highlighting
+                            "viewport": "1280x720",
+                        }
+                    },
+                    session_root=root,
+                    final_intent="enter_email",
+                    policy=get_policy_bundle().data,
+                    step_index=0,
+                )
+
+        payload = call.call_args.args[1]
+        self.assertEqual(payload["image_mime"], "image/jpeg")
+        image_bytes = base64.standard_b64decode(payload["image_base64"])
+        self.assertTrue(image_bytes.startswith(b"\xff\xd8"))  # JPEG magic bytes, not PNG's \x89PNG
+        with Image.open(io.BytesIO(image_bytes)) as im:
+            self.assertLessEqual(max(im.size), 1024)
 
 
 if __name__ == "__main__":
