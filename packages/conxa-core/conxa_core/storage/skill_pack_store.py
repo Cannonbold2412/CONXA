@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from conxa_core.config import settings
-from conxa_core.db import db_get, db_set, db_list
+from conxa_core.db import db_get, db_set, db_delete, db_list
 from conxa_core.models.workflow import SkillPack, SkillPackBuild, SkillPackInstaller
+from conxa_core.storage.skill_packages import validate_bundle_slug
 from conxa_core.workspace import company_slug as _derive_company_slug
 
 
@@ -54,6 +55,14 @@ def _write_raw(pack: SkillPack) -> None:
     db_set("skill_pack_meta", pack.company_slug, d)
     try:
         _path(pack.company_slug).write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _delete_raw(slug: str) -> None:
+    db_delete("skill_pack_meta", slug)
+    try:
+        _path(slug).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -129,6 +138,16 @@ def get_skill_pack(workspace_id: str) -> SkillPack | None:
     """Build Studio is single-tenant (LOCAL_WORKSPACE_ID) — at most one
     SkillPack ever exists per local install, so a scan is fine."""
     for pack in list_skill_packs(workspace_id):
+        if not validate_bundle_slug(pack.company_slug):
+            # Legacy record from before company_slug() was underscore-only
+            # (e.g. "acme-co-wrklocal"). Re-derive and move it under the
+            # corrected slug so it stops failing bundle-name validation.
+            old_slug = pack.company_slug
+            pack = pack.model_copy(update={
+                "company_slug": _derive_company_slug(pack.workspace_id, pack.company_name),
+            })
+            pack = save_skill_pack(pack)
+            _delete_raw(old_slug)
         return pack
     return None
 

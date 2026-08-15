@@ -19,6 +19,8 @@ def company_slug(workspace_id: str, company_name: str) -> str:
     workflow — every workflow in a workspace shares one skill package and one
     installer, so this must not vary per-workflow.
     """
-    base = re.sub(r"[^a-z0-9]+", "-", company_name.lower()).strip("-") or "company"
+    base = re.sub(r"[^a-z0-9]+", "_", company_name.lower()).strip("_") or "company"
+    if not base[0].isalpha():
+        base = f"co_{base}"  # bundle slugs must start with a letter (see validate_bundle_slug)
     suffix = re.sub(r"[^a-z0-9]+", "", workspace_id.lower())[:8] or "local"
-    return f"{base}-{suffix}"
+    return f"{base}_{suffix}"
