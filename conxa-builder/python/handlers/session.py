@@ -89,6 +89,24 @@ class SessionMixin:
                 if group is None or not group.apps or any(not a.captured_at for a in group.apps):
                     raise _CommandError("auth_required", "Authenticate every app in this workflow's group before recording.")
 
+                from concurrent.futures import ThreadPoolExecutor
+                from conxa_compile.recorder.session import check_app_session_sync
+                from conxa_core.storage.group_store import set_group_app_error
+
+                # One bounded probe per app, run concurrently (each already caps itself
+                # at 20s internally — see check_app_session_sync) so N apps cost one
+                # wait, not N serial waits, while holding _rec_lock.
+                with ThreadPoolExecutor(max_workers=len(group.apps)) as pool:
+                    app_states = list(zip(group.apps, pool.map(check_app_session_sync, group.apps)))
+                expired = [a for a, state in app_states if state == "expired"]
+                if expired:
+                    for a in expired:
+                        set_group_app_error(group.id, a.id, "Session expired — sign in again.")
+                    raise _CommandError(
+                        "auth_required",
+                        f"Re-authenticate {', '.join(a.name for a in expired)} before recording — the saved session has expired.",
+                    )
+
                 states = []
                 for app in group.apps:
                     if app.storage_state_path and Path(app.storage_state_path).is_file():

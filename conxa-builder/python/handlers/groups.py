@@ -16,14 +16,31 @@ from conxa_compile.recorder.session import registry as _recorder_registry
 from conxa_core.workspace import LOCAL_WORKSPACE_ID
 from handlers.protocol import _CommandError, _safe_id
 
+# How many workflow names a group summary carries, so a group card can show
+# what's inside it. Three plus a "+N more" line is what fits a folder card
+# without clipping; the full list lives on the group page.
+WORKFLOW_PREVIEW_LIMIT = 3
+
 
 def group_auth_status(group) -> dict[str, Any]:
     """Per-app readiness for a group, plus the id of the first app still
-    needing attention (used by both the setup wizard and the run gate)."""
+    needing attention (used by both the setup wizard and the run gate).
+
+    An app with a saved session is trusted as "ready" from its captured_at
+    flag alone — cheap, used on every page load. "expired" is not probed
+    here (that used to launch a headless browser on every group-page open
+    and could wedge the whole backend — see FIX.md); it is set by the
+    recording gate's bounded check_app_session_sync probe instead, via
+    last_error, and cleared the moment the app is re-authenticated."""
     apps = []
     first_missing = None
     for app in group.apps:
-        state = "ready" if app.captured_at else "missing"
+        if not app.captured_at:
+            state = "missing"
+        elif app.last_error:
+            state = "expired"
+        else:
+            state = "ready"
         apps.append({
             "id": app.id,
             "name": app.name,
@@ -49,14 +66,26 @@ class GroupsMixin:
     def cmd_list_groups(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         from conxa_core.storage.group_store import ensure_default_group, list_groups
         from conxa_core.storage.workflow_store import list_workflows
+        from handlers.status import derive_workflow_stage
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         ensure_default_group(workspace_id)
         groups = list_groups(workspace_id)
         workflows = list_workflows(workspace_id)
         counts: dict[str, int] = {}
+        # Per-group lifecycle breakdown and a short preview of the workflows inside,
+        # so a group card can show its contents without a second round-trip.
+        # Free — these workflows are already loaded.
+        stages: dict[str, dict[str, int]] = {}
+        previews: dict[str, list[dict[str, str]]] = {}
         for wf in workflows:
             counts[wf.group_id] = counts.get(wf.group_id, 0) + 1
+            bucket = stages.setdefault(wf.group_id, {})
+            stage = derive_workflow_stage(wf)
+            bucket[stage] = bucket.get(stage, 0) + 1
+            preview = previews.setdefault(wf.group_id, [])
+            if len(preview) < WORKFLOW_PREVIEW_LIMIT:
+                preview.append({"id": wf.id, "name": wf.name, "stage": stage})
 
         result = []
         for g in groups:
@@ -66,6 +95,8 @@ class GroupsMixin:
                 "slug": g.slug,
                 "name": g.name,
                 "workflow_count": counts.get(g.id, 0),
+                "stages": stages.get(g.id, {}),
+                "workflow_preview": previews.get(g.id, []),
                 "apps_total": status["apps_total"],
                 "apps_authenticated": status["apps_authenticated"],
                 "ready": status["ready"],

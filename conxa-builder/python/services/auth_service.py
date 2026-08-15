@@ -404,6 +404,8 @@ class AuthService:
 
     def get_token(self) -> str:
         """Return a valid access token, refreshing if near expiry. Raises if logged out."""
+        if _dev_skip_auth():
+            return "dev-skip-auth-token"
         with self._lock:
             tokens = self._load()
             if not tokens:

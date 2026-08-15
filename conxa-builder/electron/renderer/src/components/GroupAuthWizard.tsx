@@ -246,25 +246,35 @@ export function GroupAuthWizard({
       {apps.map((app: GroupAppStatus) => {
         const isActive = activeAppId === app.id
         const isReady = app.state === 'ready' && !isActive
+        const isExpired = app.state === 'expired' && !isActive
+        const isFailed = isActive && appState === 'failed'
         return (
           <div
             key={app.id}
             className={cn(
               'flex items-center gap-3 rounded-lg border px-3 py-2.5',
-              isReady ? 'border-emerald-500/20 bg-emerald-500/[0.04]' : 'border-white/8 bg-white/[0.03]',
+              isReady
+                ? 'border-emerald-500/20 bg-emerald-500/[0.04]'
+                : isExpired
+                  ? 'border-red-500/20 bg-red-500/[0.04]'
+                  : 'border-white/8 bg-white/[0.03]',
             )}
           >
             <span
               className={cn(
                 'flex size-7 shrink-0 items-center justify-center rounded-full',
-                isReady ? 'bg-emerald-500/15 text-emerald-400' : isActive && appState === 'failed' ? 'bg-red-500/15 text-red-400' : 'bg-white/8 text-zinc-500',
+                isReady
+                  ? 'bg-emerald-500/15 text-emerald-400'
+                  : isExpired || isFailed
+                    ? 'bg-red-500/15 text-red-400'
+                    : 'bg-white/8 text-zinc-500',
               )}
             >
               {isReady ? (
                 <Check className="size-3.5" />
               ) : isActive && (appState === 'launching' || appState === 'waiting') ? (
                 <Loader2 className="size-3.5 animate-spin" />
-              ) : isActive && appState === 'failed' ? (
+              ) : isExpired || isFailed ? (
                 <ShieldAlert className="size-3.5" />
               ) : (
                 <ShieldCheck className="size-3.5" />
@@ -276,11 +286,14 @@ export function GroupAuthWizard({
               {isActive && appState === 'waiting' && (
                 <p className="mt-0.5 text-[11px] text-sky-300">Sign in — this closes on its own once you're logged in.</p>
               )}
-              {isActive && appState === 'failed' && (
+              {isFailed && (
                 <p className="mt-0.5 text-[11px] text-red-300">{error || app.last_error || 'Login failed.'}</p>
               )}
+              {isExpired && (
+                <p className="mt-0.5 text-[11px] text-red-300">Session expired — sign in again.</p>
+              )}
             </div>
-            {isReady ? null : isActive && appState === 'failed' ? (
+            {isReady ? null : isFailed ? (
               <div className="flex shrink-0 gap-1.5">
                 <Button size="sm" variant="outline" onClick={skip}>Skip</Button>
                 <Button size="sm" onClick={() => retry(app.id)}>Retry</Button>
@@ -291,7 +304,7 @@ export function GroupAuthWizard({
               </Button>
             ) : (
               <Button size="sm" variant="outline" className="shrink-0" onClick={() => startMut.mutate(app.id)} disabled={!!activeAppId}>
-                Connect
+                {isExpired ? 'Reconnect' : 'Connect'}
               </Button>
             )}
             {editable && !isActive && (

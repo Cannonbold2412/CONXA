@@ -1,5 +1,6 @@
 import { cmd } from '@/lib/ipc'
 import type { Workflow } from '@/api/workflowsApi'
+import type { WorkflowStage } from '@/components/StagePath'
 
 export type GroupApp = {
   id: string
@@ -26,6 +27,12 @@ export type GroupSummary = {
   slug: string
   name: string
   workflow_count: number
+  /** How this group's workflows are distributed across the lifecycle — keys are
+   * only present for stages that have at least one workflow in them. */
+  stages: Partial<Record<WorkflowStage, number>>
+  /** The first few workflows in the group, so a group card can show its contents.
+   * Capped server-side (WORKFLOW_PREVIEW_LIMIT); `workflow_count` holds the total. */
+  workflow_preview: { id: string; name: string; stage: WorkflowStage }[]
   apps_total: number
   apps_authenticated: number
   ready: boolean
@@ -38,7 +45,7 @@ export type GroupAppStatus = {
   name: string
   login_url: string
   success_url: string
-  state: 'ready' | 'missing'
+  state: 'ready' | 'missing' | 'expired'
   captured_at: number | null
   last_error: string
 }

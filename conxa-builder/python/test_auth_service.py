@@ -56,6 +56,11 @@ class DevSkipAuthTests(unittest.TestCase):
             self.assertEqual(identity["user_id"], "dev-user")
             self.assertEqual(svc.current_identity(), identity)
 
+    def test_get_token_short_circuits_without_stored_session(self) -> None:
+        svc = AuthService(clerk_domain="https://clerk.example", client_id="client")
+        with patch.dict("os.environ", {"CONXA_ENV": "dev", "CONXA_DEV_SKIP_AUTH": "1"}):
+            self.assertTrue(svc.get_token())
+
 
 class AuthServiceKeyringCallsTests(unittest.TestCase):
     def _service(self) -> AuthService:
