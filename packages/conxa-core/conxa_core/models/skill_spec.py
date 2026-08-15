@@ -159,7 +159,7 @@ class HandlerHints(BaseModel):
 class SkillStep(BaseModel):
     """[mixed] — see field tags below. `action`/`intent`/`url`/`value`/`input_binding`/
     `validation`/`recovery`/`decision_policy`/`optional_hint` are [contract]: what this step
-    means and how its success is judged, independent of executor. `frame`/`target`/
+    means and how its success is judged, independent of executor. `frame`/`tab`/`target`/
     `identity_bundle`/`handler_hints`/`signals`/`state`/`compiled_selectors`/`snapshot_ref`/
     `snapshot_dom_hash` are [executor]: browser-DOM/Playwright implementation detail. `branch`
     is [mixed] today (holds executor probe detail) and is EXEC-1's next target for a clean
@@ -168,6 +168,11 @@ class SkillStep(BaseModel):
     intent: str = ""                                                          # [contract]
     url: str = ""                                                             # [contract]
     frame: dict[str, Any] = Field(default_factory=dict)                       # [executor] iframe chain marker
+    # [executor] Which tab/page this step runs on ({id, index, opened_by, opener_tab}). Empty
+    # means "tab_0" (the initial page) — the same page every step already ran on before
+    # multi-tab support existed, so old compiled skills are unaffected. Runtime resolution:
+    # runtime/tabs.js::resolveStepPage.
+    tab: dict[str, Any] = Field(default_factory=dict)                         # [executor]
     target: dict[str, Any] = Field(default_factory=dict)                      # [executor] raw recorded DOM target
     # [executor] Durability-ranked, orthogonality-deduplicated identity bundle — the single
     # source of truth for element identity (signals + scoring fingerprint). Runtime resolves

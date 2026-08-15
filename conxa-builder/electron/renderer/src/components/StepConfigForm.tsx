@@ -253,7 +253,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
             url,
           },
           validation: {
-            wait_for: { type: 'url_change', target: url, timeout: 15000 },
+            wait_for: { type: 'url_change', target: url, timeout: 60000 },
             success_conditions: { url },
           },
         }

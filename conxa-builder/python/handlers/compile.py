@@ -86,6 +86,8 @@ class CompileMixin:
             if (session_dir / "recording.webm").is_file():
                 from conxa_compile.recorder.frame_extractor import extract_frames_for_session
 
+                _log("Extracting frames from the recording…")
+
                 def _on_frame_progress(done: int, total: int) -> None:
                     _log(f"Extracted frames for event {done}/{total}.")
 
@@ -101,6 +103,7 @@ class CompileMixin:
                     for idx, message in frame_failures:
                         _log(f"Warning: frame_extraction_error: event {idx + 1}: {message}", level="warn")
 
+            _log("Reading normalized events from disk…")
             raw = read_session_events(session_id)
         except Exception:
             if reservation_id and not reservation_committed:

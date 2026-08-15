@@ -223,6 +223,26 @@ def _copy_frame(step: dict[str, Any], out: dict[str, Any]) -> None:
         out["frame"] = frame
 
 
+def _sanitize_runtime_tab(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    tab_id = str(raw.get("id") or "").strip()
+    if not tab_id or tab_id == "tab_0":
+        return {}
+    return {
+        "id": tab_id,
+        "index": raw.get("index", 0),
+        "opened_by": str(raw.get("opened_by") or "initial"),
+        "opener_tab": raw.get("opener_tab"),
+    }
+
+
+def _copy_tab(step: dict[str, Any], out: dict[str, Any]) -> None:
+    tab = _sanitize_runtime_tab(step.get("tab"))
+    if tab:
+        out["tab"] = tab
+
+
 def _step_action_value(step: dict[str, Any]) -> Any:
     action = step.get("action") if isinstance(step.get("action"), dict) else {}
     if isinstance(action, dict) and action.get("value") is not None:
@@ -286,8 +306,63 @@ def _upload_recorded_filename(step: dict[str, Any]) -> str:
     return ""
 
 
+_RUNTIME_ONLY_PLACEHOLDER_RE = re.compile(r"^downloaded_file(_\d+)?$")
+
+
+def _bind_downloads_to_uploads(export_steps: list[dict[str, Any]]) -> None:
+    """Rewrite an upload step's value to reference an earlier download in the same compiled
+    workflow when the recorded filenames match — e.g. export a report in one tab, upload that
+    same file in another, inside one compiled skill with no agent round-trip (EXEC-10/W-2:
+    previously the only way to hand a file between steps was an LLM round-trip per file).
+
+    Matches by exact recorded filename, FIFO per filename (the Nth upload of "report.pdf"
+    binds to the Nth not-yet-consumed download of "report.pdf") — and only to a download that
+    already happened *earlier* in the step sequence, in one forward pass, since a real
+    recording can never upload a file before downloading it and the runtime's binding
+    (run.js's download_observed handler) likewise only ever has a *past* download's path to
+    give. Binds to the plain `{{downloaded_file}}` when the whole workflow has exactly one
+    download; otherwise to the matched download's own `{{downloaded_file_N}}` so an ambiguous
+    same-filename case still binds to the right instance. Mutates matched upload steps' `value`
+    in place; every upload with no matching earlier download is left completely untouched —
+    this only ever adds a binding, never removes the existing {{file_path}} fallback for a
+    genuinely external file.
+    """
+    total_downloads = sum(
+        1 for step in export_steps
+        if isinstance(step, dict) and str(step.get("action") or "") == "download_observed"
+    )
+    if not total_downloads:
+        return
+    single_download = total_downloads == 1
+
+    pending_by_name: dict[str, list[int]] = {}
+    order = 0
+    for step in export_steps:
+        if not isinstance(step, dict):
+            continue
+        action = str(step.get("action") or "")
+        if action == "download_observed":
+            order += 1
+            raw_value = _action_value_text(step)
+            try:
+                payload = json.loads(raw_value) if raw_value else {}
+            except (TypeError, ValueError):
+                payload = {}
+            name = str((payload or {}).get("suggested_filename") or "").strip()
+            if name:
+                pending_by_name.setdefault(name, []).append(order)
+        elif action == "upload":
+            name = _upload_recorded_filename(step)
+            queue = pending_by_name.get(name) if name else None
+            if not queue:
+                continue
+            matched_order = queue.pop(0)
+            step["value"] = "{{downloaded_file}}" if single_download else f"{{{{downloaded_file_{matched_order}}}}}"
+
+
 def _copy_saved_common(step: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
     _copy_frame(step, out)
+    _copy_tab(step, out)
     # Final Selector Architecture: the runtime resolves the primary target from
     # identity_bundle.signals (run.js:resolveStep). Carry it (and the other fields
     # the runtime reads) through to execution.json; without it every step falls into
@@ -593,6 +668,11 @@ def _merge_saved_inputs_with_execution_placeholders(
             item["description"] = override
     for name in _placeholder_names_from_payload(execution_steps):
         if name in seen:
+            continue
+        if _RUNTIME_ONLY_PLACEHOLDER_RE.match(name):
+            # downloaded_file / downloaded_file_N — populated automatically at replay time by
+            # run.js's download_observed handler from an earlier download in the same run
+            # (see _bind_downloads_to_uploads), never something a user/agent supplies.
             continue
         seen.add(name)
         inputs.append(
@@ -901,6 +981,10 @@ def _build_workflow_from_saved_skill(
             and _is_legacy_synthetic_start_navigation_step(raw)
         )
     ]
+    # Wire a same-run download -> upload handoff before conversion (EXEC-10/W-2), so a matched
+    # upload step's value becomes {{downloaded_file...}} instead of the generic {{file_path}}
+    # _saved_step_to_execution_step would otherwise fall back to.
+    _bind_downloads_to_uploads(export_steps)
     for raw_index, raw in enumerate(export_steps, start=1):
         if not isinstance(raw, dict):
             continue

@@ -252,11 +252,13 @@ let checkRetryBudget;
 let isAuthFailure;
 let stepAssertions;
 let frameScopedInventory;
+let uniqueDownloadName;
 let getCachedBrowser;
 let captureReAuth;
 let gracefulShutdown;
 let createTracker;
 let mapErrorToCode;
+let closeExtraTabs;
 
 try {
   ({ Server }               = (global.__hostRequire || require)("@modelcontextprotocol/sdk/server/index.js"));
@@ -266,9 +268,10 @@ try {
   skillLoader  = require("./skill_loader");
   sync         = require("./sync");
   authManager  = require("./auth_manager");
-  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory } = require("./run"));
+  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName } = require("./run"));
   ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
+  ({ closeExtraTabs } = require("./tabs"));
 } catch (e) {
   log("error", "runtime_bootstrap_failed", { error: e.message, stack: e.stack });
   process.exit(1);
@@ -1157,6 +1160,12 @@ async function _handleTool(name, args, extra) {
 
     let page = null;
     let _browser, _context, _protectedUrl;
+    // EXEC-14: track every tab opened during this run (populated once `_context` is known,
+    // below) so closeExtraTabs (tabs.js) can close it alongside `page` on every exit path —
+    // success, cancelled, session-expired, and non-parkable failure all need this, not just
+    // success, so it's declared here rather than inside the try block, where the catch block
+    // below couldn't see it.
+    const _openedTabs = new Set();
     try {
       if (_park) {
         ({ browser: _browser, context: _context } = _park);
@@ -1190,6 +1199,8 @@ async function _handleTool(name, args, extra) {
       const _downloadSaves = [];
       const _downloadQueue = [];
 
+      const _takenNames = new Set();
+
       // Attach page diagnostic listeners — called on initial page and again after re-auth context rebuild.
       const _attachPageListeners = (pg) => {
         pg.on("console", msg => {
@@ -1205,10 +1216,11 @@ async function _handleTool(name, args, extra) {
           let resolveEntry;
           const entryPromise = new Promise(resolve => { resolveEntry = resolve; });
           _downloadQueue.push(entryPromise);
+          // Reserved synchronously, before the async save — see uniqueDownloadName (EXEC-11).
+          const fname = uniqueDownloadName(download.suggestedFilename() || `download_${Date.now()}`, _takenNames);
           const savePromise = (async () => {
             fs.mkdirSync(_downloadsDir, { recursive: true });
-            const fname = download.suggestedFilename() || `download_${Date.now()}`;
-            const dest  = path.join(_downloadsDir, fname);
+            const dest = path.join(_downloadsDir, fname);
             await download.saveAs(dest);
             _downloads.push(dest);
             resolveEntry({ filename: fname, path: dest });
@@ -1218,6 +1230,17 @@ async function _handleTool(name, args, extra) {
       };
 
       _attachPageListeners(page);
+      // Multi-tab: a download (or console/page error) triggered from a tab other than the
+      // initial one used to be invisible entirely — this listener was only ever attached to
+      // `page`. Every tab opened during this run (site-opened or Ctrl+T — see tabs.js) now gets
+      // the same diagnostics/download capture the initial tab has.
+      _context.on("page", _attachPageListeners);
+      // Feeds _openedTabs (declared above, outside this try block, so every exit path's
+      // closeExtraTabs(_openedTabs, ...) call below can see it). Never fires for `page` itself
+      // (created via _context.newPage() before this listener attaches) or for a page from a
+      // resumed park (opened in a prior call's closure) — only genuinely new tabs opened by
+      // *this* run's steps land here.
+      _context.on("page", (pg) => { _openedTabs.add(pg); });
 
       for (let si = 0; si < resolved.length; si++) {
         const { entry, steps, inputs, resumeFrom } = resolved[si];
@@ -1230,6 +1253,7 @@ async function _handleTool(name, args, extra) {
             tracker:       _runTracker,
             downloadQueue: _downloadQueue,
             structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
+            watch,
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
         } catch (runErr) {
@@ -1238,8 +1262,11 @@ async function _handleTool(name, args, extra) {
           // resume_from — see the session_expired handling in the outer catch below, which
           // builds that instruction.
           const failedStep = runErr.failedAt ?? null;
-          if (failedStep !== null && await isAuthFailure(page)) {
-            const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || page.url();
+          // Multi-tab: check auth on the tab the step actually failed on, not always the
+          // initial tab — a login redirect in a second tab would otherwise go undetected.
+          const _failedPage = runErr.failedPage || page;
+          if (failedStep !== null && await isAuthFailure(_failedPage)) {
+            const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || _failedPage.url();
             appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
             const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log, {
               groupId: entry.manifest && entry.manifest.group_id,
@@ -1278,6 +1305,7 @@ async function _handleTool(name, args, extra) {
         : null;
       await Promise.allSettled(_downloadSaves);
       await page.close().catch(() => {});
+      await closeExtraTabs(_openedTabs);
       if (watch) {
         await _context.close().catch(() => {});
         await _browser.close().catch(() => {});
@@ -1329,6 +1357,7 @@ async function _handleTool(name, args, extra) {
         const wasDeadline = activeExecution && activeExecution.deadlineExceeded;
         const stalledStep = activeExecution ? activeExecution.step : null;
         if (page) await page.close().catch(() => {});
+        await closeExtraTabs(_openedTabs);
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
@@ -1355,6 +1384,7 @@ async function _handleTool(name, args, extra) {
       // expired before any step ran) never has a `page` to build a response around.
       if (runErr.session_expired) {
         if (page) await page.close().catch(() => {});
+        await closeExtraTabs(_openedTabs);
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
@@ -1366,27 +1396,36 @@ async function _handleTool(name, args, extra) {
         return err(`${runErr.message}${resumeHint}`);
       }
 
-      const failResp = page
-        ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null)
+      // Multi-tab: use the tab the failing step actually ran on, not always the initial tab —
+      // the recovery request (and its DOM fingerprint) must describe the page that failed.
+      const _failedPage = runErr.failedPage || page;
+
+      const failResp = _failedPage
+        ? await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null)
         : err(runErr.message);
 
       // Park the live failed page for an agent-mediated (Tier 3/4) resume instead of tearing it
       // down — so the corrected selector lands on the same DOM the recovery request describes.
       // Only for single-run selector/verify failures with agent recovery enabled; auth/cancel
       // and Studio-ceiling failures are terminal and clean up normally.
-      const parkable = page && AGENT_RECOVERY_ENABLED && resolved.length === 1
+      const parkable = _failedPage && AGENT_RECOVERY_ENABLED && resolved.length === 1
         && typeof runErr.failedAt === "number" && !runErr.session_expired && !runErr.cancelled;
       if (parkable) {
         const timer = setTimeout(() => { _discardPark("ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
         _parkedRecovery = { slug: primary.entry.slug, company: primary.entry.company,
-          page, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
-          pageFingerprint: await capturePageFingerprint(page) };
+          page: _failedPage, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
+          pageFingerprint: await capturePageFingerprint(_failedPage) };
+        // Only the parked page survives — any other tab this run opened (the failure wasn't
+        // necessarily on the newest tab) is closed now rather than left to leak.
+        await closeExtraTabs(_openedTabs, _failedPage);
         appendRecoveryEvent({ event: "recovery_park_created", slug: primary.entry.slug, step_index: runErr.failedAt, ttl_ms: PARK_TTL_MS });
         log("info", "recovery_park_created", { skill: primary.entry.slug, step_index: runErr.failedAt });
         _runTracker.emit("park_created", { si: runErr.failedAt });
       } else {
         if (page) await page.close().catch(() => {});
+        if (_failedPage && _failedPage !== page) await _failedPage.close().catch(() => {});
+        await closeExtraTabs(_openedTabs);
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});

@@ -10,6 +10,7 @@ import { WorkflowHeader } from '@/components/workflowViewer/WorkflowHeader'
 import { WorkflowStepItem } from '@/components/workflowViewer/WorkflowStepItem'
 import { DeleteStepDialog } from '@/components/workflowViewer/DeleteStepDialog'
 import { BranchSubList } from '@/components/workflowViewer/BranchSubList'
+import { TabDivider } from '@/components/workflowViewer/TabDivider'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -104,8 +105,15 @@ export function WorkflowViewer({
             </div>
           ) : (
           <ol className="w-full space-y-1.5 p-2">
-            {steps.map((step) => (
+            {steps.map((step, index) => {
+              const prevTabId = index > 0 ? steps[index - 1]?.tab?.id : undefined
+              const tabId = step.tab?.id
+              const showTabDivider = !!tabId && tabId !== 'tab_0' && tabId !== prevTabId
+              return (
               <Fragment key={step.id}>
+                {showTabDivider ? (
+                  <TabDivider tabNumber={(step.tab?.index ?? 0) + 1} url={step.tab?.url} />
+                ) : null}
                 <WorkflowStepItem
                   step={step}
                   isSelected={selected === step.step_index}
@@ -124,7 +132,8 @@ export function WorkflowViewer({
                 />
                 <BranchSubList parentStepIndex={step.step_index} branchSteps={step.branch_steps} />
               </Fragment>
-            ))}
+              )
+            })}
           </ol>
           )}
         </ScrollArea>

@@ -51,6 +51,9 @@ function makeClickPage() {
     async title() {
       return "Dashboard";
     },
+    // runPlan creates a tab registry (tabs.js) at run start, which needs page.context() — a
+    // real Playwright page always has one.
+    context: () => ({ on: () => {} }),
   };
 }
 

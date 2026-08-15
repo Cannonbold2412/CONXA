@@ -149,6 +149,111 @@ def _build_frame_context(ev: dict[str, Any]) -> dict[str, Any]:
     return {"chain": out_chain} if out_chain else {}
 
 
+def _build_tab_context(ev: dict[str, Any]) -> dict[str, Any]:
+    """Which browser tab this event was recorded on (RecordedEvent.tab). The runtime resolves
+    each step's page from this at replay time — see runtime/tabs.js::resolveStepPage. Empty/
+    absent (recordings made before multi-tab support) means "tab_0", the same page every step
+    already ran on before this existed, so old skills replay unchanged."""
+    tab = ev.get("tab")
+    if not isinstance(tab, dict):
+        return {}
+    tab_id = str(tab.get("id") or "").strip()
+    if not tab_id or tab_id == "tab_0":
+        return {}
+    return {
+        "id": tab_id,
+        "index": tab.get("index", 0),
+        "opened_by": str(tab.get("opened_by") or "initial"),
+        "opener_tab": tab.get("opener_tab"),
+        # Editor display only (WorkflowViewer.tsx's tab-boundary divider) — the runtime-facing
+        # copy in execution.json (see _sanitize_runtime_tab) deliberately drops this.
+        "url": str(tab.get("url") or "").strip(),
+    }
+
+
+def _make_tab_marker_event(action: str, tab: dict[str, Any], url: str) -> dict[str, Any]:
+    """A synthetic event for a tab_open/tab_switch marker step — same shape a real recorded
+    event has, but only the fields _build_step's MARKER_ACTIONS branch reads (action, frame,
+    tab) are populated. Not written through RecordedEvent.model_validate (that already ran on
+    the real recorded events before this function is called), so no need to fill every field
+    that model requires."""
+    return {
+        "action": {"action": action, "timestamp": "", "value": url},
+        "target": {},
+        "frame": {},
+        "tab": tab,
+        "page": {"url": url, "title": ""},
+    }
+
+
+def _insert_tab_markers(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Insert a tab_open/tab_switch marker event immediately before the first event recorded
+    on a different tab than the previous event — the tab-context twin of frame_enter/
+    frame_exit, and compiled through the same no-op MARKER_ACTIONS path. tab_open the first
+    time a tab id is seen, tab_switch when returning to one already seen (including back to
+    the initial tab). The very first event never gets a marker — that's just the recording's
+    starting tab, not something that "opened" mid-workflow."""
+    if not events:
+        return events
+    out: list[dict[str, Any]] = []
+    first_tab = events[0].get("tab") if isinstance(events[0].get("tab"), dict) else {}
+    prev_tab_id = str(first_tab.get("id") or "tab_0")
+    seen_tabs = {prev_tab_id}
+    for i, ev in enumerate(events):
+        tab = ev.get("tab") if isinstance(ev.get("tab"), dict) else {}
+        tab_id = str(tab.get("id") or "tab_0")
+        if i > 0 and tab_id != prev_tab_id:
+            marker_action = "tab_switch" if tab_id in seen_tabs else "tab_open"
+            out.append(_make_tab_marker_event(marker_action, tab, str((ev.get("page") or {}).get("url") or "")))
+            seen_tabs.add(tab_id)
+        out.append(ev)
+        prev_tab_id = tab_id
+    return out
+
+
+def _insert_user_tab_navigate_steps(
+    steps: list[SkillStep], cleaned_events: list[dict[str, Any]]
+) -> list[SkillStep]:
+    """After a `tab_open` marker for a tab the *user* opened (Ctrl+T or similar — nothing on
+    the recorded page ever opens it), synthesize a `navigate` step to the tab's destination
+    URL right after it.
+
+    runtime/tabs.js::resolveStepPage creates a blank page for opened_by="user" tabs and relies
+    on "the recorded first action on this tab" being a navigate — but the compiler never
+    actually produced one: tab_open is a MARKER_ACTIONS no-op (_build_step), so the URL
+    _insert_tab_markers already computed (line ~207, from the first real event recorded on the
+    new tab) was simply discarded. Without this, a user-opened tab replays as a permanently
+    blank page and every subsequent step on it fails with "Element not found".
+
+    opened_by="site" tabs (a link/window.open) are excluded on purpose — the click that
+    triggers them is itself replayed normally and the browser navigates them as a natural side
+    effect, exactly like it did at record time. Only opened_by="user" tabs have no replayed
+    action that would ever cause them to load anything.
+    """
+    out: list[SkillStep] = []
+    for step, ev in zip(steps, cleaned_events):
+        out.append(step)
+        if step.action != "tab_open" or step.tab.get("opened_by") != "user":
+            continue
+        url = str((ev.get("page") or {}).get("url") or "").strip()
+        if not url:
+            continue
+        out.append(
+            SkillStep(
+                action="navigate",
+                intent="navigate_to_page",
+                url=url,
+                tab=dict(step.tab),
+                recovery=RecoveryBlock(**no_recovery_block("navigate_to_page")),
+                validation=ValidationBlock(
+                    wait_for={"type": "url_change", "target": url, "timeout": 60000},
+                    success_conditions={"url": url},
+                ),
+            )
+        )
+    return out
+
+
 def _merge_compile_warnings(
     protocol: dict[str, Any],
     ev_with_intent: dict[str, Any],
@@ -213,6 +318,35 @@ def _vision_anchor_warning(exc: VisionAnchorGenerationError, *, step_index: int)
     if exc.hint:
         warning["hint"] = exc.hint
     return warning
+
+
+def _log_vision_anchor_fallback_summary(steps: list[SkillStep]) -> None:
+    """Emit one aggregate event when steps fell back to keyword anchors.
+
+    Per-step `vision_anchor_fallback` warnings are easy to miss buried in a long compile
+    log — a provider cooldown degrading 30 of 41 steps should be obvious at a glance, not
+    something you notice only after runtime recovery starts flaking.
+    """
+    fallbacks = [
+        step.confidence_protocol.get("compile_warnings", {}).get("vision_anchor_fallback")
+        for step in steps
+        if isinstance(step.confidence_protocol, dict)
+        and (step.confidence_protocol.get("compile_warnings") or {}).get("vision_anchor_fallback")
+    ]
+    if not fallbacks:
+        return
+    first = fallbacks[0] if isinstance(fallbacks[0], dict) else {}
+    _compile_log(
+        "compile_phase",
+        f"Vision anchors fell back to keyword anchors for {len(fallbacks)} of {len(steps)} step(s).",
+        {
+            "phase": "vision_anchor_fallback_summary",
+            "fallback_count": len(fallbacks),
+            "step_count": len(steps),
+            "first_reason": first.get("reason"),
+            "first_hint": first.get("hint"),
+        },
+    )
 
 
 def _persisted_visual_asset_path(
@@ -923,6 +1057,7 @@ def _build_step(
             action=scroll_action,
             intent="scroll_viewport",
             frame=_build_frame_context(ev),
+            tab=_build_tab_context(ev),
             signals={
                 "visual": visual_signals,
             },
@@ -941,10 +1076,21 @@ def _build_step(
         )
         return step
     if action_payload in MARKER_ACTIONS:
+        # download_observed's recorded value ({"url", "suggested_filename"}) must survive to
+        # execution.json — skill_package_builder_saved_skill.py::_bind_downloads_to_uploads
+        # matches it against a later upload step's recorded filename to wire a same-run
+        # download->upload handoff (EXEC-10/W-2). Other markers carry no payload worth keeping.
+        marker_value = None
+        if action_payload == "download_observed":
+            raw_value = (ev.get("action") or {}).get("value")
+            if raw_value:
+                marker_value = str(raw_value)
         step = SkillStep(
             action=action_payload,
             intent=str(action_payload),
             frame=_build_frame_context(ev),
+            tab=_build_tab_context(ev),
+            value=marker_value,
             recovery=RecoveryBlock(**no_recovery_block(str(action_payload))),
         )
         _compile_log(
@@ -1085,6 +1231,7 @@ def _build_step(
         action=action_payload,
         intent=intent,
         frame=_build_frame_context(ev),
+        tab=_build_tab_context(ev),
         target=target,
         identity_bundle=identity_bundle,
         signals=signals,
@@ -1271,12 +1418,18 @@ def compile_skill_package(
         {"phase": "compiler_prepare", "event_count": len(events), "session_id": sid},
     )
     cleaned_events = fix_step_order(clean_steps(events, pol), pol)
+    # Insert tab_open/tab_switch markers at tab-boundary crossings — after clean_steps/
+    # fix_step_order so the synthetic marker events never have to satisfy those functions'
+    # assumptions about real recorded event shape.
+    cleaned_events = _insert_tab_markers(cleaned_events)
     _compile_log(
         "compile_phase",
         "Compiler inputs prepared.",
         {"phase": "compiler_prepare_done", "cleaned_event_count": len(cleaned_events)},
     )
     steps = [_build_step(e, bundle, session_root=session_root, step_index=i) for i, e in enumerate(cleaned_events)]
+    steps = _insert_user_tab_navigate_steps(steps, cleaned_events)
+    _log_vision_anchor_fallback_summary(steps)
 
     # Phase 7: populate hover_chain handler hints from hover-then-act sequences.
     _populate_hover_chains(steps, cleaned_events, session_id=sid)

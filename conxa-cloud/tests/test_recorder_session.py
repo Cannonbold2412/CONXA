@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import time
+
 from conxa_compile.recorder import session as recorder_session
-from conxa_compile.recorder.session import RecordingSession
+from conxa_compile.recorder.session import RecordingSession, check_app_session_sync, url_matches_pattern
+from conxa_core.models.workflow import GroupApp
 
 
 def _payload(action: str = "click") -> dict:
@@ -31,6 +34,26 @@ def test_payload_capture_error_is_recorded_without_raising(monkeypatch) -> None:
     assert sess.binding_errors == ["event_capture_error:hover: bad event"]
 
 
+def test_url_matches_pattern_supports_curly_brace_wildcard() -> None:
+    pattern = "https://vercel.com/{}"
+
+    assert url_matches_pattern("https://vercel.com/dashboard", pattern)
+    assert url_matches_pattern("https://vercel.com/team/settings", pattern)
+    assert not url_matches_pattern("https://vercel.com", pattern)  # missing the trailing slash the prefix requires
+    assert not url_matches_pattern("https://example.com/vercel.com/dashboard", pattern)
+
+
+def test_url_matches_pattern_excludes_start_url_variants() -> None:
+    pattern = "https://app.example.com/dashboard"
+
+    assert url_matches_pattern("https://app.example.com/dashboard", pattern)
+    assert not url_matches_pattern(
+        "https://app.example.com/login?returnUrl=/dashboard",
+        pattern,
+        exclude_prefix="https://app.example.com/login",
+    )
+
+
 def test_bridge_script_injects_hover_capture_option() -> None:
     script = recorder_session._load_bridge_script(capture_hover=True)
 
@@ -54,6 +77,32 @@ def test_status_exposes_current_url_and_ignores_blank_urls() -> None:
     sess._remember_current_url("https://example.com/app?team=abc#leads")
 
     assert sess.status()["current_url"] == "https://example.com/app?team=abc#leads"
+
+
+def test_tab_url_is_per_tab_not_shared_globally() -> None:
+    sess = RecordingSession(session_id="per-tab-url")
+
+    class FakePage:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def is_closed(self) -> bool:
+            return False
+
+    page_a = FakePage("https://a.example.com/")
+    page_b = FakePage("https://b.example.com/")
+    sess._tab_ids[id(page_a)] = "tab_0"
+    sess._tab_meta["tab_0"] = {"index": 0, "opened_by": "initial", "opener_tab": None, "last_url": "https://a.example.com/"}
+    sess._tab_ids[id(page_b)] = "tab_1"
+    sess._tab_meta["tab_1"] = {"index": 1, "opened_by": "user", "opener_tab": None, "last_url": "https://b.example.com/"}
+
+    # tab_1 navigates elsewhere — must not bleed into tab_0's reported url (the bug this guards:
+    # _tab_context_for_page used to return the session-wide current_url for every tab).
+    page_b.url = "https://c.example.com/"
+    sess._remember_page_url_sync(page_b)
+
+    assert sess._tab_context_for_page(page_a)["url"] == "https://a.example.com/"
+    assert sess._tab_context_for_page(page_b)["url"] == "https://c.example.com/"
 
 
 def test_ensure_bridge_installs_missing_child_frame() -> None:
@@ -403,6 +452,30 @@ def test_finalize_video_file_renames_webm_without_touching_events(tmp_path) -> N
     assert (session_dir / "recording.webm").read_bytes() == b"video"
     assert not (session_dir / "events.jsonl").exists()
     assert sess.binding_errors == []
+
+
+def test_check_app_session_sync_returns_ready_within_deadline_when_probe_wedges(monkeypatch, tmp_path) -> None:
+    """Regression guard: a wedged Playwright driver inside the probe body must
+    not be able to hang the calling thread forever — see FIX.md. Bound the
+    probe with a short deadline and confirm it returns (rather than blocking
+    for the monkeypatched 60s sleep) at "ready", the documented inconclusive-
+    outcome policy."""
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}", encoding="utf-8")
+    app = GroupApp(id="a", name="App", login_url="https://x.test/login", storage_state_path=str(state_path))
+
+    def _wedge(_app):
+        time.sleep(60)
+        return "expired"
+
+    monkeypatch.setattr(recorder_session, "_probe_app_session_sync", _wedge)
+
+    started = time.monotonic()
+    result = check_app_session_sync(app, timeout_s=0.2)
+    elapsed = time.monotonic() - started
+
+    assert result == "ready"
+    assert elapsed < 5, f"probe should return near the 0.2s deadline, took {elapsed:.2f}s"
 
 
 def test_no_filechooser_listener_is_registered() -> None:

@@ -10,6 +10,7 @@ const { resolve: resolveSignals, scoreCandidate } = require("./resolver");
 const { signalToLocator, gatherCandidates, bundleFingerprint, _extractDescriptor } = require("./resolve_adapter");
 const { detectPreExecDrift } = require("./drift");
 const pageScripts = require("./page_scripts");
+const { createTabRegistry, resolveStepPage, stepInheritsPage } = require("./tabs");
 
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 
@@ -22,7 +23,7 @@ const CAPTURE_PRESTEP      = process.env.CONXA_CAPTURE_PRESTEP !== "0";
 const ACTION_TIMEOUT_MS = envNumber("CONXA_ACTION_TIMEOUT_MS", 2500);
 const SECONDARY_ACTION_TIMEOUT_MS = envNumber("CONXA_SECONDARY_ACTION_TIMEOUT_MS", 2500);
 const RECOVERY_LOCATOR_TIMEOUT_MS = envNumber("CONXA_RECOVERY_LOCATOR_TIMEOUT_MS", 3000);
-const PAGE_LOAD_TIMEOUT_MS = envNumber("CONXA_PAGE_LOAD_TIMEOUT_MS", 8000);
+const PAGE_LOAD_TIMEOUT_MS = envNumber("CONXA_PAGE_LOAD_TIMEOUT_MS", 60000);
 
 const RETRY_BUDGET_MAX = 3;
 const DOWNLOAD_WAIT_TIMEOUT_MS = envNumber("CONXA_DOWNLOAD_WAIT_MS", 120000);
@@ -36,16 +37,25 @@ const INTERACTIVE_STEP_TYPES = new Set([
   "drag_drop", "keyboard_shortcut", "upload",
 ]);
 
+// tab_open/tab_switch/popup are NOT here (see tabs.js): the tab switch they mark already
+// happened via resolveStepPage() before executeStep() runs for any step, including these
+// markers, so their own handlers really are empty — but they're declared explicitly below,
+// not folded into this blanket list, so "no-op step type" isn't read as "nothing happens
+// around this step" for the one category where something very much does.
 const NOOP_STEP_TYPES = [
-  "tab_open", "tab_switch", "popup", "frame_enter", "frame_exit",
+  "frame_enter", "frame_exit",
   "upload_intent", "dialog_appeared", "dialog_accept",
   "dialog_dismiss", "file_chooser_opened", "clipboard_copy", "clipboard_paste",
 ];
 
-// Step types that may trigger a real page navigation and need waitForLoadState after them
+// Step types that may trigger a real page navigation and need waitForLoadState after them.
+// tab_open/tab_switch/popup are included so the first real step after a tab-boundary marker
+// gets a load wait too — the marker itself is a no-op, but the tab it names may still be
+// mid-navigation (e.g. a target=_blank popup that opens at about:blank).
 const NAVIGATION_STEP_TYPES = new Set([
   "navigate", "click", "dblclick", "right_click", "keyboard_shortcut",
   "if_present", "try_dismiss", "wait_for_one_of",
+  "tab_open", "tab_switch", "popup",
 ]);
 
 const DIALOG_CONTAINERS = ['[role="dialog"]', '[role="alertdialog"]', '[aria-modal="true"]', ".modal"];
@@ -90,7 +100,9 @@ async function waitForPageLoad(page, prevType) {
 
   await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
   if (process.env.CONXA_WAIT_NETWORKIDLE === "1") {
-    await page.waitForLoadState("networkidle", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
+    // networkidle never fires on analytics-heavy sites, so it never inherits the full
+    // page-load budget — capped independently of how high PAGE_LOAD_TIMEOUT_MS is set.
+    await page.waitForLoadState("networkidle", { timeout: Math.min(PAGE_LOAD_TIMEOUT_MS, 8000) }).catch(() => {});
   }
 }
 
@@ -641,7 +653,7 @@ const HANDLERS = {
   },
 
   navigate: async (page, step, inputs) => {
-    await page.goto(interpolate(step.url || "", inputs), { timeout: 15000, waitUntil: "domcontentloaded" });
+    await page.goto(interpolate(step.url || "", inputs), { timeout: PAGE_LOAD_TIMEOUT_MS, waitUntil: "domcontentloaded" });
   },
 
   scroll: async (page, step, inputs) => {
@@ -873,15 +885,45 @@ for (const type of NOOP_STEP_TYPES) {
   HANDLERS[type] = async () => {};
 }
 
-HANDLERS["download_observed"] = async (_page, _step, _inputs, ctx) => {
+// The `page` handed to these handlers is already the resolved target tab (resolveStepPage ran
+// before executeStep for this step like every other) — there is nothing left to do here.
+HANDLERS["tab_open"] = async () => {};
+HANDLERS["tab_switch"] = async () => {};
+HANDLERS["popup"] = async () => {};
+
+HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   const queue = ctx && ctx.downloadQueue;
   if (!queue || !queue.length) return;
   const pending = queue.shift();
-  await Promise.race([
+  const entry = await Promise.race([
     pending,
     new Promise(resolve => setTimeout(resolve, DOWNLOAD_WAIT_TIMEOUT_MS)),
   ]);
+  // Bind the saved path into `inputs` so a later `upload` step in this same run can reference
+  // it — `downloaded_file` always holds the latest download, `downloaded_file_N` (1-indexed,
+  // in download order) disambiguates when several downloads happen in one run. See
+  // build.py::_bind_downloads_to_uploads for how the compiler decides which one an upload
+  // step's value points at (EXEC-10/W-2 — previously a compiled skill had no way to hand a
+  // file from one tab to another without an LLM round-trip per file).
+  if (entry && entry.path) {
+    inputs.downloaded_file = entry.path;
+    const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
+    inputs[`downloaded_file_${n}`] = entry.path;
+  }
 };
+
+// Two downloads in one run can suggest the same filename (`invoice.pdf` from a per-record
+// export), and saving both to one path silently loses the first (EXEC-11). Reserve a distinct
+// name in `taken` — callers must do this synchronously, before any await, so concurrent
+// download events can't both claim the same one.
+function uniqueDownloadName(fname, taken) {
+  const ext  = path.extname(fname);
+  const base = path.basename(fname, ext);
+  let candidate = fname;
+  for (let n = 2; taken.has(candidate); n++) candidate = `${base} (${n})${ext}`;
+  taken.add(candidate);
+  return candidate;
+}
 
 async function executeStep(page, step, inputs, ctx = {}) {
   const handler = HANDLERS[step.type];
@@ -971,11 +1013,19 @@ async function anyRootHasMatch(roots, target) {
   return false;
 }
 
+const URL_ASSERTION_TYPES = new Set(["url_changed", "url_exact", "url_pattern", "url"]);
+
 async function evaluateAssertion(roots, page, a, inputs, baseline) {
   const type = String(a.type || "").toLowerCase();
   const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
   const required = a.required !== false;
-  const timeout = Number(a.timeout_ms) || 3000;
+  // A URL assertion following navigation shares the page's real load budget, not the compiler's
+  // narrower default (compiled packs can carry a short wait_for timeout from before the page-load
+  // budget was raised) — otherwise a slow navigation fails its own assertion before the page ever
+  // finishes loading.
+  const timeout = URL_ASSERTION_TYPES.has(type)
+    ? Math.max(Number(a.timeout_ms) || 0, PAGE_LOAD_TIMEOUT_MS)
+    : (Number(a.timeout_ms) || 3000);
   const startedAt = Date.now();
   let ok = true;
 
@@ -1384,19 +1434,32 @@ function stepFailure(step, stepIndex, cause, preShot) {
       err.overrideCandidates = cause.overrideCandidates;
     }
     if (cause.frameNotFound) err.frameNotFound = true;
+    if (cause.tabNotFound) err.tabNotFound = true;
+    if (cause.failedPage) err.failedPage = cause.failedPage;
   }
   return err;
 }
 
-async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, downloadQueue, structuralFingerprint } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, downloadQueue, structuralFingerprint, watch } = {}) {
   const t = tracker || { emit: () => {} };
+  // Every invocation starts with a fresh budget. The success path also clears it, but a
+  // *failed* run used to leave its attempt counts behind in this long-lived process, so the
+  // next run of the same skill started already exhausted and recovery never engaged (EXEC-12).
+  clearRetryBudget(slug);
   let recoveredSteps = 0;
   let hasExecutedStep = false;
   let prevStepType = null;
+  let prevPage = null;
+
+  // Multi-tab: each step declares which tab it runs on (step.tab — see tabs.js). The registry
+  // binds tab_0 to startPage and starts listening for new pages immediately, before any step
+  // runs, so a tab opened by an early step is queued even if a later step is the first to ask
+  // for it.
+  const tabs = createTabRegistry(startPage);
 
   // Settle the page before the first step so step 0 doesn't fire against a still-hydrating SPA.
   // Uses the same timeout constant as navigation waits; best-effort (catch swallowed).
-  await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
+  await startPage.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
 
   // Pre-execution drift gate (advisory only). On a fresh run, check whether the
   // pack's recorded structural landmarks are still present. If most have vanished
@@ -1404,14 +1467,14 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
   // This NEVER blocks: execution proceeds and per-step recovery still applies.
   if (startFrom === 0 && structuralFingerprint && Array.isArray(structuralFingerprint.landmarks) && structuralFingerprint.landmarks.length) {
     try {
-      const verdict = await detectPreExecDrift(page, structuralFingerprint);
+      const verdict = await detectPreExecDrift(startPage, structuralFingerprint);
       if (verdict.drift) {
         t.emit("drift_detected", {
           total: verdict.total,
           missing: verdict.missing,
           drift_ratio: Number(verdict.driftRatio.toFixed(3)),
           missing_intents: (verdict.missingIntents || []).slice(0, 5),
-          url: (() => { try { return page.url(); } catch (_) { return ""; } })(),
+          url: (() => { try { return startPage.url(); } catch (_) { return ""; } })(),
         });
       }
     } catch (_) { /* advisory gate never affects execution */ }
@@ -1424,7 +1487,28 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
 
     const step = steps[i];
     if (onStep) onStep(i);
-    if (hasExecutedStep) await waitForPageLoad(page, prevStepType);
+
+    // Resolve which live page this step runs on. Never falls back to the previous step's page
+    // on a miss (see resolveStepPage) — a same-looking element on the wrong tab is worse than
+    // a clean failure here. Exception: a tab_open/tab_switch/popup marker that carries no `tab`
+    // block names no tab at all (a recorder mis-stamp, e.g. a popup event attributed to the
+    // page that was active when the event drained rather than the page that fired it) — treating
+    // that as "go to tab_0" bounces execution back to wherever it started. Since these steps are
+    // no-ops (see NOOP marker handlers below) and every real step still resolves its own tab
+    // independently, simply staying on the current page is always safe here.
+    let page;
+    if (hasExecutedStep && prevPage && stepInheritsPage(step)) {
+      page = prevPage;
+    } else {
+      try {
+        page = await resolveStepPage(tabs, step, { watch, loadTimeoutMs: PAGE_LOAD_TIMEOUT_MS });
+      } catch (tabErr) {
+        t.emit("step_fail", { si: i, fc: "tab_not_found" });
+        throw stepFailure(step, i, tabErr, null);
+      }
+    }
+
+    if (hasExecutedStep && page === prevPage) await waitForPageLoad(page, prevStepType);
 
     const preShot = await maybeCapturePreStep(page, step);
     const primarySelector = baseSelector(step, inputs);
@@ -1457,10 +1541,12 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       t.emit("tier_ok", { si: i, tier: "tier1_compiled" });
       hasExecutedStep = true;
       prevStepType = step.type;
+      prevPage = page;
       continue;
     } catch (err) {
       primaryErr = err;
       primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page, step, inputs);
+      primaryErr.failedPage = page;
     }
 
     // A login redirect is an auth condition, not a selector/DOM problem the T1/T2 cascade can
@@ -1491,6 +1577,7 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
     recoveredSteps++;
     hasExecutedStep = true;
     prevStepType = step.type;
+    prevPage = page;
   }
 
   return { recoveredSteps };
@@ -1517,6 +1604,7 @@ module.exports = {
   enrichStepsWithRecovery,
   applyStepOverrides,
   executeStep,
+  uniqueDownloadName,
   runPlan,
   checkRetryBudget,
   clearRetryBudget,
