@@ -23,6 +23,11 @@ class GroupApp(BaseModel):
     captured_at: float | None = None
     storage_state_path: str = ""
     last_error: str = ""
+    # When this app's session was last actually probed (headless navigation to
+    # success_url) rather than merely captured. None means "never verified since
+    # capture" — group_auth_status treats that as unverified even if captured_at
+    # is set. Set by check_app_session_sync callers (recording gate, "Check now").
+    checked_at: float | None = None
 
 
 class WorkflowGroup(BaseModel):

@@ -19,6 +19,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_delete, db_list
@@ -42,6 +43,46 @@ def group_auth_dir(group_id: str) -> Path:
     p = _groups_dir() / group_id / "auth"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _url_hostname(value: str) -> str:
+    """Hostname of a value that may be a full URL ("https://x.com/y") or a bare
+    hostname ("x.com", as stored in SkillMeta.visited_hosts). urlparse only
+    recognizes a hostname when the value has a scheme, so a bare host falls
+    through to the plain-hostname heuristic below: no scheme, no path/query,
+    no whitespace.
+    """
+    try:
+        parsed = (urlparse(value).hostname or "").lower()
+    except ValueError:
+        parsed = ""
+    if parsed:
+        return parsed
+    candidate = value.strip().lower()
+    if not candidate or "://" in candidate or "/" in candidate or " " in candidate:
+        return ""
+    return candidate
+
+
+def apps_for_workflow(apps: list[GroupApp], *urls: str) -> list[GroupApp]:
+    """Narrow a group's apps down to the ones a specific workflow actually
+    touches, matched by hostname against each app's login_url/success_url.
+
+    `urls` accepts both full URLs (target_url/protected_url) and bare
+    hostnames (SkillMeta.visited_hosts) — _url_hostname normalizes either.
+
+    Shared by the recording gate (handlers/session.py) and the compiled
+    manifest's required_apps (skill_package_builder.py) so "which apps does
+    this workflow need" can't drift between record-time and build-time — a
+    workflow that never navigates to a given app is never gated on it.
+    """
+    wf_hosts = {_url_hostname(u) for u in urls} - {""}
+    if not wf_hosts:
+        return []
+    return [
+        a for a in apps
+        if _url_hostname(a.login_url) in wf_hosts or _url_hostname(a.success_url) in wf_hosts
+    ]
 
 
 def _read_raw(group_id: str) -> dict[str, Any] | None:
@@ -208,6 +249,7 @@ def set_group_app_auth(group_id: str, app_id: str, storage_state_path: str) -> W
         return None
     app.storage_state_path = storage_state_path
     app.captured_at = time.time()
+    app.checked_at = app.captured_at  # a just-completed login is inherently verified
     app.last_error = ""
     return save_group(group)
 
@@ -220,6 +262,31 @@ def set_group_app_error(group_id: str, app_id: str, error: str) -> WorkflowGroup
     if app is None:
         return None
     app.last_error = error[:500]
+    app.checked_at = time.time()
+    return save_group(group)
+
+
+def set_group_app_checked(group_id: str, app_id: str, state: str) -> WorkflowGroup | None:
+    """Record that app_id's session was just probed (check_app_session_sync),
+    stamping checked_at regardless of verdict. "expired" also sets last_error
+    so the badge and the recording gate agree; "ready" clears a stale error
+    from a previous failed probe.
+
+    Always overwrites last_error rather than preserving an existing one — this field is
+    also written by set_group_app_error (an unrelated auth-capture failure, e.g. "the
+    login window was closed before it could be saved"). A fresh probe verdict is the most
+    current, most relevant signal about this app's session; deferring to whatever error
+    happened to be sitting there before would let a stale, differently-sourced message
+    survive display as if it explained the CURRENT expiry.
+    """
+    group = get_group(group_id)
+    if group is None:
+        return None
+    app = _find_app(group, app_id)
+    if app is None:
+        return None
+    app.checked_at = time.time()
+    app.last_error = "Session expired — sign in again." if state == "expired" else ""
     return save_group(group)
 
 
@@ -231,6 +298,7 @@ def clear_group_app_auth(group_id: str, app_id: str) -> WorkflowGroup | None:
     if app is None:
         return None
     app.captured_at = None
+    app.checked_at = None
     app.storage_state_path = ""
     app.last_error = ""
     auth_file = group_auth_dir(group_id) / f"{app_id}.json"

@@ -43,3 +43,23 @@ def merge_storage_states(states: list[dict[str, Any]]) -> dict[str, Any]:
             existing["localStorage"] = list(merged_items.values())
 
     return {"cookies": cookies, "origins": list(origins_by_url.values())}
+
+
+def refresh_app_state(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Re-derive one app's storageState from a post-recording merged state.
+
+    A recording seeds its context with several apps' sessions merged into one
+    storageState (see merge_storage_states above); when the recording ends, that
+    single blob needs splitting back into per-app updates so each app's saved
+    session reflects what the site did to it (rotated cookies, refreshed
+    tokens) without picking up cookies that belong to a sibling app in the same
+    recording. Scoped to the cookie domains and localStorage origins ``previous``
+    already owned — a domain/origin that never appeared before is dropped, since
+    nothing here says which app it belongs to.
+    """
+    domains = {c.get("domain") for c in previous.get("cookies") or []}
+    origins = {o.get("origin") for o in previous.get("origins") or []}
+    return {
+        "cookies": [c for c in current.get("cookies") or [] if c.get("domain") in domains],
+        "origins": [o for o in current.get("origins") or [] if o.get("origin") in origins],
+    }

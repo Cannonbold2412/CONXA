@@ -34,6 +34,13 @@ class SkillMeta(BaseModel):
     # [executor] Structural fingerprint of the first 3 steps' landmark selectors — used by
     # drift detection to detect site redesigns before execution begins. Browser-DOM specific.
     structural_fingerprint: dict[str, Any] = Field(default_factory=dict)
+    # [contract] Every hostname the recording actually navigated to (main frame + any tab
+    # opened during the recording), lowercase, deduped. Used to compute a workflow's
+    # required_apps (conxa_core.storage.group_store.apps_for_workflow) from everywhere the
+    # workflow goes, not just where it starts — see CLAUDE.md's group-auth "rough edges" and
+    # docs/TRD.md's Workflow Groups section. Empty on skills compiled before this field
+    # existed; callers must fall back to target_url/protected_url-only matching for those.
+    visited_hosts: list[str] = Field(default_factory=list)
 
 
 class SkillPolicies(BaseModel):
