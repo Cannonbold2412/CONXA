@@ -1,5 +1,5 @@
 "use strict";
-// Pure-node tests for Phase 5: auth-failure detection + refreshSession stub.
+// Pure-node tests for Phase 5: auth-failure detection + session-encryption fallback.
 // Run with: node runtime/test/test_auth_recovery.js
 
 const assert = require("assert");
@@ -97,42 +97,6 @@ function makePage(url, title = "My App") {
 
   await test("no protectedUrl known yet → never reached", async () => {
     assert.equal(_reachedProtectedUrl("https://dashboard.render.com/", ""), false);
-  });
-
-  console.log("\nrefreshSession headless mode:");
-  const { refreshSession } = require("../auth_manager");
-
-  await test("headless → returns ok:false session_expired without hanging", async () => {
-    const origDisplay  = process.env.DISPLAY;
-    const origWayland  = process.env.WAYLAND_DISPLAY;
-    const origPlatform = process.platform;
-    delete process.env.DISPLAY;
-    delete process.env.WAYLAND_DISPLAY;
-    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-    const result = await refreshSession("acme", "https://example.com/login", null, "/tmp");
-    Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
-    if (origDisplay)  process.env.DISPLAY = origDisplay;
-    if (origWayland)  process.env.WAYLAND_DISPLAY = origWayland;
-    assert.equal(result.ok, false);
-    assert.equal(result.session_expired, true);
-    assert.ok(result.login_url);
-    assert.ok(result.message);
-  });
-
-  await test("attempt limit exceeded → ok:false without trying browser", async () => {
-    // Call 4 times (limit is 3) to trigger the attempt guard
-    const origPlatform = process.platform;
-    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-    delete process.env.DISPLAY;
-    const company = `test-limit-${Date.now()}`;
-    for (let i = 0; i < 4; i++) {
-      await refreshSession(company, "https://example.com/login", null, "/tmp");
-    }
-    // 4th call: attempt counter > 3, should hit the limit message
-    const result = await refreshSession(company, "https://example.com/login", null, "/tmp");
-    Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
-    assert.equal(result.ok, false);
-    assert.match(result.message, /3 times|limit|escalat/i);
   });
 
   console.log("\nsession encryption fallback logging (SG-11):");

@@ -149,9 +149,12 @@ class PhaseTests(unittest.TestCase):
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
         self.assertEqual(pkg.meta.id, "skill_test")
-        self.assertEqual(len(pkg.skills[0].steps), 1)
-        self.assertEqual(pkg.skills[0].steps[0].action, "click")
-        dumped = pkg.skills[0].steps[0].model_dump()
+        # steps[0] is the leading synthetic navigate to the recording's starting page
+        # (compiler/build.py::_insert_start_navigate_step) — the click under test is steps[1].
+        self.assertEqual(len(pkg.skills[0].steps), 2)
+        self.assertEqual(pkg.skills[0].steps[0].action, "navigate")
+        self.assertEqual(pkg.skills[0].steps[1].action, "click")
+        dumped = pkg.skills[0].steps[1].model_dump()
         self.assertIn("signals", dumped)
         self.assertIn("decision_policy", dumped)
         self.assertIn("intent", dumped)
@@ -208,7 +211,9 @@ class PhaseTests(unittest.TestCase):
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
 
-        step = pkg.skills[0].steps[0].model_dump(mode="json")
+        # steps[0] is the leading synthetic navigate to the recording's starting page; the
+        # click under test (with the frame chain) is steps[1].
+        step = pkg.skills[0].steps[1].model_dump(mode="json")
         # Cutover: structural marker keeps url/url_pattern only (no selector field).
         assert step["frame"]["chain"][0]["url_pattern"] == url_pattern
         assert "selector" not in step["frame"]["chain"][0]
@@ -339,7 +344,9 @@ class PhaseTests(unittest.TestCase):
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
         doc = pkg.model_dump(mode="json")
-        step = doc["skills"][0]["steps"][0]
+        # steps[0] is the leading synthetic navigate to the recording's starting page; the
+        # click under test is steps[1].
+        step = doc["skills"][0]["steps"][1]
         step["intent"] = ""
         rec = dict(step.get("recovery") or {})
         rec["intent"] = ""
@@ -354,9 +361,9 @@ class PhaseTests(unittest.TestCase):
             source="test",
         )
         with patch("conxa_compile.compiler.patch.enrich_semantic", return_value=fake):
-            patched = apply_step_patch(doc, 0, {"target": {"primary_selector": "#go"}})
+            patched = apply_step_patch(doc, 1, {"target": {"primary_selector": "#go"}})
 
-        out_rec = patched["skills"][0]["steps"][0]["recovery"]
+        out_rec = patched["skills"][0]["steps"][1]["recovery"]
         self.assertEqual(out_rec.get("intent"), "navigate_to_checkout")
         self.assertEqual(out_rec.get("final_intent"), "navigate_to_checkout")
         self.assertNotIn("url_state_match", out_rec.get("strategies") or [])
@@ -1209,7 +1216,10 @@ class PhaseTests(unittest.TestCase):
                     title="t",
                     version=1,
                 )
-                step = pkg.skills[0].steps[0].model_dump()
+                # steps[0] is the leading synthetic navigate to the recording's starting page;
+                # the click under test is steps[1]. Its baked-in step_index (set before the
+                # navigate is prepended) stays 0, so that assertion below is unchanged.
+                step = pkg.skills[0].steps[1].model_dump()
                 anchors = step.get("signals", {}).get("anchors") or []
                 self.assertTrue(anchors)
                 self.assertIn("submit", " ".join(str(a.get("element") or "") for a in anchors))
@@ -1246,7 +1256,9 @@ class PhaseTests(unittest.TestCase):
                     title="t",
                     version=1,
                 )
-                step = pkg.skills[0].steps[0].model_dump()
+                # steps[0] is the leading synthetic navigate to the recording's starting page;
+                # the click under test is steps[1].
+                step = pkg.skills[0].steps[1].model_dump()
                 assertions = step.get("validation", {}).get("assertions") or []
                 self.assertTrue(any(a.get("type") == "state_changed" for a in assertions))
                 cw = (step.get("confidence_protocol") or {}).get("compile_warnings") or {}

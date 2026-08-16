@@ -44,8 +44,21 @@ def _group_with_captured_app(isolated_data_dir, state_body: str):
     return set_group_app_auth(group.id, app.id, str(state_path))
 
 
+def _age_checked_at(group_id, app_id, seconds_ago):
+    """set_group_app_auth stamps checked_at fresh on capture (a just-completed login
+    is inherently verified), so a test that wants the recording gate to actually
+    re-probe an app must push checked_at outside the gate's TTL first."""
+    group = get_group(group_id)
+    app = next(a for a in group.apps if a.id == app_id)
+    app.checked_at -= seconds_ago
+    from conxa_core.storage.group_store import save_group
+
+    return save_group(group)
+
+
 def test_expired_app_session_fails_fast_and_records_why(isolated_data_dir, monkeypatch):
     group = _group_with_captured_app(isolated_data_dir, "{}")
+    _age_checked_at(group.id, group.apps[0].id, 700)
     workflow = create_workflow("Create a lead", "https://x.test/app", group_id=group.id)
 
     monkeypatch.setattr("conxa_compile.recorder.session.check_app_session_sync", lambda _app: "expired")

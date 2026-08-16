@@ -989,6 +989,128 @@ class TestSavedSkillJsonBuild:
         assert "conxa" in claude_md
         assert "npx -y conxa install" not in claude_md
 
+    def test_group_app_only_required_when_workflow_actually_targets_it(self, tmp_path, monkeypatch):
+        """A workflow in a group must not be gated on a sibling app it never
+        touches (e.g. a Render app registered on the Sales group blocking an
+        unrelated filebin.net workflow — see FIX.md)."""
+        from types import SimpleNamespace
+        import conxa_compile.skill_package_builder as skill_package_builder
+        from conxa_core.config import settings
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+        workspace_id = "wrk_test"
+        pack = SimpleNamespace(company_slug="acme", company_name="Acme")
+
+        render_app = SimpleNamespace(
+            id="app_render", name="Render",
+            login_url="https://dashboard.render.com/login",
+            success_url="https://dashboard.render.com",
+        )
+        sales_group = SimpleNamespace(id="grp_sales", name="Sales", apps=[render_app])
+
+        unrelated_wf = SimpleNamespace(
+            id="wf_unrelated", workspace_id=workspace_id, group_id="grp_sales",
+            slug="upload_8_files", name="Upload 8 files", session_id="s1",
+            skill_id="skill_unrelated", edited_at=1,
+            target_url="https://filebin.net/wn8n9o7mlzkvpvcl", protected_url="",
+        )
+        render_wf = SimpleNamespace(
+            id="wf_render", workspace_id=workspace_id, group_id="grp_sales",
+            slug="sync_contact_to_crm", name="Sync contact to CRM", session_id="s2",
+            skill_id="skill_render", edited_at=1,
+            target_url="https://dashboard.render.com", protected_url="https://dashboard.render.com/",
+        )
+
+        def _saved_skill_for(slug):
+            return {
+                "meta": {"id": f"skill_{slug}", "title": slug},
+                "inputs": [],
+                "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://example.com"}}]}],
+            }
+
+        saved_skills = {"skill_unrelated": _saved_skill_for("upload_8_files"), "skill_render": _saved_skill_for("sync_contact_to_crm")}
+
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, company_name=None: pack)
+        monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [unrelated_wf, render_wf])
+        monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: saved_skills.get(skill_id))
+        monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
+        monkeypatch.setattr(skill_package_builder, "set_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr("conxa_core.storage.group_store.get_group", lambda _group_id: sales_group)
+
+        build_skill_package(workspace_id, company_name="Acme")
+
+        pack_dir = tmp_path / "skill-packs" / "acme"
+
+        unrelated_manifest = json.loads((pack_dir / "grp_sales" / "upload_8_files" / "manifest.json").read_text())
+        assert unrelated_manifest["required_apps"] == []
+
+        render_manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
+        assert render_manifest["required_apps"] == ["app_render"]
+
+    def test_visited_hosts_widen_required_apps_beyond_start_url(self, tmp_path, monkeypatch):
+        """A workflow that STARTS in one app but links into a sibling mid-recording
+        must gate on both at execution time — not just the app its start URL happens
+        to resolve to. See CLAUDE.md's group-auth notes / SkillMeta.visited_hosts."""
+        from types import SimpleNamespace
+        import conxa_compile.skill_package_builder as skill_package_builder
+        from conxa_core.config import settings
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+        workspace_id = "wrk_test"
+        pack = SimpleNamespace(company_slug="acme", company_name="Acme")
+
+        render_app = SimpleNamespace(
+            id="app_render", name="Render",
+            login_url="https://dashboard.render.com/login",
+            success_url="https://dashboard.render.com",
+        )
+        billing_app = SimpleNamespace(
+            id="app_billing", name="Billing",
+            login_url="https://billing.example.com/login",
+            success_url="https://billing.example.com/home",
+        )
+        group = SimpleNamespace(id="grp_sales", name="Sales", apps=[render_app, billing_app])
+
+        wf = SimpleNamespace(
+            id="wf_render", workspace_id=workspace_id, group_id="grp_sales",
+            slug="sync_contact_to_crm", name="Sync contact to CRM", session_id="s2",
+            skill_id="skill_render", edited_at=1,
+            target_url="https://dashboard.render.com", protected_url="https://dashboard.render.com/",
+        )
+
+        # No `visited_hosts` in meta — a skill compiled before the field existed must
+        # fall back to today's start-URL-only behavior.
+        legacy_skill = {
+            "meta": {"id": "skill_render", "title": "sync_contact_to_crm"},
+            "inputs": [],
+            "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://dashboard.render.com"}}]}],
+        }
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, company_name=None: pack)
+        monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [wf])
+        monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: legacy_skill)
+        monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
+        monkeypatch.setattr(skill_package_builder, "set_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr("conxa_core.storage.group_store.get_group", lambda _group_id: group)
+
+        build_skill_package(workspace_id, company_name="Acme")
+        pack_dir = tmp_path / "skill-packs" / "acme"
+        manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
+        assert manifest["required_apps"] == ["app_render"]
+
+        # Now with visited_hosts covering the mid-flow link-out to Billing — both
+        # apps must be required.
+        skill_with_visit = {
+            "meta": {"id": "skill_render", "title": "sync_contact_to_crm", "visited_hosts": ["billing.example.com"]},
+            "inputs": [],
+            "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://dashboard.render.com"}}]}],
+        }
+        monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: skill_with_visit)
+        build_skill_package(workspace_id, company_name="Acme")
+        manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
+        assert set(manifest["required_apps"]) == {"app_render", "app_billing"}
+
 
 # ─────────────────────────────────────────────────
 # Upload steps
@@ -1056,11 +1178,30 @@ class TestUploadInputDeclaration:
 
     def test_description_names_the_recorded_example_file(self):
         descriptions = _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])
-        assert descriptions == {"file_path": "Path to the file to upload (e.g. kyc_document.pdf)"}
+        assert descriptions["file_path"].startswith(
+            "Path to the file to upload (e.g. kyc_document.pdf)."
+        )
 
     def test_description_omits_the_example_when_none_was_recorded(self):
         descriptions = _upload_input_descriptions([_upload_step("")])
-        assert descriptions == {"file_path": "Path to the file to upload"}
+        assert descriptions["file_path"].startswith("Path to the file to upload.")
+
+    def test_description_offers_a_folder_for_batch_uploads(self):
+        """EXEC-15: a batch upload is driven by one folder path, not N file paths -- an agent
+        moving 20 or 200 documents must learn that from get_skill_inputs alone."""
+        description = _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])["file_path"]
+        assert "folder path" in description
+        assert "name order" in description
+
+    def test_description_never_claims_how_many_files_the_control_accepts(self):
+        """Whether the control takes one file or many is a property of the live page, not of
+        how many files happened to be picked while recording -- a one-file recording against a
+        multi-select control is normal. The runtime probes the element instead; the description
+        must not assert a count derived from the recording."""
+        two_files = json.dumps([{"name": "a.pdf"}, {"name": "b.pdf"}])
+        description = _upload_input_descriptions([_upload_step(two_files)])["file_path"]
+        assert "2 files" not in description
+        assert "were selected" not in description
 
     def test_no_description_without_an_upload_step(self):
         click = {"action": {"action": "click"}, "target": {"primary_selector": "#go"}}
@@ -1071,7 +1212,9 @@ class TestUploadInputDeclaration:
         inputs = _merge_saved_inputs_with_execution_placeholders(
             [], steps, _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])
         )
-        assert inputs[0]["description"] == "Path to the file to upload (e.g. kyc_document.pdf)"
+        assert inputs[0]["description"].startswith(
+            "Path to the file to upload (e.g. kyc_document.pdf)."
+        )
 
     def test_other_placeholders_keep_the_generic_description(self):
         steps = [
@@ -1095,7 +1238,9 @@ class TestUploadInputDeclaration:
             declared, steps, _upload_input_descriptions([_upload_step(RECORDED_FILE_METADATA)])
         )
         assert len(inputs) == 1
-        assert inputs[0]["description"] == "Path to the file to upload (e.g. kyc_document.pdf)"
+        assert inputs[0]["description"].startswith(
+            "Path to the file to upload (e.g. kyc_document.pdf)."
+        )
 
     def test_no_override_leaves_other_declared_descriptions_untouched(self):
         declared = [{"id": "borrower_name", "label": "Borrower Name"}]

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
+import zipfile
+from pathlib import Path
 
 from conxa_compile.recorder import session as recorder_session
 from conxa_compile.recorder.session import RecordingSession, check_app_session_sync, url_matches_pattern
@@ -478,15 +481,13 @@ def test_check_app_session_sync_returns_ready_within_deadline_when_probe_wedges(
     assert elapsed < 5, f"probe should return near the 0.2s deadline, took {elapsed:.2f}s"
 
 
-def test_no_filechooser_listener_is_registered() -> None:
-    """Regression guard for uploads being unrecordable.
-
-    Attaching a Playwright "filechooser" listener switches on interception: the native OS file
-    picker never opens, the user cannot choose a file, the input's change event never fires, and
-    bridge.js therefore never emits upload_intent. Recording is always headed, so the real dialog
-    must be allowed through. Re-adding a listener here silently breaks every upload workflow.
+def test_filechooser_listener_is_registered() -> None:
+    """The Studio intercepts the native OS file picker (see _on_file_chooser) so it can
+    show its own dialog pre-pointed at the download folder. FileChooser.set_files() still
+    dispatches the input's change event via CDP, so bridge.js's upload_intent capture is
+    unaffected — unlike a bare unhandled listener, which would break it.
     """
-    sess = RecordingSession(session_id="no-filechooser")
+    sess = RecordingSession(session_id="filechooser-registered")
     registered: list[str] = []
 
     class _FakePage:
@@ -495,6 +496,180 @@ def test_no_filechooser_listener_is_registered() -> None:
 
     sess._attach_page_listeners(_FakePage())
 
-    assert "filechooser" not in registered
+    assert "filechooser" in registered
     # The other page-level listeners must still be wired, or this test would pass vacuously.
     assert {"download", "dialog", "popup", "framenavigated"} <= set(registered)
+
+
+def test_unique_download_name_first_claim_keeps_the_suggested_name() -> None:
+    taken: set[str] = set()
+    assert RecordingSession._unique_download_name("report.pdf", taken) == "report.pdf"
+
+
+def test_unique_download_name_collisions_get_distinct_suffixed_names() -> None:
+    taken: set[str] = set()
+    names = [RecordingSession._unique_download_name("invoice.pdf", taken) for _ in range(3)]
+    assert names == ["invoice.pdf", "invoice (2).pdf", "invoice (3).pdf"]
+    assert len(set(names)) == 3
+
+
+def test_unique_download_name_suffix_goes_before_the_extension() -> None:
+    taken: set[str] = set()
+    RecordingSession._unique_download_name("export.csv", taken)
+    assert RecordingSession._unique_download_name("export.csv", taken) == "export (2).csv"
+
+
+def _make_zip_bytes(names: list[str]) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in names:
+            zf.writestr(name, "x")
+    return buf.getvalue()
+
+
+class _FakeDownload:
+    def __init__(self, url: str, suggested_filename: str, content: bytes) -> None:
+        self.url = url
+        self.suggested_filename = suggested_filename
+        self._content = content
+
+    def save_as(self, path: str) -> None:
+        with open(path, "wb") as f:
+            f.write(self._content)
+
+
+def test_extract_zip_once_lists_top_level_files(tmp_path) -> None:
+    zip_path = tmp_path / "archive.zip"
+    zip_path.write_bytes(_make_zip_bytes(["b.pdf", "a.pdf", "c.pdf"]))
+
+    members = RecordingSession._extract_zip_once(zip_path)
+
+    assert members == ["a.pdf", "b.pdf", "c.pdf"]
+    assert (tmp_path / "archive" / "a.pdf").exists()
+
+
+def test_extract_zip_once_unwraps_a_single_top_level_wrapping_folder(tmp_path) -> None:
+    zip_path = tmp_path / "archive.zip"
+    zip_path.write_bytes(_make_zip_bytes(["export/a.pdf", "export/b.pdf"]))
+
+    members = RecordingSession._extract_zip_once(zip_path)
+
+    assert members == ["a.pdf", "b.pdf"]
+
+
+def test_extract_zip_once_is_idempotent(tmp_path) -> None:
+    zip_path = tmp_path / "archive.zip"
+    zip_path.write_bytes(_make_zip_bytes(["a.pdf"]))
+
+    first = RecordingSession._extract_zip_once(zip_path)
+    second = RecordingSession._extract_zip_once(zip_path)
+
+    assert first == second == ["a.pdf"]
+
+
+def test_on_download_of_a_zip_extracts_it_and_records_zip_members(tmp_path) -> None:
+    sess = RecordingSession(session_id="zip-download")
+    sess._downloads_dir = tmp_path / "downloads"
+    sess._downloads_dir.mkdir(parents=True)
+
+    download = _FakeDownload(
+        "https://x.test/export.zip", "export.zip", _make_zip_bytes(["a.pdf", "b.pdf"])
+    )
+    sess._on_download(download)
+
+    assert sess.binding_errors == []
+    payload, _page, _frame = sess._pending_payloads.get_nowait()
+    value = json.loads(payload["action"]["value"])
+    assert value["suggested_filename"] == "export.zip"
+    assert value["zip_members"] == ["a.pdf", "b.pdf"]
+    assert (sess._downloads_dir / "export" / "a.pdf").exists()
+
+
+def test_on_download_of_a_non_zip_file_has_no_zip_members_field(tmp_path) -> None:
+    sess = RecordingSession(session_id="plain-download")
+    sess._downloads_dir = tmp_path / "downloads"
+    sess._downloads_dir.mkdir(parents=True)
+
+    download = _FakeDownload("https://x.test/report.pdf", "report.pdf", b"not a zip")
+    sess._on_download(download)
+
+    assert sess.binding_errors == []
+    payload, _page, _frame = sess._pending_payloads.get_nowait()
+    value = json.loads(payload["action"]["value"])
+    assert "zip_members" not in value
+
+
+class _FakeChooser:
+    def __init__(self, is_multiple: bool = False) -> None:
+        self.is_multiple = is_multiple
+        self.set_files_calls: list[list[str] | None] = []
+
+    def set_files(self, paths) -> None:
+        self.set_files_calls.append(paths)
+
+
+def test_on_file_chooser_defaults_to_the_downloads_dir(tmp_path) -> None:
+    sess = RecordingSession(session_id="chooser-default-dir")
+    sess._downloads_dir = tmp_path / "downloads"
+    sess._downloads_dir.mkdir(parents=True)
+    requests: list[tuple[str, str, bool]] = []
+    sess.on_file_picker_request = lambda request_id, default_dir, multiple: requests.append(
+        (request_id, default_dir, multiple)
+    )
+
+    sess._on_file_chooser(_FakeChooser())
+
+    assert sess.binding_errors == []
+    assert len(requests) == 1
+    request_id, default_dir, multiple = requests[0]
+    assert default_dir == str(sess._downloads_dir)
+    assert multiple is False
+    assert sess._pending_file_chooser[0] == request_id
+
+
+def test_on_file_chooser_prefers_the_zip_extract_dir_after_a_zip_download(tmp_path) -> None:
+    sess = RecordingSession(session_id="chooser-zip-dir")
+    sess._downloads_dir = tmp_path / "downloads"
+    sess._downloads_dir.mkdir(parents=True)
+    sess._on_download(
+        _FakeDownload("https://x.test/export.zip", "export.zip", _make_zip_bytes(["a.pdf"]))
+    )
+
+    requests: list[tuple[str, str, bool]] = []
+    sess.on_file_picker_request = lambda rid, default_dir, multiple: requests.append(
+        (rid, default_dir, multiple)
+    )
+    sess._on_file_chooser(_FakeChooser(is_multiple=True))
+
+    assert requests[0][1] == str(sess._downloads_dir / "export")
+    assert requests[0][2] is True
+
+
+def test_on_file_chooser_falls_back_to_home_downloads_with_no_prior_download() -> None:
+    sess = RecordingSession(session_id="chooser-no-download-yet")
+    requests: list[tuple[str, str, bool]] = []
+    sess.on_file_picker_request = lambda rid, default_dir, multiple: requests.append(
+        (rid, default_dir, multiple)
+    )
+
+    sess._on_file_chooser(_FakeChooser())
+
+    assert requests[0][1] == str(Path.home() / "Downloads")
+
+
+def test_resolve_file_pick_is_queued_not_applied_directly() -> None:
+    """set_files() is a Playwright sync-API call and must run on the recorder's own driver
+    thread (the pump loop), never on whatever thread calls resolve_file_pick — see the class
+    docstring's threading note."""
+    sess = RecordingSession(session_id="resolve-pick-queued")
+    chooser = _FakeChooser()
+    sess._pending_file_chooser = ("req-1", chooser)
+
+    sess.resolve_file_pick("req-1", ["C:\\downloads\\file.pdf"])
+
+    assert chooser.set_files_calls == []
+    request_id, paths = sess._file_pick_results.get_nowait()
+    assert request_id == "req-1"
+    assert paths == ["C:\\downloads\\file.pdf"]

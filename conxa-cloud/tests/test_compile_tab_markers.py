@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from conxa_compile.compiler.build import (
     _build_tab_context,
+    _insert_start_navigate_step,
     _insert_tab_markers,
     _insert_user_tab_navigate_steps,
 )
@@ -139,3 +140,37 @@ def test_user_opened_tab_with_no_recorded_url_gets_no_navigate_step() -> None:
     events = [{"page": {"url": ""}}, {"page": {"url": ""}}]
     out = _insert_user_tab_navigate_steps(steps, events)
     assert [s.action for s in out] == ["tab_open", "click"]
+
+
+def test_recording_gets_a_leading_navigate_to_where_it_started() -> None:
+    """The recording's own starting tab (tab_0) gets no tab_open marker from
+    _insert_tab_markers, so nothing else in the compiled skill records where step 1 is
+    supposed to run — the runtime used to guess wrong (see FIX.md). This gives tab_0 the
+    same leading navigate every other tab already gets."""
+    steps = [_step("click", {}), _step("click", {})]
+    events = [{"page": {"url": "https://filebin.net/wn8n9o7mlzkvpvcl"}}, {"page": {"url": "https://filebin.net/wn8n9o7mlzkvpvcl"}}]
+    out = _insert_start_navigate_step(steps, events)
+    assert [s.action for s in out] == ["navigate", "click", "click"]
+    nav = out[0]
+    assert nav.url == "https://filebin.net/wn8n9o7mlzkvpvcl"
+    assert nav.tab == {}
+    assert nav.intent == "navigate_to_page"
+
+
+def test_recording_already_starting_with_a_navigate_gets_no_second_one() -> None:
+    steps = [_step("navigate", {}), _step("click", {})]
+    events = [{"page": {"url": "https://a.test/"}}, {"page": {"url": "https://a.test/"}}]
+    out = _insert_start_navigate_step(steps, events)
+    assert out is steps
+
+
+def test_blank_starting_url_gets_no_leading_navigate() -> None:
+    steps = [_step("click", {})]
+    events = [{"page": {"url": "about:blank"}}]
+    assert _insert_start_navigate_step(steps, events) == steps
+
+
+def test_empty_steps_or_events_is_a_no_op() -> None:
+    assert _insert_start_navigate_step([], [{"page": {"url": "https://a.test/"}}]) == []
+    steps = [_step("click", {})]
+    assert _insert_start_navigate_step(steps, []) == steps
