@@ -1,12 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   cancelRecording,
   finalizeWorkflow,
   getWorkflowRecordingStatus,
+  resolveFilePicker,
   startWorkflowRecord,
   type Workflow,
 } from '@/api/workflowsApi'
+import { getGroupAuthStatus } from '@/api/groupsApi'
+import { GroupAuthWizard } from '@/components/GroupAuthWizard'
+import { CmdError } from '@/lib/ipc'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -34,19 +38,43 @@ export function RecordWorkflowDialog({
   const [captureHover, setCaptureHover] = useState(false)
   const [activeSession, setActiveSession] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [siblingWarnings, setSiblingWarnings] = useState<string[]>([])
 
   const workflowStartUrl = (workflow.protected_url || workflow.target_url).trim()
   const varPattern = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g
   const requiredVars = Array.from(workflowStartUrl.matchAll(varPattern), (m) => m[1])
+
+  // Recording is pre-flight-gated on the workflow's required app(s) being authenticated
+  // (see handlers/session.py's cmd_start_recording) — an auth_required failure means the
+  // browser never launched. Rather than just showing the error text, surface the wizard
+  // right here so the user can fix it and retry without leaving this dialog.
+  const [authBlocked, setAuthBlocked] = useState(false)
 
   const startMut = useMutation({
     mutationFn: () => startWorkflowRecord(workflow.id, requiredVars.length > 0 ? urlVariables : undefined, captureHover),
     onSuccess: (data) => {
       setActiveSession(data.session_id)
       setError('')
+      setAuthBlocked(false)
+      // Non-blocking: a sibling app the recorder seeded (but this workflow doesn't
+      // require) looks signed out — recording started anyway, just flag it.
+      setSiblingWarnings(data.warnings ?? [])
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => {
+      setError(e.message)
+      setAuthBlocked(e instanceof CmdError && e.code === 'auth_required')
+    },
   })
+
+  // Only the apps that came back not-ready are relevant here — a healthy sibling app
+  // shouldn't clutter a "you're blocked" screen. Shares its query cache with
+  // GroupAuthWizard's own internal fetch (same queryKey), so this never double-fetches.
+  const authStatusQ = useQuery({
+    queryKey: ['group-auth-status', workflow.group_id],
+    queryFn: () => getGroupAuthStatus(workflow.group_id),
+    enabled: authBlocked && !!workflow.group_id,
+  })
+  const notReadyAppIds = authStatusQ.data?.apps.filter((a) => a.state !== 'ready').map((a) => a.id)
 
   const finalizeMut = useMutation({
     mutationFn: () => finalizeWorkflow(workflow.id, activeSession!),
@@ -55,6 +83,7 @@ export function RecordWorkflowDialog({
       setStep(1)
       setCaptureHover(false)
       setActiveSession(null)
+      setSiblingWarnings([])
       onRecorded()
     },
     onError: (e: Error) => {
@@ -72,6 +101,7 @@ export function RecordWorkflowDialog({
     onSettled: () => {
       setActiveSession(null)
       setError('')
+      setSiblingWarnings([])
       onRecorded()
     },
   })
@@ -85,6 +115,22 @@ export function RecordWorkflowDialog({
     retry: false,
   })
   const workflowBrowserClosed = statusQ.data?.browser_open === false
+
+  // While recording, a "Choose File" click asks us (instead of Chrome's native picker,
+  // which is deliberately suppressed — see recorder/session.py's filechooser listener) to
+  // show Electron's own file-pick dialog pre-pointed at the session's download folder.
+  useEffect(() => {
+    if (!activeSession) return
+    return window.conxa.onEvent(async (event) => {
+      if (event.action !== 'file_picker_request' || event.session_id !== activeSession) return
+      const requestId = event.request_id as string
+      const picked = await window.conxa.pickFile({
+        defaultPath: event.default_dir as string,
+        multiple: Boolean(event.multiple),
+      })
+      await resolveFilePicker(activeSession, requestId, picked)
+    })
+  }, [activeSession])
 
   return (
     <Dialog
@@ -159,12 +205,32 @@ export function RecordWorkflowDialog({
               </span>.
             </p>
             {error ? <p className="text-sm text-red-400">{error}</p> : null}
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="flex-1 border-white/10 bg-white/5 text-zinc-300" onClick={() => { setUrlVariables({}); setCaptureHover(false); setError('') }}>Clear</Button>
-              <Button className="flex-1" onClick={() => startMut.mutate()} disabled={startMut.isPending}>
-                {startMut.isPending ? <><Loader2 className="size-4 animate-spin" />Launching browser…</> : <><Play className="size-4" />Start Recording</>}
-              </Button>
-            </div>
+            {authBlocked && workflow.group_id ? (
+              authStatusQ.data ? (
+                <div className="space-y-3 rounded-lg border border-red-500/15 bg-red-500/[0.03] p-3">
+                  <GroupAuthWizard
+                    groupId={workflow.group_id}
+                    appIds={notReadyAppIds}
+                    onAllAuthenticated={() => {
+                      setAuthBlocked(false)
+                      setError('')
+                      // Everything this workflow needs just got fixed — retry immediately
+                      // instead of making the user click Start Recording a second time.
+                      startMut.mutate()
+                    }}
+                  />
+                </div>
+              ) : (
+                <p className="text-xs text-zinc-500">Checking authentication…</p>
+              )
+            ) : (
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" className="flex-1 border-white/10 bg-white/5 text-zinc-300" onClick={() => { setUrlVariables({}); setCaptureHover(false); setError('') }}>Clear</Button>
+                <Button className="flex-1" onClick={() => startMut.mutate()} disabled={startMut.isPending}>
+                  {startMut.isPending ? <><Loader2 className="size-4 animate-spin" />Launching browser…</> : <><Play className="size-4" />Start Recording</>}
+                </Button>
+              </div>
+            )}
           </div>
 
         ) : (
@@ -180,6 +246,9 @@ export function RecordWorkflowDialog({
               </p>
             </div>
             {error ? <p className="text-sm text-red-400">{error}</p> : null}
+            {siblingWarnings.map((w, i) => (
+              <p key={i} className="text-xs text-amber-300">{w}</p>
+            ))}
             {!finalizeMut.isPending && (
               <div className="flex gap-2">
                 <Button

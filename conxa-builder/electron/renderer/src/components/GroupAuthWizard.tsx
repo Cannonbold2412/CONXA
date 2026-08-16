@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   cancelGroupAppAuth,
+  checkGroupAppAuth,
   finishGroupAppAuth,
   getGroupAuthStatus,
   removeGroupApp,
@@ -141,21 +142,38 @@ function RemoveAppButton({ groupId, app }: { groupId: string; app: GroupAppStatu
  * session, then moves to the next app. Shared by the group setup page and
  * the pre-run gate (RunGateDialog). `editable` (group page only, not
  * RunGateDialog) adds a pencil/trash pair per row for managing the app
- * itself, replacing the old separate "Remove {app}" chip strip. */
+ * itself, replacing the old separate "Remove {app}" chip strip.
+ *
+ * `appIds` scopes the wizard to a subset of the group's apps — used when it's
+ * opened from a specific blocker (e.g. a recording's `auth_required` error
+ * naming only the app(s) that workflow actually needs) rather than the group
+ * setup page, where the whole group is relevant. Omit it to show every app,
+ * the original behavior. `onAllAuthenticated` fires once every SCOPED app is
+ * ready, not the whole group — a sibling app outside `appIds` staying broken
+ * must not block a caller that only cares about its own subset. */
 export function GroupAuthWizard({
   groupId,
   onAllAuthenticated,
   editable = false,
+  appIds,
 }: {
   groupId: string
   onAllAuthenticated: () => void
   editable?: boolean
+  appIds?: string[]
 }) {
   const qc = useQueryClient()
   const statusQ = useQuery({
     queryKey: ['group-auth-status', groupId],
     queryFn: () => getGroupAuthStatus(groupId),
   })
+  // Scoped readiness: whether every app THIS wizard was asked to cover is ready — distinct
+  // from GroupAuthStatus.ready, which reflects the whole group and would wrongly block
+  // onAllAuthenticated on an unrelated sibling app when appIds narrows the scope.
+  function isScopedReady(status: { apps: GroupAppStatus[] }): boolean {
+    if (!appIds) return status.apps.every((a) => a.state === 'ready')
+    return appIds.every((id) => status.apps.find((a) => a.id === id)?.state === 'ready')
+  }
 
   const [activeAppId, setActiveAppId] = useState<string | null>(null)
   const [editingAppId, setEditingAppId] = useState<string | null>(null)
@@ -190,7 +208,7 @@ export function GroupAuthWizard({
       qc.setQueryData(['group-auth-status', groupId], data.auth)
       qc.invalidateQueries({ queryKey: ['groups'] })
       qc.invalidateQueries({ queryKey: ['group', groupId] })
-      if (data.auth.ready) {
+      if (isScopedReady(data.auth)) {
         setActiveAppId(null)
         allDoneRef.current()
       } else {
@@ -234,20 +252,40 @@ export function GroupAuthWizard({
     setSessionId(null)
   }
 
+  // "Check now" — a bounded, user-initiated probe of whether a saved session actually
+  // still works, distinct from `state === 'ready'` (which just means a session file
+  // exists — see group_auth_status's docstring). Per-app, keyed so one app's probe
+  // spinner doesn't block another's button.
+  const [checkingAppId, setCheckingAppId] = useState<string | null>(null)
+  const checkMut = useMutation({
+    mutationFn: (appId: string) => checkGroupAppAuth(groupId, appId),
+    onMutate: (appId) => setCheckingAppId(appId),
+    onSuccess: (data) => {
+      setCheckingAppId(null)
+      qc.setQueryData(['group-auth-status', groupId], data.auth)
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      qc.invalidateQueries({ queryKey: ['group', groupId] })
+    },
+    onError: () => setCheckingAppId(null),
+  })
+
   if (statusQ.isLoading || !statusQ.data) {
     return <p className="px-1 py-4 text-xs text-zinc-500">Loading apps…</p>
   }
 
   const apps = statusQ.data.apps
+  const visibleApps = appIds ? apps.filter((a) => appIds.includes(a.id)) : apps
   const editingApp = editingAppId ? apps.find((a) => a.id === editingAppId) ?? null : null
 
   return (
     <div className="space-y-3">
-      {apps.map((app: GroupAppStatus) => {
+      {visibleApps.map((app: GroupAppStatus) => {
         const isActive = activeAppId === app.id
         const isReady = app.state === 'ready' && !isActive
         const isExpired = app.state === 'expired' && !isActive
         const isFailed = isActive && appState === 'failed'
+        const isChecking = checkingAppId === app.id
+        const isUnverified = isReady && !app.verified
         return (
           <div
             key={app.id}
@@ -263,11 +301,13 @@ export function GroupAuthWizard({
             <span
               className={cn(
                 'flex size-7 shrink-0 items-center justify-center rounded-full',
-                isReady
+                isReady && app.verified
                   ? 'bg-emerald-500/15 text-emerald-400'
-                  : isExpired || isFailed
-                    ? 'bg-red-500/15 text-red-400'
-                    : 'bg-white/8 text-zinc-500',
+                  : isUnverified
+                    ? 'bg-amber-500/15 text-amber-400'
+                    : isExpired || isFailed
+                      ? 'bg-red-500/15 text-red-400'
+                      : 'bg-white/8 text-zinc-500',
               )}
             >
               {isReady ? (
@@ -292,8 +332,21 @@ export function GroupAuthWizard({
               {isExpired && (
                 <p className="mt-0.5 text-[11px] text-red-300">Session expired — sign in again.</p>
               )}
+              {isUnverified && (
+                <p className="mt-0.5 text-[11px] text-amber-300">Not verified recently — may have expired.</p>
+              )}
             </div>
-            {isReady ? null : isFailed ? (
+            {isUnverified ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                disabled={isChecking}
+                onClick={() => checkMut.mutate(app.id)}
+              >
+                {isChecking ? <Loader2 className="size-3.5 animate-spin" /> : 'Check now'}
+              </Button>
+            ) : isReady ? null : isFailed ? (
               <div className="flex shrink-0 gap-1.5">
                 <Button size="sm" variant="outline" onClick={skip}>Skip</Button>
                 <Button size="sm" onClick={() => retry(app.id)}>Retry</Button>

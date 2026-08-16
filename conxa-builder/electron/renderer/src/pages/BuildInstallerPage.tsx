@@ -77,10 +77,10 @@ export function BuildInstallerPage() {
   const canBuild = Boolean(pack?.build) && Boolean(latestVersion) && Boolean(logoPath) && !building
 
   async function handlePickLogo() {
-    const picked = await window.conxa.pickFile([
-      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'ico'] },
-    ])
-    if (picked) setLogoPath(picked)
+    const picked = await window.conxa.pickFile({
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'ico'] }],
+    })
+    if (picked?.[0]) setLogoPath(picked[0])
   }
 
   function handleClearLogo() {

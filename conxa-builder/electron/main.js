@@ -224,12 +224,22 @@ ipcMain.handle("dialog:save-installer", async (_e, srcPath) => {
   return { ok: true, filePath };
 });
 
-ipcMain.handle("dialog:pick-file", async (_e, filters) => {
+ipcMain.handle("dialog:pick-file", async (event, opts) => {
+  const { filters, defaultPath, multiple } = opts ?? {};
+  // Surface the Studio window above whatever else has focus (e.g. the recording browser
+  // window) before showing the dialog — see the file-picker-request flow in
+  // RecordWorkflowDialog.tsx.
+  const win = windowFromEvent(event);
+  if (win) {
+    win.show();
+    win.focus();
+  }
   const { canceled, filePaths } = await dialog.showOpenDialog({
-    properties: ["openFile"],
+    properties: multiple ? ["openFile", "multiSelections"] : ["openFile"],
     filters: filters ?? [{ name: "Images", extensions: ["png", "jpg", "jpeg", "ico"] }],
+    ...(defaultPath ? { defaultPath } : {}),
   });
-  return canceled ? null : (filePaths[0] ?? null);
+  return canceled ? null : filePaths;
 });
 
 function windowFromEvent(event) {

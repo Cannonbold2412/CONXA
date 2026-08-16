@@ -8,6 +8,7 @@ export type GroupApp = {
   login_url: string
   success_url: string
   captured_at: number | null
+  checked_at: number | null
   storage_state_path: string
   last_error: string
 }
@@ -47,6 +48,12 @@ export type GroupAppStatus = {
   success_url: string
   state: 'ready' | 'missing' | 'expired'
   captured_at: number | null
+  /** When this app's session was last actually probed (headless navigation), not just
+   * captured. null means "never verified since capture" — see `verified` below. */
+  checked_at: number | null
+  /** True only when checked_at is set and recent — a real probe recently confirmed the
+   * session, not just "a session file exists". A `ready` app can still be unverified. */
+  verified: boolean
   last_error: string
 }
 
@@ -116,4 +123,10 @@ export function finishGroupAppAuth(
 
 export function cancelGroupAppAuth(sessionId: string): Promise<{ ok: boolean }> {
   return cmd('cancel_group_app_auth', { session_id: sessionId })
+}
+
+/** Bounded, user-initiated probe of whether a saved session is still actually valid —
+ * "Check now" on the Group page. Omit appId to check every captured app in the group. */
+export function checkGroupAppAuth(groupId: string, appId?: string): Promise<{ group: Group; auth: GroupAuthStatus }> {
+  return cmd('check_group_app_auth', appId ? { group_id: groupId, app_id: appId } : { group_id: groupId })
 }

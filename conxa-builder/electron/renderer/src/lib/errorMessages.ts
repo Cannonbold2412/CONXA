@@ -54,8 +54,13 @@ export const errorMessages: Record<string, string> = {
     "The recorder browser couldn't start. Close any leftover browser windows and try again.",
   empty_recording: "No actions were recorded. Record at least one step before continuing.",
   no_events: "This session has no recorded actions to work with.",
-  auth_required:
-    "Please record a sign-in for this workflow first, then try again.",
+  // auth_required is deliberately NOT mapped here — the backend's own message (from
+  // handlers/session.py's pre-flight gate) already names the specific app(s) that need
+  // authentication ("Authenticate Salesforce before recording." / "Re-authenticate Salesforce
+  // before recording — the saved session has expired."), which is strictly more useful than any
+  // generic copy this map could substitute. Falls through to errorMessage()'s second branch
+  // (the raw backend message) by design. The Record action's error handler also opens
+  // GroupAuthWizard scoped to the named app(s) — see RecordWorkflowDialog.tsx.
   auth_capture_failed:
     "The sign-in window closed before it could be saved. Please record auth again.",
   auth_file_in_build_input:

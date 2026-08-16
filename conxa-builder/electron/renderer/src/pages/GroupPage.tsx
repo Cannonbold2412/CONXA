@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   addGroupApp,
+  checkGroupAppAuth,
   deleteGroup,
   fetchGroup,
   renameGroup,
@@ -36,7 +37,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useCompileBusy } from '@/store/compileStore'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { FolderKanban, Layers, Plus, Trash2 } from 'lucide-react'
+import { FolderKanban, Layers, Loader2, Plus, Trash2 } from 'lucide-react'
 
 function AddAppDialog({ groupId }: { groupId: string }) {
   const qc = useQueryClient()
@@ -343,6 +344,18 @@ export function GroupPage() {
     },
   })
 
+  // Bounded probe of every captured app's session at once — "ready" (a session file
+  // exists) and "verified" (a probe recently confirmed it works) can disagree; this is
+  // how the whole group catches up to verified in one action instead of app-by-app.
+  const checkAllMut = useMutation({
+    mutationFn: () => checkGroupAppAuth(groupId!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['group', groupId] })
+      qc.invalidateQueries({ queryKey: ['group-auth-status', groupId] })
+      qc.invalidateQueries({ queryKey: ['groups'] })
+    },
+  })
+
   if (q.isLoading) {
     return (
       <div className="h-full overflow-y-auto">
@@ -431,15 +444,26 @@ export function GroupPage() {
           </div>
           {group.apps.length > 0 && (
             // Answers "is this group blocked?" without counting rows.
-            <div className="flex items-center gap-1.5 border-b border-white/8 px-4 py-2.5 text-xs">
-              <span aria-hidden className={cn('text-[13px] leading-none', auth.ready ? 'text-status-ok' : 'text-status-warn')}>
-                {auth.ready ? '●' : '▲'}
-              </span>
-              <span className={cn(auth.ready ? 'text-status-ok' : 'text-status-warn')}>
-                {auth.ready
-                  ? 'All apps connected'
-                  : `${auth.apps_total - auth.apps_authenticated} of ${auth.apps_total} still need signing in`}
-              </span>
+            <div className="flex items-center justify-between gap-2 border-b border-white/8 px-4 py-2.5 text-xs">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span aria-hidden className={cn('shrink-0 text-[13px] leading-none', auth.ready ? 'text-status-ok' : 'text-status-warn')}>
+                  {auth.ready ? '●' : '▲'}
+                </span>
+                <span className={cn('truncate', auth.ready ? 'text-status-ok' : 'text-status-warn')}>
+                  {auth.ready
+                    ? 'All apps connected'
+                    : `${auth.apps_total - auth.apps_authenticated} of ${auth.apps_total} still need signing in`}
+                </span>
+              </div>
+              <button
+                type="button"
+                title="Re-probe every connected app's session right now"
+                className="shrink-0 text-[11px] text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
+                disabled={checkAllMut.isPending}
+                onClick={() => checkAllMut.mutate()}
+              >
+                {checkAllMut.isPending ? <Loader2 className="size-3 animate-spin" /> : 'Check all'}
+              </button>
             </div>
           )}
           <div className="p-3">

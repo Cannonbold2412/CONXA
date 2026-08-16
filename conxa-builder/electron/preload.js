@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld("conxa", {
 
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
 
-  pickFile: (filters) => ipcRenderer.invoke("dialog:pick-file", filters),
+  pickFile: (opts) => ipcRenderer.invoke("dialog:pick-file", opts),
 
   saveInstaller: (srcPath) => ipcRenderer.invoke("dialog:save-installer", srcPath),
 

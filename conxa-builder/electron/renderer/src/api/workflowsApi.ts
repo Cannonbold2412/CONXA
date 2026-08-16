@@ -249,8 +249,16 @@ export function startWorkflowRecord(
   workflowId: string,
   urlVariables?: Record<string, string>,
   captureHover = false,
-): Promise<{ session_id: string; workflow_id: string }> {
-  return cmd<{ session_id: string; workflow_id: string }>('start_recording', {
+): Promise<{
+  session_id: string
+  workflow_id: string
+  downloads_dir?: string
+  /** Non-blocking: a sibling app in this workflow's group looks signed out, but it
+   * isn't required by this specific workflow, so recording started anyway. See
+   * cmd_start_recording's expired_sibling_names handling. */
+  warnings?: string[]
+}> {
+  return cmd('start_recording', {
     workflow_id: workflowId,
     auth_mode: false,
     url_variables: urlVariables ?? {},
@@ -275,6 +283,20 @@ export function cancelRecording(
   return cmd<{ ok: boolean }>('cancel_recording', {
     session_id: sessionId,
     workflow_id: workflowId ?? '',
+  })
+}
+
+/** Answers a "file_picker_request" event (see RecordWorkflowDialog) with the path(s) the
+ * user chose in the Studio's own file-pick dialog, or `null` paths on cancel. */
+export function resolveFilePicker(
+  sessionId: string,
+  requestId: string,
+  paths: string[] | null,
+): Promise<{ ok: boolean }> {
+  return cmd<{ ok: boolean }>('resolve_file_picker', {
+    session_id: sessionId,
+    request_id: requestId,
+    paths,
   })
 }
 

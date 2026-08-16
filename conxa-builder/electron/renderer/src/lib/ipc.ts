@@ -38,7 +38,11 @@ declare global {
       cmd: <T = unknown>(type: string, payload?: unknown) => Promise<CmdResponse<T>>;
       onEvent: (handler: (event: BackendEvent) => void) => () => void;
       openExternal: (url: string) => Promise<void>;
-      pickFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
+      pickFile: (opts?: {
+        filters?: { name: string; extensions: string[] }[];
+        defaultPath?: string;
+        multiple?: boolean;
+      }) => Promise<string[] | null>;
       saveInstaller: (srcPath: string) => Promise<{ ok: boolean; filePath?: string }>;
       windowControls: {
         minimize: () => Promise<void>;
