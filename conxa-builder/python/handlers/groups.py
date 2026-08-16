@@ -9,6 +9,7 @@ conxa_core.storage.group_store.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,17 +22,29 @@ from handlers.protocol import _CommandError, _safe_id
 # without clipping; the full list lives on the group page.
 WORKFLOW_PREVIEW_LIMIT = 3
 
+# How long a probe verdict (checked_at) is trusted before an app reads as
+# "unverified" again. Matches handlers/session.py's recording-gate TTL — the
+# two exist for different reasons (this one drives the badge, that one bounds
+# probe cost) but there's no reason for them to disagree on what "recently
+# checked" means.
+_VERIFIED_TTL_S = 600
+
 
 def group_auth_status(group) -> dict[str, Any]:
     """Per-app readiness for a group, plus the id of the first app still
     needing attention (used by both the setup wizard and the run gate).
 
-    An app with a saved session is trusted as "ready" from its captured_at
-    flag alone — cheap, used on every page load. "expired" is not probed
-    here (that used to launch a headless browser on every group-page open
-    and could wedge the whole backend — see FIX.md); it is set by the
-    recording gate's bounded check_app_session_sync probe instead, via
-    last_error, and cleared the moment the app is re-authenticated."""
+    "state" (missing/expired/ready) is trusted from captured_at/last_error
+    alone — cheap, used on every page load; it is NOT itself a live probe
+    (that used to launch a headless browser on every group-page open and
+    could wedge the whole backend — see FIX.md). "verified" is the honest
+    signal: true only when checked_at is set and within _VERIFIED_TTL_S,
+    i.e. an actual headless probe confirmed the session recently — via the
+    recording gate (handlers/session.py) or the user-initiated "Check now"
+    action (cmd_check_group_app_auth below). A "ready" app with verified
+    false has a session on disk that has simply never been (recently)
+    tested — the UI should read that differently from a freshly-confirmed one."""
+    now = time.time()
     apps = []
     first_missing = None
     for app in group.apps:
@@ -41,6 +54,7 @@ def group_auth_status(group) -> dict[str, Any]:
             state = "expired"
         else:
             state = "ready"
+        verified = bool(app.checked_at) and (now - app.checked_at) <= _VERIFIED_TTL_S
         apps.append({
             "id": app.id,
             "name": app.name,
@@ -48,6 +62,8 @@ def group_auth_status(group) -> dict[str, Any]:
             "success_url": app.success_url,
             "state": state,
             "captured_at": app.captured_at,
+            "checked_at": app.checked_at,
+            "verified": verified,
             "last_error": app.last_error,
         })
         if state != "ready" and first_missing is None:
@@ -312,3 +328,36 @@ class GroupsMixin:
             if self._active_recording == session_id:
                 self._active_recording = None
         return {"ok": True}
+
+    def cmd_check_group_app_auth(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """User-initiated bounded probe: is this app's (or every captured app's)
+        saved session actually still valid, right now? This is the only place
+        besides the recording gate that spends a real headless navigation on a
+        session check — group_auth_status's "ready" badge is otherwise cheap
+        and can be stale (see its docstring). Pass app_id to check one app;
+        omit it to check every captured app in the group concurrently."""
+        from concurrent.futures import ThreadPoolExecutor
+        from conxa_compile.recorder.session import check_app_session_sync
+        from conxa_core.storage.group_store import get_group, set_group_app_checked
+
+        group_id = _safe_id(payload.get("group_id"), "group_id")
+        app_id_raw = payload.get("app_id")
+        group = get_group(group_id)
+        if group is None:
+            raise _CommandError("group_not_found", f"No group {group_id}")
+
+        if app_id_raw:
+            app_id = _safe_id(app_id_raw, "app_id")
+            targets = [a for a in group.apps if a.id == app_id and a.captured_at and a.storage_state_path]
+            if not targets:
+                raise _CommandError("app_not_found", f"No captured app {app_id} in group {group_id}")
+        else:
+            targets = [a for a in group.apps if a.captured_at and a.storage_state_path]
+
+        if targets:
+            with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+                results = list(zip(targets, pool.map(check_app_session_sync, targets)))
+            for app, state in results:
+                group = set_group_app_checked(group_id, app.id, state)
+
+        return {"group": group.model_dump(mode="json"), "auth": group_auth_status(group)}

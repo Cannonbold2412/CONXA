@@ -3,13 +3,51 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from services import bootstrap as _bootstrap_pkg
 from conxa_compile.recorder.session import registry as _recorder_registry
 from conxa_core.storage.workflow_store import get_workflow as _get_workflow
-from handlers.protocol import _CommandError, _event_sink, _safe_id
+from handlers.protocol import _CommandError, _emit_event, _event_sink, _safe_id
+
+
+def _refresh_group_app_sessions(workflow_id: str) -> None:
+    """After a workflow recording ends, split its merged group session back into
+    per-app updates so each app's saved session picks up whatever the site did to
+    it during the recording (rotated cookies, a mid-recording re-login) — see
+    cmd_start_recording above, which seeds *and* autosaves this same merged file
+    instead of a plain single storageState.
+    """
+    import json
+
+    from conxa_core.config import settings as _settings
+    from conxa_core.storage.group_store import get_group, set_group_app_auth
+    from conxa_core.storage.storage_state import refresh_app_state
+    from conxa_core.storage.workflow_store import get_workflow
+
+    workflow = get_workflow(workflow_id)
+    if workflow is None or not workflow.group_id:
+        return
+    merged_path = Path(_settings.data_dir) / "workflows" / workflow_id / "merged_group_state.json"
+    if not merged_path.is_file():
+        return
+    group = get_group(workflow.group_id)
+    if group is None:
+        return
+    current = json.loads(merged_path.read_text(encoding="utf-8"))
+    for app in group.apps:
+        if not app.storage_state_path or not Path(app.storage_state_path).is_file():
+            continue
+        state_path = Path(app.storage_state_path)
+        previous = json.loads(state_path.read_text(encoding="utf-8"))
+        refreshed = refresh_app_state(previous, current)
+        if not refreshed["cookies"] and not refreshed["origins"]:
+            continue  # never blank a working session
+        state_path.write_text(json.dumps(refreshed), encoding="utf-8")
+        set_group_app_auth(group.id, app.id, str(state_path))
+
 
 class SessionMixin:
     def cmd_ping(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -73,40 +111,98 @@ class SessionMixin:
 
             workflow_id_raw = payload.get("workflow_id")
             workflow_id = _safe_id(workflow_id_raw, "workflow_id") if workflow_id_raw else ""
+            expired_sibling_names: list[str] = []
+            auth_scope_warning: str = ""
 
             if workflow_id:
                 # Workflow recording (auth is captured once at the group level —
                 # see handlers/groups.py's cmd_start_group_app_auth — so this
                 # path only ever records the workflow itself, seeded with the
                 # group's merged session).
-                from conxa_core.storage.group_store import get_group
+                from conxa_core.storage.group_store import apps_for_workflow, get_group
                 from conxa_core.storage.storage_state import merge_storage_states
 
                 workflow = _get_workflow(workflow_id)
                 if not workflow:
                     raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
                 group = get_group(workflow.group_id) if workflow.group_id else None
-                if group is None or not group.apps or any(not a.captured_at for a in group.apps):
+                if group is None:
                     raise _CommandError("auth_required", "Authenticate every app in this workflow's group before recording.")
 
-                from concurrent.futures import ThreadPoolExecutor
-                from conxa_compile.recorder.session import check_app_session_sync
-                from conxa_core.storage.group_store import set_group_app_error
-
-                # One bounded probe per app, run concurrently (each already caps itself
-                # at 20s internally — see check_app_session_sync) so N apps cost one
-                # wait, not N serial waits, while holding _rec_lock.
-                with ThreadPoolExecutor(max_workers=len(group.apps)) as pool:
-                    app_states = list(zip(group.apps, pool.map(check_app_session_sync, group.apps)))
-                expired = [a for a, state in app_states if state == "expired"]
-                if expired:
-                    for a in expired:
-                        set_group_app_error(group.id, a.id, "Session expired — sign in again.")
+                # Only the apps this workflow's own URLs actually resolve to gate
+                # recording — a workflow that never navigates to a sibling app in
+                # the group isn't blocked by that app's login (mirrors
+                # skill_package_builder.py's required_apps at build time).
+                required = apps_for_workflow(group.apps, workflow.target_url, workflow.protected_url)
+                if not required and group.apps:
+                    # apps_for_workflow matches purely by hostname (see its docstring) — a
+                    # workflow whose login happens on a different host than its target (the
+                    # common single-sign-on shape: login on accounts.example.com, the app
+                    # itself on app.example.com) can legitimately match nothing even though it
+                    # really does need a login. Warn rather than block: forcing a confirmation
+                    # here would also block every genuinely-no-login-needed workflow in a group
+                    # that has apps for OTHER workflows, which is the common case, not the rare
+                    # one. See TODO.md's auth-pre-flight item for the decision.
+                    auth_scope_warning = (
+                        f"Couldn't match this workflow's URL to any app in the {group.name} group — "
+                        "authentication wasn't checked. If it needs a login, make sure the app's login "
+                        "or success URL is on the same domain as this workflow."
+                    )
+                missing = [a for a in required if not a.captured_at]
+                if missing:
                     raise _CommandError(
                         "auth_required",
-                        f"Re-authenticate {', '.join(a.name for a in expired)} before recording — the saved session has expired.",
+                        f"Authenticate {', '.join(a.name for a in missing)} before recording.",
                     )
 
+                # Recording seeds EVERY captured app in the group (below), not just the
+                # required ones, so a sibling app being dead at record time is a real risk —
+                # probe every captured app, not only the required subset. Skip apps checked
+                # recently (TTL) so this stays one bounded pass per record click instead of
+                # relaunching headless Chromium per app on every click.
+                captured = [a for a in group.apps if a.captured_at and a.storage_state_path]
+                _PROBE_TTL_S = 600
+                now = time.time()
+                to_probe = [a for a in captured if not a.checked_at or (now - a.checked_at) > _PROBE_TTL_S]
+                if to_probe:
+                    from concurrent.futures import ThreadPoolExecutor
+                    from conxa_compile.recorder.session import check_app_session_sync
+                    from conxa_core.storage.group_store import set_group_app_checked
+
+                    # One bounded probe per app needing a check, run concurrently (each
+                    # already caps itself at 20s internally — see check_app_session_sync)
+                    # so N apps cost one wait, not N serial waits, while holding _rec_lock.
+                    with ThreadPoolExecutor(max_workers=len(to_probe)) as pool:
+                        app_states = list(zip(to_probe, pool.map(check_app_session_sync, to_probe)))
+                    for a, state in app_states:
+                        set_group_app_checked(group.id, a.id, state)
+                    group = get_group(group.id)  # reload — set_group_app_checked persisted updates
+
+                # After the reload above, every captured app's last_error reflects its most
+                # recent probe verdict (fresh if it needed probing, still-valid-until-TTL
+                # otherwise) — set_group_app_checked clears it on "ready" and sets it on
+                # "expired", so this is the single source of truth for "is it expired now".
+                required_ids = {a.id for a in required}
+                expired_now = {a.id for a in group.apps if a.captured_at and a.last_error}
+                expired_required = [a for a in required if a.id in expired_now]
+                if expired_required:
+                    raise _CommandError(
+                        "auth_required",
+                        f"Re-authenticate {', '.join(a.name for a in expired_required)} before recording — the saved session has expired.",
+                    )
+                expired_siblings = [
+                    a for a in group.apps
+                    if a.id in expired_now and a.id not in required_ids
+                ]
+                expired_sibling_names = [a.name for a in expired_siblings]
+
+                # Seed the recording from every captured app in the group, not just
+                # the required ones — a workflow may still cross into a sibling app
+                # mid-recording (e.g. an unplanned link-out) and should already be
+                # signed in if that app happens to be connected. A sibling flagged
+                # expired above is still seeded (best-effort) rather than dropped —
+                # the user is present in the recorder window and can sign back in
+                # inline if that app actually comes up, same as before this gate existed.
                 states = []
                 for app in group.apps:
                     if app.storage_state_path and Path(app.storage_state_path).is_file():
@@ -120,7 +216,14 @@ class SessionMixin:
                 merged_path = workflow_dir / "merged_group_state.json"
                 merged_path.write_text(_json.dumps(merged), encoding="utf-8")
                 storage_state_path = str(merged_path)
-                storage_state_autosave = ""
+                # Autosave into the same merged file the recorder was seeded from, so
+                # cmd_stop_recording/cmd_cancel_recording can read back what the site did to
+                # the session (rotated cookies, a mid-recording re-login) and write each app's
+                # slice back to its own saved session. Confirmed safe to enable: the recorder
+                # no longer autosaves on a timer (see the pump-loop comment in
+                # recorder/session.py) — it only saves once, at teardown, so this no longer
+                # reintroduces the flicker that motivated temporarily disabling this line.
+                storage_state_autosave = storage_state_path
 
                 start_url = str((workflow.protected_url or workflow.target_url or "about:blank")).strip()
                 url_variables = payload.get("url_variables")
@@ -141,12 +244,42 @@ class SessionMixin:
                 storage_state_autosave_path=storage_state_autosave,
                 capture_hover=bool(payload.get("capture_hover")),
             )
+            # Fires from the recorder's Playwright driver thread whenever a "Choose File"
+            # click would otherwise open the native OS picker — see
+            # RecordingSession._on_file_chooser. No req_id: this isn't a reply to any
+            # in-flight command, just a broadcast the renderer picks up via onEvent.
+            sess.on_file_picker_request = lambda request_id, default_dir, multiple: _emit_event(
+                None,
+                action="file_picker_request",
+                session_id=sess.session_id,
+                request_id=request_id,
+                default_dir=default_dir,
+                multiple=multiple,
+            )
             try:
                 self._loop.run(sess.start())
             except RuntimeError as exc:
                 _recorder_registry.pop(sess.session_id)
                 raise _CommandError("recorder_launch_failed", str(exc)) from exc
-            result = {"session_id": sess.session_id, "start_url": start_url}
+            result: dict[str, Any] = {"session_id": sess.session_id, "start_url": start_url}
+            downloads_dir = getattr(sess, "_downloads_dir", None)
+            if downloads_dir is not None:
+                # Files downloaded during this recording land here (mirrors the runtime's
+                # runs/{runId}/) — surfaced so the UI can point the user at it. It's also the
+                # default folder the Studio's own file-pick dialog opens to on "Choose File"
+                # (see on_file_picker_request above / _on_file_chooser in recorder/session.py).
+                result["downloads_dir"] = str(downloads_dir)
+            warnings: list[str] = []
+            if expired_sibling_names:
+                warnings.append(
+                    f"{', '.join(expired_sibling_names)} "
+                    f"{'looks' if len(expired_sibling_names) == 1 else 'look'} signed out — "
+                    "if this recording crosses into it, sign in inside the recorder window."
+                )
+            if auth_scope_warning:
+                warnings.append(auth_scope_warning)
+            if warnings:
+                result["warnings"] = warnings
             if workflow_id:
                 from conxa_core.storage.workflow_store import set_recording
 
@@ -158,6 +291,19 @@ class SessionMixin:
                 result["workflow_id"] = updated.id
             self._active_recording = sess.session_id
             return result
+
+    def cmd_resolve_file_picker(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Delivers the Studio dialog's result back to a recording session in response to a
+        "file_picker_request" event. `paths` is null/omitted on cancel. A session that's
+        already gone (recording ended while the dialog was open) is a benign no-op."""
+        session_id = _safe_id(payload.get("session_id"), "session_id")
+        request_id = str(payload.get("request_id") or "").strip()
+        paths_raw = payload.get("paths")
+        paths = [str(p) for p in paths_raw] if isinstance(paths_raw, list) and paths_raw else None
+        sess = _recorder_registry.get(session_id)
+        if sess is not None and request_id:
+            sess.resolve_file_pick(request_id, paths)
+        return {"ok": True}
 
     def cmd_cancel_recording(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         """Discard an in-progress recording the user cancelled from the UI.
@@ -186,7 +332,9 @@ class SessionMixin:
         if workflow_id_raw:
             from conxa_core.storage.workflow_store import clear_recording
 
-            clear_recording(_safe_id(workflow_id_raw, "workflow_id"))
+            workflow_id = _safe_id(workflow_id_raw, "workflow_id")
+            _refresh_group_app_sessions(workflow_id)
+            clear_recording(workflow_id)
         return {"ok": True}
 
     def cmd_stop_recording(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -214,6 +362,7 @@ class SessionMixin:
             from conxa_core.storage.workflow_store import clear_recording
 
             workflow_id = _safe_id(workflow_id, "workflow_id")
+            _refresh_group_app_sessions(workflow_id)
             if len(events) == 0:
                 clear_recording(workflow_id)
                 raise _CommandError("empty_recording", "No workflow actions were recorded.")

@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, SimpleQueue
@@ -46,11 +47,21 @@ from conxa_compile.recorder.frame_utils import (
 # open and busy loading a heavy same-page iframe (e.g. HubSpot's "Create new"
 # object-builder embed). Ending the recording on the first bad reading silently
 # truncates it mid-session. Require the bad reading to persist across this many
-# consecutive 0.2s loop ticks before treating it as a real close/crash — a
-# genuine close is unaffected, it just confirms a few seconds later. Measured
-# against real HubSpot recordings, the 8s (40-tick) window was consistently
-# exhausted by that specific panel's load time, so this is now 20s.
-_NO_PAGES_GRACE_TICKS = 100  # ~20s at the loop's 0.2s cadence
+# consecutive checks before treating it as a real close/crash — a genuine close
+# is unaffected, it just confirms a few seconds later. Measured against real
+# HubSpot recordings, the 8s (40-tick) window was consistently exhausted by
+# that specific panel's load time, so this is now 20s.
+#
+# The connectivity check itself is throttled to ~once/second (not every 0.2s
+# loop tick — see _last_connectivity_check_at in the pump loop) because
+# is_connected()/context.pages are themselves CDP round-trips, and running
+# them 5x/second was a source of visible browser window flicker during
+# recording, the same class of bug already fixed for storage-state autosaving
+# (see _autosave_storage_state_sync). Each streak increment now represents
+# ~1s of real time, so this constant is counted in checks-at-~1Hz, not raw
+# 0.2s loop ticks — kept at ~20s grace by dividing the old tick-based value
+# by 5.
+_NO_PAGES_GRACE_TICKS = 20  # ~20s at the check's ~1s cadence
 
 
 def url_matches_pattern(url: str, pattern: str, *, exclude_prefix: str = "") -> bool:
@@ -165,6 +176,8 @@ class RecordingSession:
     _pending_payloads: SimpleQueue = field(default_factory=SimpleQueue)
     _last_enqueue_at: float = 0.0
     _last_storage_state_save_at: float = 0.0
+    _last_url_sweep_at: float = 0.0
+    _last_connectivity_check_at: float = 0.0
     _bridge_script: str = ""
     _bridge_install_error_keys: set[str] = field(default_factory=set)
     _frame_diag_seen: set[str] = field(default_factory=set)
@@ -192,6 +205,19 @@ class RecordingSession:
     # Phase 2: dedup state for DOM snapshots. Maps short bridge signature -> snapshot_ref.
     _snapshot_refs_by_sig: dict[str, str] = field(default_factory=dict)
     _last_snapshot_hash: str = ""
+    # Per-session workspace downloads land in during recording — mirrors the runtime's
+    # runs/{runId}/ (see _run_sync_recorder). None for auth_mode sessions, which never record.
+    _downloads_dir: Path | None = None
+    _taken_download_names: set[str] = field(default_factory=set)
+    # Folder to default the Studio's file-pick dialog to — the most recent download's folder
+    # (or its zip-extract folder), falling back to _downloads_dir. See _on_download/_on_file_chooser.
+    _last_download_dir: Path | None = None
+    # Set by the caller (handlers/session.py) before start(): (request_id, default_dir, multiple) -> None.
+    # Invoked from the Playwright driver thread when a native file-chooser dialog would otherwise
+    # open — see _on_file_chooser. None means no interception request is dispatched anywhere.
+    on_file_picker_request: Any = None
+    _pending_file_chooser: Any = None  # (request_id, chooser) for the one outstanding pick
+    _file_pick_results: SimpleQueue = field(default_factory=SimpleQueue)
     _last_snapshot_ref: str = ""
     # A11y capture: one-strike degradation if slow (> 500ms).
     _last_a11y_capture_time: float = 0.0
@@ -378,7 +404,7 @@ class RecordingSession:
         # stuck True, since the finally block that clears it never gets reached.
         # Skip rather than risk that hang; the last successful periodic save (or lack
         # of one) is the best we can do once the connection is already gone.
-        if self._browser is None or not self._browser.is_connected():
+        if not self.browser_open:
             return
         now = time.monotonic()
         if not force and now - self._last_storage_state_save_at < 6.0:
@@ -1027,12 +1053,86 @@ class RecordingSession:
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"synthetic_event_error:{kind}: {exc!s}")
 
+    @staticmethod
+    def _unique_download_name(fname: str, taken: set[str]) -> str:
+        # Two downloads in one recording can suggest the same filename — reserve a distinct
+        # name so the second doesn't silently overwrite the first, same idea already shipped
+        # on the runtime replay side (run.js::uniqueDownloadName, EXEC-11).
+        base, ext = os.path.splitext(fname)
+        candidate, n = fname, 2
+        while candidate in taken:
+            candidate = f"{base} ({n}){ext}"
+            n += 1
+        taken.add(candidate)
+        return candidate
+
+    @staticmethod
+    def _extract_zip_once(zip_path: Path) -> list[str]:
+        """Extract a downloaded zip into a sibling folder and return its top-level filenames.
+
+        Mirrors run.js::extractZipOnce so record and replay behave identically: same
+        stem-named sibling folder, idempotent (a second download of the same name is a no-op
+        here since the caller already gave it a unique name), and a single top-level wrapping
+        folder inside the zip is unwrapped once so the returned names are the real files, not
+        one subdirectory. Recorded here (not read from the zip at compile time) because compile
+        can run in a different session/machine that no longer has this file on disk.
+        """
+        dest = zip_path.with_suffix("")
+        if not dest.exists():
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(dest)
+            dest.mkdir(parents=True, exist_ok=True)
+        entries = list(dest.iterdir())
+        if len(entries) == 1 and entries[0].is_dir():
+            dest = entries[0]
+        return sorted(p.name for p in dest.iterdir() if p.is_file())
+
     def _on_download(self, download: Any, src_page: Any | None = None) -> None:
         try:
-            value = json.dumps({"url": download.url, "suggested_filename": download.suggested_filename})
-            self._enqueue_synthetic("download_observed", value, src_page=src_page)
+            zip_members: list[str] | None = None
+            if self._downloads_dir is not None:
+                name = self._unique_download_name(
+                    download.suggested_filename or f"download_{int(time.time())}",
+                    self._taken_download_names,
+                )
+                dest = self._downloads_dir / name
+                download.save_as(str(dest))
+                if name.lower().endswith(".zip"):
+                    zip_members = self._extract_zip_once(dest)
+                    # Top-level extract folder, not the per-entry unwrapped dir
+                    # _extract_zip_once may resolve to for a single-wrapping-folder zip —
+                    # close enough as a file-picker default; the user is at most one folder
+                    # away from the real files.
+                    self._last_download_dir = dest.with_suffix("")
+                else:
+                    self._last_download_dir = self._downloads_dir
+            payload: dict[str, Any] = {"url": download.url, "suggested_filename": download.suggested_filename}
+            if zip_members is not None:
+                payload["zip_members"] = zip_members
+            self._enqueue_synthetic("download_observed", json.dumps(payload), src_page=src_page)
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"download_event_error: {exc!s}")
+
+    def _on_file_chooser(self, chooser: Any) -> None:
+        """Suppresses the native OS file picker and asks the Studio to show its own,
+        pre-pointed at the most recent download's folder. Never blocks — the user's pick can
+        take minutes; resolve_file_pick() delivers the answer back via the pump loop."""
+        try:
+            request_id = str(uuid.uuid4())
+            self._pending_file_chooser = (request_id, chooser)
+            default_dir = self._last_download_dir or self._downloads_dir or (Path.home() / "Downloads")
+            if self.on_file_picker_request is not None:
+                self.on_file_picker_request(
+                    request_id, str(default_dir), bool(getattr(chooser, "is_multiple", False))
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.binding_errors.append(f"file_chooser_event_error: {exc!s}")
+
+    def resolve_file_pick(self, request_id: str, paths: list[str] | None) -> None:
+        """Called from any thread with the Studio dialog's result. Queued, not applied
+        directly: FileChooser.set_files() is a Playwright sync-API call and must run on the
+        recorder's own driver thread — see the pump loop that drains this."""
+        self._file_pick_results.put((request_id, paths))
 
     def _on_dialog(self, dialog: Any, src_page: Any | None = None) -> None:
         try:
@@ -1085,11 +1185,11 @@ class RecordingSession:
         page.on("download", lambda download: self._on_download(download, page))
         page.on("dialog", lambda dialog: self._on_dialog(dialog, page))
         page.on("popup", lambda popup: self._on_popup(popup, page))
-        # No "filechooser" listener by design: attaching one makes Playwright intercept the
-        # dialog, so the native OS picker never opens and the user cannot choose a file. The
-        # input's change event then never fires and bridge.js never emits upload_intent, which
-        # made uploads impossible to record. Recording is always headed (headless=False below),
-        # so letting the real dialog through is safe.
+        # Intercepts the native OS file picker (see _on_file_chooser) so the Studio can show
+        # its own dialog pre-pointed at the download folder instead. set_files() on the
+        # resulting FileChooser still dispatches the input's change event via CDP, so
+        # bridge.js's upload_intent capture is unaffected.
+        page.on("filechooser", lambda chooser: self._on_file_chooser(chooser))
         page.on("framenavigated", lambda frame: self._on_page_navigated(page, frame))
         if not self.auth_mode:
             page.on("frameattached", self._on_frame_attached)
@@ -1104,16 +1204,34 @@ class RecordingSession:
         try:
             import sys as _sys
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(
-                headless=False,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--disable-session-crashed-bubble",
-                    "--disable-infobars",
-                    "--no-first-run",
-                ]
-            )
+            # Isolated per-session workspace, mirroring the runtime's runs/{runId}/ — downloads
+            # taken during recording land here instead of nowhere durable.
+            if not self.auth_mode:
+                self._downloads_dir = self.data_root / "sessions" / self.session_id / "downloads"
+                self._downloads_dir.mkdir(parents=True, exist_ok=True)
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-session-crashed-bubble",
+                "--disable-infobars",
+                "--no-first-run",
+            ]
+            has_storage_state = bool(self.storage_state_path and Path(self.storage_state_path).is_file())
+            ctx_kwargs: dict[str, Any] = {}
+            if has_storage_state:
+                ctx_kwargs["storage_state"] = self.storage_state_path
+            if not self.auth_mode:
+                # Video recording is mandatory for non-auth sessions. Confirmed not the (sole)
+                # cause of recording-window flicker — disabling it during investigation did not
+                # eliminate the flicker, which came from the periodic storage_state autosave
+                # instead (see the pump-loop comment further down). Safe to keep enabled.
+                session_dir = self.data_root / "sessions" / self.session_id
+                session_dir.mkdir(parents=True, exist_ok=True)
+                ctx_kwargs["record_video_dir"] = str(session_dir)
+                ctx_kwargs["record_video_size"] = {"width": 1280, "height": 720}
+            self._browser = self._playwright.chromium.launch(headless=False, args=launch_args)
+            self._context = self._browser.new_context(**ctx_kwargs)
+            self._browser.on("disconnected", lambda _: self._on_browser_disconnected())
             self.browser_open = True
             # Allow Chromium to steal the foreground on Windows despite focus-lock
             if _sys.platform == "win32":
@@ -1122,27 +1240,17 @@ class RecordingSession:
                     ctypes.windll.user32.AllowSetForegroundWindow(-1)
                 except Exception:
                     pass
-            self._browser.on("disconnected", lambda _: self._on_browser_disconnected())
-            ctx_kwargs: dict[str, Any] = {}
-            if self.storage_state_path and Path(self.storage_state_path).is_file():
-                ctx_kwargs["storage_state"] = self.storage_state_path
-            if not self.auth_mode:
-                # Video recording is mandatory for non-auth sessions.
-                session_dir = self.data_root / "sessions" / self.session_id
-                session_dir.mkdir(parents=True, exist_ok=True)
-                ctx_kwargs["record_video_dir"] = str(session_dir)
-                ctx_kwargs["record_video_size"] = {"width": 1280, "height": 720}
-            self._context = self._browser.new_context(**ctx_kwargs)
             if not self.auth_mode:
                 import time as _time
                 self._video_session_start = _time.monotonic()
                 self._video_session_start_wall_ms = int(_time.time() * 1000)
-            if not self.auth_mode:
                 self._bridge_script = _load_bridge_script(capture_hover=self.capture_hover)
                 self._context.expose_binding("__skillReport", self._binding_sink_sync)
                 self._context.add_init_script(self._bridge_script)
                 self._context.on("page", self._on_context_page)
-            self._page = self._context.new_page()
+                self._page = self._context.new_page()
+            else:
+                self._page = self._context.new_page()
             try:
                 self._page.goto(self.start_url, wait_until="load", timeout=30000)
                 self._remember_page_url_sync(self._page)
@@ -1203,18 +1311,26 @@ class RecordingSession:
                                 })
                         except Exception:  # noqa: BLE001
                             pass
-                # Throttled to every 6s (see _autosave_storage_state_sync) instead of
-                # every loop tick — frequent saves while auth_mode is what caused visible
-                # window flicker during active login. This periodic call is also the
-                # safety net that keeps a recent save on disk before the risky moment of
-                # the browser actually closing (see the connection guard in that method).
-                self._log_bridge_attempt("<pump>", "tick_autosave_begin")
-                self._autosave_storage_state_sync()
-                self._log_bridge_attempt("<pump>", "tick_autosave_done")
-                self._log_bridge_attempt("<pump>", "tick_page_url_sweep_begin")
-                for page in self._open_pages_sync():
-                    self._remember_page_url_sync(page)
-                self._log_bridge_attempt("<pump>", "tick_page_url_sweep_done")
+                # No periodic autosave here on purpose. context.storage_state() is a heavy,
+                # all-at-once CDP call (every cookie + every page's localStorage), and calling
+                # it repeatedly on a timer — even throttled to every 6s — was a confirmed source
+                # of visible recording-window flicker (originally diagnosed in auth_mode, later
+                # found to affect ordinary workflow recording too once autosave got wired on for
+                # it). Authentication is pre-flight-only now: recording only needs to capture the
+                # session state once, which happens at the two real signals that matter — reaching
+                # the wait_for_url target (below) and session teardown (force=True at the end of
+                # this method) — never on a blind timer.
+                # Throttled to ~1s (like the connectivity check below) instead of every 0.2s
+                # tick — reading page.url for every open page every tick is more CDP traffic
+                # than this cheap bookkeeping needs, and it stacks with the other per-tick
+                # checks to contribute to visible recording-window flicker.
+                now_for_url_sweep = time.monotonic()
+                if now_for_url_sweep - self._last_url_sweep_at >= 1.0:
+                    self._last_url_sweep_at = now_for_url_sweep
+                    self._log_bridge_attempt("<pump>", "tick_page_url_sweep_begin")
+                    for page in self._open_pages_sync():
+                        self._remember_page_url_sync(page)
+                    self._log_bridge_attempt("<pump>", "tick_page_url_sweep_done")
                 if self.wait_for_url and not self.reached_wait_url:
                     try:
                         for page in self._open_pages_sync():
@@ -1233,54 +1349,73 @@ class RecordingSession:
                         self._consume_payload_safe_sync(payload, src_page, src_frame)
                     except Empty:
                         pass
-                if not self._browser.is_connected() or not self._open_pages_sync():
-                    # A heavy same-page iframe load (e.g. HubSpot's "Create new" object
-                    # panel) can make both of these read "gone" for several real seconds
-                    # while the browser is still open and busy — is_connected() has been
-                    # observed to flicker under CDP/network pressure just like the page
-                    # list does. Debounce both under one streak so neither ends the
-                    # recording on a single bad tick; a real close/crash still confirms
-                    # well within the grace window.
-                    self._no_pages_streak += 1
-                    # Log the streak's shape (not just its eventual give-up) — on the first tick
-                    # and then every ~10th tick while it continues — so recorder_diag.json shows
-                    # how long a "pages look gone" stretch actually lasted even when it resolves
-                    # on its own well under the give-up threshold, instead of being invisible.
-                    if self._no_pages_streak == 1 or self._no_pages_streak % 10 == 0:
-                        try:
-                            connected = self._browser.is_connected()
-                        except Exception as exc:  # noqa: BLE001
-                            connected = f"raised: {exc!s}"
-                        if len(self._frame_lifecycle) < 2000:
+                    try:
+                        request_id, paths = self._file_pick_results.get_nowait()
+                        pending = self._pending_file_chooser
+                        if pending is not None and pending[0] == request_id:
+                            self._pending_file_chooser = None
+                            if paths:
+                                try:
+                                    pending[1].set_files(paths)
+                                except Exception as exc:  # noqa: BLE001
+                                    self.binding_errors.append(f"file_chooser_set_files_error: {exc!s}")
+                    except Empty:
+                        pass
+                # Throttled to ~1s instead of every 0.2s tick — context.pages is itself a CDP
+                # round-trip, and running it 5x/second was a source of visible recording-window
+                # flicker (see _NO_PAGES_GRACE_TICKS comment above). browser_open is a plain flag
+                # (set False by the browser/context "disconnected"/"close" event) so it costs
+                # nothing to check every tick, unlike a live is_connected() round-trip.
+                # The gate timestamp is updated unconditionally whenever it opens (not only on
+                # the bad-path branch below) so the throttle keeps engaging once the browser is
+                # healthy — updating it only on the bad path would leave it at 0 forever in the
+                # common case and defeat the throttle entirely. When the gate is closed this
+                # tick, skip the check outright and leave _no_pages_streak untouched.
+                now_for_connectivity_check = time.monotonic()
+                if now_for_connectivity_check - self._last_connectivity_check_at >= 1.0:
+                    self._last_connectivity_check_at = now_for_connectivity_check
+                    if not self.browser_open or not self._open_pages_sync():
+                        # A heavy same-page iframe load (e.g. HubSpot's "Create new" object
+                        # panel) can make both of these read "gone" for several real seconds
+                        # while the browser is still open and busy — the page list has been
+                        # observed to flicker under CDP/network pressure. Debounce under one
+                        # streak so neither ends the recording on a single bad check; a real
+                        # close/crash still confirms well within the grace window.
+                        self._no_pages_streak += 1
+                        # Log the streak's shape (not just its eventual give-up) — on the first
+                        # check and then every ~10th check while it continues — so
+                        # recorder_diag.json shows how long a "pages look gone" stretch actually
+                        # lasted even when it resolves on its own well under the give-up
+                        # threshold, instead of being invisible.
+                        if self._no_pages_streak == 1 or self._no_pages_streak % 10 == 0:
+                            connected = self.browser_open
+                            if len(self._frame_lifecycle) < 2000:
+                                self._frame_lifecycle.append({
+                                    "kind": "no_pages_tick",
+                                    "url": self.current_url,
+                                    "parent_url": None,
+                                    "ts": int(time.time() * 1000),
+                                    "streak": self._no_pages_streak,
+                                    "browser_connected": connected,
+                                })
+                        if self._no_pages_streak >= _NO_PAGES_GRACE_TICKS:
+                            still_connected = self.browser_open
+                            self.binding_errors.append(
+                                f"recorder_gave_up: streak={self._no_pages_streak} "
+                                f"browser_connected={still_connected} current_url={self.current_url!r}"
+                            )
+                            self.ended_by_user = True
+                            break
+                    else:
+                        if self._no_pages_streak > 0 and len(self._frame_lifecycle) < 2000:
                             self._frame_lifecycle.append({
-                                "kind": "no_pages_tick",
+                                "kind": "no_pages_resolved",
                                 "url": self.current_url,
                                 "parent_url": None,
                                 "ts": int(time.time() * 1000),
                                 "streak": self._no_pages_streak,
-                                "browser_connected": connected,
                             })
-                    if self._no_pages_streak >= _NO_PAGES_GRACE_TICKS:
-                        try:
-                            still_connected = self._browser.is_connected()
-                        except Exception as exc:  # noqa: BLE001
-                            still_connected = f"is_connected() raised: {exc!s}"
-                        self.binding_errors.append(
-                            f"recorder_gave_up: streak={self._no_pages_streak} "
-                            f"browser_connected={still_connected} current_url={self.current_url!r}"
-                        )
-                        self.ended_by_user = True
-                        break
-                else:
-                    if self._no_pages_streak > 0 and len(self._frame_lifecycle) < 2000:
-                        self._frame_lifecycle.append({
-                            "kind": "no_pages_resolved",
-                            "url": self.current_url,
-                            "parent_url": None,
-                            "ts": int(time.time() * 1000),
-                            "streak": self._no_pages_streak,
-                        })
-                    self._no_pages_streak = 0
+                        self._no_pages_streak = 0
                 time.sleep(0.2)
 
             if not self.auth_mode:

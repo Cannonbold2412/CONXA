@@ -211,6 +211,23 @@ def _insert_tab_markers(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _navigate_step(url: str, tab: dict[str, Any]) -> SkillStep:
+    """A synthetic `navigate` step to `url` — used everywhere the compiler has to insert a page
+    load the recording itself never performed as a user action (a tab open, the recording's own
+    starting page)."""
+    return SkillStep(
+        action="navigate",
+        intent="navigate_to_page",
+        url=url,
+        tab=dict(tab),
+        recovery=RecoveryBlock(**no_recovery_block("navigate_to_page")),
+        validation=ValidationBlock(
+            wait_for={"type": "url_change", "target": url, "timeout": 60000},
+            success_conditions={"url": url},
+        ),
+    )
+
+
 def _insert_user_tab_navigate_steps(
     steps: list[SkillStep], cleaned_events: list[dict[str, Any]]
 ) -> list[SkillStep]:
@@ -238,20 +255,36 @@ def _insert_user_tab_navigate_steps(
         url = str((ev.get("page") or {}).get("url") or "").strip()
         if not url:
             continue
-        out.append(
-            SkillStep(
-                action="navigate",
-                intent="navigate_to_page",
-                url=url,
-                tab=dict(step.tab),
-                recovery=RecoveryBlock(**no_recovery_block("navigate_to_page")),
-                validation=ValidationBlock(
-                    wait_for={"type": "url_change", "target": url, "timeout": 60000},
-                    success_conditions={"url": url},
-                ),
-            )
-        )
+        out.append(_navigate_step(url, step.tab))
     return out
+
+
+def _insert_start_navigate_step(
+    steps: list[SkillStep], cleaned_events: list[dict[str, Any]]
+) -> list[SkillStep]:
+    """Give the recording's own starting tab the same leading `navigate` step every
+    user-opened tab already gets from _insert_user_tab_navigate_steps.
+
+    _insert_tab_markers deliberately emits no tab_open marker for the recording's initial tab —
+    "that's just the recording's starting tab, not something that 'opened' mid-workflow." That's
+    correct for markers, but it means tab_0 is the one tab with no recorded navigation: nothing
+    in the compiled skill says where step 1 is supposed to run. The runtime used to guess (the
+    group app's landing page), which fails whenever that's a different site than the recording —
+    see FIX.md. This makes tab_0 consistent with every other tab: the skill's own first step is
+    a `navigate` to wherever the recording actually started.
+
+    Must run AFTER _insert_user_tab_navigate_steps (it prepends, which would desync that
+    function's zip(steps, cleaned_events) if run first) and AFTER _populate_hover_chains
+    (same reason: it indexes steps[i] against cleaned_events[i]).
+    """
+    if not steps or not cleaned_events:
+        return steps
+    if steps[0].action == "navigate":
+        return steps  # the recording already opens with a real navigation
+    url = str((cleaned_events[0].get("page") or {}).get("url") or "").strip()
+    if not url or url.split(":", 1)[0] == "about":
+        return steps
+    return [_navigate_step(url, steps[0].tab)] + steps
 
 
 def _merge_compile_warnings(
@@ -369,6 +402,27 @@ def _persisted_visual_asset_path(
     if session_id:
         return f"sessions/{session_id}/{r}"
     return r
+
+
+def _extract_visited_hosts(cleaned_events: list[dict[str, Any]]) -> list[str]:
+    """Every hostname this recording actually navigated to — main frame
+    (ev.page.url) and any tab opened during the recording (ev.tab.url) — so
+    SkillMeta.visited_hosts can gate required_apps on everywhere the workflow
+    goes, not just where it starts. See group_store.apps_for_workflow."""
+    from urllib.parse import urlparse
+
+    hosts: set[str] = set()
+    for ev in cleaned_events:
+        for url in ((ev.get("page") or {}).get("url"), (ev.get("tab") or {}).get("url")):
+            if not url:
+                continue
+            try:
+                host = (urlparse(url).hostname or "").lower()
+            except ValueError:
+                host = ""
+            if host:
+                hosts.add(host)
+    return sorted(hosts)
 
 
 def build_signal_reference(ev: dict[str, Any]) -> dict[str, Any]:
@@ -1431,8 +1485,11 @@ def compile_skill_package(
     steps = _insert_user_tab_navigate_steps(steps, cleaned_events)
     _log_vision_anchor_fallback_summary(steps)
 
-    # Phase 7: populate hover_chain handler hints from hover-then-act sequences.
+    # Phase 7: populate hover_chain handler hints from hover-then-act sequences. Must run before
+    # _insert_start_navigate_step below: it indexes steps[i] against cleaned_events[i], and the
+    # leading navigate that function prepends has no matching cleaned_event.
     _populate_hover_chains(steps, cleaned_events, session_id=sid)
+    steps = _insert_start_navigate_step(steps, cleaned_events)
 
     # Phase 3: Build the workflow-level intent graph (one LLM call). Selector generation
     # is fully deterministic and already complete — no LLM selector passes run here.
@@ -1468,6 +1525,7 @@ def compile_skill_package(
         compiler_policy_version=bundle.version,
         compiler_policy_hash=bundle.content_hash,
         structural_fingerprint=structural_fp,
+        visited_hosts=_extract_visited_hosts(cleaned_events),
     )
     return SkillPackage(
         meta=meta,
