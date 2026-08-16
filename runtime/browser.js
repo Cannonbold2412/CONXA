@@ -41,6 +41,9 @@ function _loadPack(company) {
 // Has the page reached protectedUrl's own host and left any login/auth path? Scoped to the
 // target site's hostname so an OAuth leg through a different host (e.g. accounts.google.com,
 // whose URLs contain "auth"/"oauth"/"signin") is never mistaken for "still logging in".
+// Deliberately narrower than run.js's AUTH_FAILURE_URL_RE (no "auth"/"logout", anchored at
+// path start) — this answers "has login-completion happened yet", not "did we just hit a
+// login wall mid-run", so it's intentionally NOT the same pattern; don't merge them.
 const LOGIN_PATH_RE = /^\/(login|signin|sign-in|session-expired)(\/|$|\?)/i;
 function _reachedProtectedUrl(url, protectedUrl) {
   if (!protectedUrl) return false;
@@ -124,36 +127,82 @@ async function _validateGroupApp(company, app, authManager, logFn) {
   return { app, stored, valid };
 }
 
-/** Group-aware auth resolution: validate every app's session, merge the
- * valid ones into one context. Any missing/expired app opens its own login
- * window (first one found) via the existing non-blocking beginInteractiveAuth
- * contract — each re-run of execute_skill advances one app, same as the
- * single-app flow, until every app in the group is signed in. */
+// Scopes a group's apps down to the ones a skill's manifest.required_apps actually
+// declared. undefined requiredAppIds (pre-field manifest) means "gate on every app" —
+// the pre-existing behavior. Pulled out of getGroupAuthContext so it's unit-testable
+// without touching Playwright/chromium.
+function _filterRequiredApps(groupApps, requiredAppIds) {
+  return Array.isArray(requiredAppIds)
+    ? groupApps.filter((a) => requiredAppIds.includes(a.id))
+    : groupApps;
+}
+
+/** Group-aware auth resolution: validate every app in the group (not just the
+ * required ones), gate on the REQUIRED apps only, but seed the merged context
+ * from every app whose session validates. This mirrors what recording already
+ * does (handlers/session.py seeds every captured app) — a workflow that
+ * wanders into a sibling app mid-run arrives already signed in instead of
+ * hitting a login wall, even though that app wasn't gated on up front.
+ *
+ * Any missing/expired REQUIRED app opens its own login window — ALL of them
+ * at once, not one at a time, so a run with N broken apps costs the user one
+ * interruption instead of N. Each app is keyed `${company}__${app.id}` in
+ * _pendingAuth, so the parallel opens never collide.
+ *
+ * opts.requiredAppIds scopes the gate to the apps the executing skill's manifest
+ * actually declared (matched by hostname against its own target_url/protected_url
+ * *and* every host the recording actually visited — see skill_package_builder.py
+ * and SkillMeta.visited_hosts). undefined means the manifest predates this field:
+ * fall back to gating on every app in the group (old behavior). An explicit empty
+ * list means this skill touches none of the group's apps, so it runs with no
+ * group auth gate at all (but still seeds every other valid app's session, in
+ * case it wanders into one anyway). */
 async function getGroupAuthContext(company, group, authManager, opts = {}) {
   const headless = opts.headless !== false;
   const logFn = opts.logFn;
+  const required = _filterRequiredApps(group.apps, opts.requiredAppIds);
+  const requiredIds = new Set(required.map((a) => a.id));
 
-  const results = await Promise.all(group.apps.map((app) => _validateGroupApp(company, app, authManager, logFn)));
-  const missing = results.find((r) => !r.valid);
-
-  if (missing) {
-    const message =
-      `This workflow belongs to the ${group.name} group and requires authentication to ${group.apps.length} ` +
-      `application${group.apps.length === 1 ? "" : "s"}. Sign in to ${missing.app.name} in the window that just ` +
-      `opened, then run the skill again.`;
-    const pending = await beginInteractiveAuth(`${company}__${missing.app.id}`, missing.app.login_url, {
-      storedState: missing.stored,
-      protectedUrl: missing.app.success_url || missing.app.login_url,
-      authManager,
-      sessionsDir: SESSIONS_DIR,
-      logFn,
-    });
-    return { ...pending, message: pending.authPending ? message : pending.message };
+  if (group.apps.length === 0) {
+    const { browser, context } = await _buildExecContext(undefined, headless);
+    return { browser, context, protectedUrl: "", sessionSource: "group-no-apps" };
   }
 
-  const merged = mergeStorageStates(results.map((r) => r.stored));
+  // Validate every app in the group, not just the required ones — seeding needs
+  // all of them; gating only needs the required subset of these same results.
+  const results = await Promise.all(group.apps.map((app) => _validateGroupApp(company, app, authManager, logFn)));
+  const missingRequired = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
+
+  if (missingRequired.length > 0) {
+    const names = missingRequired.map((r) => r.app.name);
+    const plural = missingRequired.length === 1;
+    const message =
+      `This workflow belongs to the ${group.name} group and requires authentication to ` +
+      `${required.length} application${required.length === 1 ? "" : "s"}. Sign in to ` +
+      `${names.join(", ")} in the window${plural ? "" : "s"} that just opened, then run the skill again.`;
+    const pendings = await Promise.all(missingRequired.map((r) =>
+      beginInteractiveAuth(`${company}__${r.app.id}`, r.app.login_url, {
+        storedState: r.stored,
+        protectedUrl: r.app.success_url || r.app.login_url,
+        authManager,
+        sessionsDir: SESSIONS_DIR,
+        logFn,
+      })
+    ));
+    const allPending = pendings.every((p) => p.authPending);
+    return {
+      authPending: allPending,
+      loginUrl: pendings[0] && pendings[0].loginUrl,
+      message: allPending ? message : pendings.find((p) => !p.authPending)?.message,
+      apps: missingRequired.map((r, i) => ({ id: r.app.id, name: r.app.name, loginUrl: r.app.login_url, ...pendings[i] })),
+    };
+  }
+
+  const merged = mergeStorageStates(results.filter((r) => r.valid).map((r) => r.stored));
   const { browser, context } = await _buildExecContext(merged, headless);
-  const protectedUrl = group.apps[0] && (group.apps[0].success_url || group.apps[0].login_url);
+  const protectedUrl = (required[0] && (required[0].success_url || required[0].login_url))
+    || (results.find((r) => r.valid) && (results.find((r) => r.valid).app.success_url || results.find((r) => r.valid).app.login_url))
+    || "";
   return { browser, context, protectedUrl, sessionSource: "group" };
 }
 
@@ -172,10 +221,17 @@ async function _persistSession(company, state, authManager, sessionsDir, logFn) 
   }
 }
 
-// ─── Browser cache (per-company, 5-min idle timeout) ─────────────────────────
-
+// ─── Browser cache (per-company, short idle timeout) ─────────────────────────
+// A cache hit skips re-validating the underlying app session(s) entirely (see the
+// `entry.context.pages()` liveness-only check below) — it only proves the browser process is
+// still alive, not that the login is still good. That's a real staleness window: authentication
+// is meant to be pre-flight-only (validated before a run starts), so a session that expires
+// while sitting in this cache is only discovered mid-run instead, which the pre-flight model is
+// supposed to prevent. Kept short (not zero — that would defeat the point of caching for a fast
+// back-to-back sequence) rather than re-validating on every hit, which would add a probe's worth
+// of latency to the common, nothing-expired case.
 const _cache    = new Map();
-const IDLE_MS   = 5 * 60 * 1000;
+const IDLE_MS   = 90 * 1000;
 
 function _scheduleCleanup(company) {
   const entry = _cache.get(company);
@@ -190,7 +246,11 @@ function _scheduleCleanup(company) {
 
 async function getCachedBrowser(company, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
-  const cacheKey = opts.groupId ? `${company}::${opts.groupId}` : company;
+  // requiredAppIds is part of the cache key: two skills in the same group can depend on
+  // different app subsets, so a context built (or auth-gated) for one must never be
+  // reused for the other.
+  const appsKey = Array.isArray(opts.requiredAppIds) ? `[${[...opts.requiredAppIds].sort().join(",")}]` : "*";
+  const cacheKey = opts.groupId ? `${company}::${opts.groupId}::${appsKey}` : company;
   if (headless) {
     const entry = _cache.get(cacheKey);
     if (entry && entry.browser && entry.context) {
@@ -203,7 +263,9 @@ async function getCachedBrowser(company, authManager, opts = {}) {
       }
     }
   }
-  const result = await getAuthContext(company, authManager, { headless, logFn: opts.logFn, groupId: opts.groupId });
+  const result = await getAuthContext(company, authManager, {
+    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds,
+  });
   // authPending means no browser/context was built (a login window was opened instead) —
   // nothing to cache.
   if (headless && !result.authPending) {
@@ -466,7 +528,7 @@ async function getAuthContext(company, authManager, opts = {}) {
   // _resolveGroup's comment.
   const group = _resolveGroup(company, opts.groupId);
   if (group && group.apps && group.apps.length > 0) {
-    return getGroupAuthContext(company, group, authManager, { headless, logFn });
+    return getGroupAuthContext(company, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds });
   }
 
   let _hadEncryptedSession = false; // set true if encrypted path ran; raw session is then stale
@@ -523,31 +585,57 @@ async function getAuthContext(company, authManager, opts = {}) {
   });
 }
 
-// Open a fresh headed Chromium at loginUrl for mid-execution re-auth. Non-blocking, same
-// contract as getAuthContext's interactive-auth path — see beginInteractiveAuth. Called
-// from server.js on auth failure. Group-aware: picks the app whose success_url
-// host matches the failing page's URL, so re-auth targets the right app's own
-// session key instead of clobbering the whole group; falls back to the legacy
-// single-session behavior when there's no group.
+// Resolve which app died from a mid-execution auth failure and describe it clearly —
+// but do NOT open a re-auth window here. Authentication is pre-flight only (see
+// getGroupAuthContext above): a run that hits an auth failure mid-execution always fails
+// immediately, full stop, and re-authentication happens on the user's NEXT attempt, via
+// the normal pre-flight gate at the top of the next execute_skill call — which re-validates
+// this exact app and opens its login window then. Opening a window right here, at the
+// moment of failure (the previous behavior), interrupted an already-dead run instead of
+// waiting for a fresh attempt, which is what made it a mid-run auto-login rather than a
+// pre-flight one. Called from server.js on auth failure. Group-aware: picks the app whose
+// success_url/login_url host matches the failing page's own URL (server.js passes the page
+// that actually bounced to a login screen, not the manifest's start-app URL — a group
+// pack's target_url is the app the workflow STARTS in, which is the wrong app when a
+// sibling dies mid-run). Falls back to opts.fallbackUrl's host (manifest.target_url) if the
+// primary hint matches nothing — e.g. an OAuth hop landed on a third-party host — before
+// giving up to the legacy group.apps[0] guess. Falls back to the non-group single-session
+// behavior when there's no group at all.
+function _hostOf(url) {
+  try { return new URL(url).hostname; } catch (_) { return ""; }
+}
+
 async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn, opts = {}) {
+  // authManager/sessionsDir are accepted (not used) to keep this function's call sites and
+  // existing tests stable — they were only ever needed for the window-opening/session-persist
+  // path this function no longer takes.
   const group = _resolveGroup(company, opts.groupId);
   if (group && group.apps && group.apps.length > 0) {
-    let failingHost = "";
-    try { failingHost = new URL(loginUrl).hostname; } catch (_) {}
-    const app =
-      group.apps.find((a) => {
-        try { return new URL(a.success_url || a.login_url).hostname === failingHost; } catch (_) { return false; }
-      }) || group.apps[0];
-    return beginInteractiveAuth(`${company}__${app.id}`, app.login_url, {
-      protectedUrl: app.success_url || app.login_url,
-      authManager,
-      sessionsDir,
-      logFn,
-    });
+    const byHost = (host) => group.apps.find((a) => _hostOf(a.success_url || a.login_url) === host);
+    let matchedBy = "failing-page-host";
+    let app = byHost(_hostOf(loginUrl));
+    if (!app && opts.fallbackUrl) {
+      matchedBy = "manifest-fallback-host";
+      app = byHost(_hostOf(opts.fallbackUrl));
+    }
+    if (!app) {
+      matchedBy = "group-apps[0]-default";
+      app = group.apps[0];
+    }
+    if (logFn) logFn("info", "reauth_app_resolved", { company, appId: app.id, matchedBy });
+    return {
+      authPending: false,
+      loginUrl: app.login_url,
+      message: `${app.name}'s saved sign-in expired mid-run. Call execute_skill again — ` +
+        `you'll be prompted to sign back in to ${app.name}, then can resume from where this left off.`,
+    };
   }
-  const pack = _loadPack(company);
-  const protectedUrl = _resolveProtectedUrl(company, pack);
-  return beginInteractiveAuth(company, loginUrl, { protectedUrl, authManager, sessionsDir, logFn });
+  return {
+    authPending: false,
+    loginUrl,
+    message: `The saved sign-in for ${company} expired mid-run. Call execute_skill again — ` +
+      `you'll be prompted to sign back in, then can resume from where this left off.`,
+  };
 }
 
 async function gracefulShutdown() {
@@ -563,6 +651,7 @@ module.exports = {
   getCachedBrowser,
   getAuthContext,
   getGroupAuthContext,
+  _filterRequiredApps,
   captureReAuth,
   beginInteractiveAuth,
   gracefulShutdown,

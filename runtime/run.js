@@ -27,6 +27,7 @@ const PAGE_LOAD_TIMEOUT_MS = envNumber("CONXA_PAGE_LOAD_TIMEOUT_MS", 60000);
 
 const RETRY_BUDGET_MAX = 3;
 const DOWNLOAD_WAIT_TIMEOUT_MS = envNumber("CONXA_DOWNLOAD_WAIT_MS", 120000);
+const RUN_RETENTION_MS = envNumber("CONXA_RUN_RETENTION_DAYS", 7) * 86400000;
 const RECOVERY_LOG = path.join(CONXA_DIR, "logs", "recovery.log");
 const RECOVERY_LOG_MAX = 10 * 1024 * 1024;
 
@@ -114,6 +115,86 @@ async function waitForPageLoad(page, prevType) {
 function interpolate(value, inputs) {
   if (typeof value !== "string") return value;
   return value.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (_, key) => String(inputs[key] ?? ""));
+}
+
+// An upload input's resolved value is either one file path or a *folder* path, and a folder
+// means "every file directly inside it". This is what makes a 20-file (or 200-file) upload
+// expressible at all: the agent pastes one directory location instead of shuttling every file
+// through the conversation, and a multi-select recorded in the Studio replays as the multi-
+// select it was. Playwright's setInputFiles takes an array, so the single-file case is just an
+// array of one and there is no second code path.
+//
+// Sorted naturally (file-2 before file-10) rather than by raw codepoint, because for a batch
+// upload the *order* is part of the outcome the user is checking — see EXEC-15.
+// Extract a zip into a sibling folder inside the same run's workspace — still covered by
+// sweepOldRuns, no separate cleanup needed. Idempotent so a retried step or a second
+// reference to the same zip doesn't re-extract; uniqueDownloadName (EXEC-11) already
+// guarantees the zip's own filename is unique within the run's folder, so the derived
+// extraction folder name is unique too.
+function extractZipOnce(zipPath) {
+  const dest = path.join(path.dirname(zipPath), path.basename(zipPath, path.extname(zipPath)));
+  if (!fs.existsSync(dest)) {
+    const AdmZip = (global.__hostRequire || require)("adm-zip");
+    new AdmZip(zipPath).extractAllTo(dest, true);
+    // An empty zip leaves nothing on disk to extract — create the (empty) folder anyway so
+    // the empty-folder check a few lines below in resolveUploadPaths can fire its own clear
+    // error instead of readdirSync throwing ENOENT here.
+    fs.mkdirSync(dest, { recursive: true });
+  }
+  // A zip that just wraps one top-level folder (the common case when a tool zips a
+  // directory) — descend into it once so the folder-expansion step below sees files,
+  // not one subdirectory it would otherwise skip (folder expansion is non-recursive).
+  const entries = fs.readdirSync(dest, { withFileTypes: true });
+  if (entries.length === 1 && entries[0].isDirectory()) {
+    return path.join(dest, entries[0].name);
+  }
+  return dest;
+}
+
+function resolveUploadPaths(rawValue) {
+  let target = String(rawValue ?? "").trim();
+  // Windows Explorer's "Copy as path" wraps any path containing spaces in double quotes.
+  // Node only recognizes a bare drive letter ("C:\...") as absolute, so a quoted path is
+  // silently treated as relative and joined onto the runtime's own working directory instead
+  // of erroring clearly. Strip one matching pair before it ever reaches setInputFiles.
+  if (target.length >= 2 && target.startsWith('"') && target.endsWith('"')) {
+    target = target.slice(1, -1).trim();
+  }
+  // Deliberately NOT the best-effort skip used by check/assert: silently not uploading a
+  // document while reporting the step as successful is the worst failure mode this action
+  // has. server.js's required-input gate should already reject a missing file_path, so this
+  // is defence-in-depth for a hand-authored step whose value never resolves.
+  if (!target) {
+    throw new Error("upload step has no file path — supply the skill's file_path input");
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    // Let setInputFiles raise its own not-found error for a plain file path — it names the
+    // path and is already clear. Only a directory needs the expansion below.
+    return [target];
+  }
+  // A .zip target uploads verbatim — replay must upload exactly what was picked while
+  // recording (the zip itself, or specific files already extracted from it), never silently
+  // substitute one for the other. Extraction now happens eagerly at download time (server.js's
+  // download listener calls extractZipOnce right after saveAs), so an upload step bound to the
+  // extracted contents already points at that sibling folder, not at the zip's own path — see
+  // build.py::_bind_downloads_to_uploads.
+  if (!stat.isDirectory()) return [target];
+
+  const files = fs.readdirSync(target, { withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => entry.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+    .map(name => path.join(target, name));
+  // Same reasoning as the empty-value throw above: an empty folder must fail loudly, not
+  // upload nothing and report success.
+  if (!files.length) {
+    throw new Error(`upload folder has no files in it: ${target}`);
+  }
+  return files;
 }
 
 function unique(values) {
@@ -325,8 +406,9 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
         return await fn(locator);
       } catch (err) {
         lastErr = err;
-        // Ambiguity / recompile-required cannot be fixed by waiting — surface immediately.
-        if (err && (err.ambiguous || err.recompileRequired)) throw err;
+        // Ambiguity / recompile-required / bad input cannot be fixed by waiting — surface
+        // immediately rather than re-resolving until the action deadline.
+        if (err && (err.ambiguous || err.recompileRequired || err.badInput)) throw err;
         if (Date.now() >= deadline) throw err;
         await page.waitForTimeout(120);
       }
@@ -806,24 +888,25 @@ const HANDLERS = {
   },
 
   upload: async (page, step, inputs) => {
-    let filePath = interpolate(step.value || "", inputs).trim();
-    // Windows Explorer's "Copy as path" wraps any path containing spaces in double quotes.
-    // Node only recognizes a bare drive letter ("C:\...") as absolute, so a quoted path is
-    // silently treated as relative and joined onto the runtime's own working directory instead
-    // of erroring clearly. Strip one matching pair before it ever reaches setInputFiles.
-    if (filePath.length >= 2 && filePath.startsWith('"') && filePath.endsWith('"')) {
-      filePath = filePath.slice(1, -1).trim();
-    }
-    // Deliberately NOT the best-effort skip used by check/assert: silently not uploading a
-    // document while reporting the step as successful is the worst failure mode this action
-    // has. server.js's required-input gate should already reject a missing file_path, so this
-    // is defence-in-depth for a hand-authored step whose value never resolves.
-    if (!filePath) {
-      throw new Error("upload step has no file path — supply the skill's file_path input");
-    }
+    const filePaths = resolveUploadPaths(interpolate(step.value || "", inputs));
 
-    await runLocatorStep(page, step, inputs, locator => {
-      return locator.setInputFiles(filePath, { timeout: ACTION_TIMEOUT_MS });
+    await runLocatorStep(page, step, inputs, async locator => {
+      // Whether this control takes one file or many is a property of the live page, not of
+      // what happened to be picked while recording — so ask the element, which stays correct
+      // for packs compiled before this existed and for a site that changes the control later.
+      // Only worth a round-trip when more than one file is actually on the table.
+      if (filePaths.length > 1) {
+        // Unknown (detached, cross-origin, evaluate blocked) stays permissive: let
+        // setInputFiles have its say rather than blocking an upload on a failed probe.
+        const acceptsMultiple = await locator.evaluate(el => el.multiple === true).catch(() => true);
+        if (!acceptsMultiple) {
+          throw Object.assign(new Error(
+            `this upload control accepts only one file, but ${filePaths.length} files were given ` +
+            `— pass a single file path instead of a folder`,
+          ), { badInput: true });
+        }
+      }
+      return locator.setInputFiles(filePaths, { timeout: ACTION_TIMEOUT_MS });
     });
   },
 
@@ -909,6 +992,14 @@ HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
     inputs.downloaded_file = entry.path;
     const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
     inputs[`downloaded_file_${n}`] = entry.path;
+    // A zip is always extracted at download time (server.js) — bind its sibling extraction
+    // folder too, so an upload step the compiler matched against specific files inside that
+    // zip (build.py::_bind_downloads_to_uploads) has somewhere to resolve `{{downloaded_file_dir}}`
+    // / `{{downloaded_file_N_dir}}` against. Absent entirely for a non-zip download.
+    if (entry.extractedDir) {
+      inputs.downloaded_file_dir = entry.extractedDir;
+      inputs[`downloaded_file_${n}_dir`] = entry.extractedDir;
+    }
   }
 };
 
@@ -923,6 +1014,26 @@ function uniqueDownloadName(fname, taken) {
   for (let n = 2; taken.has(candidate); n++) candidate = `${base} (${n})${ext}`;
   taken.add(candidate);
   return candidate;
+}
+
+// Nothing else ever deletes a finished run's workspace (W-7), so files accumulate under
+// {CONXA_DATA_DIR}/runs/ forever. Sweep it at the start of every execution — rather than
+// hooking success/failure/cancel/park separately — so cleanup runs no matter how the
+// *previous* run ended. Never touches the run currently starting up.
+function sweepOldRuns(runsBaseDir, maxAgeMs = RUN_RETENTION_MS, excludeRunId = null) {
+  let entries;
+  try { entries = fs.readdirSync(runsBaseDir, { withFileTypes: true }); }
+  catch (_) { return; }
+  const cutoff = Date.now() - maxAgeMs;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === excludeRunId) continue;
+    const dir = path.join(runsBaseDir, entry.name);
+    try {
+      if (fs.statSync(dir).mtimeMs < cutoff) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (_) { /* retried on next run */ }
+  }
 }
 
 async function executeStep(page, step, inputs, ctx = {}) {
@@ -1549,6 +1660,15 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, canc
       primaryErr.failedPage = page;
     }
 
+    // Same reasoning as the auth check below: the caller supplied input the page cannot accept
+    // (a folder of 20 files for a single-file upload control). No amount of re-finding the
+    // element fixes that, and letting it reach Tier 3+ would spend LLM tokens on a mistake the
+    // error message already explains. Fail straight through with that message intact.
+    if (primaryErr && primaryErr.badInput) {
+      t.emit("step_fail", { si: i, fc: "bad_input" });
+      throw stepFailure(step, i, primaryErr, preShot);
+    }
+
     // A login redirect is an auth condition, not a selector/DOM problem the T1/T2 cascade can
     // fix — running it anyway just burns ~10s against a login page before server.js's own
     // isAuthFailure check (which triggers the re-auth window) gets a turn. Skip straight to
@@ -1583,7 +1703,9 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, canc
   return { recoveredSteps };
 }
 
-// Auth-failure detection — login redirect or session-expired page heuristics.
+// Auth-failure detection — login redirect or session-expired page heuristics. Deliberately
+// broader/unanchored than browser.js's LOGIN_PATH_RE (which answers a different question —
+// "has login-completion happened yet" — see its comment); don't merge them.
 const AUTH_FAILURE_URL_RE = /\/(login|signin|sign-in|auth|logout|session-expired)(\/|$|\?)/i;
 const AUTH_FAILURE_TITLE_RE = /sign\s*in|log\s*in|session\s*expired|authentication\s*required/i;
 
@@ -1600,11 +1722,14 @@ async function isAuthFailure(page) {
 module.exports = {
   appendRecoveryEvent,
   interpolate,
+  resolveUploadPaths,
+  extractZipOnce,
   tryLocator,
   enrichStepsWithRecovery,
   applyStepOverrides,
   executeStep,
   uniqueDownloadName,
+  sweepOldRuns,
   runPlan,
   checkRetryBudget,
   clearRetryBudget,

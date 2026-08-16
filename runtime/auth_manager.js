@@ -163,61 +163,13 @@ async function reencryptPlaintextSessions(sessionsDir, getSessionKeyFn, logFn) {
   }
 }
 
-// Max attempts before escalating to Tier 5 (human review).
-const AUTH_REFRESH_MAX_ATTEMPTS = 3;
-const _authRefreshAttempts = new Map();
-
-/**
- * Attempt to re-authenticate an expired target-platform session.
- *
- * - Headed mode (Windows or DISPLAY set): opens Playwright to loginUrl, waits
- *   for the user to complete login (up to 3 min), saves fresh storageState.
- * - Headless (no DISPLAY on Linux): returns immediately with an error payload
- *   so Claude can surface "Re-login required" to the user — never hangs.
- *
- * Returns { ok: true } on success, { ok: false, session_expired: true, login_url, message } on failure.
- */
-async function refreshSession(company, loginUrl, context, sessionsDir, logFn) {
-  const attempts = (_authRefreshAttempts.get(company) || 0) + 1;
-  _authRefreshAttempts.set(company, attempts);
-  if (attempts > AUTH_REFRESH_MAX_ATTEMPTS) {
-    return { ok: false, session_expired: true, login_url: loginUrl, message: "Auth refresh failed 3 times — escalating to human review." };
-  }
-
-  const headless = process.platform !== "win32" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
-  if (headless) {
-    return { ok: false, session_expired: true, login_url: loginUrl, message: "Re-login required (headless mode — no browser available)." };
-  }
-
-  const MAX_CLOSE_RETRIES = 2;
-  for (let retry = 0; retry <= MAX_CLOSE_RETRIES; retry++) {
-    let authPage = null;
-    try {
-      authPage = await context.newPage();
-      await authPage.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await authPage.waitForURL(
-        (url) => !AUTH_FAILURE_URL_RE.test(url.pathname),
-        { timeout: 180_000 }
-      );
-      const state = await context.storageState();
-      const sessionKey = await getSessionKey(company, logFn);
-      const encrypted = saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
-      if (!encrypted) saveRawSession(company, state, sessionsDir, logFn);
-      _authRefreshAttempts.delete(company);
-      return { ok: true };
-    } catch (e) {
-      const browserClosed = /Target page|context or browser|browser has been closed|page has been closed/i.test(e.message);
-      if (browserClosed && retry < MAX_CLOSE_RETRIES) continue;
-      return { ok: false, session_expired: true, login_url: loginUrl, message: `Re-login timed out or failed: ${e.message}` };
-    } finally {
-      if (authPage) await authPage.close().catch(() => {});
-    }
-  }
-  return { ok: false, session_expired: true, login_url: loginUrl, message: "Re-login cancelled: login window was closed. Please run the skill again." };
-}
-
-// Regex re-export so run.js can share the same pattern without duplicating it.
-const AUTH_FAILURE_URL_RE = /\/(login|signin|sign-in|auth|logout|session-expired)(\/|$|\?)/i;
+// A blocking, in-context mid-run re-login (open a page inside the LIVE execution context and
+// wait up to 3 minutes for the user) used to live here as `refreshSession`. Removed — it had
+// zero production callers (only its own now-removed test) and directly contradicted the
+// pre-flight-only authentication model: authentication is validated once, before a run starts
+// (see browser.js's getGroupAuthContext) and a mid-run auth failure always fails immediately
+// (see run.js's isAuthFailure / server.js's session_expired handling) rather than attempting
+// any in-place recovery. Do not reintroduce a mid-run re-login path.
 
 module.exports = {
   getSessionKey,
@@ -226,5 +178,4 @@ module.exports = {
   saveRawSession,
   loadRawSession,
   reencryptPlaintextSessions,
-  refreshSession,
 };

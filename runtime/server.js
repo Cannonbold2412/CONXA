@@ -253,6 +253,8 @@ let isAuthFailure;
 let stepAssertions;
 let frameScopedInventory;
 let uniqueDownloadName;
+let sweepOldRuns;
+let extractZipOnce;
 let getCachedBrowser;
 let captureReAuth;
 let gracefulShutdown;
@@ -268,7 +270,7 @@ try {
   skillLoader  = require("./skill_loader");
   sync         = require("./sync");
   authManager  = require("./auth_manager");
-  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName } = require("./run"));
+  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
   ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
   ({ closeExtraTabs } = require("./tabs"));
@@ -1021,6 +1023,18 @@ async function _handleTool(name, args, extra) {
 
     // Retry budget check on resume
     const primary = resolved[0];
+
+    // Auth pre-flight must cover every skill in the sequence, not just the first — a run with
+    // 2+ skills shares one browser/context (see getCachedBrowser below, keyed off primary.entry
+    // .company for the whole sequence), so an app only the SECOND skill needs was previously
+    // never gated on before step 0 of the FIRST skill ran, discovering it expired mid-sequence
+    // instead of pre-flight. Union every skill's required_apps; if any skill's manifest predates
+    // the required_apps field (undefined = legacy "gate on every app"), the whole union falls
+    // back to that same safe legacy behavior rather than silently narrowing to only the skills
+    // that do declare it.
+    const _requiredAppIdsUnion = resolved.some((r) => !Array.isArray(r.entry.manifest.required_apps))
+      ? undefined
+      : Array.from(new Set(resolved.flatMap((r) => r.entry.manifest.required_apps)));
     if (primary.isResume && !checkRetryBudget(primary.entry.slug, primary.resumeFrom))
       return err(`Retry budget exhausted at step ${primary.resumeFrom}. Fix the root cause in execution.json before retrying from step 0.`);
 
@@ -1178,6 +1192,7 @@ async function _handleTool(name, args, extra) {
           headless: !watch,
           logFn: log,
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
+          requiredAppIds: _requiredAppIdsUnion,
         });
         if (_authResult.authPending) {
           // No valid session — a login window was just opened for the user. Nothing ran yet,
@@ -1188,13 +1203,26 @@ async function _handleTool(name, args, extra) {
         }
         ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = _authResult);
         page = await _context.newPage();
-        if (_protectedUrl) {
+        // Packs compiled after the leading-navigate change (compiler/build.py
+        // _insert_start_navigate_step) open with their own `navigate` step to the page they
+        // were recorded on, so landing on _protectedUrl (the group app's landing page) first is
+        // a wasted page load — and, when the two are different sites, a misleading one. Older
+        // packs have no such step and still need this. The auth storage state is already loaded
+        // into _context above either way, so the skill's own navigation is authenticated with
+        // no re-login.
+        if (_protectedUrl && primary.steps[0]?.type !== "navigate") {
           await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
         }
       }
 
       const runtimeLog = { consoleErrors: [], pageErrors: [], failedRequests: [] };
-      const _downloadsDir = path.join(CONXA_DIR, "downloads", _runId);
+      // Isolated per-run workspace, not the OS Downloads folder and not CONXA_DIR (that's the
+      // read-only install dir — see the header comment above). sweepOldRuns() clears stale
+      // sibling run dirs before this one is created, so cleanup happens on every execution
+      // regardless of how the *previous* run ended.
+      const _runsBaseDir = path.join(CONXA_DATA_DIR, "runs");
+      sweepOldRuns(_runsBaseDir, undefined, _runId);
+      const _downloadsDir = path.join(_runsBaseDir, _runId);
       const _downloads = [];
       const _downloadSaves = [];
       const _downloadQueue = [];
@@ -1223,7 +1251,13 @@ async function _handleTool(name, args, extra) {
             const dest = path.join(_downloadsDir, fname);
             await download.saveAs(dest);
             _downloads.push(dest);
-            resolveEntry({ filename: fname, path: dest });
+            // Extraction happens here — at download time, unconditionally — not lazily when
+            // some later upload step happens to resolve to a .zip path. Keeps replay symmetric
+            // with recording (session.py::_on_download does the same) and lets the compiler's
+            // {{downloaded_file_N_dir}} binding point at a folder that's already real by the
+            // time any step needs it. See run.js::resolveUploadPaths for the upload-side half.
+            const extractedDir = fname.toLowerCase().endsWith(".zip") ? extractZipOnce(dest) : null;
+            resolveEntry({ filename: fname, path: dest, extractedDir });
           })().catch(() => { resolveEntry(null); });
           _downloadSaves.push(savePromise);
         });
@@ -1245,6 +1279,10 @@ async function _handleTool(name, args, extra) {
       for (let si = 0; si < resolved.length; si++) {
         const { entry, steps, inputs, resumeFrom } = resolved[si];
         const startAt = si === 0 ? resumeFrom : 0;
+        // Backs a compiled bulk-upload step's {{downloaded_files_dir}} placeholder (see
+        // build.py::_bind_downloads_to_uploads) — resolveUploadPaths already expands a folder
+        // into every file inside it, so this run's own isolated download folder just works.
+        inputs.downloaded_files_dir = _downloadsDir;
 
         try {
           const result = await runPlan(page, steps, inputs, startAt, entry.slug, {
@@ -1257,23 +1295,38 @@ async function _handleTool(name, args, extra) {
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
         } catch (runErr) {
-          // Auth-failure recovery: detect a login redirect and open a (non-blocking) re-auth
-          // window. The user signs in on their own time and calls execute_skill again with
-          // resume_from — see the session_expired handling in the outer catch below, which
-          // builds that instruction.
+          // Auth-failure handling: detect a login redirect and fail immediately, naming the
+          // app whose session died. Authentication is pre-flight only — no re-auth window
+          // opens here. The next execute_skill call's normal pre-flight gate (getGroupAuthContext)
+          // re-validates this exact app and opens its login window then; see captureReAuth's
+          // comment in browser.js for why that's deliberate, not a missing feature.
           const failedStep = runErr.failedAt ?? null;
           // Multi-tab: check auth on the tab the step actually failed on, not always the
           // initial tab — a login redirect in a second tab would otherwise go undetected.
           const _failedPage = runErr.failedPage || page;
           if (failedStep !== null && await isAuthFailure(_failedPage)) {
-            const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || _failedPage.url();
+            // The page that actually bounced to a login screen is the right host to resolve
+            // the dead app from — for a group pack, entry.manifest.target_url is the START
+            // app, which is wrong when a SIBLING app's session is the one that died (see
+            // CLAUDE.md group-auth notes / captureReAuth's host-matching fallback chain).
+            const loginUrl = _failedPage.url() || entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url;
             appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
             const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log, {
               groupId: entry.manifest && entry.manifest.group_id,
+              fallbackUrl: entry.manifest?.target_url,
             });
             throw Object.assign(
               new Error(refreshResult.message),
-              { session_expired: true, login_url: refreshResult.loginUrl || loginUrl, failedAt: failedStep, fromEntry: entry }
+              {
+                session_expired: true,
+                login_url: refreshResult.loginUrl || loginUrl,
+                failedAt: failedStep,
+                fromEntry: entry,
+                // No window was opened for this failure (see captureReAuth) — the shared
+                // session_expired handler below must not tell the user "once signed in", since
+                // nothing has prompted them to sign in yet at this point.
+                authWindowOpened: false,
+              }
             );
           }
           runErr.fromEntry = entry;
@@ -1390,9 +1443,18 @@ async function _handleTool(name, args, extra) {
           await _browser?.close().catch(() => {});
         }
         const failedAt = typeof runErr.failedAt === "number" ? runErr.failedAt : null;
-        const resumeHint = AGENT_RECOVERY_ENABLED && failedAt !== null
-          ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
-          : ` Once signed in, call execute_skill again to run this skill.`;
+        // A mid-run failure (authWindowOpened: false — see captureReAuth) never opened a
+        // window; runErr.message already tells the caller to call execute_skill again to get
+        // prompted. Only add the resume_from mechanics there, not "once signed in" — nobody's
+        // been prompted to sign in yet. The pre-flight case (authWindowOpened left undefined —
+        // a window WAS just opened before any step ran) keeps the original "once signed in" hint.
+        const resumeHint = runErr.authWindowOpened === false
+          ? (AGENT_RECOVERY_ENABLED && failedAt !== null
+              ? ` Pass resume_from: ${failedAt} on that next call to continue from where this one stopped.`
+              : "")
+          : (AGENT_RECOVERY_ENABLED && failedAt !== null
+              ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
+              : ` Once signed in, call execute_skill again to run this skill.`);
         return err(`${runErr.message}${resumeHint}`);
       }
 
