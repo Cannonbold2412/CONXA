@@ -80,6 +80,7 @@ def build_skill_package(
     skill_slugs: list[str] = []
     skill_target_urls: dict[str, str] = {}
     skill_group_ids: dict[str, str] = {}
+    skill_visited_hosts: dict[str, list[str]] = {}
     for wf in workflows:
         saved_skill = read_skill(wf.skill_id) if wf.skill_id else None
         if saved_skill is not None:
@@ -92,6 +93,9 @@ def build_skill_package(
             skill_slugs.append(wf.slug)
             skill_target_urls[wf.slug] = wf.target_url
             skill_group_ids[wf.slug] = wf.group_id
+            saved_meta = saved_skill.get("meta") if isinstance(saved_skill.get("meta"), dict) else {}
+            visited = saved_meta.get("visited_hosts")
+            skill_visited_hosts[wf.slug] = [str(h) for h in visited] if isinstance(visited, list) else []
             _log(f"Workflow {wf.name!r} compiled from saved skill JSON")
             continue
 
@@ -151,21 +155,43 @@ def build_skill_package(
         _log("Written LICENSE")
 
     # ── 5. Write skill-packs/{company}/ format (for installer runtime) ────────
-    from conxa_core.storage.group_store import get_group as _get_group
+    from conxa_core.storage.group_store import apps_for_workflow, get_group as _get_group
 
-    groups_payload = []
+    group_models = {}
     for group_id in {gid for gid in skill_group_ids.values() if gid}:
         group = _get_group(group_id)
-        if group is None:
-            continue
-        groups_payload.append({
+        if group is not None:
+            group_models[group_id] = group
+
+    groups_payload = [
+        {
             "id": group.id,
             "name": group.name,
             "apps": [
                 {"id": a.id, "name": a.name, "login_url": a.login_url, "success_url": a.success_url}
                 for a in group.apps
             ],
-        })
+        }
+        for group in group_models.values()
+    ]
+
+    # A group app only gates a workflow's runtime execution if that workflow's own
+    # recorded target_url/protected_url actually lands on that app (same hostname as
+    # its login_url or success_url) — otherwise every workflow dropped into a group
+    # would be forced through logins for apps it never touches (see FIX.md). Shared
+    # with the recording gate (handlers/session.py) via apps_for_workflow so the two
+    # can't compute a different answer for the same workflow.
+    skill_required_apps: dict[str, list[str]] = {}
+    for wf in workflows:
+        if wf.slug not in skill_slugs:
+            continue
+        group = group_models.get(wf.group_id)
+        if not group:
+            continue
+        visited_hosts = skill_visited_hosts.get(wf.slug) or []
+        skill_required_apps[wf.slug] = [
+            a.id for a in apps_for_workflow(group.apps, wf.target_url, wf.protected_url, *visited_hosts)
+        ]
 
     try:
         _write_skill_packs_format(
@@ -177,6 +203,7 @@ def build_skill_package(
             skill_slugs=skill_slugs,
             skill_target_urls=skill_target_urls,
             skill_group_ids=skill_group_ids,
+            skill_required_apps=skill_required_apps,
             groups=groups_payload,
             version=version,
         )

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -284,29 +285,39 @@ def _is_recorded_file_metadata(value: str) -> bool:
         return False
 
 
-def _upload_recorded_filename(step: dict[str, Any]) -> str:
-    """Basename of the file picked while recording — documentation only.
+def _upload_recorded_filenames(step: dict[str, Any]) -> list[str]:
+    """All filenames from a recorded upload step's ``File[]`` metadata, in picker order.
 
     Browsers expose only ``File.name``, never a full path, so this can never be used as an
-    upload target. It is surfaced in the runtime input's description so the agent knows what
-    kind of file the skill expects.
+    upload target directly — it's what lets a same-run download match itself against this
+    step (see ``_bind_downloads_to_uploads``) and what seeds the runtime input's description.
     """
     raw = _action_value_text(step).strip()
     if not _is_recorded_file_metadata(raw):
-        return ""
+        return []
     try:
         parsed = json.loads(raw)
     except Exception:  # noqa: BLE001
-        return ""
+        return []
+    names = []
     for item in parsed:
         if isinstance(item, dict):
             name = str(item.get("name") or "").strip()
             if name:
-                return name
-    return ""
+                names.append(name)
+    return names
 
 
-_RUNTIME_ONLY_PLACEHOLDER_RE = re.compile(r"^downloaded_file(_\d+)?$")
+def _upload_recorded_filename(step: dict[str, Any]) -> str:
+    """First filename from a recorded upload step — documentation only. See
+    ``_upload_recorded_filenames`` for the full (possibly multi-file) list."""
+    names = _upload_recorded_filenames(step)
+    return names[0] if names else ""
+
+
+_RUNTIME_ONLY_PLACEHOLDER_RE = re.compile(
+    r"^(downloaded_file(_\d+)?(_dir)?|downloaded_files_dir)$"
+)
 
 
 def _bind_downloads_to_uploads(export_steps: list[dict[str, Any]]) -> None:
@@ -322,10 +333,32 @@ def _bind_downloads_to_uploads(export_steps: list[dict[str, Any]]) -> None:
     (run.js's download_observed handler) likewise only ever has a *past* download's path to
     give. Binds to the plain `{{downloaded_file}}` when the whole workflow has exactly one
     download; otherwise to the matched download's own `{{downloaded_file_N}}` so an ambiguous
-    same-filename case still binds to the right instance. Mutates matched upload steps' `value`
-    in place; every upload with no matching earlier download is left completely untouched —
-    this only ever adds a binding, never removes the existing {{file_path}} fallback for a
-    genuinely external file.
+    same-filename case still binds to the right instance.
+
+    A multi-select upload (several files picked in one recording action, e.g. "upload all 20
+    files") binds instead to `{{downloaded_files_dir}}` — the whole run's isolated download
+    folder, which `resolveUploadPaths` (runtime/run.js) already expands into every file inside
+    it — but only when *every* recorded filename matches an earlier, not-yet-consumed download;
+    a partial match leaves the step untouched rather than risk handing the upload control a
+    folder containing files it wasn't meant to see.
+
+    A download's recorded `zip_members` (populated by the recorder when a downloaded file was a
+    `.zip`, extracted immediately so the person recording can pick either the zip itself or its
+    contents — see session.py::_on_download) lets an upload bind to what was *actually* picked
+    inside that zip, distinct from the zip's own filename: a single recorded file matching one
+    zip member binds to that exact extracted file (`{{downloaded_file_N_dir}}/name.pdf` — a
+    literal filename appended after the interpolated folder, so no new runtime syntax is
+    needed); a multi-select recorded upload binds to the whole extracted folder
+    (`{{downloaded_file_N_dir}}`) only when the recorded names are the *entire* remaining member
+    set of that zip — a partial subset has no way to express "these files but not the rest of
+    the folder" today, so it is left untouched rather than over-uploading. This keeps replay
+    faithful to what was actually selected while recording: pick the zip, upload the zip
+    (`resolveUploadPaths` no longer auto-extracts a `.zip` target — see run.js); pick its
+    contents, upload exactly those.
+
+    Mutates matched upload steps' `value` in place; every upload with no matching earlier
+    download is left completely untouched — this only ever adds a binding, never removes the
+    existing {{file_path}} fallback for a genuinely external file.
     """
     total_downloads = sum(
         1 for step in export_steps
@@ -335,7 +368,11 @@ def _bind_downloads_to_uploads(export_steps: list[dict[str, Any]]) -> None:
         return
     single_download = total_downloads == 1
 
+    def _dir_placeholder(order: int) -> str:
+        return "downloaded_file_dir" if single_download else f"downloaded_file_{order}_dir"
+
     pending_by_name: dict[str, list[int]] = {}
+    pending_zip_members: dict[int, Counter[str]] = {}
     order = 0
     for step in export_steps:
         if not isinstance(step, dict):
@@ -351,13 +388,48 @@ def _bind_downloads_to_uploads(export_steps: list[dict[str, Any]]) -> None:
             name = str((payload or {}).get("suggested_filename") or "").strip()
             if name:
                 pending_by_name.setdefault(name, []).append(order)
+            members = [str(m).strip() for m in (payload or {}).get("zip_members") or [] if str(m).strip()]
+            if members:
+                pending_zip_members[order] = Counter(members)
         elif action == "upload":
-            name = _upload_recorded_filename(step)
-            queue = pending_by_name.get(name) if name else None
-            if not queue:
+            names = _upload_recorded_filenames(step)
+            if not names:
                 continue
-            matched_order = queue.pop(0)
-            step["value"] = "{{downloaded_file}}" if single_download else f"{{{{downloaded_file_{matched_order}}}}}"
+            if len(names) == 1:
+                name = names[0]
+                queue = pending_by_name.get(name)
+                if queue:
+                    matched_order = queue.pop(0)
+                    step["value"] = "{{downloaded_file}}" if single_download else f"{{{{downloaded_file_{matched_order}}}}}"
+                    continue
+                # Not the zip's own filename — check whether it's one file picked out of an
+                # earlier zip's extracted contents (FIFO across zips, earliest match wins).
+                for zip_order, remaining in pending_zip_members.items():
+                    if remaining.get(name, 0) > 0:
+                        remaining[name] -= 1
+                        step["value"] = f"{{{{{_dir_placeholder(zip_order)}}}}}/{name}"
+                        break
+                continue
+            # Bulk multi-select upload (one <input multiple> picked several files at once
+            # while recording): only bind to the run's whole download folder when every
+            # recorded filename provably matches an earlier, not-yet-consumed download —
+            # otherwise this would silently hand the upload control a folder that also
+            # contains files it was never meant to see.
+            needed = Counter(names)
+            if all(len(pending_by_name.get(name, [])) >= count for name, count in needed.items()):
+                for name in names:
+                    pending_by_name[name].pop(0)
+                step["value"] = "{{downloaded_files_dir}}"
+                continue
+            # Same honesty rule against a zip's extracted contents: only bind to the whole
+            # extracted folder when the recorded selection is exactly that zip's entire
+            # remaining member set — a partial subset is left untouched, since there is no
+            # syntax today for "these N files out of the folder but not the rest".
+            for zip_order, remaining in pending_zip_members.items():
+                if needed == remaining:
+                    remaining.clear()
+                    step["value"] = f"{{{{{_dir_placeholder(zip_order)}}}}}"
+                    break
 
 
 def _copy_saved_common(step: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
@@ -640,13 +712,29 @@ def _upload_input_descriptions(source_steps: list[dict[str, Any]]) -> dict[str, 
 
     Without this the generic derivation yields "Enter file path", which does not tell an agent
     calling ``get_skill_inputs`` that a real file on disk is expected.
+
+    Also states that a *folder* path is accepted, because that is the only practical way to
+    drive a batch upload: the runtime expands a directory into every file inside it
+    (``run.js::resolveUploadPaths``), so an agent moving 20 or 200 documents passes one
+    location string rather than enumerating every file.
+
+    Deliberately does **not** claim how many files this particular control accepts. Whether it
+    takes one file or many is a property of the live page (the ``multiple`` attribute), not of
+    how many files happened to be picked while recording — a single-file recording against a
+    multi-select control is perfectly normal. The runtime asks the element itself at replay
+    time and refuses a folder with a clear message if the control only takes one, so the
+    description stays honest rather than guessing from the recording (EXEC-15).
     """
     for step in source_steps:
         if _step_action_name(step) not in {"upload", "upload_intent"}:
             continue
         example = _upload_recorded_filename(step)
         hint = f" (e.g. {example})" if example else ""
-        return {"file_path": f"Path to the file to upload{hint}"}
+        return {"file_path": (
+            f"Path to the file to upload{hint}. "
+            f"If this page's upload control accepts more than one file, a folder path may be "
+            f"given instead and every file directly inside it is uploaded, in name order."
+        )}
     return {}
 
 

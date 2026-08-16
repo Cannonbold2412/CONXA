@@ -59,6 +59,7 @@ def _write_skill_packs_format(
     skill_target_urls: dict[str, str],
     version: str,
     skill_group_ids: dict[str, str] | None = None,
+    skill_required_apps: dict[str, list[str]] | None = None,
     groups: list[dict[str, Any]] | None = None,
     conxa_api_url: str = "",
     required_runtime: str = "",
@@ -193,6 +194,13 @@ def _write_skill_packs_format(
             "company":          company,
             "target_url":       skill_target_urls.get(slug, target_url),
             "group_id":         group_id,
+            # Which of the group's apps this specific workflow actually depends on (matched
+            # by hostname against the workflow's own target_url/protected_url at build time —
+            # see skill_package_builder.py). Empty for a "_default" skill or one that never
+            # touches any of its group's apps. Missing on packs built before this field
+            # existed, which the runtime group-auth gate treats as "gate on every app" (unchanged
+            # legacy behavior, see runtime/browser.js::getGroupAuthContext).
+            "required_apps":    (skill_required_apps or {}).get(slug, []),
             "inputs_required":  inputs_required,
             "structural_fingerprint": structural_fp,
             "checksum":         checksums,
