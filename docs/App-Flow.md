@@ -141,7 +141,13 @@ flowchart TD
 
 ### 4.1a Recording a workflow starts pre-authenticated to every app in its group
 
-`cmd_start_recording` merges every authenticated app's storageState in the workflow's group into one seeded Playwright context (`conxa_core.storage.storage_state.merge_storage_states`) before opening the recorder — so a recording that crosses several of the group's apps starts signed in to all of them, with no per-site login step during the recording itself.
+`cmd_start_recording` merges every authenticated app's storageState in the workflow's group into one seeded Playwright context (`conxa_core.storage.storage_state.merge_storage_states`) before opening the recorder — so a recording that crosses several of the group's apps starts signed in to all of them, with no per-site login step during the recording itself. Only the apps the workflow's own URLs actually resolve to (by hostname) have to be connected before recording can start — an app elsewhere in the group that this workflow never visits doesn't block it, mirroring the `required_apps` execution-time scoping in §4.1b below. Because recording seeds every captured app, not just the required ones, the gate also runs a bounded freshness check against every captured app (skipping any checked in the last 10 minutes) before recording opens: an expired *required* app blocks recording outright, while an expired *sibling* app only surfaces a warning in the response — the user is right there in the recorder window and can sign back in inline if that app actually comes up.
+
+Recording no longer discards what happens to the session while it's open: it autosaves into the same merged file it was seeded from, and when the recording stops (or is cancelled), each app's slice of that file — cookies and local storage the app already owned, nothing a sibling app in the same group picked up — gets written back to that app's own saved session. Signing in once now actually holds: routine cookie rotation, a refreshed token, or the user re-authenticating mid-recording because the seeded session had gone stale all stick, instead of being thrown away the moment the recording window closes.
+
+### 4.1b Testing/running a workflow only asks for the apps it actually visited — and never fails mid-run for a gap recording papered over
+
+Being pre-authenticated to every group app during recording does **not** mean every one of those apps has to be signed in before the workflow can *run*. At build time, each workflow's own start URL, the URL it lands on after auth (if any), **and every hostname the recording actually visited mid-flow** are matched by hostname against the group's apps, and only the apps that match are written into that workflow's compiled skill as `required_apps` — so a workflow that starts in one app but clicks through to a sibling app partway through gates on both, not just the one its start URL happens to resolve to. Testing or executing a workflow only *requires* signing in to an app in `required_apps` — a workflow that never touches a given app is never blocked on it — but it still *seeds* the browser session from every other app in the group that's currently signed in, the same "seed everything, require only what's needed" split recording already uses, so a workflow that unexpectedly wanders into an ungated sibling app still arrives signed in instead of hitting a login wall mid-run. If more than one required app needs signing in, every login window opens together with one message naming all of them, rather than one window per run attempt. See `docs/TRD.md` §5.2a ("Per-workflow app scoping").
 
 ### 4.2 Record a Workflow (inline action)
 
@@ -181,11 +187,13 @@ A file downloaded in one tab can also be picked up and uploaded again in a later
 run, with no extra step required. See `docs/TRD.md` §6.3, §7.1, §9.1a.
 
 **Recording a file upload** works exactly like any other step from the user's point of view: click the
-page's upload control, pick a file in the normal Windows dialog, done. Under the hood the recorder
-deliberately does *not* intercept that dialog — if it did, the native picker would never open and the
-user could never pick anything. What gets recorded is the file's *name*, never its path (browsers do
-not expose paths), so the compiled skill turns the upload into a required `file_path` input the
-calling agent must supply at run time. See `docs/TRD.md` §9.3.
+page's upload control, pick a file, done — except the dialog that opens is the Studio's own, not
+Chromium's native one, and it opens already pointed at the folder the most recent download landed
+in (or its extracted folder, for a downloaded zip). Three earlier attempts to make Chromium's own
+picker remember that folder never worked reliably, so recording now intercepts the picker request
+and shows its own dialog instead — see `docs/TRD.md` §7.1. What gets recorded is the file's *name*,
+never its path (browsers do not expose paths), so the compiled skill turns the upload into a required
+`file_path` input the calling agent must supply at run time. See `docs/TRD.md` §9.3.
 
 ---
 

@@ -17,6 +17,7 @@ staging or a real runtime install, and log results against the checklist at the 
 | 4 | Full combo: long + multi-tab + cross-domain + file transfer (35–40 steps) | `docs.google.com`/`drive.google.com` (Google Sheets) → `the-internet.herokuapp.com/upload` | Yes — free Google account (no-login alternate below) |
 | 5 | Dynamic/self-healing elements bonus | `demoqa.com/automation-practice-form` + `demoqa.com/dynamic-properties` | No |
 | 6 | Bulk 20-file transfer, data consistency across separate runs | `github.com` (public repo folder) → `demoqa.com/upload-download` | No |
+| 7 | 20 files **in one action** — bulk download + multi-file upload | `filebin.net` (both ends), `tmpfiles.org`, `blueimp.github.io/jQuery-File-Upload` | No |
 
 - **the-internet.herokuapp.com** — Heroku's "The Internet" test site, purpose-built for browser
   automation practice (file upload/download, multi-window, dynamic content). No account, no
@@ -32,6 +33,12 @@ staging or a real runtime install, and log results against the checklist at the 
 - **github.com** — used purely as a source of ≥20 real, distinct, freely downloadable files in
   one folder (any public repo with 20+ files in a directory works, e.g. a large open-source
   repo's `docs/` or `assets/` folder). No account needed to browse or download raw files.
+- **filebin.net** — anonymous file "bins". Upload many files at once into a bin, get a bin URL,
+  then download them individually *or* download the whole bin as a single ZIP. This makes it the
+  only site here that covers both directions of the 20-file case with no account. See Workflow 7.
+- **tmpfiles.org**, **blueimp jQuery File Upload demo**, **file.io**,
+  **demo.automationtesting.in/FileUpload.html** — additional multi-file upload targets, all
+  verified to expose a `<input type="file" multiple>` control (2026-08-16).
 
 ---
 
@@ -179,17 +186,116 @@ bleeds into or gets confused with the second.
 5. After Run B finishes, check the filesystem: is Run A's `{runId}` download folder from step 2
    still sitting on disk?
 
-**What this proves — and what it's likely to find:** per-run isolation for the *active* run
-looks solid — each execution gets its own `{runId}` download folder, so Run B can't accidentally
-pick up Run A's files mid-run. What's **not** currently handled anywhere in `runtime/server.js`
-is cleanup: nothing deletes or archives a `{runId}` download folder once its run finishes, so
-every execution's files just accumulate on disk indefinitely. For a 20-file-per-day workflow
-that's 20 files/day of dead weight forever, and on Windows the folder name is just a run ID with
-no user/date label, so a human clearing it out manually can't tell whose files are whose without
-opening each one. If this is what you find, it's a real gap, not a test artifact — worth adding
-to `TODO.md` as its own item (retention/cleanup policy for `~/.conxa/downloads/`, e.g. delete-
-after-N-days or delete-on-next-successful-run-of-the-same-skill) rather than folding it into
-EXEC-10, since it's a runtime storage-hygiene concern, not a replay-correctness one.
+**What this proves:** per-run isolation for the *active* run — each execution gets its own
+`{runId}` workspace, so Run B can't accidentally pick up Run A's files mid-run.
+
+**Resolved 2026-08-17 (W-7):** cleanup is now handled — `run.js::sweepOldRuns` deletes any
+sibling run directory under `{CONXA_DATA_DIR}/runs/` older than `CONXA_RUN_RETENTION_DAYS`
+(default 7) at the start of every execution, so files no longer accumulate indefinitely. Confirm
+when replaying this workflow: Run A's `{runId}` directory should still exist immediately after
+Run B starts (inside the retention window), and should be gone once its age exceeds the
+retention window on a later run — see `docs/TRD.md` §7.1 for the mechanism.
+
+---
+
+## Workflow 7 — 20 files at a time (bulk download + multi-file upload)
+
+"Move 20 files, not one" is really **two different mechanics**, and they do not have the same
+support status today. Decide which one you're testing before you record — they exercise
+completely different code and only one of them works right now.
+
+| | Shape A — 20 files, one at a time | Shape B — 20 files in one action |
+|---|---|---|
+| What the user does | click download ×20, then upload ×20 (or interleaved) | select 20 files in one file-picker dialog / one "download all" click |
+| Compiled shape | 40 steps, each bound to its own filename | 2 steps |
+| **Supported today?** | **Yes** | **Yes** — download works if the site zips them; upload takes a folder path (fixed 2026-08-16, see W-8); the zip is now extracted at download time and an upload replays exactly what was recorded — the zip itself, or specific extracted files (EXEC-20, 2026-08-16, superseding the auto-extract-at-upload-time behavior below) |
+
+### Shape A — the unrolled loop (works today, test this first)
+
+Same as Workflow 4's bulk variant. `_bind_downloads_to_uploads` binds each upload to *its own*
+earlier download by exact recorded filename, so upload #7 carries download #7 — that binding is
+precisely what the "file identity in a loop" check below is verifying against a real recording.
+
+**Best sites for this:**
+
+- **Download source:** `the-internet.herokuapp.com/download` — a flat list of individually
+  downloadable files (20 links as of 2026-08-16). It is a *public* upload dir, so the list drifts
+  over time; if you need a fixed set that will still be there next month, use a public GitHub
+  folder's raw file links instead, or upload your own 20 dummy files to a filebin bin (below) and
+  download from that.
+- **Upload target:** `demoqa.com/upload-download` is fine here — one file per step is all Shape A
+  ever needs.
+
+### Shape B — genuinely 20 at once
+
+- **Download side:** you need a site that turns a multi-select into a *single* archive download.
+  `filebin.net` does this with no account: create a bin, drop 20 files in, then "Download files"
+  → one ZIP. The runtime handles that fine — it's one `download_observed` of one file. Google
+  Drive's multi-select → ZIP behaves the same way but needs a login.
+- **Reupload side (resolved 2026-08-17, superseded 2026-08-16 by EXEC-20):** the zip that download
+  side hands back is no longer a dead end when the destination wants separate files. Originally
+  (EXEC-17) `run.js::resolveUploadPaths` detected a `.zip` upload target and silently extracted it
+  before upload; that inference was replaced by EXEC-20 with literal record→replay fidelity —
+  extraction now happens the instant the zip is downloaded (both while recording and at replay),
+  and an upload step uploads exactly what was picked during recording: the zip itself, or specific
+  extracted files. A multi-select recorded upload still sees N files when it matched that zip's
+  entire member set. See `docs/TRD.md` §7.1. **Still to confirm:** this has unit coverage
+  (`runtime/test/test_upload_zip.js`, `conxa-cloud/tests/test_download_upload_binding.py`,
+  `test_recorder_session.py`) but not yet a real recorded Shape-B replay — that's what the round
+  trip below is for.
+- **Upload side:** you need an `<input type="file" multiple>`. Verified live on 2026-08-16:
+
+  | Site | Multi-file input? | Notes |
+  |---|---|---|
+  | `filebin.net` | **Yes** | No account. Doubles as the download source. Best single choice. |
+  | `tmpfiles.org` | **Yes** | No account, temporary storage. |
+  | `blueimp.github.io/jQuery-File-Upload/` | **Yes** | The classic multi-select demo, per-file progress rows — good for asserting all 20 appear. |
+  | `file.io` | **Yes** | No account, files expire after one download by default. |
+  | `demo.automationtesting.in/FileUpload.html` | **Yes** | Has an explicit "Multiple Files Upload" widget; site uptime is less reliable than the others. |
+  | `demoqa.com/upload-download` | No | Single file only — **cannot** test Shape B. |
+  | `the-internet.herokuapp.com/upload` | No | Single file only. |
+  | `practice.expandtesting.com/upload` | No | Single file only. |
+
+**Privacy warning:** filebin, tmpfiles, file.io and catbox are *public* file hosts — anything
+uploaded is reachable by URL to anyone who has it. Use generated dummy files only. Never use a
+real customer document, export, or anything from a company system in these tests.
+
+**Suggested no-login round trip (one site, both ends):** upload 20 dummy files to a filebin bin
+by hand → that bin is your Shape A/B download source → a *second, empty* bin is your upload
+target. Bins expire on their own, so nothing accumulates.
+
+**How to drive it (W-8, fixed 2026-08-16):** you do **not** pass 20 paths. You pass **one folder
+path** as the skill's `file_path` input, and the runtime uploads every file directly inside that
+folder, in name order. That is the whole mechanism — the same input that takes a single file takes
+a directory, and `setInputFiles` receives the expanded array. It scales past 20 for free: a folder
+of 200 invoices is still one input string, so the file count is never bounded by what fits in the
+agent's context.
+
+Subdirectories are skipped (non-recursive), and an empty folder throws rather than uploading
+nothing — matching the existing rule that an upload must never report success having sent no file.
+
+**Still worth confirming with a real recording**, since only unit tests cover it so far. Do it as
+a cheap 2-step throwaway before the long version: record picking 3 files at once on filebin,
+replay with a folder of 3 files as the input, count how many arrive. Then scale to 20. If fewer
+than all of them land, that is a regression in `run.js::resolveUploadPaths` — log it against
+`TODO.md` EXEC-15.
+
+**If the control only takes one file**, the runtime says so directly: before uploading it asks
+the live element whether it accepts multiple, and refuses with *"this upload control accepts only
+one file, but 20 files were given — pass a single file path instead of a folder"*. That failure
+skips the recovery cascade entirely, so it costs no LLM tokens and returns immediately — a wrong
+input is not something re-finding the element can fix. All five sites in the table above accept
+multiple, so use one of them for the passing case and any single-file site (e.g.
+`the-internet.herokuapp.com/upload`) to see the refusal.
+
+Note the capability is read from the **page**, not from the recording — so recording with one
+file and replaying with a folder of 20 is a legitimate thing to do, and worth testing, since it
+is what a customer will do the first time they reuse a skill for a bigger batch.
+
+**What Shape B is worth commercially:** an enterprise "upload this month's 20 invoices" flow is
+almost always a single multi-select in the real UI, not twenty separate dialogs. Shape A can
+simulate the *outcome* but not the *recording* a customer will actually make — the first time
+someone records their real process, they will drag 20 files in at once.
 
 ---
 
@@ -222,10 +328,9 @@ Once one of Workflows 1–4 replays clean end-to-end, promote it into `runtime/t
 as a `gate_replay.js` fixture so this scenario is CI-enforced going forward, per EXEC-10's
 success criteria.
 
-Workflow 6's finding is different in kind — it's not about replay correctness, it's about
-runtime storage hygiene (unbounded accumulation of per-run download folders with no retention
-or cleanup policy). If confirmed, add it to `TODO.md` as its own backlog item rather than under
-EXEC-10.
+Workflow 6's finding was different in kind — it was about runtime storage hygiene (unbounded
+accumulation of per-run download folders), not replay correctness — and is now resolved as W-7
+above.
 
 ---
 ---
@@ -253,7 +358,8 @@ reason the break tests are shaped the way they are.
 | W-4 | **Retry budget is never cleared after a failed run.** The budget map is module-level and lives as long as the MCP server process; it's cleared only on the success path. | `run.js:56-73`, `server.js:1287` (`clearRetryBudget` on `run_success` only) | After one failed run, re-running the same skill in the same session starts with its recovery budget already spent — self-healing is silently disabled until Claude Desktop restarts. The second attempt fails *faster and harder* than the first. |
 | ~~W-5~~ | ~~**Download listener is attached to the initial page only.**~~ **Resolved 2026-08-15.** `server.js` now attaches its diagnostics/download listeners to every tab opened during a run (`_context.on("page", _attachPageListeners)`), not just the first. | `server.js` | — |
 | W-6 | **Tight default timeouts.** Action 2500 ms, page load 8000 ms. | `run.js:22-25` | Any enterprise app slower than a demo site — or any run on a throttled network — fails on timing, not on logic. |
-| W-7 | **No download retention policy.** Nothing ever deletes `downloads/{runId}/`. | `server.js:1188` | Unbounded disk growth; see Workflow 6. |
+| ~~W-7~~ | ~~**No download retention policy.**~~ **Resolved 2026-08-17.** Downloads now save under an isolated `{CONXA_DATA_DIR}/runs/{runId}/` workspace (not `CONXA_DIR`, and not the OS Downloads folder), and `run.js::sweepOldRuns` deletes sibling run directories older than `CONXA_RUN_RETENTION_DAYS` (default 7) at the start of every execution — regardless of how the previous run ended. See `docs/TRD.md` §7.1. | `server.js` (run start), `run.js::sweepOldRuns` | — |
+| ~~W-8~~ | ~~**Multi-file upload is unrepresentable.**~~ **Resolved 2026-08-16.** The upload input now accepts a **folder path**: `run.js::resolveUploadPaths` expands a directory into every file directly inside it (naturally sorted) and always calls `setInputFiles` with an array. When more than one file resolves, the handler asks the live element whether it accepts multiple and refuses a folder aimed at a single-file control with a clear message, skipping the recovery cascade. See `TODO.md` EXEC-15. | `run.js::resolveUploadPaths`, `HANDLERS.upload` | — (still unconfirmed against a real recording — that is Workflow 7 Shape B's job) |
 
 **The headline (2026-08-15 update):** W-1 and W-2 — the reason the exact workflow EXEC-10 was
 written to validate looked unreachable — are now fixed and unit-tested (`runtime/test/test_tabs.js`,
@@ -461,6 +567,7 @@ running.
 | B-6 | `TODO.md` EXEC-10 (timeout defaults / documented tuning guidance) |
 | B-7 | New `TODO.md` item per symptom found (leak, cache growth, log growth) |
 | B-8 | `TODO.md` PROD-3 (entity binding) — it is exactly that item's success criterion |
+| Workflow 7 Shape B | `TODO.md` EXEC-15 (multi-file upload) — already filed against W-8; add the confirmed replay result there |
 
 Once a break test's underlying bug is fixed, promote that test into `runtime/test/` as a
 regression fixture so it cannot silently come back — the same rule EXEC-10 already sets for the

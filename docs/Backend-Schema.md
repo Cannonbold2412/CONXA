@@ -141,6 +141,12 @@ class GroupApp(BaseModel):
     captured_at: float | None  # Unix timestamp, None until authenticated
     storage_state_path: str    # Absolute path to this app's captured session (local only)
     last_error: str            # Most recent capture failure, if any
+    checked_at: float | None   # Unix timestamp of the last actual probe verdict (any
+                                # check_app_session_sync call), None if never probed since
+                                # capture. Distinct from captured_at ("a session file
+                                # exists") — group_auth_status derives a `verified` flag
+                                # from this (set + within a 600s TTL), so a `ready` badge
+                                # doesn't silently mean "never actually tested."
 
 class WorkflowGroup(BaseModel):
     id: str
@@ -156,6 +162,16 @@ Storage: `data/groups/{group_id}.json` (dual DB+file, same pattern as
 Workflow) via `conxa_core/storage/group_store.py`; each app's captured
 session lives at `data/groups/{group_id}/auth/{app_id}.json`.
 
+`captured_at`/`storage_state_path` aren't only set by the explicit Connect
+flow (`cmd_finish_group_app_auth`) — every workflow recording that uses the
+app also refreshes them. `handlers/session.py::_refresh_group_app_sessions`
+runs after a recording stops or is cancelled, splits the session the
+recording ended with back into each app's own file (scoped to the cookie
+domains/origins that app already owned), and re-saves it via
+`set_group_app_auth` — so a session stays "captured" as long as it's still
+being used, not just from the moment it was first connected. See
+`docs/TRD.md` §5.2a ("Per-workflow recording gate + session write-back").
+
 **Compiled skill-pack layout:** a WorkflowGroup's `id` also decides *where a
 skill's files live on disk* — `pack.json` carries a `skill_groups` field
 (`{skill_slug: group_id}`, distinct from the `groups` array above — `groups`
@@ -164,6 +180,18 @@ written to `skill-packs/{company}/{group_id}/{skill_slug}/` (the sentinel
 `"_default"` when a workflow's `group_id` is empty), both in Build Studio's
 local build output and after the real runtime syncs. See `docs/TRD.md` §5.2a
 and §11.1 for the full on-disk layout and delta-sync wire format.
+
+Each skill's own `manifest.json` also carries `"required_apps": [app_id, ...]`
+— the subset of its group's `GroupApp`s that workflow's own `target_url`/
+`protected_url`, **and every hostname the recording actually visited**
+(`SkillMeta.visited_hosts`, populated at compile time from the recorded
+events — see `docs/TRD.md` §5.2a "Per-workflow app scoping"), resolve to by
+hostname. The runtime's group-auth gate (`runtime/browser.js::getGroupAuthContext`)
+only *requires* these apps to be signed in before running the skill — but it
+*seeds* the merged session from every app in the group whose saved session
+still validates, required or not, so a workflow that wanders into an
+ungated sibling app mid-run still arrives signed in instead of hitting a
+login wall.
 
 ### 2.3 SkillPack (Workspace-Level, Shared)
 
@@ -264,7 +292,7 @@ is tagged in code and below as one of:
 
 | Class | Contract fields | Executor fields |
 |---|---|---|
-| `SkillMeta` | `id`, `version`, `title`, `created_at`, `source_session_id`, `compiler_policy_version`, `compiler_policy_hash` | `required_runtime`, `structural_fingerprint` |
+| `SkillMeta` | `id`, `version`, `title`, `created_at`, `source_session_id`, `compiler_policy_version`, `compiler_policy_hash`, `visited_hosts` | `required_runtime`, `structural_fingerprint` |
 | `SkillPolicies` | all | — |
 | `RecoveryBlock` | `intent`, `final_intent`, `strategies`, `confidence_threshold`, `max_attempts`, `require_diverse_attempts` | `anchors` |
 | `Assertion` | all | — |
@@ -327,7 +355,7 @@ class SkillInputVariable(BaseModel):
 
 `optional` is excluded from the packaged manifest's `inputs_required` (`skill_package_builder_output.py::_compute_inputs_required`), which is what the runtime's pre-execution gate and the MCP tool's `inputSchema.required` both read (`runtime/server.js`).
 
-**Auto-declared inputs.** Any `{{placeholder}}` present in the execution steps but absent from the declared input list is appended automatically at package time. One is special-cased: **every upload step binds to `file_path`**, regardless of the picker element's label — a recording can only ever capture a file's *name*, never a path, so the real path must arrive as a runtime input. Its description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk path is expected rather than a filename. See `docs/TRD.md` §9.3.
+**Auto-declared inputs.** Any `{{placeholder}}` present in the execution steps but absent from the declared input list is appended automatically at package time. One is special-cased: **every upload step binds to `file_path`**, regardless of the picker element's label — a recording can only ever capture a file's *name*, never a path, so the real path must arrive as a runtime input. Its description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk path is expected rather than a filename. The description also states that a **folder path** may be given when the page's upload control accepts more than one file — the runtime expands a directory into every file directly inside it, which is how a batch upload of 20 or 200 documents is driven without enumerating each file. It does not claim how many files the control accepts: that is a property of the live page (`multiple`), so the runtime asks the element at replay time and refuses a folder aimed at a single-file control with a clear message. See `docs/TRD.md` §9.3.
 
 ### 3.2 SkillMeta
 
@@ -342,6 +370,13 @@ class SkillMeta(BaseModel):
     compiler_policy_hash: str
     structural_fingerprint: dict  # Hash of first 3 steps' landmark selectors
                                   # Used for drift detection
+    visited_hosts: list[str]      # Every hostname the recording actually navigated to
+                                  # (main frame + any tab opened during recording), lowercase,
+                                  # deduped. Feeds required_apps (§2.2) so a workflow that
+                                  # starts in one group app but links into a sibling mid-
+                                  # recording gates on both at execution time, not just the
+                                  # app its start URL resolves to. Empty on skills compiled
+                                  # before this field existed.
 ```
 
 ### 3.3 SkillStep
