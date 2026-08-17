@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -272,17 +271,9 @@ def _action_value_json(step: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_recorded_file_metadata(value: str) -> bool:
-    """True for bridge.js's ``JSON.stringify(files)`` payload on an upload step.
+    from conxa_compile.compiler.upload_binding import is_recorded_file_metadata as _is_meta
 
-    That payload is file *metadata* (``[{name, size, type}, ...]``), never a path. It is
-    truthy, so it must be recognised explicitly rather than relying on an ``or`` fallback.
-    """
-    if not value.startswith("["):
-        return False
-    try:
-        return isinstance(json.loads(value), list)
-    except Exception:  # noqa: BLE001
-        return False
+    return _is_meta(value)
 
 
 def _upload_recorded_filenames(step: dict[str, Any]) -> list[str]:
@@ -321,115 +312,10 @@ _RUNTIME_ONLY_PLACEHOLDER_RE = re.compile(
 
 
 def _bind_downloads_to_uploads(export_steps: list[dict[str, Any]]) -> None:
-    """Rewrite an upload step's value to reference an earlier download in the same compiled
-    workflow when the recorded filenames match — e.g. export a report in one tab, upload that
-    same file in another, inside one compiled skill with no agent round-trip (EXEC-10/W-2:
-    previously the only way to hand a file between steps was an LLM round-trip per file).
+    """Rewrite upload values to same-run download placeholders when filenames/provenance match."""
+    from conxa_compile.compiler.upload_binding import apply_bindings_to_export_steps
 
-    Matches by exact recorded filename, FIFO per filename (the Nth upload of "report.pdf"
-    binds to the Nth not-yet-consumed download of "report.pdf") — and only to a download that
-    already happened *earlier* in the step sequence, in one forward pass, since a real
-    recording can never upload a file before downloading it and the runtime's binding
-    (run.js's download_observed handler) likewise only ever has a *past* download's path to
-    give. Binds to the plain `{{downloaded_file}}` when the whole workflow has exactly one
-    download; otherwise to the matched download's own `{{downloaded_file_N}}` so an ambiguous
-    same-filename case still binds to the right instance.
-
-    A multi-select upload (several files picked in one recording action, e.g. "upload all 20
-    files") binds instead to `{{downloaded_files_dir}}` — the whole run's isolated download
-    folder, which `resolveUploadPaths` (runtime/run.js) already expands into every file inside
-    it — but only when *every* recorded filename matches an earlier, not-yet-consumed download;
-    a partial match leaves the step untouched rather than risk handing the upload control a
-    folder containing files it wasn't meant to see.
-
-    A download's recorded `zip_members` (populated by the recorder when a downloaded file was a
-    `.zip`, extracted immediately so the person recording can pick either the zip itself or its
-    contents — see session.py::_on_download) lets an upload bind to what was *actually* picked
-    inside that zip, distinct from the zip's own filename: a single recorded file matching one
-    zip member binds to that exact extracted file (`{{downloaded_file_N_dir}}/name.pdf` — a
-    literal filename appended after the interpolated folder, so no new runtime syntax is
-    needed); a multi-select recorded upload binds to the whole extracted folder
-    (`{{downloaded_file_N_dir}}`) only when the recorded names are the *entire* remaining member
-    set of that zip — a partial subset has no way to express "these files but not the rest of
-    the folder" today, so it is left untouched rather than over-uploading. This keeps replay
-    faithful to what was actually selected while recording: pick the zip, upload the zip
-    (`resolveUploadPaths` no longer auto-extracts a `.zip` target — see run.js); pick its
-    contents, upload exactly those.
-
-    Mutates matched upload steps' `value` in place; every upload with no matching earlier
-    download is left completely untouched — this only ever adds a binding, never removes the
-    existing {{file_path}} fallback for a genuinely external file.
-    """
-    total_downloads = sum(
-        1 for step in export_steps
-        if isinstance(step, dict) and str(step.get("action") or "") == "download_observed"
-    )
-    if not total_downloads:
-        return
-    single_download = total_downloads == 1
-
-    def _dir_placeholder(order: int) -> str:
-        return "downloaded_file_dir" if single_download else f"downloaded_file_{order}_dir"
-
-    pending_by_name: dict[str, list[int]] = {}
-    pending_zip_members: dict[int, Counter[str]] = {}
-    order = 0
-    for step in export_steps:
-        if not isinstance(step, dict):
-            continue
-        action = str(step.get("action") or "")
-        if action == "download_observed":
-            order += 1
-            raw_value = _action_value_text(step)
-            try:
-                payload = json.loads(raw_value) if raw_value else {}
-            except (TypeError, ValueError):
-                payload = {}
-            name = str((payload or {}).get("suggested_filename") or "").strip()
-            if name:
-                pending_by_name.setdefault(name, []).append(order)
-            members = [str(m).strip() for m in (payload or {}).get("zip_members") or [] if str(m).strip()]
-            if members:
-                pending_zip_members[order] = Counter(members)
-        elif action == "upload":
-            names = _upload_recorded_filenames(step)
-            if not names:
-                continue
-            if len(names) == 1:
-                name = names[0]
-                queue = pending_by_name.get(name)
-                if queue:
-                    matched_order = queue.pop(0)
-                    step["value"] = "{{downloaded_file}}" if single_download else f"{{{{downloaded_file_{matched_order}}}}}"
-                    continue
-                # Not the zip's own filename — check whether it's one file picked out of an
-                # earlier zip's extracted contents (FIFO across zips, earliest match wins).
-                for zip_order, remaining in pending_zip_members.items():
-                    if remaining.get(name, 0) > 0:
-                        remaining[name] -= 1
-                        step["value"] = f"{{{{{_dir_placeholder(zip_order)}}}}}/{name}"
-                        break
-                continue
-            # Bulk multi-select upload (one <input multiple> picked several files at once
-            # while recording): only bind to the run's whole download folder when every
-            # recorded filename provably matches an earlier, not-yet-consumed download —
-            # otherwise this would silently hand the upload control a folder that also
-            # contains files it was never meant to see.
-            needed = Counter(names)
-            if all(len(pending_by_name.get(name, [])) >= count for name, count in needed.items()):
-                for name in names:
-                    pending_by_name[name].pop(0)
-                step["value"] = "{{downloaded_files_dir}}"
-                continue
-            # Same honesty rule against a zip's extracted contents: only bind to the whole
-            # extracted folder when the recorded selection is exactly that zip's entire
-            # remaining member set — a partial subset is left untouched, since there is no
-            # syntax today for "these N files out of the folder but not the rest".
-            for zip_order, remaining in pending_zip_members.items():
-                if needed == remaining:
-                    remaining.clear()
-                    step["value"] = f"{{{{{_dir_placeholder(zip_order)}}}}}"
-                    break
+    apply_bindings_to_export_steps(export_steps)
 
 
 def _copy_saved_common(step: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:

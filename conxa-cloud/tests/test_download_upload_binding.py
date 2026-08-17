@@ -156,13 +156,21 @@ def test_bulk_upload_matching_the_entire_zip_binds_to_the_whole_extracted_folder
     assert steps[1]["value"] == "{{downloaded_file_dir}}"
 
 
-def test_bulk_upload_matching_only_part_of_a_zip_is_left_untouched() -> None:
-    """Picking 2 of a zip's 3 files has no way to express 'these but not the rest of the
-    folder' today — binding to the whole folder would over-upload, so refuse."""
+def test_bulk_upload_matching_only_part_of_a_zip_binds_to_explicit_path_list() -> None:
+    """Picking 2 of a zip's 3 files binds to an explicit path list, not the whole folder."""
     original_value = json.dumps([{"name": "a.pdf"}, {"name": "b.pdf"}])
     steps = [_zip_download_step("archive.zip", "a.pdf", "b.pdf", "c.pdf"), {"action": "upload", "value": original_value}]
     _bind_downloads_to_uploads(steps)
-    assert steps[1]["value"] == original_value
+    assert steps[1]["value"] == json.dumps(
+        ["{{downloaded_file_dir}}/a.pdf", "{{downloaded_file_dir}}/b.pdf"]
+    )
+
+
+def test_upload_intent_action_is_bound_like_upload() -> None:
+    steps = [_zip_download_step("archive.zip", "a.pdf", "b.pdf"), _upload_step("a.pdf")]
+    steps[1]["action"] = "upload_intent"
+    _bind_downloads_to_uploads(steps)
+    assert steps[1]["value"] == "{{downloaded_file_dir}}/a.pdf"
 
 
 def test_zip_member_matching_does_not_steal_a_name_that_matches_a_real_top_level_download() -> None:

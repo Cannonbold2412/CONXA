@@ -218,6 +218,8 @@ class RecordingSession:
     on_file_picker_request: Any = None
     _pending_file_chooser: Any = None  # (request_id, chooser) for the one outstanding pick
     _file_pick_results: SimpleQueue = field(default_factory=SimpleQueue)
+    _zip_downloads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _pending_file_pick: dict[str, Any] | None = None
     _last_snapshot_ref: str = ""
     # A11y capture: one-strike degradation if slow (> 500ms).
     _last_a11y_capture_time: float = 0.0
@@ -977,6 +979,10 @@ class RecordingSession:
                     "video session start time not initialized; non-auth sessions must record video"
                 )
             timestamp_ms = self._compute_event_timestamp_ms(action, tab_id=(payload.get("tab") or {}).get("id"))
+        extras: dict[str, Any] = {"sequence": seq, "session_id": self.session_id}
+        if action_name == "upload_intent" and self._pending_file_pick:
+            extras["file_pick"] = self._pending_file_pick
+            self._pending_file_pick = None
         body = {
             "action": action,
             "target": payload["target"],
@@ -996,7 +1002,7 @@ class RecordingSession:
             "page": payload["page"],
             "state_change": payload.get("state_change") or {"before": "", "after": ""},
             "timing": timing,
-            "extras": {"sequence": seq, "session_id": self.session_id},
+            "extras": extras,
             "frame": payload.get("frame") if isinstance(payload.get("frame"), dict) else {},
             "tab": payload.get("tab") if isinstance(payload.get("tab"), dict) else {},
             # Phase 2 signals.
@@ -1165,6 +1171,11 @@ class RecordingSession:
                     self._fsync_path(extract_dir)
                     zip_members = self._extract_zip_once(dest)
                     self._last_download_dir = extract_dir
+                    self._zip_downloads[name] = {
+                        "zip_path": dest,
+                        "extract_dir": extract_dir,
+                        "members": zip_members,
+                    }
                 else:
                     self._last_download_dir = self._downloads_dir
             payload: dict[str, Any] = {"url": download.url, "suggested_filename": download.suggested_filename}
@@ -1418,6 +1429,13 @@ class RecordingSession:
                             self._pending_file_chooser = None
                             if paths:
                                 try:
+                                    from conxa_compile.compiler.upload_binding import classify_file_pick
+
+                                    self._pending_file_pick = classify_file_pick(
+                                        paths,
+                                        self._downloads_dir,
+                                        self._zip_downloads,
+                                    )
                                     pending[1].set_files(paths)
                                 except Exception as exc:  # noqa: BLE001
                                     self.binding_errors.append(f"file_chooser_set_files_error: {exc!s}")

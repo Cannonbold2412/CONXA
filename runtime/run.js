@@ -154,18 +154,26 @@ function extractZipOnce(zipPath) {
 function resolveUploadPaths(rawValue) {
   let target = String(rawValue ?? "").trim();
   // Windows Explorer's "Copy as path" wraps any path containing spaces in double quotes.
-  // Node only recognizes a bare drive letter ("C:\...") as absolute, so a quoted path is
-  // silently treated as relative and joined onto the runtime's own working directory instead
-  // of erroring clearly. Strip one matching pair before it ever reaches setInputFiles.
   if (target.length >= 2 && target.startsWith('"') && target.endsWith('"')) {
     target = target.slice(1, -1).trim();
   }
-  // Deliberately NOT the best-effort skip used by check/assert: silently not uploading a
-  // document while reporting the step as successful is the worst failure mode this action
-  // has. server.js's required-input gate should already reject a missing file_path, so this
-  // is defence-in-depth for a hand-authored step whose value never resolves.
   if (!target) {
     throw new Error("upload step has no file path — supply the skill's file_path input");
+  }
+
+  if (target.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(target);
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "string") {
+        const paths = parsed.map((item) => String(item ?? "").trim()).filter(Boolean);
+        if (!paths.length) {
+          throw new Error("upload step has no file path — supply the skill's file_path input");
+        }
+        return paths;
+      }
+    } catch {
+      // Not a JSON path list — fall through to single-path handling.
+    }
   }
 
   let stat;

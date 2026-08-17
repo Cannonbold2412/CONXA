@@ -4,6 +4,11 @@
 
 ---
 
+## Uploads from downloaded or extracted files no longer ask for a file path — 2026-08-18
+When you recorded a workflow that downloaded a zip, unpacked it, and then uploaded either the zip itself or specific files from inside it, the app still asked you to type a file path before every test run — even though the files already came from that same workflow. Now the recorder remembers what you picked in the file window (the zip versus certain extracted files, or files from the download folder), and replay uses that intent automatically. You only get a file-path prompt when you deliberately browse outside the workflow's download folders during recording.
+
+ — 2026-08-18
+
 ## Downloaded files now show up in the file-picker window during recording — 2026-08-18
 When you recorded a workflow that downloaded a file and then tried to upload it, the file-picker window would open in the right folder but the downloaded file itself was nowhere to be seen — even though it was sitting right there on disk. The window was accidentally set to show only pictures, so documents, spreadsheets, and zip files were hidden. That filter is gone for recording uploads. The picker now shows every file type, opens in the folder where the download actually landed (including inside a zip that was unpacked automatically), and refreshes that folder on Windows before the window appears so nothing is missing.
  — 2026-08-18

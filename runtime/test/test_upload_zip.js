@@ -32,6 +32,13 @@ function makeZip(entries) {
   return zipPath;
 }
 
+test("resolveUploadPaths expands a JSON array of explicit file paths", () => {
+  const paths = resolveUploadPaths(
+    JSON.stringify(["C:/tmp/a.pdf", "C:/tmp/b.pdf"])
+  );
+  assert.deepStrictEqual(paths, ["C:/tmp/a.pdf", "C:/tmp/b.pdf"]);
+});
+
 test("resolveUploadPaths uploads a .zip target verbatim — no auto-extraction", () => {
   const zipPath = makeZip([["a.pdf", "1"], ["b.pdf", "2"]]);
   try {

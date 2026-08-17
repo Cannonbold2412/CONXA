@@ -14,6 +14,7 @@ from conxa_compile.compiler.decision_layer import rank_merged_anchors
 from conxa_compile.compiler.action_semantics import commit_intent_hit, is_editable_field_click
 from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
 from conxa_compile.compiler.input_binding import derive_input_binding
+from conxa_compile.compiler.upload_binding import apply_bindings_to_compiled_steps
 from conxa_compile.compiler.recovery_policy import (
     default_recovery_block,
     merge_recovery_strategies_for_wait_shape,
@@ -1496,6 +1497,7 @@ def compile_skill_package(
     intent_graph = _build_intent_graph(steps, cleaned_events, session_id=sid)
 
     _deduplicate_input_bindings(steps)
+    apply_bindings_to_compiled_steps(steps, cleaned_events)
 
     _compile_log(
         "compile_phase",
