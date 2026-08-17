@@ -1067,6 +1067,22 @@ class RecordingSession:
         return candidate
 
     @staticmethod
+    def _zip_extract_dir(zip_path: Path) -> Path:
+        """Return the folder containing extracted files (unwrap one wrapping dir).
+
+        Mirrors run.js::extractZipOnce so record and replay behave identically.
+        """
+        dest = zip_path.with_suffix("")
+        if not dest.exists():
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(dest)
+            dest.mkdir(parents=True, exist_ok=True)
+        entries = list(dest.iterdir())
+        if len(entries) == 1 and entries[0].is_dir():
+            return entries[0]
+        return dest
+
+    @staticmethod
     def _extract_zip_once(zip_path: Path) -> list[str]:
         """Extract a downloaded zip into a sibling folder and return its top-level filenames.
 
@@ -1077,15 +1093,56 @@ class RecordingSession:
         one subdirectory. Recorded here (not read from the zip at compile time) because compile
         can run in a different session/machine that no longer has this file on disk.
         """
-        dest = zip_path.with_suffix("")
-        if not dest.exists():
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(dest)
-            dest.mkdir(parents=True, exist_ok=True)
-        entries = list(dest.iterdir())
-        if len(entries) == 1 and entries[0].is_dir():
-            dest = entries[0]
+        dest = RecordingSession._zip_extract_dir(zip_path)
         return sorted(p.name for p in dest.iterdir() if p.is_file())
+
+    @staticmethod
+    def _fsync_path(path: Path) -> None:
+        """Flush a file or directory to disk so the OS picker sees it immediately."""
+        import sys as _sys
+
+        if not path.exists():
+            return
+        if path.is_file():
+            try:
+                with open(path, "rb") as f:
+                    os.fsync(f.fileno())
+            except OSError:
+                pass
+            dir_to_sync = path.parent
+        elif path.is_dir():
+            dir_to_sync = path
+        else:
+            return
+        # ponytail: no portable directory-fsync on Windows; file fsync above is enough
+        if _sys.platform == "win32":
+            return
+        try:
+            fd = os.open(str(dir_to_sync), os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _notify_dir_changed(dir_path: Path) -> None:
+        """Tell Windows Explorer a folder changed so the file picker lists new files."""
+        import sys as _sys
+
+        if _sys.platform != "win32":
+            return
+        try:
+            import ctypes
+
+            SHCNE_UPDATEDIR = 0x00001000
+            SHCNF_PATHW = 0x0005
+            ctypes.windll.shell32.SHChangeNotify(
+                SHCNE_UPDATEDIR, SHCNF_PATHW, str(dir_path), None
+            )
+        except Exception:
+            pass
 
     def _on_download(self, download: Any, src_page: Any | None = None) -> None:
         try:
@@ -1097,13 +1154,17 @@ class RecordingSession:
                 )
                 dest = self._downloads_dir / name
                 download.save_as(str(dest))
+                if not dest.exists():
+                    raise FileNotFoundError(f"download did not land on disk: {dest}")
+                self._fsync_path(dest)
                 if name.lower().endswith(".zip"):
+                    extract_dir = self._zip_extract_dir(dest)
+                    for entry in extract_dir.iterdir():
+                        if entry.is_file():
+                            self._fsync_path(entry)
+                    self._fsync_path(extract_dir)
                     zip_members = self._extract_zip_once(dest)
-                    # Top-level extract folder, not the per-entry unwrapped dir
-                    # _extract_zip_once may resolve to for a single-wrapping-folder zip —
-                    # close enough as a file-picker default; the user is at most one folder
-                    # away from the real files.
-                    self._last_download_dir = dest.with_suffix("")
+                    self._last_download_dir = extract_dir
                 else:
                     self._last_download_dir = self._downloads_dir
             payload: dict[str, Any] = {"url": download.url, "suggested_filename": download.suggested_filename}
@@ -1121,6 +1182,7 @@ class RecordingSession:
             request_id = str(uuid.uuid4())
             self._pending_file_chooser = (request_id, chooser)
             default_dir = self._last_download_dir or self._downloads_dir or (Path.home() / "Downloads")
+            self._notify_dir_changed(default_dir)
             if self.on_file_picker_request is not None:
                 self.on_file_picker_request(
                     request_id, str(default_dir), bool(getattr(chooser, "is_multiple", False))

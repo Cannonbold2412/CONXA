@@ -127,6 +127,7 @@ export function RecordWorkflowDialog({
       const picked = await window.conxa.pickFile({
         defaultPath: event.default_dir as string,
         multiple: Boolean(event.multiple),
+        filters: [{ name: 'All Files', extensions: ['*'] }],
       })
       await resolveFilePicker(activeSession, requestId, picked)
     })

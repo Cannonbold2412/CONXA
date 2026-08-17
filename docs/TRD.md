@@ -975,9 +975,14 @@ that machinery has been removed). `session.py` attaches a `page.on("filechooser"
 `on_file_picker_request(request_id, default_dir, multiple)` — wired in `handlers/session.py` to emit a
 `file_picker_request` event over the same JSON-RPC event stream every other backend progress event
 uses (`id: null`, since it isn't a reply to any in-flight command). The renderer
-(`RecordWorkflowDialog.tsx`) shows Electron's own `dialog.showOpenDialog`, pre-pointed at
-`default_dir` — the most recent download's folder (or its zip-extract folder; see `_last_download_dir`)
-— and posts the result back via `cmd_resolve_file_picker`. `RecordingSession.resolve_file_pick()`
+(`RecordWorkflowDialog.tsx`) shows Electron's own `dialog.showOpenDialog` with an **All Files** filter
+(so PDFs, zips, and other non-image downloads are visible — the installer-logo picker on Build
+Installer is the only caller that passes an Images-only filter), pre-pointed at `default_dir` —
+the most recent download's folder, or the unwrapped zip-extract folder when a single top-level
+wrapping directory was inside the zip (see `_last_download_dir` / `_zip_extract_dir`) — and posts
+the result back via `cmd_resolve_file_picker`. Before the dialog opens, downloads are fsync'd to
+disk and Windows is notified of the folder change (`SHChangeNotify`) so the picker lists files
+written during the current recording. `RecordingSession.resolve_file_pick()`
 queues the answer; the pump loop (the only thread allowed to touch Playwright's sync API) drains it
 and calls `chooser.set_files(...)`, which still dispatches the input's `change` event via CDP, so
 `bridge.js`'s `upload_intent` capture is unaffected. A canceled pick is a no-op; the page sees a

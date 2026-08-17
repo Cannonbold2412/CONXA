@@ -4,6 +4,10 @@
 
 ---
 
+## Downloaded files now show up in the file-picker window during recording — 2026-08-18
+When you recorded a workflow that downloaded a file and then tried to upload it, the file-picker window would open in the right folder but the downloaded file itself was nowhere to be seen — even though it was sitting right there on disk. The window was accidentally set to show only pictures, so documents, spreadsheets, and zip files were hidden. That filter is gone for recording uploads. The picker now shows every file type, opens in the folder where the download actually landed (including inside a zip that was unpacked automatically), and refreshes that folder on Windows before the window appears so nothing is missing.
+ — 2026-08-18
+
 ## The "Choose File" window now opens in the right folder every time — 2026-08-17
 When you record a workflow that downloads a file and then uploads that same file somewhere else, clicking "Choose File" used to open Windows' file-picker window in some unrelated folder, forcing you to hunt around for the file you just downloaded. Three earlier attempts tried to quietly tell Windows' picker to remember the right folder, and none of them held up in practice. This time we took a different approach: Conxa now shows its own file-picker window instead of the operating system's, and opens it already sitting in the exact folder the file landed in. Nothing else about recording an upload changes — you still just click and pick the file — it just always starts in the right place now. This only affects recording; testing or running an already-recorded workflow was never affected by this issue.
  — 2026-08-17
@@ -22,6 +26,14 @@ Some workflows download a batch of files from one website and then need to hand 
 
 ## Files you download while recording a workflow now land somewhere you can actually find — 2026-08-17
 Before this fix, if you downloaded a file while recording a workflow in the Build Studio, that file didn't go anywhere you could see or find again — it just vanished into a temporary spot the app manages internally. Now every recording gets its own private folder, and anything you download during that recording is saved there with a clear, non-clashing name (so two files with the same name don't overwrite each other). When the next step in your recording is uploading a file, Chromium's own "remember where I was" habit will often open the file picker right in that same folder already — though we can't promise that every time, since browsers don't give any app that level of direct control over their built-in file-picker window. Either way, you now know exactly where to look.
+ — 2026-08-17
+
+## The `agent` command now has a reliable fallback on PATH — 2026-08-17
+The Cursor agent was installed, but an already-open PowerShell window could not see the updated PATH yet, so typing `agent` failed. A small fallback launcher was added under the user's normal command folder so both `agent` and `cursor-agent` can still find the real Cursor agent install even if a shell only sees that folder. This was tested from PowerShell and Command Prompt, and both now report the Cursor agent version correctly.
+ — 2026-08-17
+
+## Cursor, codebase memory, and Ponytail are set up cleanly on this machine — 2026-08-17
+The Cursor command-line tools were already installed, but Windows was not resolving all of them cleanly and PATH had an old Cursor location mixed in. The user PATH now points at the real Cursor install, the Cursor agent folder, and the codebase-memory command folder. Clear environment variables were also added so tools can find the exact Cursor CLI, Cursor agent, and codebase-memory MCP program without guessing. Codebase-memory was reinstalled into the supported agent configs, and this repo's graph was refreshed so future code searches can use the knowledge graph again. Ponytail was installed for Codex and copied into Cursor's global rules so both tools get the simple-solution guidance. One small caveat: codebase-memory refreshed the live graph cache successfully, but its optional compressed share artifact did not regenerate even when requested; the working graph itself is fine.
  — 2026-08-17
 
 ## A downloaded zip file now automatically unpacks itself before uploading — 2026-08-17

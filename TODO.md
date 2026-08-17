@@ -1069,7 +1069,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 - **Technical value:** the previously-missing backend↔frontend request/response channel now exists (`on_file_picker_request` callback → fire-and-forget event → renderer `onEvent` listener → `cmd_resolve_file_picker` reply), built on the existing `_emit_event(None, ...)` broadcast pattern rather than new IPC plumbing, plus a `SimpleQueue`-based cross-thread handoff matching the pump loop's existing `_pending_payloads` pattern.
 - **Dependencies:** none remaining.
 - **Complexity:** was L, delivered.
-- **Success criteria:** `pytest -q tests/test_recorder_session.py` covers `_on_file_chooser`'s default-dir selection (downloads dir, zip-extract dir, home fallback) and `resolve_file_pick`'s cross-thread queuing; manual verification is recording a download→upload workflow and confirming the Studio's own dialog opens pre-pointed at the download folder.
+- **Success criteria:** `pytest -q tests/test_recorder_session.py` covers `_on_file_chooser`'s default-dir selection (downloads dir, zip-extract dir including unwrapped wrapping folders, home fallback) and `resolve_file_pick`'s cross-thread queuing; the recording picker shows all file types (not the installer-logo Images filter); manual verification is recording a download→upload workflow and confirming the Studio's own dialog opens pre-pointed at the download folder with the downloaded files visible.
 
 ### BUILD-13 — A cancelled file-picker click, recorded with no following upload, can still hang a run
 - **Category:** Builder

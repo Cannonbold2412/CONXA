@@ -234,11 +234,23 @@ ipcMain.handle("dialog:pick-file", async (event, opts) => {
     win.show();
     win.focus();
   }
-  const { canceled, filePaths } = await dialog.showOpenDialog({
+  let resolvedDefaultPath = defaultPath;
+  if (resolvedDefaultPath) {
+    try {
+      const stat = fs.statSync(resolvedDefaultPath);
+      if (!stat.isDirectory() && !stat.isFile()) {
+        resolvedDefaultPath = undefined;
+      }
+    } catch {
+      resolvedDefaultPath = undefined;
+    }
+  }
+  const dialogOpts = {
     properties: multiple ? ["openFile", "multiSelections"] : ["openFile"],
-    filters: filters ?? [{ name: "Images", extensions: ["png", "jpg", "jpeg", "ico"] }],
-    ...(defaultPath ? { defaultPath } : {}),
-  });
+    ...(Array.isArray(filters) && filters.length ? { filters } : {}),
+    ...(resolvedDefaultPath ? { defaultPath: resolvedDefaultPath } : {}),
+  };
+  const { canceled, filePaths } = await dialog.showOpenDialog(dialogOpts);
   return canceled ? null : filePaths;
 });
 

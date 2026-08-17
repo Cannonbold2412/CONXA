@@ -584,7 +584,9 @@ def test_on_download_of_a_zip_extracts_it_and_records_zip_members(tmp_path) -> N
     value = json.loads(payload["action"]["value"])
     assert value["suggested_filename"] == "export.zip"
     assert value["zip_members"] == ["a.pdf", "b.pdf"]
+    assert (sess._downloads_dir / "export.zip").exists()
     assert (sess._downloads_dir / "export" / "a.pdf").exists()
+    assert sess._last_download_dir == sess._downloads_dir / "export"
 
 
 def test_on_download_of_a_non_zip_file_has_no_zip_members_field(tmp_path) -> None:
@@ -645,6 +647,28 @@ def test_on_file_chooser_prefers_the_zip_extract_dir_after_a_zip_download(tmp_pa
 
     assert requests[0][1] == str(sess._downloads_dir / "export")
     assert requests[0][2] is True
+
+
+def test_on_file_chooser_defaults_to_unwrapped_folder_for_wrapping_zip(tmp_path) -> None:
+    sess = RecordingSession(session_id="chooser-wrapping-zip")
+    sess._downloads_dir = tmp_path / "downloads"
+    sess._downloads_dir.mkdir(parents=True)
+    sess._on_download(
+        _FakeDownload(
+            "https://x.test/export.zip",
+            "export.zip",
+            _make_zip_bytes(["export/a.pdf", "export/b.pdf"]),
+        )
+    )
+
+    requests: list[tuple[str, str, bool]] = []
+    sess.on_file_picker_request = lambda rid, default_dir, multiple: requests.append(
+        (rid, default_dir, multiple)
+    )
+    sess._on_file_chooser(_FakeChooser())
+
+    assert requests[0][1] == str(sess._downloads_dir / "export" / "export")
+    assert (sess._downloads_dir / "export" / "export" / "a.pdf").exists()
 
 
 def test_on_file_chooser_falls_back_to_home_downloads_with_no_prior_download() -> None:
