@@ -224,9 +224,20 @@ def test_installer_upload_duplicate_version_rejected_but_new_slug_allowed(monkey
 
 
 def _publish(slug: str, version: str, skills: list[str]):
+    import base64
+
+    # A byte-identical artifact is now rejected outright (skill_pack_artifact_unchanged
+    # — see release-system plan §5), so give each call a distinct marker file rather
+    # than the empty file list every prior version shared.
+    marker = base64.b64encode(version.encode()).decode()
     return client.post(
         "/api/v1/workflows/publish",
-        json={"slug": slug, "skill_pack_version": version, "skills": skills, "files": []},
+        json={
+            "slug": slug,
+            "skill_pack_version": version,
+            "skills": skills,
+            "files": [{"path": "pack.json", "content_base64": marker}],
+        },
     )
 
 

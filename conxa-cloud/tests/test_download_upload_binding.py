@@ -6,7 +6,9 @@ _merge_saved_inputs_with_execution_placeholders (the runtime-only-placeholder ex
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
+from conxa_compile.compiler.upload_binding import apply_bindings_to_compiled_steps
 from conxa_compile.skill_package_builder_saved_skill import (
     _bind_downloads_to_uploads,
     _merge_saved_inputs_with_execution_placeholders,
@@ -171,6 +173,29 @@ def test_upload_intent_action_is_bound_like_upload() -> None:
     steps[1]["action"] = "upload_intent"
     _bind_downloads_to_uploads(steps)
     assert steps[1]["value"] == "{{downloaded_file_dir}}/a.pdf"
+
+
+def _compiled_step(action, value=None, input_binding=None) -> SimpleNamespace:
+    return SimpleNamespace(action=action, value=value, input_binding=input_binding)
+
+
+def test_apply_bindings_to_compiled_steps_ignores_dict_action_steps() -> None:
+    """A branch/conditional SkillStep carries a dict action (str | dict per the model
+    contract) — filtering compiled steps for upload/upload_intent must not choke on it.
+    Regression for BUILD-16: a dict action made the ``in {"upload", "upload_intent"}``
+    membership check raise ``TypeError: unhashable type: 'dict'``, crashing every compile
+    that had both an upload step and any dict-action step ahead of it."""
+    events = [
+        {"action": {"action": "download_observed", "value": json.dumps({"url": "https://x.test/f", "suggested_filename": "report.pdf"})}},
+        {"action": {"action": "upload_intent", "value": json.dumps([{"name": "report.pdf", "size": 1, "type": ""}])}, "extras": {}},
+    ]
+    steps = [
+        _compiled_step("download_observed", value=json.dumps({"url": "https://x.test/f", "suggested_filename": "report.pdf"})),
+        _compiled_step({"action": "if_present", "target": {}}),
+        _compiled_step("upload_intent", value=json.dumps([{"name": "report.pdf", "size": 1, "type": ""}])),
+    ]
+    apply_bindings_to_compiled_steps(steps, events)
+    assert steps[2].value == "{{downloaded_file}}"
 
 
 def test_zip_member_matching_does_not_steal_a_name_that_matches_a_real_top_level_download() -> None:

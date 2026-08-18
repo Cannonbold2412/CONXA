@@ -893,3 +893,142 @@ def test_sign_off_surfaces_build_failure_without_failing_the_sign_off(backend, m
 
     updated = get_workflow(workflow.id)
     assert updated.signed_off is True
+
+
+# ---------------------------------------------------------------------------
+# Release Center RPC handlers — each is a thin proxy over _cloud_json; these
+# tests assert the URL/method/body built for the cloud call and that the
+# cloud's response is returned unchanged, without needing a real cloud.
+# ---------------------------------------------------------------------------
+
+def _stub_generation(monkeypatch, b) -> None:
+    monkeypatch.setattr(b, "_installer_generation", lambda: "v2")
+
+
+def test_cmd_release_preview_reads_the_built_pack_not_the_payload(backend, monkeypatch, tmp_path):
+    """The renderer has no direct access to the built pack's files — the handler
+    must read them off disk itself, the same way publish would upload them."""
+    b, _out = backend
+
+    from conxa_core.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _stub_generation(monkeypatch, b)
+
+    packs_dir = tmp_path / "skill-packs" / "render"
+    packs_dir.mkdir(parents=True)
+    (packs_dir / "pack.json").write_text(
+        json.dumps({"company": "render", "skills": ["deploy"], "skill_groups": {"deploy": "grp"}}),
+        encoding="utf-8",
+    )
+    (packs_dir / "grp" / "deploy").mkdir(parents=True)
+    (packs_dir / "grp" / "deploy" / "execution.json").write_text("[]", encoding="utf-8")
+
+    seen: dict[str, object] = {}
+
+    def fake_cloud_json(path, *, method="GET", body=None):
+        seen["path"] = path
+        seen["method"] = method
+        seen["body"] = body
+        return {"diff": {"summary": "no changes"}}
+
+    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
+
+    result = b.cmd_release_preview({"company_slug": "render", "version": "1.1.0"}, "rid")
+
+    assert result == {"diff": {"summary": "no changes"}}
+    assert seen["path"] == "/api/v1/workflows/v2/render/releases/preview"
+    assert seen["method"] == "POST"
+    assert seen["body"]["version"] == "1.1.0"
+    assert seen["body"]["skills"] == ["deploy"]
+    assert seen["body"]["skill_groups"] == {"deploy": "grp"}
+    assert {f["path"] for f in seen["body"]["files"]} == {"pack.json", "grp/deploy/execution.json"}
+
+
+def test_cmd_rollback_release_calls_the_versioned_rollback_endpoint(backend, monkeypatch, tmp_path):
+    b, out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
+    from conxa_core.workspace import LOCAL_WORKSPACE_ID
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _stub_generation(monkeypatch, b)
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
+
+    seen: dict[str, object] = {}
+
+    def fake_cloud_json(path, *, method="GET", body=None):
+        seen["path"] = path
+        seen["method"] = method
+        return {"slug": "render", "rolled_back_to": "1.0.0", "previous_stable": "1.1.0"}
+
+    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
+
+    result = b.cmd_rollback_release({"company_slug": "render", "version": "1.0.0"}, "rid")
+
+    assert result["rolled_back_to"] == "1.0.0"
+    assert seen["path"] == "/api/v1/workflows/v2/render/releases/1.0.0/rollback"
+    assert seen["method"] == "POST"
+    # A progress event was emitted around the call — Publishing UX relies on this.
+    assert any(e.get("kind") == "rollback" for e in out)
+
+
+def test_cmd_list_deployments_and_release_events_proxy_correctly(backend, monkeypatch, tmp_path):
+    b, _out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
+    from conxa_core.workspace import LOCAL_WORKSPACE_ID
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _stub_generation(monkeypatch, b)
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
+
+    calls: list[str] = []
+
+    def fake_cloud_json(path, *, method="GET", body=None):
+        calls.append(path)
+        return {"ok": True}
+
+    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
+
+    b.cmd_list_deployments({"company_slug": "render"}, "rid")
+    b.cmd_release_events({"company_slug": "render"}, "rid")
+
+    assert calls == [
+        "/api/v1/workflows/v2/render/deployments",
+        "/api/v1/workflows/v2/render/releases/events",
+    ]
+
+
+def test_cmd_release_detail_and_diff_use_the_given_version(backend, monkeypatch, tmp_path):
+    b, _out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
+    from conxa_core.workspace import LOCAL_WORKSPACE_ID
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _stub_generation(monkeypatch, b)
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
+
+    calls: list[str] = []
+
+    def fake_cloud_json(path, *, method="GET", body=None):
+        calls.append(path)
+        return {"ok": True}
+
+    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
+
+    b.cmd_release_detail({"company_slug": "render", "version": "1.0.0"}, "rid")
+    b.cmd_release_diff({"company_slug": "render", "version": "1.0.0"}, "rid")
+
+    assert calls == [
+        "/api/v1/workflows/v2/render/releases/1.0.0",
+        "/api/v1/workflows/v2/render/releases/1.0.0/diff",
+    ]

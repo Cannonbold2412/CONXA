@@ -356,22 +356,46 @@ flowchart TD
 
 **Publish is the primary, mandatory release action.** Build Installer is a secondary, optional action for distributing an already-published skill package as a standalone `.exe`.
 
-### 8.1 Publish Skill Package (Primary)
+### 8.1 Publish Skill Package — the Release Center (Primary)
+
+The Publish page is the **Release Center**: release candidate → what will change
+(deterministic diff) → where it will go (stable channel) → publish → release
+history → deployment status → audit trail. Full mechanism in
+`docs/TRD.md` §5.5a; API contracts in `docs/Backend-Schema.md` §5.1d.
 
 ```mermaid
 flowchart TD
-    A[Skill package built; user visits Publish page] --> B[User enters release notes + clicks Publish]
+    A[Skill package built; user visits Release Center] --> A2["Studio previews: proposed version, diff vs. current stable, artifact hash"]
+    A2 --> B[User enters version + release notes + clicks Publish]
     B --> C[Backend: cmd_publish_skill_pack]
     C --> D["Read all files from data/skill-packs/{company_slug}/"]
-    D --> E["POST /api/v1/workflows/publish to Cloud"]
-    E --> F[Cloud: claim slug ownership]
-    F --> G[Cloud: write skill pack files]
-    G --> H[Cloud: generate tracking token]
-    H --> I["Cloud: return {tracking_token, sync_url}"]
-    I --> J[Rewrite pack.json with tracking + sync_endpoint]
-    J --> K[Version record created on Cloud]
-    K --> L[Studio shows Published version + download URL for manual installer build]
+    D --> E["POST .../skill-packs/upload to Cloud"]
+    E --> F{Cloud: duplicate version or unchanged artifact?}
+    F -->|Yes| F2[409 — reject, Studio shows why, Publish button stays enabled to retry]
+    F -->|No| G["Cloud: write immutable per-version snapshot"]
+    G --> H["Cloud: refresh mutable mirror + component_versions + manifest"]
+    H --> I["Cloud: move stable channel pointer — the single act of activation"]
+    I --> J[Cloud: write audit + release events]
+    J --> K["Cloud: return {tracking_token, sync_url, version}"]
+    K --> L[Rewrite pack.json with tracking + sync_endpoint]
+    L --> M[Studio shows Published — release history, deployment, and audit sections refresh]
 ```
+
+A failed publish (step F2, or a failure inside G-I) never moves the stable
+channel — the UI states plainly that stable is unchanged and what version was
+NOT released, per the release-system plan's publishing UX states.
+
+### 8.1a Rollback
+
+From the Release Center's Release History, an admin/owner picks a previous
+published version and confirms (current stable, target, effect shown explicitly).
+No artifact is rebuilt or re-uploaded — the stable channel pointer moves back to
+the already-immutable snapshot, and the mutable mirror + `component_versions` +
+manifest are refreshed from it. Runtimes pick up the change at their next regular
+delta-sync, exactly as they would a forward publish — the sync mechanism itself
+doesn't know the difference. A read-only mirror of release history and deployment
+status (no publish/rollback controls) is also visible on the Cloud dashboard's
+Skill Packages page, for checking release state without opening Build Studio.
 
 ### 8.2 Build Installer (Secondary, Optional)
 

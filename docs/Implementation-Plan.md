@@ -708,14 +708,70 @@ CompileProgress, RecordingFeed, SetupWizard, LoginOverlay) now route through the
 
 ---
 
-### 3.4 Workflow Version History & Rollback
+### ✅ 3.4 Workflow Version History & Rollback — DONE 2026-08-19
 
-- Store previous SkillPackage versions (not just the latest).
-- Allow publishing a previous version via the dashboard.
-- Delta sync serves whichever version the company selects.
-- UI shows version timeline.
+**What was built:** the full Enterprise Skill Package Release System — immutable
+per-version artifact snapshots, a stable-channel pointer, rollback, a deterministic
+diff, a per-slug release audit trail, and a Release Center UI in Build Studio (primary)
+with a read-only mirror on the Cloud dashboard.
 
-**Files:** `publish_routes.py`, `skillpack_update_routes.py`, Cloud dashboard
+- **Cloud (`app/api/skillpack_storage.py`):** new immutable per-version snapshot
+  storage (`skillpack_release_files_ns`/`skill_pack_release_dir`,
+  `write_release_snapshot`/`read_release_snapshot`) alongside the existing mutable
+  "currently live" mirror (`write_mutable_mirror_files`, `write_pack_json_mirror`/
+  `read_pack_json_mirror`) that `_build_delta` already served unchanged.
+- **Cloud (`app/services/release_channel.py`, new):** the stable-channel pointer
+  (`skillpack_channels` KV, one row per slug) and the per-slug, unbounded release
+  event log (`skillpack_release_events__{slug}`), mirrored into the existing
+  `saas.add_audit_event` so the dashboard's Audit page needed no changes.
+- **Cloud (`app/services/release_diff.py`, new):** deterministic (stdlib `difflib`,
+  no LLM) diff between two release file sets, aligning execution steps by a
+  semantic content key rather than position so a re-healed selector reads as
+  "modified", not "removed + added".
+- **Cloud (`app/api/publish_routes.py`):** `_publish_skill_pack_impl` rewritten as
+  a release transaction — immutable snapshot + pending version row + mutable
+  mirror + manifest, all written before the channel pointer moves as the final,
+  single act of activation; a duplicate version or a byte-identical republish is
+  rejected outright (409 `skill_pack_version_exists` / `skill_pack_artifact_unchanged`).
+- **Cloud (`app/api/release_routes.py`, new):** `POST .../releases/preview`,
+  `GET .../releases/{version}`, `GET .../releases/{version}/diff`,
+  `POST .../releases/{version}/rollback`, `GET .../deployments`,
+  `GET .../releases/events` — all under the existing `/api/v1/workflows/{installer_version}/{company_slug}` prefix, `require_admin`-gated.
+- **Cloud (`app/api/skillpack_update_routes.py`):** telemetry's `TelemetryBody`
+  gained an optional `skill_versions` field; `_build_delta`/`_skill_version`
+  themselves are **unchanged** — rollback restores the mutable mirror + `component_versions`
+  from the immutable snapshot, so the sync hot path never needs to know about channels.
+- **Build Studio (`python/handlers/workflows.py`, `python/backend.py`):** thin
+  proxy RPC handlers (`cmd_release_preview`, `cmd_release_detail`, `cmd_release_diff`,
+  `cmd_rollback_release`, `cmd_list_deployments`, `cmd_release_events`); publish now
+  emits real `stage` markers (`validated`/`uploading`/`published`/`failed`) instead
+  of one opaque log line.
+- **Build Studio (`renderer/src/pages/PublishPage.tsx`):** rewritten into the full
+  Release Center (candidate → diff → where-it-goes → history → deployment → audit),
+  with explicit idle/publishing/success/failure states. New pure-logic module
+  `renderer/src/lib/releaseState.ts` (state derivation, diff summarization, badges)
+  covered by `test/releaseState.test.mjs` (`node --experimental-strip-types --test`).
+- **Cloud dashboard (`SkillPackageVersionsPage.tsx`):** read-only Release History +
+  Deployment sections — no publish/rollback controls; those stay Studio-only.
+- **Runtime (`server.js`, `installed_versions.js` new):** phone-home telemetry now
+  reports installed skill versions per company, read off the same `current`
+  junction / `version.json` sync.js already writes. Optional field — an
+  already-deployed runtime that hasn't self-updated yet just reports nothing for it.
+
+**Known limitations (by design, not oversight):** deployment status only
+distinguishes up-to-date/pending/offline/unknown — "updating"/"failed"/"rolled back"
+aren't derivable without the runtime reporting sync *outcomes*, a larger runtime
+change left for later. Rollback is only available for releases published after this
+change (pre-existing published packs have no per-version snapshot to roll back to).
+
+**Files:** `app/api/publish_routes.py`, `app/api/release_routes.py` (new),
+`app/api/skillpack_storage.py`, `app/api/skillpack_update_routes.py`,
+`app/services/release_channel.py` (new), `app/services/release_diff.py` (new),
+`app/main.py`, `conxa-cloud/tests/test_release_channel.py` (new, 17 tests),
+`python/handlers/workflows.py`, `python/backend.py`,
+`renderer/src/pages/PublishPage.tsx`, `renderer/src/lib/releaseState.ts` (new),
+`renderer/src/components/release/*` (new), `runtime/server.js`,
+`runtime/installed_versions.js` (new), Cloud dashboard `SkillPackageVersionsPage.tsx`
 
 ---
 

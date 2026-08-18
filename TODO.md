@@ -35,9 +35,23 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P0 — Critical / Time-Sensitive (8 items)
+## P0 — Critical / Time-Sensitive (9 items)
 
 **Added 2026-08-09, direct from the founders — supersedes every previously-tracked priority in this file.** The four items below are the reason the rest of this backlog shifted down one tier (old P0 → P1, old P1 → P2, old P2 → P3, old P3 → P4); no other item content changed, only the section labels. See the "Fourth pass" note at the bottom of this file.
+
+### ~~BUILD-16 — "Testing os picker" compile did not finish: recording on disk, no compiled skill~~ — RESOLVED 2026-08-18
+- **Category:** Builder / Compile
+- **Description:** The latest **Testing os picker** workflow compile did not finish. The recording session artifacts are on disk (`data/sessions/…`, workflow metadata present), but no compiled skill package was written — the workflow cannot be tested or published. Likely a regression in the recent in-Studio file-picker compile path (BUILD-12 and the 2026-08-18 upload-binding follow-ups), but the failure mode has not yet been diagnosed: compile may have hung, crashed silently, or exited without surfacing an error in the UI.
+- **Why required:** blocks verification of the os-picker / download→upload recording path that just shipped — the exact workflow shape the last two days of fixes were built for.
+- **Business value:** without a successful compile, the file-picker UX improvements cannot be validated end-to-end before customers hit them.
+- **Technical value:** forces a root-cause trace through `cmd_compile` → `pipeline/run.py` → `compiler/build.py` → `skill_package_builder.py` on a real session that reproduces the failure; whatever breaks here likely affects any workflow with a Studio file-picker step.
+- **Dependencies:** none blocking — this is the repro case.
+- **Suggested order:** immediate — diagnose and fix before any further os-picker or upload-binding changes.
+- **Complexity:** unknown until triaged — likely S–M if it's a surfaced error or missing guard; M–L if compile hangs on a new step shape.
+- **Success criteria:** the **Testing os picker** recording compiles to a skill package on disk; Build Studio shows compile success; a sandbox or runtime replay of the compiled skill completes the upload step without hanging.
+- **Found via:** direct user report (2026-08-18). **Repro artifact:** recording on disk, compiled skill absent.
+- **Root cause:** `SkillStep.action` is contractually `str | dict[str, Any]` — a `scroll` step's compiled action is `{"action": "scroll", "delta": ...}`, not a bare string. `upload_binding.py::apply_bindings_to_compiled_steps` (added in the download→upload binding work, c2718bd) filtered compiled steps with `getattr(s, "action", None) in {"upload", "upload_intent"}`, which raises `TypeError: unhashable type: 'dict'` the instant it hits a dict-action step — crashing `compile_skill_package` right after the workflow intent graph, before the package is written. Every recording with both a scroll step and an upload/upload_intent step (i.e. exactly this "Testing os picker" shape) hit it. Confirmed by direct repro against the real session (`53b2d323-ec54-4253-8698-afa07cb01fae`) with the actual `cmd_compile` handler.
+- **Fix:** `conxa-builder/python/conxa_compile/compiler/upload_binding.py` — added a local `_step_action_str()` helper matching the existing normalization pattern already used elsewhere in `build.py` (`action if isinstance(action, str) else (action or {}).get("action", "")`), used at both call sites that were doing a raw `getattr(...) in {...}` membership check. Regression test added: `conxa-cloud/tests/test_download_upload_binding.py::test_apply_bindings_to_compiled_steps_ignores_dict_action_steps`. Re-ran the real session through `cmd_compile` after the fix — compiled cleanly (9 steps, `compile_status: ok`, `min_confidence: 0.95`), upload step correctly bound to `{{downloaded_file_dir}}`.
 
 ### ~~CLOUD-10 — Homepage: rebuild around the new positioning + pricing ladder~~ — **Resolved 2026-08-12**
 - **Resolution:** The homepage now carries the ladder story and the prices. `Hero` leads with the business
@@ -369,7 +383,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 ### BUILD-1 — Compiler IR (CIR) + reproducible, pinned compiles
 - **Category:** Builder
 - **Description:** Introduce a diffable intermediate representation between recorded events and the final `SkillPackage` — a `.cir` artifact with a `cir_root_hash`, produced by a compile pinned to a specific model/prompt version so the same recording reliably produces the same package. Confirmed unbuilt via grep across `conxa_compile/` (no `.cir`, no `cir_root_hash`, no model-pinning anywhere).
-- **Why required:** without a diffable IR, there's no way to do true rollback-to-identical-bytes, partial recompilation of just the changed steps, or a diff-driven repair-suggestion UX when a skill needs a targeted fix rather than a full recompile.
+- **Why required:** without a diffable IR, there's no way to do partial recompilation of just the changed steps, or a diff-driven repair-suggestion UX when a skill needs a targeted fix rather than a full recompile. (Rollback-to-identical-bytes itself no longer needs this — the 2026-08-19 release system added immutable per-version artifact snapshots + a stable-channel pointer, so rollback is a pointer move against already-published bytes with no CIR involved. `release_diff.py`'s deterministic diff also covers "what changed between two releases" at the compiled-output level, coarser-grained than a true CIR but sufficient for the Release Center's diff view — see `docs/TRD.md` §5.5a.)
 - **Business value:** unlocks safer, faster iteration on published skills — a customer-visible reliability and turnaround-time improvement once the durability flywheel (EXEC-2) can act on it.
 - **Technical value:** this is the substrate multiple other items depend on — most notably EXEC-2 (fleet durability automation), which needs a diffable representation to generate targeted CIR patches rather than full recompiles.
 - **Dependencies:** none upstream, but EXEC-2 depends on this.
@@ -736,7 +750,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 
 ---
 
-## P4 — Low Urgency, Opportunistic (17 items)
+## P4 — Low Urgency, Opportunistic (19 items)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1081,6 +1095,28 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 - **Suggested order:** opportunistic — pick up if this hang is ever actually hit in practice, or bundled with any other runtime `browser.js` work.
 - **Complexity:** S (compiler-side drop) or S (runtime-side guard) — either alone is small; doing both is still small.
 - **Success criteria:** a recording containing a cancelled file-picker click (a lone click on a file input, no following upload) either never reaches the compiled skill, or is safely absorbed at runtime without hanging.
+
+### CLOUD-12 — `GET /api/v1/workflows/generations` is unreachable (route shadowed)
+- **Category:** Cloud
+- **Description:** Found 2026-08-19 while building the release system. `main.py` registers `workflow_router` (prefix `/workflows`) before `publish_router` (also prefix `/workflows`). `workflow_routes.py`'s `GET /{workflow_id}` matches first, so `GET /api/v1/workflows/generations` resolves to `get_workflow_detail("generations")` → 404 `"Workflow not found."`, never `publish_routes.get_installer_generations()`.
+- **Why required:** currently harmless — `backend.py::_installer_generation()` catches the failure and falls back to `"v2"`, which happens to be the correct current default, so nothing user-visible is broken today. But the fallback silently masks the route being dead, and the intended behavior (admin-flippable default generation via `POST /admin/workflows/generations`) has no working read path to verify against.
+- **Business value:** low today (masked by the fallback); would become a real bug the moment `current` is ever flipped away from `"v2"` — every Studio install would keep stamping the stale default with no visible error.
+- **Technical value:** one-line fix (reorder router registration, or move `publish_router` before `workflow_router` in `main.py`), high value for closing a silent-failure gap.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic — bundle with any other `main.py` router-registration change.
+- **Complexity:** S.
+- **Success criteria:** `GET /api/v1/workflows/generations` returns the generations payload, not a 404; a regression test asserts the route resolves correctly regardless of router registration order.
+
+### CLOUD-13 — Publish always bumps every skill's version, even unchanged ones
+- **Category:** Cloud
+- **Description:** Found 2026-08-19 while building the release system. `publish_routes.py`'s per-skill `component_versions` write always stamps the pack-wide `skill_pack_version` onto every skill in `body.skills`, because publish is always whole-pack (`backend.py` rglobs the entire `skill-packs/{company}/` tree). So "per-skill independent versioning" — the mechanism `_build_delta` implements and `docs/Backend-Schema.md` §5.9 documents ("republishing one skill never triggers a redownload of the others") — doesn't hold with the current publish path: republishing bumps every skill's reported version, so every skill's delta reads `action: "update"` and the runtime redownloads and reactivates the whole pack on every publish, not just the skill(s) that actually changed.
+- **Why required:** wasted bandwidth and redundant skill reactivation on every publish, scaling with pack size — a 20-skill company redownloads 20 skills' files to ship a 1-skill fix.
+- **Business value:** moderate — larger customers with many skills per pack pay a real, avoidable sync cost on every release; not correctness-affecting (delta content is still right), purely an efficiency gap.
+- **Technical value:** the release system's new deterministic diff (`release_diff.py`) already computes exactly which skills changed between two releases at publish time — wiring that into the `component_versions` write (only bump a skill's version if `release_diff` says it changed) would make the existing "per-skill independent" architecture actually per-skill, with no new detection logic needed.
+- **Dependencies:** the release system (2026-08-19) — a previous-release snapshot to diff against now exists precisely because of it.
+- **Suggested order:** opportunistic — natural follow-up to the release system, not urgent on its own.
+- **Complexity:** S-M — the diff computation already exists; the change is threading its per-skill result into the existing `component_versions` write loop.
+- **Success criteria:** republishing a pack where only one of N skills actually changed results in `_build_delta` reporting `action: "update"` for exactly that skill and `action: "no_change"` for the rest.
 
 ---
 

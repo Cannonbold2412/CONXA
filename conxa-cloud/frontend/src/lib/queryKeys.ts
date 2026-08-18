@@ -13,6 +13,8 @@ export const queryKeys = {
   skillPacks: ['skill-packs'] as const,
   skillPack: (slug: string) => ['skill-pack', slug] as const,
   installerVersions: (slug: string | undefined) => ['installer-versions', slug] as const,
+  skillPackVersions: (slug: string | undefined) => ['skill-pack-versions', slug] as const,
+  deployments: (slug: string | undefined) => ['deployments', slug] as const,
   auditEvents: (scope?: string) =>
     (scope ? ['auditEvents', scope] : ['auditEvents']) as readonly string[],
   trackingDashboard: (range: string) => ['tracking-dashboard', range] as const,

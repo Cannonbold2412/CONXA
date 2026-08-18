@@ -631,3 +631,70 @@ export type RuntimeRegistrationsResponse = {
 export function fetchRuntimeRegistrations(): Promise<RuntimeRegistrationsResponse> {
   return apiFetch('/telemetry/runtimes').then((r) => json<RuntimeRegistrationsResponse>(r))
 }
+
+// ── Release Center (read-only dashboard mirror) ─────────────────────────────
+// Build Studio owns publish/rollback (see docs/App-Flow.md); this dashboard
+// surface only ever reads the same cloud state, so a support engineer or
+// founder can check release status without opening the desktop app.
+//
+// `{installer_version}` in these paths is a Conxa-owned platform-generation
+// tag ("v1"/"v2") the backend validates but does not yet branch behavior on
+// (see app/api/skillpack_update_routes.py) — "v2" (current) is safe to use
+// unconditionally here rather than adding a second round trip to resolve it.
+const RELEASE_GENERATION = 'v2'
+
+export type ReleaseStatus = 'pending' | 'published'
+
+export type SkillPackVersion = {
+  slug: string
+  version: string
+  release_notes: string
+  skills: string[]
+  skill_versions?: Record<string, string>
+  workspace_id: string
+  owner_user_id?: string
+  published_by?: { user_id: string; email: string | null; name: string | null }
+  published_at: number
+  file_count?: number
+  artifact_sha256?: string
+  status?: ReleaseStatus
+  is_latest: boolean
+}
+
+export type SkillPackVersionsResponse = {
+  slug: string
+  versions: SkillPackVersion[]
+  current_stable: SkillPackVersion | null
+}
+
+export function fetchSkillPackVersions(slug: string): Promise<SkillPackVersionsResponse> {
+  return apiFetch(`/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/skill-packs/versions`).then((r) =>
+    json<SkillPackVersionsResponse>(r),
+  )
+}
+
+export type DeploymentStatus = 'up_to_date' | 'pending' | 'offline' | 'unknown'
+
+export type DeploymentMachine = {
+  machine_id: string
+  platform: string
+  runtime_version: string
+  installed_skill_versions: Record<string, string> | null
+  desired_skill_version: string | null
+  status: DeploymentStatus
+  last_seen: number
+  last_sync: number
+}
+
+export type DeploymentsResponse = {
+  slug: string
+  desired_version: string | null
+  machines: DeploymentMachine[]
+  summary: { total: number; up_to_date: number; pending: number; offline: number; unknown: number }
+}
+
+export function fetchDeployments(slug: string): Promise<DeploymentsResponse> {
+  return apiFetch(`/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/deployments`).then((r) =>
+    json<DeploymentsResponse>(r),
+  )
+}

@@ -311,6 +311,14 @@ def apply_bindings_to_export_steps(export_steps: list[dict[str, Any]]) -> None:
             )
 
 
+def _step_action_str(step: Any) -> str:
+    """SkillStep.action is ``str | dict`` — a scroll step's action is
+    ``{"action": "scroll", "delta": ...}``, not a bare string. Normalize the same
+    way build.py's other step.action readers do before any ``in {...}`` check."""
+    action = getattr(step, "action", None)
+    return action if isinstance(action, str) else str((action or {}).get("action") or "")
+
+
 def apply_bindings_to_compiled_steps(steps: list[Any], events: list[dict[str, Any]]) -> None:
     """After SkillStep list is built, bind uploads using parallel upload events."""
     upload_events = [
@@ -318,7 +326,7 @@ def apply_bindings_to_compiled_steps(steps: list[Any], events: list[dict[str, An
         for e in events
         if str((e.get("action") or {}).get("action") or "") in {"upload", "upload_intent"}
     ]
-    upload_steps = [s for s in steps if getattr(s, "action", None) in {"upload", "upload_intent"}]
+    upload_steps = [s for s in steps if _step_action_str(s) in {"upload", "upload_intent"}]
 
     # region agent log
     _debug_log(
@@ -339,7 +347,7 @@ def apply_bindings_to_compiled_steps(steps: list[Any], events: list[dict[str, An
     state = _BindingState()
     event_idx = 0
     for step in steps:
-        action = getattr(step, "action", None)
+        action = _step_action_str(step)
         if action == "download_observed":
             state.add_download(str(step.value or ""))
         elif action in {"upload", "upload_intent"}:

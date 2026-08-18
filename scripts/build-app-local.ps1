@@ -53,7 +53,7 @@ New-Item -ItemType Directory -Force -Path $versionDest | Out-Null
 Write-Host "-- obfuscating app layer -------------------------------------------"
 $files = @(
   "server.js", "sync.js", "run.js", "browser.js",
-  "skill_loader.js", "tracker.js", "install_identity.js",
+  "skill_loader.js", "tracker.js", "install_identity.js", "installed_versions.js",
   "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js", "tabs.js",
   "drift.js", "version_manager.js", "manifest_manager.js", "auth_manager.js",
   "http_client.js", "page_scripts.js",
@@ -117,6 +117,5 @@ if (-not (Test-Path (Join-Path $StudioHome "deps\conxa-runtime"))) {
   Write-Host "before Test Skill will work."
 }
 Write-Host ""
-Write-Host "Next Test Skill run will re-stage the sandbox with this build (see"
-Write-Host "ensure_test_sandbox() in conxa_compile/conxa_runtime.py)."
+Write-Host 'Next Test Skill run will re-stage the sandbox with this build (see ensure_test_sandbox() in conxa_compile/conxa_runtime.py).'
 Write-Host "-----------------------------------------------------------------"

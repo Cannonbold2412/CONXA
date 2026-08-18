@@ -627,6 +627,60 @@ sequenceDiagram
     Backend-->>Studio: {cloud_download_url, cloud_tracking_url}
 ```
 
+### 5.5a Release System — Immutable Versions, Stable Channel, Rollback
+
+Full API contracts and KV shapes: `docs/Backend-Schema.md` §5.1d. Design writeup:
+`docs/Implementation-Plan.md` §3.4. This section covers the mechanism, not the wire
+format.
+
+**The core idea:** every publish already wrote to a *mutable* location
+(`skillpack_files__{slug}` KV + `data/skill-packs/{slug}/`) that `_build_delta`
+(§5.9 below) reads. That made every publish an irreversible overwrite — there was
+no artifact left to roll back *to*. The release system adds an *immutable*,
+write-once snapshot per version (`skillpack_release_files__{slug}__{version}`) and
+a **stable channel pointer** (`skillpack_channels` KV) that says which version is
+current. Publish and rollback both refresh the mutable mirror from whichever
+release should now be live; `_build_delta` itself was not touched — the runtime
+sync hot path has no idea channels or rollback exist.
+
+```mermaid
+sequenceDiagram
+    participant Studio as Build Studio
+    participant Cloud as Conxa Cloud
+
+    Studio->>Cloud: POST .../skill-packs/upload (same request as §5.5)
+    Cloud->>Cloud: duplicate-version gate (409 unless status="pending")
+    Cloud->>Cloud: byte-identical-artifact gate (409 skill_pack_artifact_unchanged)
+    Note over Cloud: Everything below happens inside one request — no cross-request transaction exists
+    Cloud->>Cloud: 1. write immutable snapshot (release_files KV + disk)
+    Cloud->>Cloud: 2. write version row, status="pending"
+    Cloud->>Cloud: 3. refresh mutable mirror + pack.json + component_versions + manifest
+    Cloud->>Cloud: 4. move stable channel pointer  ◀── the single act of activation
+    Cloud->>Cloud: 5. flip version row to "published", is_latest bookkeeping
+    Cloud-->>Studio: 200 (or 5xx if steps 1-3 failed — channel never moved)
+```
+
+**Write ordering is the whole safety property.** Every write that can plausibly fail
+(disk, KV) happens *before* the channel pointer moves; the pointer move is the last
+meaningful write. A failure at step 1-3 leaves the channel untouched (a failed
+publish never affects what runtimes receive) and the version row `"pending"` (safe
+to retry the exact same version number — the duplicate-version gate treats a
+`"pending"` row as never having actually happened).
+
+**Rollback** (`POST .../releases/{version}/rollback`) is the mirror image without
+step 1-2: it reads the target version's already-immutable snapshot, moves the
+channel pointer, and refreshes the mutable mirror + `component_versions` +
+manifest from that snapshot — no artifact is copied, rebuilt, or mutated. The
+previously-stable version becomes "superseded" by derivation (its row is
+untouched; `is_latest` just no longer matches the channel).
+
+**Deterministic diff** (`app/services/release_diff.py`) aligns execution steps
+across two file sets by a semantic key (type/tab/frame/selector) rather than list
+position, so the compiler re-healing a selector between releases reads as one step
+"modified", not one removed and a different one added. Pure stdlib `difflib`, no
+LLM, no wall-clock — same inputs always produce byte-identical output, which is
+what lets the pre-publish preview and the after-the-fact `.../diff` endpoint agree.
+
 ### 5.6 Skill Sync Flow (Runtime → Cloud)
 
 ```mermaid

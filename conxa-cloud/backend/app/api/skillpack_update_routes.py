@@ -254,6 +254,12 @@ class TelemetryBody(BaseModel):
     companies: list[str] = []
     platform: str = ""
     install_id: str = ""
+    # Optional: {company: {skill_slug: installed_version}}, as reported by
+    # runtime/server.js's _phonehome (added for the release-system's deployment
+    # view — see docs/App-Flow.md). Absent for any runtime that hasn't picked up
+    # that change yet; those registrations read as deployment status "unknown"
+    # rather than a fabricated "up to date".
+    skill_versions: dict[str, dict[str, str]] = {}
 
 
 telemetry_router = APIRouter(prefix="/telemetry", tags=["telemetry"])
@@ -280,19 +286,25 @@ def post_telemetry_runtime_start(body: TelemetryBody) -> dict[str, Any]:
 
         key = f"{company}:{install_id or platform}"
         existing = db_get("runtime_registrations", key) or {}
-        db_set(
-            "runtime_registrations",
-            key,
-            {
-                "company": company,
-                "install_id": install_id,
-                "platform": platform,
-                "runtime_version": (body.runtime_version or "").strip(),
-                "workspace_id": workspace_id,
-                "last_seen": now,
-                "first_seen": existing.get("first_seen", now),
-            },
-        )
+        company_skill_versions = body.skill_versions.get(company) if isinstance(body.skill_versions, dict) else None
+        row: dict[str, Any] = {
+            "company": company,
+            "install_id": install_id,
+            "platform": platform,
+            "runtime_version": (body.runtime_version or "").strip(),
+            "workspace_id": workspace_id,
+            "last_seen": now,
+            "first_seen": existing.get("first_seen", now),
+        }
+        # Only overwrite skill_versions when this phone-home actually reported
+        # it — an older runtime that hasn't self-updated yet keeps reporting
+        # nothing for this field, and its last-known value (if any) shouldn't
+        # be wiped back to "unknown" just because it phoned home again.
+        if company_skill_versions:
+            row["skill_versions"] = company_skill_versions
+        elif isinstance(existing.get("skill_versions"), dict):
+            row["skill_versions"] = existing["skill_versions"]
+        db_set("runtime_registrations", key, row)
 
     return {"ok": True}
 

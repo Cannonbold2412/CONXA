@@ -66,6 +66,22 @@ export const errorMessages: Record<string, string> = {
   auth_file_in_build_input:
     "Sign-in credentials were found in the build folder and can't be shipped. Remove them and rebuild.",
 
+  // Release Center (publish / rollback) — conxa-cloud/backend/app/api/publish_routes.py
+  // and app/api/release_routes.py
+  skill_pack_version_exists:
+    "This version was already published and can never be overwritten. Bump the version and publish again.",
+  skill_pack_artifact_unchanged:
+    "Nothing has changed since the current stable release — this exact skill pack is already published.",
+  release_not_found: "That release no longer exists.",
+  release_not_published: "That release never finished publishing, so it can't be rolled back to.",
+  already_stable: "That release is already the stable channel — there's nothing to roll back.",
+  release_snapshot_unavailable:
+    "This release predates version history and has no saved snapshot, so it can't be rolled back to.",
+  slug_owned_by_another_workspace:
+    "This skill pack's slug is already published by a different Conxa workspace.",
+  "admin role required":
+    "Publishing and rollback require an admin or owner role in this Conxa workspace.",
+
   // Build / compile / test
   pack_not_built: "Build this skill pack before continuing.",
   skill_package_not_built: "Build the skill package before testing its workflows.",

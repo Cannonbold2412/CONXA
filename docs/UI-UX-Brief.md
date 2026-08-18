@@ -285,16 +285,24 @@ Renamed from `TestPluginPage.tsx` in the 2026-08-12 Plugin→Workflow/SkillPack 
 
 ---
 
-### 2.11 Publish Skill Package (`PublishPage.tsx`)
+### 2.11 Publish Skill Package — the Release Center (`PublishPage.tsx`)
 
-**Purpose:** The primary, mandatory, version-controlled release-management action — ship a skill-pack update to customers who already have Conxa installed, via the runtime's delta-sync, with zero installer rebuild required.
+**Purpose:** The primary, mandatory, version-controlled release-management action — ship a skill-pack update to customers who already have Conxa installed, via the runtime's delta-sync, with zero installer rebuild required. As of the release system (2026-08-19) this is a full enterprise release workflow, not a bare upload form: release candidate → what will change → where it will go → publish → release history → deployment status → audit trail.
 **Inputs:** Version (semver), release notes — no per-workflow selector; the page acts on the workspace's one shared skill pack, fetched via `fetchSkillPack()`.
-**Outputs:** Release history (version, release notes, publish timestamp, `is_latest`), sync endpoint, tracking URL, workspace ID.
-**User goal:** Ship a skill-pack change to customers as fast as possible.
+**Outputs:** Deterministic diff preview against the current stable release, immutable release history (version, status, artifact hash, publisher, `is_latest` — now tracking the *stable channel*, not "most recently published"), runtime deployment status, per-slug release audit trail, sync endpoint, tracking URL, workspace ID.
+**User goal:** Ship a skill-pack change to customers as fast as possible, see exactly what's about to change before doing it, and undo a bad release without waiting on a rebuild.
 
 **Shipped 2026-07 (Phase 4)**, replacing the Phase-1 stub. `Backend._publish_skill_pack_for_installer` was renamed to `_publish_skill_pack` and extracted from Build Installer's call chain into the new mandatory `cmd_publish_skill_pack` RPC, which this page calls via `publishSkillPack()`. Skill-pack upload is **mandatory** — publish fails the whole action if the cloud upload fails (`_CommandError("cloud_publish_failed", ...)`), by design (per the versioned-installer-architecture requirement).
 
-**Version history:** new `SkillPackVersionHistory`-style list (calling `fetchSkillPackVersions()` → `GET /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions`) — the version/release-comment/publishing-limit surface that moved here from Build Installer, per the original design brief. Republishing an already-used version number is rejected with `skill_pack_version_exists` (409) rather than silently overwriting history.
+**Release system (2026-08-19):** new pure-logic module `lib/releaseState.ts` (dependency-free, tested by `test/releaseState.test.mjs`) drives every derived UI state — candidate readiness, the publish button's compound gate, the idle/publishing/success/failure states, release badges (`stable`/`superseded`/`pending`/`failed`), and rollback eligibility. New components under `components/release/`: `DiffPanel` (the deterministic "what will change" summary + progressive-disclosure technical detail), `ReleaseHistoryTable` (with inline `RollbackDialog` — an explicit confirm showing current stable, target, and effect, gated to only render for a valid rollback target), `DeploymentPanel`, `ReleaseAuditLog`. `fetchSkillPackVersions()`'s response gained `current_stable`; new calls: `previewRelease()`, `fetchReleaseDetail()`, `fetchReleaseDiff()`, `rollbackRelease()`, `fetchDeployments()`, `fetchReleaseEvents()`.
+
+**Publishing progress is honest, not animated.** The publish transaction is one opaque cloud call from the Studio's point of view — `stageChecklist()` only marks a checklist item done once a real `stage` event (`validated`/`uploading`/`published`/`failed`) has actually been observed from the backend, never guessing intermediate cloud-side progress it can't see (persist artifact / create release / move channel / write audit all happen server-side inside the single "uploading" step).
+
+**Version history:** `fetchSkillPackVersions()` → `GET /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions` — the version/release-comment/publishing-limit surface that moved here from Build Installer, per the original design brief. Republishing an already-used version number is rejected with `skill_pack_version_exists` (409); republishing a byte-identical artifact under a *new* version number is rejected with `skill_pack_artifact_unchanged` (409) rather than silently minting a no-op release.
+
+**Deployment status is deliberately partial.** Only `up_to_date`/`pending`/`offline`/`unknown` are shown — `updating`/`failed`/`rolled_back` aren't derivable from what the runtime currently reports (state at phone-home, not sync outcomes), so the UI never fabricates them. A registration with no `skill_versions` field (an already-deployed runtime that hasn't self-updated to report it yet) reads as `unknown`, never a guessed `up_to_date`.
+
+**Read-only cloud mirror:** the Cloud dashboard's Skill Packages detail page (`SkillPackageVersionsPage.tsx`) shows the same release history + deployment sections for visibility (e.g. a support engineer checking release state without opening Build Studio) — no publish or rollback controls there; those stay Studio-only.
 
 **Meter behavior:** the header pill was repurposed 2026-08-08 from the now-removed skill-pack-slot meter
 to compile credits remaining — there is no longer any limit on how many distinct product slugs a
@@ -303,6 +311,8 @@ white-label errors from a publish or installer-upload attempt surface through th
 map as every other entitlement code (`lib/errorMessages.ts`) — no dedicated UI state per code yet.
 
 **Shared components:** the log/result-card UI (`components/BuildLogUi.tsx`) is shared with Build Installer (§2.9) to prevent the two pages' visual language drifting apart. The "Built Packages" sidebar list (`components/PluginListSidebar.tsx`) this section used to reference was removed in the 2026-08-12 refactor — both pages became workspace-scoped with no per-automation selector, so there's nothing left to switch between.
+
+**Known gap:** Build Studio has no client-visible role concept today (a local desktop tool, typically single-operator), so `canManageReleases()` in `releaseState.ts` is defined but not wired to a real "am I admin" check on this page — publish/rollback controls always render, and `require_admin` enforcement is entirely server-side. Not a security gap (the server never trusts the client), but a non-admin user would only discover they can't publish when the 403 comes back.
 
 ---
 
@@ -757,6 +767,8 @@ Multi-engineer teams cannot currently:
 ### 8.2 Audit Trail
 
 The Cloud Dashboard now has a dedicated `/audit` page with search, action filtering, summary counters, metadata preview, and CSV export over `GET /api/v1/audit-events`. Remaining enterprise hardening work is deeper event taxonomy, actor display names, and backend-level export pagination beyond the current loaded result set.
+
+**Release events (2026-08-19):** every release-lifecycle action (publish start/succeed/fail, channel move, rollback start/complete) is mirrored into this same global audit log, so the `/audit` page needed no changes. But that log is a 500-entry ring buffer shared across every workspace — a busy tenant can evict another tenant's history. The Release Center's own Audit section (§2.11) reads from a separate, unbounded, per-slug source (`GET .../releases/events`) instead, which is the one to trust for a specific skill pack's full release history.
 
 ### 8.3 Offline Mode
 

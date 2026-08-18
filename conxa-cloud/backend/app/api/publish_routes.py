@@ -50,7 +50,14 @@ from app.api.product_ownership import (
     _owner_of,
     validate_installer_version,
 )
-from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns, skillpack_versions_ns
+from app.api.skillpack_storage import (
+    read_pack_json_mirror,
+    skill_packs_dir,
+    skillpack_versions_ns,
+    write_mutable_mirror_files,
+    write_pack_json_mirror,
+    write_release_snapshot,
+)
 from app.services.entitlements import (
     _limits_from_billing,
     ensure_distribution_allowed,
@@ -63,6 +70,7 @@ from app.services.entitlements import (
 )
 from app.services.rbac import require_admin
 from app.services.saas import add_audit_event, billing_for
+from app.services import release_channel
 from app.api.updates_routes import (
     _COMPONENT_VERSIONS_NS,
     _MANIFEST_NS,
@@ -216,6 +224,32 @@ def _upsert_published_skill_pack(
     save_skill_pack(pack)
 
 
+def _decode_publish_files(files: list[PublishFile]) -> dict[str, bytes]:
+    """Validate + base64-decode every file once, so the artifact hash, the
+    immutable snapshot, and the mutable mirror all read from the same bytes."""
+    decoded: dict[str, bytes] = {}
+    for f in files:
+        rel = _validate_rel_path(f.path)
+        try:
+            decoded[rel] = base64.b64decode(f.content_base64, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid_base64: {rel}") from exc
+    return decoded
+
+
+def _artifact_sha256(files: dict[str, bytes]) -> str:
+    """Canonical hash over sorted (path, bytes) pairs — the release fingerprint
+    used both to identify a published release and to detect a byte-identical
+    republish (``skill_pack_artifact_unchanged`` below)."""
+    hasher = hashlib.sha256()
+    for path in sorted(files):
+        hasher.update(path.encode("utf-8"))
+        hasher.update(b"\x00")
+        hasher.update(files[path])
+        hasher.update(b"\x00")
+    return hasher.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Publish skill pack data
 # ---------------------------------------------------------------------------
@@ -227,6 +261,14 @@ def _publish_skill_pack_impl(
     ``/{installer_version}/{slug}/skill-packs/upload`` route. ``installer_version``
     is ``None`` for the legacy route (unversioned URLs are minted into pack.json,
     matching every runtime already deployed against them).
+
+    Publishing is a release transaction (docs/Implementation-Plan.md §3.4): the
+    stable channel only ever moves after the immutable per-version snapshot and
+    its version-history row are durably persisted, and never moves at all if
+    anything before that fails — see the numbered steps below. A duplicate
+    version number is rejected outright; a byte-identical republish (same
+    artifact hash as the current stable release) is rejected explicitly rather
+    than silently minting a no-op version.
     """
     try:
         ensure_trial_active(principal)
@@ -242,69 +284,91 @@ def _publish_skill_pack_impl(
     _claim_owner(slug, principal.workspace_id)
 
     skill_pack_version = _validate_skill_pack_version(body.skill_pack_version)
+    decoded_files = _decode_publish_files(body.files)
+    artifact_sha256 = _artifact_sha256(decoded_files)
 
-    # A given semver is an immutable release, same as installer uploads — forces
-    # a version bump rather than silently overwriting a prior release's history row.
-    if db_get(skillpack_versions_ns(slug), skill_pack_version) is not None:
+    # A given semver is an immutable release. The one exception: a row left
+    # behind by a publish attempt that failed before the channel ever moved
+    # (status "pending") — that version was never actually released, so
+    # retrying the same version number is safe and expected, not an overwrite.
+    existing_row = db_get(skillpack_versions_ns(slug), skill_pack_version)
+    if isinstance(existing_row, dict) and existing_row.get("status", "published") != "pending":
         raise HTTPException(status_code=409, detail="skill_pack_version_exists")
 
-    packs_dir = skill_packs_dir(slug)
-    packs_dir.mkdir(parents=True, exist_ok=True)
-    pack_path = packs_dir / "pack.json"
+    # Publishing an artifact byte-identical to what's already live is almost
+    # always a mistake (forgot to rebuild, re-ran a stale script) — reject it
+    # explicitly instead of quietly minting a no-op version. Prefer blocking
+    # over an implicit "republish" per the release-system plan.
+    current_stable_version = release_channel.get_stable_version(slug)
+    if current_stable_version:
+        current_stable_row = db_get(skillpack_versions_ns(slug), current_stable_version)
+        if isinstance(current_stable_row, dict) and current_stable_row.get("artifact_sha256") == artifact_sha256:
+            raise HTTPException(status_code=409, detail="skill_pack_artifact_unchanged")
 
-    written = 0
-    for f in body.files:
-        rel = _validate_rel_path(f.path)
-        try:
-            raw = base64.b64decode(f.content_base64, validate=True)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise HTTPException(status_code=400, detail=f"invalid_base64: {rel}") from exc
-        target = packs_dir / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_bytes(raw)
-        tmp.replace(target)
-        db_set(skillpack_files_ns(slug), rel, {"path": rel, "content_base64": f.content_base64})
-        written += 1
+    release_channel.record_release_event(
+        principal, slug, release_channel.EVT_PUBLISH_STARTED, metadata={"version": skill_pack_version}
+    )
 
-    published_at = time.time()
-    api_base = _api_base(request)
-    if installer_version:
-        sync_url_path = f"/api/v1/workflows/{installer_version}/{slug}/skill-packs/delta"
-        tracking_url_path = f"/api/v1/workflows/{installer_version}/{slug}/tracking/events"
-    else:
-        sync_url_path = f"/api/v1/skill-packs/{slug}/delta"
-        tracking_url_path = f"/api/tracking/{slug}/events"
-    tracking = {
-        "enabled": True,
-        "tracking_url": f"{api_base}{tracking_url_path}",
-        "tracking_token": _tracking_token(slug, principal.workspace_id, skill_pack_version, principal.user_id),
-        "company_id": slug,
-        "schema_version": 1,
-        "protocol_version": 1,
-    }
-    sync_token = _sync_token(slug, principal.workspace_id, skill_pack_version, principal.user_id)
-    if pack_path.is_file():
-        try:
-            pack = json.loads(pack_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            pack = {}
-    else:
-        # Local disk may have been wiped (Render free plan has no persistent disk) since
-        # the last publish; recover the prior pack.json from Postgres so republishing
-        # doesn't lose fields like company_display.
-        stored_pack = db_get(skillpack_files_ns(slug), "pack.json")
-        if isinstance(stored_pack, dict) and stored_pack.get("content_base64"):
-            try:
-                pack = json.loads(base64.b64decode(stored_pack["content_base64"]).decode("utf-8"))
-            except (ValueError, json.JSONDecodeError):
-                pack = {}
+    try:
+        published_at = time.time()
+        api_base = _api_base(request)
+        if installer_version:
+            sync_url_path = f"/api/v1/workflows/{installer_version}/{slug}/skill-packs/delta"
+            tracking_url_path = f"/api/v1/workflows/{installer_version}/{slug}/tracking/events"
         else:
-            pack = {}
-    pack.update(
-        {
-            "company": pack.get("company") or slug,
-            "company_display": body.display_name.strip() or pack.get("company_display") or slug,
+            sync_url_path = f"/api/v1/skill-packs/{slug}/delta"
+            tracking_url_path = f"/api/tracking/{slug}/events"
+        tracking = {
+            "enabled": True,
+            "tracking_url": f"{api_base}{tracking_url_path}",
+            "tracking_token": _tracking_token(slug, principal.workspace_id, skill_pack_version, principal.user_id),
+            "company_id": slug,
+            "schema_version": 1,
+            "protocol_version": 1,
+        }
+        sync_token = _sync_token(slug, principal.workspace_id, skill_pack_version, principal.user_id)
+
+        # 1. Write the immutable per-version snapshot FIRST. This is the artifact
+        #    a future rollback restores from — never touched again after this call.
+        write_release_snapshot(slug, skill_pack_version, decoded_files)
+
+        # 2. Version-history row, written as "pending" — not yet a real release
+        #    until the channel pointer actually moves in step 3.
+        history_row = {
+            "slug": slug,
+            "version": skill_pack_version,
+            "release_notes": body.release_notes.strip(),
+            "skills": list(body.skills),
+            "skill_groups": dict(body.skill_groups),
+            "skill_versions": {s: skill_pack_version for s in body.skills},
+            "workspace_id": principal.workspace_id,
+            "owner_user_id": principal.user_id,
+            "published_by": {"user_id": principal.user_id, "email": principal.email, "name": principal.name},
+            "published_at": published_at,
+            "files_written": len(decoded_files),
+            "file_count": len(decoded_files),
+            "size_bytes": sum(len(v) for v in decoded_files.values()),
+            "artifact_sha256": artifact_sha256,
+            "status": "pending",
+            "is_latest": False,
+        }
+        db_set(skillpack_versions_ns(slug), skill_pack_version, history_row)
+        release_channel.record_release_event(
+            principal, slug, release_channel.EVT_VERSION_CREATED, metadata={"version": skill_pack_version}
+        )
+
+        # 3. Refresh the mutable "currently live" mirror that _build_delta serves —
+        #    unchanged in shape from before the release system, just now also the
+        #    thing rollback restores when it moves the pointer the other way (see
+        #    release_routes.rollback). Deliberately BEFORE the channel move below:
+        #    every write that could plausibly fail (disk, KV) happens first, so if
+        #    any of it does fail, the channel pointer — the one thing a failed
+        #    publish must never move — is still untouched.
+        write_mutable_mirror_files(slug, decoded_files)
+        existing_pack = read_pack_json_mirror(slug)
+        pack_updates = {
+            "company": slug,
+            "company_display": body.display_name.strip() or existing_pack.get("company_display") or slug,
             "skill_pack_version": skill_pack_version,
             "release_notes": body.release_notes.strip(),
             "skills": list(body.skills),
@@ -315,82 +379,90 @@ def _publish_skill_pack_impl(
             "sync_token": sync_token,
             "tracking": tracking,
         }
-    )
-    if installer_version:
-        pack["installer_version"] = installer_version
-    pack_bytes = json.dumps(pack, ensure_ascii=False, indent=2).encode("utf-8")
-    tmp = pack_path.with_suffix(".json.tmp")
-    tmp.write_bytes(pack_bytes)
-    tmp.replace(pack_path)
-    db_set(
-        skillpack_files_ns(slug),
-        "pack.json",
-        {"path": "pack.json", "content_base64": base64.b64encode(pack_bytes).decode("ascii")},
-    )
-    _upsert_published_skill_pack(body, slug, skill_pack_version, principal.workspace_id)
+        if installer_version:
+            pack_updates["installer_version"] = installer_version
+        write_pack_json_mirror(slug, pack_updates)
+        _upsert_published_skill_pack(body, slug, skill_pack_version, principal.workspace_id)
 
-    # Record each skill's version in the unified signed manifest so runtimes can
-    # compare against it before pulling a delta. `files` is intentionally left empty
-    # here — skill content is delivered through the existing per-company delta-sync
-    # (Bearer sync_token), not broadcast in a public manifest; the manifest only
-    # needs to know "what version is current" and any compatibility gate.
-    published_at_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_at))
-    index = db_get(_MANIFEST_NS, "skill_pack_index") or []
-    index_changed = False
-    for skill_slug in body.skills:
-        identifier = f"{slug}:{skill_slug}"
-        db_set(
-            _COMPONENT_VERSIONS_NS,
-            f"skill_packs:{slug}:{skill_slug}",
-            {"version": skill_pack_version, "released_at": published_at_iso, "files": []},
+        # Record each skill's version in the unified signed manifest so runtimes can
+        # compare against it before pulling a delta. `files` is intentionally left empty
+        # here — skill content is delivered through the existing per-company delta-sync
+        # (Bearer sync_token), not broadcast in a public manifest; the manifest only
+        # needs to know "what version is current" and any compatibility gate.
+        published_at_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_at))
+        index = db_get(_MANIFEST_NS, "skill_pack_index") or []
+        index_changed = False
+        for skill_slug in body.skills:
+            identifier = f"{slug}:{skill_slug}"
+            db_set(
+                _COMPONENT_VERSIONS_NS,
+                f"skill_packs:{slug}:{skill_slug}",
+                {"version": skill_pack_version, "released_at": published_at_iso, "files": []},
+            )
+            if identifier not in index:
+                index.append(identifier)
+                index_changed = True
+            record_published_workflow(principal.workspace_id, slug, skill_slug)
+        if index_changed:
+            db_set(_MANIFEST_NS, "skill_pack_index", index)
+        if body.skills:
+            _compose_manifest()
+
+        # 4. Move the stable channel pointer — the single act of activation, and
+        #    the LAST write that matters. Everything above this line has already
+        #    durably persisted the release; a failure past this point (the
+        #    is_latest bookkeeping and audit events below) leaves an informational
+        #    flag briefly stale, never an inconsistent or partially-active release.
+        release_channel.set_stable_version(
+            slug, skill_pack_version, set_by=principal.user_id, reason="publish", from_version=current_stable_version
         )
-        if identifier not in index:
-            index.append(identifier)
-            index_changed = True
-        record_published_workflow(principal.workspace_id, slug, skill_slug)
-    if index_changed:
-        db_set(_MANIFEST_NS, "skill_pack_index", index)
-    if body.skills:
-        _compose_manifest()
 
-    # Skill-pack release history — mirrors installer_versions_ns exactly (one KV
-    # row per version, is_latest flip on every other row for this slug).
-    history_row = {
-        "slug": slug,
-        "version": skill_pack_version,
-        "release_notes": body.release_notes.strip(),
-        "skills": list(body.skills),
-        "workspace_id": principal.workspace_id,
-        "owner_user_id": principal.user_id,
-        "published_at": published_at,
-        "files_written": written,
-        "is_latest": True,
-    }
-    db_set(skillpack_versions_ns(slug), skill_pack_version, history_row)
-    for _other_key, other_row in db_list_kv(skillpack_versions_ns(slug)):
-        if not isinstance(other_row, dict):
-            continue
-        other_version = other_row.get("version")
-        if other_version == skill_pack_version:
-            continue
-        if other_row.get("is_latest"):
-            other_row["is_latest"] = False
-            db_set(skillpack_versions_ns(slug), other_version, other_row)
+        # 5. Flip this row (only it) to "published" / is_latest — mirrors
+        #    installer_versions_ns's is_latest-flip exactly.
+        history_row["status"] = "published"
+        history_row["is_latest"] = True
+        db_set(skillpack_versions_ns(slug), skill_pack_version, history_row)
+        for _other_key, other_row in db_list_kv(skillpack_versions_ns(slug)):
+            if not isinstance(other_row, dict):
+                continue
+            other_version = other_row.get("version")
+            if other_version == skill_pack_version:
+                continue
+            if other_row.get("is_latest"):
+                other_row["is_latest"] = False
+                db_set(skillpack_versions_ns(slug), other_version, other_row)
 
-    add_audit_event(
-        principal,
-        "publish",
-        resource_type="skill_pack",
-        resource_id=slug,
-        metadata={"version": skill_pack_version, "files_written": written},
-    )
+        add_audit_event(
+            principal,
+            "publish",
+            resource_type="skill_pack",
+            resource_id=slug,
+            metadata={"version": skill_pack_version, "files_written": len(decoded_files)},
+        )
+        release_channel.record_release_event(
+            principal,
+            slug,
+            release_channel.EVT_CHANNEL_CHANGED,
+            metadata={"channel": release_channel.STABLE, "from": current_stable_version, "to": skill_pack_version},
+        )
+        release_channel.record_release_event(
+            principal, slug, release_channel.EVT_PUBLISH_SUCCEEDED, metadata={"version": skill_pack_version}
+        )
+    except Exception as exc:  # noqa: BLE001
+        release_channel.record_release_event(
+            principal,
+            slug,
+            release_channel.EVT_PUBLISH_FAILED,
+            metadata={"version": skill_pack_version, "error": str(exc)[:300]},
+        )
+        raise
 
     billing = billing_for(principal)
     limits = _limits_from_billing(billing)
     return {
         "slug": slug,
         "version": skill_pack_version,
-        "files_written": written,
+        "files_written": len(decoded_files),
         "sync_url": sync_url_path,
         "sync_token": sync_token,
         "tracking": tracking,
@@ -445,7 +517,10 @@ def _skill_pack_versions_impl(slug: str, request: Request) -> dict[str, Any]:
         if isinstance(row, dict) and row.get("workspace_id") == principal.workspace_id
     ]
     versions.sort(key=lambda item: float(item.get("published_at") or 0), reverse=True)
-    return {"slug": slug, "versions": versions}
+
+    current_stable_version = release_channel.get_stable_version(slug)
+    current_stable = next((v for v in versions if v.get("version") == current_stable_version), None)
+    return {"slug": slug, "versions": versions, "current_stable": current_stable}
 
 
 # ---------------------------------------------------------------------------

@@ -299,6 +299,37 @@ class Backend(
         except Exception:
             pass
 
+    def _read_pack_json(self, company_slug: str) -> tuple[Path, dict[str, Any]]:
+        """Locate + parse the already-built pack.json for a company slug.
+        Read-only — callers that need to mutate it write it back themselves."""
+        from conxa_core.config import settings as _settings
+
+        packs_dir = Path(_settings.data_dir) / "skill-packs" / company_slug
+        pack_path = packs_dir / "pack.json"
+        if not pack_path.is_file():
+            raise _CommandError("pack_not_built", f"No built skill pack for {company_slug}")
+        return pack_path, json.loads(pack_path.read_text(encoding="utf-8"))
+
+    def _collect_skill_pack_files(self, company_slug: str) -> list[dict[str, str]]:
+        """Every file currently under the built pack's directory, base64-encoded
+        the same way a publish upload encodes them. Shared by ``_publish_skill_pack``
+        (the real upload) and ``cmd_release_preview`` (a read-only dry run against
+        the exact same bytes, so the preview never drifts from what publish sends)."""
+        from conxa_core.config import settings as _settings
+        import base64
+
+        packs_dir = Path(_settings.data_dir) / "skill-packs" / company_slug
+        files: list[dict[str, str]] = []
+        for fpath in sorted(packs_dir.rglob("*")):
+            if fpath.is_file():
+                files.append(
+                    {
+                        "path": fpath.relative_to(packs_dir).as_posix(),
+                        "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
+                    }
+                )
+        return files
+
     def _publish_skill_pack(
         self,
         *,
@@ -314,30 +345,16 @@ class Backend(
         cmd_publish_skill_pack). Only a local dev cloud that's simply unreachable
         is swallowed — see _auto_publish_enabled.
         """
-        from conxa_core.config import settings as _settings
-        import base64
         import urllib.request
 
-        data_dir = Path(_settings.data_dir)
-        packs_dir = data_dir / "skill-packs" / company_slug
-        pack_path = packs_dir / "pack.json"
-        if not pack_path.is_file():
-            raise _CommandError("pack_not_built", f"No built skill pack for {company_slug}")
-
-        pack = json.loads(pack_path.read_text(encoding="utf-8"))
+        pack_path, pack = self._read_pack_json(company_slug)
         pack["skill_pack_version"] = version
         pack["release_notes"] = release_notes
         pack_path.write_text(json.dumps(pack, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        files: list[dict[str, str]] = []
-        for fpath in sorted(packs_dir.rglob("*")):
-            if fpath.is_file():
-                files.append(
-                    {
-                        "path": fpath.relative_to(packs_dir).as_posix(),
-                        "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
-                    }
-                )
+        # Collected AFTER the write above so pack.json's own uploaded bytes carry
+        # this release's version/release_notes.
+        files = self._collect_skill_pack_files(company_slug)
 
         cloud_api = self._cloud_api_base()
         generation = self._installer_generation()
@@ -354,7 +371,8 @@ class Backend(
                 "files": files,
             }
         ).encode("utf-8")
-        sink({"kind": "skill_pack_publish", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
+        sink({"kind": "skill_pack_publish", "stage": "validated", "message": f"Validated {len(files)} files for {company_slug}."})
+        sink({"kind": "skill_pack_publish", "stage": "uploading", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
         try:
             req = urllib.request.Request(
                 f"{cloud_api}/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/upload",
@@ -369,11 +387,19 @@ class Backend(
                 published = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             # The cloud responded — it's reachable but rejected the request (bad auth,
-            # bad payload, duplicate version, etc). Always a real failure, local cloud or not.
+            # bad payload, duplicate version, unchanged artifact, etc). Always a real
+            # failure, local cloud or not — the stable channel was never touched (see
+            # publish_routes._publish_skill_pack_impl's write ordering).
             try:
                 body_text = exc.read().decode("utf-8", errors="replace")
             except Exception:
                 body_text = ""
+            if exc.code == 409 and "skill_pack_artifact_unchanged" in body_text:
+                raise _CommandError(
+                    "skill_pack_artifact_unchanged",
+                    f"Nothing changed since the current stable release of {company_slug} — "
+                    "this exact skill pack is already published. Make a change before republishing.",
+                ) from exc
             if exc.code == 409:
                 raise _CommandError(
                     "skill_pack_version_exists",
@@ -381,6 +407,7 @@ class Backend(
                 ) from exc
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": f"Cloud publish failed — Conxa Cloud responded {exc.code}: {body_text or exc}",
             })
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body_text}") from exc
@@ -393,11 +420,13 @@ class Backend(
             if not self._auto_publish_enabled():
                 sink({
                     "kind": "skill_pack_publish",
+                    "stage": "skipped",
                     "message": f"Cloud publish skipped — {cloud_api} is not reachable ({exc})",
                 })
                 return {"skipped": True, "slug": company_slug, "version": version}
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": f"Cloud publish failed — could not reach {cloud_api} ({exc})",
             })
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc}") from exc
@@ -406,6 +435,7 @@ class Backend(
         if not tracking.get("tracking_token"):
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": "Cloud publish failed — Conxa Cloud accepted the upload but did not return a tracking token.",
             })
             raise _CommandError("cloud_publish_failed", "Cloud publish did not return a tracking token.")
@@ -414,6 +444,7 @@ class Backend(
         if not sync_token:
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": "Cloud publish failed — Conxa Cloud accepted the upload but did not return a sync_token.",
             })
             raise _CommandError(
@@ -440,8 +471,9 @@ class Backend(
         sink(
             {
                 "kind": "skill_pack_publish",
+                "stage": "published",
                 "message": (
-                    "Cloud tokens embedded in pack.json "
+                    f"Published {company_slug} v{version} — stable channel updated "
                     f"(workspace {workspace_id or 'unknown'}, sync_token present, "
                     f"tracking_token present, url {tracking.get('tracking_url', '')})"
                 ),

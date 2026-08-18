@@ -221,7 +221,14 @@ def test_publish_upsert_updates_existing_skill_pack_slug(monkeypatch, tmp_path):
     r1 = client.post("/api/v1/workflows/publish", json=body)
     assert r1.status_code == 200, r1.text
 
-    r2 = client.post("/api/v1/workflows/publish", json={**body, "skill_pack_version": "1.0.1"})
+    # A second publish must carry a different artifact — an identical one is
+    # rejected as skill_pack_artifact_unchanged (see release-system plan §5).
+    body2 = {
+        **body,
+        "skill_pack_version": "1.0.1",
+        "files": [{"path": "pack.json", "content_base64": base64.b64encode(b'{"marker":"v2"}').decode()}],
+    }
+    r2 = client.post("/api/v1/workflows/publish", json=body2)
     assert r2.status_code == 200, r2.text
 
     packs = [p for p in list_skill_packs(workspace_id="wrk_local") if p.company_slug == "render"]

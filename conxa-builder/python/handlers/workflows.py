@@ -177,8 +177,16 @@ class WorkflowsMixin:
         return publish_info
 
     def cmd_list_skill_pack_versions(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        """Release history for the Skill Pack Publishing page — version, release
-        notes, and publish timestamp per prior release of this company's slug."""
+        """Release history for the Skill Pack Publishing / Release Center page —
+        version, release notes, publish timestamp, and (since the release system)
+        the current stable release, per prior release of this company's slug."""
+        generation, company_slug = self._resolve_release_company(payload)
+        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/versions")
+
+    def _resolve_release_company(self, payload: dict[str, Any]) -> tuple[str, str]:
+        """Shared by every Release Center RPC handler below: resolve
+        (installer_generation, company_slug) the same way cmd_list_skill_pack_versions
+        always has, so a payload with no explicit company_slug still works."""
         from conxa_core.storage.skill_pack_store import get_skill_pack
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
@@ -190,8 +198,66 @@ class WorkflowsMixin:
             if pack is None:
                 raise _CommandError("skill_pack_not_found", f"No skill pack built yet for workspace {workspace_id}")
             company_slug = pack.company_slug
-        generation = self._installer_generation()
-        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/versions")
+        return self._installer_generation(), company_slug
+
+    def cmd_release_preview(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Everything the Release Center needs to show before the user clicks
+        Publish: proposed vs. previous version, deterministic diff, artifact hash,
+        and whether the candidate is a duplicate or a no-op republish. Reads the
+        already-built pack exactly as ``cmd_publish_skill_pack`` would upload it —
+        read-only, no mutation — so nothing shown here can drift from what
+        actually gets recorded on Publish."""
+        generation, company_slug = self._resolve_release_company(payload)
+        _pack_path, pack = self._read_pack_json(company_slug)
+        files = self._collect_skill_pack_files(company_slug)
+        body = {
+            "version": str(payload.get("version") or ""),
+            "skills": list(pack.get("skills") or []),
+            "skill_groups": dict(pack.get("skill_groups") or {}),
+            "files": files,
+        }
+        return self._cloud_json(
+            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/preview", method="POST", body=body
+        )
+
+    def cmd_release_detail(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        generation, company_slug = self._resolve_release_company(payload)
+        version = _safe_id(str(payload.get("version") or ""), "version")
+        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}")
+
+    def cmd_release_diff(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Deterministic diff for an already-published release, against the
+        release immediately preceding it — used by the Release History detail
+        view ("what changed in this version")."""
+        generation, company_slug = self._resolve_release_company(payload)
+        version = _safe_id(str(payload.get("version") or ""), "version")
+        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}/diff")
+
+    def cmd_rollback_release(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
+        """Move the stable channel back to an already-published release. Admin/
+        owner only — enforced cloud-side (require_admin); this handler is a thin
+        proxy, not a second authorization check."""
+        generation, company_slug = self._resolve_release_company(payload)
+        version = _safe_id(str(payload.get("version") or ""), "version")
+        sink = _event_sink(rid)
+        sink({"kind": "rollback", "message": f"Rolling back {company_slug} to v{version}..."})
+        result = self._cloud_json(
+            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}/rollback",
+            method="POST",
+        )
+        sink({"kind": "rollback", "message": f"{company_slug} stable is now v{version}."})
+        return result
+
+    def cmd_list_deployments(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Runtime deployment status for the Release Center's Deployment section —
+        desired (stable) version vs. what each registered machine last reported."""
+        generation, company_slug = self._resolve_release_company(payload)
+        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/deployments")
+
+    def cmd_release_events(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Release-lifecycle audit trail for the Release Center's Audit section."""
+        generation, company_slug = self._resolve_release_company(payload)
+        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/events")
 
     def cmd_build_installer(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         """Package the already-published skill pack into a distributable NSIS

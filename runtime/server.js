@@ -7,6 +7,7 @@ const httpClient = require("./http_client");
 const crypto = require("crypto");
 const semver = (global.__hostRequire || require)("semver");
 const { loadInstallId } = require("./install_identity");
+const { installedSkillVersions } = require("./installed_versions");
 const pageScripts = require("./page_scripts");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
@@ -1538,6 +1539,9 @@ async function _phonehome() {
     companies,
     platform: process.platform,
     install_id: INSTALL_ID,
+    // Added for the release system's Deployment view (docs/App-Flow.md) — optional
+    // server-side, so an older cloud that doesn't know this field yet is unaffected.
+    skill_versions: installedSkillVersions(skillIndex),
   });
   await new Promise((resolve) => {
     const req = httpClient.request(`${CONXA_API}/api/v1/telemetry/runtime-start`, {
