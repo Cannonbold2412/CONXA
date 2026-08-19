@@ -524,8 +524,15 @@ def test_finish_group_app_auth_marks_group_and_workflows_ready(backend, monkeypa
         async def stop(self):
             # Mirrors RecordingSession.stop(): the recorder thread forces a final
             # storage_state autosave right before it tears down (session.py L1074).
+            # Non-empty cookies here matter — cmd_finish_group_app_auth now rejects an
+            # empty storage state (see _has_captured_session) as "closed before signing
+            # in", so a genuinely captured session needs at least one cookie to exercise
+            # this test's actual success path.
             auth_path.parent.mkdir(parents=True, exist_ok=True)
-            auth_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
+            auth_path.write_text(
+                json.dumps({"cookies": [{"name": "session", "value": "abc"}], "origins": []}),
+                encoding="utf-8",
+            )
 
     class FakeRegistry:
         def get(self, session_id: str):
@@ -584,6 +591,49 @@ def test_finish_group_app_auth_fails_when_browser_closed_before_save(backend, mo
             "rid",
         )
     assert exc_info.value.code == "auth_capture_failed"
+
+
+def test_finish_group_app_auth_fails_when_saved_state_has_no_session(backend, monkeypatch, tmp_path):
+    """The recorder can still write a storage-state file (an empty shell) even when the
+    user closed Chromium before actually signing in — cmd_finish_group_app_auth must treat
+    that the same as no file at all, not silently mark the app connected with no cookies."""
+    b, _out = backend
+    globals_ = b.cmd_finish_group_app_auth.__globals__
+
+    from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "https://example.test/dashboard")
+    app_id = group.apps[0].id
+    auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
+
+    class FakeSession:
+        async def stop(self):
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
+
+    class FakeRegistry:
+        def get(self, session_id: str):
+            return FakeSession() if session_id == "sess-empty" else None
+
+        def pop(self, session_id: str):
+            return None
+
+    monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
+
+    from handlers.protocol import _CommandError
+
+    with pytest.raises(_CommandError) as exc_info:
+        b.cmd_finish_group_app_auth(
+            {"session_id": "sess-empty", "group_id": group.id, "app_id": app_id},
+            "rid",
+        )
+    assert exc_info.value.code == "auth_capture_failed"
+    assert "closed the login window" in str(exc_info.value)
 
 
 def test_delete_workflow_removes_metadata_and_artifact_dir(monkeypatch, tmp_path):

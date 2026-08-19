@@ -435,9 +435,9 @@ export function GroupPage() {
         }
       />
 
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:flex-row">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:flex-row">
         {/* ── Applications column ── */}
-        <section className="shrink-0 self-start rounded-xl border border-white/8 bg-white/[0.02] lg:w-72">
+        <section className="shrink-0 self-start rounded-xl border border-white/8 bg-white/[0.02] lg:w-[26rem]">
           <div className="flex items-center justify-between border-b border-white/8 px-4 py-3.5">
             <span className="text-[0.6875rem] font-medium text-zinc-400">Applications</span>
             <AddAppDialog groupId={group.id} />
@@ -485,7 +485,7 @@ export function GroupPage() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-zinc-400">No workflows yet</p>
-                  <p className="mt-1 max-w-xs text-xs text-zinc-600">Create a workflow in this group to start automating.</p>
+                  <p className="mt-1 max-w-sm text-xs text-zinc-600">Create a workflow in this group to start automating.</p>
                 </div>
                 <NewWorkflowDialog groupId={group.id} />
               </div>

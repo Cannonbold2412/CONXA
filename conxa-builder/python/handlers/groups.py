@@ -31,6 +31,30 @@ WORKFLOW_PREVIEW_LIMIT = 3
 _VERIFIED_TTL_S = 600
 
 
+def _has_captured_session(auth_path: Path) -> bool:
+    """Cheap validity check for a just-finished auth recording: does the saved
+    storage state actually contain a session, not just an empty shell? Distinct
+    from cmd_check_group_app_auth's live probe — this only guards against the
+    "closed the login window before signing in" case, where Playwright still
+    writes a storage-state file but it has no cookies or localStorage."""
+    if not auth_path.is_file():
+        return False
+    try:
+        import json as _json
+
+        data = _json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("cookies"):
+        return True
+    for origin in data.get("origins") or []:
+        if isinstance(origin, dict) and origin.get("localStorage"):
+            return True
+    return False
+
+
 def group_auth_status(group) -> dict[str, Any]:
     """Per-app readiness for a group, plus the id of the first app still
     needing attention (used by both the setup wizard and the run gate).
@@ -356,9 +380,10 @@ class GroupsMixin:
         _recorder_registry.pop(session_id)
 
         auth_path = group_auth_dir(group_id) / f"{app_id}.json"
-        if not auth_path.is_file():
-            set_group_app_error(group_id, app_id, "Login window closed before a session could be saved.")
-            raise _CommandError("auth_capture_failed", "Login window closed before a session could be saved.")
+        if not _has_captured_session(auth_path):
+            message = "You closed the login window before signing in — nothing was saved."
+            set_group_app_error(group_id, app_id, message)
+            raise _CommandError("auth_capture_failed", message)
 
         group = set_group_app_auth(group_id, app_id, str(auth_path))
         if group is None:

@@ -305,6 +305,7 @@ export function getWorkflowRecordingStatus(sessionId: string): Promise<{
   ended_by_user: boolean
   binding_errors: string[]
   reached_wait_url?: boolean
+  auth_captured?: boolean
   capture_hover?: boolean
   current_url?: string
 }> {

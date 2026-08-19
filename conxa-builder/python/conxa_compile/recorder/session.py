@@ -200,6 +200,14 @@ class RecordingSession:
     wait_for_url: str = ""
     reached_wait_url: bool = False
     auth_mode: bool = False  # skip bridge/events — only capture storage state
+    # auth_mode only: set the moment a storage-state save actually succeeds, so the
+    # caller can tell "browser closed after a session was saved" from "closed with
+    # nothing captured" (see cmd_finish_group_app_auth). Distinct from reached_wait_url,
+    # which requires a configured success_url match — this fires on any successful save.
+    auth_captured: bool = False
+    # auth_mode only: the last URL an off-start-page autosave fired for, so the ~1s URL
+    # sweep below saves once per post-login navigation rather than repeatedly.
+    _auth_saved_url: str = ""
     capture_hover: bool = False
     current_url: str = ""
     # Phase 2: dedup state for DOM snapshots. Maps short bridge signature -> snapshot_ref.
@@ -416,6 +424,8 @@ class RecordingSession:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._context.storage_state(path=str(path))
             self._last_storage_state_save_at = now
+            if self.auth_mode:
+                self.auth_captured = True
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"storage_state_autosave_error: {exc!s}")
 
@@ -1416,6 +1426,31 @@ class RecordingSession:
                                 break
                     except Exception:  # noqa: BLE001
                         pass
+                # auth_mode only: save the session the moment the browser navigates away
+                # from the login page, even when no success_url is configured (or it never
+                # matches) — teardown's force=True save at the end of this method is a
+                # no-op once browser_open is already False (see _autosave_storage_state_sync),
+                # which is exactly the state when the user closes Chromium after signing in.
+                # Capturing here, while the browser is still open, is what makes "sign in,
+                # then close the window" a reliable success path instead of a silent loss.
+                # Guarded to at most one save per distinct URL so a page that keeps
+                # navigating post-login doesn't reintroduce timer-like autosave flicker.
+                if self.auth_mode and not self.reached_wait_url:
+                    try:
+                        start_base = self.start_url.split("?")[0].split("#")[0]
+                        for page in self._open_pages_sync():
+                            current_url = page.url
+                            if (
+                                current_url
+                                and not is_blank_url(current_url)
+                                and not current_url.startswith(start_base)
+                                and current_url != self._auth_saved_url
+                            ):
+                                self._auth_saved_url = current_url
+                                self._autosave_storage_state_sync(force=True)
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
                 if not self.auth_mode:
                     try:
                         payload, src_page, src_frame = self._pending_payloads.get_nowait()
@@ -1553,6 +1588,7 @@ class RecordingSession:
             "ended_by_user": self.ended_by_user,
             "binding_errors": self.binding_errors,
             "reached_wait_url": self.reached_wait_url,
+            "auth_captured": self.auth_captured,
             "capture_hover": self.capture_hover,
             "current_url": self.current_url,
         }

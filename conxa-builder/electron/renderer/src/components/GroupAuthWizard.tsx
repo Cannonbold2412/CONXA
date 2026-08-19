@@ -27,7 +27,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Check, Loader2, Pencil, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react'
+import { Check, Loader2, Pencil, RotateCw, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react'
 
 type AppState = 'idle' | 'launching' | 'waiting' | 'captured' | 'failed'
 
@@ -234,12 +234,28 @@ export function GroupAuthWizard({
   })
 
   useEffect(() => {
-    if (appState !== 'waiting' || !recStatusQ.data) return
-    if (recStatusQ.data.reached_wait_url || recStatusQ.data.browser_open === false) {
+    if (appState !== 'waiting' || finishMut.isPending) return
+    // Auto-finish on the recorder's own success signal, on the browser closing, or on the
+    // status poll itself failing — a poll that starts erroring while `retry: false` is set
+    // freezes `recStatusQ.data` at its last good value forever, which used to leave the card
+    // stuck on "Sign in — this closes on its own" with nothing to break out of it.
+    if (recStatusQ.isError) {
+      finishMut.mutate()
+      return
+    }
+    if (!recStatusQ.data) return
+    if (recStatusQ.data.reached_wait_url || recStatusQ.data.auth_captured || recStatusQ.data.browser_open === false) {
       finishMut.mutate()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appState, recStatusQ.data?.reached_wait_url, recStatusQ.data?.browser_open])
+  }, [
+    appState,
+    finishMut.isPending,
+    recStatusQ.isError,
+    recStatusQ.data?.reached_wait_url,
+    recStatusQ.data?.auth_captured,
+    recStatusQ.data?.browser_open,
+  ])
 
   function retry(appId: string) {
     startMut.mutate(appId)
@@ -290,7 +306,7 @@ export function GroupAuthWizard({
           <div
             key={app.id}
             className={cn(
-              'flex items-center gap-3 rounded-lg border px-3 py-2.5',
+              'rounded-lg border p-4',
               isReady
                 ? 'border-emerald-500/20 bg-emerald-500/[0.04]'
                 : isExpired
@@ -298,33 +314,98 @@ export function GroupAuthWizard({
                   : 'border-white/8 bg-white/[0.03]',
             )}
           >
-            <span
-              className={cn(
-                'flex size-7 shrink-0 items-center justify-center rounded-full',
-                isReady && app.verified
-                  ? 'bg-emerald-500/15 text-emerald-400'
-                  : isUnverified
-                    ? 'bg-amber-500/15 text-amber-400'
-                    : isExpired || isFailed
-                      ? 'bg-red-500/15 text-red-400'
-                      : 'bg-white/8 text-zinc-500',
-              )}
-            >
-              {isReady ? (
-                <Check className="size-3.5" />
-              ) : isActive && (appState === 'launching' || appState === 'waiting') ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : isExpired || isFailed ? (
-                <ShieldAlert className="size-3.5" />
-              ) : (
-                <ShieldCheck className="size-3.5" />
-              )}
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-white">{app.name}</p>
-              <p className="truncate font-mono text-[11px] text-zinc-500">{app.login_url}</p>
+            {/* Row 1: status glyph + name + actions, all on one line */}
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  'flex size-7 shrink-0 items-center justify-center rounded-full',
+                  isReady && app.verified
+                    ? 'bg-emerald-500/15 text-emerald-400'
+                    : isUnverified
+                      ? 'bg-amber-500/15 text-amber-400'
+                      : isExpired || isFailed
+                        ? 'bg-red-500/15 text-red-400'
+                        : 'bg-white/8 text-zinc-500',
+                )}
+              >
+                {isReady ? (
+                  <Check className="size-3.5" />
+                ) : isActive && (appState === 'launching' || appState === 'waiting') ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : isExpired || isFailed ? (
+                  <ShieldAlert className="size-3.5" />
+                ) : (
+                  <ShieldCheck className="size-3.5" />
+                )}
+              </span>
+              <p className="min-w-0 flex-1 truncate text-sm font-medium text-white">{app.name}</p>
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                {isUnverified ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isChecking}
+                    onClick={() => checkMut.mutate(app.id)}
+                  >
+                    {isChecking ? <Loader2 className="size-3.5 animate-spin" /> : 'Check now'}
+                  </Button>
+                ) : isReady ? null : isFailed ? (
+                  <>
+                    <Button size="sm" variant="outline" onClick={skip}>Skip</Button>
+                    <Button size="sm" onClick={() => retry(app.id)}>Retry</Button>
+                  </>
+                ) : isActive && appState === 'waiting' ? (
+                  // Not disabled — a stuck poll (see the auto-finish effect above) must never
+                  // trap the user with no way out of "waiting" other than force-quitting Chromium.
+                  <>
+                    <Button size="sm" variant="outline" onClick={skip}>Cancel</Button>
+                    <Button size="sm" disabled={finishMut.isPending} onClick={() => finishMut.mutate()}>
+                      {finishMut.isPending ? <Loader2 className="size-3.5 animate-spin" /> : 'Done'}
+                    </Button>
+                  </>
+                ) : isActive ? (
+                  <Button size="sm" variant="outline" disabled>
+                    <Loader2 className="size-3.5 animate-spin" /> Launching…
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="outline" onClick={() => startMut.mutate(app.id)} disabled={!!activeAppId}>
+                    {isExpired ? 'Reconnect' : 'Connect'}
+                  </Button>
+                )}
+                {editable && !isActive && (
+                  <>
+                    {/* Recheck: same headless probe as the "Check now" text button above, but
+                        available for an already-verified ready session, which has no other way
+                        to be manually re-probed on demand — "Check now" only shows once
+                        `checked_at` goes stale, and this is intentionally the ready+verified
+                        case alone, not "captured at all": isUnverified already has "Check now"
+                        in the primary-action slot, and isExpired already has "Reconnect" there,
+                        so this icon would just be a redundant, confusing second checker. */}
+                    {isReady && !isUnverified && (
+                      <Button
+                        size="icon-sm"
+                        variant="outline"
+                        title={`Recheck ${app.name}`}
+                        className="border-white/10 bg-white/[0.04] text-zinc-500 hover:text-white"
+                        disabled={isChecking}
+                        onClick={() => checkMut.mutate(app.id)}
+                      >
+                        <RotateCw className={cn('size-3.5', isChecking && 'animate-spin')} />
+                      </Button>
+                    )}
+                    <Button size="icon-sm" variant="outline" title={`Edit ${app.name}`} className="border-white/10 bg-white/[0.04] text-zinc-500 hover:text-white" onClick={() => setEditingAppId(app.id)}>
+                      <Pencil className="size-3.5" />
+                    </Button>
+                    <RemoveAppButton groupId={groupId} app={app} />
+                  </>
+                )}
+              </div>
+            </div>
+            {/* Row 2: target URL + contextual status, indented under the name */}
+            <div className="pl-10">
+              <p className="break-all font-mono text-[11px] text-zinc-500">{app.login_url}</p>
               {isActive && appState === 'waiting' && (
-                <p className="mt-0.5 text-[11px] text-sky-300">Sign in — this closes on its own once you're logged in.</p>
+                <p className="mt-0.5 text-[11px] text-sky-300">Sign in — this closes on its own once you're done, or click Done.</p>
               )}
               {isFailed && (
                 <p className="mt-0.5 text-[11px] text-red-300">{error || app.last_error || 'Login failed.'}</p>
@@ -336,38 +417,6 @@ export function GroupAuthWizard({
                 <p className="mt-0.5 text-[11px] text-amber-300">Not verified recently — may have expired.</p>
               )}
             </div>
-            {isUnverified ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="shrink-0"
-                disabled={isChecking}
-                onClick={() => checkMut.mutate(app.id)}
-              >
-                {isChecking ? <Loader2 className="size-3.5 animate-spin" /> : 'Check now'}
-              </Button>
-            ) : isReady ? null : isFailed ? (
-              <div className="flex shrink-0 gap-1.5">
-                <Button size="sm" variant="outline" onClick={skip}>Skip</Button>
-                <Button size="sm" onClick={() => retry(app.id)}>Retry</Button>
-              </div>
-            ) : isActive ? (
-              <Button size="sm" variant="outline" disabled className="shrink-0">
-                <Loader2 className="size-3.5 animate-spin" /> Waiting…
-              </Button>
-            ) : (
-              <Button size="sm" variant="outline" className="shrink-0" onClick={() => startMut.mutate(app.id)} disabled={!!activeAppId}>
-                {isExpired ? 'Reconnect' : 'Connect'}
-              </Button>
-            )}
-            {editable && !isActive && (
-              <div className="flex shrink-0 gap-1.5">
-                <Button size="icon-sm" variant="outline" title={`Edit ${app.name}`} className="border-white/10 bg-white/[0.04] text-zinc-500 hover:text-white" onClick={() => setEditingAppId(app.id)}>
-                  <Pencil className="size-3.5" />
-                </Button>
-                <RemoveAppButton groupId={groupId} app={app} />
-              </div>
-            )}
           </div>
         )
       })}
