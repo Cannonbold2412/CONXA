@@ -1,11 +1,16 @@
+'use client'
+
 import { Loader2 } from 'lucide-react'
 import type { ReleaseEvent } from '@/api/workflowsApi'
 
 const ACTION_LABELS: Record<string, string> = {
   skill_version_created: 'Created version',
   skill_publish_started: 'Started publishing',
-  skill_publish_succeeded: 'Published',
+  skill_publish_succeeded: 'Published (ready for release)',
   skill_publish_failed: 'Publish failed',
+  release_started: 'Started release',
+  release_succeeded: 'Released to production',
+  release_failed: 'Release failed',
   stable_channel_changed: 'Stable channel updated',
   rollback_started: 'Started rollback',
   rollback_completed: 'Rolled back',
@@ -22,9 +27,9 @@ function formatTimestamp(seconds: number): string {
   return new Date(seconds * 1000).toLocaleString()
 }
 
-/** Section 6 — Audit. Every consequential release action, never fabricated —
- * this is release_channel.list_release_events() verbatim, not a synthesized
- * timeline. */
+/** Audit — every consequential release action (publish, release, rollback),
+ * never fabricated: this is release_channel.list_release_events() verbatim,
+ * not a synthesized timeline. Cloud owns this log end-to-end. */
 export function ReleaseAuditLog({ events, isLoading }: { events: ReleaseEvent[]; isLoading: boolean }) {
   if (isLoading) {
     return (

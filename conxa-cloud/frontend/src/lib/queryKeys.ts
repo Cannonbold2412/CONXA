@@ -13,8 +13,15 @@ export const queryKeys = {
   skillPacks: ['skill-packs'] as const,
   skillPack: (slug: string) => ['skill-pack', slug] as const,
   installerVersions: (slug: string | undefined) => ['installer-versions', slug] as const,
-  skillPackVersions: (slug: string | undefined) => ['skill-pack-versions', slug] as const,
-  deployments: (slug: string | undefined) => ['deployments', slug] as const,
+  groups: (slug: string | undefined) => ['groups', slug] as const,
+  skillPackVersions: (slug: string | undefined, skillSlug: string | undefined) =>
+    ['skill-pack-versions', slug, skillSlug] as const,
+  deployments: (slug: string | undefined, skillSlug: string | undefined) =>
+    ['deployments', slug, skillSlug] as const,
+  releaseEvents: (slug: string | undefined, skillSlug: string | undefined) =>
+    ['release-events', slug, skillSlug] as const,
+  releaseDiff: (slug: string | undefined, skillSlug: string | undefined, version: string | undefined) =>
+    ['release-diff', slug, skillSlug, version] as const,
   auditEvents: (scope?: string) =>
     (scope ? ['auditEvents', scope] : ['auditEvents']) as readonly string[],
   trackingDashboard: (range: string) => ['tracking-dashboard', range] as const,

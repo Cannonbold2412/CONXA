@@ -10,7 +10,8 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start",
+    "test:release-state": "node --experimental-strip-types --test test/releaseState.test.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.3.0",

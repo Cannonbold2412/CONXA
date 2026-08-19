@@ -3,6 +3,7 @@ import { releaseBadge, releaseBadgeLabel, type ReleaseRowLike } from '@/lib/rele
 
 const VARIANT: Record<ReturnType<typeof releaseBadge>, 'success' | 'outline' | 'warning' | 'destructive'> = {
   stable: 'success',
+  ready: 'outline',
   superseded: 'outline',
   pending: 'warning',
   failed: 'destructive',

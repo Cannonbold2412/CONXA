@@ -11,36 +11,40 @@ import test from "node:test";
 import {
   canManageReleases,
   canPublish,
-  canRollbackTo,
   changeCounts,
   deriveCandidateReadiness,
   derivePublishUiState,
   diffHeadline,
+  isUntested,
   isValidSemver,
   releaseBadge,
   stageChecklist,
   suggestNextVersion,
-  untestedCount,
-  upToDatePercent,
 } from "../renderer/src/lib/releaseState.ts";
 
 // 1. Draft / no package built yet.
 test("candidate readiness: no package built yet", () => {
-  assert.equal(deriveCandidateReadiness(false, []), "no_package");
+  assert.equal(deriveCandidateReadiness(false, null), "no_package");
 });
 
-// 2. Tested state: some workflows still failing/never-tested.
-test("candidate readiness: needs test when any workflow hasn't passed", () => {
-  const workflows = [{ last_test_status: "passed" }, { last_test_status: "never" }];
-  assert.equal(deriveCandidateReadiness(true, workflows), "needs_test");
-  assert.equal(untestedCount(workflows), 1);
+// 1b. No skill selected yet, even though a package exists.
+test("candidate readiness: no skill selected reads as no_package", () => {
+  assert.equal(deriveCandidateReadiness(true, null), "no_package");
+});
+
+// 2. The selected skill hasn't passed its own test — a sibling skill's status
+// is irrelevant, since only the selected workflow is ever passed in.
+test("candidate readiness: needs test when the selected workflow hasn't passed", () => {
+  const workflow = { last_test_status: "never" };
+  assert.equal(deriveCandidateReadiness(true, workflow), "needs_test");
+  assert.equal(isUntested(workflow), true);
 });
 
 // 3. Ready-to-publish state.
-test("candidate readiness: ready when every workflow passed", () => {
-  const workflows = [{ last_test_status: "passed" }, { last_test_status: "passed" }];
-  assert.equal(deriveCandidateReadiness(true, workflows), "ready");
-  assert.equal(untestedCount(workflows), 0);
+test("candidate readiness: ready when the selected workflow passed", () => {
+  const workflow = { last_test_status: "passed" };
+  assert.equal(deriveCandidateReadiness(true, workflow), "ready");
+  assert.equal(isUntested(workflow), false);
 });
 
 test("canPublish requires every gate to hold, including admin role", () => {
@@ -100,9 +104,10 @@ test("stage checklist never claims a step happened before it was observed", () =
 });
 
 // 7. Version history badges.
-test("release badges: stable / superseded / failed(pending)", () => {
+test("release badges: stable / ready / superseded / failed(pending)", () => {
   assert.equal(releaseBadge({ version: "1.1.0", status: "published" }, "1.1.0"), "stable");
   assert.equal(releaseBadge({ version: "1.0.0", status: "published" }, "1.1.0"), "superseded");
+  assert.equal(releaseBadge({ version: "1.2.0", status: "ready" }, "1.1.0"), "ready");
   assert.equal(releaseBadge({ version: "1.2.0", status: "pending" }, "1.1.0"), "failed");
 });
 
@@ -122,18 +127,9 @@ test("diff headline and change counts", () => {
   assert.equal(diffHeadline(noChange, "1.3.0"), "No changes from v1.3.0");
 });
 
-// 9. Deployment view.
-test("deployment up-to-date percent handles zero machines without NaN", () => {
-  assert.equal(upToDatePercent({ total: 0, up_to_date: 0, pending: 0, offline: 0, unknown: 0 }), 0);
-  assert.equal(upToDatePercent({ total: 4, up_to_date: 3, pending: 1, offline: 0, unknown: 0 }), 75);
-});
-
-// 10. Rollback confirmation — only valid targets are rollback-able.
-test("rollback is only offered for a published, non-current release", () => {
-  assert.equal(canRollbackTo({ version: "1.0.0", status: "published" }, "1.1.0"), true);
-  assert.equal(canRollbackTo({ version: "1.1.0", status: "published" }, "1.1.0"), false); // already stable
-  assert.equal(canRollbackTo({ version: "1.2.0", status: "pending" }, "1.1.0"), false); // never activated
-});
+// Deployment status and rollback/release actions are Cloud-only now (see
+// conxa-cloud/frontend/src/lib/releaseState.ts) — Build Studio no longer
+// derives or renders either, so those cases moved there.
 
 // 12. Permission restrictions.
 test("only admin/owner roles can manage releases", () => {

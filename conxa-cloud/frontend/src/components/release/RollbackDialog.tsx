@@ -1,7 +1,8 @@
+'use client'
+
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { rollbackRelease, type RollbackResult } from '@/api/workflowsApi'
-import { errorMessage } from '@/api/workflowApi'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -16,15 +17,19 @@ import {
 } from '@/components/ui/alert-dialog'
 import { History } from 'lucide-react'
 
-/** Confirm-then-rollback for a single release history row. Explicit
- * confirmation showing current stable, target, and effect — per the
- * release-system plan's "Rollback to vX.Y.Z?" requirement. Only ever rendered
- * for rows releaseState.canRollbackTo() already says are valid targets. */
+/** Confirm-then-rollback for a single release history row. Cloud-only — see
+ * docs/App-Flow.md. Only ever rendered for rows releaseState.canRollbackTo()
+ * already says are valid targets. Rollback is scoped to exactly one skill;
+ * there is no group-level or bulk rollback action anywhere in Cloud. */
 export function RollbackDialog({
+  slug,
+  skillSlug,
   version,
   currentStableVersion,
   onRolledBack,
 }: {
+  slug: string
+  skillSlug: string
   version: string
   currentStableVersion: string | null
   onRolledBack: (result: RollbackResult) => void
@@ -32,13 +37,13 @@ export function RollbackDialog({
   const [open, setOpen] = useState(false)
   const [error, setError] = useState('')
   const mutation = useMutation({
-    mutationFn: () => rollbackRelease(version),
+    mutationFn: () => rollbackRelease(slug, skillSlug, version),
     onSuccess: (result) => {
       setError('')
       setOpen(false)
       onRolledBack(result)
     },
-    onError: (e: unknown) => setError(errorMessage(e, 'Rollback failed')),
+    onError: (e: unknown) => setError((e as Error)?.message ?? 'Rollback failed'),
   })
 
   return (

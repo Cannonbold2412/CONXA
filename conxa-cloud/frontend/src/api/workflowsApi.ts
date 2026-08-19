@@ -632,10 +632,11 @@ export function fetchRuntimeRegistrations(): Promise<RuntimeRegistrationsRespons
   return apiFetch('/telemetry/runtimes').then((r) => json<RuntimeRegistrationsResponse>(r))
 }
 
-// ── Release Center (read-only dashboard mirror) ─────────────────────────────
-// Build Studio owns publish/rollback (see docs/App-Flow.md); this dashboard
-// surface only ever reads the same cloud state, so a support engineer or
-// founder can check release status without opening the desktop app.
+// ── Release Center — Cloud is the release/deployment control plane ─────────
+// Build Studio only ever publishes an immutable "ready" version here (see
+// publishSkillPack in Build Studio's own workflowsApi.ts). Reviewing a
+// version, releasing/deploying it, rolling it back, and reading deployment/
+// audit state are all Cloud-only actions — see docs/App-Flow.md.
 //
 // `{installer_version}` in these paths is a Conxa-owned platform-generation
 // tag ("v1"/"v2") the backend validates but does not yet branch behavior on
@@ -643,19 +644,26 @@ export function fetchRuntimeRegistrations(): Promise<RuntimeRegistrationsRespons
 // unconditionally here rather than adding a second round trip to resolve it.
 const RELEASE_GENERATION = 'v2'
 
-export type ReleaseStatus = 'pending' | 'published'
+// A "ready" version has been published (uploaded, immutable, versioned) but
+// not yet Released/Deployed by a Cloud admin — see the publish/release split
+// in docs/TRD.md. "pending" is legacy: a row left behind by a publish attempt
+// that crashed before even reaching "ready".
+export type ReleaseStatus = 'ready' | 'pending' | 'published'
 
 export type SkillPackVersion = {
   slug: string
+  skill_slug: string
   version: string
   release_notes: string
-  skills: string[]
-  skill_versions?: Record<string, string>
+  group_id?: string
+  tests_passed?: boolean
   workspace_id: string
   owner_user_id?: string
   published_by?: { user_id: string; email: string | null; name: string | null }
   published_at: number
+  files_written?: number
   file_count?: number
+  size_bytes?: number
   artifact_sha256?: string
   status?: ReleaseStatus
   is_latest: boolean
@@ -663,38 +671,137 @@ export type SkillPackVersion = {
 
 export type SkillPackVersionsResponse = {
   slug: string
+  skill_slug: string
   versions: SkillPackVersion[]
   current_stable: SkillPackVersion | null
 }
 
-export function fetchSkillPackVersions(slug: string): Promise<SkillPackVersionsResponse> {
-  return apiFetch(`/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/skill-packs/versions`).then((r) =>
-    json<SkillPackVersionsResponse>(r),
-  )
+export function fetchSkillPackVersions(slug: string, skillSlug: string): Promise<SkillPackVersionsResponse> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/skill-packs/versions?skill_slug=${encodeURIComponent(skillSlug)}`,
+  ).then((r) => json<SkillPackVersionsResponse>(r))
 }
 
-export type DeploymentStatus = 'up_to_date' | 'pending' | 'offline' | 'unknown'
+// --- Release Center (Cloud is the authoritative owner — see docs/App-Flow.md) ---
+
+export type ReleaseDiffSkillEntry = {
+  status: 'added' | 'removed' | 'changed' | 'unchanged'
+  steps_added: number
+  steps_removed: number
+  steps_modified: number
+  recovery_changed: boolean
+  metadata_changed: boolean
+}
+
+export type ReleaseDiff = {
+  skills_added: string[]
+  skills_removed: string[]
+  steps_added: number
+  steps_removed: number
+  steps_modified: number
+  recovery_changed_skills: string[]
+  metadata_changed_skills: string[]
+  summary: string
+  per_skill: Record<string, ReleaseDiffSkillEntry>
+}
+
+export type ReleaseDiffResponse =
+  | ({ slug: string; available: true; from_version: string | null; to_version: string } & ReleaseDiff)
+  | { slug: string; available: false; reason: string; version: string; from_version?: string }
+
+export function fetchReleaseDiff(slug: string, skillSlug: string, version: string): Promise<ReleaseDiffResponse> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/${encodeURIComponent(version)}/diff?skill_slug=${encodeURIComponent(skillSlug)}`,
+  ).then((r) => json<ReleaseDiffResponse>(r))
+}
+
+export type ReleaseResult = { slug: string; skill_slug: string; released: string; previous_stable: string | null }
+
+/** The Release/Deploy action — Cloud-only, the only place a "ready" version
+ * ever becomes the live stable release. Requires the target version's status
+ * to already be "ready" server-side (require_admin-gated, same as rollback). */
+export function releaseVersion(slug: string, skillSlug: string, version: string): Promise<ReleaseResult> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/${encodeURIComponent(version)}/release?skill_slug=${encodeURIComponent(skillSlug)}`,
+    { method: 'POST' },
+  ).then((r) => json<ReleaseResult>(r))
+}
+
+export type RollbackResult = {
+  slug: string
+  skill_slug: string
+  rolled_back_to: string
+  previous_stable: string | null
+}
+
+export function rollbackRelease(slug: string, skillSlug: string, version: string): Promise<RollbackResult> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/${encodeURIComponent(version)}/rollback?skill_slug=${encodeURIComponent(skillSlug)}`,
+    { method: 'POST' },
+  ).then((r) => json<RollbackResult>(r))
+}
+
+export type DeploymentStatus = 'up_to_date' | 'pending' | 'failed' | 'offline' | 'unknown'
 
 export type DeploymentMachine = {
   machine_id: string
   platform: string
   runtime_version: string
-  installed_skill_versions: Record<string, string> | null
+  installed_skill_versions: string | null
   desired_skill_version: string | null
   status: DeploymentStatus
+  sync_error: { code: string; at: string } | null
   last_seen: number
   last_sync: number
 }
 
 export type DeploymentsResponse = {
   slug: string
+  skill_slug: string
   desired_version: string | null
   machines: DeploymentMachine[]
-  summary: { total: number; up_to_date: number; pending: number; offline: number; unknown: number }
+  summary: { total: number; up_to_date: number; pending: number; failed: number; offline: number; unknown: number }
 }
 
-export function fetchDeployments(slug: string): Promise<DeploymentsResponse> {
-  return apiFetch(`/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/deployments`).then((r) =>
-    json<DeploymentsResponse>(r),
+export function fetchDeployments(slug: string, skillSlug: string): Promise<DeploymentsResponse> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/deployments?skill_slug=${encodeURIComponent(skillSlug)}`,
+  ).then((r) => json<DeploymentsResponse>(r))
+}
+
+export type ReleaseEvent = {
+  id: string
+  workspace_id: string
+  user_id: string
+  action: string
+  resource_type: string
+  resource_id: string
+  metadata: Record<string, unknown>
+  created_at: number
+}
+
+export type ReleaseEventsResponse = { slug: string; skill_slug: string; events: ReleaseEvent[] }
+
+export function fetchReleaseEvents(slug: string, skillSlug: string): Promise<ReleaseEventsResponse> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/events?skill_slug=${encodeURIComponent(skillSlug)}`,
+  ).then((r) => json<ReleaseEventsResponse>(r))
+}
+
+export type GroupWorkflowSummary = {
+  skill_slug: string
+  workflow_name: string
+  current_stable_version: string | null
+  has_ready_version: boolean
+  ready_version: string | null
+}
+
+export type Group = { group_id: string; group_name: string; workflows: GroupWorkflowSummary[] }
+
+export type GroupsResponse = { slug: string; groups: Group[] }
+
+export function fetchGroups(slug: string): Promise<GroupsResponse> {
+  return apiFetch(`/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/groups`).then((r) =>
+    json<GroupsResponse>(r),
   )
 }

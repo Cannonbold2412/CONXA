@@ -1,28 +1,37 @@
+'use client'
+
 import { useState } from 'react'
 import { Clock, Loader2 } from 'lucide-react'
-import type { RollbackResult, SkillPackVersion } from '@/api/workflowsApi'
-import { canRollbackTo } from '@/lib/releaseState'
+import type { ReleaseResult, RollbackResult, SkillPackVersion } from '@/api/workflowsApi'
+import { canReleaseTo, canRollbackTo } from '@/lib/releaseState'
 import { ReleaseStatusBadge } from './ReleaseStatusBadge'
 import { RollbackDialog } from './RollbackDialog'
+import { ReleaseDialog } from './ReleaseDialog'
 
 function formatTimestamp(seconds: number): string {
   if (!seconds) return ''
   return new Date(seconds * 1000).toLocaleString()
 }
 
-/** Section 4 — Release History. Answers, in order: what's current, what
- * existed before, who published it, when, what changed, is it deployed, can I
- * roll back — see the release-system plan §20. */
+/** Release History — what's current, what existed before, who published it,
+ * when, what changed, is it deployed, can it be released or rolled back.
+ * Cloud-only: Build Studio's post-publish page no longer renders this. */
 export function ReleaseHistoryTable({
+  slug,
+  skillSlug,
   versions,
   currentStableVersion,
   isLoading,
+  onReleased,
   onRolledBack,
   onSelectVersion,
 }: {
+  slug: string
+  skillSlug: string
   versions: SkillPackVersion[]
   currentStableVersion: string | null
   isLoading: boolean
+  onReleased: (result: ReleaseResult) => void
   onRolledBack: (result: RollbackResult) => void
   onSelectVersion: (version: string) => void
 }) {
@@ -78,17 +87,38 @@ export function ReleaseHistoryTable({
             {isExpanded && (
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-3">
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
-                  <span>{v.skills.length} skill{v.skills.length !== 1 ? 's' : ''}</span>
                   {v.file_count != null && <span>{v.file_count} files</span>}
                   {v.artifact_sha256 && (
                     <span className="font-mono" title={v.artifact_sha256}>
                       sha256 {v.artifact_sha256.slice(0, 12)}…
                     </span>
                   )}
+                  {v.tests_passed != null && (
+                    <span className={v.tests_passed ? 'text-emerald-400' : 'text-amber-400'}>
+                      {v.tests_passed ? 'Tests passed' : 'Tests not passing at publish'}
+                    </span>
+                  )}
                 </div>
-                {canRollbackTo(v, currentStableVersion) && (
-                  <RollbackDialog version={v.version} currentStableVersion={currentStableVersion} onRolledBack={onRolledBack} />
-                )}
+                <div className="flex items-center gap-2">
+                  {canReleaseTo(v) && (
+                    <ReleaseDialog
+                      slug={slug}
+                      skillSlug={skillSlug}
+                      version={v.version}
+                      currentStableVersion={currentStableVersion}
+                      onReleased={onReleased}
+                    />
+                  )}
+                  {canRollbackTo(v, currentStableVersion) && (
+                    <RollbackDialog
+                      slug={slug}
+                      skillSlug={skillSlug}
+                      version={v.version}
+                      currentStableVersion={currentStableVersion}
+                      onRolledBack={onRolledBack}
+                    />
+                  )}
+                </div>
               </div>
             )}
           </div>
