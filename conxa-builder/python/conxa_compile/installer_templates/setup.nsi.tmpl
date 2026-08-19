@@ -194,6 +194,16 @@ Section "SkillPacks" SEC_SKILLS
 
   ; Force conxa-runtime.exe to rescan the newly installed pack instead of using stale cache.
   Delete "${INSTALL_DIR}\cache\manifests.json"
+
+  ; Pull the actual skill files now instead of leaving it for the first MCP
+  ; launch — a large enterprise pack (tens of MB) would otherwise stall a
+  ; customer's very first tool call. Same delta-sync server.js runs on every
+  ; launch (runtime/sync.js via runtime/cli_sync.js), just called here first
+  ; and given a real time budget since this is a visible install step. Never
+  ; fails the install: if this doesn't finish (slow network, etc.), the
+  ; runtime's normal on-launch sync is the fallback and just finishes it then.
+  DetailPrint "Downloading skill package..."
+  ExecWait 'cmd.exe /C set CONXA_DIR=${INSTALL_DIR}&& set CONXA_ENV=${CONXA_ENV}&& set CONXA_UPDATE_CHANNEL=${UPDATE_CHANNEL}&& "${RUNTIME_ROOT}\current\conxa-runtime.exe" sync' $0
 SectionEnd
 
 ; ── MCP registration ──────────────────────────────────────────────────────────

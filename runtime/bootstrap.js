@@ -26,6 +26,17 @@ const APP_ROOT = process.env.CONXA_APP_DIR;
 // Expose the resolved environment to disk-loaded layers without re-deriving it.
 global.__conxaEnv = envInfo;
 
+// `sync` is an install-time-only subcommand: the NSIS installer's SkillPacks
+// section already staged the app layer (SEC_RUNTIME runs first), so this just
+// calls the same delta-sync server.js runs on every launch, but earlier and
+// visibly, so a large enterprise pack downloads during install instead of
+// stalling the first MCP tool call. Runs and exits here, same as
+// register-mcp/unregister-mcp above.
+if (process.argv[2] === "sync") {
+  require("./cli_sync").run(CONXA_DIR, APP_ROOT, versionManager);
+  return;
+}
+
 // Expose bundled npm modules and host metadata to disk-loaded app code.
 // App JS files use (global.__hostRequire || require)('playwright') etc.
 // __runtimeVersion lets server.js (loaded from disk) read the version baked
