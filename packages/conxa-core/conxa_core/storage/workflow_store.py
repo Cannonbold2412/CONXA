@@ -62,6 +62,63 @@ def _migrate_workspace(raw: dict) -> dict:
     return raw
 
 
+def _heal_workflow_slug(workflow: Workflow) -> Workflow:
+    """Truncate overlong slugs (cloud publish caps at MAX_SLUG_LEN) and rename built output."""
+    from conxa_core.slugs import MAX_SLUG_LEN, fit_slug
+
+    if len(workflow.slug) <= MAX_SLUG_LEN:
+        return workflow
+    import re
+
+    slug_base = re.sub(r"[^a-z0-9]+", "-", workflow.name.lower()).strip("-") or "workflow"
+    new_slug = fit_slug(slug_base, workflow.id[:8], "-")
+    if new_slug == workflow.slug:
+        return workflow
+    old_slug = workflow.slug
+    workflow = workflow.model_copy(update={"slug": new_slug, "updated_at": time.time()})
+    _write_raw(workflow)
+    _rename_workflow_skill_dirs(workflow.workspace_id, old_slug, new_slug)
+    return workflow
+
+
+def _rename_workflow_skill_dirs(workspace_id: str, old_slug: str, new_slug: str) -> None:
+    """Move built skill folders when a workflow slug is shortened."""
+    if old_slug == new_slug:
+        return
+    from conxa_core.storage.skill_pack_store import get_skill_pack
+    from conxa_core.storage.skill_packages import bundle_root_dir
+
+    pack = get_skill_pack(workspace_id)
+    if pack is None:
+        return
+    packs_root = settings.data_dir / "skill-packs" / pack.company_slug
+    if packs_root.is_dir():
+        for group_dir in packs_root.iterdir():
+            if not group_dir.is_dir():
+                continue
+            old_path = group_dir / old_slug
+            new_path = group_dir / new_slug
+            if old_path.is_dir() and not new_path.exists():
+                old_path.rename(new_path)
+        pack_json = packs_root / "pack.json"
+        if pack_json.is_file():
+            try:
+                data = json.loads(pack_json.read_text(encoding="utf-8"))
+                groups = data.get("skill_groups") or {}
+                if old_slug in groups:
+                    groups[new_slug] = groups.pop(old_slug)
+                    data["skill_groups"] = groups
+                    pack_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
+    bundle = bundle_root_dir(pack.company_slug)
+    if bundle is not None:
+        old_skill = bundle / "skills" / old_slug
+        new_skill = bundle / "skills" / new_slug
+        if old_skill.is_dir() and not new_skill.exists():
+            old_skill.rename(new_skill)
+
+
 def create_workflow(
     name: str,
     target_url: str,
@@ -74,13 +131,15 @@ def create_workflow(
     import re
     from conxa_core.storage.group_store import ensure_default_group
 
+    from conxa_core.slugs import fit_slug
+
     slug_base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "workflow"
     workflow_id = str(uuid.uuid4())
     now = time.time()
     workspace_id = workspace_id or LOCAL_WORKSPACE_ID
     workflow = Workflow(
         id=workflow_id,
-        slug=f"{slug_base}-{workflow_id[:8]}",
+        slug=fit_slug(slug_base, workflow_id[:8], "-"),
         name=name,
         owner_user_id=owner_user_id,
         workspace_id=workspace_id,
@@ -105,7 +164,7 @@ def get_workflow(workflow_id: str, workspace_id: str = "") -> Workflow | None:
         workflow = Workflow.model_validate(raw)
         if workspace_id and workflow.workspace_id != workspace_id:
             return None
-        return workflow
+        return _heal_workflow_slug(workflow)
     except Exception:
         return None
 
@@ -120,7 +179,7 @@ def list_workflows(workspace_id: str = "") -> list[Workflow]:
                 workflow = Workflow.model_validate(raw)
                 if workspace_id and workflow.workspace_id != workspace_id:
                     continue
-                out.append(workflow)
+                out.append(_heal_workflow_slug(workflow))
             except Exception:
                 continue
         return sorted(out, key=lambda w: w.updated_at, reverse=True)
@@ -135,7 +194,7 @@ def list_workflows(workspace_id: str = "") -> list[Workflow]:
             workflow = Workflow.model_validate(raw)
             if workspace_id and workflow.workspace_id != workspace_id:
                 continue
-            out.append(workflow)
+            out.append(_heal_workflow_slug(workflow))
         except Exception:
             continue
     return out

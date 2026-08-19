@@ -126,9 +126,17 @@ class WorkflowsMixin:
         from conxa_core.storage.workflow_store import list_workflows
 
         skill_slug = _safe_id(skill_slug, "skill_slug")
-        for wf in list_workflows(workspace_id):
+        workflows = list_workflows(workspace_id)
+        for wf in workflows:
             if wf.slug == skill_slug:
                 return wf
+        # Stale slug from the UI before a length heal shortened wf.slug.
+        if len(skill_slug) > 8 and "-" in skill_slug:
+            suffix = skill_slug.rsplit("-", 1)[-1]
+            if len(suffix) == 8:
+                for wf in workflows:
+                    if wf.id.startswith(suffix):
+                        return wf
         raise _CommandError("workflow_not_found", f"No workflow with slug {skill_slug!r}")
 
     def cmd_build_skill_package(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
@@ -172,6 +180,7 @@ class WorkflowsMixin:
         if not skill_slug:
             raise _CommandError("invalid_input", "skill_slug is required")
         workflow = self._resolve_workflow_by_skill_slug(workspace_id, skill_slug)
+        skill_slug = workflow.slug
         if not workflow.skill_id:
             raise _CommandError("workflow_uncompiled", f"Workflow {skill_slug!r} is not compiled yet")
         company_slug = str(payload.get("company_slug") or "").strip()

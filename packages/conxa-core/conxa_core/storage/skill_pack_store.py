@@ -23,6 +23,7 @@ from typing import Any
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_delete, db_list
 from conxa_core.models.workflow import SkillPack, SkillPackBuild, SkillPackInstaller
+from conxa_core.slugs import MAX_SLUG_LEN
 from conxa_core.storage.skill_packages import validate_bundle_slug
 from conxa_core.workspace import company_slug as _derive_company_slug
 
@@ -65,6 +66,19 @@ def _delete_raw(slug: str) -> None:
         _path(slug).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _rename_company_pack_dir(old_slug: str, new_slug: str) -> None:
+    if old_slug == new_slug:
+        return
+    old_dir = settings.data_dir / "skill-packs" / old_slug
+    new_dir = settings.data_dir / "skill-packs" / new_slug
+    if old_dir.is_dir() and not new_dir.exists():
+        old_dir.rename(new_dir)
+
+
+def _slug_needs_heal(slug: str) -> bool:
+    return not validate_bundle_slug(slug) or len(slug) > MAX_SLUG_LEN
 
 
 def get_skill_pack_by_slug(company_slug: str) -> SkillPack | None:
@@ -138,16 +152,17 @@ def get_skill_pack(workspace_id: str) -> SkillPack | None:
     """Build Studio is single-tenant (LOCAL_WORKSPACE_ID) — at most one
     SkillPack ever exists per local install, so a scan is fine."""
     for pack in list_skill_packs(workspace_id):
-        if not validate_bundle_slug(pack.company_slug):
+        if _slug_needs_heal(pack.company_slug):
             # Legacy record from before company_slug() was underscore-only
-            # (e.g. "acme-co-wrklocal"). Re-derive and move it under the
-            # corrected slug so it stops failing bundle-name validation.
+            # (e.g. "acme-co-wrklocal"), or a slug that exceeds the cloud's
+            # 64-char publish limit. Re-derive and move it under the corrected slug.
             old_slug = pack.company_slug
             pack = pack.model_copy(update={
                 "company_slug": _derive_company_slug(pack.workspace_id, pack.company_name),
             })
             pack = save_skill_pack(pack)
             _delete_raw(old_slug)
+            _rename_company_pack_dir(old_slug, pack.company_slug)
         return pack
     return None
 
