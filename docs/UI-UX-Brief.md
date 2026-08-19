@@ -500,12 +500,12 @@ with a muted dash instead of a cyan tick — a tick beside a negative statement 
 
 ### 3.3 Skill Packages Page (`app/(protected)/packages/page.tsx`)
 
-**Purpose:** List all published skill packages per company.
-**Inputs:** Clerk auth.  
-**Outputs:** Skill Package cards (one per company_slug) with status (idle/building/error), latest published version, installer version, build/update timestamp, and navigation to version history.
-**User goal:** Find a published skill package and review its version history or installer downloads.
+**Purpose:** List the workspace's groups (folders of published skills), not the workspace itself as one card.
+**Inputs:** Clerk auth; `GET /workflows/skill-packs` then `GET .../groups` per company slug.
+**Outputs:** Group cards (name, workflow count, ready count). Click opens `/packages/{slug}/groups/{groupId}`. Header **Installer** opens `/packages/{slug}` (company-level installer downloads). If the workspace has more than one company slug, each group card shows the company name as a subtitle and each slug gets its own Installer control.
+**User goal:** Open a group and review its workflows / release status.
 
-**Note:** A skill package is workspace-scoped and company-scoped — one per workspace/company pair. All workflows targeting that company/slug compile together into this single package, not individual packages per workflow.
+**Note:** A skill package is still company-scoped (installer + sync live at the slug). Groups are the listing unit because one workspace holds many groups. Empty folders appear as soon as they are created in Build Studio.
 
 ---
 
@@ -513,8 +513,8 @@ with a muted dash instead of a cyan tick — a tick beside a negative statement 
 
 **Purpose:** Version history and installer release management for one skill package.
 **Inputs:** Company slug (not workspace ID — derived from the authenticated workspace context).
-**Outputs:** Skill package versions (release notes, publish timestamp, skill list, file count), installer versions (if any) with download buttons, and version-specific metadata.
-**User goal:** Audit release history, download previous versions, compare versions.
+**Outputs:** Skill package versions (release notes, publish timestamp, skill list, file count), installer versions (if any) with download buttons, version-specific metadata, and a Groups grid. Groups appear as soon as they are created in Build Studio (empty folders with zero workflows); publishing a workflow fills the matching folder. Click a group to see its workflows, click a workflow to reach its release/deployment page.
+**User goal:** Audit release history, download previous versions, compare versions, and open a group's workflows.
 
 **UX issues:**
 - No filter by status (ok/fail).

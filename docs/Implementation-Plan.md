@@ -758,11 +758,13 @@ with a read-only mirror on the Cloud dashboard.
   junction / `version.json` sync.js already writes. Optional field — an
   already-deployed runtime that hasn't self-updated yet just reports nothing for it.
 
-**Known limitations (by design, not oversight):** deployment status only
-distinguishes up-to-date/pending/offline/unknown — "updating"/"failed"/"rolled back"
-aren't derivable without the runtime reporting sync *outcomes*, a larger runtime
-change left for later. Rollback is only available for releases published after this
-change (pre-existing published packs have no per-version snapshot to roll back to).
+**Known limitations (by design, not oversight):** rollback is only available for
+releases published after this change (pre-existing published packs have no
+per-version snapshot to roll back to). The "Build Studio (primary) with a
+read-only mirror on Cloud" ownership split described above, and the
+up-to-date/pending/offline/unknown-only deployment status, were both
+superseded by §3.4a below — Cloud is now the release/deployment/audit owner,
+and deployment status has a real `failed` state.
 
 **Files:** `app/api/publish_routes.py`, `app/api/release_routes.py` (new),
 `app/api/skillpack_storage.py`, `app/api/skillpack_update_routes.py`,
@@ -772,6 +774,83 @@ change (pre-existing published packs have no per-version snapshot to roll back t
 `renderer/src/pages/PublishPage.tsx`, `renderer/src/lib/releaseState.ts` (new),
 `renderer/src/components/release/*` (new), `runtime/server.js`,
 `runtime/installed_versions.js` (new), Cloud dashboard `SkillPackageVersionsPage.tsx`
+
+---
+
+### ✅ 3.4a Build Studio / Cloud Publish-Release Separation — DONE 2026-08-19
+
+**Supersedes §3.4's "Build Studio (primary) with a read-only mirror on Cloud"
+framing and closes its "updating/failed" known limitation.** Publishing and
+deploying were the same atomic transaction — clicking Publish in Build Studio
+immediately activated the version for every customer machine. Redesigned so
+Build Studio is BUILD/PUBLISH only and Conxa Cloud is the sole
+RELEASE/DEPLOYMENT control plane: `Workflow → Compile → Test → Publish` (Studio)
+→ `Ready for Release → Review → Release/Deploy → Desired Version` (Cloud) →
+`Sync → Verify → Install → Execute → Report Status` (Runtime). See
+`docs/App-Flow.md` §8/§8.1/§8.1a and `docs/TRD.md` §5.5a for the full mechanism.
+
+- **Cloud (`app/api/publish_routes.py`):** `_publish_skill_pack_impl` now stops
+  after writing the immutable snapshot + a version row with the new status
+  `"ready"` — it no longer touches the mutable mirror, `component_versions`, the
+  manifest, or the stable channel. `PublishBody` gained `group_name`,
+  `workflow_name` (display-only, for Cloud's Groups/Workflows nav) and
+  `tests_passed` (Build Studio's local test-gate result, shown to Cloud
+  reviewers).
+- **Cloud (`app/api/release_routes.py`):** new `POST .../releases/{version}/release`
+  — Cloud-only, `require_admin`-gated, the only endpoint that activates a
+  `"ready"` version (mirrors `.../rollback`'s structure, opposite precondition).
+  New `GET .../groups` backing the Skill Packages → Group → Workflow nav.
+  `GET .../deployments` gained a `failed` status derived from telemetry (below).
+- **Cloud (`app/api/skillpack_storage.py`):** new `skillpack_known_skills` KV
+  (`record_known_skill`/`list_known_skills`), upserted at publish time —
+  deliberately independent of `pack.json`'s `skills`/`skill_groups` union (which
+  still only updates at Release) so an unreleased "ready" skill is still visible
+  to Cloud admins.
+- **Cloud (`app/services/release_channel.py`):** new `EVT_RELEASE_STARTED`/
+  `_SUCCEEDED`/`_FAILED` events, parallel to the existing publish/rollback pairs.
+- **Runtime (`sync.js`, `sync_errors.js` new):** a checksum mismatch or
+  download/activation failure is now recorded per-skill in
+  `pack.json.last_sync_errors`, cleared on the next successful activation, and
+  reported (not sticky, unlike `skill_versions`) at the next phone-home — this
+  is what closes §3.4's "failed" gap without a new transport, reusing the
+  existing `runtime-start` telemetry endpoint.
+- **Build Studio (`renderer/src/pages/PublishPage.tsx`):** trimmed to a bare
+  post-publish confirmation ("v{version} is Ready for Release in Conxa Cloud")
+  — Release History, Deployment, Audit, and Rollback no longer render here.
+  `ReleaseHistoryTable.tsx`/`DeploymentPanel.tsx`/`ReleaseAuditLog.tsx`/
+  `RollbackDialog.tsx` deleted from Build Studio; `cmd_rollback_release`,
+  `cmd_list_deployments`, `cmd_release_events` removed from
+  `python/handlers/workflows.py` (no longer called from Studio's UI).
+- **Cloud dashboard:** the former read-only mirror is now the authoritative,
+  interactive surface — new `GroupPage.tsx`, `WorkflowReleasePage.tsx`, and a
+  ported `components/release/*` (with a new `ReleaseDialog.tsx` for the
+  Release/Deploy action) under Skill Packages → Group → Workflow.
+
+**Files:** `app/api/publish_routes.py`, `app/api/release_routes.py`,
+`app/api/skillpack_storage.py`, `app/api/skillpack_update_routes.py`,
+`app/services/release_channel.py`, `conxa-cloud/tests/test_release_channel.py`,
+`conxa-cloud/tests/test_llm_proxy_and_publish.py`,
+`conxa-cloud/tests/test_build_studio_backend.py`,
+`python/handlers/workflows.py`, `python/backend.py`,
+`renderer/src/pages/PublishPage.tsx`, `renderer/src/lib/releaseState.ts`,
+`renderer/src/api/workflowsApi.ts`, `electron/test/releaseState.test.mjs`,
+`runtime/sync.js`, `runtime/sync_errors.js` (new), `runtime/server.js`,
+`runtime/test/test_sync.js`, `runtime/test/test_sync_errors.js` (new),
+`conxa-cloud/backend/app/api/skillpack_update_routes.py`,
+Cloud frontend `SkillPackagesPage.tsx`, `SkillPackageVersionsPage.tsx`,
+`GroupPage.tsx` (new), `WorkflowReleasePage.tsx` (new), `api/workflowsApi.ts`,
+`lib/releaseState.ts` (new), `lib/queryKeys.ts`, `components/release/*` (new),
+`test/releaseState.test.mjs` (new)
+
+---
+
+### ✅ 3.4b Studio groups sync to Cloud Skill Packages — DONE 2026-08-20
+
+Creating or renaming a group in Build Studio now upserts the same id and name
+onto Conxa Cloud (`PUT .../groups/{group_id}` + `skillpack_known_groups` KV).
+`GET .../groups` unions that registry with publish-time known-skills, so an
+empty folder appears on Skill Packages immediately. Default is not synced
+until renamed. Delete in Studio does not remove the Cloud folder.
 
 ---
 

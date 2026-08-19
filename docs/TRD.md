@@ -519,7 +519,7 @@ A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `conxa_core/sto
 
 **Per-workflow recording gate + session write-back (2026-08-16):** `cmd_start_recording` no longer requires every app in the group to be connected before a workflow can be recorded — it narrows the group's apps down to `apps_for_workflow(group.apps, workflow.target_url, workflow.protected_url)` (`conxa_core.storage.group_store`, hostname-matched against each app's `login_url`/`success_url`, shared with the build-time `required_apps` computation below so the two can't disagree) and only *requires* those before recording can start. It still *probes* every captured app in the group (skipping any checked within the last 600s, via `checked_at`) — not just the required subset — because recording seeds every captured app's session into the browser (below), so a sibling app being dead at record time is a real, silent risk even though it isn't gated on. An expired required app blocks recording with `auth_required`; an expired sibling only warns (surfaced in the `cmd_start_recording` response's `warnings` field) since the user is present in the recorder window and can sign back in inline if that app actually comes up. Recording also stops discarding the session it was seeded with: `storage_state_autosave_path` is now the same `merged_group_state.json` the recorder was seeded from (previously left unset). **Authentication is pre-flight-only (2026-08-17):** this save happens exactly once, at recording teardown (`force=True`) — never on a repeating timer during the recording. An earlier version of this feature autosaved on a throttled 6s timer during recording, which turned out to reproduce, for ordinary workflow recording, the same visible browser-window flicker already diagnosed and fixed for auth-mode recording (`context.storage_state()` is a heavy, all-at-once CDP call; see `_autosave_storage_state_sync`'s comment in `recorder/session.py`). Recording never re-checks a required app's session mid-recording either — the pre-flight gate above is the only auth check; if a site logs the user out partway through, its own login page simply appears in the recorder window like any other page, and the human signs back in inline, same as before this feature existed. When the recording stops or is cancelled, `_refresh_group_app_sessions(workflow_id)` (`handlers/session.py`) reads that merged file and, for each app in the group that already has a saved session, derives its refreshed slice via `conxa_core.storage.storage_state.refresh_app_state` — keeping only the cookie domains/localStorage origins that app already owned, so a sibling app's cookies from the same merged context never bleed across — and writes it back to that app's `storage_state_path` via `set_group_app_auth` (bumping `captured_at` and `checked_at` — a just-completed login is inherently verified — clearing `last_error`). This is what makes routine cookie rotation, refresh-token renewal, or a user manually re-authenticating mid-recording actually stick instead of being thrown away the moment the recorder closes. If `apps_for_workflow` matches none of the group's apps (a workflow whose login happens on a different host than its target, the common single-sign-on shape), recording is **not** blocked — it warns instead (`auth_scope_warning` in the `cmd_start_recording` response's `warnings` field), since forcing a confirmation here would also block every genuinely-no-login-needed workflow in the same group.
 
-**Group summary (`cmd_list_groups`):** each row carries `{id, slug, name, workflow_count, stages, workflow_preview, apps_total, apps_authenticated, ready, created_at, updated_at}`. `stages` is a `{stage: count}` map over `derive_workflow_stage` (keys present only for non-empty stages) and `workflow_preview` is the first `WORKFLOW_PREVIEW_LIMIT` (3) workflows as `{id, name, stage}`. Both are derived from the workflow list the handler already loads — no extra I/O — and exist so the Workflows page can draw each group as a folder showing its contents and lifecycle mix (see `docs/UI-UX-Brief.md` §2.3).
+**Group summary (`cmd_list_groups`):** each row carries `{id, slug, name, workflow_count, stages, workflow_preview, apps_total, apps_authenticated, ready, created_at, updated_at}`. `stages` is a `{stage: count}` map over `derive_workflow_stage` (keys present only for non-empty stages) and `workflow_preview` is the first `WORKFLOW_PREVIEW_LIMIT` (3) workflows as `{id, name, stage}`. Both are derived from the workflow list the handler already loads — no extra I/O — and exist so the Workflows page can draw each group as a folder showing its contents and lifecycle mix (see `docs/UI-UX-Brief.md` §2.3). Creating or renaming a group in Build Studio also upserts that group's `id` and `name` to Conxa Cloud (`PUT /api/v1/workflows/{installer_version}/{company_slug}/groups/{group_id}`), so Skill Packages can show the folder immediately — including when it still has zero published workflows. The Default group is not synced until it is renamed. Deleting a Studio group does not remove the Cloud folder. Cloud failures never fail the local create/rename.
 
 **Compiled pack contract:** `pack.json` gains a `groups` array (`[{id, name, apps: [{id, name, login_url, success_url}]}]`); each skill's `manifest.json` gains `group_id` and `required_apps` (`[app_id, ...]`, see below). A pack with no `groups` key is untouched — it's the pre-Groups format and takes the legacy single-session path everywhere below.
 
@@ -627,52 +627,85 @@ sequenceDiagram
     Backend-->>Studio: {cloud_download_url, cloud_tracking_url}
 ```
 
-### 5.5a Release System — Immutable Versions, Stable Channel, Rollback
+### 5.5a Release System — Publish/Release Split, Immutable Versions, Stable Channel, Rollback (per skill)
 
 Full API contracts and KV shapes: `docs/Backend-Schema.md` §5.1d. Design writeup:
-`docs/Implementation-Plan.md` §3.4. This section covers the mechanism, not the wire
-format.
+`docs/Implementation-Plan.md` §3.4. End-to-end product flow: `docs/App-Flow.md`
+§8. This section covers the mechanism, not the wire format.
 
-**The core idea:** every publish already wrote to a *mutable* location
-(`skillpack_files__{slug}` KV + `data/skill-packs/{slug}/`) that `_build_delta`
-(§5.9 below) reads. That made every publish an irreversible overwrite — there was
-no artifact left to roll back *to*. The release system adds an *immutable*,
-write-once snapshot per version (`skillpack_release_files__{slug}__{version}`) and
-a **stable channel pointer** (`skillpack_channels` KV) that says which version is
-current. Publish and rollback both refresh the mutable mirror from whichever
-release should now be live; `_build_delta` itself was not touched — the runtime
-sync hot path has no idea channels or rollback exist.
+**Re-scoped 2026-08-19 to per-skill; split 2026-08-19 into publish vs. release.**
+1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1
+independent release. Every write below is keyed by `(company_slug, skill_slug)`,
+not company slug alone — publishing, releasing, or rolling back one skill never
+touches another skill's version history, stable channel, or live files, even
+under the same company slug.
+
+**Publishing is not deploying.** Build Studio's `POST .../skill-packs/upload`
+(`publish_routes.py`) and Cloud's `POST .../releases/{version}/release`
+(`release_routes.py`) are two separate HTTP requests, reachable from two
+different callers — Build Studio can only ever call the first; only a
+Clerk-authenticated Cloud admin (`require_admin`) can call the second. Publish
+writes the immutable snapshot and a version-history row with `status="ready"`
+and stops — it never touches the mutable mirror `_build_delta` reads, never
+writes a `component_versions` entry, and never moves the stable channel. A
+version sits "ready" for as long as it takes a Cloud admin to review it (diff,
+test status, artifact) and click Release — there's no timeout or auto-promote.
 
 ```mermaid
 sequenceDiagram
     participant Studio as Build Studio
     participant Cloud as Conxa Cloud
+    participant Admin as Cloud Admin (dashboard)
 
     Studio->>Cloud: POST .../skill-packs/upload (same request as §5.5)
-    Cloud->>Cloud: duplicate-version gate (409 unless status="pending")
+    Cloud->>Cloud: duplicate-version gate (409 unless status in "ready"/"pending")
     Cloud->>Cloud: byte-identical-artifact gate (409 skill_pack_artifact_unchanged)
     Note over Cloud: Everything below happens inside one request — no cross-request transaction exists
     Cloud->>Cloud: 1. write immutable snapshot (release_files KV + disk)
-    Cloud->>Cloud: 2. write version row, status="pending"
-    Cloud->>Cloud: 3. refresh mutable mirror + pack.json + component_versions + manifest
-    Cloud->>Cloud: 4. move stable channel pointer  ◀── the single act of activation
-    Cloud->>Cloud: 5. flip version row to "published", is_latest bookkeeping
-    Cloud-->>Studio: 200 (or 5xx if steps 1-3 failed — channel never moved)
+    Cloud->>Cloud: 2. write version row, status="ready"; upsert skillpack_known_skills
+    Cloud-->>Studio: 200 — "ready", not live. No mutable-mirror/component_versions/channel write happened.
+
+    Note over Admin,Cloud: Some time later — Admin reviews the "ready" version in Skill Packages → Group → Workflow
+    Admin->>Cloud: POST .../releases/{version}/release
+    Cloud->>Cloud: precondition: row status must be "ready" (400 release_not_ready otherwise)
+    Cloud->>Cloud: 3. refresh mutable mirror; fold skill into pack.json skills/skill_groups
+    Cloud->>Cloud: 4. refresh component_versions + manifest
+    Cloud->>Cloud: 5. move stable channel pointer  ◀── the single act of activation
+    Cloud->>Cloud: 6. flip version row to "published", is_latest bookkeeping
+    Cloud-->>Admin: 200 (or 5xx if steps 3-5 failed — channel never moved, row stays "ready")
 ```
 
-**Write ordering is the whole safety property.** Every write that can plausibly fail
-(disk, KV) happens *before* the channel pointer moves; the pointer move is the last
-meaningful write. A failure at step 1-3 leaves the channel untouched (a failed
-publish never affects what runtimes receive) and the version row `"pending"` (safe
-to retry the exact same version number — the duplicate-version gate treats a
-`"pending"` row as never having actually happened).
+**Write ordering is still the whole safety property** — just now split across two
+requests instead of one. Within Release, every write that can plausibly fail
+(disk, KV) happens *before* the channel pointer moves; the pointer move is the
+last meaningful write. A failure at steps 3-5 leaves the channel untouched (a
+failed release never affects what runtimes receive) and the version row still
+`"ready"` (safe to retry the same Release call — no republish needed, since the
+snapshot from step 1 already exists). Publish's own duplicate-version gate
+treats both `"ready"` and legacy `"pending"` rows as never having actually
+been activated, so retrying an unreleased version number is likewise safe.
 
-**Rollback** (`POST .../releases/{version}/rollback`) is the mirror image without
-step 1-2: it reads the target version's already-immutable snapshot, moves the
-channel pointer, and refreshes the mutable mirror + `component_versions` +
-manifest from that snapshot — no artifact is copied, rebuilt, or mutated. The
-previously-stable version becomes "superseded" by derivation (its row is
-untouched; `is_latest` just no longer matches the channel).
+**Rollback** (`POST .../releases/{version}/rollback`, Cloud-only, same
+`require_admin` gate as Release) is structurally the same as Release minus
+steps 1-2, with the opposite precondition — it requires an already-`"published"`
+row, not a `"ready"` one. It reads the target version's already-immutable
+snapshot, moves the channel pointer, and refreshes the mutable mirror +
+`component_versions` + manifest from that snapshot — no artifact is copied,
+rebuilt, or mutated. The previously-stable version becomes "superseded" by
+derivation (its row is untouched; `is_latest` just no longer matches the
+channel). **Rollback is always scoped to one workflow/skill — never a whole
+group** — there is no bulk or group-level rollback path anywhere in this
+system.
+
+**Deployment "failed" status.** `runtime/sync.js` records a per-skill entry in
+`pack.json.last_sync_errors` (`checksum_mismatch` | `download_failed` |
+`activation_failed`) on a failed activation, clearing it the moment that skill
+next activates successfully. `runtime/sync_errors.js` reads it back at the next
+phone-home (`sync_errors` field, `skillpack_update_routes.TelemetryBody`) —
+unlike `skill_versions`, this field is **not sticky**, always overwritten in
+full. `GET .../deployments` (§Backend-Schema.md §5.1d) derives `failed` from
+it, ahead of `pending`/`unknown`, but only while the installed version still
+hasn't caught up to desired (a self-resolved error never counts).
 
 **Deterministic diff** (`app/services/release_diff.py`) aligns execution steps
 across two file sets by a semantic key (type/tab/frame/selector) rather than list
@@ -1621,7 +1654,7 @@ quality-gated the same way as `target.primary_selector`) but have no dedicated a
 
 **Endpoint:** `GET /api/v1/skill-packs/{company}/delta?since={json-map}`
 
-**Current state:** `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (see §5.9 for the full contract and §5.6 for the sequence). Each skill is compared against its own version independently — `_build_delta()` in `skillpack_update_routes.py` returns `{"name": slug, "action": "no_change", "group": group_id}` for unchanged skills and `{"name": slug, "version", "action": "update", "group": group_id, "files": [...]}` for changed ones, where `group_id` comes from `pack.json`'s `skill_groups` map (falling back to `"_default"`). Republishing one skill never triggers a re-download of the others. Within a changed skill, all of that skill's files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) are still sent — there is no per-file checksum comparison *within* a single skill, which remains a real but low-impact gap (a handful of small JSON files, not a whole company pack). Rate-limiting is KV-backed (`rate_limits` namespace in `conxa_core.db`), persisted across restarts and shared across instances — not the in-memory dict this section used to describe, and Redis was deliberately not introduced (see `docs/Security.md` SG-04).
+**Current state:** `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (see §5.9 for the full contract and §5.6 for the sequence). `pack.json`'s `skills` list and `component_versions` — what this endpoint actually reads — only ever reflect a skill's most recently **Released**, not most recently published, version (see §5.5a); a "ready" version sitting in Cloud awaiting release is invisible here entirely. Each skill is compared against its own version independently — `_build_delta()` in `skillpack_update_routes.py` returns `{"name": slug, "action": "no_change", "group": group_id}` for unchanged skills and `{"name": slug, "version", "action": "update", "group": group_id, "files": [...]}` for changed ones, where `group_id` comes from `pack.json`'s `skill_groups` map (falling back to `"_default"`). Republishing one skill never triggers a re-download of the others. Within a changed skill, all of that skill's files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) are still sent — there is no per-file checksum comparison *within* a single skill, which remains a real but low-impact gap (a handful of small JSON files, not a whole company pack). Rate-limiting is KV-backed (`rate_limits` namespace in `conxa_core.db`), persisted across restarts and shared across instances — not the in-memory dict this section used to describe, and Redis was deliberately not introduced (see `docs/Security.md` SG-04).
 
 `group` in the response is what lets `runtime/sync.js` write each skill's files into its nested `skill-packs/{company}/{group_id}/{skill_slug}/` directory (§5.2a) instead of the pre-Groups flat layout — the client's own version-comparison lookup only ever checks the nested path, so upgrading to this changes nothing observable except that every skill gets freshly redownloaded into its nested location exactly once, the next time each runtime syncs.
 

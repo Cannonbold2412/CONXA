@@ -114,7 +114,7 @@ flowchart LR
 
 ## 4. Group Page — Workflow Lifecycle Rail
 
-The Group Page (`/groups/:groupId`) is the primary interface for recording and managing every workflow in a group — there is no separate per-workflow page (removed 2026-08-13; see `docs/UI-UX-Brief.md` §2.3a). Each workflow's row carries a five-node `WorkflowStageRail` — Record → Compile → Review → Test → Ready to Package — where each node is the action for that stage, gated on the previous one's completion.
+The Group Page (`/groups/:groupId`) is the primary interface for recording and managing every workflow in a group — there is no separate per-workflow page (removed 2026-08-13; see `docs/UI-UX-Brief.md` §2.3a). Each workflow's row carries a five-node `WorkflowStageRail` — Record → Compile → Review → Test → Ready to Package — where each node is the action for that stage, gated on the previous one's completion. Creating or renaming the group in Build Studio also creates/renames the matching folder under Conxa Cloud Skill Packages (same id and name), even if no workflow in it has been published yet. Cloud is not a second place to create groups.
 
 ### 4.1 Authentication is set up once per group, not per workflow
 
@@ -270,9 +270,7 @@ flowchart TD
     E --> U3[Edit nested branch-body step field] --> U4[cmd_patch_step with path='branch.steps N ']
     E --> U5["Confirm 'treat as optional?' suggestion"] --> U6[cmd_confirm_optional_interstitial → step becomes try_dismiss branch]
     E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true, edited_at=now]
-    W --> X{Every workflow in this skill-pack workspace now compiled + signed off?}
-    X -->|No| Y[Return waiting_on: names of remaining workflows]
-    X -->|Yes| Z[Auto-invoke skill_package_builder.build_skill_package — see §7] --> AA[Return built=true; skill package built]
+    W --> Z[Auto-invoke skill_package_builder.build_skill_package, only_workflow_id=this workflow — see §7] --> AA[Return built=true; only this workflow's skill built — a sibling workflow that isn't compiled/edited yet is never required or touched]
 ```
 
 **Patch gate:** Each edit increments the skill version. `revalidate_step()` checks that selector and intent remain coherent after the patch.
@@ -327,25 +325,20 @@ Deterministic Human Edit actions are available without quota: patch, reorder, de
 
 ## 7. Build Skill Package
 
-**Trigger (revised 2026-08):** there is no longer a "Build Skill Package" page or button. `cmd_build_skill_package` (and the `skill_package_builder.build_skill_package` call it wraps) fires automatically the moment sign-off's gate check passes — i.e., when every workflow in the workspace that targets this company is compiled and signed off — or manually via the Publish page's "Rebuild" action. This is a **workspace-scoped** operation that bundles every signed-off workflow into a single skill package (one per company/workspace pair).
+**Trigger (revised 2026-08, re-scoped 2026-08-19):** there is no longer a "Build Skill Package" page or button. `cmd_build_skill_package` (and the `skill_package_builder.build_skill_package` call it wraps) fires automatically the moment sign-off's gate check passes for **that one workflow** — a sibling workflow that isn't compiled/edited yet is never required or touched — or manually via the Inspector drawer's "Rebuild package" action (also single-workflow scoped) or the Publish page's per-skill "Rebuild" action. 1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1 independent release: `build_skill_package(workspace_id, only_workflow_id=...)` compiles just that workflow into its own subtree of the shared local package directory, merging into (never replacing) whatever sibling skills were already built there. An explicit full-workspace rebuild (`only_workflow_id=None`) still exists as a maintenance action but is no longer the path sign-off or Publish use.
 
 ```mermaid
 flowchart TD
-    A[Sign-off completes the gate for this company, or user visits Publish page and clicks Rebuild] --> B[Backend: cmd_build_skill_package]
-    B --> C[Read ALL compiled + signed-off workflows in workspace for this company]
-    C --> D[skill_package_builder.build_skill_package]
-    D --> E["Create output/{company_slug}-skill-package/ folder"]
-    E --> F[Write skill_package.json manifest]
-    E --> G[Render CLAUDE.md from template]
-    E --> H[Render index.md from template]
-    E --> I[For each workflow:]
-    I --> J["Write {skill_slug}/execution.json"]
-    I --> K["Write {skill_slug}/recovery.json"]
-    I --> L["Write {skill_slug}/inputs.json"]
-    J & K & L --> M["Copy to data/skill-packs/{company_slug}/"]
-    M --> N[Write pack.json with version + skills list]
+    A[Sign-off completes for one workflow, or user rebuilds that one skill from the Inspector/Publish page] --> B[Backend: cmd_build_skill_package, skill_slug=this workflow]
+    B --> C[Read only this ONE compiled + signed-off workflow]
+    C --> D[skill_package_builder.build_skill_package, only_workflow_id=this workflow]
+    D --> E["Create/reuse output/{company_slug}-skill-package/ folder"]
+    E --> F[Merge this workflow's entry into skill_package.json — sibling skills' entries untouched]
+    E --> I["Write {skill_slug}/execution.json, recovery.json, inputs.json"]
+    I --> M["Copy to data/skill-packs/{company_slug}/{group_id}/{skill_slug}/ — sibling skills' directories untouched"]
+    M --> N[Merge skills/skill_groups into pack.json — union, not replace]
     N --> O[Skill package build record saved]
-    O --> P[Build complete — version shown]
+    O --> P[Build complete — this skill ready to publish]
 ```
 
 **Security check:** Build output directory is scanned for `auth.json`. If found, the build is **refused** with `auth_file_in_build_input` error.
@@ -354,48 +347,104 @@ flowchart TD
 
 ## 8. Publish & Build Installer
 
-**Publish is the primary, mandatory release action.** Build Installer is a secondary, optional action for distributing an already-published skill package as a standalone `.exe`.
+**Publish is the primary, mandatory release action — and publishing is not
+the same as deploying.** Build Studio only ever gets a version to Conxa
+Cloud as an immutable, versioned artifact; a Cloud admin's explicit
+Release/Deploy action is what actually activates it and starts customer
+machines receiving it. Build Installer is a secondary, optional action for
+distributing an already-published skill package as a standalone `.exe`.
 
-### 8.1 Publish Skill Package — the Release Center (Primary)
+```mermaid
+flowchart LR
+    subgraph Studio["Build Studio (BUILD/PUBLISH plane)"]
+        S1[Workflow] --> S2[Compile] --> S3[Test] --> S4[Publish]
+    end
+    subgraph Cloud["Conxa Cloud (RELEASE/DEPLOYMENT control plane)"]
+        C1["Ready for Release"] --> C2[Review: diff, test status, artifact] --> C3["Release / Deploy"] --> C4["Desired Version"]
+    end
+    subgraph Runtime["Runtime (customer machine)"]
+        R1[Sync] --> R2[Verify] --> R3[Install] --> R4[Execute] --> R5["Report Status"]
+    end
+    S4 --> C1
+    C4 --> R1
+```
 
-The Publish page is the **Release Center**: release candidate → what will change
-(deterministic diff) → where it will go (stable channel) → publish → release
-history → deployment status → audit trail. Full mechanism in
-`docs/TRD.md` §5.5a; API contracts in `docs/Backend-Schema.md` §5.1d.
+### 8.1 Publish Skill Package (Build Studio, Primary)
+
+The Publish page is scoped to ONE selected skill (workflow) via a skill
+picker: release candidate → what will change (deterministic diff against
+that skill's own previous version) → version + release notes → publish. Every
+skill has its own independent version number (a brand-new skill's first
+publish is v1.0.0, no previous-version requirement) and its own publish/test
+gate — publishing "Create a Lead" never requires, checks, or touches "Update
+Opportunity," even if "Update Opportunity" is failing its tests. Full
+mechanism in `docs/TRD.md` §5.5a; API contracts in `docs/Backend-Schema.md`
+§5.1d.
 
 ```mermaid
 flowchart TD
-    A[Skill package built; user visits Release Center] --> A2["Studio previews: proposed version, diff vs. current stable, artifact hash"]
+    A[Skill package built; user visits Publish, picks a skill] --> A2["Studio previews: proposed version, diff vs. THIS skill's current stable, artifact hash"]
     A2 --> B[User enters version + release notes + clicks Publish]
-    B --> C[Backend: cmd_publish_skill_pack]
-    C --> D["Read all files from data/skill-packs/{company_slug}/"]
-    D --> E["POST .../skill-packs/upload to Cloud"]
-    E --> F{Cloud: duplicate version or unchanged artifact?}
+    B --> C[Backend: cmd_publish_skill_pack, skill_slug=selected skill]
+    C --> D["Read only this skill's own files from data/skill-packs/{company_slug}/{group_id}/{skill_slug}/"]
+    D --> E["POST .../skills/{skill_slug}/skill-packs/upload to Cloud"]
+    E --> F{Cloud: duplicate version or unchanged artifact — checked against THIS skill's own history?}
     F -->|Yes| F2[409 — reject, Studio shows why, Publish button stays enabled to retry]
-    F -->|No| G["Cloud: write immutable per-version snapshot"]
-    G --> H["Cloud: refresh mutable mirror + component_versions + manifest"]
-    H --> I["Cloud: move stable channel pointer — the single act of activation"]
-    I --> J[Cloud: write audit + release events]
-    J --> K["Cloud: return {tracking_token, sync_url, version}"]
-    K --> L[Rewrite pack.json with tracking + sync_endpoint]
-    L --> M[Studio shows Published — release history, deployment, and audit sections refresh]
+    F -->|No| G["Cloud: write this skill's own immutable per-version snapshot"]
+    G --> H["Cloud: version-history row status=ready; register this skill+group in Cloud's Groups/Workflows index"]
+    H --> I["Cloud: return {tracking_token, sync_url, version} — the stable channel is NOT moved"]
+    I --> J[Rewrite local pack.json with tracking + sync_endpoint]
+    J --> K["Studio shows a bare confirmation: 'v{version} is Ready for Release in Conxa Cloud' — no deployment/audit UI rendered here"]
 ```
 
-A failed publish (step F2, or a failure inside G-I) never moves the stable
-channel — the UI states plainly that stable is unchanged and what version was
-NOT released, per the release-system plan's publishing UX states.
+A failed publish (step F2, or a failure inside G-H) never creates a "ready"
+row — the UI states plainly that nothing was uploaded and what version failed.
+Because every step above is scoped to one skill, a failed publish (or a
+failing test gate) for one skill never blocks, retests, or republishes any
+other skill. Build Studio never renders release history, deployment status,
+or an audit log — those, along with Release/Deploy and Rollback, are
+Cloud-only (§8.1a).
 
-### 8.1a Rollback
+### 8.1a Release, Deploy, Rollback, and Deployment/Audit — Conxa Cloud (Primary)
 
-From the Release Center's Release History, an admin/owner picks a previous
-published version and confirms (current stable, target, effect shown explicitly).
-No artifact is rebuilt or re-uploaded — the stable channel pointer moves back to
-the already-immutable snapshot, and the mutable mirror + `component_versions` +
-manifest are refreshed from it. Runtimes pick up the change at their next regular
-delta-sync, exactly as they would a forward publish — the sync mechanism itself
-doesn't know the difference. A read-only mirror of release history and deployment
-status (no publish/rollback controls) is also visible on the Cloud dashboard's
-Skill Packages page, for checking release state without opening Build Studio.
+Everything downstream of "uploaded to Cloud" lives in the Cloud dashboard
+under Skill Packages → Group → Workflow, never in Build Studio:
+
+- **Ready for Release**: every "ready" version for the selected workflow,
+  each with its diff against the previous release, its test status
+  (`tests_passed`, reported by Build Studio at publish time), and its
+  artifact hash.
+- **Release / Deploy**: a Cloud admin picks a "ready" version and confirms
+  (current stable, target, effect shown explicitly). This is the *only*
+  action anywhere in the product that moves a skill's stable channel forward
+  — it refreshes that skill's files in the mutable mirror runtimes actually
+  sync from, records its `component_versions` entry, and flips the version
+  row to "published." Admin/owner only, enforced server-side
+  (`require_admin`), same gate as publish and rollback.
+- **Rollback**: from Release History, an admin/owner picks a previous
+  *already-published* version of the same skill and confirms. No artifact is
+  rebuilt or re-uploaded — that skill's stable channel pointer moves back to
+  the already-immutable snapshot, and only that skill's files in the mutable
+  mirror plus its own `component_versions` entry are refreshed from it; no
+  other skill's channel, files, or version history is touched, and the
+  company-level `pack.json` (target_url, tracking) is left as-is. **Rollback
+  is always scoped to one workflow/skill — never the whole group.**
+- **Deployment dashboard**: desired (stable) version vs. what each registered
+  machine last reported, derived only from data the runtime actually reports
+  (`runtime_registrations`) — never fabricated. Per-machine status is one of
+  `up_to_date`, `pending` (hasn't synced to the desired version yet),
+  `failed` (the runtime reported a sync error — checksum mismatch or
+  download/activation failure — that it hasn't since recovered from),
+  `offline` (not seen in 30 days), or `unknown` (a registration that predates
+  per-skill version reporting).
+- **Audit log**: every publish, release, rollback, and channel-change event
+  for the selected skill, attributed to the user who did it — a durable,
+  unbounded per-skill event log (mirrored into the global audit ring buffer
+  the rest of the dashboard already uses).
+
+Runtimes pick up a Release or a Rollback at their next regular delta-sync —
+the sync mechanism itself doesn't know the difference between the two, only
+that the stable channel moved.
 
 ### 8.2 Build Installer (Secondary, Optional)
 
@@ -591,16 +640,19 @@ See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify
 flowchart TD
     A[Company re-records or edits a workflow] --> B[Compile new version]
     B --> C[Build workflow with new version string]
-    C --> D[Build installer — OR — publish only]
+    C --> D[Build Studio: publish only]
     D --> E[POST /api/v1/workflows/publish]
-    E --> F["Cloud writes new files to skill-packs/{co}/"]
-    F --> G[Cloud updates pack.json skill_pack_version]
-    G --> H[Customer runtimes detect version change on next sync]
-    H --> I[Delta delivered, files updated atomically]
-    I --> J[New skill version active on next execution]
+    E --> F["Cloud writes this skill's immutable snapshot + version row, status=ready"]
+    F --> G["Cloud admin reviews in Skill Packages → Group → Workflow, clicks Release"]
+    G --> H["Cloud: mutable mirror + component_versions updated; stable channel moves — see §8.1a"]
+    H --> I[Customer runtimes detect version change on next sync]
+    I --> J[Delta delivered, files updated atomically]
+    J --> K[New skill version active on next execution]
 ```
 
-**No re-installer needed** for content-only updates. The runtime's delta sync handles delivery automatically.
+**No re-installer needed** for content-only updates — once released, the runtime's delta sync
+handles delivery automatically. **Publishing alone never reaches step H** — see §8.1/§8.1a for why
+that split exists and who does each half.
 
 ---
 
@@ -619,13 +671,15 @@ flowchart TD
     I --> J[Write files to skill-packs/co/skill/<version>/, SHA-256 verify each]
     J --> K[version_manager.activate — flip that skill's current junction, prune old versions]
     K --> L{Activation OK?}
-    L -->|Yes| M[Add to activated list]
-    L -->|No| N[Discard the partial version dir — that skill's current is untouched]
-    M --> O[Update pack.json last_synced]
+    L -->|Yes| M[Add to activated list; clear that skill's last_sync_errors entry]
+    L -->|No| N["Discard the partial version dir — that skill's current is untouched; record last_sync_errors[skill]={code, at}"]
+    M --> O[Update pack.json last_synced + last_sync_errors]
+    N --> O
     O --> P[Reload skill index]
+    P --> Q["Next phone-home reports last_sync_errors alongside skill_versions — feeds Cloud's Deployment dashboard 'failed' status (§8.1a)"]
 ```
 
-Each skill is compared and activated **independently** — republishing one skill never redownloads or re-touches the others (see TRD.md §5.9).
+Each skill is compared and activated **independently** — republishing one skill never redownloads or re-touches the others (see TRD.md §5.9). A checksum mismatch or a download/activation failure for one skill is recorded (`code`: `checksum_mismatch` | `download_failed` | `activation_failed`) and cleared the moment that skill next activates successfully — it never blocks or delays any other skill's sync.
 
 ---
 
@@ -767,6 +821,6 @@ custom icon.
 | Customer install | .exe runs | Runtime, Claude Desktop | 2–5 min |
 | Skill execution | Claude tool call | Runtime, Target website | 10s–5 min |
 | Recovery | Step failure | Runtime, Cloud (LLM at T3+) | +2–30s |
-| Skill update | Company publishes | Cloud, Runtime (next start) | <15s sync |
+| Skill update | Cloud admin releases a "ready" version | Build Studio (publish), Cloud (release), Runtime (next sync) | <15s sync after release |
 | Runtime update | Cold start check | Runtime, Cloud | Background |
 | Entitlement gate | Every compile/LLM/installer call | Build Studio, Cloud | <200ms |

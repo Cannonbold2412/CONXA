@@ -745,37 +745,49 @@ Stored in `kv_store` under `tracking_tokens` → `company_slug`:
 
 ### 5.1 Publish Skill Pack
 
+**Publish never deploys — it uploads a "ready" version to Conxa Cloud.** A
+Cloud admin's explicit Release/Deploy action (§5.1d) is the only thing that
+activates a version and starts runtimes receiving it. See `docs/App-Flow.md`
+§8.
+
 **POST /api/v1/workflows/publish**
 
 Request:
 ```json
 {
   "slug": "acme",
+  "skill_slug": "submit_expense",
+  "group_id": "expenses",
+  "group_name": "Expenses",
+  "workflow_name": "Submit Expense",
   "display_name": "Acme Corp",
   "target_url": "https://app.acme.com",
   "protected_url": "https://app.acme.com/dashboard",
   "skill_pack_version": "0.2.0",
-  "skills": ["submit_expense", "export_report"],
+  "release_notes": "Fixed export bug",
+  "tests_passed": true,
   "files": [
     {
-      "path": "pack.json",
-      "content_base64": "..."
-    },
-    {
-      "path": "submit_expense/execution.json",
+      "path": "execution.json",
       "content_base64": "..."
     }
   ]
 }
 ```
+`group_name`/`workflow_name` are display-only, used by Cloud's Skill Packages
+→ Group → Workflow navigation (§5.1d) — an older Build Studio that hasn't
+picked them up yet just falls back to the slug/group_id. `tests_passed` is
+Build Studio's own local test-gate result, surfaced to Cloud admins reviewing
+a "ready" version alongside its diff and artifact.
 
-Response (201):
+Response (200):
 ```json
 {
   "slug": "acme",
   "version": "0.2.0",
-  "files_written": 6,
+  "files_written": 1,
   "sync_url": "/api/v1/skill-packs/acme/delta",
+  "sync_token": "...",
   "tracking": {
     "enabled": true,
     "tracking_url": "https://apis.conxa.in/api/tracking/acme/events",
@@ -787,8 +799,14 @@ Response (201):
   "published_at": 1717000000.0
 }
 ```
+This response means the version is durably uploaded and **"ready"** — not
+that it's live. `sync_url`/`sync_token` are minted here (Build Studio's local
+`pack.json` needs them for future syncs), but nothing about the runtime-facing
+mutable mirror or the stable channel moves until Release/Deploy (§5.1d).
 
-Duplicate-version publish → **409** `skill_pack_version_exists` (a given `skill_pack_version` is an immutable release, same as installer uploads — bump the version and republish).
+Duplicate-version publish → **409** `skill_pack_version_exists`, unless the
+existing row is still `"ready"` (or legacy `"pending"`) — retrying an
+unreleased version number is safe and expected, not an overwrite.
 
 ### 5.1a Versioned Endpoint Scheme (`{installer_version}`)
 
@@ -811,48 +829,81 @@ Every versioned route validates `{installer_version}` against the allow-list (40
 ```json
 {
   "slug": "acme",
-  "current_stable": {"slug": "acme", "version": "0.3.0", "status": "published", "is_latest": true, "...": "same row shape as below"},
+  "skill_slug": "submit_expense",
+  "current_stable": {"slug": "acme", "skill_slug": "submit_expense", "version": "0.3.0", "status": "published", "is_latest": true, "...": "same row shape as below"},
   "versions": [
-    {"slug": "acme", "version": "0.3.0", "release_notes": "Fixed export bug", "skills": ["submit_expense"],
-     "skill_groups": {"submit_expense": "_default"}, "skill_versions": {"submit_expense": "0.3.0"},
+    {"slug": "acme", "skill_slug": "submit_expense", "version": "0.4.0", "release_notes": "WIP export tweak",
+     "group_id": "expenses", "tests_passed": true,
+     "workspace_id": "org_clerk123", "owner_user_id": "user_123",
+     "published_by": {"user_id": "user_123", "email": "a@acme.test", "name": "Ana"},
+     "published_at": 1717000200.0, "files_written": 4, "file_count": 4, "size_bytes": 3010,
+     "artifact_sha256": "7e5d...12", "status": "ready", "is_latest": false},
+    {"slug": "acme", "skill_slug": "submit_expense", "version": "0.3.0", "release_notes": "Fixed export bug",
+     "group_id": "expenses", "tests_passed": true,
      "workspace_id": "org_clerk123", "owner_user_id": "user_123",
      "published_by": {"user_id": "user_123", "email": "a@acme.test", "name": "Ana"},
      "published_at": 1717000100.0, "files_written": 6, "file_count": 6, "size_bytes": 4821,
      "artifact_sha256": "3f2a...c9", "status": "published", "is_latest": true},
-    {"slug": "acme", "version": "0.2.0", "release_notes": "Initial release", "skills": ["submit_expense"],
+    {"slug": "acme", "skill_slug": "submit_expense", "version": "0.2.0", "release_notes": "Initial release",
      "workspace_id": "org_clerk123", "owner_user_id": "user_123", "published_at": 1717000000.0,
      "files_written": 5, "artifact_sha256": "9c1b...44", "status": "published", "is_latest": false}
   ]
 }
 ```
-**KV namespace:** `skillpack_versions__{slug}` — one row per version (mirrors `installer_versions__{slug}`, §5.1b below). Duplicate-version publish → 409 `skill_pack_version_exists`; a byte-identical republish (same `artifact_sha256` as the current stable release) → 409 `skill_pack_artifact_unchanged` (see §5.1). `is_latest` tracks the stable channel, not "most recently published" — it moves on rollback too. `status` is `"pending"` only for a row left behind by a publish attempt that failed before the channel moved (safe to retry the same version number); every other row is `"published"`. See §5.1d for the full release system this row shape backs.
+**KV namespace:** `skillpack_versions__{slug}__{skill_slug}` — one row per (skill, version) (mirrors `installer_versions__{slug}`, §5.1b below). Duplicate-version publish → 409 `skill_pack_version_exists`; a byte-identical republish (same `artifact_sha256` as the current stable release) → 409 `skill_pack_artifact_unchanged` (see §5.1). `is_latest` tracks the stable channel, not "most recently published" — it moves on rollback too. `status` is one of: `"ready"` — uploaded and durably persisted, awaiting a Cloud admin's Release/Deploy decision (§5.1d); `"published"` — activated, the normal state for every row a Release or Rollback has ever pointed at; `"pending"` — legacy, a row left behind by a publish attempt that crashed before even reaching `"ready"` (safe to retry the same version number, but distinct from the new `"ready"` steady state). See §5.1d for the full release system this row shape backs.
 
-### 5.1d Skill Pack Release System (immutable versions, stable channel, rollback, diff)
+### 5.1d Skill Pack Release System (per-skill: immutable versions, stable channel, rollback, diff)
 
 Built on top of §5.1's publish endpoint — see `docs/Implementation-Plan.md` §3.4 for the full design writeup. Every route below shares §5.1a's `/api/v1/workflows/{installer_version}/{company_slug}/...` prefix and `require_admin` gating.
 
+**Re-scoped 2026-08-19 to per skill.** 1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1 independent release. Every route, KV namespace, and JSON shape below is keyed by **(company slug, skill slug)**, not company slug alone — publishing, testing, versioning, and rolling back one skill (e.g. "create-a-lead") never requires, checks, or touches another skill (e.g. "update-opportunity") published under the same company slug. `skill_slug` travels as a required body field on `POST`s with a body (`.../releases/preview`) and as a required `?skill_slug=` query parameter on every other route below (kept off the URL path itself to avoid re-numbering the existing route segments).
+
 ```
-POST /api/v1/workflows/{installer_version}/{company_slug}/releases/preview            # dry run — proposed version, diff, duplicate/unchanged flags
-GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}          # release detail + per-file sha256
-GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/diff     # deterministic diff vs. the preceding published version
-POST /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/rollback # move the stable channel pointer
-GET  /api/v1/workflows/{installer_version}/{company_slug}/deployments                 # runtime deployment status
-GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/events             # release-lifecycle audit trail
+POST /api/v1/workflows/{installer_version}/{company_slug}/releases/preview                              # dry run for ONE skill — proposed version, diff vs. that skill's own previous version, duplicate/unchanged flags
+GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}?skill_slug=...              # release detail + per-file sha256, for that one skill's own version row
+GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/diff?skill_slug=...          # deterministic diff vs. the preceding published version OF THIS SAME SKILL
+POST /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/release?skill_slug=...       # Cloud-only: activate a "ready" version — the only action that deploys it
+POST /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/rollback?skill_slug=...      # move ONE skill's stable channel pointer back to an already-published version
+GET  /api/v1/workflows/{installer_version}/{company_slug}/deployments?skill_slug=...                      # runtime deployment status for ONE skill
+GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/events?skill_slug=...                  # release-lifecycle audit trail for ONE skill
+GET  /api/v1/workflows/{installer_version}/{company_slug}/groups                                          # Cloud's Skill Packages → Group → Workflow navigation — Studio-synced groups (possibly empty) unioned with every skill ever published
+PUT  /api/v1/workflows/{installer_version}/{company_slug}/groups/{group_id}                               # Build Studio create/rename: upsert {group_id, group_name} so the folder exists before first publish
 ```
+
+**Publish vs. Release/Deploy.** `POST .../skill-packs/upload` (§5.1) only ever
+writes the immutable snapshot and a version-history row with
+`status: "ready"` — it never touches the mutable mirror `_build_delta`
+serves, the `component_versions` entry, or the stable channel. `POST
+.../releases/{version}/release` is the only thing that does all three
+(mirrors `.../rollback`'s structure, just with the opposite precondition: a
+`"ready"` row instead of an already-`"published"` one). This is what makes
+"publish ≠ deploy" true at the data-plane level, not just a UI label — see
+`docs/App-Flow.md` §8.1/§8.1a.
 
 **Domain model:**
-- **Immutable snapshot** — every publish writes its file set once, write-only, to `skillpack_release_files__{slug}__{version}` (KV) + `data_dir/skill-packs/{slug}/releases/{version}/` (disk cache). Never touched again. This is what rollback restores from — no artifact is ever rebuilt, copied, or mutated.
-- **Mutable mirror** — the pre-existing `skillpack_files__{slug}` / `data_dir/skill-packs/{slug}/{...}` layout `_build_delta` (§5.9) has always served. Publish and rollback both refresh it from whichever release should now be live; the runtime sync hot path itself is unchanged.
-- **Stable channel** — `skillpack_channels` KV, key = slug: `{"slug": "acme", "stable": {"version": "1.3.0", "set_at": 1717000100.0, "set_by": "user_123", "reason": "publish"|"rollback", "from_version": "1.2.0"}}`. One channel in V1; the row is a dict of channels so a second (`beta`/`canary`) needs no migration later. **Not** the same "channel" concept as §5.8's runtime/app self-update `dev`/`stable` channel — a separate, unrelated pointer this system doesn't read or write.
-- **Release events** — `skillpack_release_events__{slug}` KV, an unbounded append-only array (`db_append`), one row per lifecycle action: `skill_version_created`, `skill_publish_started`, `skill_publish_succeeded`, `skill_publish_failed`, `stable_channel_changed`, `rollback_started`, `rollback_completed`. Every event is also mirrored into the existing `saas.add_audit_event` (§7's `saas` namespace) so the dashboard's Audit page needed no changes — but that log is a global 500-entry ring buffer across all workspaces, so the durable per-slug record here is the one to query for a specific slug's history.
+- **Immutable snapshot** — every publish writes its file set once, write-only, to `skillpack_release_files__{slug}__{skill_slug}__{version}` (KV) + `data_dir/skill-packs/{slug}/skills/{skill_slug}/releases/{version}/` (disk cache). Never touched again. This is what rollback restores from — no artifact is ever rebuilt, copied, or mutated. Contains only that skill's own files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`) — never `pack.json`, which is company-level static config (target_url, tracking) a single skill's release/rollback must never mutate.
+- **Mutable mirror** — the pre-existing `skillpack_files__{slug}` / `data_dir/skill-packs/{slug}/{group_id}/{skill_slug}/...` layout `_build_delta` (§5.9) has always served. Still one namespace per company (not re-keyed), but every publish/rollback call now only ever writes the one skill's own file subset into it — a sibling skill's files in the same mirror are never touched.
+- **Stable channel** — `skillpack_channels` KV (still one namespace), row key is now the composite `"{slug}:{skill_slug}"`: `{"slug": "acme", "skill_slug": "create-a-lead", "stable": {"version": "1.3.0", "set_at": 1717000100.0, "set_by": "user_123", "reason": "publish"|"rollback", "from_version": "1.2.0"}}`. One channel per skill in V1. **Not** the same "channel" concept as §5.8's runtime/app self-update `dev`/`stable` channel — a separate, unrelated pointer this system doesn't read or write.
+- **Release events** — `skillpack_release_events__{slug}__{skill_slug}` KV, an unbounded append-only array (`db_append`), one row per lifecycle action: `skill_version_created`, `skill_publish_started`, `skill_publish_succeeded`, `skill_publish_failed`, `release_started`, `release_succeeded`, `release_failed`, `stable_channel_changed`, `rollback_started`, `rollback_completed`. Every event is also mirrored into the existing `saas.add_audit_event` (§7's `saas` namespace) so the dashboard's Audit page needed no changes — but that log is a global 500-entry ring buffer across all workspaces, so the durable per-(slug, skill_slug) record here is the one to query for a specific skill's history. `stable_channel_changed` now fires from two different callers with a different `reason` (`"release"` vs. `"rollback"`) rather than from `publish` — publishing alone never emits it.
+- **No data migration for the re-key.** These four namespaces are purely internal cloud bookkeeping — no installed runtime reads them directly (runtimes only ever see `component_versions`, `pack.json`, and the delta endpoint, all unchanged in shape — see §5.9). A pre-existing company-wide release published before this re-scoping simply won't appear in the new per-skill Release Center; that's an accepted gap, not a regression for any already-deployed runtime.
+- **Known-skills registry** — `skillpack_known_skills` KV (row key `"{slug}:{skill_slug}"`, same pattern as `skillpack_channels`): `{slug, skill_slug, group_id, group_name, workflow_name, first_published_at}`, upserted at **publish** time (not release time). Deliberately independent of `pack.json`'s `skills`/`skill_groups` union, which only updates at Release/Deploy — this registry is what lets Cloud's Skill Packages → Group → Workflow navigation (`GET .../groups`) show a skill the moment it's published, before anyone has released it, without exposing anything runtime-facing early.
+- **Known-groups registry** — `skillpack_known_groups` KV (row key `"{slug}:{group_id}"`): `{slug, group_id, group_name, created_at}`, upserted when Build Studio creates or renames a group (`PUT .../groups/{group_id}`), not at publish time. `GET .../groups` unions this registry with known-skills so an empty Studio group appears as a folder with `workflows: []`. A later publish of a skill with the same `group_id` attaches that workflow to the existing folder. Deleting a group in Studio does not remove the Cloud row. If the company slug has no SkillPack yet, the PUT creates a shell record from the caller's workspace name so the Skill Packages list has a company card to hang the folder on.
 
-**POST .../releases/preview** request/response — same `PublishFile`/skills/skill_groups shape as §5.1's upload, plus an optional `version` to validate:
+**PUT .../groups/{group_id}** request/response — Build Studio, `require_admin` + slug ownership (unclaimed slugs are claimed when the shell SkillPack is created):
 ```json
 // request
-{"version": "0.4.0", "skills": ["submit_expense"], "skill_groups": {}, "files": [{"path": "pack.json", "content_base64": "..."}]}
+{"group_name": "Sales", "company_name": "Acme"}
+// response
+{"slug": "acme", "group_id": "11111111-1111-1111-1111-111111111111", "group_name": "Sales"}
+```
+
+**POST .../releases/preview** request/response — one skill per call:
+```json
+// request
+{"version": "0.4.0", "skill_slug": "submit_expense", "group_id": "expenses", "files": [{"path": "execution.json", "content_base64": "..."}]}
 // response
 {
-  "slug": "acme", "previous_version": "0.3.0", "proposed_version": "0.4.0",
+  "slug": "acme", "skill_slug": "submit_expense", "previous_version": "0.3.0", "proposed_version": "0.4.0",
   "version_valid": true, "version_available": true,
   "artifact_sha256": "a1b2...", "artifact_unchanged": false,
   "diff": {
@@ -864,25 +915,29 @@ GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/events       
   }
 }
 ```
-The diff is pure stdlib (`difflib` over a semantic per-step key — type/tab/frame/selector — excluding volatile targeting metadata like `identity_bundle`/`compiled_selectors`/`confidence`) — deterministic, no LLM, same function for the pre-publish preview and the published `.../diff` endpoint.
+For a brand-new skill (no previous publish), `previous_version` is `null` and the artifact-unchanged check is skipped entirely — no previous-version requirement, matching "publish a new skill's first version as v1.0.0." The diff is pure stdlib (`difflib` over a semantic per-step key — type/tab/frame/selector — excluding volatile targeting metadata like `identity_bundle`/`compiled_selectors`/`confidence`) — deterministic, no LLM, same function for the pre-publish preview and the published `.../diff` endpoint.
 
-**POST .../releases/{version}/rollback** — `require_admin` + slug ownership. 404 if the version doesn't exist; 400 `release_not_published` if it's a `"pending"` (never-activated) row; 400 `already_stable` if it's already the channel target; 409 `release_snapshot_unavailable` if it predates this feature (published before per-version snapshots existed — the mutable mirror kept working via the pre-existing legacy path, but there's nothing to roll back *to*). Success response: `{"slug": "acme", "rolled_back_to": "1.2.0", "previous_stable": "1.3.0"}`.
+**POST .../releases/{version}/release?skill_slug=...** — Cloud-only, `require_admin` + slug ownership. 404 if the version doesn't exist for this skill; 400 `release_not_ready` if it isn't currently `"ready"` (already published, or still `"pending"`); 409 `release_snapshot_unavailable` if the snapshot is missing. Success response: `{"slug": "acme", "skill_slug": "create-a-lead", "released": "1.3.0", "previous_stable": "1.2.0"}`. Performs, in order: refresh the mutable mirror from the immutable snapshot; fold the skill into `pack.json`'s `skills`/`skill_groups` union (a no-op after the first release of a given skill); rewrite `component_versions`; move the stable channel; flip the row to `"published"` + `is_latest`. Every step is scoped to this one skill.
 
-**GET .../deployments** — reads `runtime_registrations` (§5.6/telemetry), filtered to the slug + caller's workspace, compared against the channel's stable version:
+**POST .../releases/{version}/rollback?skill_slug=...** — `require_admin` + slug ownership. 404 if the version doesn't exist for this skill; 400 `release_not_published` if it isn't currently `"published"` (still `"ready"`, or a legacy `"pending"` row); 400 `already_stable` if it's already this skill's channel target; 409 `release_snapshot_unavailable` if it predates this feature. Success response: `{"slug": "acme", "skill_slug": "create-a-lead", "rolled_back_to": "1.2.0", "previous_stable": "1.3.0"}`. Every step (channel move, mirror restore, `component_versions` rewrite, `is_latest` flip) is scoped to this one skill — a sibling skill's stable version, live files, and version history are never touched by this call. **Rollback is always scoped to one workflow/skill — there is no group-level or bulk rollback anywhere in this system.**
+
+**GET .../deployments?skill_slug=...** — reads `runtime_registrations` (§5.6/telemetry), filtered to the slug + caller's workspace, compared against THIS skill's channel stable version only:
 ```json
 {
-  "slug": "acme", "desired_version": "1.3.0",
+  "slug": "acme", "skill_slug": "submit_expense", "desired_version": "1.3.0",
   "machines": [{"machine_id": "install-abc", "platform": "win32", "runtime_version": "1.4.0",
-                "installed_skill_versions": {"submit_expense": "1.3.0"}, "desired_skill_version": "1.3.0",
-                "status": "up_to_date", "last_seen": 1717000200.0, "last_sync": 1717000200.0}],
-  "summary": {"total": 1, "up_to_date": 1, "pending": 0, "offline": 0, "unknown": 0}
+                "installed_skill_versions": "1.3.0", "desired_skill_version": "1.3.0",
+                "status": "up_to_date", "sync_error": null, "last_seen": 1717000200.0, "last_sync": 1717000200.0}],
+  "summary": {"total": 1, "up_to_date": 1, "pending": 0, "failed": 0, "offline": 0, "unknown": 0}
 }
 ```
-`status` is one of `up_to_date` / `pending` / `offline` (stale `last_seen`, §5.6's 30-day window) / `unknown` (registration predates the runtime reporting `skill_versions` — see below). `updating`/`failed`/`rolled_back` are deliberately not modeled: the runtime reports current state at phone-home, not sync *outcomes*, so those aren't derivable from telemetry today.
+`installed_skill_versions` is that one skill's installed version string (not the machine's full `{skill_slug: version}` map) — a machine current on every other skill but stale on this one reads `pending`, never `up_to_date`. `status` is one of, checked in this order: `offline` (stale `last_seen`, §5.6's 30-day window) → `failed` (the runtime's last phone-home reported a `sync_errors` entry for this skill AND the installed version still hasn't caught up to desired — an error that's since self-resolved never counts) → `unknown` (registration predates the runtime reporting `skill_versions`, or hasn't reported this skill yet) → `up_to_date` / `pending`. `sync_error` (`{code, at}` or `null`) is only populated when `status == "failed"`.
 
-**Runtime telemetry extension** — `POST /api/v1/telemetry/runtime-start`'s `TelemetryBody` gained an optional `skill_versions: {company: {skill_slug: version}}` field, populated by `runtime/installed_versions.js` off the same `current` junction / `version.json` §5.9/§8 already describe. Omitted entirely by a runtime that hasn't self-updated to report it yet — its registrations just read as `unknown` above rather than a fabricated `up_to_date`.
+**Runtime telemetry extension** — `POST /api/v1/telemetry/runtime-start`'s `TelemetryBody` has two optional fields:
+- `skill_versions: {company: {skill_slug: version}}`, populated by `runtime/installed_versions.js` off the same `current` junction / `version.json` §5.9/§8 already describe. Omitted entirely by a runtime that hasn't self-updated to report it yet — its registrations just read as `unknown` above rather than a fabricated `up_to_date`. Sticky: an omission never overwrites a previously-reported value (an older runtime that stops sending it doesn't regress an already-known state to `unknown`).
+- `sync_errors: {company: {skill_slug: {code, at}}}`, populated by `runtime/sync_errors.js` off `pack.json.last_sync_errors` — the per-skill failures `runtime/sync.js` records on a checksum mismatch, download failure, or activation failure, and clears the moment that skill next activates successfully. **Not sticky**: always overwritten in full on every phone-home, since an empty `{}` is itself a real signal ("nothing failed this round"), unlike `skill_versions`.
 
-**KV namespaces added:** `skillpack_release_files__{slug}__{version}`, `skillpack_channels`, `skillpack_release_events__{slug}` — see §7.
+**KV namespaces (re-keyed 2026-08-19 to include `skill_slug`):** `skillpack_release_files__{slug}__{skill_slug}__{version}`, `skillpack_channels` (composite row key `"{slug}:{skill_slug}"`), `skillpack_release_events__{slug}__{skill_slug}`, `skillpack_known_skills` (composite row key `"{slug}:{skill_slug}"`, publish-time index, see above) — see §7.
 
 ### 5.1b Installer Upload + History (installer becomes a secondary, advanced artifact)
 
@@ -1273,7 +1328,7 @@ Response (`packages/conxa-core/conxa_core/models/manifest.py:UnifiedManifest`):
 
 `signature` is computed over the canonical JSON (sorted keys, no whitespace, `signature` field excluded) of every other field, using an Ed25519 private key held only as the `CONXA_MANIFEST_SIGNING_KEY` env var — never in CI. The runtime verifies it against a public key baked into the host exe at build time; a failed verification is treated exactly like a network failure (fall back to the last verified cache, or skip entirely on first run). `skill_packs[].files` is deliberately empty — skill content is delivered through the existing per-company delta-sync (§5.9) which is Bearer-token-gated per company, not broadcast in a public manifest.
 
-**POST /api/v1/admin/component-versions/{component}** — CI (after host/app build) and `publish_routes.py` (after skill publish) write a component's version record here; the manifest is recomposed and re-signed immediately after. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. Requires `Authorization: Bearer <CONXA_ADMIN_TOKEN>`.
+**POST /api/v1/admin/component-versions/{component}** — CI (after host/app build) and `release_routes.py` (after a skill is Released/Deployed — see §5.1d; **not** at publish time) write a component's version record here; the manifest is recomposed and re-signed immediately after. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. Requires `Authorization: Bearer <CONXA_ADMIN_TOKEN>`.
 
 **Deprecated shims** (kept for runtimes that haven't picked up the manifest-driven self-updater): `GET /api/v1/updates/conxa-runtime-manifest` and `GET /api/v1/updates/conxa-app-manifest` now derive their response from the same `component_versions` KV data instead of process-local globals.
 
@@ -1547,15 +1602,17 @@ erDiagram
 | `roi_assumptions` | `{workspace_id}` | `{default_minutes, hourly_rate, currency, per_workflow: {"{company}/{skill}": minutes}, updated_at, updated_by}` | Operations dashboard — Impact page. The only input the dashboard cannot derive from telemetry: how long a task took a human before it was automated. Admin-writable, surfaced beside every figure that depends on it |
 | `sync_tokens` | `{slug}` | `{token, company, version, workspace_id, owner_user_id, updated_at}` | Cloud publish, runtime sync auth |
 | `installer_versions__{slug}` | `{version}` | Installer `meta.json` fields + `content_base64` (full .exe) | Cloud publish — durable backing for installer history; Render's free-tier disk is ephemeral, this KV namespace (Postgres in prod) is the source of truth, local disk is a rehydratable cache |
-| `skillpack_files__{slug}` | `{relative_path}` (e.g. `pack.json`, `{skill}/execution.json`) | `{path, content_base64}` | Cloud publish, skill-pack sync — the **mutable** "currently live" mirror `_build_delta` serves; durable backing for published skill-pack files, same disk-wipe rationale as above. `path` is stored explicitly because the fs-fallback KV implementation keys files by a hash of the original key, not the literal string |
-| `skillpack_versions__{slug}` | `{version}` | Release-history row: `{slug, version, release_notes, skills, skill_groups, skill_versions, workspace_id, owner_user_id, published_by, published_at, file_count, size_bytes, artifact_sha256, status, is_latest}` | Cloud publish, §5.1d release system — one immutable row per published version |
-| `skillpack_release_files__{slug}__{version}` | `{relative_path}` | `{path, content_base64}` | §5.1d release system — the **immutable** per-version snapshot, write-once, never overwritten; what rollback restores `skillpack_files__{slug}` from |
-| `skillpack_channels` | `{slug}` | `{slug, stable: {version, set_at, set_by, reason, from_version}}` | §5.1d release system — the stable-channel pointer; distinct from §5.8's runtime/app self-update `dev`/`stable` channel |
-| `skillpack_release_events__{slug}` | `"events"` (single key, JSON array via `db_append`) | `[{id, workspace_id, user_id, action, resource_type, resource_id, metadata, created_at}, ...]` | §5.1d release system — unbounded per-slug release audit trail, mirrored into `saas.add_audit_event` |
+| `skillpack_files__{slug}` | `{relative_path}` (e.g. `pack.json`, `{group_id}/{skill_slug}/execution.json`) | `{path, content_base64}` | Cloud publish, skill-pack sync — the **mutable** "currently live" mirror `_build_delta` serves; still one namespace per company (not re-keyed by skill), but every publish/rollback call only ever writes one skill's own path subset — a sibling skill's entries are untouched. Same disk-wipe rationale as above; `path` is stored explicitly because the fs-fallback KV implementation keys files by a hash of the original key, not the literal string |
+| `skillpack_versions__{slug}__{skill_slug}` | `{version}` | Release-history row: `{slug, skill_slug, version, release_notes, group_id, tests_passed, workspace_id, owner_user_id, published_by, published_at, file_count, size_bytes, artifact_sha256, status, is_latest}` | Cloud publish, §5.1d release system — one immutable row per published version, per skill (re-keyed 2026-08-19; every skill has its own independent history). `status` is `ready` (published, awaiting Release/Deploy), `published` (activated), or legacy `pending` |
+| `skillpack_release_files__{slug}__{skill_slug}__{version}` | `{relative_path}` | `{path, content_base64}` | §5.1d release system — the **immutable** per-version snapshot for one skill, write-once, never overwritten; what Release/Deploy or rollback restores that skill's subset of `skillpack_files__{slug}` from |
+| `skillpack_known_skills` | `"{slug}:{skill_slug}"` | `{slug, skill_slug, group_id, group_name, workflow_name, first_published_at}` | §5.1d release system — upserted at **publish** time (not release time); backs Cloud's Skill Packages → Group → Workflow navigation (`GET .../groups`) so an unreleased "ready" skill is still visible to admins |
+| `skillpack_known_groups` | `"{slug}:{group_id}"` | `{slug, group_id, group_name, created_at}` | §5.1d — upserted when Build Studio creates/renames a group; `GET .../groups` unions this with known-skills so empty folders appear before first publish |
+| `skillpack_channels` | `"{slug}:{skill_slug}"` | `{slug, skill_slug, stable: {version, set_at, set_by, reason, from_version}}` | §5.1d release system — the per-skill stable-channel pointer (re-keyed 2026-08-19); distinct from §5.8's runtime/app self-update `dev`/`stable` channel. `reason` is `release` (first activation of a "ready" version) or `rollback` — never `publish` |
+| `skillpack_release_events__{slug}__{skill_slug}` | `"events"` (single key, JSON array via `db_append`) | `[{id, workspace_id, user_id, action, resource_type, resource_id, skill_slug, metadata, created_at}, ...]` | §5.1d release system — unbounded per-(slug, skill_slug) release audit trail, mirrored into `saas.add_audit_event` |
 | `tracking/{company}` | `{run_id}` | `[event_batch, ...]` | Runtime, Cloud dashboard |
 | `runs` | `{workflow_id}` | `[run_record, ...]` | Cloud, Build Studio |
 | `selector_cache` | `{dom_hash}:{bbox}:{model}` | Selector candidates | Compiler |
-| `runtime_registrations` | `{company}:{install_id or platform}` | `{company, install_id, platform, runtime_version, workspace_id, last_seen, first_seen, skill_versions?}` | 2.1 device registration. `skill_versions` (`{skill_slug: installed_version}`) is optional, added for §5.1d's Deployment view — absent for a runtime that hasn't self-updated to report it yet |
+| `runtime_registrations` | `{company}:{install_id or platform}` | `{company, install_id, platform, runtime_version, workspace_id, last_seen, first_seen, skill_versions?, sync_errors?}` | 2.1 device registration. `skill_versions` (`{skill_slug: installed_version}`) is optional and sticky (an omission never wipes a prior value), added for §5.1d's Deployment view. `sync_errors` (`{skill_slug: {code, at}}`) is optional and **not** sticky — always overwritten in full each phone-home — and is what lets Deployment show a real `failed` status |
 | `audit_log` | `{workspace_id}` | `[{id, user_id, action, resource_type, resource_id, metadata, created_at, ip}, ...]` | 2.3 audit trail |
 | `rate_limits` | `{sha256(token)[:16]}` | `{last_ts}` | Skill-pack sync rate limiter — persisted so the 5-min window survives restarts and is shared across instances (1.5). In-memory dict fallback when no database is configured |
 | `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |
