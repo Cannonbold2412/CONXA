@@ -101,7 +101,7 @@ test("an empty zip extracts to an empty folder, which resolveUploadPaths still r
   }
 });
 
-// build.py::_bind_downloads_to_uploads compiles a step matched against a zip's extracted
+// conxa_compile/compiler/upload_binding.py compiles a step matched against a zip's extracted
 // contents to {{downloaded_file_dir}}/{{downloaded_file_N_dir}} — the download_observed
 // handler is what has to make that placeholder real at replay time, from whatever
 // server.js's download listener resolved (entry.extractedDir, set only for a .zip download).

@@ -269,6 +269,17 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 
 </details>
 
+### BUILD-17 — Workflow test dialog treats every declared input as required, ignoring the compiler's `optional` flag
+- **Category:** Builder
+- **Description:** Found while fixing the "Testing os picker" input-guessing bug (2026-08-19, see `FIX.md`). `conxa-builder/electron/renderer/src/components/WorkflowTests.tsx`'s `normalizeInputSpec` (around line 95) sets `required: rec.required !== false` — it looks for a `required` field. But the compiler marks optionality the other way around, with `optional: true` (`conxa-builder/python/conxa_compile/skill_package_builder_output.py::_compute_inputs_required`, which computes `manifest.json`'s `inputs_required` list by excluding anything flagged `optional`). `input.json`'s declared inputs never carry a `required` field at all, so `normalizeInputSpec` always falls through to `true` — an input the compiler considers optional still shows up in the Studio's "Workflow inputs" dialog as required, and `missingRequiredInputLabels` will block a test run over it.
+- **Why required:** the runtime (`runtime/server.js`'s `_skillToolDefinitions`) and the Studio test dialog disagree about which inputs are mandatory, so a workflow that runs fine over MCP with an input left blank can be un-runnable from the Studio's own Test/Replay button.
+- **Business value:** confusing, blocking UX in the tool vendors use every day to verify their own recordings before publishing.
+- **Technical value:** small, contained fix once scheduled — one field name to read correctly in one function.
+- **Dependencies:** none.
+- **Suggested order:** low urgency — no known workflow in the current data set has an optional input, so it hasn't caused an observed failure yet.
+- **Complexity:** S.
+- **Success criteria:** a compiled input flagged `optional: true` shows as optional (not blocking) in the Studio's Workflow inputs dialog, matching what `manifest.json`'s `inputs_required` already says.
+
 ### PROD-17 — Build Studio Terms & Conditions + Privacy Policy (anti-modification, anti-resale)
 - **Category:** Product Strategy & Business-Risk Mitigation / Legal
 - **Description:** Draft and publish Terms & Conditions and a Privacy Policy covering the Build Studio (Electron desktop app) distributed to SaaS company customers. The terms must explicitly prohibit modifying, reverse-engineering, or redistributing the Build Studio binary, and prohibit any commercial use outside the licensed relationship (e.g., white-labeling or reselling Build Studio itself, as opposed to the skill packages/installers a licensee is entitled to build and ship to their own end customers). Needs sign-off from a founder/legal counsel on the exact license grant boundaries before wording is finalized; this item is drafting + legal review + publishing (linking from the Build Studio installer/first-run screen and the cloud dashboard), not an engineering build.

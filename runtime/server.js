@@ -1281,8 +1281,9 @@ async function _handleTool(name, args, extra) {
         const { entry, steps, inputs, resumeFrom } = resolved[si];
         const startAt = si === 0 ? resumeFrom : 0;
         // Backs a compiled bulk-upload step's {{downloaded_files_dir}} placeholder (see
-        // build.py::_bind_downloads_to_uploads) — resolveUploadPaths already expands a folder
-        // into every file inside it, so this run's own isolated download folder just works.
+        // conxa_compile/compiler/upload_binding.py's _BindingState) — resolveUploadPaths already
+        // expands a folder into every file inside it, so this run's own isolated download folder
+        // just works.
         inputs.downloaded_files_dir = _downloadsDir;
 
         try {

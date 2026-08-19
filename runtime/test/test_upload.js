@@ -55,6 +55,25 @@ test("upload throws when file_path is supplied as whitespace-free empty value", 
   );
 });
 
+// Regression: a step bound to {{downloaded_file_dir}} (or any of the other runtime-only
+// download placeholders) never declares that name as an input — filter_runtime_only_inputs
+// (compiler) deliberately excludes it — so the generic "supply the skill's file_path input"
+// message pointed the user at an input that was never going to exist. When this specific
+// placeholder family resolves empty, the error must name the real cause instead.
+test("upload names the real cause when a downloaded_file placeholder never resolved", async () => {
+  await assert.rejects(
+    () => executeStep(unusedPage, { type: "upload", value: "{{downloaded_file_dir}}" }, {}),
+    /recorded download.*didn't produce a file/,
+  );
+});
+
+test("upload still gives the generic message for an unrelated unresolved placeholder", async () => {
+  await assert.rejects(
+    () => executeStep(unusedPage, { type: "upload", value: "{{some_other_input}}" }, {}),
+    /no file path/,
+  );
+});
+
 // The value plumbing itself — that a supplied input reaches the step's path — is interpolate's
 // job. Asserting it here keeps the contract pinned without mocking the whole resolver stack
 // (already covered by test_resolver.js / test_resolve_adapter.js).
@@ -244,7 +263,7 @@ test("an unreadable multiple probe stays permissive rather than refusing", async
   }
 });
 
-// build.py::_bind_downloads_to_uploads compiles a matched bulk upload's value to the literal
+// conxa_compile/compiler/upload_binding.py compiles a matched bulk upload's value to the literal
 // string "{{downloaded_files_dir}}"; server.js sets inputs.downloaded_files_dir to this run's
 // own isolated download folder before runPlan starts. A rename on either side of that contract
 // breaks the handoff silently (falls through to a plain-file-not-found error deep in

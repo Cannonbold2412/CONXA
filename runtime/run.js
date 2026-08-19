@@ -45,6 +45,11 @@ const INTERACTIVE_STEP_TYPES = new Set([
 // around this step" for the one category where something very much does.
 const NOOP_STEP_TYPES = [
   "frame_enter", "frame_exit",
+  // "upload_intent" (native-OS-file-picker provenance) never actually reaches this dispatch as
+  // its own type in a real skill pack — skill_package_builder_saved_skill.py's
+  // _saved_step_to_execution_step collapses it to type "upload" (real handler below) at build
+  // time, same value/selector. Kept here only as defensive dead code in case that collapsing
+  // rule ever regresses; don't read it as "upload_intent uploads are a no-op" — they aren't.
   "upload_intent", "dialog_appeared", "dialog_accept",
   "dialog_dismiss", "file_chooser_opened", "clipboard_copy", "clipboard_paste",
 ];
@@ -116,6 +121,12 @@ function interpolate(value, inputs) {
   if (typeof value !== "string") return value;
   return value.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (_, key) => String(inputs[key] ?? ""));
 }
+
+// Mirrors conxa_compile/compiler/upload_binding.py's _RUNTIME_ONLY_PLACEHOLDER_RE — the names the
+// compiler binds an upload step to when it matched a same-run download, never declared as a real
+// skill input (see filter_runtime_only_inputs). Used only to tell a genuinely-missing declared
+// input apart from a download that never produced a file — see the `upload` handler below.
+const DOWNLOAD_ONLY_PLACEHOLDER_RE = /^\{\{\s*(downloaded_file(_\d+)?(_dir)?|downloaded_files_dir)\s*\}\}$/;
 
 // An upload input's resolved value is either one file path or a *folder* path, and a folder
 // means "every file directly inside it". This is what makes a 20-file (or 200-file) upload
@@ -189,7 +200,8 @@ function resolveUploadPaths(rawValue) {
   // substitute one for the other. Extraction now happens eagerly at download time (server.js's
   // download listener calls extractZipOnce right after saveAs), so an upload step bound to the
   // extracted contents already points at that sibling folder, not at the zip's own path — see
-  // build.py::_bind_downloads_to_uploads.
+  // conxa_compile/compiler/upload_binding.py's binding rules (moved out of
+  // skill_package_builder_saved_skill.py::_bind_downloads_to_uploads, now a 3-line delegate).
   if (!stat.isDirectory()) return [target];
 
   const files = fs.readdirSync(target, { withFileTypes: true })
@@ -896,7 +908,19 @@ const HANDLERS = {
   },
 
   upload: async (page, step, inputs) => {
-    const filePaths = resolveUploadPaths(interpolate(step.value || "", inputs));
+    const rawValue = String(step.value || "");
+    const resolved = interpolate(rawValue, inputs);
+    // A bare {{downloaded_file...}}-style placeholder that resolved to "" isn't a missing
+    // declared input — filter_runtime_only_inputs (compiler) deliberately never declares these,
+    // so telling the user to "supply" one is a dead end. It means the recorded download for this
+    // step didn't produce a file during this run (timed out, or the download never fired).
+    if (!resolved.trim() && DOWNLOAD_ONLY_PLACEHOLDER_RE.test(rawValue.trim())) {
+      throw new Error(
+        "upload step has no file path — the recorded download for this step didn't produce a " +
+        "file during this run (it may have timed out or never started)",
+      );
+    }
+    const filePaths = resolveUploadPaths(resolved);
 
     await runLocatorStep(page, step, inputs, async locator => {
       // Whether this control takes one file or many is a property of the live page, not of
@@ -984,7 +1008,18 @@ HANDLERS["popup"] = async () => {};
 
 HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   const queue = ctx && ctx.downloadQueue;
-  if (!queue || !queue.length) return;
+  if (!queue) return;
+  // server.js's `page.on("download", ...)` listener only pushes onto this queue once Playwright's
+  // download event actually fires — which can trail the triggering click by real wall-clock time
+  // (server round-trip, header negotiation). Checking the queue once and bailing when it's still
+  // empty raced that arrival far too often: this step would silently skip binding
+  // downloaded_file*, and a later upload step would fail with a "no file path" error that looked
+  // like a missing input rather than a download that just hadn't started yet. Wait for an entry
+  // to arrive, bounded by the same budget used below for the download itself to finish.
+  if (!queue.length) {
+    await pollPositive(() => queue.length > 0, DOWNLOAD_WAIT_TIMEOUT_MS);
+  }
+  if (!queue.length) return;
   const pending = queue.shift();
   const entry = await Promise.race([
     pending,
@@ -993,16 +1028,16 @@ HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   // Bind the saved path into `inputs` so a later `upload` step in this same run can reference
   // it — `downloaded_file` always holds the latest download, `downloaded_file_N` (1-indexed,
   // in download order) disambiguates when several downloads happen in one run. See
-  // build.py::_bind_downloads_to_uploads for how the compiler decides which one an upload
-  // step's value points at (EXEC-10/W-2 — previously a compiled skill had no way to hand a
-  // file from one tab to another without an LLM round-trip per file).
+  // conxa_compile/compiler/upload_binding.py's _BindingState for how the compiler decides which
+  // one an upload step's value points at (EXEC-10/W-2 — previously a compiled skill had no way
+  // to hand a file from one tab to another without an LLM round-trip per file).
   if (entry && entry.path) {
     inputs.downloaded_file = entry.path;
     const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
     inputs[`downloaded_file_${n}`] = entry.path;
     // A zip is always extracted at download time (server.js) — bind its sibling extraction
     // folder too, so an upload step the compiler matched against specific files inside that
-    // zip (build.py::_bind_downloads_to_uploads) has somewhere to resolve `{{downloaded_file_dir}}`
+    // zip (upload_binding.py's _BindingState) has somewhere to resolve `{{downloaded_file_dir}}`
     // / `{{downloaded_file_N_dir}}` against. Absent entirely for a non-zip download.
     if (entry.extractedDir) {
       inputs.downloaded_file_dir = entry.extractedDir;

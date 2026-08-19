@@ -949,8 +949,11 @@ same as `frame_enter`/`frame_exit`) — see §10.4.
 
 **A downloaded file can bind to a later upload in the same compiled skill** (EXEC-10/W-2). When a
 recorded `upload` step's filename (browsers only ever expose `File.name`, never a path) matches an
-earlier `download_observed` event's `suggested_filename`, `skill_package_builder_saved_skill.py
-:_bind_downloads_to_uploads` rewrites that upload step's value from the generic `{{file_path}}`
+earlier `download_observed` event's `suggested_filename`, `conxa_compile/compiler/upload_binding.py`
+(both compile-time entry points — `apply_bindings_to_compiled_steps` for the primary compiled
+`SkillStep` list, `apply_bindings_to_export_steps` for the saved-skill export format;
+`skill_package_builder_saved_skill.py::_bind_downloads_to_uploads` is now a 3-line delegate to the
+latter) rewrites that upload step's value from the generic `{{file_path}}`
 runtime-input placeholder to `{{downloaded_file}}` (the workflow's only download) or
 `{{downloaded_file_N}}` (Nth download, FIFO-matched per filename, when several downloads share a
 name) — bound only to a download that already happened earlier in the step sequence, since a real
@@ -963,7 +966,7 @@ untouched, still falling back to `{{file_path}}` as before.
 **A bulk (multi-select) upload can bind to the whole run's download folder, not just one file**
 (resolved 2026-08-16). When an upload step's recorded `File[]` metadata lists more than one
 filename (one `<input multiple>` picked several files in a single recording action — the natural
-shape of "upload all N files"), `_bind_downloads_to_uploads` only rewrites its value when *every*
+shape of "upload all N files"), `upload_binding.py` only rewrites its value when *every*
 recorded filename matches an earlier, not-yet-consumed `download_observed` entry; on a full match
 it consumes all of them and sets the step's value to `{{downloaded_files_dir}}` instead of chaining
 several `{{downloaded_file_N}}` scalars. `server.js` sets `inputs.downloaded_files_dir` to the
@@ -994,14 +997,17 @@ Python side) the instant the file is saved, unconditionally, never waiting to se
 step later needs. Extraction is idempotent and unwraps one single top-level wrapping folder the
 same way it always has; needs no separate cleanup, since the extracted folder lives inside
 `runs/{runId}/` (replay) or `sessions/{session_id}/downloads/` (recording) and is swept the same
-way the rest of that workspace is. `_bind_downloads_to_uploads` (`skill_package_builder_saved_skill.py`)
+way the rest of that workspace is. `upload_binding.py`'s `_BindingState`
 now reads a zip download's member filenames (recorded on `download_observed` as `zip_members`) and
 binds an upload step to *exactly what was picked while recording*: the zip's own filename still
 binds to `{{downloaded_file}}` and uploads the zip verbatim; a single file matching one member binds
 to that exact extracted file (`{{downloaded_file_N_dir}}/name.pdf`); a multi-select matching a
-zip's *entire* remaining member set binds to the whole extracted folder (`{{downloaded_file_N_dir}}`)
-— a partial subset is left untouched, since there is no syntax today for "these files but not the
-rest of the folder." `run.js::resolveUploadPaths` no longer special-cases `.zip` at all — a zip
+zip's *entire* remaining member set binds to the whole extracted folder (`{{downloaded_file_N_dir}}`);
+and a multi-select matching only a *partial* subset of a zip's members (some picked, some not) binds
+to a JSON array of explicit paths, e.g. `["{{downloaded_file_N_dir}}/a.pdf",
+"{{downloaded_file_N_dir}}/b.pdf"]` — `run.js::resolveUploadPaths` detects the leading `[` and
+parses it as a path list before falling through to its single-file/folder handling.
+`resolveUploadPaths` no longer special-cases `.zip` itself at all — a zip
 target now just uploads verbatim, the same as any other single file.
 
 *Superseded design (EXEC-17, resolved 2026-08-17, kept for history):* `resolveUploadPaths` used to

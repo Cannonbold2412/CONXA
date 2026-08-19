@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -12,26 +11,6 @@ from typing import Any
 _RUNTIME_ONLY_PLACEHOLDER_RE = re.compile(
     r"^(downloaded_file(_\d+)?(_dir)?|downloaded_files_dir)$"
 )
-
-_DEBUG_LOG = Path(__file__).resolve().parents[4] / "debug-09a39f.log"
-
-
-def _debug_log(location: str, message: str, data: dict[str, Any], hypothesis_id: str) -> None:
-    # region agent log
-    try:
-        entry = {
-            "sessionId": "09a39f",
-            "timestamp": int(time.time() * 1000),
-            "location": location,
-            "message": message,
-            "data": data,
-            "hypothesisId": hypothesis_id,
-        }
-        with _DEBUG_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # endregion
 
 
 def is_recorded_file_metadata(value: str) -> bool:
@@ -96,19 +75,6 @@ def classify_file_pick(
         return False
 
     left_context = any(not under_allowed(p) for p in resolved)
-
-    # region agent log
-    _debug_log(
-        "upload_binding.py:classify_file_pick",
-        "classified picker paths",
-        {
-            "names": names,
-            "left_context": left_context,
-            "zip_count": len(zip_downloads),
-        },
-        "H1",
-    )
-    # endregion
 
     for zip_name, info in zip_downloads.items():
         zip_path = Path(info["zip_path"]).resolve()
@@ -273,14 +239,6 @@ def bind_upload_step_value(
 
     step["value"] = bound
     step["input_binding"] = None
-    # region agent log
-    _debug_log(
-        "upload_binding.py:bind_upload_step_value",
-        "bound upload step",
-        {"bound": bound, "had_file_pick": bool(file_pick)},
-        "H2",
-    )
-    # endregion
     return True
 
 
@@ -327,19 +285,6 @@ def apply_bindings_to_compiled_steps(steps: list[Any], events: list[dict[str, An
         if str((e.get("action") or {}).get("action") or "") in {"upload", "upload_intent"}
     ]
     upload_steps = [s for s in steps if _step_action_str(s) in {"upload", "upload_intent"}]
-
-    # region agent log
-    _debug_log(
-        "upload_binding.py:apply_bindings_to_compiled_steps",
-        "compile bind pass",
-        {
-            "upload_events": len(upload_events),
-            "upload_steps": len(upload_steps),
-            "total_steps": len(steps),
-        },
-        "H3",
-    )
-    # endregion
 
     if not upload_steps:
         return

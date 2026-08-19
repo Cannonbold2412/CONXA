@@ -306,11 +306,6 @@ def _upload_recorded_filename(step: dict[str, Any]) -> str:
     return names[0] if names else ""
 
 
-_RUNTIME_ONLY_PLACEHOLDER_RE = re.compile(
-    r"^(downloaded_file(_\d+)?(_dir)?|downloaded_files_dir)$"
-)
-
-
 def _bind_downloads_to_uploads(export_steps: list[dict[str, Any]]) -> None:
     """Rewrite upload values to same-run download placeholders when filenames/provenance match."""
     from conxa_compile.compiler.upload_binding import apply_bindings_to_export_steps
@@ -629,6 +624,8 @@ def _merge_saved_inputs_with_execution_placeholders(
     execution_steps: list[dict[str, Any]],
     descriptions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    from conxa_compile.compiler.upload_binding import _RUNTIME_ONLY_PLACEHOLDER_RE
+
     inputs = _normalize_saved_skill_inputs(declared_inputs)
     seen = {str(item.get("name") or "") for item in inputs}
     overrides = descriptions or {}

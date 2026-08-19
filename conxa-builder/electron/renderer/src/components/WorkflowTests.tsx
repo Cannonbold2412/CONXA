@@ -34,8 +34,6 @@ type InputSpec = {
   required?: boolean
 }
 
-const TEMPLATE_INPUT_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g
-
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
 
@@ -106,24 +104,6 @@ function inputSpecsFromPayload(payload: unknown): InputSpec[] {
         ? rec.required
         : []
   return rawItems.map(normalizeInputSpec).filter((item): item is InputSpec => item !== null)
-}
-
-function inferInputSpecsFromTemplates(...payloads: unknown[]): InputSpec[] {
-  const seen = new Set<string>()
-  const specs: InputSpec[] = []
-
-  for (const payload of payloads) {
-    if (payload == null) continue
-    const text = typeof payload === 'string' ? payload : JSON.stringify(payload)
-    for (const match of text.matchAll(TEMPLATE_INPUT_RE)) {
-      const id = match[1]?.trim()
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-      specs.push({ id, label: id.replace(/_/g, ' '), type: 'text', required: true })
-    }
-  }
-
-  return specs
 }
 
 function missingRequiredInputLabels(specs: InputSpec[], values: Record<string, string>) {
@@ -275,22 +255,26 @@ export function WorkflowTestRow({
     setInputs(savedInputs)
 
     async function loadInputSpecs() {
-      let specs: InputSpec[] = []
-
+      // A compiled skill's input.json is authoritative — including when it declares none.
+      // The compiler deliberately omits runtime-bound placeholders such as
+      // {{downloaded_file_dir}} (upload_binding.py::filter_runtime_only_inputs), because
+      // run.js's download_observed handler binds them from this run's own download.
+      // Guessing inputs back out of execution.json would prompt for exactly the values the
+      // download->upload binding exists to supply automatically.
+      let declared: unknown = null
       try {
         const compiled = await getCompiledSkill(wf.slug)
-        specs = inputSpecsFromPayload(compiled.files['input.json'])
-        if (specs.length === 0) {
-          specs = inputSpecsFromPayload(compiled.files['inputs.json'])
-        }
-        if (specs.length === 0) {
-          specs = inferInputSpecsFromTemplates(compiled.files['execution.json'], compiled.files['recovery.json'])
-        }
+        declared = compiled.files['input.json'] ?? null
       } catch {
-        specs = []
+        declared = null
       }
 
-      if (specs.length === 0 && wf.skill_id) {
+      let specs: InputSpec[] = []
+      if (declared != null) {
+        specs = inputSpecsFromPayload(declared)
+      } else if (wf.skill_id) {
+        // Pack built before input.json existed — fall back to the saved skill doc, which
+        // handlers/compile.py has already run filter_runtime_only_inputs over.
         try {
           const wfData = await fetchWorkflow(wf.skill_id)
           specs = inputSpecsFromPayload(wfData.inputs ?? [])
@@ -339,11 +323,7 @@ export function WorkflowTestRow({
     setInputDialogOpen(false)
     try {
       const parsedInputs: Record<string, unknown> = {}
-      if (inputSpecs.length > 0) {
-        for (const spec of inputSpecs) parsedInputs[spec.id] = inputs[spec.id] ?? ''
-      } else {
-        for (const [k, v] of Object.entries(inputs)) parsedInputs[k] = v
-      }
+      for (const spec of inputSpecs) parsedInputs[spec.id] = inputs[spec.id] ?? ''
       await testWorkflow(wf.id, parsedInputs, false, (msg) => {
         setLogs((prev) => [...prev, msg])
         setTimeout(() => logRef.current?.scrollTo(0, logRef.current.scrollHeight), 0)
