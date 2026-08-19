@@ -3,20 +3,17 @@
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import {
-  fetchDeployments,
+  fetchGroups,
   fetchInstallerVersions,
   fetchSkillPack,
-  fetchSkillPackVersions,
-  type DeploymentStatus,
   type InstallerVersion,
   type SkillPack,
-  type SkillPackVersion,
 } from '@/api/workflowsApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { ChevronLeft, Clock3, Download, Monitor, PackageCheck, Rocket } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Clock3, Download, FolderOpen, PackageCheck } from 'lucide-react'
 import { queryKeys } from '@/lib/queryKeys'
 
 function formatBytes(size: number) {
@@ -43,48 +40,6 @@ function statusLabel(status: SkillPack['status']) {
   return labels[status] ?? 'Error'
 }
 
-function SummaryStat({
-  label,
-  value,
-  sub,
-}: {
-  label: string
-  value: string
-  sub: string
-}) {
-  return (
-    <div className="rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2.5">
-      <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-zinc-600">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
-      <p className="mt-0.5 truncate text-xs text-zinc-600">{sub}</p>
-    </div>
-  )
-}
-
-function skillPackReleaseBadge(row: SkillPackVersion, currentStableVersion: string | null) {
-  if (row.version === currentStableVersion) {
-    return <Badge variant="outline" className="h-5 border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-300">Stable</Badge>
-  }
-  if (row.status === 'pending') {
-    return <Badge variant="outline" className="h-5 border-red-500/30 bg-red-500/10 text-[10px] text-red-300">Failed</Badge>
-  }
-  return <Badge variant="outline" className="h-5 border-white/10 bg-white/[0.04] text-[10px] text-zinc-400">Superseded</Badge>
-}
-
-const DEPLOYMENT_STATUS_LABEL: Record<DeploymentStatus, string> = {
-  up_to_date: 'Up to date',
-  pending: 'Pending update',
-  offline: 'Offline',
-  unknown: 'Unknown',
-}
-
-const DEPLOYMENT_STATUS_DOT: Record<DeploymentStatus, string> = {
-  up_to_date: 'bg-emerald-400',
-  pending: 'bg-amber-400',
-  offline: 'bg-zinc-600',
-  unknown: 'bg-zinc-700',
-}
-
 function releaseRows(pack: SkillPack, versions: InstallerVersion[]) {
   if (versions.length > 0) return versions
   if (!pack.installer) return []
@@ -108,6 +63,9 @@ function releaseRows(pack: SkillPack, versions: InstallerVersion[]) {
   ] satisfies InstallerVersion[]
 }
 
+/** Skill Packages → Company: installer downloads (company-level, unaffected
+ * by per-skill release) plus the Groups grid — click a group to see its
+ * Workflows, click a workflow to reach its full release/deployment page. */
 export function SkillPackageVersionsPage({ companySlug }: { companySlug: string }) {
   const packQ = useQuery({
     queryKey: queryKeys.skillPack(companySlug),
@@ -121,29 +79,23 @@ export function SkillPackageVersionsPage({ companySlug }: { companySlug: string 
     enabled: !!pack?.company_slug,
     staleTime: 30_000,
   })
-  const skillPackVersionsQ = useQuery({
-    queryKey: queryKeys.skillPackVersions(pack?.company_slug),
-    queryFn: () => fetchSkillPackVersions(pack?.company_slug ?? ''),
+  const groupsQ = useQuery({
+    queryKey: queryKeys.groups(pack?.company_slug),
+    queryFn: () => fetchGroups(pack?.company_slug ?? ''),
     enabled: !!pack?.company_slug,
-    staleTime: 30_000,
-  })
-  const deploymentsQ = useQuery({
-    queryKey: queryKeys.deployments(pack?.company_slug),
-    queryFn: () => fetchDeployments(pack?.company_slug ?? ''),
-    enabled: !!pack?.company_slug,
-    staleTime: 30_000,
+    staleTime: 15_000,
   })
 
   const rows = pack ? releaseRows(pack, versionsQ.data?.versions ?? []) : []
   const latest = rows.find((row) => row.is_latest) ?? rows[0]
-  const skillPackVersions = skillPackVersionsQ.data?.versions ?? []
-  const currentStableVersion = skillPackVersionsQ.data?.current_stable?.version ?? null
+  const groups = groupsQ.data?.groups ?? []
+  const totalWorkflows = groups.reduce((n, g) => n + g.workflows.length, 0)
 
   return (
     <div className="h-full overflow-y-auto">
       <PageHeader
         title={pack?.company_name ?? 'Skill Package'}
-        description={pack?.company_slug ?? 'Installer release history and downloads.'}
+        description={pack?.company_slug ?? 'Installer downloads and published workflow groups.'}
         actions={
           <Button
             asChild
@@ -175,15 +127,73 @@ export function SkillPackageVersionsPage({ companySlug }: { companySlug: string 
             <section className="grid gap-3 md:grid-cols-3">
               <SummaryStat label="Status" value={statusLabel(pack.status)} sub="distribution state" />
               <SummaryStat
-                label="Current version"
+                label="Installer version"
                 value={latest ? `v${latest.version}` : 'Not published'}
                 sub={latest?.is_latest ? 'latest installer' : 'waiting for installer'}
               />
-              <SummaryStat
-                label="Releases"
-                value={String(rows.length)}
-                sub="installer versions"
-              />
+              <SummaryStat label="Workflows" value={String(totalWorkflows)} sub={`across ${groups.length} group${groups.length !== 1 ? 's' : ''}`} />
+            </section>
+
+            <section>
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">Groups</p>
+              {groupsQ.isLoading ? (
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {[0, 1].map((item) => (
+                    <div key={item} className="h-24 animate-pulse rounded-lg border border-white/8 bg-white/[0.03]" />
+                  ))}
+                </div>
+              ) : groups.length === 0 ? (
+                <Card className="border-white/8 bg-white/[0.03] shadow-none">
+                  <CardContent className="flex flex-col items-center gap-2 py-8 text-center">
+                    <FolderOpen className="size-7 text-zinc-600" />
+                    <p className="text-sm font-medium text-zinc-300">No groups yet</p>
+                    <p className="max-w-xs text-xs text-zinc-500">
+                      Create a group in Build Studio — it appears here immediately, even before any
+                      workflow is published.
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {groups.map((g) => {
+                    const readyCount = g.workflows.filter((w) => w.has_ready_version).length
+                    return (
+                      <Link
+                        key={g.group_id || '_ungrouped'}
+                        href={`/packages/${encodeURIComponent(companySlug)}/groups/${encodeURIComponent(g.group_id)}`}
+                        className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                      >
+                        <Card
+                          size="sm"
+                          className="h-full gap-0 border-white/8 bg-white/[0.035] py-3 shadow-none transition-colors group-hover:border-white/15 group-hover:bg-white/[0.05]"
+                        >
+                          <CardHeader className="pb-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <CardTitle className="truncate text-sm font-medium text-white">
+                                {g.group_name || g.group_id || 'Ungrouped'}
+                              </CardTitle>
+                              {readyCount > 0 && (
+                                <Badge variant="outline" className="h-5 shrink-0 border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">
+                                  {readyCount} ready
+                                </Badge>
+                              )}
+                            </div>
+                          </CardHeader>
+                          <CardContent className="pt-0">
+                            <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+                              <span>{g.workflows.length} workflow{g.workflows.length !== 1 ? 's' : ''}</span>
+                              <span className="inline-flex items-center gap-1 text-zinc-400 transition-colors group-hover:text-white">
+                                Open
+                                <ChevronRight className="size-3.5" />
+                              </span>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </Link>
+                    )
+                  })}
+                </div>
+              )}
             </section>
 
             <section>
@@ -292,113 +302,23 @@ export function SkillPackageVersionsPage({ companySlug }: { companySlug: string 
                     <Clock3 className="mt-0.5 size-3.5 shrink-0 text-zinc-600" />
                     Keep comments specific so customers can choose the right installer version.
                   </p>
-                  <p>
-                    Version rows use stored installer metadata.
-                  </p>
-                </CardContent>
-              </Card>
-
-              {/* Read-only mirror of Build Studio's Release Center — publishing and
-                  rollback happen in the Studio app; this view is for visibility only. */}
-              <Card className="mt-3 gap-0 border-white/8 bg-white/[0.03] py-0 shadow-none">
-                <CardHeader className="border-b border-white/8 py-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <CardTitle className="flex items-center gap-2 text-sm font-semibold text-white">
-                        <Rocket className="size-3.5 text-zinc-500" />
-                        Skill Pack Releases
-                      </CardTitle>
-                      <p className="mt-0.5 text-xs text-zinc-600">
-                        Immutable release history. Publish and rollback from Build Studio.
-                      </p>
-                    </div>
-                    {currentStableVersion && (
-                      <span className="whitespace-nowrap font-mono text-xs text-emerald-300">
-                        stable v{currentStableVersion}
-                      </span>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent className="p-0">
-                  {skillPackVersionsQ.isLoading ? (
-                    <div className="space-y-2 p-3">
-                      {[0, 1].map((item) => (
-                        <div key={item} className="h-12 animate-pulse rounded-lg bg-white/[0.04]" />
-                      ))}
-                    </div>
-                  ) : skillPackVersions.length === 0 ? (
-                    <div className="px-4 py-8 text-center">
-                      <PackageCheck className="mx-auto size-7 text-zinc-700" />
-                      <p className="mt-2 text-sm font-medium text-zinc-300">No skill pack releases yet</p>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full min-w-[560px] text-left text-sm">
-                        <thead className="border-b border-white/8 text-[10px] uppercase tracking-[0.1em] text-zinc-600">
-                          <tr>
-                            <th className="px-4 py-2.5 font-medium">Version</th>
-                            <th className="px-4 py-2.5 font-medium">Status</th>
-                            <th className="px-4 py-2.5 font-medium">Published by</th>
-                            <th className="px-4 py-2.5 font-medium">Date</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-white/8">
-                          {skillPackVersions.map((row) => (
-                            <tr key={row.version} className="bg-transparent transition-colors hover:bg-white/[0.025]">
-                              <td className="whitespace-nowrap px-4 py-3 align-top">
-                                <span className="font-mono text-xs text-zinc-200">v{row.version}</span>
-                              </td>
-                              <td className="px-4 py-3 align-top">{skillPackReleaseBadge(row, currentStableVersion)}</td>
-                              <td className="whitespace-nowrap px-4 py-3 align-top text-xs text-zinc-500">
-                                {row.published_by?.name ?? row.published_by?.email ?? '—'}
-                              </td>
-                              <td className="whitespace-nowrap px-4 py-3 align-top text-xs text-zinc-500">
-                                {formatDate(row.published_at)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="mt-3 gap-0 border-white/8 bg-white/[0.03] py-0 shadow-none">
-                <CardHeader className="border-b border-white/8 py-3">
-                  <CardTitle className="flex items-center gap-2 text-sm font-semibold text-white">
-                    <Monitor className="size-3.5 text-zinc-500" />
-                    Deployment
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-3">
-                  {deploymentsQ.isLoading ? (
-                    <div className="h-16 animate-pulse rounded-lg bg-white/[0.04]" />
-                  ) : !deploymentsQ.data ? (
-                    <p className="text-xs text-zinc-600">Deployment data unavailable</p>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      {(['up_to_date', 'pending', 'offline', 'unknown'] as DeploymentStatus[]).map((status) => (
-                        <div key={status} className="rounded-md border border-white/8 bg-black/20 px-2.5 py-2">
-                          <div className="flex items-center gap-1.5">
-                            <span className={`size-1.5 rounded-full ${DEPLOYMENT_STATUS_DOT[status]}`} />
-                            <span className="text-[10px] uppercase tracking-wide text-zinc-500">
-                              {DEPLOYMENT_STATUS_LABEL[status]}
-                            </span>
-                          </div>
-                          <p className="mt-0.5 text-lg font-semibold text-zinc-200">
-                            {deploymentsQ.data.summary[status]}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <p>Version rows use stored installer metadata.</p>
                 </CardContent>
               </Card>
             </section>
           </>
         ) : null}
       </main>
+    </div>
+  )
+}
+
+function SummaryStat({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div className="rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2.5">
+      <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-zinc-600">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
+      <p className="mt-0.5 truncate text-xs text-zinc-600">{sub}</p>
     </div>
   )
 }

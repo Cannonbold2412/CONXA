@@ -1,8 +1,8 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { fetchSkillPacks, normalizeSkillPackList, type SkillPack } from '@/api/workflowsApi'
+import { fetchGroups, fetchSkillPacks, normalizeSkillPackList, type Group } from '@/api/workflowsApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -10,27 +10,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { OpenInStudioButton } from '@/components/OpenInStudioButton'
 import { StudioDownloadDialog } from '@/components/StudioDownloadDialog'
-import { ChevronRight, Download, Globe, PackageCheck } from 'lucide-react'
+import { ChevronRight, Download, FolderOpen } from 'lucide-react'
 import { useState } from 'react'
 import { queryKeys } from '@/lib/queryKeys'
 
 function formatCount(value: number | null | undefined) {
   if (value == null) return 'Unlimited'
   return new Intl.NumberFormat().format(value)
-}
-
-function statusBadge(status: SkillPack['status']) {
-  const map: Record<SkillPack['status'], { label: string; className: string }> = {
-    idle:     { label: 'Idle',     className: 'border-white/10 bg-white/[0.04] text-zinc-400' },
-    building: { label: 'Building', className: 'border-blue-500/30 bg-blue-500/10 text-blue-300' },
-    error:    { label: 'Error',    className: 'border-red-500/30 bg-red-500/10 text-red-300' },
-  }
-  const { label, className } = map[status] ?? map.error
-  return (
-    <Badge variant="outline" className={className}>
-      {label}
-    </Badge>
-  )
 }
 
 function CompileCreditsSummary() {
@@ -76,25 +62,64 @@ function CompileCreditsSummary() {
   )
 }
 
+type GroupRow = Group & { company_slug: string; company_name: string }
+
 export function SkillPackagesPage() {
   const [downloadOpen, setDownloadOpen] = useState(false)
-  const q = useQuery({ queryKey: queryKeys.skillPacks, queryFn: fetchSkillPacks, staleTime: 10_000 })
-  const packs = normalizeSkillPackList(q.data)
+  const packsQ = useQuery({ queryKey: queryKeys.skillPacks, queryFn: fetchSkillPacks, staleTime: 10_000 })
+  const packs = normalizeSkillPackList(packsQ.data)
+  const showCompany = packs.length > 1
+
+  const groupQueries = useQueries({
+    queries: packs.map((pack) => ({
+      queryKey: queryKeys.groups(pack.company_slug),
+      queryFn: () => fetchGroups(pack.company_slug),
+      staleTime: 15_000,
+      enabled: packsQ.isSuccess,
+    })),
+  })
+
+  const groupsLoading = packsQ.isSuccess && packs.length > 0 && groupQueries.some((q) => q.isLoading)
+  const groupsError = groupQueries.find((q) => q.isError)
+  const groups: GroupRow[] = packs.flatMap((pack, i) =>
+    (groupQueries[i]?.data?.groups ?? []).map((g) => ({
+      ...g,
+      company_slug: pack.company_slug,
+      company_name: pack.company_name,
+    })),
+  )
 
   return (
     <div className="h-full overflow-y-auto">
       <PageHeader
         title="Skill Packages"
-        description={q.isSuccess && packs.length > 0 ? `${packs.length} published skill package${packs.length !== 1 ? 's' : ''}` : 'Published skills for customer installation.'}
+        description={
+          packsQ.isSuccess && groups.length > 0
+            ? `${groups.length} group${groups.length !== 1 ? 's' : ''}`
+            : 'Groups of published skills for customer installation.'
+        }
         actions={
           <>
+            {packs.map((pack) => (
+              <Button
+                key={pack.company_slug}
+                asChild
+                variant="outline"
+                size="sm"
+                className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
+              >
+                <Link href={`/packages/${encodeURIComponent(pack.company_slug)}`}>
+                  {showCompany ? `${pack.company_name} installer` : 'Installer'}
+                </Link>
+              </Button>
+            ))}
             <OpenInStudioButton label="Open Build Studio" primary />
             <CompileCreditsSummary />
           </>
         }
       />
       <div className="flex w-full max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6">
-        {q.isLoading ? (
+        {packsQ.isLoading || groupsLoading ? (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {[0, 1, 2].map((item) => (
               <Card key={item} size="sm" className="gap-0 border-white/8 bg-white/[0.03] py-3 shadow-none">
@@ -109,22 +134,26 @@ export function SkillPackagesPage() {
                 </CardHeader>
                 <CardContent className="space-y-2 pt-0">
                   <div className="h-3 w-36 animate-pulse rounded bg-white/[0.06]" />
-                  <div className="h-7 w-full animate-pulse rounded-md bg-white/[0.06]" />
                 </CardContent>
               </Card>
             ))}
           </div>
-        ) : q.isError ? (
+        ) : packsQ.isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(q.error as Error).message}
+            {(packsQ.error as Error).message}
           </div>
-        ) : packs.length === 0 ? (
+        ) : groupsError ? (
+          <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+            {(groupsError.error as Error).message}
+          </div>
+        ) : groups.length === 0 ? (
           <Card className="border-white/8 bg-white/[0.03] shadow-none">
             <CardContent className="flex flex-col items-center gap-2.5 py-9 text-center">
-              <Globe className="size-7 text-zinc-600" />
-              <p className="text-sm font-medium text-zinc-300">No published skill packages yet</p>
+              <FolderOpen className="size-7 text-zinc-600" />
+              <p className="text-sm font-medium text-zinc-300">No groups yet</p>
               <p className="max-w-xs text-xs text-zinc-500">
-                Build and publish a skill package from Build Studio. It will appear here once published.
+                Create a group in Build Studio — it appears here immediately, even before any
+                workflow is published.
               </p>
               <OpenInStudioButton label="Open Build Studio" primary />
               <Button
@@ -140,15 +169,13 @@ export function SkillPackagesPage() {
           </Card>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {packs.map((pack) => {
-              const version = pack.installer?.version ?? pack.build?.version
-              const hasInstaller = !!pack.installer
+            {groups.map((g) => {
+              const readyCount = g.workflows.filter((w) => w.has_ready_version).length
               return (
                 <Link
-                  key={pack.company_slug}
-                  href={`/packages/${encodeURIComponent(pack.company_slug)}`}
+                  key={`${g.company_slug}:${g.group_id || '_ungrouped'}`}
+                  href={`/packages/${encodeURIComponent(g.company_slug)}/groups/${encodeURIComponent(g.group_id)}`}
                   className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-                  aria-label={`Open ${pack.company_name} release history`}
                 >
                   <Card
                     size="sm"
@@ -158,30 +185,23 @@ export function SkillPackagesPage() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <CardTitle className="truncate text-sm font-medium text-white">
-                            {pack.company_name}
+                            {g.group_name || g.group_id || 'Ungrouped'}
                           </CardTitle>
-                          <p className="mt-0.5 truncate text-xs text-zinc-500">{pack.company_slug}</p>
+                          {showCompany ? (
+                            <p className="mt-0.5 truncate text-xs text-zinc-500">{g.company_name}</p>
+                          ) : null}
                         </div>
-                        {statusBadge(pack.status)}
+                        {readyCount > 0 && (
+                          <Badge variant="outline" className="h-5 shrink-0 border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">
+                            {readyCount} ready
+                          </Badge>
+                        )}
                       </div>
                     </CardHeader>
                     <CardContent className="pt-0">
-                      <div className="grid grid-cols-2 gap-2 border-y border-white/8 py-2.5 text-xs">
-                        <div>
-                          <p className="text-[10px] uppercase tracking-[0.08em] text-zinc-600">Version</p>
-                          <p className="mt-1 truncate font-mono text-zinc-300">{version ? `v${version}` : 'Not built'}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] uppercase tracking-[0.08em] text-zinc-600">Installer</p>
-                          <p className={hasInstaller ? 'mt-1 text-emerald-300' : 'mt-1 text-zinc-600'}>
-                            {hasInstaller ? 'Published' : 'Pending'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="mt-2.5 flex items-center justify-between gap-2 text-xs text-zinc-500">
-                        <span className="inline-flex items-center gap-1.5">
-                          <PackageCheck className="size-3.5 text-zinc-600" />
-                          Release history
+                      <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+                        <span>
+                          {g.workflows.length} workflow{g.workflows.length !== 1 ? 's' : ''}
                         </span>
                         <span className="inline-flex items-center gap-1 text-zinc-400 transition-colors group-hover:text-white">
                           Open

@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from conxa_compile.recorder.session import registry as _recorder_registry
-from conxa_core.workspace import LOCAL_WORKSPACE_ID
+from conxa_core.storage.group_store import DEFAULT_GROUP_NAME
+from conxa_core.workspace import LOCAL_WORKSPACE_ID, company_slug as _derive_company_slug
 from handlers.protocol import _CommandError, _safe_id
 
 # How many workflow names a group summary carries, so a group card can show
@@ -79,6 +80,50 @@ def group_auth_status(group) -> dict[str, Any]:
 
 
 class GroupsMixin:
+    def _sync_group_to_cloud(self, group, workspace_id: str = "") -> bool:
+        """Best-effort upsert of this group onto Cloud's Skill Packages index.
+        Returns True if Cloud accepted the write. Local CRUD must never fail
+        because Cloud is down or the user is signed out."""
+        from urllib.parse import quote
+
+        from conxa_core.storage.skill_pack_store import get_skill_pack
+
+        ws = workspace_id or getattr(group, "workspace_id", "") or LOCAL_WORKSPACE_ID
+        slug = self._synced_company_slug or ""
+        company_name = ""
+        if not slug:
+            pack = get_skill_pack(ws)
+            if pack is not None:
+                slug = pack.company_slug
+                company_name = pack.company_name
+        if not slug:
+            try:
+                payload = self._cloud_json("/api/v1/workflows/skill-packs")
+                packs = payload.get("skill_packs") if isinstance(payload, dict) else None
+                if isinstance(packs, list) and packs:
+                    packs = sorted(packs, key=lambda p: float((p or {}).get("updated_at") or 0), reverse=True)
+                    slug = str(packs[0].get("company_slug") or "")
+                    company_name = company_name or str(packs[0].get("company_name") or "")
+            except Exception:
+                pass
+        if not slug:
+            company_name = company_name or "Local workspace"
+            slug = _derive_company_slug(ws, company_name)
+        try:
+            generation = self._installer_generation()
+            self._cloud_json(
+                f"/api/v1/workflows/{generation}/{quote(slug)}/groups/{quote(group.id)}",
+                method="PUT",
+                body={
+                    "group_name": group.name,
+                    "company_name": company_name or "Local workspace",
+                },
+            )
+        except Exception:
+            return False
+        self._synced_company_slug = slug
+        return True
+
     def cmd_list_groups(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         from conxa_core.storage.group_store import ensure_default_group, list_groups
         from conxa_core.storage.workflow_store import list_workflows
@@ -87,6 +132,11 @@ class GroupsMixin:
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         ensure_default_group(workspace_id)
         groups = list_groups(workspace_id)
+        for g in groups:
+            if g.name == DEFAULT_GROUP_NAME:
+                continue
+            if not self._sync_group_to_cloud(g, workspace_id):
+                break
         workflows = list_workflows(workspace_id)
         counts: dict[str, int] = {}
         # Per-group lifecycle breakdown and a short preview of the workflows inside,
@@ -147,6 +197,7 @@ class GroupsMixin:
             raise _CommandError("invalid_input", "name is required")
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         group = create_group(name, workspace_id=workspace_id)
+        self._sync_group_to_cloud(group, workspace_id)
         return {"group": group.model_dump(mode="json")}
 
     def cmd_rename_group(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -161,6 +212,7 @@ class GroupsMixin:
             raise _CommandError("group_not_found", f"No group {group_id}")
         group.name = name
         group = save_group(group)
+        self._sync_group_to_cloud(group, group.workspace_id)
         return {"group": group.model_dump(mode="json")}
 
     def cmd_delete_group(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
