@@ -434,12 +434,14 @@ export function buildInstaller(
   logoPath?: string | null,
   version?: string,
   releaseNotes?: string,
+  installerName?: string,
 ): Promise<InstallerBuildResult> {
   return withKindLog('installer_build', onLog, () =>
     cmd<InstallerBuildResult>('build_installer', {
       logo_path: logoPath ?? null,
       version,
       release_notes: releaseNotes,
+      installer_name: installerName,
     }),
   )
 }

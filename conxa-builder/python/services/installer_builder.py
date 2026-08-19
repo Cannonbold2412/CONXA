@@ -19,6 +19,7 @@ def build_installer(
     logo_path: str | None = None,
     version: str | None = None,
     release_notes: str = "",
+    installer_name: str | None = None,
     realtime_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     # Ensure all deps (NSIS, runtime) are at the latest cloud version before packaging.
@@ -69,5 +70,6 @@ def build_installer(
         logo_path=logo_path,
         version=version,
         release_notes=release_notes,
+        installer_name=installer_name,
         realtime_sink=realtime_sink,
     )

@@ -109,6 +109,7 @@ def build_installer(
     logo_path: str | None = None,
     version: str | None = None,
     release_notes: str = "",
+    installer_name: str | None = None,
     realtime_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Package the workspace's already-built shared skill pack into a Windows installer EXE.
@@ -245,11 +246,13 @@ def build_installer(
         _log(f"NSIS script written to {nsi_path}")
 
         # ── 5. Compile installer ──────────────────────────────────────────────
-        safe_name = company_name.replace(" ", "")
-        installer_name = f"{safe_name}-Agent-Setup.exe"
-        installer_path = tmp / installer_name
+        # installer_name is a user-supplied label for now (later: derived from
+        # verified domain / company identity). Falls back to company_name.
+        safe_name = (installer_name or company_name).strip().replace(" ", "") or company_name.replace(" ", "")
+        installer_filename = f"{safe_name}-Agent-Setup.exe"
+        installer_path = tmp / installer_filename
 
-        _log(f"Running makensis → {installer_name}…")
+        _log(f"Running makensis → {installer_filename}…")
         result = subprocess.run(
             [makensis, "/V2", f"/DOUTPUT_PATH={installer_path}", str(nsi_path)],
             check=False,
@@ -286,7 +289,7 @@ def build_installer(
         # ── 7. Persist installer ──────────────────────────────────────────────
         out_dir = settings.data_dir / "installers"
         out_dir.mkdir(parents=True, exist_ok=True)
-        dest = out_dir / installer_name
+        dest = out_dir / installer_filename
         _log(f"Copying installer to {dest}…")
         shutil.copy2(installer_path, dest)
         size_kb = dest.stat().st_size // 1024
@@ -297,7 +300,7 @@ def build_installer(
         set_installer(
             workspace_id,
             installer_path=str(dest),
-            filename=installer_name,
+            filename=installer_filename,
             version=installer_version,
             runtime_version=runtime_version,
             release_notes=release_notes,
@@ -307,7 +310,7 @@ def build_installer(
 
     return {
         "installer_path": str(dest),
-        "filename":       installer_name,
+        "filename":       installer_filename,
         "company":        company_slug,
         "workspace_id":   workspace_id,
         "version":        installer_version,

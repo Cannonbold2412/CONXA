@@ -326,6 +326,7 @@ class WorkflowsMixin:
                 "Publish a skill pack release before building an installer.",
             )
 
+        installer_name = str(payload.get("installer_name") or "").strip() or None
         logo_path = str(payload.get("logo_path") or "").strip() or None
         if logo_path:
             # Custom installer icons are a paid-plan capability (see docs/PRD.md
@@ -344,6 +345,7 @@ class WorkflowsMixin:
             logo_path=logo_path,
             version=version,
             release_notes=release_notes,
+            installer_name=installer_name,
             realtime_sink=sink,
         )
         result["installed_runtime_path"] = (
