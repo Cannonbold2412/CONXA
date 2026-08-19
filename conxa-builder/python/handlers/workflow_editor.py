@@ -481,20 +481,9 @@ class WorkflowEditorMixin:
             return {"skill_id": skill_id, "signed_off": True, "built": False, "waiting_on": []}
 
         # Sign-off gates the build (skill_package_builder.py's raise-on-uncompiled/unedited
-        # is the enforcement point); auto-build simply fires the moment that gate is
-        # satisfied for every workflow in the workspace, so the user never has to visit
-        # a separate build page after approving the last one.
-        waiting_on = [
-            wf.name for wf in list_workflows(workspace_id) if not wf.skill_id or not wf.edited_at
-        ]
-        if waiting_on:
-            return {
-                "skill_id": skill_id,
-                "signed_off": True,
-                "built": False,
-                "waiting_on": waiting_on,
-            }
-
+        # is the enforcement point); auto-build fires the moment THIS workflow satisfies
+        # that gate — scoped to only_workflow_id, so a sibling workflow that isn't
+        # compiled/edited yet never blocks or gets swept into this workflow's build.
         from conxa_compile.skill_package_builder import build_skill_package
 
         sink = _event_sink(rid)
@@ -502,7 +491,12 @@ class WorkflowEditorMixin:
             # company_name is only used the first time this workspace ever builds a
             # skill package (SkillPack.get_or_create) — falls back to this workflow's
             # own name, matching the old company_name = plugin.name default.
-            build_skill_package(workspace_id, company_name=target_workflow.name, realtime_sink=sink)
+            build_skill_package(
+                workspace_id,
+                company_name=target_workflow.name,
+                only_workflow_id=target_workflow.id,
+                realtime_sink=sink,
+            )
             return {"skill_id": skill_id, "signed_off": True, "built": True, "waiting_on": []}
         except Exception as exc:
             sink({"kind": "skill_package_build", "message": f"Auto-build failed: {exc}"})

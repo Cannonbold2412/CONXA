@@ -211,7 +211,24 @@ def _write_skill_packs_format(
         written_slugs.append(slug)
         skill_groups[slug] = group_id
 
-    # pack.json at company root
+    # pack.json at company root. Merge `skills`/`skill_groups`/`groups` with
+    # whatever's already there rather than replacing wholesale — a scoped
+    # single-workflow build (only `written_slugs` for this one call) must
+    # never drop a sibling skill a prior build already wrote here.
+    existing_pack: dict[str, Any] = {}
+    existing_pack_path = skill_packs / "pack.json"
+    if existing_pack_path.is_file():
+        try:
+            existing_pack = json.loads(existing_pack_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing_pack = {}
+    merged_skills = [s for s in (existing_pack.get("skills") or []) if s not in written_slugs] + written_slugs
+    merged_skill_groups = {**(existing_pack.get("skill_groups") or {}), **skill_groups}
+    existing_groups_by_id = {g.get("id"): g for g in (existing_pack.get("groups") or []) if isinstance(g, dict)}
+    for g in (groups or []):
+        existing_groups_by_id[g.get("id")] = g
+    merged_groups = list(existing_groups_by_id.values())
+
     _req_rt = required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3")
     pack = {
         "company":            company,
@@ -220,9 +237,9 @@ def _write_skill_packs_format(
         "required_runtime":   _req_rt,
         "target_url":         target_url,
         "protected_url":      protected_url,
-        "skills":             written_slugs,
-        "skill_groups":       skill_groups,
-        "groups":             groups or [],
+        "skills":             merged_skills,
+        "skill_groups":       merged_skill_groups,
+        "groups":             merged_groups,
         "sync_endpoint":      f"{api_base}/skill-packs/{company}/delta",
         "built_at":           datetime.now(timezone.utc).isoformat(),
     }

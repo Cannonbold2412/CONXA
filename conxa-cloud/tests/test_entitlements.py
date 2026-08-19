@@ -223,20 +223,21 @@ def test_installer_upload_duplicate_version_rejected_but_new_slug_allowed(monkey
     assert another_slug.status_code == 200, another_slug.text
 
 
-def _publish(slug: str, version: str, skills: list[str]):
+def _publish(slug: str, skill_slug: str, version: str):
     import base64
 
     # A byte-identical artifact is now rejected outright (skill_pack_artifact_unchanged
     # — see release-system plan §5), so give each call a distinct marker file rather
-    # than the empty file list every prior version shared.
-    marker = base64.b64encode(version.encode()).decode()
+    # than the empty file list every prior version shared. One skill per call — see
+    # the per-skill publishing architecture (1 Workflow = 1 Skill = 1 Skill Package).
+    marker = base64.b64encode(f"{skill_slug}:{version}".encode()).decode()
     return client.post(
         "/api/v1/workflows/publish",
         json={
             "slug": slug,
+            "skill_slug": skill_slug,
             "skill_pack_version": version,
-            "skills": skills,
-            "files": [{"path": "pack.json", "content_base64": marker}],
+            "files": [{"path": "execution.json", "content_base64": marker}],
         },
     )
 
@@ -252,9 +253,9 @@ def test_downgrade_soft_locks_oldest_excess_workflows(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
     _set_plan("free", compile_credits=2)
 
-    first = _publish("acme", "1.0.0", ["wf1"])
-    second = _publish("acme", "1.0.1", ["wf1", "wf2"])
-    over_cap = _publish("acme", "1.0.2", ["wf1", "wf2", "wf3"])
+    first = _publish("acme", "wf1", "1.0.0")
+    second = _publish("acme", "wf2", "1.0.0")
+    over_cap = _publish("acme", "wf3", "1.0.0")
 
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text
@@ -276,8 +277,8 @@ def test_downgrade_soft_locks_oldest_excess_workflows(monkeypatch, tmp_path):
     }
     assert locked_ids == {"wf1"}  # oldest published stays locked, wf2 (newer) stays active
 
-    republish_locked = _publish("acme", "1.0.3", ["wf1"])
-    republish_active = _publish("acme", "1.0.4", ["wf2"])
+    republish_locked = _publish("acme", "wf1", "1.0.3")
+    republish_active = _publish("acme", "wf2", "1.0.4")
 
     assert republish_locked.status_code == 402, republish_locked.text
     assert republish_locked.json()["detail"] == "workflow_locked"

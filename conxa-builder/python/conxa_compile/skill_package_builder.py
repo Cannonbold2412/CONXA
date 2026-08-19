@@ -19,6 +19,7 @@ Credentials are local runtime state captured by the installed Conxa runtime.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Callable
 
@@ -46,13 +47,33 @@ def build_skill_package(
     *,
     company_name: str | None = None,
     version: str = "0.1.0",
+    only_workflow_id: str | None = None,
     realtime_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Compile every workflow in a workspace into one installer-ready package."""
+    """Compile workflow(s) into the shared local package directory.
+
+    ``only_workflow_id=None`` (default for an explicit full-workspace rebuild):
+    compiles every workflow in the workspace, as before.
+
+    ``only_workflow_id=<id>``: compiles ONLY that one workflow — a sibling
+    workflow that isn't compiled, edited, or passing its tests never blocks
+    this build. This is the path Publish uses (see handlers/workflows.py's
+    cmd_build_skill_package), so publishing "Create a Lead" never requires
+    "Update Opportunity" to be ready. Other already-built skills' output on
+    disk is left untouched and still counted in the merged skill_package.json.
+    """
     pack = get_or_create_skill_pack(workspace_id, company_name=company_name)
-    workflows = [w for w in list_workflows(workspace_id) if w.workspace_id == workspace_id]
-    if not workflows:
+    all_workflows = [w for w in list_workflows(workspace_id) if w.workspace_id == workspace_id]
+    if not all_workflows:
         raise ValueError("No workflows recorded yet. Record at least one workflow.")
+
+    if only_workflow_id is not None:
+        workflows = [w for w in all_workflows if w.id == only_workflow_id]
+        if not workflows:
+            raise ValueError(f"No workflow found with id {only_workflow_id}")
+    else:
+        workflows = all_workflows
+
     uncompiled = [w.name for w in workflows if not w.skill_id]
     if uncompiled:
         raise ValueError(f"Compile these workflows before building: {', '.join(uncompiled)}")
@@ -103,48 +124,67 @@ def build_skill_package(
 
     # ── 2. Write skill_package.json (v2 manifest for the installed Conxa runtime) ──
     # target_url/protected_url are package-level display defaults, taken from the
-    # first workflow — each skill's own manifest.json (written below) carries its
-    # own accurate target_url, since different workflows may automate different
-    # pages on the company's site.
+    # first workflow BUILT IN THIS CALL — each skill's own manifest.json (written
+    # below) carries its own accurate target_url, since different workflows may
+    # automate different pages on the company's site.
     primary = workflows[0]
     var_pattern = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}")
     protected_url_vars = var_pattern.findall(primary.protected_url)
 
     package_id = bundle_slug
+    # Union with any already-built skills' entries rather than replacing —
+    # a scoped single-workflow build must never drop a sibling skill that a
+    # prior build already wrote to this same package.
+    existing_config: dict[str, Any] = {}
+    existing_config_path = bundle_root / "skill_package.json"
+    if only_workflow_id is not None and existing_config_path.is_file():
+        try:
+            existing_config = json.loads(existing_config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing_config = {}
+    existing_skill_entries = {
+        s["slug"]: s for s in (existing_config.get("skills") or []) if isinstance(s, dict) and s.get("slug")
+    }
+    for s in skill_slugs:
+        existing_skill_entries[s] = {"slug": s, "path": f"skills/{s}"}
+    merged_skill_slugs = list(existing_skill_entries.keys())
+
     skill_package_config = {
         "package_format": 2,
         "id": package_id,
         "slug": bundle_slug,
         "name": pack.company_name,
         "version": version,
-        "target_url": primary.target_url,
-        "protected_url": primary.protected_url,
+        "target_url": primary.target_url if not existing_config else existing_config.get("target_url", primary.target_url),
+        "protected_url": primary.protected_url if not existing_config else existing_config.get("protected_url", primary.protected_url),
         "protected_url_vars": protected_url_vars,
         "auth_requirements": {"kind": "cookie", "manual_login": True},
-        "skills": [{"slug": s, "path": f"skills/{s}"} for s in skill_slugs],
+        "skills": list(existing_skill_entries.values()),
         "runtime_min_version": "1.0.0",
         "compatibility": {"conxa_runtime": ">=1.0.0"},
     }
     (bundle_root / "skill_package.json").write_text(
         dumps_safe(skill_package_config, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    _log("Written skill_package.json", skills=skill_slugs, package_id=package_id)
+    _log("Written skill_package.json", skills=merged_skill_slugs, package_id=package_id)
 
     # ── 3. Copy skill-package templates (Claude.md, index.md, .gitignore) ──
+    # skill_slugs=merged_skill_slugs (not just this call's skill_slugs) so a
+    # scoped single-workflow build still documents every already-built sibling.
     _copy_skill_package_templates(
         bundle_root,
         company_name=pack.company_name,
         bundle_slug=bundle_slug,
         target_url=primary.target_url,
         version=version,
-        skill_slugs=skill_slugs,
+        skill_slugs=merged_skill_slugs,
         package_id=package_id,
     )
     _log("Copied skill package templates")
 
     # ── 4. Write README.md and LICENSE ────────────────────────────────────
     (bundle_root / "README.md").write_text(
-        _render_readme(pack.company_name, bundle_slug, primary.target_url, skill_slugs, package_id=package_id),
+        _render_readme(pack.company_name, bundle_slug, primary.target_url, merged_skill_slugs, package_id=package_id),
         encoding="utf-8",
     )
     _log("Written README.md")

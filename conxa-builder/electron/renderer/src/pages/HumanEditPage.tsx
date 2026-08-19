@@ -385,11 +385,11 @@ export function HumanEditPage() {
     }
     if (signOff.build_error) {
       toast.error(`Approved, but the package failed to build: ${signOff.build_error}`)
-    } else if (signOff.waiting_on.length > 0) {
-      toast.success(
-        `Approved. Waiting on ${signOff.waiting_on.length === 1 ? signOff.waiting_on[0] : `${signOff.waiting_on.length} other workflows`} before the skill package can build.`,
-      )
     } else {
+      // Sign-off now always attempts a build scoped to this one workflow (see
+      // cmd_sign_off_workflow) — a sibling workflow's readiness never blocks
+      // it, so `waiting_on` is always empty and `built` is only false when
+      // this workflow itself has no matching skill yet.
       toast.success(`${skillId} saved in place — same skill id as when you compiled from the recording.`)
     }
     navigate(fromPath ?? '/edit')

@@ -48,7 +48,7 @@ def _redact_sensitive_test_inputs(skill_id: str, inputs: dict[str, Any]) -> dict
 
 class WorkflowsMixin:
     def cmd_create_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        from conxa_core.storage.group_store import ensure_default_group, get_group
+        from conxa_core.storage.group_store import get_group
         from conxa_core.storage.workflow_store import create_workflow as _create
 
         name = str(payload.get("name") or "").strip()
@@ -57,12 +57,11 @@ class WorkflowsMixin:
         target_url = str(payload.get("target_url") or "about:blank").strip()
 
         group_id = str(payload.get("group_id") or "").strip()
-        if group_id:
-            group_id = _safe_id(group_id, "group_id")
-            if get_group(group_id) is None:
-                raise _CommandError("group_not_found", f"No group {group_id}")
-        else:
-            group_id = ensure_default_group().id
+        if not group_id:
+            raise _CommandError("invalid_input", "group_id is required")
+        group_id = _safe_id(group_id, "group_id")
+        if get_group(group_id) is None:
+            raise _CommandError("group_not_found", f"No group {group_id}")
 
         workflow = _create(name=name, target_url=target_url, group_id=group_id)
         return {"workflow": workflow.model_dump(mode="json")}
@@ -104,7 +103,10 @@ class WorkflowsMixin:
 
     def cmd_get_skill_pack(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         """Read-only status for the Publish / Build Installer pages: is the
-        workspace's shared skill package built yet, and what's in it."""
+        workspace's shared skill package built yet, and — per workflow — is it
+        ready to publish. Every workflow is returned so the Publish page can
+        offer a skill picker; each workflow's own test/compile status is what
+        gates *that* workflow's publish, never a sibling's."""
         from conxa_core.storage.skill_pack_store import get_skill_pack
         from conxa_core.storage.workflow_store import list_workflows
 
@@ -120,33 +122,58 @@ class WorkflowsMixin:
             "workflows": workflows,
         }
 
+    def _resolve_workflow_by_skill_slug(self, workspace_id: str, skill_slug: str):
+        from conxa_core.storage.workflow_store import list_workflows
+
+        skill_slug = _safe_id(skill_slug, "skill_slug")
+        for wf in list_workflows(workspace_id):
+            if wf.slug == skill_slug:
+                return wf
+        raise _CommandError("workflow_not_found", f"No workflow with slug {skill_slug!r}")
+
     def cmd_build_skill_package(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
+        """Build one workflow's compiled skill into the shared local package
+        directory. Scoped to that one workflow — a sibling workflow that isn't
+        compiled, edited, or tested yet never blocks this build."""
         from conxa_compile.skill_package_builder import build_skill_package
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         company_name = str(payload.get("company_name") or "").strip() or None
         version = str(payload.get("version") or "0.1.0")
+        skill_slug = str(payload.get("skill_slug") or "").strip()
+        only_workflow_id = None
+        if skill_slug:
+            only_workflow_id = self._resolve_workflow_by_skill_slug(workspace_id, skill_slug).id
         return build_skill_package(
             workspace_id,
             company_name=company_name,
             version=version,
+            only_workflow_id=only_workflow_id,
             realtime_sink=_event_sink(rid),
         )
 
     def cmd_publish_skill_pack(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
-        """Publish a skill-pack release to Conxa Cloud — the primary, mandatory
+        """Publish ONE skill's release to Conxa Cloud — the primary, mandatory
         release-management action. Skill Pack Publishing owns version history,
-        release notes, and publishing limits; Build Installer (below) becomes a
-        secondary, advanced action that requires a release to already exist.
+        release notes, and publishing limits per skill; Build Installer (below)
+        becomes a secondary, advanced action that requires a release to already
+        exist.
 
-        Workspace-scoped: publishes the ONE shared skill pack every workflow in
-        this workspace compiles into, not a per-workflow package."""
+        Skill-scoped: publishes only the one workflow named by skill_slug. A
+        sibling workflow's compile/test/sign-off status is never checked and
+        its files are never uploaded."""
         from conxa_core.storage.skill_pack_store import get_skill_pack
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         pack = get_skill_pack(workspace_id)
         if pack is None:
             raise _CommandError("skill_pack_not_found", f"No skill pack built yet for workspace {workspace_id}")
+        skill_slug = str(payload.get("skill_slug") or "").strip()
+        if not skill_slug:
+            raise _CommandError("invalid_input", "skill_slug is required")
+        workflow = self._resolve_workflow_by_skill_slug(workspace_id, skill_slug)
+        if not workflow.skill_id:
+            raise _CommandError("workflow_uncompiled", f"Workflow {skill_slug!r} is not compiled yet")
         company_slug = str(payload.get("company_slug") or "").strip()
         company_slug = _safe_id(company_slug, "company_slug") if company_slug else pack.company_slug
         version = _validate_release_version(payload.get("version"))
@@ -161,12 +188,19 @@ class WorkflowsMixin:
                 "Refusing to publish: auth.json found under the built skill pack.",
             )
 
+        from conxa_core.storage.group_store import get_group
+
+        group = get_group(workflow.group_id) if workflow.group_id else None
         sink = _event_sink(rid)
         publish_info = self._publish_skill_pack(
             company_slug=company_slug,
             company_name=pack.company_name,
+            skill_slug=skill_slug,
             version=version,
             release_notes=release_notes,
+            group_name=group.name if group else "",
+            workflow_name=workflow.name,
+            tests_passed=workflow.last_test_status == "passed",
             sink=sink,
         )
         if not publish_info:
@@ -177,11 +211,14 @@ class WorkflowsMixin:
         return publish_info
 
     def cmd_list_skill_pack_versions(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        """Release history for the Skill Pack Publishing / Release Center page —
-        version, release notes, publish timestamp, and (since the release system)
-        the current stable release, per prior release of this company's slug."""
+        """Release history for ONE skill on the Skill Pack Publishing / Release
+        Center page — version, release notes, publish timestamp, and the
+        current stable release, all scoped to this skill's own history."""
         generation, company_slug = self._resolve_release_company(payload)
-        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/versions")
+        skill_slug = _safe_id(str(payload.get("skill_slug") or ""), "skill_slug")
+        return self._cloud_json(
+            f"/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/versions?skill_slug={quote(skill_slug)}"
+        )
 
     def _resolve_release_company(self, payload: dict[str, Any]) -> tuple[str, str]:
         """Shared by every Release Center RPC handler below: resolve
@@ -206,14 +243,16 @@ class WorkflowsMixin:
         and whether the candidate is a duplicate or a no-op republish. Reads the
         already-built pack exactly as ``cmd_publish_skill_pack`` would upload it —
         read-only, no mutation — so nothing shown here can drift from what
-        actually gets recorded on Publish."""
+        actually gets recorded on Publish. Scoped to one skill: only that
+        skill's own files are read, against only that skill's own previous
+        version."""
         generation, company_slug = self._resolve_release_company(payload)
-        _pack_path, pack = self._read_pack_json(company_slug)
-        files = self._collect_skill_pack_files(company_slug)
+        skill_slug = _safe_id(str(payload.get("skill_slug") or ""), "skill_slug")
+        files = self._collect_skill_pack_files(company_slug, skill_slug)
         body = {
             "version": str(payload.get("version") or ""),
-            "skills": list(pack.get("skills") or []),
-            "skill_groups": dict(pack.get("skill_groups") or {}),
+            "skill_slug": skill_slug,
+            "group_id": self._skill_group_id(company_slug, skill_slug),
             "files": files,
         }
         return self._cloud_json(
@@ -223,41 +262,23 @@ class WorkflowsMixin:
     def cmd_release_detail(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         generation, company_slug = self._resolve_release_company(payload)
         version = _safe_id(str(payload.get("version") or ""), "version")
-        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}")
+        skill_slug = _safe_id(str(payload.get("skill_slug") or ""), "skill_slug")
+        return self._cloud_json(
+            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}?skill_slug={quote(skill_slug)}"
+        )
 
     def cmd_release_diff(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         """Deterministic diff for an already-published release, against the
-        release immediately preceding it — used by the Release History detail
-        view ("what changed in this version")."""
+        release immediately preceding it in this same skill's own history —
+        used by the Release History detail view ("what changed in this
+        version")."""
         generation, company_slug = self._resolve_release_company(payload)
         version = _safe_id(str(payload.get("version") or ""), "version")
-        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}/diff")
-
-    def cmd_rollback_release(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
-        """Move the stable channel back to an already-published release. Admin/
-        owner only — enforced cloud-side (require_admin); this handler is a thin
-        proxy, not a second authorization check."""
-        generation, company_slug = self._resolve_release_company(payload)
-        version = _safe_id(str(payload.get("version") or ""), "version")
-        sink = _event_sink(rid)
-        sink({"kind": "rollback", "message": f"Rolling back {company_slug} to v{version}..."})
-        result = self._cloud_json(
-            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}/rollback",
-            method="POST",
+        skill_slug = _safe_id(str(payload.get("skill_slug") or ""), "skill_slug")
+        return self._cloud_json(
+            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}/diff"
+            f"?skill_slug={quote(skill_slug)}"
         )
-        sink({"kind": "rollback", "message": f"{company_slug} stable is now v{version}."})
-        return result
-
-    def cmd_list_deployments(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        """Runtime deployment status for the Release Center's Deployment section —
-        desired (stable) version vs. what each registered machine last reported."""
-        generation, company_slug = self._resolve_release_company(payload)
-        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/deployments")
-
-    def cmd_release_events(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        """Release-lifecycle audit trail for the Release Center's Audit section."""
-        generation, company_slug = self._resolve_release_company(payload)
-        return self._cloud_json(f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/events")
 
     def cmd_build_installer(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         """Package the already-published skill pack into a distributable NSIS

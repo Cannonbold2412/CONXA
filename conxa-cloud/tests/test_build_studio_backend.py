@@ -238,13 +238,14 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
                 "target_url": "https://dashboard.render.com",
                 "protected_url": "https://dashboard.render.com/",
                 "skills": ["delete-a-service"],
+                "skill_groups": {"delete-a-service": "_default"},
                 "tracking": {"tracking_url": "http://127.0.0.1:8000/api/tracking/render/events"},
             }
         ),
         encoding="utf-8",
     )
-    skill_dir = packs_dir / "delete-a-service"
-    skill_dir.mkdir()
+    skill_dir = packs_dir / "_default" / "delete-a-service"
+    skill_dir.mkdir(parents=True)
     (skill_dir / "execution.json").write_text("[]", encoding="utf-8")
 
     class FakeResponse:
@@ -286,6 +287,7 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
     publish_info = b._publish_skill_pack(
         company_slug="render",
         company_name="Render",
+        skill_slug="delete-a-service",
         version="1.2.3",
         release_notes="Release message",
         sink=logs.append,
@@ -347,6 +349,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
     result = b._publish_skill_pack(
         company_slug="render",
         company_name="Render",
+        skill_slug="delete-a-service",
         version="1.0.0",
         release_notes="",
         sink=logs.append,
@@ -362,6 +365,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
         b._publish_skill_pack(
             company_slug="render",
             company_name="Render",
+            skill_slug="delete-a-service",
             version="1.0.0",
             release_notes="",
             sink=lambda _e: None,
@@ -789,9 +793,9 @@ def test_recompile_reserves_compile_credit_not_human_edit(backend, monkeypatch, 
     assert calls["proxy"] == ["compile"]
 
 
-def test_sign_off_auto_builds_when_all_workflows_ready(backend, monkeypatch, tmp_path):
-    """Sign-off should trigger build_skill_package the moment its own gate (every
-    workflow in the workspace compiled + edited) is satisfied, without a separate
+def test_sign_off_auto_builds_the_signed_off_workflow_immediately(backend, monkeypatch, tmp_path):
+    """Sign-off should trigger build_skill_package for THIS workflow immediately —
+    it never waits on any other workflow in the workspace, without a separate
     Build Skill Package page visit."""
     b, out = backend
 
@@ -802,9 +806,11 @@ def test_sign_off_auto_builds_when_all_workflows_ready(backend, monkeypatch, tmp
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    build_calls: list[str] = []
+    build_calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
-        skill_package_builder, "build_skill_package", lambda workspace_id, **kwargs: build_calls.append(workspace_id)
+        skill_package_builder,
+        "build_skill_package",
+        lambda workspace_id, **kwargs: build_calls.append((workspace_id, kwargs.get("only_workflow_id"))),
     )
 
     workflow = create_workflow("Send Invoice", "https://acme.test")
@@ -816,16 +822,18 @@ def test_sign_off_auto_builds_when_all_workflows_ready(backend, monkeypatch, tmp
     result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-1")
 
     assert result == {"skill_id": "skill_sess-1", "signed_off": True, "built": True, "waiting_on": []}
-    assert build_calls == [workflow.workspace_id]
+    assert build_calls == [(workflow.workspace_id, workflow.id)]
 
     updated = get_workflow(workflow.id)
     assert updated.signed_off is True
     assert updated.edited_at is not None
 
 
-def test_sign_off_reports_waiting_on_other_workflows_without_building(backend, monkeypatch, tmp_path):
-    """Approving one workflow must not build until every workflow in the
-    workspace is compiled and signed off."""
+def test_sign_off_builds_this_workflow_even_when_a_sibling_is_not_ready(backend, monkeypatch, tmp_path):
+    """Approving one workflow must build it immediately, regardless of whether
+    another workflow in the same workspace is compiled/edited/signed off — this
+    is the fix for the bug where "Create a Lead" couldn't publish because
+    "Update Opportunity" was still failing."""
     b, out = backend
 
     from conxa_core.config import settings
@@ -835,9 +843,11 @@ def test_sign_off_reports_waiting_on_other_workflows_without_building(backend, m
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
 
-    build_calls: list[str] = []
+    build_calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
-        skill_package_builder, "build_skill_package", lambda workspace_id, **kwargs: build_calls.append(workspace_id)
+        skill_package_builder,
+        "build_skill_package",
+        lambda workspace_id, **kwargs: build_calls.append((workspace_id, kwargs.get("only_workflow_id"))),
     )
 
     wf1 = create_workflow("Send Invoice", "https://acme.test")
@@ -850,13 +860,9 @@ def test_sign_off_reports_waiting_on_other_workflows_without_building(backend, m
 
     result = b.cmd_sign_off_workflow({"skill_id": "skill_sess-1"}, "signoff-2")
 
-    assert result["signed_off"] is True
-    assert result["built"] is False
-    assert result["waiting_on"] == ["Cancel Invoice"]
-    assert build_calls == []
+    assert result == {"skill_id": "skill_sess-1", "signed_off": True, "built": True, "waiting_on": []}
+    assert build_calls == [(wf1.workspace_id, wf1.id)]
 
-    # The workflow being signed off still gets its own fields set even though the
-    # workspace as a whole isn't ready to build yet.
     updated = get_workflow(wf1.id)
     assert updated.signed_off is True
     assert updated.edited_at is not None
@@ -935,74 +941,15 @@ def test_cmd_release_preview_reads_the_built_pack_not_the_payload(backend, monke
 
     monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
 
-    result = b.cmd_release_preview({"company_slug": "render", "version": "1.1.0"}, "rid")
+    result = b.cmd_release_preview({"company_slug": "render", "skill_slug": "deploy", "version": "1.1.0"}, "rid")
 
     assert result == {"diff": {"summary": "no changes"}}
     assert seen["path"] == "/api/v1/workflows/v2/render/releases/preview"
     assert seen["method"] == "POST"
     assert seen["body"]["version"] == "1.1.0"
-    assert seen["body"]["skills"] == ["deploy"]
-    assert seen["body"]["skill_groups"] == {"deploy": "grp"}
-    assert {f["path"] for f in seen["body"]["files"]} == {"pack.json", "grp/deploy/execution.json"}
-
-
-def test_cmd_rollback_release_calls_the_versioned_rollback_endpoint(backend, monkeypatch, tmp_path):
-    b, out = backend
-
-    from conxa_core.config import settings
-    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
-    from conxa_core.workspace import LOCAL_WORKSPACE_ID
-
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(settings, "database_url", "")
-    _stub_generation(monkeypatch, b)
-    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
-
-    seen: dict[str, object] = {}
-
-    def fake_cloud_json(path, *, method="GET", body=None):
-        seen["path"] = path
-        seen["method"] = method
-        return {"slug": "render", "rolled_back_to": "1.0.0", "previous_stable": "1.1.0"}
-
-    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
-
-    result = b.cmd_rollback_release({"company_slug": "render", "version": "1.0.0"}, "rid")
-
-    assert result["rolled_back_to"] == "1.0.0"
-    assert seen["path"] == "/api/v1/workflows/v2/render/releases/1.0.0/rollback"
-    assert seen["method"] == "POST"
-    # A progress event was emitted around the call — Publishing UX relies on this.
-    assert any(e.get("kind") == "rollback" for e in out)
-
-
-def test_cmd_list_deployments_and_release_events_proxy_correctly(backend, monkeypatch, tmp_path):
-    b, _out = backend
-
-    from conxa_core.config import settings
-    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
-    from conxa_core.workspace import LOCAL_WORKSPACE_ID
-
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(settings, "database_url", "")
-    _stub_generation(monkeypatch, b)
-    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
-
-    calls: list[str] = []
-
-    def fake_cloud_json(path, *, method="GET", body=None):
-        calls.append(path)
-        return {"ok": True}
-
-    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
-
-    b.cmd_list_deployments({"company_slug": "render"}, "rid")
-    b.cmd_release_events({"company_slug": "render"}, "rid")
-
-    assert calls == [
-        "/api/v1/workflows/v2/render/deployments",
-        "/api/v1/workflows/v2/render/releases/events",
-    ]
+    assert seen["body"]["skill_slug"] == "deploy"
+    assert seen["body"]["group_id"] == "grp"
+    assert {f["path"] for f in seen["body"]["files"]} == {"grp/deploy/execution.json"}
 
 
 def test_cmd_release_detail_and_diff_use_the_given_version(backend, monkeypatch, tmp_path):
@@ -1025,10 +972,77 @@ def test_cmd_release_detail_and_diff_use_the_given_version(backend, monkeypatch,
 
     monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
 
-    b.cmd_release_detail({"company_slug": "render", "version": "1.0.0"}, "rid")
-    b.cmd_release_diff({"company_slug": "render", "version": "1.0.0"}, "rid")
+    b.cmd_release_detail({"company_slug": "render", "skill_slug": "deploy", "version": "1.0.0"}, "rid")
+    b.cmd_release_diff({"company_slug": "render", "skill_slug": "deploy", "version": "1.0.0"}, "rid")
 
     assert calls == [
-        "/api/v1/workflows/v2/render/releases/1.0.0",
-        "/api/v1/workflows/v2/render/releases/1.0.0/diff",
+        "/api/v1/workflows/v2/render/releases/1.0.0?skill_slug=deploy",
+        "/api/v1/workflows/v2/render/releases/1.0.0/diff?skill_slug=deploy",
     ]
+
+
+def test_create_group_puts_to_cloud(backend, monkeypatch, tmp_path):
+    from conxa_core.config import settings
+
+    b, out = backend
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _stub_generation(monkeypatch, b)
+
+    calls: list[tuple] = []
+
+    def fake_cloud_json(path, *, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/skill-packs"):
+            return {"skill_packs": []}
+        return {"ok": True}
+
+    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
+    result = b.cmd_create_group({"name": "Sales"}, "rid")
+    assert result["group"]["name"] == "Sales"
+    puts = [c for c in calls if c[0] == "PUT"]
+    assert len(puts) == 1
+    assert puts[0][2]["group_name"] == "Sales"
+    assert result["group"]["id"] in puts[0][1]
+
+
+def test_rename_group_puts_to_cloud(backend, monkeypatch, tmp_path):
+    from conxa_core.config import settings
+
+    b, _out = backend
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _stub_generation(monkeypatch, b)
+    calls: list[tuple] = []
+
+    def fake_cloud_json(path, *, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/skill-packs"):
+            return {"skill_packs": []}
+        return {"ok": True}
+
+    monkeypatch.setattr(b, "_cloud_json", fake_cloud_json)
+    created = b.cmd_create_group({"name": "Sales"}, "rid")
+    gid = created["group"]["id"]
+    calls.clear()
+    renamed = b.cmd_rename_group({"group_id": gid, "name": "Revenue"}, "rid")
+    assert renamed["group"]["name"] == "Revenue"
+    puts = [c for c in calls if c[0] == "PUT"]
+    assert len(puts) == 1
+    assert puts[0][2]["group_name"] == "Revenue"
+
+
+def test_create_group_succeeds_when_cloud_raises(backend, monkeypatch, tmp_path):
+    from conxa_core.config import settings
+
+    b, _out = backend
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _stub_generation(monkeypatch, b)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("cloud down")
+
+    monkeypatch.setattr(b, "_cloud_json", boom)
+    result = b.cmd_create_group({"name": "Sales"}, "rid")
+    assert result["group"]["name"] == "Sales"

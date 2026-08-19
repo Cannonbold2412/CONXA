@@ -101,7 +101,7 @@ def test_publish_and_sync_roundtrip():
             "target_url": "https://acme.test",
             "protected_url": "https://acme.test/app",
             "skill_pack_version": "0.3.0",
-            "skills": ["deploy"],
+            "skill_slug": "deploy",
             "files": files,
         },
     )
@@ -113,6 +113,10 @@ def test_publish_and_sync_roundtrip():
     assert body["tracking"]["tracking_token"]
     assert db_get("tracking_tokens", "acme-test")["workspace_id"] == "wrk_local"
     assert any(p.company_slug == "acme-test" for p in list_skill_packs(workspace_id="wrk_local"))
+
+    # Publish alone never makes a skill runtime-visible — release it first.
+    rel = client.post("/api/v1/workflows/v2/acme-test/releases/0.3.0/release?skill_slug=deploy")
+    assert rel.status_code == 200, rel.text
 
     # The delta endpoint should now serve the published pack, per skill.
     d = client.get("/api/v1/skill-packs/acme-test/delta?since=%7B%7D")
@@ -128,26 +132,33 @@ def test_publish_and_sync_roundtrip():
 
 def test_delta_ships_only_the_skill_that_actually_changed():
     """Two skills under one company must version and sync independently — bumping one
-    skill's component_versions record must not affect the other's delta result."""
+    skill's component_versions record must not affect the other's delta result. Each
+    is published independently (one skill per publish call — see the per-skill
+    publishing architecture), never bundled into one call together."""
     import json as _json
 
-    files = [
-        {"path": "pack.json", "content_base64": base64.b64encode(b'{"company":"multi-skill-test"}').decode()},
-        {"path": "invoice-automation/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
-        {"path": "approval-workflow/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
-    ]
-    r = client.post(
-        "/api/v1/workflows/publish",
-        json={
-            "slug": "multi-skill-test",
-            "display_name": "Multi Skill Test",
-            "target_url": "https://multi.test",
-            "skill_pack_version": "1.0.0",
-            "skills": ["invoice-automation", "approval-workflow"],
-            "files": files,
-        },
-    )
-    assert r.status_code == 200, r.text
+    for skill_slug in ("invoice-automation", "approval-workflow"):
+        r = client.post(
+            "/api/v1/workflows/publish",
+            json={
+                "slug": "multi-skill-test",
+                "display_name": "Multi Skill Test",
+                "target_url": "https://multi.test",
+                "skill_pack_version": "1.0.0",
+                "skill_slug": skill_slug,
+                "files": [
+                    {
+                        "path": f"{skill_slug}/execution.json",
+                        "content_base64": base64.b64encode(b'{"steps":[]}').decode(),
+                    }
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        rel = client.post(
+            f"/api/v1/workflows/v2/multi-skill-test/releases/1.0.0/release?skill_slug={skill_slug}"
+        )
+        assert rel.status_code == 200, rel.text
 
     # Simulate an independent version bump for one skill only (a future enhanced
     # publish flow would do this directly; today the KV record is what the delta
@@ -186,11 +197,13 @@ def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
             "display_name": "Wipe Skillpack Test",
             "target_url": "https://wipe.test",
             "skill_pack_version": "1.0.0",
-            "skills": ["deploy"],
+            "skill_slug": "deploy",
             "files": files,
         },
     )
     assert r.status_code == 200, r.text
+    rel = client.post(f"/api/v1/workflows/v2/{slug}/releases/1.0.0/release?skill_slug=deploy")
+    assert rel.status_code == 200, rel.text
 
     import shutil
     shutil.rmtree(tmp_path / "skill-packs", ignore_errors=True)
@@ -215,7 +228,7 @@ def test_publish_upsert_updates_existing_skill_pack_slug(monkeypatch, tmp_path):
         "display_name": "Render",
         "target_url": "https://dashboard.render.com",
         "skill_pack_version": "1.0.0",
-        "skills": [],
+        "skill_slug": "deploy",
         "files": [],
     }
     r1 = client.post("/api/v1/workflows/publish", json=body)
@@ -267,7 +280,7 @@ def test_skill_pack_delta_requires_sync_token_when_cloud_auth_required(monkeypat
 def test_tracking_ingest_requires_published_token_and_lists_runs():
     pub = client.post(
         "/api/v1/workflows/publish",
-        json={"slug": "track-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+        json={"slug": "track-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
     )
     assert pub.status_code == 200, pub.text
     token = pub.json()["tracking"]["tracking_token"]
@@ -564,7 +577,7 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
             "display_name": "Personal Visible",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
         headers=personal_headers,
@@ -622,7 +635,7 @@ def test_org_member_without_a_role_is_not_admin(monkeypatch, tmp_path):
             "display_name": "Org No Role",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
         headers={
@@ -648,7 +661,7 @@ def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_p
             "display_name": "Personal Hidden",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
         headers={
@@ -676,7 +689,7 @@ def test_publish_rejects_path_traversal():
     files = [{"path": "../escape.json", "content_base64": base64.b64encode(b"x").decode()}]
     r = client.post(
         "/api/v1/workflows/publish",
-        json={"slug": "trav-test", "skill_pack_version": "1.0.0", "skills": [], "files": files},
+        json={"slug": "trav-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": files},
     )
     assert r.status_code == 400
     assert "invalid_file_path" in r.json()["detail"]
@@ -814,7 +827,7 @@ def test_installer_upload_updates_skill_pack_latest_metadata():
             "display_name": "Skill Pack Meta Installer",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
     )
@@ -881,7 +894,7 @@ def test_tracking_ingest_caps_oversized_batch_and_fields(monkeypatch, tmp_path):
 
     pub = client.post(
         "/api/v1/workflows/publish",
-        json={"slug": "cap-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+        json={"slug": "cap-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
     )
     assert pub.status_code == 200, pub.text
     token = pub.json()["tracking"]["tracking_token"]
@@ -907,7 +920,7 @@ def test_tracking_ingest_passes_through_normal_batches_unchanged(monkeypatch, tm
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     pub = client.post(
         "/api/v1/workflows/publish",
-        json={"slug": "no-cap-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+        json={"slug": "no-cap-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
     )
     assert pub.status_code == 200, pub.text
     token = pub.json()["tracking"]["tracking_token"]

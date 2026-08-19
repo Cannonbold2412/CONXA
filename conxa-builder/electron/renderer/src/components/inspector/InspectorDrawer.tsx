@@ -25,9 +25,11 @@ import { FolderKanban, Hammer, Loader2 } from 'lucide-react'
  * package" escape hatch now that Build Skill Package no longer has its own page
  * (superseded by auto-build-on-sign-off, see cmd_sign_off_workflow).
  *
- * The compiled package is workspace-scoped — every workflow in the workspace
- * shares it — so this drawer just needs to find the one package containing
- * this particular workflow's own compiled skill. */
+ * Every workflow's compiled skill lands in the same shared local package
+ * directory, so this drawer finds the one package containing this particular
+ * workflow's own compiled skill. "Rebuild package" only recompiles this one
+ * workflow (see buildSkillPackage's skillSlug param) — a sibling workflow
+ * that isn't ready yet is never touched or required. */
 export function InspectorDrawer({ workflow, trigger }: { workflow: Workflow; trigger: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [activeFile, setActiveFile] = useState<string | null>(null)
@@ -85,7 +87,7 @@ export function InspectorDrawer({ workflow, trigger }: { workflow: Workflow; tri
   async function handleRebuild() {
     setRebuilding(true)
     try {
-      await buildSkillPackage()
+      await buildSkillPackage(workflow.slug)
       toast.success('Package rebuilt.')
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['skillPackages'] }),

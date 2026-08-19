@@ -56,15 +56,20 @@ export function BuildInstallerPage() {
   const logRef = useRef<HTMLDivElement>(null)
 
   const pack = packQ.data?.skill_pack ?? null
+  // Build Installer stages the whole company's skill-packs directory (a thin,
+  // static artifact — see installer_builder.py), not one skill's release, so
+  // there's no single skill to scope this gate to. Any published workflow is
+  // enough to prove "at least one release exists" for this company.
+  const representativeSkillSlug = packQ.data?.workflows?.[0]?.slug ?? ''
 
   // Build Installer no longer collects its own version/release notes — it packages
   // whatever was most recently published via Publish Skill Package. This is also
   // the gate: no release, no installer (routine skill-pack updates never need a
   // rebuild at all; this is deliberately a secondary/advanced action now).
   const versionsQ = useQuery({
-    queryKey: ['skill-pack-versions'],
-    queryFn: fetchSkillPackVersions,
-    enabled: Boolean(pack?.build),
+    queryKey: ['skill-pack-versions', representativeSkillSlug],
+    queryFn: () => fetchSkillPackVersions(representativeSkillSlug),
+    enabled: Boolean(pack?.build) && Boolean(representativeSkillSlug),
     staleTime: 10_000,
   })
   const latestVersion = versionsQ.data?.versions?.[0]

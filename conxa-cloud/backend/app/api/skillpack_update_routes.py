@@ -260,6 +260,11 @@ class TelemetryBody(BaseModel):
     # that change yet; those registrations read as deployment status "unknown"
     # rather than a fabricated "up to date".
     skill_versions: dict[str, dict[str, str]] = {}
+    # Optional: {company: {skill_slug: {code, at}}} — per-skill sync failures
+    # (checksum mismatch, download/activation error), reported by
+    # runtime/sync_errors.js via the same phone-home. Lets get_deployments
+    # (release_routes.py) show a real "failed" status instead of "pending".
+    sync_errors: dict[str, dict[str, dict[str, str]]] = {}
 
 
 telemetry_router = APIRouter(prefix="/telemetry", tags=["telemetry"])
@@ -304,6 +309,12 @@ def post_telemetry_runtime_start(body: TelemetryBody) -> dict[str, Any]:
             row["skill_versions"] = company_skill_versions
         elif isinstance(existing.get("skill_versions"), dict):
             row["skill_versions"] = existing["skill_versions"]
+
+        company_sync_errors = body.sync_errors.get(company) if isinstance(body.sync_errors, dict) else None
+        # Always overwrite (unlike skill_versions above) — sync_errors reflects
+        # only the most recent sync pass, so an empty {} here is a real signal
+        # ("nothing failed this time"), not a gap to preserve the old value for.
+        row["sync_errors"] = company_sync_errors if isinstance(company_sync_errors, dict) else {}
         db_set("runtime_registrations", key, row)
 
     return {"ok": True}

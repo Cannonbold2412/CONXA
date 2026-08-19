@@ -14,11 +14,12 @@ is the only reader of one that isn't also the writer.
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 from typing import Any
 
 from conxa_core.config import settings
-from conxa_core.db import db_list_kv, db_set
+from conxa_core.db import db_get, db_list_kv, db_set
 
 
 def skill_packs_dir(slug: str) -> Path:
@@ -31,25 +32,107 @@ def skillpack_files_ns(slug: str) -> str:
     return f"skillpack_files__{slug}"
 
 
-def skillpack_versions_ns(slug: str) -> str:
-    """KV namespace holding skill-pack release history, one row per version.
+def skillpack_versions_ns(slug: str, skill_slug: str) -> str:
+    """KV namespace holding one skill's release history, one row per version.
 
+    Keyed by (company slug, skill slug) — every skill has its own independent
+    version history (see docs/TRD.md's per-skill publishing architecture).
     Mirrors ``installer_versions_ns`` in ``installer_storage.py`` — no ``:``
     separator, for the same Windows-path-safety reasoning documented there.
     """
-    return f"skillpack_versions__{slug}"
+    return f"skillpack_versions__{slug}__{skill_slug}"
 
 
-def skill_pack_release_dir(slug: str, version: str) -> Path:
-    """On-disk immutable snapshot directory for one published release."""
-    return settings.data_dir / "skill-packs" / slug / "releases" / version
+def skill_pack_release_dir(slug: str, skill_slug: str, version: str) -> Path:
+    """On-disk immutable snapshot directory for one skill's published release."""
+    return settings.data_dir / "skill-packs" / slug / "skills" / skill_slug / "releases" / version
 
 
-def skillpack_release_files_ns(slug: str, version: str) -> str:
-    """KV namespace holding the durable copy of one release's files. Never
+def skillpack_release_files_ns(slug: str, skill_slug: str, version: str) -> str:
+    """KV namespace holding the durable copy of one skill's release files. Never
     overwritten after a publish succeeds — this is what makes rollback possible
     without rebuilding or duplicating anything."""
-    return f"skillpack_release_files__{slug}__{version}"
+    return f"skillpack_release_files__{slug}__{skill_slug}__{version}"
+
+
+def skillpack_known_skills_ns() -> str:
+    """KV namespace listing every skill ever published for a company, one row
+    per (slug, skill_slug) — keyed like ``skillpack_channels_ns()``.
+
+    Deliberately independent of pack.json's ``skills``/``skill_groups`` union,
+    which only updates at Release/Deploy time (see release_routes.py). This
+    registry updates at Publish time instead, so Cloud's Skill Packages →
+    Group → Workflow navigation can see a skill the moment it's published,
+    before anyone has released it — an admin-facing "what exists" index, not
+    the runtime-facing "what's currently live" mirror."""
+    return "skillpack_known_skills"
+
+
+def record_known_skill(
+    slug: str, skill_slug: str, *, group_id: str = "", group_name: str = "", workflow_name: str = ""
+) -> None:
+    """Upsert this skill into the company's known-skills registry. Called once
+    per publish (never removed — a skill's presence here just means "has been
+    published at least once"). Display fields are optional and only ever
+    overwrite with a non-empty value, so an older Build Studio that doesn't
+    send them yet never blanks out a name a newer one already recorded."""
+    key = f"{slug}:{skill_slug}"
+    existing = db_get(skillpack_known_skills_ns(), key)
+    row = existing if isinstance(existing, dict) else {}
+    row["slug"] = slug
+    row["skill_slug"] = skill_slug
+    if group_id:
+        row["group_id"] = group_id
+    if group_name:
+        row["group_name"] = group_name
+    if workflow_name:
+        row["workflow_name"] = workflow_name
+    row.setdefault("first_published_at", time.time())
+    db_set(skillpack_known_skills_ns(), key, row)
+
+
+def list_known_skills(slug: str) -> list[dict[str, Any]]:
+    """Every skill ever published for this company, across all groups.
+
+    Filter on the stored ``slug`` field, not the KV key — the filesystem
+    fallback hashes keys, so a ``"{slug}:"`` prefix match would miss every row.
+    """
+    return [
+        row
+        for _key, row in db_list_kv(skillpack_known_skills_ns())
+        if isinstance(row, dict) and row.get("slug") == slug
+    ]
+
+
+def skillpack_known_groups_ns() -> str:
+    """KV namespace listing every Workflow Group Build Studio has synced for a
+    company, one row per (slug, group_id). Independent of known-skills: a
+    group appears here the moment it is created in Studio, before any
+    workflow in it has been published."""
+    return "skillpack_known_groups"
+
+
+def record_known_group(slug: str, group_id: str, group_name: str = "") -> None:
+    """Upsert this group into the company's known-groups registry. Name only
+    overwrites when non-empty, matching ``record_known_skill``."""
+    key = f"{slug}:{group_id}"
+    existing = db_get(skillpack_known_groups_ns(), key)
+    row = existing if isinstance(existing, dict) else {}
+    row["slug"] = slug
+    row["group_id"] = group_id
+    if group_name:
+        row["group_name"] = group_name
+    row.setdefault("created_at", time.time())
+    db_set(skillpack_known_groups_ns(), key, row)
+
+
+def list_known_groups(slug: str) -> list[dict[str, Any]]:
+    """Every group Studio has synced for this company, including empty ones."""
+    return [
+        row
+        for _key, row in db_list_kv(skillpack_known_groups_ns())
+        if isinstance(row, dict) and row.get("slug") == slug
+    ]
 
 
 def skillpack_channels_ns() -> str:
@@ -60,20 +143,24 @@ def skillpack_channels_ns() -> str:
     return "skillpack_channels"
 
 
-def skillpack_release_events_ns(slug: str) -> str:
-    """KV namespace for the durable, unbounded per-slug release audit trail —
+def skillpack_release_events_ns(slug: str, skill_slug: str) -> str:
+    """KV namespace for the durable, unbounded per-skill release audit trail —
     see ``release_channel.record_release_event``."""
-    return f"skillpack_release_events__{slug}"
+    return f"skillpack_release_events__{slug}__{skill_slug}"
 
 
-def write_release_snapshot(slug: str, version: str, files: dict[str, bytes]) -> None:
-    """Write the immutable, write-once snapshot for a published release —
-    disk (fast path) + KV (durable, survives an ephemeral-disk restart).
-    Never called twice for the same (slug, version): publish's duplicate-version
-    gate is what makes that a safe assumption here."""
-    release_dir = skill_pack_release_dir(slug, version)
+def write_release_snapshot(slug: str, skill_slug: str, version: str, files: dict[str, bytes]) -> None:
+    """Write the immutable, write-once snapshot for one skill's published
+    release — disk (fast path) + KV (durable, survives an ephemeral-disk
+    restart). Never called twice for the same (slug, skill_slug, version):
+    publish's duplicate-version gate is what makes that a safe assumption here.
+
+    ``files`` is that skill's own files only — never includes ``pack.json``,
+    which is company-level static config and must never be restored by a
+    single skill's rollback (see release_routes.post_release_rollback)."""
+    release_dir = skill_pack_release_dir(slug, skill_slug, version)
     release_dir.mkdir(parents=True, exist_ok=True)
-    ns = skillpack_release_files_ns(slug, version)
+    ns = skillpack_release_files_ns(slug, skill_slug, version)
     for rel, raw in files.items():
         target = release_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -83,13 +170,13 @@ def write_release_snapshot(slug: str, version: str, files: dict[str, bytes]) -> 
         db_set(ns, rel, {"path": rel, "content_base64": base64.b64encode(raw).decode("ascii")})
 
 
-def read_release_snapshot(slug: str, version: str) -> dict[str, bytes]:
-    """{relative_path: raw_bytes} for an immutable published release, read from
-    KV (the durable source — disk can be wiped between requests on a
+def read_release_snapshot(slug: str, skill_slug: str, version: str) -> dict[str, bytes]:
+    """{relative_path: raw_bytes} for one skill's immutable published release,
+    read from KV (the durable source — disk can be wiped between requests on a
     no-persistent-disk host). Returns {} if the release predates this feature
-    (published before a per-version snapshot existed) or was never published."""
+    (published before a per-skill snapshot existed) or was never published."""
     out: dict[str, bytes] = {}
-    for _key, row in db_list_kv(skillpack_release_files_ns(slug, version)):
+    for _key, row in db_list_kv(skillpack_release_files_ns(slug, skill_slug, version)):
         if isinstance(row, dict) and row.get("content_base64") and row.get("path"):
             out[str(row["path"])] = base64.b64decode(row["content_base64"])
     return out

@@ -124,6 +124,7 @@ class Backend(
         self._undo_stacks: dict[str, list] = {}
         self._redo_stacks: dict[str, list] = {}
         self._installer_generation_cache: str | None = None
+        self._synced_company_slug: str | None = None
 
     # -- undo / redo helpers -------------------------------------------------
 
@@ -310,17 +311,34 @@ class Backend(
             raise _CommandError("pack_not_built", f"No built skill pack for {company_slug}")
         return pack_path, json.loads(pack_path.read_text(encoding="utf-8"))
 
-    def _collect_skill_pack_files(self, company_slug: str) -> list[dict[str, str]]:
-        """Every file currently under the built pack's directory, base64-encoded
-        the same way a publish upload encodes them. Shared by ``_publish_skill_pack``
-        (the real upload) and ``cmd_release_preview`` (a read-only dry run against
-        the exact same bytes, so the preview never drifts from what publish sends)."""
+    def _skill_group_id(self, company_slug: str, skill_slug: str) -> str:
+        """This skill's group folder name, as already written into the local
+        pack.json mirror by ``_write_skill_packs_format`` (falls back to
+        "_default", matching that function's own fallback)."""
+        _pack_path, pack = self._read_pack_json(company_slug)
+        return str((pack.get("skill_groups") or {}).get(skill_slug) or "_default")
+
+    def _collect_skill_pack_files(self, company_slug: str, skill_slug: str) -> list[dict[str, str]]:
+        """Every file under ONE skill's own directory (``{group_id}/{skill_slug}/``
+        under the built pack's root — see skill_package_builder_output.py's
+        ``_write_skill_packs_format``), base64-encoded the same way a publish
+        upload encodes them. Paths stay relative to the pack root (not the skill
+        directory) so they round-trip unchanged through the cloud's mutable
+        mirror and delta-sync, which both key on ``{group_id}/{skill_slug}/...``.
+
+        Shared by ``_publish_skill_pack`` (the real upload) and
+        ``cmd_release_preview`` (a read-only dry run against the exact same
+        bytes, so the preview never drifts from what publish sends). Never
+        walks the whole company directory — that would upload every other
+        skill's files on every single-skill publish."""
         from conxa_core.config import settings as _settings
         import base64
 
         packs_dir = Path(_settings.data_dir) / "skill-packs" / company_slug
+        group_id = self._skill_group_id(company_slug, skill_slug)
+        skill_dir = packs_dir / group_id / skill_slug
         files: list[dict[str, str]] = []
-        for fpath in sorted(packs_dir.rglob("*")):
+        for fpath in sorted(skill_dir.rglob("*")):
             if fpath.is_file():
                 files.append(
                     {
@@ -335,11 +353,22 @@ class Backend(
         *,
         company_slug: str,
         company_name: str,
+        skill_slug: str,
         version: str,
         release_notes: str,
+        group_name: str = "",
+        workflow_name: str = "",
+        tests_passed: bool = False,
         sink: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
-        """Publish the built skill pack and rewrite local pack.json with cloud tracking.
+        """Publish ONE skill's built files and rewrite local pack.json with cloud
+        tracking. Never uploads a sibling skill's files — see
+        ``_collect_skill_pack_files``.
+
+        This only ever gets the version to "ready" in Conxa Cloud — it does
+        NOT deploy it. A Cloud admin's explicit Release/Deploy action is what
+        moves the stable channel and makes runtimes start receiving it; see
+        docs/App-Flow.md.
 
         Mandatory operation: any real-cloud failure raises _CommandError (see
         cmd_publish_skill_pack). Only a local dev cloud that's simply unreachable
@@ -348,31 +377,40 @@ class Backend(
         import urllib.request
 
         pack_path, pack = self._read_pack_json(company_slug)
+        # Display-only, best-effort: each skill has its own independent version
+        # now (see the cloud's per-skill version history), so this local field
+        # just reflects whichever skill was most recently published — it's read
+        # only as installer_builder.py's last-resort fallback when no explicit
+        # version is passed to Build Installer.
         pack["skill_pack_version"] = version
         pack["release_notes"] = release_notes
         pack_path.write_text(json.dumps(pack, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        # Collected AFTER the write above so pack.json's own uploaded bytes carry
-        # this release's version/release_notes.
-        files = self._collect_skill_pack_files(company_slug)
+        group_id = self._skill_group_id(company_slug, skill_slug)
+        # Collected AFTER the write above so pack.json's own uploaded bytes (if
+        # ever included) would carry this release's release_notes.
+        files = self._collect_skill_pack_files(company_slug, skill_slug)
 
         cloud_api = self._cloud_api_base()
         generation = self._installer_generation()
         body = json.dumps(
             {
                 "slug": company_slug,
+                "skill_slug": skill_slug,
+                "group_id": group_id,
+                "group_name": group_name,
+                "workflow_name": workflow_name,
                 "display_name": company_name or company_slug,
                 "target_url": str(pack.get("target_url") or ""),
                 "protected_url": str(pack.get("protected_url") or ""),
                 "skill_pack_version": version,
                 "release_notes": release_notes,
-                "skills": list(pack.get("skills") or []),
-                "skill_groups": dict(pack.get("skill_groups") or {}),
+                "tests_passed": tests_passed,
                 "files": files,
             }
         ).encode("utf-8")
-        sink({"kind": "skill_pack_publish", "stage": "validated", "message": f"Validated {len(files)} files for {company_slug}."})
-        sink({"kind": "skill_pack_publish", "stage": "uploading", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
+        sink({"kind": "skill_pack_publish", "stage": "validated", "message": f"Validated {len(files)} files for {skill_slug}."})
+        sink({"kind": "skill_pack_publish", "stage": "uploading", "message": f"Publishing {skill_slug} to Conxa Cloud..."})
         try:
             req = urllib.request.Request(
                 f"{cloud_api}/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/upload",
@@ -473,9 +511,9 @@ class Backend(
                 "kind": "skill_pack_publish",
                 "stage": "published",
                 "message": (
-                    f"Published {company_slug} v{version} — stable channel updated "
-                    f"(workspace {workspace_id or 'unknown'}, sync_token present, "
-                    f"tracking_token present, url {tracking.get('tracking_url', '')})"
+                    f"Uploaded {company_slug} v{version} — Ready for Release in Conxa Cloud "
+                    f"(workspace {workspace_id or 'unknown'}). A Cloud admin must Release/Deploy "
+                    f"it before any runtime receives it."
                 ),
             }
         )

@@ -128,15 +128,19 @@ export type SkillPackReleaseResult = {
   published_at?: number
 }
 
-export type ReleaseStatus = 'pending' | 'published'
+// A "ready" version has been published (uploaded, immutable, versioned) but
+// not yet Released/Deployed by a Cloud admin — see the publish/release split
+// in docs/TRD.md. Build Studio never branches on this beyond display; Cloud
+// owns Release/Deploy, rollback, deployment, and audit.
+export type ReleaseStatus = 'ready' | 'pending' | 'published'
 
 export type SkillPackVersion = {
   slug: string
+  skill_slug: string
   version: string
   release_notes: string
-  skills: string[]
-  skill_groups?: Record<string, string>
-  skill_versions?: Record<string, string>
+  group_id?: string
+  tests_passed?: boolean
   workspace_id: string
   owner_user_id?: string
   published_by?: { user_id: string; email: string | null; name: string | null }
@@ -151,6 +155,7 @@ export type SkillPackVersion = {
 
 export type SkillPackVersionsResponse = {
   slug: string
+  skill_slug: string
   versions: SkillPackVersion[]
   current_stable: SkillPackVersion | null
 }
@@ -202,41 +207,6 @@ export type ReleaseDetail = {
 export type ReleaseDiffResponse =
   | ({ slug: string; available: true; from_version: string | null; to_version: string } & ReleaseDiff)
   | { slug: string; available: false; reason: string; version: string; from_version?: string }
-
-export type RollbackResult = { slug: string; rolled_back_to: string; previous_stable: string | null }
-
-export type DeploymentStatus = 'up_to_date' | 'pending' | 'offline' | 'unknown'
-
-export type DeploymentMachine = {
-  machine_id: string
-  platform: string
-  runtime_version: string
-  installed_skill_versions: Record<string, string> | null
-  desired_skill_version: string | null
-  status: DeploymentStatus
-  last_seen: number
-  last_sync: number
-}
-
-export type DeploymentsResponse = {
-  slug: string
-  desired_version: string | null
-  machines: DeploymentMachine[]
-  summary: { total: number; up_to_date: number; pending: number; offline: number; unknown: number }
-}
-
-export type ReleaseEvent = {
-  id: string
-  workspace_id: string
-  user_id: string
-  action: string
-  resource_type: string
-  resource_id: string
-  metadata: Record<string, unknown>
-  created_at: number
-}
-
-export type ReleaseEventsResponse = { slug: string; events: ReleaseEvent[] }
 
 export type TrackingEvent = {
   e: string
@@ -443,16 +413,18 @@ async function withKindLogAndStage<T>(
   }
 }
 
-/** Workspace-scoped: compiles every signed-off workflow into the one shared
- * skill package. company_name is only required the first time this workspace
+/** Compiles ONE signed-off workflow into the shared local skill package —
+ * a sibling workflow that isn't compiled/edited/tested yet is never touched
+ * or required. company_name is only required the first time this workspace
  * ever builds (nothing to derive it from otherwise). */
 export function buildSkillPackage(
+  skillSlug: string,
   companyName?: string,
   version = '0.1.0',
   onLog: (message: string) => void = () => {},
 ): Promise<SkillPackBuild> {
   return withKindLog('skill_package_build', onLog, () =>
-    cmd<SkillPackBuild>('build_skill_package', { company_name: companyName, version }),
+    cmd<SkillPackBuild>('build_skill_package', { skill_slug: skillSlug, company_name: companyName, version }),
   )
 }
 
@@ -471,11 +443,13 @@ export function buildInstaller(
   )
 }
 
-/** The primary, mandatory release-management action — publishes the workspace's
- * shared skill-pack release (version + release notes + built skill files) to
- * Conxa Cloud. Build Installer (above) is a secondary, advanced action that
+/** The primary, mandatory release-management action — publishes ONE skill's
+ * release (version + release notes + that skill's own built files) to Conxa
+ * Cloud. A sibling skill's test status, files, and version history are never
+ * touched. Build Installer (above) is a secondary, advanced action that
  * requires a release to already exist. */
 export function publishSkillPack(
+  skillSlug: string,
   version: string,
   releaseNotes: string,
   onLog: (message: string) => void = () => {},
@@ -483,44 +457,30 @@ export function publishSkillPack(
 ): Promise<SkillPackReleaseResult> {
   return withKindLogAndStage('skill_pack_publish', onLog, onStage, () =>
     cmd<SkillPackReleaseResult>('publish_skill_pack', {
+      skill_slug: skillSlug,
       version,
       release_notes: releaseNotes,
     }),
   )
 }
 
-export function fetchSkillPackVersions(): Promise<SkillPackVersionsResponse> {
-  return cmd<SkillPackVersionsResponse>('list_skill_pack_versions')
+export function fetchSkillPackVersions(skillSlug: string): Promise<SkillPackVersionsResponse> {
+  return cmd<SkillPackVersionsResponse>('list_skill_pack_versions', { skill_slug: skillSlug })
 }
 
 /** Dry-run against the exact bytes a Publish would upload — computed cloud-side
  * by the same code path publish itself uses, so nothing shown here can drift
- * from what actually gets recorded on Publish. */
-export function previewRelease(version: string): Promise<ReleasePreview> {
-  return cmd<ReleasePreview>('release_preview', { version })
+ * from what actually gets recorded on Publish. Scoped to one skill. */
+export function previewRelease(skillSlug: string, version: string): Promise<ReleasePreview> {
+  return cmd<ReleasePreview>('release_preview', { skill_slug: skillSlug, version })
 }
 
-export function fetchReleaseDetail(version: string): Promise<ReleaseDetail> {
-  return cmd<ReleaseDetail>('release_detail', { version })
+export function fetchReleaseDetail(skillSlug: string, version: string): Promise<ReleaseDetail> {
+  return cmd<ReleaseDetail>('release_detail', { skill_slug: skillSlug, version })
 }
 
-export function fetchReleaseDiff(version: string): Promise<ReleaseDiffResponse> {
-  return cmd<ReleaseDiffResponse>('release_diff', { version })
-}
-
-export function rollbackRelease(
-  version: string,
-  onLog: (message: string) => void = () => {},
-): Promise<RollbackResult> {
-  return withKindLog('rollback', onLog, () => cmd<RollbackResult>('rollback_release', { version }))
-}
-
-export function fetchDeployments(): Promise<DeploymentsResponse> {
-  return cmd<DeploymentsResponse>('list_deployments')
-}
-
-export function fetchReleaseEvents(): Promise<ReleaseEventsResponse> {
-  return cmd<ReleaseEventsResponse>('release_events')
+export function fetchReleaseDiff(skillSlug: string, version: string): Promise<ReleaseDiffResponse> {
+  return cmd<ReleaseDiffResponse>('release_diff', { skill_slug: skillSlug, version })
 }
 
 export function getCompiledSkill(
