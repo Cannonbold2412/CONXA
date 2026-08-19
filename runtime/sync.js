@@ -145,6 +145,12 @@ async function _syncCompany(skillPacksDir, company, log) {
   const serverSkillNames = (delta.skills || []).map((s) => s.name).filter(Boolean);
   const changed = (delta.skills || []).filter((s) => s.action === "update");
 
+  // {skill_slug: {code, at}} — reported to the cloud via server.js's phone-home
+  // (see runtime/sync_errors.js) so the Deployment dashboard can show a real
+  // "failed" status. Seeded from last round so an error survives an unrelated
+  // sync pass; cleared the moment the skill activates successfully below.
+  const syncErrors = { ...(pack.last_sync_errors || {}) };
+
   const activated = [];
   if (changed.length > 0) {
     // Download all files for all changed skills in parallel first — nothing touches
@@ -168,6 +174,8 @@ async function _syncCompany(skillPacksDir, company, log) {
       }));
     } catch (e) {
       log(`[sync:error] ${company} download failed — ${e.message}`);
+      const at = new Date().toISOString();
+      for (const skillEntry of changed) syncErrors[skillEntry.name] = { code: "download_failed", at };
     }
 
     for (const { skillEntry, files } of downloaded || []) {
@@ -192,9 +200,14 @@ async function _syncCompany(skillPacksDir, company, log) {
         }
         versionManager.activate(skillRoot, versionDir, { keep: 3, requiredFiles: ["manifest.json"] });
         activated.push(`${slug}@${skillEntry.version}`);
+        delete syncErrors[slug];
       } catch (e) {
         log(`[sync:error] ${company}/${slug}: activation failed — ${e.message}`);
         try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
+        syncErrors[slug] = {
+          code: /checksum mismatch/i.test(e.message) ? "checksum_mismatch" : "activation_failed",
+          at: new Date().toISOString(),
+        };
       }
     }
   }
@@ -210,6 +223,7 @@ async function _syncCompany(skillPacksDir, company, log) {
     if (s.name) pack.skill_groups[s.name] = s.group || "_default";
   }
   pack.last_synced = new Date().toISOString();
+  pack.last_sync_errors = syncErrors;
   const packTmp = packPath + ".tmp";
   fs.writeFileSync(packTmp, JSON.stringify(pack, null, 2));
   fs.renameSync(packTmp, packPath);

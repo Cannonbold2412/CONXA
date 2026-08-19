@@ -260,3 +260,63 @@ test("a brand-new skill added to a company post-install is picked up from nothin
   fs.rmSync(skillPacksDir, { recursive: true, force: true });
 });
 
+test("a checksum mismatch records last_sync_errors instead of activating a corrupt version", async (t) => {
+  const skillPacksDir = mkSkillPacksDir();
+  const packPath = writePack(skillPacksDir, "acme", { skills: [] });
+
+  const getMock = mockDeltaResponse({
+    skills: [
+      {
+        name: "skill-a",
+        action: "update",
+        version: "1.0.0",
+        group: "_default",
+        // Wrong sha256 — atomicWrite must reject this file.
+        files: [{ path: "manifest.json", sha256: "0".repeat(64), content_base64: Buffer.from("{}").toString("base64") }],
+      },
+    ],
+  });
+  t.after(() => getMock.mock.restore());
+
+  await syncSkillPacks(skillPacksDir, { timeoutMs: 4000, log: () => {} });
+
+  const pack = JSON.parse(fs.readFileSync(packPath, "utf8"));
+  assert.equal(pack.last_sync_errors["skill-a"].code, "checksum_mismatch");
+  assert.ok(
+    !fs.existsSync(path.join(skillPacksDir, "acme", "_default", "skill-a", "current")),
+    "a checksum-mismatched version must never be activated"
+  );
+
+  fs.rmSync(skillPacksDir, { recursive: true, force: true });
+});
+
+test("a successful sync clears a previously recorded sync error for that skill", async (t) => {
+  const skillPacksDir = mkSkillPacksDir();
+  const packPath = writePack(skillPacksDir, "acme", {
+    skills: ["skill-a"],
+    last_sync_errors: { "skill-a": { code: "checksum_mismatch", at: "2026-08-19T00:00:00Z" } },
+  });
+
+  const content = Buffer.from('{"skills":[]}');
+  const sha256 = crypto.createHash("sha256").update(content).digest("hex");
+  const getMock = mockDeltaResponse({
+    skills: [
+      {
+        name: "skill-a",
+        action: "update",
+        version: "1.0.0",
+        group: "_default",
+        files: [{ path: "manifest.json", sha256, content_base64: content.toString("base64") }],
+      },
+    ],
+  });
+  t.after(() => getMock.mock.restore());
+
+  await syncSkillPacks(skillPacksDir, { timeoutMs: 4000, log: () => {} });
+
+  const pack = JSON.parse(fs.readFileSync(packPath, "utf8"));
+  assert.deepStrictEqual(pack.last_sync_errors, {}, "a skill that just activated successfully must not still read as failed");
+
+  fs.rmSync(skillPacksDir, { recursive: true, force: true });
+});
+

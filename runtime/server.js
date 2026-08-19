@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const semver = (global.__hostRequire || require)("semver");
 const { loadInstallId } = require("./install_identity");
 const { installedSkillVersions } = require("./installed_versions");
+const { collectSyncErrors } = require("./sync_errors");
 const pageScripts = require("./page_scripts");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
@@ -1543,6 +1544,9 @@ async function _phonehome() {
     // Added for the release system's Deployment view (docs/App-Flow.md) — optional
     // server-side, so an older cloud that doesn't know this field yet is unaffected.
     skill_versions: installedSkillVersions(skillIndex),
+    // Per-skill sync failures (checksum mismatch, download/activation error) —
+    // lets the Deployment dashboard show "failed" instead of just "pending".
+    sync_errors: collectSyncErrors(SKILL_PACKS_DIR),
   });
   await new Promise((resolve) => {
     const req = httpClient.request(`${CONXA_API}/api/v1/telemetry/runtime-start`, {
