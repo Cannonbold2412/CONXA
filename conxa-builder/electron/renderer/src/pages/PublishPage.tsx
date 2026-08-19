@@ -32,7 +32,6 @@ export function PublishPage() {
   const qc = useQueryClient()
   const packQ = useQuery({ queryKey: ['skill-pack'], queryFn: fetchSkillPack, staleTime: 10_000 })
   const entitlementsQ = useQuery({ queryKey: ['entitlements'], queryFn: fetchEntitlements, staleTime: 30_000, retry: 1 })
-  const creditsMeter = entitlementsQ.data?.meters?.compile_credits
 
   const workflows = packQ.data?.workflows ?? []
 
@@ -141,19 +140,10 @@ export function PublishPage() {
     }
   }
 
-  const slotPill = (
-    <div className="flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px]">
-      <span className="font-semibold text-zinc-200">
-        {creditsMeter ? (creditsMeter.unlimited ? creditsMeter.used : `${creditsMeter.remaining} / ${creditsMeter.limit}`) : '—'}
-      </span>
-      <span className="text-zinc-500">{creditsMeter?.unlimited ? 'compiles used' : 'compile credits left'}</span>
-    </div>
-  )
-
   if (packQ.isLoading) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <PageHeader title="Publish Skill Package" actions={slotPill} />
+        <PageHeader title="Publish Skill Package" />
         <div className="flex flex-1 items-center justify-center">
           <div className="flex items-center gap-2 text-zinc-500">
             <Loader2 className="size-4 animate-spin" />
@@ -167,7 +157,7 @@ export function PublishPage() {
   if (packQ.isError) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <PageHeader title="Publish Skill Package" actions={slotPill} />
+        <PageHeader title="Publish Skill Package" />
         <div className="mx-6 mt-6 flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
           <XCircle className="mt-0.5 size-4 shrink-0 text-red-400" />
           <p className="text-sm text-red-300">{(packQ.error as Error)?.message ?? 'Failed to load the skill package'}</p>
@@ -185,10 +175,9 @@ export function PublishPage() {
             ? `Current release: v${currentStableVersion} — Published, Stable`
             : 'Ship a version-controlled skill update — the primary way to release changes to customers who already have Conxa installed.'
         }
-        actions={slotPill}
       />
 
-      <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-6">
+      <div className="scrollbar-none mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-6">
         {!pack?.build || workflows.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 text-center">
             <div className="rounded-full border border-white/8 bg-white/[0.03] p-5">
