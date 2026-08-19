@@ -10,28 +10,49 @@
   with zero interference. Endpoints/keys come from the matching .env.<env> file,
   loaded automatically by CONXA_ENV.
 
+  With no arguments, defaults to dev + studio (Build Studio in the dev lane).
+
 .EXAMPLE
-  .\scripts\conxa.ps1 dev studio
-  .\scripts\conxa.ps1 prod backend
+  .\scripts\conxa.ps1
+  .\scripts\conxa.ps1 backend
+  .\scripts\conxa.ps1 prod studio
 #>
 param(
-  [Parameter(Mandatory=$true)][ValidateSet("dev","prod")][string]$Env,
-  [Parameter(Mandatory=$true)][ValidateSet("backend","frontend","studio","runtime","env")][string]$Target
+  [Parameter(Position=0)][string]$Arg1,
+  [Parameter(Position=1)][string]$Arg2
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 
+$ValidEnvs    = @("dev", "prod")
+$ValidTargets = @("backend", "frontend", "studio", "runtime", "env")
+
+# ── Resolve env + target from 0/1/2 positional args ──────────────────────────
+if (-not $Arg1 -and -not $Arg2) {
+  $Env = "dev"; $Target = "studio"
+} elseif ($Arg1 -and -not $Arg2) {
+  if ($ValidEnvs -contains $Arg1)    { $Env = $Arg1; $Target = "studio" }
+  elseif ($ValidTargets -contains $Arg1) { $Env = "dev"; $Target = $Arg1 }
+  else { throw "Unknown argument: '$Arg1' (expected dev|prod|backend|frontend|studio|runtime|env)" }
+} else {
+  $Env = $Arg1; $Target = $Arg2
+}
+
+if ($ValidEnvs -notcontains $Env)       { throw "Unknown env: '$Env' (expected dev|prod)" }
+if ($ValidTargets -notcontains $Target) { throw "Unknown target: '$Target' (expected backend|frontend|studio|runtime|env)" }
+
 # ── The single switch ────────────────────────────────────────────────────────
 $env:CONXA_ENV = $Env
-$env:CONXA_DEV_SKIP_AUTH = "1"
 
-# ── Isolated path roots per lane ─────────────────────────────────────────────
+# ── Isolated path roots + dev conveniences per lane ──────────────────────────
 if ($Env -eq "dev") {
   if (-not $env:CONXA_DIR)            { $env:CONXA_DIR            = "$HOME\.conxa-dev" }
   if (-not $env:CONXA_DATA_DIR)       { $env:CONXA_DATA_DIR       = "$env:APPDATA\Conxa-Dev" }
   if (-not $env:CONXA_APP_DIR)        { $env:CONXA_APP_DIR        = "$env:CONXA_DIR\conxa-app" }
   if (-not $env:CONXA_STUDIO_HOME)    { $env:CONXA_STUDIO_HOME    = "$HOME\.conxa-build-studio-dev" }
   if (-not $env:CONXA_UPDATE_CHANNEL) { $env:CONXA_UPDATE_CHANNEL = "dev" }
+  # Skip Clerk login in Build Studio — dev lane only.
+  if (-not $env:CONXA_DEV_SKIP_AUTH) { $env:CONXA_DEV_SKIP_AUTH = "1" }
   # No .env.dev ships in the repo, so the standalone cloud backend
   # (`conxa.ps1 dev backend`) has zero LLM provider keys by default. Without
   # this, Settings() refuses to even start ("No LLM providers enabled").
@@ -44,14 +65,15 @@ if ($Env -eq "dev") {
   # fallback path in build.py) instead of waiting on it. Flip to "0" once the
   # configured providers are healthy again; leave "1" while they're down/flaky.
   if (-not $env:CONXA_DISABLE_VISION_ANCHORS) { $env:CONXA_DISABLE_VISION_ANCHORS = "1" }
+  # Runtime / Test Skill: skip self-update polling in dev.
+  if (-not $env:CONXA_SKIP_SELF_UPDATE) { $env:CONXA_SKIP_SELF_UPDATE = "1" }
+  # Studio sandbox caps recovery at tier 2 (deterministic, no agent handoff).
+  if (-not $env:CONXA_MAX_RECOVERY_TIER) { $env:CONXA_MAX_RECOVERY_TIER = "2" }
   # Test Skill always runs the LOCALLY BUILT runtime — never a download, ever, in
   # Dev. Run scripts\build-runtime-local.ps1 and scripts\build-app-local.ps1 (once
   # after cloning, then again after editing bootstrap.js/server.js/etc.) — they
-  # write to <CONXA_STUDIO_HOME>\dev-runtime\, which
-  # conxa_compile/conxa_runtime.py's resolve_runtime_dir() always resolves to for
-  # a non-frozen (unpacked) Studio checkout. This mirrors the Production pipeline
-  # (build -> publish -> download) except "publish/download" is just a local file
-  # copy done by those two scripts.
+  # write to <CONXA_STUDIO_HOME>\deps\, which conxa_compile/conxa_runtime.py's
+  # resolve_runtime_dir() resolves for a non-frozen (unpacked) Studio checkout.
 } else {
   if (-not $env:CONXA_DIR)            { $env:CONXA_DIR            = "$HOME\.conxa" }
   if (-not $env:CONXA_DATA_DIR)       { $env:CONXA_DATA_DIR       = "$env:APPDATA\Conxa" }
@@ -60,24 +82,17 @@ if ($Env -eq "dev") {
   if (-not $env:CONXA_UPDATE_CHANNEL) { $env:CONXA_UPDATE_CHANNEL = "stable" }
 }
 
-Write-Host "-- conxa [$($env:CONXA_ENV)] --------------------------------------"
+Write-Host "-- conxa [$($env:CONXA_ENV)] -> $Target --------------------------------"
 Write-Host "  CONXA_DIR            = $($env:CONXA_DIR)"
 Write-Host "  CONXA_DATA_DIR       = $($env:CONXA_DATA_DIR)"
 Write-Host "  CONXA_STUDIO_HOME    = $($env:CONXA_STUDIO_HOME)"
 Write-Host "  CONXA_UPDATE_CHANNEL = $($env:CONXA_UPDATE_CHANNEL)"
 Write-Host "  env file             = .env.$($env:CONXA_ENV)"
-Write-Host "-----------------------------------------------------------------"
-
-# Dev-only sample data (a Default group plus a seeded Sales group/workflows) so
-# a fresh Studio checkout has something to look at. Never runs in prod; a
-# failure here is a warning, never a launch blocker — see seed_dev_data.py.
-if ($Env -eq "dev" -and $Target -eq "studio") {
-  try {
-    python "$Root\scripts\seed_dev_data.py"
-  } catch {
-    Write-Host "  (seed data skipped: $_)"
-  }
+if ($Env -eq "dev") {
+  Write-Host "  CONXA_DEV_SKIP_AUTH         = $($env:CONXA_DEV_SKIP_AUTH)"
+  Write-Host "  CONXA_DISABLE_VISION_ANCHORS = $($env:CONXA_DISABLE_VISION_ANCHORS)"
 }
+Write-Host "-----------------------------------------------------------------"
 
 $port = if ($env:PORT) { $env:PORT } else { "8000" }
 
