@@ -197,9 +197,8 @@ login wall.
 
 ```python
 class SkillPack(BaseModel):
-    workspace_id: str          # Clerk org ID or "ws_local" (keyed by this + company_slug)
-    company_slug: str          # URL-safe company identifier, globally unique, e.g. "acme-corp"
-    company_name: str          # Display name
+    workspace_id: str          # Clerk org ID or "ws_local" (unique key)
+    display_name: str = ""     # Display name for UI + installer filename; cosmetic only
     status: Literal["idle", "building", "error"]
     build: SkillPackBuild | None  # Most recent build metadata
     installer: SkillPackInstaller | None
@@ -207,14 +206,14 @@ class SkillPack(BaseModel):
     updated_at: float
 ```
 
-**Note:** This is a workspace-level entity, not a per-workflow entity. All workflows in a workspace that are `signed_off=true` compile together into this single skill package. A multi-tenant workspace may own multiple company slugs, each with its own SkillPack row.
+**Note:** One workspace has exactly one SkillPack, forever. All workflows in a workspace that are `signed_off=true` compile together into this single skill package. The workspace is the sole identity unit — there is no secondary "company slug" ownership model.
 
 ### 2.4 SkillPackBuild
 
 ```python
 class SkillPackBuild(BaseModel):
     last_built_at: float
-    output_path: str           # Path to {company_slug}-skill-package/ folder
+    output_path: str           # Path to skill-package/ folder
     version: str               # Semver, e.g. "0.1.0"
 ```
 
@@ -726,12 +725,12 @@ After enrichment, stored in `kv_store` under `tracking/{company}` → `run_id`:
 
 ### 4.3 Tracking Token Record
 
-Stored in `kv_store` under `tracking_tokens` → `company_slug`:
+Stored in `kv_store` under `tracking_tokens` → `workspace_id`:
 
 ```json
 {
   "token": "random_urlsafe_32_bytes",
-  "company": "acme",
+  "company": "workspace_dir_slug_value",
   "version": "0.2.0",
   "workspace_id": "org_clerk123",
   "owner_user_id": "user_clerk456",
@@ -810,22 +809,30 @@ unreleased version number is safe and expected, not an overwrite.
 
 ### 5.1a Versioned Endpoint Scheme (`{installer_version}`)
 
-Skill Pack Publishing is the primary, version-controlled release surface; installers are a stable, Conxa-owned platform artifact. To let Conxa evolve the installer/runtime wire contract without ever requiring vendors to rebuild for routine skill-pack updates, every per-company endpoint has a versioned equivalent nested under a Conxa-owned `{installer_version}` path segment (`publish_routes.SUPPORTED_INSTALLER_GENERATIONS`, currently `("v1", "v2")`):
+Skill Pack Publishing is the primary, version-controlled release surface; installers are a stable, Conxa-owned platform artifact. To let Conxa evolve the installer/runtime wire contract without ever requiring vendors to rebuild for routine skill-pack updates, Conxa-owned versions of endpoint families are nested under `{installer_version}` path segment (`publish_routes.SUPPORTED_INSTALLER_GENERATIONS`, currently `("v1", "v2")`):
 
+**Dashboard endpoints** (Clerk-authenticated; workspace derived from authenticated principal, not a path parameter):
 ```
-POST /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/upload      # same body/response as §5.1
-GET  /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions   # release history — see §5.1a below
-GET  /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/delta      # same as §5.9
-POST /api/v1/workflows/{installer_version}/{company_slug}/installer/upload       # same as §5.1b below
-GET  /api/v1/workflows/{installer_version}/{company_slug}/installer/versions     # same as §5.1b below
-POST /api/v1/workflows/{installer_version}/{company_slug}/tracking/events        # same as §5.6
+POST /api/v1/workflows/publish                                                  # legacy
+POST /api/v1/workflows/{installer_version}/skill-packs/upload                   # versioned; same body/response as §5.1
+GET  /api/v1/workflows/{installer_version}/skill-packs/versions                 # release history — see §5.1a below
+POST /api/v1/workflows/{installer_version}/installer/upload                     # versioned; same as §5.1b below
+GET  /api/v1/workflows/{installer_version}/installer/versions                   # versioned; same as §5.1b below
 GET  /api/v1/workflows/generations                                              # {current, supported, deprecated}
 POST /api/v1/admin/workflows/generations                                        # admin flip (Bearer CONXA_ADMIN_TOKEN)
 ```
 
-Every versioned route validates `{installer_version}` against the allow-list (400 `unsupported_installer_version` otherwise) and delegates to the exact same shared implementation function as its legacy, unversioned counterpart — behavior is identical across generations. **`{installer_version}` is frozen into an installer at build time** (stamped into `pack.json.installer_version` at publish time by Build Studio, read from `GET /api/v1/workflows/generations`'s `current` field) and is never reassigned remotely for an already-installed runtime. "Migrating customers to a new generation" means Conxa flips the *default* generation that **new** installer builds stamp (`POST /api/v1/admin/workflows/generations`) — it does not, and cannot, change the URLs already baked into a customer's machine. The legacy, unversioned routes (`/api/v1/workflows/publish`, `/api/v1/workflows/{slug}/installer/upload`, `/api/v1/skill-packs/{company}/delta`, `/api/tracking/{company}/events`) are kept mounted **permanently** as the implicit "v1" behavior for every already-deployed installer — never removed.
+**Runtime endpoints** (bearer-token authenticated; workspace scoped by `{workspace_id}` path parameter):
+```
+GET  /api/v1/skill-packs/{workspace_id}/delta                                   # legacy
+GET  /api/v1/workflows/{installer_version}/{workspace_id}/skill-packs/delta     # versioned; same as §5.9
+POST /api/v1/tracking/{workspace_id}/events                                     # legacy ingest
+POST /api/v1/workflows/{installer_version}/{workspace_id}/tracking/events       # versioned ingest; same as §5.6
+```
 
-**GET /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions** — release history for the Skill Pack Publishing / Release Center page (version, release notes, publish timestamp, artifact hash, `is_latest`), the version/release-comment/publishing-limit surface that moved here from Build Installer:
+Every versioned route validates `{installer_version}` against the allow-list (400 `unsupported_installer_version` otherwise) and delegates to the exact same shared implementation function as its legacy, unversioned counterpart — behavior is identical across generations. **`{installer_version}` is frozen into an installer at build time** (stamped into `pack.json.installer_version` at publish time by Build Studio, read from `GET /api/v1/workflows/generations`'s `current` field) and is never reassigned remotely for an already-installed runtime. "Migrating customers to a new generation" means Conxa flips the *default* generation that **new** installer builds stamp (`POST /api/v1/admin/workflows/generations`) — it does not, and cannot, change the URLs already baked into a customer's machine. The legacy, unversioned routes are kept mounted **permanently** as the implicit "v1" behavior for every already-deployed installer — never removed.
+
+**GET /api/v1/workflows/{installer_version}/skill-packs/versions** — release history for the Skill Pack Publishing / Release Center page (version, release notes, publish timestamp, artifact hash, `is_latest`), the version/release-comment/publishing-limit surface that moved here from Build Installer:
 ```json
 {
   "slug": "acme",
@@ -854,20 +861,20 @@ Every versioned route validates `{installer_version}` against the allow-list (40
 
 ### 5.1d Skill Pack Release System (per-skill: immutable versions, stable channel, rollback, diff)
 
-Built on top of §5.1's publish endpoint — see `docs/Implementation-Plan.md` §3.4 for the full design writeup. Every route below shares §5.1a's `/api/v1/workflows/{installer_version}/{company_slug}/...` prefix and `require_admin` gating.
+Built on top of §5.1's publish endpoint — see `docs/Implementation-Plan.md` §3.4 for the full design writeup. Every route below is Clerk-authenticated with `require_admin` gating; workspace is derived from the authenticated principal, not a path parameter.
 
-**Re-scoped 2026-08-19 to per skill.** 1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1 independent release. Every route, KV namespace, and JSON shape below is keyed by **(company slug, skill slug)**, not company slug alone — publishing, testing, versioning, and rolling back one skill (e.g. "create-a-lead") never requires, checks, or touches another skill (e.g. "update-opportunity") published under the same company slug. `skill_slug` travels as a required body field on `POST`s with a body (`.../releases/preview`) and as a required `?skill_slug=` query parameter on every other route below (kept off the URL path itself to avoid re-numbering the existing route segments).
+**Re-scoped 2026-08-19 to per skill.** 1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1 independent release. Every route, KV namespace, and JSON shape below is keyed by **skill slug** — publishing, testing, versioning, and rolling back one skill (e.g. "create-a-lead") never requires, checks, or touches another skill (e.g. "update-opportunity") in the same workspace. `skill_slug` travels as a required body field on `POST`s with a body (`.../releases/preview`) and as a required `?skill_slug=` query parameter on every other route below (kept off the URL path itself to avoid re-numbering the existing route segments).
 
 ```
-POST /api/v1/workflows/{installer_version}/{company_slug}/releases/preview                              # dry run for ONE skill — proposed version, diff vs. that skill's own previous version, duplicate/unchanged flags
-GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}?skill_slug=...              # release detail + per-file sha256, for that one skill's own version row
-GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/diff?skill_slug=...          # deterministic diff vs. the preceding published version OF THIS SAME SKILL
-POST /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/release?skill_slug=...       # Cloud-only: activate a "ready" version — the only action that deploys it
-POST /api/v1/workflows/{installer_version}/{company_slug}/releases/{version}/rollback?skill_slug=...      # move ONE skill's stable channel pointer back to an already-published version
-GET  /api/v1/workflows/{installer_version}/{company_slug}/deployments?skill_slug=...                      # runtime deployment status for ONE skill
-GET  /api/v1/workflows/{installer_version}/{company_slug}/releases/events?skill_slug=...                  # release-lifecycle audit trail for ONE skill
-GET  /api/v1/workflows/{installer_version}/{company_slug}/groups                                          # Cloud's Skill Packages → Group → Workflow navigation — Studio-synced groups (possibly empty) unioned with every skill ever published
-PUT  /api/v1/workflows/{installer_version}/{company_slug}/groups/{group_id}                               # Build Studio create/rename: upsert {group_id, group_name} so the folder exists before first publish
+POST /api/v1/workflows/{installer_version}/releases/preview                              # dry run for ONE skill — proposed version, diff vs. that skill's own previous version, duplicate/unchanged flags
+GET  /api/v1/workflows/{installer_version}/releases/{version}?skill_slug=...              # release detail + per-file sha256, for that one skill's own version row
+GET  /api/v1/workflows/{installer_version}/releases/{version}/diff?skill_slug=...          # deterministic diff vs. the preceding published version OF THIS SAME SKILL
+POST /api/v1/workflows/{installer_version}/releases/{version}/release?skill_slug=...       # Cloud-only: activate a "ready" version — the only action that deploys it
+POST /api/v1/workflows/{installer_version}/releases/{version}/rollback?skill_slug=...      # move ONE skill's stable channel pointer back to an already-published version
+GET  /api/v1/workflows/{installer_version}/deployments?skill_slug=...                      # runtime deployment status for ONE skill
+GET  /api/v1/workflows/{installer_version}/releases/events?skill_slug=...                  # release-lifecycle audit trail for ONE skill
+GET  /api/v1/workflows/{installer_version}/groups                                          # Cloud's Skill Packages → Group → Workflow navigation — Studio-synced groups (possibly empty) unioned with every skill ever published
+PUT  /api/v1/workflows/{installer_version}/groups/{group_id}                               # Build Studio create/rename: upsert {group_id, group_name} so the folder exists before first publish
 ```
 
 **Publish vs. Release/Deploy.** `POST .../skill-packs/upload` (§5.1) only ever
@@ -1013,14 +1020,14 @@ Response:
     "active": 200,
     "locked": 12,
     "workflows": [
-      {"workspace_id": "org_123", "company_slug": "acme", "workflow_id": "wf1", "created_at": "2026-06-01T00:00:00Z", "locked": true}
+      {"workspace_id": "org_123", "workflow_id": "wf1", "created_at": "2026-06-01T00:00:00Z", "locked": true}
     ]
   }
 }
 ```
 (Free is the only plan carrying `"distribution": "internal"`, enforced by `ensure_distribution_allowed` at installer-upload time — see §5.1b below.)
 
-**Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(company_slug, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
+**Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(workspace_id, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
 
 For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`). `trial_ends_at`/`trial_expired` are non-null only for the `free` plan.
 
@@ -1419,8 +1426,7 @@ Streaming event:
 erDiagram
     SkillPack {
         string workspace_id PK
-        string company_slug PK
-        string company_name
+        string display_name
         string status
         float created_at
         float updated_at
@@ -1430,7 +1436,6 @@ erDiagram
         string slug
         string name
         string workspace_id FK
-        string company_slug FK
         string target_url
         string protected_url
         string status
@@ -1474,7 +1479,7 @@ erDiagram
     Workflow ||--o| SkillPackage : "compiled to"
 ```
 
-**Cardinality:** One SkillPack (identified by `workspace_id` + `company_slug`) owns many Workflows. Each Workflow represents one recorded automation with one login session and one recording. When a workspace publishes, all `signed_off=true` workflows in that company compile together into the single SkillPack's shared build and installer.
+**Cardinality:** One workspace has exactly one SkillPack (identified by `workspace_id`). The SkillPack owns many Workflows. Each Workflow represents one recorded automation with one login session and one recording. When a workspace publishes, all `signed_off=true` workflows in that workspace compile together into the single SkillPack's shared build and installer.
 
 ### 6.2 Skill Package Domain
 
@@ -1594,13 +1599,12 @@ erDiagram
 | Namespace | Key | Value | Used by |
 |---|---|---|---|
 | `workflows` | `{workflow_id}` | `Workflow` JSON | Build Studio, Cloud |
-| `skill_packs_meta` | `{company_slug}` | `SkillPack` JSON (workspace-scoped; cloud side, keyed by the globally-unique company_slug; Studio typically has only one) | Build Studio, Cloud |
+| `skill_packs_meta` | `{workspace_id}` | `SkillPack` JSON (workspace-scoped; one per workspace) | Build Studio, Cloud |
 | `entitlement_usage` | `{workspace_id}:{YYYY-MM}` | Monthly compile/Human Edit usage row | Cloud entitlements |
 | `compile_reservations` | `{reservation_id}` | Compile reservation row | Cloud entitlements |
-| `publish_owners` | `{slug}` | `{workspace_id, claimed_at}` | Cloud publish |
-| `tracking_tokens` | `{company}` | `{token, workspace_id, ...}` | Cloud tracking |
+| `tracking_tokens` | `{workspace_id}` | `{token, company, version, workspace_id, owner_user_id, updated_at}` | Cloud tracking, runtime telemetry auth |
 | `roi_assumptions` | `{workspace_id}` | `{default_minutes, hourly_rate, currency, per_workflow: {"{company}/{skill}": minutes}, updated_at, updated_by}` | Operations dashboard — Impact page. The only input the dashboard cannot derive from telemetry: how long a task took a human before it was automated. Admin-writable, surfaced beside every figure that depends on it |
-| `sync_tokens` | `{slug}` | `{token, company, version, workspace_id, owner_user_id, updated_at}` | Cloud publish, runtime sync auth |
+| `sync_tokens` | `{workspace_id}` | `{token, company, version, workspace_id, owner_user_id, updated_at}` | Cloud publish, runtime delta-sync auth |
 | `installer_versions__{slug}` | `{version}` | Installer `meta.json` fields + `content_base64` (full .exe) | Cloud publish — durable backing for installer history; Render's free-tier disk is ephemeral, this KV namespace (Postgres in prod) is the source of truth, local disk is a rehydratable cache |
 | `skillpack_files__{slug}` | `{relative_path}` (e.g. `pack.json`, `{group_id}/{skill_slug}/execution.json`) | `{path, content_base64}` | Cloud publish, skill-pack sync — the **mutable** "currently live" mirror `_build_delta` serves; still one namespace per company (not re-keyed by skill), but every publish/rollback call only ever writes one skill's own path subset — a sibling skill's entries are untouched. Same disk-wipe rationale as above; `path` is stored explicitly because the fs-fallback KV implementation keys files by a hash of the original key, not the literal string |
 | `skillpack_versions__{slug}__{skill_slug}` | `{version}` | Release-history row: `{slug, skill_slug, version, release_notes, group_id, tests_passed, workspace_id, owner_user_id, published_by, published_at, file_count, size_bytes, artifact_sha256, status, is_latest}` | Cloud publish, §5.1d release system — one immutable row per published version, per skill (re-keyed 2026-08-19; every skill has its own independent history). `status` is `ready` (published, awaiting Release/Deploy), `published` (activated), or legacy `pending` |

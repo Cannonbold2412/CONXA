@@ -35,7 +35,22 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ---
 
-## P0 — Critical / Time-Sensitive (9 items)
+## Progress Dashboard
+
+Counts below are computed straight from the section headers in this file (unique item, resolved vs. still-open) — they are not hand-maintained, so they only go stale if an item is marked resolved/reopened without leaving its heading in the format `### ID — Title` / `### ~~ID — Title~~ — Resolved <date>`.
+
+| Priority | Remaining | Total | Resolved |
+|---|---|---|---|
+| P0 — Critical / Time-Sensitive | 6 | 16 | 10 |
+| P1 — Blocking / Foundational | 4 | 5 | 1 |
+| P2 — High Value, Do Soon | 23 | 26 | 3 |
+| P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
+| P4 — Low Urgency, Opportunistic | 29 | 36 | 7 |
+| **Total** | **85** | **106** | **21** |
+
+---
+
+## P0 — Critical / Time-Sensitive (6 remaining / 16 total)
 
 **Added 2026-08-09, direct from the founders — supersedes every previously-tracked priority in this file.** The four items below are the reason the rest of this backlog shifted down one tier (old P0 → P1, old P1 → P2, old P2 → P3, old P3 → P4); no other item content changed, only the section labels. See the "Fourth pass" note at the bottom of this file.
 
@@ -247,7 +262,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 
 ---
 
-## P1 — Blocking / Foundational (4 items)
+## P1 — Blocking / Foundational (4 remaining / 5 total)
 
 ### ~~BUILD-15 — Recording-window flicker: move the mid-recording session-refresh save off the visible hot path~~ — **Resolved 2026-08-17**
 - **Resolution:** Landed as the broader "authentication is pre-flight-only" redesign (recording + execution), per direct user request once the root cause was confirmed. The flicker-causing periodic 6s `context.storage_state()` autosave (option (a) from this item's original "what's left" list) is gone — `_autosave_storage_state_sync()` now runs only twice: once when `wait_for_url` is reached, and once, `force=True`, at recording teardown. `handlers/session.py:204-208`'s `storage_state_autosave = storage_state_path` is restored (no longer force-disabled), and Playwright's `record_video_dir`/`record_video_size` is restored too (confirmed during investigation not to be the cause). Both `PONYTAIL TEMP DEBUG` blocks are gone. Same pass also closed a matching mid-*execution* contradiction found on the runtime side (`captureReAuth` no longer opens a re-auth window automatically at the moment of a mid-run failure — it now just fails immediately with a clear, app-named message; re-auth happens via the next `execute_skill`'s normal pre-flight gate), plus a few gaps found along the way: `execute_sequence` now pre-flight-checks every skill's required apps, not just the first; the browser-context cache TTL dropped from 5 minutes to 90 seconds; `GroupAuthWizard` can now scope to specific app(s) instead of always showing the whole group, wired to `RecordWorkflowDialog`'s `auth_required` error; the backend's sibling-app warning (previously generated, never displayed) is now surfaced; a "workflow's login doesn't match any app in its group" case now warns instead of silently skipping the check; and a `last_error` field-overload bug (a stale, unrelated error message could survive display as a fresh expiry reason) was fixed. Full trace and design decisions in `.claude/plans/created-workflow-testing-download-staged-cray.md` (session-local). **Not done in this pass** — the two amplifying (non-flicker-causing) cleanups this item originally also named: `_rewrite_events_jsonl` still writes a full diagnostics dump on every recorded event instead of once at session end, and the dead `_capture_a11y_async` (calls a Playwright API removed in the installed version, silently failing every time) is still there. Tracked as a new opportunistic item below.
@@ -316,7 +331,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 
 ---
 
-## P2 — High Value, Do Soon (22 items)
+## P2 — High Value, Do Soon (23 remaining / 26 total)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -412,6 +427,39 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 - **Suggested order:** can run in parallel with execution/recovery work — it's revenue-gated, not reliability-gated, per the research corpus's own sequencing recommendation.
 - **Complexity:** XL — SSO/SAML integration, per-skill ACL model, and a real tenant-isolation migration are each substantial on their own.
 - **Success criteria:** a read-only analyst role exists and is enforced; SSO/SAML login works end-to-end for at least one major IdP; tenant data isolation is enforced at the data layer, not just by application-level filtering convention.
+
+### CLOUD-16 — Group-level access control: who can see/edit which Workflow Group in Build Studio
+- **Category:** Cloud / Build Studio
+- **Description:** Today any employee signed into Build Studio can see and edit every Workflow Group in the workspace. Add per-group membership so, for example, only Sales employees are added to (and can open/record/compile into) the "Sales" group, while a Support employee can't see it at all. Needs a group-membership model on the cloud side (which user belongs to which group(s)) plus enforcement in Build Studio's group list/open/save calls — not just hiding the group in the UI.
+- **Why required:** companies onboarding multiple departments onto Conxa need department-scoped editing today, not just department-scoped execution (see CLOUD-17) — an org where Sales and Support share one workspace currently has no way to keep each team out of the other's workflows.
+- **Business value:** removes a blocker for any customer with more than one department building workflows; today the workaround is "give every team the whole workspace," which larger customers won't accept.
+- **Technical value:** this is the natural extension of CLOUD-1's per-skill ACL work, scoped to groups instead of individual skills — likely shares the same permission model and should be designed together with CLOUD-1 rather than as a second, parallel ACL system.
+- **Dependencies:** CLOUD-1 (RBAC model) — build the group-membership check on top of whatever role/permission primitive that item establishes, don't build a second one.
+- **Suggested order:** after or alongside CLOUD-1; before CLOUD-17, since execution-time enforcement needs the same membership data this item creates.
+- **Complexity:** L — group-membership schema + enforcement in every Build Studio group read/write path.
+- **Success criteria:** a user assigned only to the Sales group cannot list, open, or edit any other group's workflows via Build Studio, enforced server-side (not just hidden client-side).
+
+### CLOUD-17 — Employee-scoped execution: who can run which workflow group at runtime, gated by installer login
+- **Category:** Cloud / Runtime
+- **Description:** Right now the installer identifies a *company*, not an *employee* — anyone with the installer and a machine can execute every skill pack it downloads. Add an employee-identity layer: the installer/runtime authenticates the individual (email + password, or SSO once CLOUD-1 lands) before it will sync or execute skill packs, and execution is filtered to the workflow groups that employee's account is a member of (same membership model as CLOUD-16) — a Sales employee's runtime can execute Sales-group skills but not Support-group ones, and skill packs outside their groups are never even synced to their machine.
+- **Why required:** without this, any customer employee (or anyone who gets hold of a company's installer) can execute every workflow the company has ever published, regardless of role — a real problem once CLOUD-16 lets companies scope *editing* by group, since execution would still be wide open.
+- **Business value:** this is likely a hard requirement for the same enterprise buyers CLOUD-1 targets — least-privilege execution, not just least-privilege editing, is a standard ask once a company has more than one department on the platform.
+- **Technical value:** changes what the installer authenticates as (today: company-level static token in `pack.json`) to what it authenticates as *plus who's logged in on this machine* — touches `runtime/auth_manager.js` (per-company token today, needs a per-employee session on top) and `runtime/sync.js` (delta-sync needs to filter by the logged-in employee's group membership, not just company).
+- **Dependencies:** CLOUD-1 (identity/RBAC model) and CLOUD-16 (group-membership data) — this is the runtime-enforcement half of the same access model, not a separate one.
+- **Suggested order:** after CLOUD-16, since it reuses that item's group-membership data; both should be designed in the same pass as CLOUD-1 to avoid ending up with three divergent permission models (cloud dashboard, Build Studio, runtime).
+- **Complexity:** XL — new employee-identity auth flow in the installer/runtime (login UI or CLI prompt, credential storage, session refresh), plus sync/execution filtering by group membership, plus the "Auth files never enter build output" invariant (see CLAUDE.md) needs revisiting for what *is* allowed to persist locally for a logged-in employee session.
+- **Success criteria:** a fresh install of the installer requires an employee to log in before any skill pack executes; an employee's runtime only ever syncs and can only ever execute skills belonging to workflow groups they're a member of; revoking a group membership on the cloud side stops that employee's local runtime from executing that group's skills on next sync.
+
+### CLOUD-18 — New Build Studio install: authenticate as employee, auto-import (read-only) the groups they belong to
+- **Category:** Cloud / Build Studio
+- **Description:** When a new employee installs Build Studio and logs in (same employee auth as CLOUD-17), Build Studio should look up which Workflow Groups the cloud says they belong to and, for any group that already has published workflows, pull those workflows' *published* skill packages down into the local Build Studio so the employee can see and test-run them immediately — without waiting for someone to hand them a file or re-record from scratch. The catch: the underlying recording/session data (`data/sessions/<id>/events.jsonl`, screenshots) only ever lived on the machine that recorded it and was never uploaded to the cloud (recording/compiling is local-only, per this repo's core architecture). So the import is necessarily the *compiled, published skill package* — enough to view, test-run, and understand the workflow — not the original recording, so it can't be re-compiled or edited on the new machine. Editing still requires either the original recorder's machine or a fresh re-recording.
+- **Why required:** today a new hire on an existing team (e.g. the second Sales employee) starts from zero in Build Studio even though their team's workflows already exist and are published — they have to ask around for context or re-record something that's already built. This is a rough first-week experience and duplicates work.
+- **Business value:** faster ramp for new team members, less duplicated recording effort across a team, and reinforces that Workflow Groups (CLOUD-16) are a real shared-team boundary rather than just an access filter — joining a group should visibly "hand you" what your team already built.
+- **Technical value:** this is a read path on top of CLOUD-16's group membership and the existing Publish flow's already-cloud-hosted skill packages (`skillpack_storage`/`publish_routes.py`) — no new storage is needed, just a Build Studio import step that pulls what's already on the cloud for the groups the logged-in employee belongs to. Must be clearly surfaced as read-only/imported in the UI (distinct from "your local recordings") so nobody tries to edit a package with no local session data behind it and gets confused when it fails.
+- **Dependencies:** CLOUD-16 (group membership data) and CLOUD-17 (employee login in the Build Studio / installer context) — this is the "welcome import" that group membership makes possible, not a separate access-control mechanism itself.
+- **Suggested order:** after CLOUD-16 and CLOUD-17 land, since it's a convenience feature layered on their identity + membership plumbing, not a blocker for either.
+- **Complexity:** M — mostly a Build Studio-side "fetch published packages for my groups on login" call plus clear read-only UI treatment; no new compiler or storage work.
+- **Success criteria:** a new employee, after logging in, sees their group's already-published workflows appear in Build Studio automatically, can open and test-run them, and gets a clear "imported, not editable here" indicator rather than a confusing edit failure if they try to modify one.
 
 ### EXEC-2 — Fleet durability flywheel automation
 - **Category:** Execution & Recovery
@@ -539,7 +587,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 
 ---
 
-## P3 — Valuable, Sequence Around Other Work (17 items)
+## P3 — Valuable, Sequence Around Other Work (19 remaining / 19 total; +4 more in "P3 Discovered Items" below)
 
 ### PROD-2 — Recordability pre-check (green/yellow/red compile-time score)
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -761,7 +809,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 
 ---
 
-## P4 — Low Urgency, Opportunistic (19 items)
+## P4 — Low Urgency, Opportunistic (29 remaining / 36 total)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1145,7 +1193,7 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 
 ---
 
-## P3 Discovered Items (2026-08-12 Plugin→Workflow/SkillPack refactor)
+## P3 Discovered Items (4 remaining / 4 total) (2026-08-12 Plugin→Workflow/SkillPack refactor)
 
 ### TEST-7 — Dev-script renaming cleanup: test_plugin.py, rebuild_plugin.py, plugin_test/ directory
 - **Category:** Testing & Cleanup

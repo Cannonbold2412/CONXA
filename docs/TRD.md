@@ -144,7 +144,7 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 │       ├── skill.json         (SkillPackage JSON)
 │       └── assets/            (screenshot thumbnails)
 ├── skill-packs/
-│   └── {company_slug}/
+│   └── {workspace_dir_slug}/   (filesystem-safe transform of workspace_id)
 │       ├── pack.json          (manifest with sync_endpoint, tracking, skill_groups — see §5.2a)
 │       └── {group_id}/        (workflow's group_id, or "_default" — see §5.2a)
 │           └── {skill_slug}/
@@ -208,24 +208,24 @@ All under `/api/v1/` except health endpoints:
 | `POST /api/v1/usage/compile/release` | Release an uncommitted compile reservation | Clerk JWT |
 | `GET \| PUT \| DELETE /api/v1/workspace/llm-key` | Enterprise BYOK (Azure OpenAI) key config — GET never returns the key | Clerk JWT, owner/admin |
 | `GET /api/v1/subscriptions/plans` | Public price sheet — the four tiers, derived from `PLAN_LIMITS` so it can't drift; excludes the credit add-on | Public |
-| `POST /api/v1/workflows/publish` | Skill pack publish (legacy, permanent) — **mandatory**, fails the whole publish on cloud error | Clerk JWT |
-| `POST /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/upload` | Skill pack publish (versioned equivalent, §17 row) — same contract/mandatory semantics | Clerk JWT |
-| `GET /api/v1/workflows/{installer_version}/{company_slug}/skill-packs/versions` | Skill-pack release history (version, release notes, `is_latest`) — the Skill Pack Publishing page's changelog | Clerk JWT |
-| `POST /api/v1/workflows/{slug}/installer/upload` | Upload .exe (legacy, permanent) — **optional**, failure never fails the build (only surfaced as a `cloud_upload_error` field) | Clerk JWT |
-| `POST /api/v1/workflows/{installer_version}/{company_slug}/installer/upload` | Upload .exe (versioned equivalent) — same optional semantics | Clerk JWT |
+| `POST /api/v1/workflows/publish` | Skill pack publish (legacy, permanent) — **mandatory**, fails the whole publish on cloud error; workspace derived from Clerk session | Clerk JWT |
+| `POST /api/v1/workflows/{installer_version}/skill-packs/upload` | Skill pack publish (versioned equivalent); workspace derived from Clerk session — same contract/mandatory semantics | Clerk JWT |
+| `GET /api/v1/workflows/{installer_version}/skill-packs/versions` | Skill-pack release history (version, release notes, `is_latest`) — the Skill Pack Publishing page's changelog; workspace derived from Clerk session | Clerk JWT |
+| `POST /api/v1/workflows/{slug}/installer/upload` | Upload .exe (legacy, permanent) — **optional**, failure never fails the build (only surfaced as a `cloud_upload_error` field); workspace derived from Clerk session | Clerk JWT |
+| `POST /api/v1/workflows/{installer_version}/installer/upload` | Upload .exe (versioned equivalent); workspace derived from Clerk session — same optional semantics | Clerk JWT |
 | `GET /api/v1/workflows/generations` | `{current, supported, deprecated}` installer generations — Build Studio stamps `current` into new publishes/builds | Public |
 | `POST /api/v1/admin/workflows/generations` | Flip the default generation stamped into new builds (never affects already-installed runtimes) | Bearer: `CONXA_ADMIN_TOKEN` |
 | `GET /api/v1/installers/{slug}` | Installer download | Public if `SKILL_INSTALLER_SIGNING_KEY` unset (dev); otherwise requires `ts`+`sig` query params, HMAC-SHA256 signed, 10-min default window (SG-07) |
-| `GET /api/v1/skill-packs/{co}/delta` | Runtime skill sync — per-skill delta (see below), legacy permanent route | Rate-limited; token optional |
-| `GET /api/v1/workflows/{installer_version}/{company}/skill-packs/delta` | Runtime skill sync, versioned equivalent — identical contract | Rate-limited; token optional |
-| `POST /api/tracking/{co}/events` | Telemetry ingest — permanent back-compat alias (also served at `/api/v1/tracking/...` and the versioned `/api/v1/workflows/{installer_version}/{co}/tracking/events`) | Package tracking token |
-| `GET /api/v1/tracking/companies` | Company list — not ops_tier-gated (navigation lookup, not analytics content) | Clerk JWT |
-| `GET /api/v1/tracking/{co}/runs` | Run summaries — `ops_tier` "basic"+ (§13.4) | Clerk JWT |
-| `GET /api/v1/tracking/{co}/runs/{run_id}` | Run timeline — `ops_tier` "basic"+ | Clerk JWT |
-| `GET /api/v1/tracking/{co}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) — `ops_tier` "full" only | Clerk JWT |
-| `GET /api/v1/tracking/dashboard?range=` | Full operations payload — adoption, reliability, health score, per-skill rollups, recovery cascade, heatmap, ROI, rule-derived insights. `range` accepts `24h`/`7d`/`30d`/`90d` — `ops_tier` "basic"+ | Clerk JWT |
-| `GET /api/v1/tracking/activity` | Recent runs across every visible company for the live feed (polls independently of the dashboard aggregate) — `ops_tier` "basic"+ | Clerk JWT |
-| `GET /api/v1/tracking/workflows/{co}/{slug}?range=` | Step-level drill-down for one skill — `ops_tier` "basic"+ | Clerk JWT |
+| `GET /api/v1/skill-packs/{workspace_id}/delta` | Runtime skill sync — per-skill delta (see below), legacy permanent route | Rate-limited; bearer token optional |
+| `GET /api/v1/workflows/{installer_version}/{workspace_id}/skill-packs/delta` | Runtime skill sync, versioned equivalent — identical contract | Rate-limited; bearer token optional |
+| `POST /api/tracking/{workspace_id}/events` | Telemetry ingest — permanent back-compat alias (also served at `/api/v1/tracking/...` and the versioned `/api/v1/workflows/{installer_version}/{workspace_id}/tracking/events`) | Package tracking token |
+| `GET /api/v1/tracking/companies` | Workspace list — not ops_tier-gated (navigation lookup, not analytics content) | Clerk JWT |
+| `GET /api/v1/tracking/{workspace_id}/runs` | Run summaries — `ops_tier` "basic"+ (§13.4) | Clerk JWT |
+| `GET /api/v1/tracking/{workspace_id}/runs/{run_id}` | Run timeline — `ops_tier` "basic"+ | Clerk JWT |
+| `GET /api/v1/tracking/{workspace_id}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) — `ops_tier` "full" only | Clerk JWT |
+| `GET /api/v1/tracking/dashboard?range=` | Full operations payload — adoption, reliability, health score, per-skill rollups, recovery cascade, heatmap, ROI, rule-derived insights. `range` accepts `24h`/`7d`/`30d`/`90d` — workspace derived from Clerk session; `ops_tier` "basic"+ | Clerk JWT |
+| `GET /api/v1/tracking/activity` | Recent runs for the workspace (polls independently of the dashboard aggregate) — `ops_tier` "basic"+ | Clerk JWT |
+| `GET /api/v1/tracking/workflows/{workspace_id}/{slug}?range=` | Step-level drill-down for one skill — `ops_tier` "basic"+ | Clerk JWT |
 | `GET \| PUT /api/v1/tracking/roi-assumptions` | Workspace ROI baseline (minutes per run, hourly rate). `PUT` is admin/owner only — `ops_tier` "basic"+ | Clerk JWT |
 | `GET /api/v1/updates/deps-manifest` | Bootstrap manifest (Build Studio deps only) | Public |
 | `GET /api/v1/manifest.json` | **Unified, Ed25519-signed** runtime update manifest — conxa_runtime, conxa_app, and per-skill versions, compatibility matrix, minimum versions, rollout percentages. Source of truth for `runtime/manifest_manager.js`. Served straight from `manifest` KV (signed once at publish time, not on the read path). | Public |
@@ -241,8 +241,8 @@ All under `/api/v1/` except health endpoints:
 | `POST /api/v1/subscriptions/webhooks/cashfree` | Cashfree webhook | Webhook secret HMAC over sorted `cf_`-prefixed fields |
 | `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
 | `GET /api/v1/workflows` | Workflow list + skill pack status | Clerk JWT |
-| `GET /api/v1/workflows/skill-packs` | SkillPack list (dashboard) | Clerk JWT |
-| `GET /api/v1/workflows/skill-packs/{company_slug}` | SkillPack detail (dashboard) | Clerk JWT |
+| `GET /api/v1/workflows/skill-packs` | SkillPack list (dashboard); workspace derived from Clerk session | Clerk JWT |
+| `GET /api/v1/workflows/skill-packs/{workspace_id}` | SkillPack detail (dashboard) | Clerk JWT |
 | `GET /api/v1/jobs/{job_id}` | Job status | Clerk JWT |
 
 ### 3.3 Authentication Middleware
@@ -521,11 +521,11 @@ A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `conxa_core/sto
 
 **Per-workflow recording gate + session write-back (2026-08-16):** `cmd_start_recording` no longer requires every app in the group to be connected before a workflow can be recorded — it narrows the group's apps down to `apps_for_workflow(group.apps, workflow.target_url, workflow.protected_url)` (`conxa_core.storage.group_store`, hostname-matched against each app's `login_url`/`success_url`, shared with the build-time `required_apps` computation below so the two can't disagree) and only *requires* those before recording can start. It still *probes* every captured app in the group (skipping any checked within the last 600s, via `checked_at`) — not just the required subset — because recording seeds every captured app's session into the browser (below), so a sibling app being dead at record time is a real, silent risk even though it isn't gated on. An expired required app blocks recording with `auth_required`; an expired sibling only warns (surfaced in the `cmd_start_recording` response's `warnings` field) since the user is present in the recorder window and can sign back in inline if that app actually comes up. Recording also stops discarding the session it was seeded with: `storage_state_autosave_path` is now the same `merged_group_state.json` the recorder was seeded from (previously left unset). **Authentication is pre-flight-only (2026-08-17):** this save happens exactly once, at recording teardown (`force=True`) — never on a repeating timer during the recording. An earlier version of this feature autosaved on a throttled 6s timer during recording, which turned out to reproduce, for ordinary workflow recording, the same visible browser-window flicker already diagnosed and fixed for auth-mode recording (`context.storage_state()` is a heavy, all-at-once CDP call; see `_autosave_storage_state_sync`'s comment in `recorder/session.py`). Recording never re-checks a required app's session mid-recording either — the pre-flight gate above is the only auth check; if a site logs the user out partway through, its own login page simply appears in the recorder window like any other page, and the human signs back in inline, same as before this feature existed. When the recording stops or is cancelled, `_refresh_group_app_sessions(workflow_id)` (`handlers/session.py`) reads that merged file and, for each app in the group that already has a saved session, derives its refreshed slice via `conxa_core.storage.storage_state.refresh_app_state` — keeping only the cookie domains/localStorage origins that app already owned, so a sibling app's cookies from the same merged context never bleed across — and writes it back to that app's `storage_state_path` via `set_group_app_auth` (bumping `captured_at` and `checked_at` — a just-completed login is inherently verified — clearing `last_error`). This is what makes routine cookie rotation, refresh-token renewal, or a user manually re-authenticating mid-recording actually stick instead of being thrown away the moment the recorder closes. If `apps_for_workflow` matches none of the group's apps (a workflow whose login happens on a different host than its target, the common single-sign-on shape), recording is **not** blocked — it warns instead (`auth_scope_warning` in the `cmd_start_recording` response's `warnings` field), since forcing a confirmation here would also block every genuinely-no-login-needed workflow in the same group.
 
-**Group summary (`cmd_list_groups`):** each row carries `{id, slug, name, workflow_count, stages, workflow_preview, apps_total, apps_authenticated, ready, created_at, updated_at}`. `stages` is a `{stage: count}` map over `derive_workflow_stage` (keys present only for non-empty stages) and `workflow_preview` is the first `WORKFLOW_PREVIEW_LIMIT` (3) workflows as `{id, name, stage}`. Both are derived from the workflow list the handler already loads — no extra I/O — and exist so the Workflows page can draw each group as a folder showing its contents and lifecycle mix (see `docs/UI-UX-Brief.md` §2.3). Creating or renaming a group in Build Studio also upserts that group's `id` and `name` to Conxa Cloud (`PUT /api/v1/workflows/{installer_version}/{company_slug}/groups/{group_id}`), so Skill Packages can show the folder immediately — including when it still has zero published workflows. The Default group is not synced until it is renamed. Deleting a Studio group does not remove the Cloud folder. Cloud failures never fail the local create/rename.
+**Group summary (`cmd_list_groups`):** each row carries `{id, slug, name, workflow_count, stages, workflow_preview, apps_total, apps_authenticated, ready, created_at, updated_at}`. `stages` is a `{stage: count}` map over `derive_workflow_stage` (keys present only for non-empty stages) and `workflow_preview` is the first `WORKFLOW_PREVIEW_LIMIT` (3) workflows as `{id, name, stage}`. Both are derived from the workflow list the handler already loads — no extra I/O — and exist so the Workflows page can draw each group as a folder showing its contents and lifecycle mix (see `docs/UI-UX-Brief.md` §2.3). Creating or renaming a group in Build Studio also upserts that group's `id` and `name` to Conxa Cloud (`PUT /api/v1/workflows/{installer_version}/groups/{group_id}`, workspace derived from Clerk session), so Skill Packages can show the folder immediately — including when it still has zero published workflows. The Default group is not synced until it is renamed. Deleting a Studio group does not remove the Cloud folder. Cloud failures never fail the local create/rename.
 
 **Compiled pack contract:** `pack.json` gains a `groups` array (`[{id, name, apps: [{id, name, login_url, success_url}]}]`); each skill's `manifest.json` gains `group_id` and `required_apps` (`[app_id, ...]`, see below). A pack with no `groups` key is untouched — it's the pre-Groups format and takes the legacy single-session path everywhere below.
 
-**On-disk skill layout:** `pack.json` also gains a `skill_groups` field (`{skill_slug: group_id}`, distinct from `groups` above — `groups` is auth-app metadata, `skill_groups` is the path index) and each skill's directory nests under its `group_id` (or the sentinel `"_default"` when a workflow's `group_id` is empty) — `skill-packs/{company}/{group_id}/{skill_slug}/`, both in Build Studio's local build output and on the real runtime after sync. The delta-sync response's per-skill entries (§11.1) also carry a `"group"` field so `runtime/sync.js` knows which nested path to write into; its version-comparison lookup only ever consults the nested path, so a skill previously synced under the pre-nesting flat layout (`skill-packs/{company}/{skill_slug}/`) is treated as never-synced and freshly redownloaded into its nested location on the runtime's next sync — a one-time, self-healing migration with no separate migration pass. The cloud's `_build_delta` (`skillpack_update_routes.py`) mirrors this on its own storage: if a company's files still sit at the old flat cloud-storage path (published before this nested-path support existed), it serves from there while still reporting the resolved `group_id`, so already-published companies keep syncing without needing to republish.
+**On-disk skill layout:** `pack.json` also gains a `skill_groups` field (`{skill_slug: group_id}`, distinct from `groups` above — `groups` is auth-app metadata, `skill_groups` is the path index) and each skill's directory nests under its `group_id` (or the sentinel `"_default"` when a workflow's `group_id` is empty) — `skill-packs/{workspace_dir_slug}/{group_id}/{skill_slug}/`, both in Build Studio's local build output and on the real runtime after sync. The delta-sync response's per-skill entries (§11.1) also carry a `"group"` field so `runtime/sync.js` knows which nested path to write into; its version-comparison lookup only ever consults the nested path, so a skill previously synced under the pre-nesting flat layout (`skill-packs/{workspace_dir_slug}/{skill_slug}/`) is treated as never-synced and freshly redownloaded into its nested location on the runtime's next sync — a one-time, self-healing migration with no separate migration pass. The cloud's `_build_delta` (`skillpack_update_routes.py`) mirrors this on its own storage: if a workspace's files still sit at the old flat cloud-storage path (published before this nested-path support existed), it serves from there while still reporting the resolved `group_id`, so already-published workspaces keep syncing without needing to republish.
 
 **Per-workflow app scoping (`required_apps`, 2026-08-16):** a group's apps only *gate* the specific workflows that actually use them, computed from `target_url`/`protected_url` **and** every hostname the recording actually visited. `SkillMeta.visited_hosts` (`conxa_core.models.skill_spec`) is populated at compile time by `compiler/build.py::_extract_visited_hosts` from every recorded event's `page.url`/`tab.url` — so a workflow that *starts* in one app but clicks through to a sibling app mid-recording (a link-out, not a planned navigation) still gates on both apps at execution time, not just the one its start URL happens to resolve to. `skill_package_builder.py` calls the same `apps_for_workflow` helper the recording gate above uses (`conxa_core.storage.group_store`, which accepts bare hostnames as well as full URLs) against `target_url`, `protected_url`, and `visited_hosts` together, and writes the matching app ids into that skill's `manifest.json.required_apps`. A workflow that never navigates to any of its group's apps (e.g. a "Sales" group holding both a Salesforce workflow and an unrelated one-off scrape of a public site) gets `required_apps: []` and runs with no group auth gate at all. Skills compiled before `visited_hosts` existed have an empty list and fall back to today's start-URL-only matching; manifests built before `required_apps` existed have no key at all, which the runtime treats as "gate on every app in the group" — both fully backward compatible, no republish required to keep working.
 
@@ -607,23 +607,21 @@ sequenceDiagram
     participant Cloud as Conxa Cloud
 
     Note over Studio: After build_installer command
-    Backend->>Backend: read skill-packs/{slug}/pack.json
+    Backend->>Backend: read skill-packs/{workspace_dir_slug}/pack.json
     Backend->>Backend: collect all files as base64
     Backend->>Cloud: POST /api/v1/workflows/publish
-    Note over Backend,Cloud: Bearer Clerk JWT<br/>body: {company_slug, files[], skill_pack_version, skills[]}
+    Note over Backend,Cloud: Bearer Clerk JWT<br/>body: {files[], skill_pack_version, skills[]}; workspace derived from JWT
     
-    Cloud->>Cloud: _assert_owner(company_slug, workspace_id)
-    Note over Cloud: First publish claims company_slug ownership.<br/>Subsequent publishes from same workspace only.
-    Cloud->>Cloud: write files to data/skill-packs/{company_slug}/
+    Cloud->>Cloud: write files to data/skill-packs/{workspace_dir_slug}/
     Cloud->>Cloud: generate tracking token (secrets.token_urlsafe(32))
-    Cloud->>Cloud: store tracking_tokens[company_slug] in kv_store
+    Cloud->>Cloud: store tracking_tokens[workspace_id] in kv_store
     Cloud->>Cloud: upsert SkillPack record in kv_store
     Cloud-->>Backend: {tracking: {tracking_token, tracking_url}, sync_url}
     
     Backend->>Backend: rewrite pack.json with tracking + sync_endpoint
-    Backend->>Cloud: POST /api/v1/workflows/{slug}/installer/upload
+    Backend->>Cloud: POST /api/v1/workflows/{workspace_dir_slug}/installer/upload
     Note over Backend,Cloud: Bearer Clerk JWT<br/>body: raw .exe bytes
-    Cloud->>Cloud: store to data/installers/{slug}/installer.exe
+    Cloud->>Cloud: store to data/installers/{workspace_dir_slug}/installer.exe
     Cloud->>Cloud: store meta.json (sha256, filename, version)
     Cloud-->>Backend: {download_url, sha256}
     Backend-->>Studio: {cloud_download_url, cloud_tracking_url}
@@ -637,10 +635,9 @@ Full API contracts and KV shapes: `docs/Backend-Schema.md` §5.1d. Design writeu
 
 **Re-scoped 2026-08-19 to per-skill; split 2026-08-19 into publish vs. release.**
 1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1
-independent release. Every write below is keyed by `(company_slug, skill_slug)`,
-not company slug alone — publishing, releasing, or rolling back one skill never
-touches another skill's version history, stable channel, or live files, even
-under the same company slug.
+independent release. Every write below is keyed by skill slug alone — publishing,
+releasing, or rolling back one skill never touches another skill's version history,
+stable channel, or live files, even under the same workspace.
 
 **Publishing is not deploying.** Build Studio's `POST .../skill-packs/upload`
 (`publish_routes.py`) and Cloud's `POST .../releases/{version}/release`
@@ -1176,8 +1173,8 @@ changed. See `TODO.md` ARCH-3.
 After compilation, `build_skill_package(workspace_id)` gathers all workflows in the workspace and produces a data-only skill package folder:
 
 ```
-output/skill_package/{company_slug}-skill-package/
-├── skill_package.json   (manifest: company_slug, company_name, skills[])
+output/skill_package/{workspace_dir_slug}-skill-package/
+├── skill_package.json   (manifest: workspace_id, display_name, skills[])
 ├── CLAUDE.md            (rendered from skill_package_templates/skill_package/Claude.md.tmpl)
 ├── index.md             (rendered from skill_package_templates/skill_package/index.md.tmpl)
 ├── pack.json            (version manifest)
@@ -1853,13 +1850,13 @@ LLM-assisted Human Edit:
 - Those calls use `usage_class="human_edit"`. Deterministic editor actions stay available when the Human Edit pool is exhausted.
 - The LLM proxy also enforces trial expiry and machine registration on every call (`app/api/llm_proxy_routes.py::_meter_and_call`), and routes to the workspace's `compile_pool` (or a BYOK entry — §13.5 — when configured).
 
-Persistent workflow-slot ledger (added 2026-08-09) — closes the one gap the reservation flow above doesn't cover: `compile_credits` resets every billing period, so it never reclaims access to workflows a workspace already published while on a higher tier. `record_published_workflow` (`entitlements.py`) writes one never-resetting entry per distinct `(workspace_id, company_slug, workflow_id)` to the `entitlement_workflows` KV namespace on first publish (`publish_routes.py::_publish_skill_pack_impl`). `_reconcile_workflow_locks`, re-run on every read of `GET /api/v1/entitlements/current` (exposed as the `workflow_lock` field) and on every publish, reuses the plan's current `compile_credits` number as a standing cap on how many published workflows may stay **active**, keeping the most-recently-published `limit` unlocked and locking the rest oldest-first — self-healing, no separate downgrade migration step. `ensure_workflow_publishable` enforces the same cap at publish time: republishing an already-active workflow (new version) is always allowed, republishing a **locked** one 402s `workflow_locked`, and publishing a brand-new workflow once already at the cap 402s `workflow_limit_exceeded`. Scope is company-side only by design — it never touches `skillpack_update_routes.py`'s delta-sync, so an end customer who already has a workflow installed keeps syncing and running it regardless of the SaaS company's current plan.
+Persistent workflow-slot ledger (added 2026-08-09) — closes the one gap the reservation flow above doesn't cover: `compile_credits` resets every billing period, so it never reclaims access to workflows a workspace already published while on a higher tier. `record_published_workflow` (`entitlements.py`) writes one never-resetting entry per distinct `(workspace_id, workflow_id)` to the `entitlement_workflows` KV namespace on first publish (`publish_routes.py::_publish_skill_pack_impl`). `_reconcile_workflow_locks`, re-run on every read of `GET /api/v1/entitlements/current` (exposed as the `workflow_lock` field) and on every publish, reuses the plan's current `compile_credits` number as a standing cap on how many published workflows may stay **active**, keeping the most-recently-published `limit` unlocked and locking the rest oldest-first — self-healing, no separate downgrade migration step. `ensure_workflow_publishable` enforces the same cap at publish time: republishing an already-active workflow (new version) is always allowed, republishing a **locked** one 402s `workflow_locked`, and publishing a brand-new workflow once already at the cap 402s `workflow_limit_exceeded`. Scope is company-side only by design — it never touches `skillpack_update_routes.py`'s delta-sync, so an end customer who already has a workflow installed keeps syncing and running it regardless of the SaaS company's current plan.
 
 Distribution (replaces installer slots, removed 2026-08-08):
 - No limit on how many product slugs a workspace publishes under, or on skill-pack publish.
 - Installer upload (`publish_routes.py::_upload_installer_impl`) accepts `distribution` (`internal`
   default | `external`) and `white_label` query params from Build Studio, and stores them in the
-  installer version's KV metadata (`installer_versions__{slug}`) alongside the existing
+  installer version's KV metadata (`installer_versions__{workspace_dir_slug}`) alongside the existing
   filename/version/release-notes fields. This is server-side gating on what the Studio *tells* the
   cloud it's uploading, not an inspection of the binary's own `pack.json` — `installer_builder.py`
   itself was not changed; it does not yet stamp `distribution` into the built artifact.
@@ -2027,12 +2024,12 @@ Mode 2: Filesystem (no SKILL_DATABASE_URL)
 
 Key namespaces in use:
 - `workflows` — Workflow model JSON
-- `skill_packs_meta` — SkillPack model JSON, keyed by company_slug
+- `skill_packs_meta` — SkillPack model JSON, keyed by workspace_id
 - `entitlement_usage` — monthly usage row keyed by `workspace_id:YYYY-MM`
 - `compile_reservations` — compile-credit reservations keyed by reservation id
-- `publish_owners` — company_slug → workspace_id ownership
-- `tracking_tokens` — company_slug → {token, workspace_id, ...}
-- `tracking/{company}` — run_id → [event batches]
+- `tracking_tokens` — workspace_id → {token, company, version, workspace_id, owner_user_id, updated_at}
+- `sync_tokens` — workspace_id → {token, company, version, workspace_id, owner_user_id, updated_at}
+- `tracking/{workspace_id}` — run_id → [event batches]
 - `runs` — workflow_id → [run records]
 - `selector_cache` — DOM hash → selector candidates
 

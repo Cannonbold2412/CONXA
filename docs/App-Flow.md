@@ -332,10 +332,10 @@ flowchart TD
     A[Sign-off completes for one workflow, or user rebuilds that one skill from the Inspector/Publish page] --> B[Backend: cmd_build_skill_package, skill_slug=this workflow]
     B --> C[Read only this ONE compiled + signed-off workflow]
     C --> D[skill_package_builder.build_skill_package, only_workflow_id=this workflow]
-    D --> E["Create/reuse output/{company_slug}-skill-package/ folder"]
+    D --> E["Create/reuse output/{workspace_dir_slug}-skill-package/ folder"]
     E --> F[Merge this workflow's entry into skill_package.json — sibling skills' entries untouched]
     E --> I["Write {skill_slug}/execution.json, recovery.json, inputs.json"]
-    I --> M["Copy to data/skill-packs/{company_slug}/{group_id}/{skill_slug}/ — sibling skills' directories untouched"]
+    I --> M["Copy to data/skill-packs/{workspace_dir_slug}/{group_id}/{skill_slug}/ — sibling skills' directories untouched"]
     M --> N[Merge skills/skill_groups into pack.json — union, not replace]
     N --> O[Skill package build record saved]
     O --> P[Build complete — this skill ready to publish]
@@ -386,7 +386,7 @@ flowchart TD
     A[Skill package built; user visits Publish, picks a skill] --> A2["Studio previews: proposed version, diff vs. THIS skill's current stable, artifact hash"]
     A2 --> B[User enters version + release notes + clicks Publish]
     B --> C[Backend: cmd_publish_skill_pack, skill_slug=selected skill]
-    C --> D["Read only this skill's own files from data/skill-packs/{company_slug}/{group_id}/{skill_slug}/"]
+    C --> D["Read only this skill's own files from data/skill-packs/{workspace_dir_slug}/{group_id}/{skill_slug}/"]
     D --> E["POST .../skills/{skill_slug}/skill-packs/upload to Cloud"]
     E --> F{Cloud: duplicate version or unchanged artifact — checked against THIS skill's own history?}
     F -->|Yes| F2[409 — reject, Studio shows why, Publish button stays enabled to retry]
@@ -454,10 +454,10 @@ flowchart TD
     B --> C[Backend: cmd_build_installer]
     C --> D[Validate skill pack published]
     D --> E[build_installer via NSIS]
-    E --> F[".exe created at output/{company_slug}-Setup.exe"]
+    E --> F[".exe created at output/{workspace_dir_slug}-Setup.exe"]
     
     F --> G{User clicks Upload to Cloud?}
-    G -->|Yes| H["POST /api/v1/workflows/{slug}/installer/upload"]
+    G -->|Yes| H["POST /api/v1/workflows/{installer_version}/installer/upload"]
     G -->|No| I[Save installer locally, optionally skip cloud upload]
     H --> J[Cloud stores installer.exe + meta.json]
     J --> K[Cloud returns download_url]
@@ -465,7 +465,7 @@ flowchart TD
 ```
 
 **Installer contents:**
-- `skill-packs/{company_slug}/` (pack.json with tracking config embedded)
+- `skill-packs/{workspace_dir_slug}/` (pack.json with tracking config embedded)
 - `runtime.exe` + `keytar.node` + `version.json`
 - Chromium browser (fetched at install time via `runtime.exe --install-playwright`, not bundled)
 

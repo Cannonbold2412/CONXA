@@ -405,16 +405,16 @@ routing. Frontend `npm run lint` and `npm run build` both clean, `/pricing` rend
 
 **New model:**
 - **`Workflow`** — flat, exactly ONE login session + ONE recording + ONE compiled skill per workflow entity. Fields: id, slug, name, status (needs_auth/ready/error), auth (optional WorkflowAuth), recording_status (recorded/compiled/error), skill_id, compile_status, etc. Stored per-workflow.
-- **`SkillPack`** — workspace-scoped, company-scoped (keyed by workspace_id + company_slug), shared across all workflows targeting that company. Holds the single build + installer metadata. One per company/workspace pair, not per-workflow.
+- **`SkillPack`** — workspace-scoped (keyed by workspace_id), shared across all workflows in that workspace. Holds the single build + installer metadata. One per workspace, forever.
 
 **What shipped (2026-08-12):**
 - **Core models:** `packages/conxa-core/conxa_core/models/workflow.py` (new `Workflow`, `WorkflowAuth`, `SkillPack`, `SkillPackBuild`, `SkillPackInstaller`); old `plugin.py` deleted.
-- **Storage:** `workflow_store.py` (replaces `plugin_store.py`, KV namespace `workflows`), `skill_pack_store.py` (new, KV namespace `skill_packs_meta`, keyed by company_slug for multi-tenancy).
+- **Storage:** `workflow_store.py` (replaces `plugin_store.py`, KV namespace `workflows`), `skill_pack_store.py` (new, KV namespace `skill_packs_meta`, keyed by workspace_id).
 - **Studio Python backend:** `handlers/workflows.py` (replaces `handlers/plugins.py`), `skill_package_builder.py` (replaces `plugin_builder.py`), updated `handlers/compile.py`, `handlers/session.py`, `handlers/runs.py`.
 - **Cloud backend:** `/api/v1/workflows/*` routes (replace `/api/v1/plugins/*`), telemetry field renames (`plugin_id`/`plugin_ver` → `workflow_id`/`workflow_ver` in wire format `wfid`/`wfv`), updated `tracking_routes.py`, `publish_routes.py`, `skillpack_update_routes.py`, `entitlements.py`.
 - **Runtime:** telemetry wire format `wfid`/`wfv` (was `pid`/`pv`), server.js MCP tools updated, tracker.js + test fixtures.
 - **Studio UI:** `/workflows` (Workflow List) replaces `/record`, `/workflows/:id` (Workflow Detail) replaces Plugin Detail + Record, inline auth + recording actions, deleted Record page entirely. `WorkflowSwitcher` replaces `PluginSwitcher`.
-- **Cloud dashboard:** `/packages` (Skill Packages List, replaces `/plugins`) `/packages/:slug` (Skill Package Versions, replaces Plugin Detail), scoped to company_slug not workspace_id.
+- **Cloud dashboard:** `/packages` (Skill Packages List, replaces `/plugins`) `/packages/:workspace_id` (Skill Package Versions, replaces Plugin Detail), scoped to workspace_id.
 - **Docs:** `docs/Backend-Schema.md` §2 (data models), §6.1 (ERD), §7 (KV namespaces) rewritten; `docs/App-Flow.md` restructured (Workflow Detail inline actions); `docs/UI-UX-Brief.md` redesigned (Workflow List/Detail specs); `docs/Implementation-Plan.md` updated; `CLAUDE.md` updated for new file/symbol references.
 
 **Files (non-exhaustive):** `packages/conxa-core/conxa_core/models/workflow.py`, `storage/workflow_store.py`, `storage/skill_pack_store.py`, `conxa-builder/python/handlers/workflows.py`, `conxa_compile/skill_package_builder.py`, `conxa-cloud/backend/app/api/workflow_routes.py`, `publish_routes.py`, `skillpack_update_routes.py`, `tracking_routes.py`, `conxa-builder/electron/renderer/src/pages/WorkflowListPage.tsx`, `WorkflowPage.tsx`, `api/workflowsApi.ts`, `conxa-cloud/frontend/src/SkillPackagesPage.tsx`, `docs/*.md`.
@@ -736,7 +736,7 @@ with a read-only mirror on the Cloud dashboard.
 - **Cloud (`app/api/release_routes.py`, new):** `POST .../releases/preview`,
   `GET .../releases/{version}`, `GET .../releases/{version}/diff`,
   `POST .../releases/{version}/rollback`, `GET .../deployments`,
-  `GET .../releases/events` — all under the existing `/api/v1/workflows/{installer_version}/{company_slug}` prefix, `require_admin`-gated.
+  `GET .../releases/events` — all under `/api/v1/workflows/{installer_version}/...`, workspace derived from Clerk session, `require_admin`-gated.
 - **Cloud (`app/api/skillpack_update_routes.py`):** telemetry's `TelemetryBody`
   gained an optional `skill_versions` field; `_build_delta`/`_skill_version`
   themselves are **unchanged** — rollback restores the mutable mirror + `component_versions`
@@ -851,6 +851,19 @@ onto Conxa Cloud (`PUT .../groups/{group_id}` + `skillpack_known_groups` KV).
 `GET .../groups` unions that registry with publish-time known-skills, so an
 empty folder appears on Skill Packages immediately. Default is not synced
 until renamed. Delete in Studio does not remove the Cloud folder.
+
+---
+
+### ✅ 3.4c Remove Publish Ownership (Slug Claiming) — DONE 2026-08-21
+
+One workspace now has exactly one SkillPack, forever. The `publish_owners` KV
+namespace (which tracked slug ownership for workspaces that claimed multiple
+company slugs) has been removed entirely. All models, routes, and KV stores
+now key by workspace_id directly. SkillPack, tracking_tokens, and sync_tokens
+are now workspace-scoped, not slug-scoped. Dashboard routes derive workspace
+from authenticated principal; runtime routes use {workspace_id} in the path.
+
+**Files:** `conxa-core/conxa_core/models/workflow.py`, `conxa-cloud/backend/app/api/publish_routes.py`, `app/api/release_routes.py`, `app/api/skillpack_update_routes.py`, `app/api/tracking_routes.py`, removed `app/api/product_ownership.py`'s `_assert_owner`/`_claim_owner` logic.
 
 ---
 
