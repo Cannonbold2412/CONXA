@@ -39,8 +39,8 @@ _RECOVERY_TIERS = (
 def _verify_token(company: str, token: str) -> dict[str, Any] | None:
     """Verify the tracking token for a company.
 
-    Published packs get a server-issued token stored in kv_store. Local dev
-    without a stored token or secret still accepts telemetry for convenience —
+    Published packs get a server-issued token stored in kv_store keyed by company slug.
+    Local dev without a stored token or secret still accepts telemetry for convenience —
     but in production (SKILL_AUTH_REQUIRED=true) a missing token is rejected
     rather than silently treated as an empty workspace (SG-05).
     """
@@ -163,37 +163,44 @@ def _company_run_stats(company: str, principal: Principal) -> tuple[int, float]:
 
 def _tracking_company_rows(principal: Principal) -> list[dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
+    visible_workspace_ids = set(visible_workspace_ids_for(principal))
+    display_names = {
+        pack.workspace_id: pack.display_name
+        for pack in list_skill_packs()
+        if pack.display_name and (pack.workspace_id == principal.workspace_id or pack.workspace_id in visible_workspace_ids)
+    }
 
-    for key, record in db_list_kv("tracking_tokens"):
+    # tracking_tokens is keyed by workspace slug, but the filesystem KV
+    # fallback's list-scan key is a SHA-256 hash of the real key (see
+    # conxa_core.db._fs_path), not the original string — the real slug must
+    # be read from the record's own "company" field to survive that.
+    for kv_key, record in db_list_kv("tracking_tokens"):
         if not isinstance(record, dict):
             continue
         if not _record_visible_to_principal(record, principal):
             continue
-        workspace_id = str(record.get("workspace_id") or "")
-        company = str(record.get("company") or key or "").strip()
-        if not company:
+        slug = str(record.get("company") or kv_key or "").strip()
+        if not slug:
             continue
-        run_count, last_seen = _company_run_stats(company, principal)
-        rows[company] = {
-            "company": company,
-            "workspace_id": workspace_id or principal.workspace_id,
+        workspace_id = str(record.get("workspace_id") or slug).strip()
+        run_count, last_seen = _company_run_stats(slug, principal)
+        rows[workspace_id] = {
+            "company": display_names.get(workspace_id) or slug,
+            "workspace_id": workspace_id,
             "run_count": run_count,
             "last_seen": last_seen or float(record.get("updated_at") or 0),
         }
 
-    visible_workspace_ids = set(visible_workspace_ids_for(principal))
     for pack in list_skill_packs():
         if pack.workspace_id != principal.workspace_id and pack.workspace_id not in visible_workspace_ids:
             continue
-        company = str(pack.company_slug or pack.company_name or "").strip()
-        if not company:
-            continue
-        current = rows.get(company)
+        workspace_id = pack.workspace_id
+        current = rows.get(workspace_id)
         if current is None:
-            run_count, last_seen = _company_run_stats(company, principal)
-            rows[company] = {
-                "company": company,
-                "workspace_id": pack.workspace_id,
+            run_count, last_seen = _company_run_stats(workspace_id, principal)
+            rows[workspace_id] = {
+                "company": pack.display_name or workspace_id,
+                "workspace_id": workspace_id,
                 "run_count": run_count,
                 "last_seen": last_seen or float(pack.updated_at or 0),
             }

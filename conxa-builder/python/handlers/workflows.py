@@ -146,7 +146,7 @@ class WorkflowsMixin:
         from conxa_compile.skill_package_builder import build_skill_package
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
-        company_name = str(payload.get("company_name") or "").strip() or None
+        display_name = str(payload.get("display_name") or "").strip() or None
         version = str(payload.get("version") or "0.1.0")
         skill_slug = str(payload.get("skill_slug") or "").strip()
         only_workflow_id = None
@@ -154,7 +154,7 @@ class WorkflowsMixin:
             only_workflow_id = self._resolve_workflow_by_skill_slug(workspace_id, skill_slug).id
         return build_skill_package(
             workspace_id,
-            company_name=company_name,
+            company_name=display_name,
             version=version,
             only_workflow_id=only_workflow_id,
             realtime_sink=_event_sink(rid),
@@ -171,6 +171,7 @@ class WorkflowsMixin:
         sibling workflow's compile/test/sign-off status is never checked and
         its files are never uploaded."""
         from conxa_core.storage.skill_pack_store import get_skill_pack
+        from conxa_core.workspace import workspace_dir_slug
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         pack = get_skill_pack(workspace_id)
@@ -183,8 +184,7 @@ class WorkflowsMixin:
         skill_slug = workflow.slug
         if not workflow.skill_id:
             raise _CommandError("workflow_uncompiled", f"Workflow {skill_slug!r} is not compiled yet")
-        company_slug = str(payload.get("company_slug") or "").strip()
-        company_slug = _safe_id(company_slug, "company_slug") if company_slug else pack.company_slug
+        company_slug = workspace_dir_slug(workspace_id)
         version = _validate_release_version(payload.get("version"))
         release_notes = _validate_release_notes(payload.get("release_notes"))
 
@@ -203,10 +203,11 @@ class WorkflowsMixin:
         sink = _event_sink(rid)
         publish_info = self._publish_skill_pack(
             company_slug=company_slug,
-            company_name=pack.company_name,
+            company_name=pack.display_name,
             skill_slug=skill_slug,
             version=version,
             release_notes=release_notes,
+            group_id=workflow.group_id or "_default",
             group_name=group.name if group else "",
             workflow_name=workflow.name,
             tests_passed=workflow.last_test_status == "passed",
@@ -226,24 +227,21 @@ class WorkflowsMixin:
         generation, company_slug = self._resolve_release_company(payload)
         skill_slug = _safe_id(str(payload.get("skill_slug") or ""), "skill_slug")
         return self._cloud_json(
-            f"/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/versions?skill_slug={quote(skill_slug)}"
+            f"/api/v1/workflows/{generation}/skill-packs/versions?skill_slug={quote(skill_slug)}"
         )
 
     def _resolve_release_company(self, payload: dict[str, Any]) -> tuple[str, str]:
         """Shared by every Release Center RPC handler below: resolve
-        (installer_generation, company_slug) the same way cmd_list_skill_pack_versions
-        always has, so a payload with no explicit company_slug still works."""
+        (installer_generation, company_slug) for cloud API calls. company_slug
+        is now derived from workspace_id via workspace_dir_slug."""
         from conxa_core.storage.skill_pack_store import get_skill_pack
+        from conxa_core.workspace import workspace_dir_slug
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
-        company_slug = str(payload.get("company_slug") or "").strip()
-        if company_slug:
-            company_slug = _safe_id(company_slug, "company_slug")
-        else:
-            pack = get_skill_pack(workspace_id)
-            if pack is None:
-                raise _CommandError("skill_pack_not_found", f"No skill pack built yet for workspace {workspace_id}")
-            company_slug = pack.company_slug
+        pack = get_skill_pack(workspace_id)
+        if pack is None:
+            raise _CommandError("skill_pack_not_found", f"No skill pack built yet for workspace {workspace_id}")
+        company_slug = workspace_dir_slug(workspace_id)
         return self._installer_generation(), company_slug
 
     def cmd_release_preview(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -265,7 +263,7 @@ class WorkflowsMixin:
             "files": files,
         }
         return self._cloud_json(
-            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/preview", method="POST", body=body
+            f"/api/v1/workflows/{generation}/releases/preview", method="POST", body=body
         )
 
     def cmd_release_detail(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -273,7 +271,7 @@ class WorkflowsMixin:
         version = _safe_id(str(payload.get("version") or ""), "version")
         skill_slug = _safe_id(str(payload.get("skill_slug") or ""), "skill_slug")
         return self._cloud_json(
-            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}?skill_slug={quote(skill_slug)}"
+            f"/api/v1/workflows/{generation}/releases/{quote(version)}?skill_slug={quote(skill_slug)}"
         )
 
     def cmd_release_diff(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -285,7 +283,7 @@ class WorkflowsMixin:
         version = _safe_id(str(payload.get("version") or ""), "version")
         skill_slug = _safe_id(str(payload.get("skill_slug") or ""), "skill_slug")
         return self._cloud_json(
-            f"/api/v1/workflows/{generation}/{quote(company_slug)}/releases/{quote(version)}/diff"
+            f"/api/v1/workflows/{generation}/releases/{quote(version)}/diff"
             f"?skill_slug={quote(skill_slug)}"
         )
 
@@ -297,13 +295,13 @@ class WorkflowsMixin:
         from pathlib import Path
         from services.installer_builder import build_installer
         from conxa_core.storage.skill_pack_store import get_skill_pack
+        from conxa_core.workspace import workspace_dir_slug
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         pack = get_skill_pack(workspace_id)
         if pack is None:
             raise _CommandError("skill_pack_not_found", f"No skill pack built yet for workspace {workspace_id}")
-        company_slug = str(payload.get("company_slug") or "").strip()
-        company_slug = _safe_id(company_slug, "company_slug") if company_slug else pack.company_slug
+        company_slug = workspace_dir_slug(workspace_id)
         version = _validate_release_version(payload.get("version"))
         release_notes = _validate_release_notes(payload.get("release_notes"))
 
@@ -341,7 +339,6 @@ class WorkflowsMixin:
         sink = _event_sink(rid)
         result = build_installer(
             workspace_id,
-            company_slug=company_slug,
             logo_path=logo_path,
             version=version,
             release_notes=release_notes,
@@ -444,7 +441,8 @@ class WorkflowsMixin:
             )
             raise _CommandError("runtime_not_found", message)
 
-        company = pack.company_slug
+        from conxa_core.workspace import workspace_dir_slug
+        company = workspace_dir_slug(workspace_id)
 
         data_dir = Path(_settings.data_dir)
         source_dir = data_dir / "skill-packs" / company

@@ -29,14 +29,14 @@ process.env.CONXA_DIR = tmpDataDir;
 
 const browser = require("../browser.js");
 
-const COMPANY = "acme";
+const WORKSPACE_ID = "acme";
 const RENDER = { id: "app_render", name: "Render", login_url: "https://dashboard.render.com/login", success_url: "https://dashboard.render.com/home" };
 const BILLING = { id: "app_billing", name: "Billing", login_url: "https://billing.example.com/login", success_url: "https://billing.example.com/home" };
 
 function writePack(groups) {
-  const dir = path.join(tmpDataDir, "skill-packs", COMPANY);
+  const dir = path.join(tmpDataDir, "skill-packs", WORKSPACE_ID);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "pack.json"), JSON.stringify({ company: COMPANY, groups }));
+  fs.writeFileSync(path.join(dir, "pack.json"), JSON.stringify({ workspace_id: WORKSPACE_ID, groups }));
 }
 
 async function run() {
@@ -47,7 +47,7 @@ async function run() {
     const logFn = (_level, event, data) => calls.push({ event, data });
     // The failing page bounced to Billing's login screen — server.js passes that
     // page's live URL as loginUrl, ahead of manifest.target_url (Render, the start app).
-    await browser.captureReAuth(COMPANY, "https://billing.example.com/login", null, tmpDataDir, logFn, {
+    await browser.captureReAuth(WORKSPACE_ID, "https://billing.example.com/login", null, tmpDataDir, logFn, {
       groupId: "g1",
       fallbackUrl: "https://dashboard.render.com",
     });
@@ -61,7 +61,7 @@ async function run() {
     const calls = [];
     const logFn = (_level, event, data) => calls.push({ event, data });
     // A third-party OAuth hop landed on a host that matches no app in the group.
-    await browser.captureReAuth(COMPANY, "https://accounts.google.com/o/oauth2/auth", null, tmpDataDir, logFn, {
+    await browser.captureReAuth(WORKSPACE_ID, "https://accounts.google.com/o/oauth2/auth", null, tmpDataDir, logFn, {
       groupId: "g1",
       fallbackUrl: "https://dashboard.render.com",
     });
@@ -74,7 +74,7 @@ async function run() {
   await check("falls back to the group's first app when nothing matches at all", async () => {
     const calls = [];
     const logFn = (_level, event, data) => calls.push({ event, data });
-    await browser.captureReAuth(COMPANY, "https://accounts.google.com/o/oauth2/auth", null, tmpDataDir, logFn, {
+    await browser.captureReAuth(WORKSPACE_ID, "https://accounts.google.com/o/oauth2/auth", null, tmpDataDir, logFn, {
       groupId: "g1",
       fallbackUrl: "https://also-unmatched.example.net",
     });

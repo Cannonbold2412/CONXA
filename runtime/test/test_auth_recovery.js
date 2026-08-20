@@ -119,22 +119,22 @@ function makePage(url, title = "My App") {
 
   await test("reencryptPlaintextSessions encrypts and deletes a planted plaintext session", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-sessions-"));
-    const company = "reencrypt-co";
-    const rawPath = path.join(dir, `${company}_raw_state.json`);
+    const workspace_id = "reencrypt-co";
+    const rawPath = path.join(dir, `${workspace_id}_raw_state.json`);
     fs.writeFileSync(rawPath, JSON.stringify({ cookies: [] }));
     const events = [];
     const logFn = (level, msg) => events.push(`${level}:${msg}`);
     await authManager.reencryptPlaintextSessions(dir, async () => "bb".repeat(32), logFn);
     assert.ok(!fs.existsSync(rawPath), "plaintext original should be deleted");
-    assert.ok(fs.existsSync(path.join(dir, `${company}_state.json`)), "encrypted file should exist");
+    assert.ok(fs.existsSync(path.join(dir, `${workspace_id}_state.json`)), "encrypted file should exist");
     assert.ok(events.includes("info:plaintext_session_reencrypted"));
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
   await test("reencryptPlaintextSessions leaves plaintext in place if key fetch fails", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-sessions-"));
-    const company = "reencrypt-fail-co";
-    const rawPath = path.join(dir, `${company}_raw_state.json`);
+    const workspace_id = "reencrypt-fail-co";
+    const rawPath = path.join(dir, `${workspace_id}_raw_state.json`);
     fs.writeFileSync(rawPath, JSON.stringify({ cookies: [] }));
     const events = [];
     const logFn = (level, msg) => events.push(`${level}:${msg}`);

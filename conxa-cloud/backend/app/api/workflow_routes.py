@@ -36,7 +36,7 @@ from conxa_core.storage.workflow_store import (
     get_workflow,
     list_workflows,
 )
-from conxa_core.storage.skill_pack_store import get_skill_pack_by_slug, list_skill_packs
+from conxa_core.storage.skill_pack_store import get_skill_pack, list_skill_packs
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +57,10 @@ def get_list_skill_packs(request: Request) -> dict[str, Any]:
     return {"skill_packs": [p.model_dump(mode="json") for p in packs]}
 
 
-@router.get("/skill-packs/{slug}")
-def get_skill_pack_detail(slug: str, request: Request) -> dict[str, Any]:
+@router.get("/skill-packs/current")
+def get_skill_pack_detail(request: Request) -> dict[str, Any]:
     principal = principal_from_request(request)
-    pack = get_skill_pack_by_slug(slug)
+    pack = get_skill_pack(principal.workspace_id)
     if pack is None:
         raise HTTPException(status_code=404, detail="Skill pack not found.")
     visible_ids = set(visible_workspace_ids_for(principal))

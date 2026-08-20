@@ -754,8 +754,8 @@ def release_compile_credit(principal: Principal, reservation_id: str) -> dict[st
     return {"reservation_id": reservation_id, "status": status}
 
 
-def _workflow_key(workspace_id: str, company_slug: str, workflow_id: str) -> str:
-    return f"{workspace_id}:{company_slug}:{workflow_id}"
+def _workflow_key(workspace_id: str, workflow_id: str) -> str:
+    return f"{workspace_id}:{workflow_id}"
 
 
 def _reconcile_workflow_locks(
@@ -786,22 +786,21 @@ def _reconcile_workflow_locks(
             row["locked"] = should_lock
             store.set(
                 WORKFLOW_NS,
-                _workflow_key(workspace_id, str(row.get("company_slug") or ""), str(row.get("workflow_id") or "")),
+                _workflow_key(workspace_id, str(row.get("workflow_id") or "")),
                 row,
             )
     rows.sort(key=lambda r: (str(r.get("created_at") or ""), r.get("created_at_ns") or 0), reverse=True)
     return rows
 
 
-def record_published_workflow(workspace_id: str, company_slug: str, workflow_id: str) -> None:
+def record_published_workflow(workspace_id: str, workflow_id: str) -> None:
     """Durable ledger entry for a published workflow. Unlike the monthly
     compile-credit meter this never resets, so a downgrade later has
     something stable to soft-lock the oldest excess against."""
     workflow_id = str(workflow_id or "").strip()
     if not workflow_id:
         return
-    company_slug = str(company_slug or "").strip()
-    key = _workflow_key(workspace_id, company_slug, workflow_id)
+    key = _workflow_key(workspace_id, workflow_id)
     with _locked_store(f"workflow-ledger:{workspace_id}") as store:
         if isinstance(store.get(WORKFLOW_NS, key), dict):
             return
@@ -810,7 +809,6 @@ def record_published_workflow(workspace_id: str, company_slug: str, workflow_id:
             key,
             {
                 "workspace_id": workspace_id,
-                "company_slug": company_slug,
                 "workflow_id": workflow_id,
                 "created_at": _iso(_now()),
                 "created_at_ns": time.time_ns(),
@@ -819,7 +817,7 @@ def record_published_workflow(workspace_id: str, company_slug: str, workflow_id:
         )
 
 
-def ensure_workflow_publishable(principal: Principal, company_slug: str, workflow_ids: list[str]) -> None:
+def ensure_workflow_publishable(principal: Principal, workflow_ids: list[str]) -> None:
     """Publish-time gate: a plan's compile-credit number doubles as the max
     number of workflows a workspace may keep active at once (docs/PRD.md §11).
     Republishing an already-active workflow (a new version) is always allowed;
@@ -831,19 +829,18 @@ def ensure_workflow_publishable(principal: Principal, company_slug: str, workflo
     limit = limits["compile_credits"]
     if limit is None or not settings.entitlements_enforce_compile:
         return
-    company_slug = str(company_slug or "").strip()
     workspace_id = principal.workspace_id
     with _locked_store(f"workflow-ledger:{workspace_id}") as store:
         rows = _reconcile_workflow_locks(store, workspace_id, limit)
         active = sum(1 for row in rows if not row.get("locked"))
         known = {
-            (str(row.get("company_slug") or ""), str(row.get("workflow_id") or "")): row for row in rows
+            str(row.get("workflow_id") or ""): row for row in rows
         }
         for raw_workflow_id in workflow_ids:
             workflow_id = str(raw_workflow_id or "").strip()
             if not workflow_id:
                 continue
-            existing = known.get((company_slug, workflow_id))
+            existing = known.get(workflow_id)
             if existing is None:
                 if active >= int(limit):
                     raise EntitlementError("workflow_limit_exceeded", 402)

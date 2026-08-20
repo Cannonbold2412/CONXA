@@ -442,8 +442,8 @@ function _skillToolDefinitions() {
 
     const needsStr = required.length ? ` Needs: ${required.join(", ")}.` : "";
     tools.push({
-      name: `skill_${entry.company}_${entry.slug.replace(/-/g, "_")}`,
-      description: `Conxa: ${entry.manifest.name || entry.slug} on ${entry.company}. ${entry.manifest.description || ""}${needsStr}`,
+      name: `skill_${entry.workspace_id}_${entry.slug.replace(/-/g, "_")}`,
+      description: `Conxa: ${entry.manifest.name || entry.slug} on ${entry.workspace_id}. ${entry.manifest.description || ""}${needsStr}`,
       inputSchema: { type: "object", properties, required },
     });
   }
@@ -455,11 +455,11 @@ function _toolDefinitions() {
   return [
     {
       name: "list_skills",
-      description: "Conxa automation: list all installed workflow skills. ALWAYS call this first when the user mentions Conxa or wants to automate any task on a web app (Render, GitHub, Jira, Stripe, etc.). Returns available companies and skill slugs so you can match the user's intent to the right skill.",
+      description: "Conxa automation: list all installed workflow skills. ALWAYS call this first when the user mentions Conxa or wants to automate any task on a web app (Render, GitHub, Jira, Stripe, etc.). Returns available workspaces and skill slugs so you can match the user's intent to the right skill.",
       inputSchema: {
         type: "object",
         properties: {
-          company: { type: "string", description: "Filter to a specific company slug (optional)" },
+          workspace_id: { type: "string", description: "Filter to a specific workspace (optional)" },
         },
         required: [],
       },
@@ -471,7 +471,7 @@ function _toolDefinitions() {
         type: "object",
         properties: {
           skill:       { type: "string",  description: "Skill slug from list_skills" },
-          company:     { type: "string",  description: "Company slug (required if skill slug is not unique)" },
+          workspace_id:     { type: "string",  description: "Workspace ID (required if skill slug is not unique)" },
           inputs:      { type: "object",  description: "Input values. Call get_skill_inputs first to see the schema." },
           resume_from: { type: "integer", description: "0-based step index to resume from after a failure (the value reported in the failure response)." },
           step_overrides: {
@@ -495,7 +495,7 @@ function _toolDefinitions() {
               type: "object",
               properties: {
                 skill:   { type: "string" },
-                company: { type: "string" },
+                workspace_id: { type: "string" },
                 inputs:  { type: "object" },
                 resume_from:    { type: "integer", description: "0-based step index to resume from after a failure." },
                 step_overrides: { type: "object", description: "Tier 3/4 self-healing selector overrides, keyed by step index (see execute_skill)." },
@@ -515,7 +515,7 @@ function _toolDefinitions() {
         type: "object",
         properties: {
           skill:   { type: "string" },
-          company: { type: "string" },
+          workspace_id: { type: "string" },
         },
         required: ["skill"],
       },
@@ -536,28 +536,28 @@ function _toolDefinitions() {
 }
 
 // ─── Resolve skill from index ─────────────────────────────────────────────────
-function _resolveSkill(skillSlug, company) {
+function _resolveSkill(skillSlug, workspace_id) {
   if (!skillSlug) return null;
   const normalSlug = skillSlug.replace(/-/g, "_");
 
   // Exact match
-  if (company) {
-    const entry = skillIndex[`${company}:${skillSlug}`];
+  if (workspace_id) {
+    const entry = skillIndex[`${workspace_id}:${skillSlug}`];
     if (entry) return entry;
     // Try underscore/dash normalization
     for (const v of Object.values(skillIndex)) {
-      if (v.company === company && v.slug.replace(/-/g, "_") === normalSlug) return v;
+      if (v.workspace_id === workspace_id && v.slug.replace(/-/g, "_") === normalSlug) return v;
     }
   }
 
-  // Slug-only match across all companies
+  // Slug-only match across all workspaces
   for (const v of Object.values(skillIndex)) {
     if (v.slug === skillSlug || v.slug.replace(/-/g, "_") === normalSlug) return v;
   }
   return null;
 }
 
-// ─── Sync status per company ──────────────────────────────────────────────────
+// ─── Sync status per workspace ──────────────────────────────────────────────────
 function _syncStatus(pack) {
   if (!pack.last_synced) return "unknown";
   return (Date.now() - new Date(pack.last_synced).getTime()) < 3600000 ? "current" : "stale";
@@ -848,12 +848,12 @@ async function _handleTool(name, args, extra) {
 
   // ── list_skills ──────────────────────────────────────────────────────────────
   if (name === "list_skills") {
-    const filterCompany = args.company ? String(args.company) : null;
+    const filterWorkspace = args.workspace_id ? String(args.workspace_id) : null;
     const skills = Object.values(skillIndex)
-      .filter(s => !filterCompany || s.company === filterCompany)
+      .filter(s => !filterWorkspace || s.workspace_id === filterWorkspace)
       .map(s => ({
         skill:           s.slug,
-        company:         s.company,
+        workspace_id:         s.workspace_id,
         name:            s.manifest.name || s.slug,
         description:     s.manifest.description || "",
         inputs_required: s.manifest.inputs_required || [],
@@ -865,7 +865,7 @@ async function _handleTool(name, args, extra) {
 
   // ── get_skill_inputs ─────────────────────────────────────────────────────────
   if (name === "get_skill_inputs") {
-    const entry = _resolveSkill(String(args.skill || ""), args.company ? String(args.company) : null);
+    const entry = _resolveSkill(String(args.skill || ""), args.workspace_id ? String(args.workspace_id) : null);
     if (!entry) return err(`Skill not found: ${args.skill}. Call list_skills first.`);
     const inputsPath = path.join(entry.skillDir, "inputs.json");
     // Fall back to legacy input.json
@@ -904,16 +904,16 @@ async function _handleTool(name, args, extra) {
 
     const packsMap = {};
     for (const entry of Object.values(skillIndex)) {
-      const co = entry.company;
-      if (!packsMap[co]) {
-        packsMap[co] = {
-          company: co,
+      const ws = entry.workspace_id;
+      if (!packsMap[ws]) {
+        packsMap[ws] = {
+          workspace_id: ws,
           skill_pack_version: entry.pack?.skill_pack_version || "unknown",
           required_runtime: entry.pack?.required_runtime || "unknown",
           skills: [],
         };
       }
-      packsMap[co].skills.push(entry.slug);
+      packsMap[ws].skills.push(entry.slug);
     }
 
     return text(JSON.stringify({
@@ -934,7 +934,7 @@ async function _handleTool(name, args, extra) {
     const watch = args.watch !== false;
     const runs = name === "execute_sequence"
       ? (Array.isArray(args.skills) ? args.skills : [])
-      : [{ skill: args.skill, company: args.company, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides }];
+      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides }];
 
     if (runs.length === 0) return err("No skills provided.");
 
@@ -952,7 +952,7 @@ async function _handleTool(name, args, extra) {
     const resolved = [];
     let _overrideAppliedCount = 0;
     for (const run of runs) {
-      const entry = _resolveSkill(String(run.skill || ""), run.company ? String(run.company) : null);
+      const entry = _resolveSkill(String(run.skill || ""), run.workspace_id ? String(run.workspace_id) : null);
       if (!entry) return err(`Skill not found: ${run.skill}. Call list_skills.`);
 
       // Integrity gate

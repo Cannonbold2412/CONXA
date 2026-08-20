@@ -51,8 +51,8 @@ def _compute_inputs_required(idata: dict[str, Any]) -> list[str]:
 def _write_skill_packs_format(
     *,
     bundle_root: Path,
-    company_slug: str,
-    company_name: str,
+    workspace_id: str,
+    display_name: str,
     target_url: str,
     protected_url: str,
     skill_slugs: list[str],
@@ -64,20 +64,21 @@ def _write_skill_packs_format(
     conxa_api_url: str = "",
     required_runtime: str = "",
 ) -> None:
-    """Write the skill-packs/{company}/ layout alongside the legacy build output.
+    """Write the skill-packs/{workspace_dir_slug}/ layout alongside the legacy build output.
 
     This format is consumed by conxa-runtime.exe (the installer-distributed MCP server).
     The legacy skills/ layout is kept untouched for backward compatibility.
 
-    target_url/protected_url are the company-level display defaults (from the first
+    target_url/protected_url are the workspace-level display defaults (from the first
     workflow, best-effort) — each skill's own manifest.json carries its own accurate
     target_url from skill_target_urls, since different workflows in one shared package
-    may automate different pages on the company's site.
+    may automate different pages on the workspace's site.
     """
     from conxa_core.config import active_environment
     from conxa_core.config import settings
+    from conxa_core.workspace import workspace_dir_slug
 
-    company      = company_slug
+    company      = workspace_dir_slug(workspace_id)
     # Resolve the public base that gets FROZEN into pack.json (sync + tracking) from
     # the active environment, so a dev-built installer embeds the dev cloud and a
     # prod-built one embeds prod — consistently across BOTH sync_endpoint and
@@ -231,8 +232,8 @@ def _write_skill_packs_format(
 
     _req_rt = required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3")
     pack = {
-        "company":            company,
-        "company_display":    company_name,
+        "workspace_id":       workspace_id,
+        "display_name":       display_name,
         "skill_pack_version": version,
         "required_runtime":   _req_rt,
         "target_url":         target_url,
@@ -251,10 +252,10 @@ def _write_skill_packs_format(
     _tracking_secret = os.environ.get("SKILL_TRACKING_HMAC_SECRET", "")
     _tracking_token  = ""
     if _tracking_secret:
-        _raw = f"{company}:{version}".encode()
+        _raw = f"{workspace_id}:{version}".encode()
         _tracking_token = _hmac_mod.new(_tracking_secret.encode(), _raw, _hash_mod.sha256).hexdigest()
         from conxa_core.db import db_set
-        db_set("tracking_tokens", company, {"token": _tracking_token, "version": version})
+        db_set("tracking_tokens", workspace_id, {"token": _tracking_token, "version": version})
 
     # tracking_events_url already derives from the env-consistent api_base above
     # (via tracking_base), so no per-env localhost special-case is needed — dev builds
@@ -263,7 +264,7 @@ def _write_skill_packs_format(
         "enabled":          True,
         "tracking_url":     tracking_events_url,
         "tracking_token":   _tracking_token,
-        "company_id":       company,
+        "workspace_id":     workspace_id,
         "schema_version":   1,
         "protocol_version": 1,
     }

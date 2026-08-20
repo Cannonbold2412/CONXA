@@ -49,7 +49,7 @@ function releaseRows(pack: SkillPack, versions: InstallerVersion[]) {
   // URL — the UI disables the download action in that case.
   return [
     {
-      slug: pack.company_slug,
+      slug: '',
       version: pack.installer.version,
       release_notes: pack.installer.release_notes ?? '',
       filename: pack.installer.filename,
@@ -63,26 +63,24 @@ function releaseRows(pack: SkillPack, versions: InstallerVersion[]) {
   ] satisfies InstallerVersion[]
 }
 
-/** Skill Packages → Company: installer downloads (company-level, unaffected
+/** Skill Packages → Installer: installer downloads (workspace-level, unaffected
  * by per-skill release) plus the Groups grid — click a group to see its
  * Workflows, click a workflow to reach its full release/deployment page. */
-export function SkillPackageVersionsPage({ companySlug }: { companySlug: string }) {
+export function SkillPackageVersionsPage() {
   const packQ = useQuery({
-    queryKey: queryKeys.skillPack(companySlug),
-    queryFn: () => fetchSkillPack(companySlug),
+    queryKey: queryKeys.skillPack,
+    queryFn: () => fetchSkillPack(),
     staleTime: 10_000,
   })
   const pack = packQ.data?.skill_pack
   const versionsQ = useQuery({
-    queryKey: queryKeys.installerVersions(pack?.company_slug),
-    queryFn: () => fetchInstallerVersions(pack?.company_slug ?? ''),
-    enabled: !!pack?.company_slug,
+    queryKey: queryKeys.installerVersions,
+    queryFn: () => fetchInstallerVersions(),
     staleTime: 30_000,
   })
   const groupsQ = useQuery({
-    queryKey: queryKeys.groups(pack?.company_slug),
-    queryFn: () => fetchGroups(pack?.company_slug ?? ''),
-    enabled: !!pack?.company_slug,
+    queryKey: queryKeys.groups,
+    queryFn: () => fetchGroups(),
     staleTime: 15_000,
   })
 
@@ -94,8 +92,8 @@ export function SkillPackageVersionsPage({ companySlug }: { companySlug: string 
   return (
     <div className="h-full overflow-y-auto">
       <PageHeader
-        title={pack?.company_name ?? 'Skill Package'}
-        description={pack?.company_slug ?? 'Installer downloads and published workflow groups.'}
+        title={pack?.display_name ?? 'Installer'}
+        description="Installer downloads and published workflow groups."
         actions={
           <Button
             asChild
@@ -160,7 +158,7 @@ export function SkillPackageVersionsPage({ companySlug }: { companySlug: string 
                     return (
                       <Link
                         key={g.group_id || '_ungrouped'}
-                        href={`/packages/${encodeURIComponent(companySlug)}/groups/${encodeURIComponent(g.group_id)}`}
+                        href={`/packages/groups/${encodeURIComponent(g.group_id)}`}
                         className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
                       >
                         <Card

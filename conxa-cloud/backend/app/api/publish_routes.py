@@ -28,9 +28,9 @@ from pydantic import BaseModel, Field
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_list_kv, using_database
 from conxa_core.storage.skill_pack_store import (
-    get_skill_pack_by_slug,
+    get_skill_pack,
+    get_or_create_skill_pack,
     save_skill_pack,
-    upsert_skill_pack_by_slug,
 )
 from conxa_core.models.workflow import SkillPackBuild, SkillPackInstaller
 from app.api.deps import current_principal, entitlement_http_error
@@ -44,10 +44,6 @@ from app.api.installer_storage import (
 )
 from app.api.product_ownership import (
     SUPPORTED_INSTALLER_GENERATIONS,
-    _assert_not_owned_by_other,
-    _assert_owner,
-    _claim_owner,
-    _owner_of,
     validate_installer_version,
 )
 from app.api.skillpack_storage import (
@@ -99,7 +95,7 @@ class PublishFile(BaseModel):
 
 
 class PublishBody(BaseModel):
-    slug: str = Field(..., min_length=1, max_length=64)
+    slug: str = Field(default="", max_length=64)  # Deprecated — ignored, workspace_id derived from principal
     skill_slug: str = Field(..., min_length=1, max_length=64)
     group_id: str = Field(default="", max_length=64)
     # Display-only names for Cloud's Skill Packages → Group → Workflow
@@ -173,8 +169,8 @@ def _mint_pack_token(
     first publish and reusing it on republish.
 
     Rotating a token is done by deleting its KV entry, which forces a new one on
-    the next publish.
-    """
+    the next publish. Keyed by slug (the workspace identifier) so that tracking
+    aggregation and verification can find tokens by the workspace slug."""
     existing = db_get(namespace, slug)
     if isinstance(existing, dict) and existing.get("token"):
         token = str(existing["token"])
@@ -219,12 +215,12 @@ def _api_base(request: Request) -> str:
 def _upsert_published_skill_pack(
     body: PublishBody, slug: str, skill_pack_version: str, workspace_id: str
 ) -> None:
-    """Mirror a publish into the cloud's own SkillPack record for this slug —
+    """Mirror a publish into the cloud's own SkillPack record for this workspace —
     dashboard-visible build metadata. The workflows that compiled into this
     release live in Build Studio's local store, not here; the cloud only ever
     sees the published artifact, so it tracks the package, not the sources."""
     name = body.display_name.strip() or slug
-    pack = upsert_skill_pack_by_slug(slug, workspace_id=workspace_id, company_name=name)
+    pack = get_or_create_skill_pack(workspace_id, display_name=name)
     pack.build = SkillPackBuild(last_built_at=time.time(), output_path="", version=skill_pack_version)
     save_skill_pack(pack)
 
@@ -281,16 +277,9 @@ def _publish_skill_pack_impl(
 
     try:
         ensure_trial_active(principal)
-        ensure_workflow_publishable(principal, slug, [skill_slug])
+        ensure_workflow_publishable(principal, [skill_slug])
     except Exception as exc:  # noqa: BLE001
         raise entitlement_http_error(exc) from exc
-
-    # Conflict-check before claiming — a workspace may publish under any number
-    # of slugs (the per-plan slot limit was removed 2026-08-08; see
-    # docs/Implementation-Plan.md), the only remaining rule is that a slug
-    # already claimed by another workspace can't be taken over.
-    _assert_not_owned_by_other(slug, principal.workspace_id)
-    _claim_owner(slug, principal.workspace_id)
 
     skill_pack_version = _validate_skill_pack_version(body.skill_pack_version)
     decoded_files = _decode_publish_files(body.files)
@@ -333,7 +322,7 @@ def _publish_skill_pack_impl(
             "enabled": True,
             "tracking_url": f"{api_base}{tracking_url_path}",
             "tracking_token": _tracking_token(slug, principal.workspace_id, skill_pack_version, principal.user_id),
-            "company_id": slug,
+            "workspace_id": slug,
             "schema_version": 1,
             "protocol_version": 1,
         }
@@ -384,10 +373,9 @@ def _publish_skill_pack_impl(
         # endpoint (release_routes.post_release_release) adds them.
         existing_pack = read_pack_json_mirror(slug)
         pack_updates = {
-            "company": slug,
-            "company_display": body.display_name.strip() or existing_pack.get("company_display") or slug,
+            "workspace_id": slug,
+            "display_name": body.display_name.strip() or existing_pack.get("display_name") or slug,
             "release_notes": body.release_notes.strip(),
-            "workspace_id": principal.workspace_id,
             "published_at": published_at,
             "sync_endpoint": f"{api_base}{sync_url_path}",
             "sync_token": sync_token,
@@ -401,7 +389,7 @@ def _publish_skill_pack_impl(
             slug, skill_slug,
             group_id=body.group_id.strip(), group_name=body.group_name.strip(), workflow_name=body.workflow_name.strip(),
         )
-        record_published_workflow(principal.workspace_id, slug, skill_slug)
+        record_published_workflow(principal.workspace_id, skill_slug)
 
         add_audit_event(
             principal,
@@ -445,28 +433,32 @@ def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     installers/tooling — see ``post_publish_v2`` for the versioned equivalent."""
     principal = current_principal(request)
     require_admin(principal)
-    slug = _validate_slug(body.slug)
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
     return _publish_skill_pack_impl(slug, body, principal, request, installer_version=None)
 
 
-@router.post("/{installer_version}/{company_slug}/skill-packs/upload")
+@router.post("/{installer_version}/skill-packs/upload")
 def post_publish_v2(
-    installer_version: str, company_slug: str, body: PublishBody, request: Request
+    installer_version: str, body: PublishBody, request: Request
 ) -> dict[str, Any]:
     principal = current_principal(request)
     require_admin(principal)
     installer_version = validate_installer_version(installer_version)
-    slug = _validate_slug(company_slug)
-    if body.slug and body.slug != slug:
-        raise HTTPException(status_code=400, detail="slug_mismatch")
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
     return _publish_skill_pack_impl(slug, body, principal, request, installer_version=installer_version)
 
 
-@router.get("/{installer_version}/{company_slug}/skill-packs/versions")
+@router.get("/{installer_version}/skill-packs/versions")
 def get_skill_pack_versions_v2(
-    installer_version: str, company_slug: str, skill_slug: str, request: Request
+    installer_version: str, skill_slug: str, request: Request
 ) -> dict[str, Any]:
-    return _skill_pack_versions_impl(company_slug, skill_slug, request)
+    principal = current_principal(request)
+    require_admin(principal)
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
+    return _skill_pack_versions_impl(slug, skill_slug, request)
 
 
 def _skill_pack_versions_impl(slug: str, skill_slug: str, request: Request) -> dict[str, Any]:
@@ -477,9 +469,6 @@ def _skill_pack_versions_impl(slug: str, skill_slug: str, request: Request) -> d
     principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(slug)
-    owner = _owner_of(slug)
-    if owner and owner != principal.workspace_id:
-        raise HTTPException(status_code=403, detail="slug_owned_by_another_workspace")
 
     versions = [
         row
@@ -512,7 +501,6 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
     principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(slug)
-    _assert_owner(slug, principal.workspace_id)
 
     distribution = request.query_params.get("distribution", "internal").strip().lower()
     if distribution not in ("internal", "external"):
@@ -621,7 +609,7 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
 
     # Persist installer metadata onto the SkillPack record so the dashboard can
     # surface version and a download button without reading the filesystem.
-    pack = get_skill_pack_by_slug(slug)
+    pack = get_skill_pack(principal.workspace_id)
     if pack is not None:
         pack.installer = SkillPackInstaller(
             built_at=uploaded_at,
@@ -658,10 +646,14 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     return await _upload_installer_impl(slug, request)
 
 
-@router.post("/{installer_version}/{company_slug}/installer/upload")
-async def post_installer_upload_v2(installer_version: str, company_slug: str, request: Request) -> dict[str, Any]:
+@router.post("/{installer_version}/installer/upload")
+async def post_installer_upload_v2(installer_version: str, request: Request) -> dict[str, Any]:
     validate_installer_version(installer_version)
-    return await _upload_installer_impl(company_slug, request)
+    principal = current_principal(request)
+    require_admin(principal)
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
+    return await _upload_installer_impl(slug, request)
 
 
 def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
@@ -669,9 +661,6 @@ def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
     principal = current_principal(request)
     require_admin(principal)
     slug = _validate_slug(slug)
-    owner = _owner_of(slug)
-    if owner and owner != principal.workspace_id:
-        raise HTTPException(status_code=403, detail="slug_owned_by_another_workspace")
 
     def _row_from_meta(meta: dict[str, Any], fallback_version: str) -> dict[str, Any]:
         version = str(meta.get("version") or fallback_version)
@@ -728,10 +717,14 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     return _installer_versions_impl(slug, request)
 
 
-@router.get("/{installer_version}/{company_slug}/installer/versions")
-def get_installer_versions_v2(installer_version: str, company_slug: str, request: Request) -> dict[str, Any]:
+@router.get("/{installer_version}/installer/versions")
+def get_installer_versions_v2(installer_version: str, request: Request) -> dict[str, Any]:
     validate_installer_version(installer_version)
-    return _installer_versions_impl(company_slug, request)
+    principal = current_principal(request)
+    require_admin(principal)
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
+    return _installer_versions_impl(slug, request)
 
 
 @router.get("/generations")

@@ -38,7 +38,7 @@ def _seed_skill_dir(bundle_root, slug: str, *, with_fingerprint: bool) -> None:
 
 def _manifest(tmp_path, slug: str) -> dict:
     return json.loads(
-        (tmp_path / "skill-packs" / "acme" / "_default" / slug / "manifest.json").read_text(encoding="utf-8")
+        (tmp_path / "skill-packs" / "wrk_acme" / "_default" / slug / "manifest.json").read_text(encoding="utf-8")
     )
 
 
@@ -49,8 +49,8 @@ def test_manifest_carries_structural_fingerprint(tmp_path, monkeypatch) -> None:
 
     skill_package_builder_output._write_skill_packs_format(
         bundle_root=bundle_root,
-        company_slug="acme",
-        company_name="Acme",
+        workspace_id="wrk_acme",
+        display_name="Acme",
         target_url="https://acme.test",
         protected_url="",
         skill_slugs=["checkout"],
@@ -71,8 +71,8 @@ def test_manifest_fingerprint_defaults_empty_when_absent(tmp_path, monkeypatch) 
 
     skill_package_builder_output._write_skill_packs_format(
         bundle_root=bundle_root,
-        company_slug="acme",
-        company_name="Acme",
+        workspace_id="wrk_acme",
+        display_name="Acme",
         target_url="https://acme.test",
         protected_url="",
         skill_slugs=["login"],

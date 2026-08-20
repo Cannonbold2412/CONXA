@@ -926,7 +926,7 @@ class TestSavedSkillJsonBuild:
         import conxa_compile.skill_package_builder as skill_package_builder
 
         workspace_id = "wrk_test"
-        pack = SimpleNamespace(company_slug="render", company_name="Render")
+        pack = SimpleNamespace(display_name="Render")
         workflow = SimpleNamespace(
             id="wf1",
             workspace_id=workspace_id,
@@ -959,7 +959,7 @@ class TestSavedSkillJsonBuild:
                 }
             ],
         }
-        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, company_name=None: pack)
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, display_name=None: pack)
         monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [workflow])
         monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: saved_skill if skill_id == "skill_saved" else None)
         monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
@@ -1000,7 +1000,7 @@ class TestSavedSkillJsonBuild:
         monkeypatch.setattr(settings, "data_dir", tmp_path)
 
         workspace_id = "wrk_test"
-        pack = SimpleNamespace(company_slug="acme", company_name="Acme")
+        pack = SimpleNamespace(display_name="Acme")
 
         render_app = SimpleNamespace(
             id="app_render", name="Render",
@@ -1031,7 +1031,7 @@ class TestSavedSkillJsonBuild:
 
         saved_skills = {"skill_unrelated": _saved_skill_for("upload_8_files"), "skill_render": _saved_skill_for("sync_contact_to_crm")}
 
-        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, company_name=None: pack)
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, display_name=None: pack)
         monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [unrelated_wf, render_wf])
         monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: saved_skills.get(skill_id))
         monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
@@ -1040,7 +1040,7 @@ class TestSavedSkillJsonBuild:
 
         build_skill_package(workspace_id, company_name="Acme")
 
-        pack_dir = tmp_path / "skill-packs" / "acme"
+        pack_dir = tmp_path / "skill-packs" / "wrk_test"
 
         unrelated_manifest = json.loads((pack_dir / "grp_sales" / "upload_8_files" / "manifest.json").read_text())
         assert unrelated_manifest["required_apps"] == []
@@ -1059,7 +1059,7 @@ class TestSavedSkillJsonBuild:
         monkeypatch.setattr(settings, "data_dir", tmp_path)
 
         workspace_id = "wrk_test"
-        pack = SimpleNamespace(company_slug="acme", company_name="Acme")
+        pack = SimpleNamespace(display_name="Acme")
 
         render_app = SimpleNamespace(
             id="app_render", name="Render",
@@ -1087,7 +1087,7 @@ class TestSavedSkillJsonBuild:
             "inputs": [],
             "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://dashboard.render.com"}}]}],
         }
-        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, company_name=None: pack)
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, display_name=None: pack)
         monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [wf])
         monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: legacy_skill)
         monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
@@ -1095,7 +1095,7 @@ class TestSavedSkillJsonBuild:
         monkeypatch.setattr("conxa_core.storage.group_store.get_group", lambda _group_id: group)
 
         build_skill_package(workspace_id, company_name="Acme")
-        pack_dir = tmp_path / "skill-packs" / "acme"
+        pack_dir = tmp_path / "skill-packs" / "wrk_test"
         manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
         assert manifest["required_apps"] == ["app_render"]
 

@@ -22,10 +22,6 @@ from conxa_core.db import db_get, db_list, db_list_kv, db_set
 
 from app.api.deps import current_principal
 from app.api.product_ownership import (
-    _assert_not_owned_by_other,
-    _assert_owner,
-    _claim_owner,
-    _owner_of,
     validate_installer_version,
 )
 from app.api.publish_routes import PublishFile, _validate_rel_path, _validate_slug, _SEMVER_RE
@@ -39,7 +35,7 @@ from app.api.skillpack_storage import (
     write_mutable_mirror_files,
     write_pack_json_mirror,
 )
-from conxa_core.storage.skill_pack_store import get_skill_pack_by_slug, upsert_skill_pack_by_slug
+from conxa_core.storage.skill_pack_store import get_skill_pack, get_or_create_skill_pack
 from app.api.skillpack_update_routes import _STALE_RUNTIME_DAYS
 from app.api.updates_routes import _COMPONENT_VERSIONS_NS, _MANIFEST_NS, _compose_manifest
 from app.services import release_channel, release_diff
@@ -61,16 +57,13 @@ class UpsertGroupBody(BaseModel):
     company_name: str = Field(default="", max_length=128)
 
 
-def _require_owned_slug(slug: str, request: Request):
-    """Shared read-path guard for release routes: admin role + slug either
-    unclaimed or owned by the caller's workspace. Does not claim the slug —
-    only publish does that."""
+def _require_owned_slug(request: Request):
+    """Shared read-path guard for release routes: admin role + derive slug from
+    authenticated workspace_id. No path parameter needed."""
     principal = current_principal(request)
     require_admin(principal)
-    slug = _validate_slug(slug)
-    owner = _owner_of(slug)
-    if owner and owner != principal.workspace_id:
-        raise HTTPException(status_code=403, detail="slug_owned_by_another_workspace")
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
     return principal, slug
 
 
@@ -102,8 +95,8 @@ def _version_row(slug: str, skill_slug: str, version: str) -> dict[str, Any] | N
     return row if isinstance(row, dict) else None
 
 
-@router.post("/{installer_version}/{company_slug}/releases/preview")
-def post_release_preview(installer_version: str, company_slug: str, body: ReleasePreviewBody, request: Request) -> dict[str, Any]:
+@router.post("/{installer_version}/releases/preview")
+def post_release_preview(installer_version: str, body: ReleasePreviewBody, request: Request) -> dict[str, Any]:
     """Everything the Release Center's "Release Candidate" + "What Will Change"
     sections need before the user clicks Publish — computed the exact same way
     publish itself computes it, so the numbers shown here never drift from what
@@ -111,7 +104,7 @@ def post_release_preview(installer_version: str, company_slug: str, body: Releas
     diff, previous version, and duplicate/no-op checks are all against that
     skill's own history only."""
     validate_installer_version(installer_version)
-    principal, slug = _require_owned_slug(company_slug, request)
+    principal, slug = _require_owned_slug(request)
     skill_slug = body.skill_slug.strip()
     if not skill_slug:
         raise HTTPException(status_code=400, detail="skill_slug_required")
@@ -153,22 +146,22 @@ def post_release_preview(installer_version: str, company_slug: str, body: Releas
     }
 
 
-@router.get("/{installer_version}/{company_slug}/releases/events")
-def get_release_events(installer_version: str, company_slug: str, skill_slug: str, request: Request) -> dict[str, Any]:
+@router.get("/{installer_version}/releases/events")
+def get_release_events(installer_version: str, skill_slug: str, request: Request) -> dict[str, Any]:
     # Registered BEFORE /releases/{version} below — FastAPI matches routes in
     # registration order, and a single-segment static path here would
     # otherwise always lose to {version} capturing "events" as a version string.
     validate_installer_version(installer_version)
-    _principal, slug = _require_owned_slug(company_slug, request)
+    _principal, slug = _require_owned_slug(request)
     return {"slug": slug, "skill_slug": skill_slug, "events": release_channel.list_release_events(slug, skill_slug)}
 
 
-@router.get("/{installer_version}/{company_slug}/releases/{version}")
+@router.get("/{installer_version}/releases/{version}")
 def get_release_detail(
-    installer_version: str, company_slug: str, version: str, skill_slug: str, request: Request
+    installer_version: str, version: str, skill_slug: str, request: Request
 ) -> dict[str, Any]:
     validate_installer_version(installer_version)
-    _principal, slug = _require_owned_slug(company_slug, request)
+    _principal, slug = _require_owned_slug(request)
     row = _version_row(slug, skill_slug, version)
     if row is None:
         raise HTTPException(status_code=404, detail="release_not_found")
@@ -188,16 +181,16 @@ def get_release_detail(
     }
 
 
-@router.get("/{installer_version}/{company_slug}/releases/{version}/diff")
+@router.get("/{installer_version}/releases/{version}/diff")
 def get_release_diff(
-    installer_version: str, company_slug: str, version: str, skill_slug: str, request: Request
+    installer_version: str, version: str, skill_slug: str, request: Request
 ) -> dict[str, Any]:
     """Deterministic diff against the release immediately preceding this one in
     this skill's own publish order (not channel order — a rollback shouldn't
     change what "the previous release" means for a version that's already
     published). A sibling skill's releases are never part of this scan."""
     validate_installer_version(installer_version)
-    _principal, slug = _require_owned_slug(company_slug, request)
+    _principal, slug = _require_owned_slug(request)
     row = _version_row(slug, skill_slug, version)
     if row is None:
         raise HTTPException(status_code=404, detail="release_not_found")
@@ -240,9 +233,9 @@ def get_release_diff(
     return {"slug": slug, "skill_slug": skill_slug, "available": True, "from_version": prior_version, "to_version": version, **diff}
 
 
-@router.post("/{installer_version}/{company_slug}/releases/{version}/rollback")
+@router.post("/{installer_version}/releases/{version}/rollback")
 def post_release_rollback(
-    installer_version: str, company_slug: str, version: str, skill_slug: str, request: Request
+    installer_version: str, version: str, skill_slug: str, request: Request
 ) -> dict[str, Any]:
     """Move ONE skill's stable channel pointer back to an already-published
     release of that same skill. Never rebuilds, copies, or mutates an
@@ -252,8 +245,8 @@ def post_release_rollback(
     validate_installer_version(installer_version)
     principal = current_principal(request)
     require_admin(principal)
-    slug = _validate_slug(company_slug)
-    _assert_owner(slug, principal.workspace_id)
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
     version = str(version or "").strip()
     skill_slug = str(skill_slug or "").strip()
     if not skill_slug:
@@ -331,9 +324,9 @@ def post_release_rollback(
     return {"slug": slug, "skill_slug": skill_slug, "rolled_back_to": version, "previous_stable": current_stable_version}
 
 
-@router.post("/{installer_version}/{company_slug}/releases/{version}/release")
+@router.post("/{installer_version}/releases/{version}/release")
 def post_release_release(
-    installer_version: str, company_slug: str, version: str, skill_slug: str, request: Request
+    installer_version: str, version: str, skill_slug: str, request: Request
 ) -> dict[str, Any]:
     """Activate ONE skill's "ready" (published-but-undeployed) version — the
     Cloud-only Release/Deploy action. This is what "publish ≠ deploy" means in
@@ -348,8 +341,8 @@ def post_release_release(
     validate_installer_version(installer_version)
     principal = current_principal(request)
     require_admin(principal)
-    slug = _validate_slug(company_slug)
-    _assert_owner(slug, principal.workspace_id)
+    from conxa_core.workspace import workspace_dir_slug
+    slug = workspace_dir_slug(principal.workspace_id)
     version = str(version or "").strip()
     skill_slug = str(skill_slug or "").strip()
     if not skill_slug:
@@ -445,31 +438,29 @@ def post_release_release(
     return {"slug": slug, "skill_slug": skill_slug, "released": version, "previous_stable": current_stable_version}
 
 
-@router.put("/{installer_version}/{company_slug}/groups/{group_id}")
+@router.put("/{installer_version}/groups/{group_id}")
 def put_group(
-    installer_version: str, company_slug: str, group_id: str, body: UpsertGroupBody, request: Request
+    installer_version: str, group_id: str, body: UpsertGroupBody, request: Request
 ) -> dict[str, Any]:
     """Build Studio group create/rename: record this group's id+name on Cloud
     so Skill Packages can show the folder before any workflow is published."""
     validate_installer_version(installer_version)
-    principal, slug = _require_owned_slug(company_slug, request)
+    principal, slug = _require_owned_slug(request)
     gid = _validate_slug(group_id)
-    _assert_not_owned_by_other(slug, principal.workspace_id)
-    if get_skill_pack_by_slug(slug) is None:
+    if get_skill_pack(principal.workspace_id) is None:
         name = body.company_name.strip() or principal.workspace_name or slug
-        upsert_skill_pack_by_slug(slug, workspace_id=principal.workspace_id, company_name=name)
-        _claim_owner(slug, principal.workspace_id)
+        get_or_create_skill_pack(principal.workspace_id, display_name=name)
     record_known_group(slug, gid, body.group_name.strip())
     return {"slug": slug, "group_id": gid, "group_name": body.group_name.strip()}
 
 
-@router.get("/{installer_version}/{company_slug}/groups")
-def get_groups(installer_version: str, company_slug: str, request: Request) -> dict[str, Any]:
+@router.get("/{installer_version}/groups")
+def get_groups(installer_version: str, request: Request) -> dict[str, Any]:
     """Cloud's Skill Packages → Group → Workflow navigation. Unions Studio-synced
     groups (possibly empty) with every skill ever published (from the publish-time
     skill registry, not the runtime-facing pack.json mirror)."""
     validate_installer_version(installer_version)
-    _principal, slug = _require_owned_slug(company_slug, request)
+    _principal, slug = _require_owned_slug(request)
 
     groups: dict[str, dict[str, Any]] = {}
     for row in list_known_groups(slug):
@@ -509,8 +500,8 @@ def get_groups(installer_version: str, company_slug: str, request: Request) -> d
     return {"slug": slug, "groups": list(groups.values())}
 
 
-@router.get("/{installer_version}/{company_slug}/deployments")
-def get_deployments(installer_version: str, company_slug: str, skill_slug: str, request: Request) -> dict[str, Any]:
+@router.get("/{installer_version}/deployments")
+def get_deployments(installer_version: str, skill_slug: str, request: Request) -> dict[str, Any]:
     """Runtime deployment status for ONE skill, derived only from data the
     runtime actually reports (runtime_registrations) — never fabricated. A
     registration that predates skill-version reporting (an already-deployed
@@ -519,7 +510,7 @@ def get_deployments(installer_version: str, company_slug: str, skill_slug: str, 
     "pending", not "up to date" — this never looks at a sibling skill's
     version."""
     validate_installer_version(installer_version)
-    principal, slug = _require_owned_slug(company_slug, request)
+    principal, slug = _require_owned_slug(request)
 
     desired_version = release_channel.get_stable_version(slug, skill_slug)
     stale_cutoff = time.time() - _STALE_RUNTIME_DAYS * 86400

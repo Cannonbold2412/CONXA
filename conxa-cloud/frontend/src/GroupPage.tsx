@@ -12,19 +12,18 @@ import { queryKeys } from '@/lib/queryKeys'
 
 /** Skill Packages → Group: the workflows (skills) published under one group.
  * Click a workflow to reach its full release/deployment/rollback/audit page. */
-export function GroupPage({ companySlug, groupId }: { companySlug: string; groupId: string }) {
-  const groupsQ = useQuery({
-    queryKey: queryKeys.groups(companySlug),
-    queryFn: () => fetchGroups(companySlug),
-    staleTime: 15_000,
-  })
-  const group = groupsQ.data?.groups.find((g) => g.group_id === groupId)
+export function GroupPage({ groupId }: { groupId: string }) {
+  const groupsQ = useQuery({ queryKey: queryKeys.groups, queryFn: fetchGroups, staleTime: 15_000 })
+  const groups = groupsQ.data?.groups ?? []
+  const group = groups.find((g) => g.group_id === groupId)
+  const isLoading = groupsQ.isLoading
+  const isError = groupsQ.isError
+  const error = groupsQ.error
 
   return (
     <div className="h-full overflow-y-auto">
       <PageHeader
         title={group?.group_name || groupId || 'Ungrouped'}
-        description={companySlug}
         actions={
           <Button
             asChild
@@ -32,7 +31,7 @@ export function GroupPage({ companySlug, groupId }: { companySlug: string; group
             size="sm"
             className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
           >
-            <Link href={`/packages/${encodeURIComponent(companySlug)}`}>
+            <Link href="/packages">
               <ChevronLeft className="size-3.5" />
               Back
             </Link>
@@ -41,15 +40,15 @@ export function GroupPage({ companySlug, groupId }: { companySlug: string; group
       />
 
       <main className="flex w-full max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6">
-        {groupsQ.isLoading ? (
+        {isLoading ? (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {[0, 1, 2].map((item) => (
               <div key={item} className="h-24 animate-pulse rounded-lg border border-white/8 bg-white/[0.03]" />
             ))}
           </div>
-        ) : groupsQ.isError ? (
+        ) : isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(groupsQ.error as Error).message}
+            {error?.message}
           </div>
         ) : !group || group.workflows.length === 0 ? (
           <Card className="border-white/8 bg-white/[0.03] shadow-none">
@@ -66,7 +65,7 @@ export function GroupPage({ companySlug, groupId }: { companySlug: string; group
             {group.workflows.map((w) => (
               <Link
                 key={w.skill_slug}
-                href={`/packages/${encodeURIComponent(companySlug)}/groups/${encodeURIComponent(groupId)}/workflows/${encodeURIComponent(w.skill_slug)}`}
+                href={`/packages/groups/${encodeURIComponent(groupId)}/workflows/${encodeURIComponent(w.skill_slug)}`}
                 className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
               >
                 <Card

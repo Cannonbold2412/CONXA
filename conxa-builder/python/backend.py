@@ -356,6 +356,7 @@ class Backend(
         skill_slug: str,
         version: str,
         release_notes: str,
+        group_id: str,
         group_name: str = "",
         workflow_name: str = "",
         tests_passed: bool = False,
@@ -386,16 +387,22 @@ class Backend(
         pack["release_notes"] = release_notes
         pack_path.write_text(json.dumps(pack, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        group_id = self._skill_group_id(company_slug, skill_slug)
         # Collected AFTER the write above so pack.json's own uploaded bytes (if
-        # ever included) would carry this release's release_notes.
+        # ever included) would carry this release's release_notes. Deliberately
+        # uses the on-disk snapshot's own group id to find the built files —
+        # that's wherever the last build actually wrote them — which can lag
+        # behind `group_id` (the workflow's *current* group, passed in by the
+        # caller) if the workflow was reassigned to a different group after
+        # its last build. The two are independent on purpose: reporting the
+        # live group_id to Cloud is what keeps Skill Packages from splitting
+        # one group into two when that happens; the disk lookup must still use
+        # the snapshot's id or it won't find the files at all.
         files = self._collect_skill_pack_files(company_slug, skill_slug)
 
         cloud_api = self._cloud_api_base()
         generation = self._installer_generation()
         body = json.dumps(
             {
-                "slug": company_slug,
                 "skill_slug": skill_slug,
                 "group_id": group_id,
                 "group_name": group_name,
@@ -413,7 +420,7 @@ class Backend(
         sink({"kind": "skill_pack_publish", "stage": "uploading", "message": f"Publishing {skill_slug} to Conxa Cloud..."})
         try:
             req = urllib.request.Request(
-                f"{cloud_api}/api/v1/workflows/{generation}/{quote(company_slug)}/skill-packs/upload",
+                f"{cloud_api}/api/v1/workflows/{generation}/skill-packs/upload",
                 data=body,
                 method="POST",
             )
@@ -555,7 +562,7 @@ class Backend(
                 "release_notes": release_notes,
             }
         )
-        url = f"{cloud_api}/api/v1/workflows/{generation}/{quote(company_slug)}/installer/upload?{params}"
+        url = f"{cloud_api}/api/v1/workflows/{generation}/installer/upload?{params}"
         req = urllib.request.Request(url, data=installer_path.read_bytes(), method="POST")
         req.add_header("Content-Type", "application/octet-stream")
         req.add_header("Authorization", f"Bearer {self._cloud_token()}")

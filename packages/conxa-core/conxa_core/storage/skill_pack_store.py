@@ -1,16 +1,13 @@
-"""Filesystem JSON persistence for SkillPack — the shared package a company's
-workflows compile into (see conxa_core.models.workflow).
+"""Filesystem JSON persistence for SkillPack — the shared package a
+workspace's workflows compile into (see conxa_core.models.workflow).
 
-Keyed by company_slug (globally unique — see publish_routes.py's
-_assert_not_owned_by_other), not by workspace_id: the cloud is multi-tenant
-and a single workspace may publish under any number of slugs (e.g. an agency
-running several client companies from one account). Build Studio is
-single-tenant per install (LOCAL_WORKSPACE_ID), so its call sites use the
-workspace-scoped helpers below, which are a thin convenience over the same
-slug-keyed storage.
+Keyed by workspace_id: one workspace has exactly one skill pack and one
+installer, forever (see CLAUDE.md Key Invariants). Both the cloud (multi-
+tenant) and Build Studio (single-tenant per install, LOCAL_WORKSPACE_ID) use
+the same workspace_id-keyed storage below.
 
 Layout:
-  data/skill_pack_meta/{company_slug}.json  — one file per company
+  data/skill_pack_meta/{workspace_dir_slug}.json  — one file per workspace
 """
 
 from __future__ import annotations
@@ -21,11 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from conxa_core.config import settings
-from conxa_core.db import db_get, db_set, db_delete, db_list
+from conxa_core.db import db_get, db_set, db_list
 from conxa_core.models.workflow import SkillPack, SkillPackBuild, SkillPackInstaller
-from conxa_core.slugs import MAX_SLUG_LEN
-from conxa_core.storage.skill_packages import validate_bundle_slug
-from conxa_core.workspace import company_slug as _derive_company_slug
+from conxa_core.workspace import workspace_dir_slug
 
 
 def _dir() -> Path:
@@ -34,15 +29,15 @@ def _dir() -> Path:
     return p
 
 
-def _path(slug: str) -> Path:
-    return _dir() / f"{slug}.json"
+def _path(workspace_id: str) -> Path:
+    return _dir() / f"{workspace_dir_slug(workspace_id)}.json"
 
 
-def _read_raw(slug: str) -> dict[str, Any] | None:
-    data = db_get("skill_pack_meta", slug)
+def _read_raw(workspace_id: str) -> dict[str, Any] | None:
+    data = db_get("skill_pack_meta", workspace_id)
     if data is not None:
         return data
-    path = _path(slug)
+    path = _path(workspace_id)
     if not path.is_file():
         return None
     try:
@@ -53,42 +48,11 @@ def _read_raw(slug: str) -> dict[str, Any] | None:
 
 def _write_raw(pack: SkillPack) -> None:
     d = pack.model_dump(mode="json")
-    db_set("skill_pack_meta", pack.company_slug, d)
+    db_set("skill_pack_meta", pack.workspace_id, d)
     try:
-        _path(pack.company_slug).write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+        _path(pack.workspace_id).write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass
-
-
-def _delete_raw(slug: str) -> None:
-    db_delete("skill_pack_meta", slug)
-    try:
-        _path(slug).unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-def _rename_company_pack_dir(old_slug: str, new_slug: str) -> None:
-    if old_slug == new_slug:
-        return
-    old_dir = settings.data_dir / "skill-packs" / old_slug
-    new_dir = settings.data_dir / "skill-packs" / new_slug
-    if old_dir.is_dir() and not new_dir.exists():
-        old_dir.rename(new_dir)
-
-
-def _slug_needs_heal(slug: str) -> bool:
-    return not validate_bundle_slug(slug) or len(slug) > MAX_SLUG_LEN
-
-
-def get_skill_pack_by_slug(company_slug: str) -> SkillPack | None:
-    raw = _read_raw(company_slug)
-    if raw is None:
-        return None
-    try:
-        return SkillPack.model_validate(raw)
-    except Exception:
-        return None
 
 
 def list_skill_packs(workspace_id: str = "") -> list[SkillPack]:
@@ -111,80 +75,32 @@ def list_skill_packs(workspace_id: str = "") -> list[SkillPack]:
     return out
 
 
-def upsert_skill_pack_by_slug(
-    company_slug: str,
-    *,
-    workspace_id: str,
-    company_name: str,
-) -> SkillPack:
-    """Cloud entry point: create or update the published record for a slug.
-
-    A slug is claimed by exactly one workspace (see publish_routes.py's
-    ownership check, enforced before this is called) but a workspace may own
-    several slugs, so this is looked up by slug — never by workspace_id.
-    """
-    existing = get_skill_pack_by_slug(company_slug)
-    now = time.time()
-    if existing is None:
-        pack = SkillPack(
-            workspace_id=workspace_id,
-            company_slug=company_slug,
-            company_name=company_name,
-            created_at=now,
-        )
-    else:
-        pack = existing.model_copy(update={
-            "workspace_id": workspace_id,
-            "company_name": company_name,
-        })
-    return save_skill_pack(pack)
-
-
 def save_skill_pack(pack: SkillPack) -> SkillPack:
     pack = pack.model_copy(update={"updated_at": time.time()})
     _write_raw(pack)
     return pack
 
 
-# ─── Build Studio convenience: workspace-scoped (single-tenant local install) ──
-
 def get_skill_pack(workspace_id: str) -> SkillPack | None:
-    """Build Studio is single-tenant (LOCAL_WORKSPACE_ID) — at most one
-    SkillPack ever exists per local install, so a scan is fine."""
-    for pack in list_skill_packs(workspace_id):
-        if _slug_needs_heal(pack.company_slug):
-            # Legacy record from before company_slug() was underscore-only
-            # (e.g. "acme-co-wrklocal"), or a slug that exceeds the cloud's
-            # 64-char publish limit. Re-derive and move it under the corrected slug.
-            old_slug = pack.company_slug
-            pack = pack.model_copy(update={
-                "company_slug": _derive_company_slug(pack.workspace_id, pack.company_name),
-            })
-            pack = save_skill_pack(pack)
-            _delete_raw(old_slug)
-            _rename_company_pack_dir(old_slug, pack.company_slug)
-        return pack
-    return None
+    raw = _read_raw(workspace_id)
+    if raw is None:
+        return None
+    try:
+        return SkillPack.model_validate(raw)
+    except Exception:
+        return None
 
 
-def get_or_create_skill_pack(workspace_id: str, company_name: str | None = None) -> SkillPack:
-    """Return the workspace's SkillPack, creating it on first use.
-
-    company_name is required the first time a workspace builds or publishes
-    (nothing to derive it from otherwise); every subsequent call reuses the
-    stored name and ignores a mismatched one.
-    """
+def get_or_create_skill_pack(workspace_id: str, display_name: str | None = None) -> SkillPack:
+    """Return the workspace's SkillPack, creating it on first use."""
     existing = get_skill_pack(workspace_id)
     if existing is not None:
         return existing
-    name = (company_name or "").strip()
-    if not name:
-        raise ValueError("company_name is required to create the workspace's skill pack.")
-    return upsert_skill_pack_by_slug(
-        _derive_company_slug(workspace_id, name),
+    return save_skill_pack(SkillPack(
         workspace_id=workspace_id,
-        company_name=name,
-    )
+        display_name=(display_name or "").strip(),
+        created_at=time.time(),
+    ))
 
 
 def set_build(workspace_id: str, output_path: str, version: str = "0.1.0") -> SkillPack | None:

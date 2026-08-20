@@ -21,8 +21,7 @@ export type SkillPackInstaller = {
 
 export type SkillPack = {
   workspace_id: string
-  company_slug: string
-  company_name: string
+  display_name: string
   status: 'idle' | 'building' | 'error'
   build: SkillPackBuild | null
   installer: SkillPackInstaller | null
@@ -30,23 +29,10 @@ export type SkillPack = {
   updated_at: number
 }
 
-export type SkillPacksResponse = { skill_packs: SkillPack[] }
+export type SkillPackResponse = { skill_pack: SkillPack }
 
-export function normalizeSkillPackList(data: unknown): SkillPack[] {
-  if (Array.isArray(data)) return data as SkillPack[]
-  if (data && typeof data === 'object') {
-    const packs = (data as { skill_packs?: unknown }).skill_packs
-    if (Array.isArray(packs)) return packs as SkillPack[]
-  }
-  return []
-}
-
-export function fetchSkillPacks(): Promise<SkillPacksResponse> {
-  return apiFetch('/workflows/skill-packs').then((r) => json<SkillPacksResponse>(r))
-}
-
-export function fetchSkillPack(slug: string): Promise<{ skill_pack: SkillPack }> {
-  return apiFetch(`/workflows/skill-packs/${encodeURIComponent(slug)}`).then((r) => json<{ skill_pack: SkillPack }>(r))
+export function fetchSkillPack(): Promise<SkillPackResponse> {
+  return apiFetch('/workflows/skill-pack').then((r) => json<SkillPackResponse>(r))
 }
 
 // ─────────────────────────────────────────────────
@@ -592,9 +578,9 @@ export type InstallerVersion = {
   download_url: string
 }
 
-export function fetchInstallerVersions(slug: string): Promise<{ slug: string; versions: InstallerVersion[] }> {
-  return apiFetch(`/workflows/${encodeURIComponent(slug)}/installer/versions`).then((r) =>
-    json<{ slug: string; versions: InstallerVersion[] }>(r),
+export function fetchInstallerVersions(): Promise<{ versions: InstallerVersion[] }> {
+  return apiFetch(`/workflows/installer/versions`).then((r) =>
+    json<{ versions: InstallerVersion[] }>(r),
   )
 }
 
@@ -676,9 +662,9 @@ export type SkillPackVersionsResponse = {
   current_stable: SkillPackVersion | null
 }
 
-export function fetchSkillPackVersions(slug: string, skillSlug: string): Promise<SkillPackVersionsResponse> {
+export function fetchSkillPackVersions(skillSlug: string): Promise<SkillPackVersionsResponse> {
   return apiFetch(
-    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/skill-packs/versions?skill_slug=${encodeURIComponent(skillSlug)}`,
+    `/workflows/${RELEASE_GENERATION}/skill-packs/versions?skill_slug=${encodeURIComponent(skillSlug)}`,
   ).then((r) => json<SkillPackVersionsResponse>(r))
 }
 
@@ -709,9 +695,9 @@ export type ReleaseDiffResponse =
   | ({ slug: string; available: true; from_version: string | null; to_version: string } & ReleaseDiff)
   | { slug: string; available: false; reason: string; version: string; from_version?: string }
 
-export function fetchReleaseDiff(slug: string, skillSlug: string, version: string): Promise<ReleaseDiffResponse> {
+export function fetchReleaseDiff(skillSlug: string, version: string): Promise<ReleaseDiffResponse> {
   return apiFetch(
-    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/${encodeURIComponent(version)}/diff?skill_slug=${encodeURIComponent(skillSlug)}`,
+    `/workflows/${RELEASE_GENERATION}/releases/${encodeURIComponent(version)}/diff?skill_slug=${encodeURIComponent(skillSlug)}`,
   ).then((r) => json<ReleaseDiffResponse>(r))
 }
 
@@ -720,9 +706,9 @@ export type ReleaseResult = { slug: string; skill_slug: string; released: string
 /** The Release/Deploy action — Cloud-only, the only place a "ready" version
  * ever becomes the live stable release. Requires the target version's status
  * to already be "ready" server-side (require_admin-gated, same as rollback). */
-export function releaseVersion(slug: string, skillSlug: string, version: string): Promise<ReleaseResult> {
+export function releaseVersion(skillSlug: string, version: string): Promise<ReleaseResult> {
   return apiFetch(
-    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/${encodeURIComponent(version)}/release?skill_slug=${encodeURIComponent(skillSlug)}`,
+    `/workflows/${RELEASE_GENERATION}/releases/${encodeURIComponent(version)}/release?skill_slug=${encodeURIComponent(skillSlug)}`,
     { method: 'POST' },
   ).then((r) => json<ReleaseResult>(r))
 }
@@ -734,9 +720,9 @@ export type RollbackResult = {
   previous_stable: string | null
 }
 
-export function rollbackRelease(slug: string, skillSlug: string, version: string): Promise<RollbackResult> {
+export function rollbackRelease(skillSlug: string, version: string): Promise<RollbackResult> {
   return apiFetch(
-    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/${encodeURIComponent(version)}/rollback?skill_slug=${encodeURIComponent(skillSlug)}`,
+    `/workflows/${RELEASE_GENERATION}/releases/${encodeURIComponent(version)}/rollback?skill_slug=${encodeURIComponent(skillSlug)}`,
     { method: 'POST' },
   ).then((r) => json<RollbackResult>(r))
 }
@@ -763,9 +749,9 @@ export type DeploymentsResponse = {
   summary: { total: number; up_to_date: number; pending: number; failed: number; offline: number; unknown: number }
 }
 
-export function fetchDeployments(slug: string, skillSlug: string): Promise<DeploymentsResponse> {
+export function fetchDeployments(skillSlug: string): Promise<DeploymentsResponse> {
   return apiFetch(
-    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/deployments?skill_slug=${encodeURIComponent(skillSlug)}`,
+    `/workflows/${RELEASE_GENERATION}/deployments?skill_slug=${encodeURIComponent(skillSlug)}`,
   ).then((r) => json<DeploymentsResponse>(r))
 }
 
@@ -782,9 +768,9 @@ export type ReleaseEvent = {
 
 export type ReleaseEventsResponse = { slug: string; skill_slug: string; events: ReleaseEvent[] }
 
-export function fetchReleaseEvents(slug: string, skillSlug: string): Promise<ReleaseEventsResponse> {
+export function fetchReleaseEvents(skillSlug: string): Promise<ReleaseEventsResponse> {
   return apiFetch(
-    `/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/releases/events?skill_slug=${encodeURIComponent(skillSlug)}`,
+    `/workflows/${RELEASE_GENERATION}/releases/events?skill_slug=${encodeURIComponent(skillSlug)}`,
   ).then((r) => json<ReleaseEventsResponse>(r))
 }
 
@@ -800,8 +786,8 @@ export type Group = { group_id: string; group_name: string; workflows: GroupWork
 
 export type GroupsResponse = { slug: string; groups: Group[] }
 
-export function fetchGroups(slug: string): Promise<GroupsResponse> {
-  return apiFetch(`/workflows/${RELEASE_GENERATION}/${encodeURIComponent(slug)}/groups`).then((r) =>
+export function fetchGroups(): Promise<GroupsResponse> {
+  return apiFetch(`/workflows/${RELEASE_GENERATION}/groups`).then((r) =>
     json<GroupsResponse>(r),
   )
 }

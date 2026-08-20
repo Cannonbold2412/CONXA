@@ -33,8 +33,8 @@ async function _maskAutomation(page) {
   });
 }
 
-function _loadPack(company) {
-  const packPath = path.join(CONXA_DIR, "skill-packs", company, "pack.json");
+function _loadPack(workspace_id) {
+  const packPath = path.join(CONXA_DIR, "skill-packs", workspace_id, "pack.json");
   try { return JSON.parse(fs.readFileSync(packPath, "utf8")); } catch (_) { return {}; }
 }
 
@@ -57,7 +57,7 @@ function _reachedProtectedUrl(url, protectedUrl) {
 }
 
 // ─── Multi-app group auth ─────────────────────────────────────────────────
-// A WorkflowGroup's session files are keyed `${company}__${appId}` (see
+// A WorkflowGroup's session files are keyed `${workspace_id}__${appId}` (see
 // auth_manager.js — every save/load function already takes the key as its
 // first argument, so keying is purely a call-site convention). Merging N
 // per-app storageStates into one lets a single Chromium context stay signed
@@ -92,23 +92,23 @@ function mergeStorageStates(states) {
   return { cookies, origins: [...originsByUrl.values()] };
 }
 
-// Resolve a company's WorkflowGroup from pack.json's `groups` block. Packs
+// Resolve a workspace's WorkflowGroup from pack.json's `groups` block. Packs
 // built before Workflow Groups shipped have no `groups` key — callers must
 // treat that as "take the legacy single-session path", not an error.
-function _resolveGroup(company, groupId) {
-  const pack = _loadPack(company);
+function _resolveGroup(workspace_id, groupId) {
+  const pack = _loadPack(workspace_id);
   const groups = Array.isArray(pack.groups) ? pack.groups : [];
   if (groups.length === 0) return null;
   if (groupId) return groups.find((g) => g.id === groupId) || null;
   return groups[0];
 }
 
-function _groupAppSessionPath(company, appId) {
-  return path.join(SESSIONS_DIR, `${company}__${appId}_raw_state.json`);
+function _groupAppSessionPath(workspace_id, appId) {
+  return path.join(SESSIONS_DIR, `${workspace_id}__${appId}_raw_state.json`);
 }
 
-async function _validateGroupApp(company, app, authManager, logFn) {
-  const key = `${company}__${app.id}`;
+async function _validateGroupApp(workspace_id, app, authManager, logFn) {
+  const key = `${workspace_id}__${app.id}`;
   let stored = null;
   if (authManager) {
     try {
@@ -117,7 +117,7 @@ async function _validateGroupApp(company, app, authManager, logFn) {
     } catch (_) {}
   }
   if (!stored) {
-    const rawPath = _groupAppSessionPath(company, app.id);
+    const rawPath = _groupAppSessionPath(workspace_id, app.id);
     if (fs.existsSync(rawPath)) {
       try { stored = JSON.parse(fs.readFileSync(rawPath, "utf8")); } catch (_) {}
     }
@@ -146,7 +146,7 @@ function _filterRequiredApps(groupApps, requiredAppIds) {
  *
  * Any missing/expired REQUIRED app opens its own login window — ALL of them
  * at once, not one at a time, so a run with N broken apps costs the user one
- * interruption instead of N. Each app is keyed `${company}__${app.id}` in
+ * interruption instead of N. Each app is keyed `${workspace_id}__${app.id}` in
  * _pendingAuth, so the parallel opens never collide.
  *
  * opts.requiredAppIds scopes the gate to the apps the executing skill's manifest
@@ -157,7 +157,7 @@ function _filterRequiredApps(groupApps, requiredAppIds) {
  * list means this skill touches none of the group's apps, so it runs with no
  * group auth gate at all (but still seeds every other valid app's session, in
  * case it wanders into one anyway). */
-async function getGroupAuthContext(company, group, authManager, opts = {}) {
+async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) {
   const headless = opts.headless !== false;
   const logFn = opts.logFn;
   const required = _filterRequiredApps(group.apps, opts.requiredAppIds);
@@ -170,7 +170,7 @@ async function getGroupAuthContext(company, group, authManager, opts = {}) {
 
   // Validate every app in the group, not just the required ones — seeding needs
   // all of them; gating only needs the required subset of these same results.
-  const results = await Promise.all(group.apps.map((app) => _validateGroupApp(company, app, authManager, logFn)));
+  const results = await Promise.all(group.apps.map((app) => _validateGroupApp(workspace_id, app, authManager, logFn)));
   const missingRequired = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
 
   if (missingRequired.length > 0) {
@@ -181,7 +181,7 @@ async function getGroupAuthContext(company, group, authManager, opts = {}) {
       `${required.length} application${required.length === 1 ? "" : "s"}. Sign in to ` +
       `${names.join(", ")} in the window${plural ? "" : "s"} that just opened, then run the skill again.`;
     const pendings = await Promise.all(missingRequired.map((r) =>
-      beginInteractiveAuth(`${company}__${r.app.id}`, r.app.login_url, {
+      beginInteractiveAuth(`${workspace_id}__${r.app.id}`, r.app.login_url, {
         storedState: r.stored,
         protectedUrl: r.app.success_url || r.app.login_url,
         authManager,
@@ -206,22 +206,22 @@ async function getGroupAuthContext(company, group, authManager, opts = {}) {
   return { browser, context, protectedUrl, sessionSource: "group" };
 }
 
-async function _persistSession(company, state, authManager, sessionsDir, logFn) {
+async function _persistSession(workspace_id, state, authManager, sessionsDir, logFn) {
   if (authManager) {
     try {
-      const sessionKey = await authManager.getSessionKey(company, logFn);
-      const encrypted = authManager.saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
-      if (!encrypted) authManager.saveRawSession(company, state, sessionsDir, logFn);
+      const sessionKey = await authManager.getSessionKey(workspace_id, logFn);
+      const encrypted = authManager.saveEncryptedSession(workspace_id, state, sessionKey, sessionsDir, logFn);
+      if (!encrypted) authManager.saveRawSession(workspace_id, state, sessionsDir, logFn);
     } catch (_) {
-      authManager.saveRawSession(company, state, sessionsDir, logFn);
+      authManager.saveRawSession(workspace_id, state, sessionsDir, logFn);
     }
   } else {
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(path.join(sessionsDir, `${company}_raw_state.json`), JSON.stringify(state, null, 2), { mode: 0o600 });
+    fs.writeFileSync(path.join(sessionsDir, `${workspace_id}_raw_state.json`), JSON.stringify(state, null, 2), { mode: 0o600 });
   }
 }
 
-// ─── Browser cache (per-company, short idle timeout) ─────────────────────────
+// ─── Browser cache (per-workspace, short idle timeout) ─────────────────────────
 // A cache hit skips re-validating the underlying app session(s) entirely (see the
 // `entry.context.pages()` liveness-only check below) — it only proves the browser process is
 // still alive, not that the login is still good. That's a real staleness window: authentication
@@ -233,24 +233,24 @@ async function _persistSession(company, state, authManager, sessionsDir, logFn) 
 const _cache    = new Map();
 const IDLE_MS   = 90 * 1000;
 
-function _scheduleCleanup(company) {
-  const entry = _cache.get(company);
+function _scheduleCleanup(cacheKey) {
+  const entry = _cache.get(cacheKey);
   if (!entry) return;
   clearTimeout(entry.idleTimer);
   entry.idleTimer = setTimeout(async () => {
     const b = entry.browser;
-    _cache.delete(company);
+    _cache.delete(cacheKey);
     if (b) await b.close().catch(() => {});
   }, IDLE_MS);
 }
 
-async function getCachedBrowser(company, authManager, opts = {}) {
+async function getCachedBrowser(workspace_id, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
   // requiredAppIds is part of the cache key: two skills in the same group can depend on
   // different app subsets, so a context built (or auth-gated) for one must never be
   // reused for the other.
   const appsKey = Array.isArray(opts.requiredAppIds) ? `[${[...opts.requiredAppIds].sort().join(",")}]` : "*";
-  const cacheKey = opts.groupId ? `${company}::${opts.groupId}::${appsKey}` : company;
+  const cacheKey = opts.groupId ? `${workspace_id}::${opts.groupId}::${appsKey}` : workspace_id;
   if (headless) {
     const entry = _cache.get(cacheKey);
     if (entry && entry.browser && entry.context) {
@@ -263,7 +263,7 @@ async function getCachedBrowser(company, authManager, opts = {}) {
       }
     }
   }
-  const result = await getAuthContext(company, authManager, {
+  const result = await getAuthContext(workspace_id, authManager, {
     headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds,
   });
   // authPending means no browser/context was built (a login window was opened instead) —
@@ -303,32 +303,32 @@ function _rejectReasonForProtectedUrl(url) {
   return "";
 }
 
-function _authMetaPath(company) {
-  return path.join(SESSIONS_DIR, `${company}_auth_meta.json`);
+function _authMetaPath(workspace_id) {
+  return path.join(SESSIONS_DIR, `${workspace_id}_auth_meta.json`);
 }
 
-function _readAuthMeta(company) {
+function _readAuthMeta(workspace_id) {
   try {
-    const metaPath = _authMetaPath(company);
+    const metaPath = _authMetaPath(workspace_id);
     return fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, "utf8")) : {};
   } catch (_) {
     return {};
   }
 }
 
-function _writeAuthMeta(company, patch) {
+function _writeAuthMeta(workspace_id, patch) {
   const meta = {
-    ..._readAuthMeta(company),
+    ..._readAuthMeta(workspace_id),
     ...patch,
     updated_at: new Date().toISOString(),
   };
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-  fs.writeFileSync(_authMetaPath(company), JSON.stringify(meta, null, 2), { mode: 0o600 });
+  fs.writeFileSync(_authMetaPath(workspace_id), JSON.stringify(meta, null, 2), { mode: 0o600 });
   return meta;
 }
 
-function _resolveProtectedUrl(company, pack = {}) {
-  const metaUrl = String((_readAuthMeta(company).protected_url || "")).trim();
+function _resolveProtectedUrl(workspace_id, pack = {}) {
+  const metaUrl = String((_readAuthMeta(workspace_id).protected_url || "")).trim();
   if (metaUrl) return metaUrl;
   return String((pack.protected_url || "")).trim();
 }
@@ -367,7 +367,7 @@ async function _buildExecContext(stored, headless = false) {
   return { browser, context };
 }
 
-async function _captureInteractiveAuth(company, targetUrl, opts = {}) {
+async function _captureInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   const { storedState, protectedUrl } = opts;
   const loginBrowser = await chromium.launch({
     headless: false,
@@ -465,11 +465,11 @@ async function _captureInteractiveAuth(company, targetUrl, opts = {}) {
 
   const rejectReason = _rejectReasonForProtectedUrl(lastUrl);
   if (rejectReason) throw new Error(rejectReason);
-  if (!lastState) throw new Error(`Authentication session was not captured for ${company}. Please try again.`);
+  if (!lastState) throw new Error(`Authentication session was not captured for ${workspace_id}. Please try again.`);
   return { state: lastState, protectedUrl: lastUrl };
 }
 
-// Per-company handle for an in-flight (or just-finished) interactive login window, so a
+// Per-workspace handle for an in-flight (or just-finished) interactive login window, so a
 // second execute_skill call while the window is open doesn't spawn a second one.
 const _pendingAuth = new Map();
 
@@ -478,27 +478,27 @@ const _pendingAuth = new Map();
 // session save) happens in the background. The window disconnecting with no session
 // captured (user closed it before signing in) reopens once, then gives up — the next
 // call to this function starts a fresh attempt.
-async function beginInteractiveAuth(company, targetUrl, opts = {}) {
+async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   const { storedState, protectedUrl, authManager, sessionsDir, logFn } = opts;
 
-  const existing = _pendingAuth.get(company);
+  const existing = _pendingAuth.get(workspace_id);
   if (existing && existing.status === "pending") {
     return { authPending: true, loginUrl: targetUrl,
-      message: `A login window for ${company} is already open. Sign in there, then re-run the skill.` };
+      message: `A login window for ${workspace_id} is already open. Sign in there, then re-run the skill.` };
   }
   const reopened = existing && existing.status === "done" && existing.outcome === "abandoned";
 
   const handle = { status: "pending", outcome: null };
-  _pendingAuth.set(company, handle);
+  _pendingAuth.set(workspace_id, handle);
 
   (async () => {
     let lastErr = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { state, protectedUrl: capturedUrl } =
-          await _captureInteractiveAuth(company, targetUrl, { storedState, protectedUrl });
-        await _persistSession(company, state, authManager, sessionsDir, logFn);
-        _writeAuthMeta(company, { protected_url: capturedUrl });
+          await _captureInteractiveAuth(workspace_id, targetUrl, { storedState, protectedUrl });
+        await _persistSession(workspace_id, state, authManager, sessionsDir, logFn);
+        _writeAuthMeta(workspace_id, { protected_url: capturedUrl });
         handle.status = "done";
         handle.outcome = "captured";
         return;
@@ -512,41 +512,41 @@ async function beginInteractiveAuth(company, targetUrl, opts = {}) {
   })();
 
   const message = reopened
-    ? `The previous login window for ${company} was closed before signing in. Opened a new one — sign in there, then re-run the skill.`
-    : `Opened a browser window for the user to log in to ${company}. Sign in there — the window closes on its own once you land on the app.`;
+    ? `The previous login window for ${workspace_id} was closed before signing in. Opened a new one — sign in there, then re-run the skill.`
+    : `Opened a browser window for the user to log in to ${workspace_id}. Sign in there — the window closes on its own once you land on the app.`;
   return { authPending: true, loginUrl: targetUrl, message };
 }
 
-async function getAuthContext(company, authManager, opts = {}) {
+async function getAuthContext(workspace_id, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
   const logFn = opts.logFn;
 
   // Workflow Groups path: a pack with a `groups` block resolves every app's
-  // session and merges them, instead of the single company-wide session
+  // session and merges them, instead of the single workspace-wide session
   // below. Packs built before Workflow Groups shipped have no `groups` key,
   // so _resolveGroup returns null and behavior is unchanged — see
   // _resolveGroup's comment.
-  const group = _resolveGroup(company, opts.groupId);
+  const group = _resolveGroup(workspace_id, opts.groupId);
   if (group && group.apps && group.apps.length > 0) {
-    return getGroupAuthContext(company, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds });
+    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds });
   }
 
   let _hadEncryptedSession = false; // set true if encrypted path ran; raw session is then stale
   let lastKnownState = null; // best available (possibly expired) session — seeds the login window
-  const pack = _loadPack(company);
-  const protectedUrl = _resolveProtectedUrl(company, pack);
+  const pack = _loadPack(workspace_id);
+  const protectedUrl = _resolveProtectedUrl(workspace_id, pack);
   const targetUrl    = pack.target_url || protectedUrl;
 
   // Try encrypted session (uses per-machine session key from keytar)
   if (authManager) {
     try {
-      const token = await authManager.getSessionKey(company, logFn);
+      const token = await authManager.getSessionKey(workspace_id, logFn);
       if (token) {
-        const stored = authManager.loadDecryptedSession(company, token, SESSIONS_DIR);
+        const stored = authManager.loadDecryptedSession(workspace_id, token, SESSIONS_DIR);
         if (stored) {
           lastKnownState = stored;
           if (await _validateSession(stored, protectedUrl)) {
-            _writeAuthMeta(company, { protected_url: protectedUrl });
+            _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
             const { browser, context } = await _buildExecContext(stored, headless);
             return { browser, context, protectedUrl, sessionSource: "encrypted" };
           }
@@ -559,14 +559,14 @@ async function getAuthContext(company, authManager, opts = {}) {
 
   // Try raw session (installer-included initial session, not yet encrypted)
   // Skip if encrypted path already ran — raw session is then stale and should not override
-  const rawSessionPath = path.join(SESSIONS_DIR, `${company}_raw_state.json`);
+  const rawSessionPath = path.join(SESSIONS_DIR, `${workspace_id}_raw_state.json`);
   if (!_hadEncryptedSession && fs.existsSync(rawSessionPath)) {
     let stored;
     try { stored = JSON.parse(fs.readFileSync(rawSessionPath, "utf8")); } catch (_) {}
     if (stored) {
       lastKnownState = stored;
       if (await _validateSession(stored, protectedUrl)) {
-        _writeAuthMeta(company, { protected_url: protectedUrl });
+        _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
         const { browser, context } = await _buildExecContext(stored, headless);
         return { browser, context, protectedUrl, sessionSource: "raw" };
       }
@@ -574,9 +574,9 @@ async function getAuthContext(company, authManager, opts = {}) {
   }
 
   // No valid session — open an interactive login window for the user (non-blocking).
-  if (!targetUrl) throw new Error(`No target_url configured for company ${company}. Cannot authenticate.`);
+  if (!targetUrl) throw new Error(`No target_url configured for workspace ${workspace_id}. Cannot authenticate.`);
 
-  return beginInteractiveAuth(company, targetUrl, {
+  return beginInteractiveAuth(workspace_id, targetUrl, {
     storedState: lastKnownState,
     protectedUrl,
     authManager,
@@ -605,11 +605,11 @@ function _hostOf(url) {
   try { return new URL(url).hostname; } catch (_) { return ""; }
 }
 
-async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn, opts = {}) {
+async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, logFn, opts = {}) {
   // authManager/sessionsDir are accepted (not used) to keep this function's call sites and
   // existing tests stable — they were only ever needed for the window-opening/session-persist
   // path this function no longer takes.
-  const group = _resolveGroup(company, opts.groupId);
+  const group = _resolveGroup(workspace_id, opts.groupId);
   if (group && group.apps && group.apps.length > 0) {
     const byHost = (host) => group.apps.find((a) => _hostOf(a.success_url || a.login_url) === host);
     let matchedBy = "failing-page-host";
@@ -622,7 +622,7 @@ async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn,
       matchedBy = "group-apps[0]-default";
       app = group.apps[0];
     }
-    if (logFn) logFn("info", "reauth_app_resolved", { company, appId: app.id, matchedBy });
+    if (logFn) logFn("info", "reauth_app_resolved", { workspace_id, appId: app.id, matchedBy });
     return {
       authPending: false,
       loginUrl: app.login_url,
@@ -633,7 +633,7 @@ async function captureReAuth(company, loginUrl, authManager, sessionsDir, logFn,
   return {
     authPending: false,
     loginUrl,
-    message: `The saved sign-in for ${company} expired mid-run. Call execute_skill again — ` +
+    message: `The saved sign-in for ${workspace_id} expired mid-run. Call execute_skill again — ` +
       `you'll be prompted to sign back in, then can resume from where this left off.`,
   };
 }

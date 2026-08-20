@@ -51,18 +51,18 @@ function mkSkillPacksDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "sync-test-"));
 }
 
-function writePack(skillPacksDir, company, overrides = {}) {
-  const companyDir = path.join(skillPacksDir, company);
-  fs.mkdirSync(companyDir, { recursive: true });
+function writePack(skillPacksDir, workspace_id, overrides = {}) {
+  const workspaceDir = path.join(skillPacksDir, workspace_id);
+  fs.mkdirSync(workspaceDir, { recursive: true });
   const pack = {
-    company,
-    sync_endpoint: "https://cloud.example/api/v1/workflows/v2/" + company + "/skill-packs/delta",
+    workspace_id,
+    sync_endpoint: "https://cloud.example/api/v1/workflows/v2/" + workspace_id + "/skill-packs/delta",
     sync_token: "test-token",
     skills: [],
     ...overrides,
   };
-  fs.writeFileSync(path.join(companyDir, "pack.json"), JSON.stringify(pack, null, 2));
-  return path.join(companyDir, "pack.json");
+  fs.writeFileSync(path.join(workspaceDir, "pack.json"), JSON.stringify(pack, null, 2));
+  return path.join(workspaceDir, "pack.json");
 }
 
 function mockDeltaResponse(payload) {

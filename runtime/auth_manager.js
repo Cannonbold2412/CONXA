@@ -41,7 +41,7 @@ function _getKeytar(logFn) {
 }
 
 // ─── Per-machine session-encryption key ──────────────────────────────────────
-// A unique random key is generated per machine per company on first use and
+// A unique random key is generated per machine per workspace on first use and
 // stored in the OS keychain.  It is used as HKDF key material to encrypt the
 // target-platform browser session at rest (AES-256-GCM).  Keeping it separate
 // from the installer-embedded sync_token means a leaked installer cannot
@@ -50,13 +50,13 @@ function _getKeytar(logFn) {
 const _SESSION_KEY_SVC = "conxa-session";
 const HKDF_INFO = Buffer.from("conxa-session-v1");
 
-async function getSessionKey(company, logFn) {
+async function getSessionKey(workspace_id, logFn) {
   const keytar = _getKeytar(logFn);
-  let raw = await keytar.getPassword(_SESSION_KEY_SVC, company);
+  let raw = await keytar.getPassword(_SESSION_KEY_SVC, workspace_id);
   if (!raw) {
     // First use: generate a fresh random 32-byte key, store as hex.
     const key = crypto.randomBytes(32).toString("hex");
-    await keytar.setPassword(_SESSION_KEY_SVC, company, key);
+    await keytar.setPassword(_SESSION_KEY_SVC, workspace_id, key);
     raw = key;
   }
   return raw;
@@ -68,7 +68,7 @@ function _deriveKey(sessionKeyHex) {
 
 // Returns true on success, false on failure — callers must check this before
 // deciding whether a plaintext fallback write is warranted (SG-11).
-function saveEncryptedSession(company, state, sessionKeyHex, sessionsDir, logFn) {
+function saveEncryptedSession(workspace_id, state, sessionKeyHex, sessionsDir, logFn) {
   try {
     const key    = _deriveKey(sessionKeyHex);
     const iv     = crypto.randomBytes(12);
@@ -81,16 +81,16 @@ function saveEncryptedSession(company, state, sessionKeyHex, sessionsDir, logFn)
       data: enc.toString("base64"),
     });
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(path.join(sessionsDir, `${company}_state.json`), payload);
+    fs.writeFileSync(path.join(sessionsDir, `${workspace_id}_state.json`), payload);
     return true;
   } catch (e) {
-    if (logFn) logFn("warn", "session_encryption_failed", { company, error: e.message });
+    if (logFn) logFn("warn", "session_encryption_failed", { workspace_id, error: e.message });
     return false;
   }
 }
 
-function loadDecryptedSession(company, sessionKeyHex, sessionsDir) {
-  const sessionPath = path.join(sessionsDir, `${company}_state.json`);
+function loadDecryptedSession(workspace_id, sessionKeyHex, sessionsDir) {
+  const sessionPath = path.join(sessionsDir, `${workspace_id}_state.json`);
   if (!fs.existsSync(sessionPath)) return null;
   try {
     const { iv, tag, data } = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
@@ -107,23 +107,23 @@ function loadDecryptedSession(company, sessionKeyHex, sessionsDir) {
 // Save unencrypted session — only called as an explicit fallback once
 // saveEncryptedSession() has reported failure (SG-11). Logs visibly since
 // this leaves live target-platform credentials on disk unencrypted.
-function saveRawSession(company, state, sessionsDir, logFn) {
-  if (logFn) logFn("warn", "plaintext_session_written", { company });
+function saveRawSession(workspace_id, state, sessionsDir, logFn) {
+  if (logFn) logFn("warn", "plaintext_session_written", { workspace_id });
   try {
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(
-      path.join(sessionsDir, `${company}_raw_state.json`),
+      path.join(sessionsDir, `${workspace_id}_raw_state.json`),
       JSON.stringify(state, null, 2),
       { mode: 0o600 }
     );
   } catch (_) {}
 }
 
-function loadRawSession(company, sessionsDir, logFn) {
-  const p = path.join(sessionsDir, `${company}_raw_state.json`);
+function loadRawSession(workspace_id, sessionsDir, logFn) {
+  const p = path.join(sessionsDir, `${workspace_id}_raw_state.json`);
   try {
     if (!fs.existsSync(p)) return null;
-    if (logFn) logFn("warn", "plaintext_session_loaded", { company });
+    if (logFn) logFn("warn", "plaintext_session_loaded", { workspace_id });
     return JSON.parse(fs.readFileSync(p, "utf8"));
   } catch (_) { return null; }
 }
@@ -140,7 +140,7 @@ async function reencryptPlaintextSessions(sessionsDir, getSessionKeyFn, logFn) {
   const suffix = "_raw_state.json";
   for (const name of entries) {
     if (!name.endsWith(suffix)) continue;
-    const company = name.slice(0, -suffix.length);
+    const workspace_id = name.slice(0, -suffix.length);
     const rawPath = path.join(sessionsDir, name);
     let state;
     try {
@@ -149,16 +149,16 @@ async function reencryptPlaintextSessions(sessionsDir, getSessionKeyFn, logFn) {
       continue; // corrupted — leave it, don't lose the only copy
     }
     try {
-      const sessionKey = await getSessionKeyFn(company, logFn);
-      const ok = saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
+      const sessionKey = await getSessionKeyFn(workspace_id, logFn);
+      const ok = saveEncryptedSession(workspace_id, state, sessionKey, sessionsDir, logFn);
       if (ok) {
         fs.unlinkSync(rawPath);
-        if (logFn) logFn("info", "plaintext_session_reencrypted", { company });
+        if (logFn) logFn("info", "plaintext_session_reencrypted", { workspace_id });
       } else if (logFn) {
-        logFn("warn", "plaintext_session_reencrypt_failed", { company });
+        logFn("warn", "plaintext_session_reencrypt_failed", { workspace_id });
       }
     } catch (e) {
-      if (logFn) logFn("warn", "plaintext_session_reencrypt_failed", { company, error: e.message });
+      if (logFn) logFn("warn", "plaintext_session_reencrypt_failed", { workspace_id, error: e.message });
     }
   }
 }

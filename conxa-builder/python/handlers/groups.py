@@ -15,7 +15,7 @@ from typing import Any
 
 from conxa_compile.recorder.session import registry as _recorder_registry
 from conxa_core.storage.group_store import DEFAULT_GROUP_NAME
-from conxa_core.workspace import LOCAL_WORKSPACE_ID, company_slug as _derive_company_slug
+from conxa_core.workspace import LOCAL_WORKSPACE_ID, workspace_dir_slug
 from handlers.protocol import _CommandError, _safe_id
 
 # How many workflow names a group summary carries, so a group card can show
@@ -113,26 +113,16 @@ class GroupsMixin:
         from conxa_core.storage.skill_pack_store import get_skill_pack
 
         ws = workspace_id or getattr(group, "workspace_id", "") or LOCAL_WORKSPACE_ID
-        slug = self._synced_company_slug or ""
-        company_name = ""
-        if not slug:
-            pack = get_skill_pack(ws)
-            if pack is not None:
-                slug = pack.company_slug
-                company_name = pack.company_name
-        if not slug:
-            try:
-                payload = self._cloud_json("/api/v1/workflows/skill-packs")
-                packs = payload.get("skill_packs") if isinstance(payload, dict) else None
-                if isinstance(packs, list) and packs:
-                    packs = sorted(packs, key=lambda p: float((p or {}).get("updated_at") or 0), reverse=True)
-                    slug = str(packs[0].get("company_slug") or "")
-                    company_name = company_name or str(packs[0].get("company_name") or "")
-            except Exception:
-                pass
-        if not slug:
-            company_name = company_name or "Local workspace"
-            slug = _derive_company_slug(ws, company_name)
+        slug = workspace_dir_slug(ws)
+        display_name = ""
+
+        pack = get_skill_pack(ws)
+        if pack is not None:
+            display_name = pack.display_name
+
+        if not display_name:
+            display_name = "Local workspace"
+
         try:
             generation = self._installer_generation()
             self._cloud_json(
@@ -140,21 +130,19 @@ class GroupsMixin:
                 method="PUT",
                 body={
                     "group_name": group.name,
-                    "company_name": company_name or "Local workspace",
+                    "display_name": display_name,
                 },
             )
         except Exception:
             return False
-        self._synced_company_slug = slug
         return True
 
     def cmd_list_groups(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        from conxa_core.storage.group_store import ensure_default_group, list_groups
+        from conxa_core.storage.group_store import list_groups
         from conxa_core.storage.workflow_store import list_workflows
         from handlers.status import derive_workflow_stage
 
         workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
-        ensure_default_group(workspace_id)
         groups = list_groups(workspace_id)
         for g in groups:
             if g.name == DEFAULT_GROUP_NAME:
@@ -179,6 +167,12 @@ class GroupsMixin:
 
         result = []
         for g in groups:
+            # The Default group exists only as a landing spot for workflows with no
+            # group of their own (migrations, reassignment on delete). Empty, it is
+            # noise — hide it rather than making every workspace start with a folder
+            # nobody asked for.
+            if g.name == DEFAULT_GROUP_NAME and not counts.get(g.id):
+                continue
             status = group_auth_status(g)
             result.append({
                 "id": g.id,

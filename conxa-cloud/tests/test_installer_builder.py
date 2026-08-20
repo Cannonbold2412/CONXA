@@ -79,7 +79,7 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
     from conxa_compile import skill_package_builder
     from conxa_core.storage import skill_pack_store
 
-    skill_pack = tmp_path / "skill-packs" / "render"
+    skill_pack = tmp_path / "skill-packs" / "ws_1"
     skill_pack.mkdir(parents=True)
     (skill_pack / "pack.json").write_text(
         '{"skill_pack_version":"v9.9.9","skills":["delete-a-service","create-a-service"],"sync_token":"sync-token"}',
@@ -87,9 +87,8 @@ def test_build_installer_packages_existing_skill_pack_without_rebuild(tmp_path, 
     )
 
     pack = SkillPack(
-        workspace_id="ws-1",
-        company_slug="render",
-        company_name="Render",
+        workspace_id="ws_1",
+        display_name="Render",
         build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
     )
 
@@ -146,7 +145,7 @@ def test_build_installer_allows_missing_sync_token_for_local_dev_endpoint(tmp_pa
     from conxa_compile import skill_package_builder
     from conxa_core.storage import skill_pack_store
 
-    skill_pack = tmp_path / "skill-packs" / "render"
+    skill_pack = tmp_path / "skill-packs" / "ws_1"
     skill_pack.mkdir(parents=True)
     (skill_pack / "pack.json").write_text(
         '{"skill_pack_version":"v9.9.9","skills":[],'
@@ -155,9 +154,8 @@ def test_build_installer_allows_missing_sync_token_for_local_dev_endpoint(tmp_pa
     )
 
     pack = SkillPack(
-        workspace_id="ws-1",
-        company_slug="render",
-        company_name="Render",
+        workspace_id="ws_1",
+        display_name="Render",
         build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
     )
 
@@ -200,7 +198,7 @@ def test_build_installer_still_requires_sync_token_for_real_cloud_endpoint(tmp_p
     from conxa_compile import installer_builder
     from conxa_core.storage import skill_pack_store
 
-    skill_pack = tmp_path / "skill-packs" / "render"
+    skill_pack = tmp_path / "skill-packs" / "ws_1"
     skill_pack.mkdir(parents=True)
     (skill_pack / "pack.json").write_text(
         '{"skill_pack_version":"v9.9.9","skills":[],'
@@ -209,9 +207,8 @@ def test_build_installer_still_requires_sync_token_for_real_cloud_endpoint(tmp_p
     )
 
     pack = SkillPack(
-        workspace_id="ws-1",
-        company_slug="render",
-        company_name="Render",
+        workspace_id="ws_1",
+        display_name="Render",
         build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="v9.9.9"),
     )
 
@@ -240,7 +237,7 @@ def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeyp
     from conxa_compile import skill_package_builder
     from conxa_core.storage import skill_pack_store
 
-    skill_pack = tmp_path / "skill-packs" / "render"
+    skill_pack = tmp_path / "skill-packs" / "ws_1"
     (skill_pack / "deploy").mkdir(parents=True)
     (skill_pack / "pack.json").write_text(
         '{"skill_pack_version":"0.3.0","skills":["deploy"],"sync_token":"sync-token","installer_version":"v2"}',
@@ -250,7 +247,7 @@ def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeyp
     (skill_pack / "deploy" / "execution.json").write_text('{"steps":[]}', encoding="utf-8")
 
     pack = SkillPack(
-        workspace_id="ws-1", company_slug="render", company_name="Render",
+        workspace_id="ws_1", display_name="Render",
         build=SkillPackBuild(last_built_at=1.0, output_path=str(tmp_path / "out"), version="0.3.0"),
     )
 
@@ -269,7 +266,8 @@ def test_build_installer_stages_only_pack_json_not_skill_files(tmp_path, monkeyp
         # Assert here, not after build_installer() returns — its `with
         # tempfile.TemporaryDirectory()` block deletes `tmp` before this function's
         # caller sees control again.
-        staged = tmp / "skill-packs" / "render"
+        # args[0] is company_slug (workspace_dir_slug of the workspace_id)
+        staged = tmp / "skill-packs" / args[0]
         assert (staged / "pack.json").is_file(), "pack.json must stay flat at the company root"
         assert not (staged / "deploy").exists(), "thin installer must not stage any skill file tree"
         captured["staged_entries"] = sorted(p.name for p in staged.iterdir())

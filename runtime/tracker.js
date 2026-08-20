@@ -25,8 +25,8 @@ function mapErrorToCode(err) {
  * createTracker(trackingConfig, runtimeContext) → tracker
  *
  * trackingConfig: { enabled, tracking_url, tracking_token,
- *                   company_id, schema_version, protocol_version }
- * runtimeContext: { runtime_version, workflow_id, workflow_version, company_id }
+ *                   workspace_id, schema_version, protocol_version }
+ * runtimeContext: { runtime_version, workflow_id, workflow_version, workspace_id }
  */
 function createTracker(trackingConfig, runtimeContext) {
   const cfg = trackingConfig  || {};
@@ -46,7 +46,7 @@ function createTracker(trackingConfig, runtimeContext) {
   // Disabled: return a no-op tracker so callers never branch
   if (!cfg.enabled) {
     _info("tracking_disabled", {
-      company: cfg.company_id || ctx.company_id || "",
+      workspace_id: cfg.workspace_id || ctx.workspace_id || "",
       workflow_id: ctx.workflow_id || "",
     });
     const noop = () => {};
@@ -59,13 +59,13 @@ function createTracker(trackingConfig, runtimeContext) {
 
   if (!cfg.tracking_url) {
     _warn("tracking_url_missing", {
-      company: cfg.company_id || ctx.company_id || "",
+      workspace_id: cfg.workspace_id || ctx.workspace_id || "",
       workflow_id: ctx.workflow_id || "",
     });
   }
   if (!cfg.tracking_token) {
     _warn("tracking_token_missing", {
-      company: cfg.company_id || ctx.company_id || "",
+      workspace_id: cfg.workspace_id || ctx.workspace_id || "",
       workflow_id: ctx.workflow_id || "",
     });
   }
@@ -100,7 +100,7 @@ function createTracker(trackingConfig, runtimeContext) {
       const payload = JSON.stringify({
         v:   cfg.protocol_version || 1,
         sv:  cfg.schema_version   || 1,
-        cid:  cfg.company_id       || ctx.company_id || "",
+        cid:  cfg.workspace_id       || ctx.workspace_id || "",
         wfid: ctx.workflow_id      || "",
         wfv:  ctx.workflow_version || "",
         rv:   ctx.runtime_version  || "",

@@ -290,6 +290,7 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
         skill_slug="delete-a-service",
         version="1.2.3",
         release_notes="Release message",
+        group_id="_default",
         sink=logs.append,
     )
 
@@ -299,7 +300,7 @@ def test_installer_publish_rewrites_pack_with_cloud_tracking(backend, monkeypatc
     # raises inside itself, which _cloud_json converts to _CommandError and
     # _installer_generation() catches, falling back to "v2" — the actual publish
     # POST happens second and is what `seen` reflects by the time we assert.
-    assert seen["url"] == "https://apis.conxa.in/api/v1/workflows/v2/render/skill-packs/upload"
+    assert seen["url"] == "https://apis.conxa.in/api/v1/workflows/v2/skill-packs/upload"
     assert seen["auth"] == "Bearer studio-token"
     assert seen["body"]["skill_pack_version"] == "1.2.3"
     assert seen["body"]["release_notes"] == "Release message"
@@ -352,6 +353,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
         skill_slug="delete-a-service",
         version="1.0.0",
         release_notes="",
+        group_id="_default",
         sink=logs.append,
     )
     # Truthy sentinel, not {} — a caller that does `if not publish_info: raise` must
@@ -368,6 +370,7 @@ def test_installer_publish_skips_gracefully_when_local_cloud_unreachable(backend
             skill_slug="delete-a-service",
             version="1.0.0",
             release_notes="",
+            group_id="_default",
             sink=lambda _e: None,
         )
 
@@ -385,9 +388,9 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, display_name="Render")
 
-    packs_dir = tmp_path / "skill-packs" / "render"
+    packs_dir = tmp_path / "skill-packs" / "wrk_local"
     packs_dir.mkdir(parents=True)
     (packs_dir / "pack.json").write_text(
         json.dumps({"company": "render", "skills": [], "sync_token": "sync-token"}), encoding="utf-8"
@@ -396,12 +399,14 @@ def test_cmd_build_installer_forwards_release_metadata(backend, monkeypatch, tmp
     seen: dict[str, object] = {}
 
     def fake_build(workspace_id, **kwargs):
+        from conxa_core.workspace import workspace_dir_slug
         seen["build_workspace_id"] = workspace_id
         seen["build"] = kwargs
+        company_slug = workspace_dir_slug(workspace_id)
         return {
             "installer_path": str(tmp_path / "Render-Setup.exe"),
             "filename": "Render-Setup.exe",
-            "company": kwargs["company_slug"],
+            "company": company_slug,
             "workspace_id": workspace_id,
             "version": kwargs["version"],
             "runtime_version": "v1.0.0",
@@ -443,7 +448,7 @@ def test_cmd_build_installer_requires_published_skill_pack(backend, monkeypatch,
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, display_name="Render")
 
     with pytest.raises(Exception, match="Publish a skill pack release"):
         b.cmd_build_installer(
@@ -465,19 +470,21 @@ def test_cmd_build_installer_non_fatal_when_upload_fails(backend, monkeypatch, t
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, display_name="Render")
 
-    packs_dir = tmp_path / "skill-packs" / "render"
+    packs_dir = tmp_path / "skill-packs" / "wrk_local"
     packs_dir.mkdir(parents=True)
     (packs_dir / "pack.json").write_text(
         json.dumps({"company": "render", "skills": [], "sync_token": "sync-token"}), encoding="utf-8"
     )
 
     def fake_build(workspace_id, **kwargs):
+        from conxa_core.workspace import workspace_dir_slug
+        company_slug = workspace_dir_slug(workspace_id)
         return {
             "installer_path": str(tmp_path / "Render-Setup.exe"),
             "filename": "Render-Setup.exe",
-            "company": kwargs["company_slug"],
+            "company": company_slug,
             "workspace_id": workspace_id,
             "version": kwargs["version"],
             "runtime_version": "v1.0.0",
@@ -967,12 +974,15 @@ def test_cmd_release_preview_reads_the_built_pack_not_the_payload(backend, monke
     b, _out = backend
 
     from conxa_core.config import settings
+    from conxa_core.storage.skill_pack_store import get_or_create_skill_pack
+    from conxa_core.workspace import LOCAL_WORKSPACE_ID
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     _stub_generation(monkeypatch, b)
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, display_name="Render")
 
-    packs_dir = tmp_path / "skill-packs" / "render"
+    packs_dir = tmp_path / "skill-packs" / "wrk_local"
     packs_dir.mkdir(parents=True)
     (packs_dir / "pack.json").write_text(
         json.dumps({"company": "render", "skills": ["deploy"], "skill_groups": {"deploy": "grp"}}),
@@ -994,7 +1004,7 @@ def test_cmd_release_preview_reads_the_built_pack_not_the_payload(backend, monke
     result = b.cmd_release_preview({"company_slug": "render", "skill_slug": "deploy", "version": "1.1.0"}, "rid")
 
     assert result == {"diff": {"summary": "no changes"}}
-    assert seen["path"] == "/api/v1/workflows/v2/render/releases/preview"
+    assert seen["path"] == "/api/v1/workflows/v2/releases/preview"
     assert seen["method"] == "POST"
     assert seen["body"]["version"] == "1.1.0"
     assert seen["body"]["skill_slug"] == "deploy"
@@ -1012,7 +1022,7 @@ def test_cmd_release_detail_and_diff_use_the_given_version(backend, monkeypatch,
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     _stub_generation(monkeypatch, b)
-    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, company_name="Render")
+    get_or_create_skill_pack(LOCAL_WORKSPACE_ID, display_name="Render")
 
     calls: list[str] = []
 
@@ -1026,8 +1036,8 @@ def test_cmd_release_detail_and_diff_use_the_given_version(backend, monkeypatch,
     b.cmd_release_diff({"company_slug": "render", "skill_slug": "deploy", "version": "1.0.0"}, "rid")
 
     assert calls == [
-        "/api/v1/workflows/v2/render/releases/1.0.0?skill_slug=deploy",
-        "/api/v1/workflows/v2/render/releases/1.0.0/diff?skill_slug=deploy",
+        "/api/v1/workflows/v2/releases/1.0.0?skill_slug=deploy",
+        "/api/v1/workflows/v2/releases/1.0.0/diff?skill_slug=deploy",
     ]
 
 

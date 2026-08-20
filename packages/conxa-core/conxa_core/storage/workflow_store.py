@@ -87,11 +87,13 @@ def _rename_workflow_skill_dirs(workspace_id: str, old_slug: str, new_slug: str)
         return
     from conxa_core.storage.skill_pack_store import get_skill_pack
     from conxa_core.storage.skill_packages import bundle_root_dir
+    from conxa_core.workspace import workspace_dir_slug
 
     pack = get_skill_pack(workspace_id)
     if pack is None:
         return
-    packs_root = settings.data_dir / "skill-packs" / pack.company_slug
+    pack_slug = workspace_dir_slug(pack.workspace_id)
+    packs_root = settings.data_dir / "skill-packs" / pack_slug
     if packs_root.is_dir():
         for group_dir in packs_root.iterdir():
             if not group_dir.is_dir():
@@ -111,7 +113,7 @@ def _rename_workflow_skill_dirs(workspace_id: str, old_slug: str, new_slug: str)
                     pack_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             except (OSError, json.JSONDecodeError, TypeError):
                 pass
-    bundle = bundle_root_dir(pack.company_slug)
+    bundle = bundle_root_dir(pack_slug)
     if bundle is not None:
         old_skill = bundle / "skills" / old_slug
         new_skill = bundle / "skills" / new_slug

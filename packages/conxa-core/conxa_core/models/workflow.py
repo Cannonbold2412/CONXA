@@ -92,12 +92,13 @@ class SkillPackInstaller(BaseModel):
 
 
 class SkillPack(BaseModel):
-    """One per workspace/company — the shared package every workflow in that
-    workspace compiles into. Keyed by workspace_id, not by any single workflow."""
+    """One per workspace, forever — the shared package every workflow in that
+    workspace compiles into. Keyed by workspace_id, not by any single workflow.
+    display_name is cosmetic only (installer filename, UI label) and carries
+    no uniqueness guarantee."""
 
     workspace_id: str
-    company_slug: str
-    company_name: str
+    display_name: str = ""
     status: Literal["idle", "building", "error"] = "idle"
     build: SkillPackBuild | None = None
     installer: SkillPackInstaller | None = None

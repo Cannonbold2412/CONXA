@@ -107,19 +107,20 @@ def test_publish_and_sync_roundtrip():
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["slug"] == "acme-test"
+    assert body["slug"] == "wrk_local"
     assert body["files_written"] == 2
-    assert body["tracking"]["tracking_url"].endswith("/api/tracking/acme-test/events")
+    assert body["tracking"]["tracking_url"].endswith("/api/tracking/wrk_local/events")
     assert body["tracking"]["tracking_token"]
-    assert db_get("tracking_tokens", "acme-test")["workspace_id"] == "wrk_local"
-    assert any(p.company_slug == "acme-test" for p in list_skill_packs(workspace_id="wrk_local"))
+    assert db_get("tracking_tokens", "wrk_local")["workspace_id"] == "wrk_local"
+    packs = list_skill_packs(workspace_id="wrk_local")
+    assert any(p.workspace_id == "wrk_local" and p.display_name == "Acme Test" for p in packs)
 
     # Publish alone never makes a skill runtime-visible — release it first.
-    rel = client.post("/api/v1/workflows/v2/acme-test/releases/0.3.0/release?skill_slug=deploy")
+    rel = client.post("/api/v1/workflows/v2/releases/0.3.0/release?skill_slug=deploy")
     assert rel.status_code == 200, rel.text
 
     # The delta endpoint should now serve the published pack, per skill.
-    d = client.get("/api/v1/skill-packs/acme-test/delta?since=%7B%7D")
+    d = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D")
     assert d.status_code == 200
     skills = {s["name"]: s for s in d.json()["skills"]}
     assert skills["deploy"]["action"] == "update"
@@ -127,7 +128,7 @@ def test_publish_and_sync_roundtrip():
 
     companies = client.get("/api/v1/tracking/companies")
     assert companies.status_code == 200
-    assert any(row["company"] == "acme-test" for row in companies.json()["companies"])
+    assert any(row["company"] == "Acme Test" for row in companies.json()["companies"])
 
 
 def test_delta_ships_only_the_skill_that_actually_changed():
@@ -156,7 +157,7 @@ def test_delta_ships_only_the_skill_that_actually_changed():
         )
         assert r.status_code == 200, r.text
         rel = client.post(
-            f"/api/v1/workflows/v2/multi-skill-test/releases/1.0.0/release?skill_slug={skill_slug}"
+            f"/api/v1/workflows/v2/releases/1.0.0/release?skill_slug={skill_slug}"
         )
         assert rel.status_code == 200, rel.text
 
@@ -165,12 +166,12 @@ def test_delta_ships_only_the_skill_that_actually_changed():
     # endpoint actually reads, per _skill_version()).
     db_set(
         "component_versions",
-        "skill_packs:multi-skill-test:invoice-automation",
+        "skill_packs:wrk_local:invoice-automation",
         {"version": "1.1.0", "released_at": "2026-07-01T00:00:00Z", "files": []},
     )
 
     since = _json.dumps({"invoice-automation": "1.0.0", "approval-workflow": "1.0.0"})
-    d = client.get(f"/api/v1/skill-packs/multi-skill-test/delta?since={since}")
+    d = client.get(f"/api/v1/skill-packs/wrk_local/delta?since={since}")
     assert d.status_code == 200, d.text
     skills = {s["name"]: s for s in d.json()["skills"]}
 
@@ -185,9 +186,9 @@ def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
     wiping local disk between requests and asserts the Postgres-backed copy heals it."""
     monkeypatch.setattr("app.api.publish_routes.using_database", lambda: True)
     monkeypatch.setattr("app.api.skillpack_update_routes.using_database", lambda: True)
-    slug = "wipe-skillpack-test"
+    slug = "wrk_local"
     files = [
-        {"path": "pack.json", "content_base64": base64.b64encode(b'{"company":"wipe-skillpack-test"}').decode()},
+        {"path": "pack.json", "content_base64": base64.b64encode(b'{"workspace_id":"wrk_local"}').decode()},
         {"path": "deploy/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
     ]
     r = client.post(
@@ -202,7 +203,7 @@ def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
         },
     )
     assert r.status_code == 200, r.text
-    rel = client.post(f"/api/v1/workflows/v2/{slug}/releases/1.0.0/release?skill_slug=deploy")
+    rel = client.post("/api/v1/workflows/v2/releases/1.0.0/release?skill_slug=deploy")
     assert rel.status_code == 200, rel.text
 
     import shutil
@@ -244,9 +245,9 @@ def test_publish_upsert_updates_existing_skill_pack_slug(monkeypatch, tmp_path):
     r2 = client.post("/api/v1/workflows/publish", json=body2)
     assert r2.status_code == 200, r2.text
 
-    packs = [p for p in list_skill_packs(workspace_id="wrk_local") if p.company_slug == "render"]
+    packs = list_skill_packs(workspace_id="wrk_local")
     assert len(packs) == 1
-    assert packs[0].company_name == "Render"
+    assert packs[0].display_name == "Render"
     assert packs[0].build.version == "1.0.1"
     assert packs[0].workspace_id == "wrk_local"
 
@@ -280,20 +281,20 @@ def test_skill_pack_delta_requires_sync_token_when_cloud_auth_required(monkeypat
 def test_tracking_ingest_requires_published_token_and_lists_runs():
     pub = client.post(
         "/api/v1/workflows/publish",
-        json={"slug": "track-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
+        json={"slug": "wrk_local", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
     )
     assert pub.status_code == 200, pub.text
     token = pub.json()["tracking"]["tracking_token"]
 
     denied = client.post(
-        "/api/tracking/track-test/events",
+        "/api/tracking/wrk_local/events",
         json={"rid": "run-denied", "evts": [{"e": "wf_start", "ts": 1}]},
         headers={"X-Tracking-Token": "wrong"},
     )
     assert denied.status_code == 401
 
     accepted = client.post(
-        "/api/tracking/track-test/events",
+        "/api/tracking/wrk_local/events",
         json={
             "rid": "run-ok",
             "wfid": "delete-a-service",
@@ -305,7 +306,7 @@ def test_tracking_ingest_requires_published_token_and_lists_runs():
     )
     assert accepted.status_code == 202
 
-    runs = client.get("/api/v1/tracking/track-test/runs")
+    runs = client.get("/api/v1/tracking/wrk_local/runs")
     assert runs.status_code == 200
     assert runs.json()["runs"][0]["run_id"] == "run-ok"
 
@@ -583,12 +584,12 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
         headers=personal_headers,
     )
     assert pub.status_code == 200, pub.text
-    token_record = db_get("tracking_tokens", "personal-visible")
+    token_record = db_get("tracking_tokens", "personal_user_same")
     assert token_record["workspace_id"] == "personal_user_same"
     assert token_record["owner_user_id"] == "user_same"
 
     accepted = client.post(
-        "/api/tracking/personal-visible/events",
+        "/api/tracking/personal_user_same/events",
         json={
             "rid": "run-personal-visible",
             "wfid": "skill-visible",
@@ -600,13 +601,13 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
 
     packs = client.get("/api/v1/workflows/skill-packs", headers=org_headers)
     assert packs.status_code == 200
-    assert any(p["company_slug"] == "personal-visible" for p in packs.json()["skill_packs"])
+    assert any(p["workspace_id"] == "personal_user_same" and p["display_name"] == "Personal Visible" for p in packs.json()["skill_packs"])
 
     companies = client.get("/api/v1/tracking/companies", headers=org_headers)
     assert companies.status_code == 200
-    assert any(row["company"] == "personal-visible" for row in companies.json()["companies"])
+    assert any(row["company"] == "Personal Visible" for row in companies.json()["companies"])
 
-    runs = client.get("/api/v1/tracking/personal-visible/runs", headers=org_headers)
+    runs = client.get("/api/v1/tracking/personal_user_same/runs", headers=org_headers)
     assert runs.status_code == 200
     assert runs.json()["runs"][0]["run_id"] == "run-personal-visible"
 
@@ -678,7 +679,7 @@ def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_p
     }
     packs = client.get("/api/v1/workflows/skill-packs", headers=org_headers)
     assert packs.status_code == 200
-    assert all(p["company_slug"] != "personal-hidden" for p in packs.json()["skill_packs"])
+    assert all(p["display_name"] != "Personal Hidden" for p in packs.json()["skill_packs"])
 
     companies = client.get("/api/v1/tracking/companies", headers=org_headers)
     assert companies.status_code == 200
@@ -841,7 +842,7 @@ def test_installer_upload_updates_skill_pack_latest_metadata():
 
     packs = client.get("/api/v1/workflows/skill-packs")
     assert packs.status_code == 200
-    pack = next(row for row in packs.json()["skill_packs"] if row["company_slug"] == slug)
+    pack = next(row for row in packs.json()["skill_packs"] if row["display_name"] == "Skill Pack Meta Installer")
     assert pack["installer"]["version"] == "1.4.0"
     assert pack["installer"]["release_notes"] == "Dashboard release"
 

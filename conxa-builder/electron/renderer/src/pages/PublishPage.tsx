@@ -228,7 +228,7 @@ export function PublishPage() {
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h3 className="text-base font-semibold leading-snug text-white">
-                    {selectedWorkflow?.name ?? pack.company_name}
+                    {selectedWorkflow?.name ?? pack.display_name}
                   </h3>
                   <p className="mt-0.5 break-all font-mono text-xs text-zinc-500">{pack.build.output_path}</p>
                   <p className="mt-1 text-[11px] text-zinc-600">

@@ -5,10 +5,10 @@ import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   fetchDeployments,
-  fetchGroups,
   fetchReleaseDiff,
   fetchReleaseEvents,
   fetchSkillPackVersions,
+  fetchGroups,
 } from '@/api/workflowsApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -38,33 +38,31 @@ function SummaryStat({ label, value, sub }: { label: string; value: string; sub:
  * version to "ready" here; everything below the Ready for Release section is
  * Cloud-owned end to end. */
 export function WorkflowReleasePage({
-  companySlug,
   groupId,
   skillSlug,
 }: {
-  companySlug: string
   groupId: string
   skillSlug: string
 }) {
   const qc = useQueryClient()
-  const groupsQ = useQuery({ queryKey: queryKeys.groups(companySlug), queryFn: () => fetchGroups(companySlug), staleTime: 15_000 })
-  const workflowName =
-    groupsQ.data?.groups.find((g) => g.group_id === groupId)?.workflows.find((w) => w.skill_slug === skillSlug)
-      ?.workflow_name ?? skillSlug
+  const groupsQ = useQuery({ queryKey: queryKeys.groups, queryFn: fetchGroups, staleTime: 15_000 })
+  const groups = groupsQ.data?.groups ?? []
+  const group = groups.find((g) => g.group_id === groupId)
+  const workflowName = group?.workflows.find((w) => w.skill_slug === skillSlug)?.workflow_name ?? skillSlug
 
   const versionsQ = useQuery({
-    queryKey: queryKeys.skillPackVersions(companySlug, skillSlug),
-    queryFn: () => fetchSkillPackVersions(companySlug, skillSlug),
+    queryKey: queryKeys.skillPackVersions(skillSlug),
+    queryFn: () => fetchSkillPackVersions(skillSlug),
     staleTime: 10_000,
   })
   const deploymentsQ = useQuery({
-    queryKey: queryKeys.deployments(companySlug, skillSlug),
-    queryFn: () => fetchDeployments(companySlug, skillSlug),
+    queryKey: queryKeys.deployments(skillSlug),
+    queryFn: () => fetchDeployments(skillSlug),
     staleTime: 15_000,
   })
   const eventsQ = useQuery({
-    queryKey: queryKeys.releaseEvents(companySlug, skillSlug),
-    queryFn: () => fetchReleaseEvents(companySlug, skillSlug),
+    queryKey: queryKeys.releaseEvents(skillSlug),
+    queryFn: () => fetchReleaseEvents(skillSlug),
     staleTime: 10_000,
   })
 
@@ -82,8 +80,8 @@ export function WorkflowReleasePage({
   }, [readyVersions.map((v) => v.version).join(',')])
 
   const diffQ = useQuery({
-    queryKey: queryKeys.releaseDiff(companySlug, skillSlug, selectedReady ?? undefined),
-    queryFn: () => fetchReleaseDiff(companySlug, skillSlug, selectedReady as string),
+    queryKey: queryKeys.releaseDiff(skillSlug, selectedReady ?? undefined),
+    queryFn: () => fetchReleaseDiff(skillSlug, selectedReady as string),
     enabled: Boolean(selectedReady),
     staleTime: 15_000,
   })
@@ -92,14 +90,13 @@ export function WorkflowReleasePage({
     void versionsQ.refetch()
     void deploymentsQ.refetch()
     void eventsQ.refetch()
-    void qc.invalidateQueries({ queryKey: queryKeys.groups(companySlug) })
+    void qc.invalidateQueries({ queryKey: queryKeys.groups })
   }
 
   return (
     <div className="h-full overflow-y-auto">
       <PageHeader
         title={workflowName}
-        description={companySlug}
         actions={
           <Button
             asChild
@@ -107,7 +104,7 @@ export function WorkflowReleasePage({
             size="sm"
             className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
           >
-            <Link href={`/packages/${encodeURIComponent(companySlug)}/groups/${encodeURIComponent(groupId)}`}>
+            <Link href={`/packages/groups/${encodeURIComponent(groupId)}`}>
               <ChevronLeft className="size-3.5" />
               Back
             </Link>
@@ -116,7 +113,7 @@ export function WorkflowReleasePage({
       />
 
       <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-4 sm:px-6">
-        {versionsQ.isLoading ? (
+        {groupsQ.isLoading || versionsQ.isLoading ? (
           <div className="grid gap-3 md:grid-cols-3">
             {[0, 1, 2].map((item) => (
               <div key={item} className="h-20 animate-pulse rounded-lg border border-white/8 bg-white/[0.03]" />
@@ -164,7 +161,6 @@ export function WorkflowReleasePage({
                       </div>
                       {selectedReady && (
                         <ReleaseDialog
-                          slug={companySlug}
                           skillSlug={skillSlug}
                           version={selectedReady}
                           currentStableVersion={currentStableVersion}
@@ -214,7 +210,6 @@ export function WorkflowReleasePage({
                 </Card>
               ) : (
                 <ReleaseHistoryTable
-                  slug={companySlug}
                   skillSlug={skillSlug}
                   versions={versions}
                   currentStableVersion={currentStableVersion}

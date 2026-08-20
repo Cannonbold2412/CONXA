@@ -22,13 +22,11 @@ import { History } from 'lucide-react'
  * already says are valid targets. Rollback is scoped to exactly one skill;
  * there is no group-level or bulk rollback action anywhere in Cloud. */
 export function RollbackDialog({
-  slug,
   skillSlug,
   version,
   currentStableVersion,
   onRolledBack,
 }: {
-  slug: string
   skillSlug: string
   version: string
   currentStableVersion: string | null
@@ -37,7 +35,7 @@ export function RollbackDialog({
   const [open, setOpen] = useState(false)
   const [error, setError] = useState('')
   const mutation = useMutation({
-    mutationFn: () => rollbackRelease(slug, skillSlug, version),
+    mutationFn: () => rollbackRelease(skillSlug, version),
     onSuccess: (result) => {
       setError('')
       setOpen(false)

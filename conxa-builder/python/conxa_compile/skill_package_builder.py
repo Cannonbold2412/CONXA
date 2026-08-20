@@ -62,7 +62,7 @@ def build_skill_package(
     "Update Opportunity" to be ready. Other already-built skills' output on
     disk is left untouched and still counted in the merged skill_package.json.
     """
-    pack = get_or_create_skill_pack(workspace_id, company_name=company_name)
+    pack = get_or_create_skill_pack(workspace_id, display_name=company_name)
     all_workflows = [w for w in list_workflows(workspace_id) if w.workspace_id == workspace_id]
     if not all_workflows:
         raise ValueError("No workflows recorded yet. Record at least one workflow.")
@@ -88,7 +88,8 @@ def build_skill_package(
         if realtime_sink:
             realtime_sink(entry)
 
-    bundle_slug = pack.company_slug
+    from conxa_core.workspace import workspace_dir_slug
+    bundle_slug = workspace_dir_slug(workspace_id)
     _log("Starting skill package build", bundle_slug=bundle_slug, version=version)
 
     bundle_root = _bundle_root(bundle_slug)
@@ -153,7 +154,7 @@ def build_skill_package(
         "package_format": 2,
         "id": package_id,
         "slug": bundle_slug,
-        "name": pack.company_name,
+        "name": pack.display_name,
         "version": version,
         "target_url": primary.target_url if not existing_config else existing_config.get("target_url", primary.target_url),
         "protected_url": primary.protected_url if not existing_config else existing_config.get("protected_url", primary.protected_url),
@@ -173,7 +174,7 @@ def build_skill_package(
     # scoped single-workflow build still documents every already-built sibling.
     _copy_skill_package_templates(
         bundle_root,
-        company_name=pack.company_name,
+        company_name=pack.display_name,
         bundle_slug=bundle_slug,
         target_url=primary.target_url,
         version=version,
@@ -184,7 +185,7 @@ def build_skill_package(
 
     # ── 4. Write README.md and LICENSE ────────────────────────────────────
     (bundle_root / "README.md").write_text(
-        _render_readme(pack.company_name, bundle_slug, primary.target_url, merged_skill_slugs, package_id=package_id),
+        _render_readme(pack.display_name, bundle_slug, primary.target_url, merged_skill_slugs, package_id=package_id),
         encoding="utf-8",
     )
     _log("Written README.md")
@@ -236,8 +237,8 @@ def build_skill_package(
     try:
         _write_skill_packs_format(
             bundle_root=bundle_root,
-            company_slug=bundle_slug,
-            company_name=pack.company_name,
+            workspace_id=workspace_id,
+            display_name=pack.display_name,
             target_url=primary.target_url,
             protected_url=primary.protected_url,
             skill_slugs=skill_slugs,

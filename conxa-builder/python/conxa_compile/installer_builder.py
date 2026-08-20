@@ -105,7 +105,7 @@ def _stage_logo_icon(src: Path, tmp: Path, log: Callable[[str], None]) -> Path:
 def build_installer(
     workspace_id: str,
     *,
-    company_slug: str,
+    company_slug: str = "",
     logo_path: str | None = None,
     version: str | None = None,
     release_notes: str = "",
@@ -114,16 +114,22 @@ def build_installer(
 ) -> dict[str, Any]:
     """Package the workspace's already-built shared skill pack into a Windows installer EXE.
 
-    Returns dict with keys: installer_path, filename, company, workspace_id, version.
+    Returns dict with keys: installer_path, filename, workspace_id, version.
     Raises ValueError / RuntimeError on build failure.
+
+    company_slug parameter kept for backward compatibility but unused — all paths
+    now derive from workspace_id via workspace_dir_slug.
     """
     from conxa_core.storage.skill_pack_store import get_skill_pack, set_installer
+    from conxa_core.workspace import workspace_dir_slug
 
     # Named pack_meta (not `pack`) — the local variable further down holds the
     # parsed pack.json dict, and both are needed at once.
     pack_meta = get_skill_pack(workspace_id)
     if pack_meta is None:
         raise ValueError(f"No skill pack built yet for workspace {workspace_id!r}.")
+
+    company_slug = workspace_dir_slug(workspace_id)
 
     def _log(msg: str, **extra: Any) -> None:
         if realtime_sink:
@@ -232,12 +238,12 @@ def build_installer(
                 _log(f"Warning: could not process logo ({exc}); proceeding without custom icon.")
 
         # ── 4. Render NSIS script ─────────────────────────────────────────────
-        company_name = pack_meta.company_name
-        _log(f"Rendering NSIS script (company={company_slug!r}, version={installer_version})…")
+        display_name = pack_meta.display_name or "Conxa Skills"
+        _log(f"Rendering NSIS script (workspace={workspace_id!r}, version={installer_version})…")
         nsi_path = _render_nsis_script(
             tmp,
             company_slug,
-            company_name,
+            display_name,
             installer_version,
             runtime_version=runtime_version,
             app_version=app_version,
@@ -247,8 +253,8 @@ def build_installer(
 
         # ── 5. Compile installer ──────────────────────────────────────────────
         # installer_name is a user-supplied label for now (later: derived from
-        # verified domain / company identity). Falls back to company_name.
-        safe_name = (installer_name or company_name).strip().replace(" ", "") or company_name.replace(" ", "")
+        # verified domain / company identity). Falls back to display_name.
+        safe_name = (installer_name or display_name).strip().replace(" ", "") or display_name.replace(" ", "")
         installer_filename = f"{safe_name}-Agent-Setup.exe"
         installer_path = tmp / installer_filename
 
@@ -311,7 +317,6 @@ def build_installer(
     return {
         "installer_path": str(dest),
         "filename":       installer_filename,
-        "company":        company_slug,
         "workspace_id":   workspace_id,
         "version":        installer_version,
         "runtime_version": runtime_version,

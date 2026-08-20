@@ -53,7 +53,7 @@ console.log("\n_resolveGroup (pack.json groups resolution):");
 check("pack with no groups key returns null (legacy path)", () => {
   const dir = path.join(tmpDataDir, "skill-packs", "legacyco");
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "pack.json"), JSON.stringify({ company: "legacyco", target_url: "https://x" }));
+  fs.writeFileSync(path.join(dir, "pack.json"), JSON.stringify({ workspace_id: "legacyco", target_url: "https://x" }));
   assert.strictEqual(browser._resolveGroup("legacyco"), null);
 });
 check("pack with groups resolves by id, falls back to first", () => {
@@ -61,7 +61,7 @@ check("pack with groups resolves by id, falls back to first", () => {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, "pack.json"),
-    JSON.stringify({ company: "groupco", groups: [{ id: "g1", name: "Sales", apps: [] }, { id: "g2", name: "Mktg", apps: [] }] })
+    JSON.stringify({ workspace_id: "groupco", groups: [{ id: "g1", name: "Sales", apps: [] }, { id: "g2", name: "Mktg", apps: [] }] })
   );
   assert.strictEqual(browser._resolveGroup("groupco", "g2").name, "Mktg");
   assert.strictEqual(browser._resolveGroup("groupco").name, "Sales");

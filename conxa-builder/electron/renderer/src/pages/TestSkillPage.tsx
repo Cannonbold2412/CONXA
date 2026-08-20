@@ -41,7 +41,7 @@ export function TestSkillPage() {
         ) : (
           <>
             <div className="mb-3">
-              <h3 className="text-sm font-medium text-white">{pack.company_name}</h3>
+              <h3 className="text-sm font-medium text-white">{pack.display_name}</h3>
               <p className="mt-0.5 text-xs text-zinc-500">
                 {workflows.length} workflow{workflows.length !== 1 ? 's' : ''}
                 {' · '}

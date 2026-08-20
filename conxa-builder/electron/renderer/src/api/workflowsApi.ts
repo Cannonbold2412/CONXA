@@ -52,8 +52,7 @@ export type SkillPackInstaller = {
  * see conxa_core.models.workflow.SkillPack. */
 export type SkillPack = {
   workspace_id: string
-  company_slug: string
-  company_name: string
+  display_name: string
   status: 'idle' | 'building' | 'error'
   build: SkillPackBuild | null
   installer: SkillPackInstaller | null

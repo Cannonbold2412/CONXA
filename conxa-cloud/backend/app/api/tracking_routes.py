@@ -41,10 +41,10 @@ public_router = APIRouter(prefix="/api/tracking", tags=["tracking"])
 versioned_router = APIRouter(prefix="/workflows", tags=["tracking"])
 
 
-async def _ingest_events_impl(company: str, request: Request) -> dict[str, Any]:
+async def _ingest_events_impl(workspace_id: str, request: Request) -> dict[str, Any]:
     """Accept a compact event batch from the runtime. Fast 202 — never blocks execution."""
     token = request.headers.get("x-tracking-token", "")
-    token_record = _verify_token(company, token)
+    token_record = _verify_token(workspace_id, token)
     if token_record is None:
         raise HTTPException(status_code=401, detail="invalid_tracking_token")
 
@@ -57,11 +57,11 @@ async def _ingest_events_impl(company: str, request: Request) -> dict[str, Any]:
     evts = body.get("evts", [])
     if not isinstance(evts, list):
         evts = []
-    capped_evts = _cap_events(evts, company)
+    capped_evts = _cap_events(evts, workspace_id)
 
     enriched: dict[str, Any] = {
         "run_id":      run_id,
-        "company":     company,
+        "company":     workspace_id,
         "workflow_id":  body.get("wfid", ""),
         "workflow_ver": body.get("wfv", ""),
         "runtime_ver": body.get("rv", ""),
@@ -73,24 +73,24 @@ async def _ingest_events_impl(company: str, request: Request) -> dict[str, Any]:
         "events":      capped_evts,
         "schema_v":    body.get("sv", 1),
     }
-    db_append(f"tracking/{company}", run_id, [enriched])
+    db_append(f"tracking/{workspace_id}", run_id, [enriched])
     return {"ok": True}
 
 
-@public_router.post("/{company}/events", status_code=202)
-@router.post("/{company}/events", status_code=202)
-async def ingest_events(company: str, request: Request) -> dict[str, Any]:
+@public_router.post("/{workspace_id}/events", status_code=202)
+@router.post("/{workspace_id}/events", status_code=202)
+async def ingest_events(workspace_id: str, request: Request) -> dict[str, Any]:
     """Legacy ingest route, served at both the bare ``/api/tracking/...`` path
     (permanent back-compat alias, not a bug — see CLAUDE.md Key Invariants) and
     ``/api/v1/tracking/...``. See ``ingest_events_v2`` for the versioned,
-    company-scoped-by-installer-generation equivalent."""
-    return await _ingest_events_impl(company, request)
+    workspace-scoped-by-installer-generation equivalent."""
+    return await _ingest_events_impl(workspace_id, request)
 
 
-@versioned_router.post("/{installer_version}/{company}/tracking/events", status_code=202)
-async def ingest_events_v2(installer_version: str, company: str, request: Request) -> dict[str, Any]:
+@versioned_router.post("/{installer_version}/{workspace_id}/tracking/events", status_code=202)
+async def ingest_events_v2(installer_version: str, workspace_id: str, request: Request) -> dict[str, Any]:
     validate_installer_version(installer_version)
-    return await _ingest_events_impl(company, request)
+    return await _ingest_events_impl(workspace_id, request)
 
 
 
@@ -212,16 +212,16 @@ def tracking_drift_queue(
     }
 
 
-@router.get("/{company}/runs")
+@router.get("/{workspace_id}/runs")
 def list_runs(
-    company: str,
+    workspace_id: str,
     limit: int = 50,
     offset: int = 0,
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    """Return paginated run summaries for a company."""
+    """Return paginated run summaries for a workspace."""
     _ensure_dashboard_access(principal)
-    pairs = db_list_kv(f"tracking/{company}")
+    pairs = db_list_kv(f"tracking/{workspace_id}")
     summaries = []
     hidden_workspace_runs = 0
     for run_id, batches in pairs:
@@ -242,15 +242,15 @@ def list_runs(
     }
 
 
-@router.get("/{company}/runs/{run_id}")
+@router.get("/{workspace_id}/runs/{run_id}")
 def get_run_timeline(
-    company: str,
+    workspace_id: str,
     run_id: str,
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
     """Return the flattened event timeline for a single run."""
     _ensure_dashboard_access(principal)
-    data = db_get(f"tracking/{company}", run_id)
+    data = db_get(f"tracking/{workspace_id}", run_id)
     if not data:
         raise HTTPException(status_code=404, detail="run_not_found")
 
@@ -266,7 +266,7 @@ def get_run_timeline(
     summary = _run_summary(run_id, batches)
     return {
         "run_id":      run_id,
-        "company":     company,
+        "company":     workspace_id,
         "workflow_id":  meta.get("workflow_id", ""),
         "workflow_ver": meta.get("workflow_ver", ""),
         "runtime_ver": meta.get("runtime_ver", ""),
@@ -278,6 +278,6 @@ def get_run_timeline(
         # Step-by-step outcome, derived server-side so the run view and the dashboard
         # aggregates classify recoveries the same way.
         "steps": tracking_analytics.run_step_flow(
-            {"company": company, "summary": summary, "events": events}
+            {"company": workspace_id, "summary": summary, "events": events}
         ),
     }

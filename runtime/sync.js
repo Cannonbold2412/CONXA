@@ -64,8 +64,8 @@ function atomicWrite(targetPath, content, expectedSha256) {
 // never needs a backup-copy dance the way flat-file sync used to — a failed activation
 // just leaves `current` pointing at whatever it pointed at before.
 
-async function _syncCompany(skillPacksDir, company, log) {
-  const packPath = path.join(skillPacksDir, company, "pack.json");
+async function _syncCompany(skillPacksDir, workspace_id, log) {
+  const packPath = path.join(skillPacksDir, workspace_id, "pack.json");
   if (!fs.existsSync(packPath)) return;
 
   let pack;
@@ -76,7 +76,7 @@ async function _syncCompany(skillPacksDir, company, log) {
 
   const token = pack.sync_token || null;
   if (!token) {
-    log(`[sync:warn] ${company} no sync_token in pack.json — skipping sync (pack may need to be republished)`);
+    log(`[sync:warn] ${workspace_id} no sync_token in pack.json — skipping sync (pack may need to be republished)`);
     return;
   }
 
@@ -84,17 +84,17 @@ async function _syncCompany(skillPacksDir, company, log) {
   if (pack.last_synced) {
     const ageMs = Date.now() - new Date(pack.last_synced).getTime();
     if (ageMs < 5 * 60 * 1000) {
-      log(`[sync:skip] ${company} synced ${Math.floor(ageMs / 1000)}s ago — skipping`);
+      log(`[sync:skip] ${workspace_id} synced ${Math.floor(ageMs / 1000)}s ago — skipping`);
       return;
     }
   }
 
   // Each skill is compared independently against its own last-known version (read
-  // from its own version.json, not one shared company-wide counter), so republishing
+  // from its own version.json, not one shared workspace-wide counter), so republishing
   // one skill never triggers a redownload of skills that haven't changed.
   //
   // Version lookup only ever consults the group-nested path (skill_groups[slug],
-  // falling back to "_default"), never the pre-Groups flat `company/slug/` layout.
+  // falling back to "_default"), never the pre-Groups flat `workspace_id/slug/` layout.
   // That's deliberate: a skill that's only ever been synced to the old flat location
   // has no version.json at its nested path, so it reads back as version "0" here,
   // the server reports action:"update", and the file gets freshly written into the
@@ -104,7 +104,7 @@ async function _syncCompany(skillPacksDir, company, log) {
   const sinceMap = {};
   for (const slug of pack.skills || []) {
     const group = skillGroups[slug] || "_default";
-    const skillRoot = path.join(skillPacksDir, company, group, slug);
+    const skillRoot = path.join(skillPacksDir, workspace_id, group, slug);
     const currentDir = versionManager.resolveCurrent(skillRoot);
     let version = "0";
     if (currentDir) {
@@ -129,16 +129,16 @@ async function _syncCompany(skillPacksDir, company, log) {
       }
     }
     if (lastErr) {
-      log(`[sync:error] ${company} delta fetch failed — ${lastErr.message}`);
+      log(`[sync:error] ${workspace_id} delta fetch failed — ${lastErr.message}`);
       return;
     }
   }
 
-  // The delta response is authoritative for "what skills does this company have
+  // The delta response is authoritative for "what skills does this workspace have
   // right now" — every server-side skill gets an entry (no_change or update), so
   // this is always the full current skill list, independent of what this client's
   // sinceMap knew about beforehand. Applying it unconditionally below (even when
-  // nothing changed) is what makes a skill added to a company post-install ever
+  // nothing changed) is what makes a skill added to a workspace post-install ever
   // reach skill_loader.js's registry, which reads pack.skills off disk rather than
   // scanning the directory tree itself — a thin installer starts with pack.skills
   // empty, so without this, no skill would ever become visible after install.
@@ -173,7 +173,7 @@ async function _syncCompany(skillPacksDir, company, log) {
         return { skillEntry, files };
       }));
     } catch (e) {
-      log(`[sync:error] ${company} download failed — ${e.message}`);
+      log(`[sync:error] ${workspace_id} download failed — ${e.message}`);
       const at = new Date().toISOString();
       for (const skillEntry of changed) syncErrors[skillEntry.name] = { code: "download_failed", at };
     }
@@ -183,7 +183,7 @@ async function _syncCompany(skillPacksDir, company, log) {
       const group = skillEntry.group || "_default";
       const rawVersion = String(skillEntry.version || "0");
       const versionDirName = /^v/.test(rawVersion) ? rawVersion : `v${rawVersion}`;
-      const skillRoot  = path.join(skillPacksDir, company, group, slug);
+      const skillRoot  = path.join(skillPacksDir, workspace_id, group, slug);
       const versionDir = path.join(skillRoot, versionDirName);
       try {
         // Clear any stale partial staging from a previously interrupted attempt at
@@ -202,7 +202,7 @@ async function _syncCompany(skillPacksDir, company, log) {
         activated.push(`${slug}@${skillEntry.version}`);
         delete syncErrors[slug];
       } catch (e) {
-        log(`[sync:error] ${company}/${slug}: activation failed — ${e.message}`);
+        log(`[sync:error] ${workspace_id}/${slug}: activation failed — ${e.message}`);
         try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}
         syncErrors[slug] = {
           code: /checksum mismatch/i.test(e.message) ? "checksum_mismatch" : "activation_failed",
@@ -229,29 +229,29 @@ async function _syncCompany(skillPacksDir, company, log) {
   fs.renameSync(packTmp, packPath);
 
   // Best-effort: keeps each registered agent host's discoverability file
-  // (SKILL.md, AGENTS.md, …) in sync with the company's current skill list.
+  // (SKILL.md, AGENTS.md, …) in sync with the workspace's current skill list.
   // Never fails the sync itself over this — registration already succeeded
   // and skills are already usable even if a host's instructions file couldn't
   // be updated this round.
   try {
-    await require("./durable_context").updateDurableContext(company, serverSkillNames);
+    await require("./durable_context").updateDurableContext(workspace_id, serverSkillNames);
   } catch (e) {
-    log(`[sync:warn] ${company} durable-context update failed — ${e.message}`);
+    log(`[sync:warn] ${workspace_id} durable-context update failed — ${e.message}`);
   }
 
   if (activated.length > 0) {
-    log(`[sync:status] ${company} updated (${activated.length} skill${activated.length !== 1 ? "s" : ""}: ${activated.join(", ")})`);
+    log(`[sync:status] ${workspace_id} updated (${activated.length} skill${activated.length !== 1 ? "s" : ""}: ${activated.join(", ")})`);
   } else if (changed.length === 0) {
-    log(`[sync:status] ${company} up-to-date`);
+    log(`[sync:status] ${workspace_id} up-to-date`);
   } else {
-    log(`[sync:status] ${company} sync completed with no successful activations`);
+    log(`[sync:status] ${workspace_id} sync completed with no successful activations`);
   }
 }
 
 async function _doSync(skillPacksDir, log) {
   if (!fs.existsSync(skillPacksDir)) return;
-  const companies = fs.readdirSync(skillPacksDir);
-  await Promise.allSettled(companies.map(c => _syncCompany(skillPacksDir, c, log)));
+  const workspaceIds = fs.readdirSync(skillPacksDir);
+  await Promise.allSettled(workspaceIds.map(workspaceId => _syncCompany(skillPacksDir, workspaceId, log)));
 }
 
 // Public: run sync with a hard timeout.

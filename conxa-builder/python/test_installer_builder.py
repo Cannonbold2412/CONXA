@@ -114,7 +114,7 @@ class StudioInstallerWrapperTests(unittest.TestCase):
         with patch.dict(os.environ, {"MAKENSIS_PATH": "already-set"}), patch.object(
             installer_builder, "build_installer", return_value={"ok": True}
         ) as build:
-            result = studio_installer_builder.build_installer("plugin-1", company_slug="acme")
+            result = studio_installer_builder.build_installer("plugin-1", company_slug="plugin")
 
         self.assertEqual(result, {"ok": True})
         self.assertNotIn("runtime_source", build.call_args.kwargs)

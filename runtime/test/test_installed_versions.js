@@ -18,8 +18,8 @@ function mkSkillDir(version) {
 
 test("reads each skill's installed version off its current-junction dir", () => {
   const skillIndex = {
-    "acme:deploy": { company: "acme", slug: "deploy", skillDir: mkSkillDir("1.1.0") },
-    "acme:invoice": { company: "acme", slug: "invoice", skillDir: mkSkillDir("2.0.0") },
+    "acme:deploy": { workspace_id: "acme", slug: "deploy", skillDir: mkSkillDir("1.1.0") },
+    "acme:invoice": { workspace_id: "acme", slug: "invoice", skillDir: mkSkillDir("2.0.0") },
   };
   assert.deepStrictEqual(installedSkillVersions(skillIndex), {
     acme: { deploy: "1.1.0", invoice: "2.0.0" },
@@ -28,8 +28,8 @@ test("reads each skill's installed version off its current-junction dir", () => 
 
 test("groups multiple companies separately", () => {
   const skillIndex = {
-    "acme:deploy": { company: "acme", slug: "deploy", skillDir: mkSkillDir("1.0.0") },
-    "other:sync": { company: "other", slug: "sync", skillDir: mkSkillDir("3.0.0") },
+    "acme:deploy": { workspace_id: "acme", slug: "deploy", skillDir: mkSkillDir("1.0.0") },
+    "other:sync": { workspace_id: "other", slug: "sync", skillDir: mkSkillDir("3.0.0") },
   };
   assert.deepStrictEqual(installedSkillVersions(skillIndex), {
     acme: { deploy: "1.0.0" },
@@ -39,7 +39,7 @@ test("groups multiple companies separately", () => {
 
 test("a skill with no version.json yet is omitted, not reported as \"0\"", () => {
   const skillIndex = {
-    "acme:deploy": { company: "acme", slug: "deploy", skillDir: mkSkillDir(undefined) },
+    "acme:deploy": { workspace_id: "acme", slug: "deploy", skillDir: mkSkillDir(undefined) },
   };
   assert.deepStrictEqual(installedSkillVersions(skillIndex), {});
 });
@@ -48,8 +48,8 @@ test("corrupt version.json for one skill doesn't break reporting for the rest", 
   const badDir = fs.mkdtempSync(path.join(os.tmpdir(), "iv-test-"));
   fs.writeFileSync(path.join(badDir, "version.json"), "{not json");
   const skillIndex = {
-    "acme:broken": { company: "acme", slug: "broken", skillDir: badDir },
-    "acme:ok": { company: "acme", slug: "ok", skillDir: mkSkillDir("1.0.0") },
+    "acme:broken": { workspace_id: "acme", slug: "broken", skillDir: badDir },
+    "acme:ok": { workspace_id: "acme", slug: "ok", skillDir: mkSkillDir("1.0.0") },
   };
   assert.deepStrictEqual(installedSkillVersions(skillIndex), {
     acme: { ok: "1.0.0" },

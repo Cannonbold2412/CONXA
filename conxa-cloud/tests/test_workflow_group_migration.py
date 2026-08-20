@@ -70,3 +70,27 @@ def test_legacy_workflow_via_list_workflows_also_migrates(tmp_data_dir):
     workflows = workflow_store.list_workflows()
     assert len(workflows) == 1
     assert workflows[0].group_id == group_store.ensure_default_group(LOCAL_WORKSPACE_ID).id
+
+
+def test_empty_default_group_is_hidden_from_the_group_list(tmp_data_dir):
+    """The Default group is a landing spot for group-less workflows, not a folder
+    every workspace should start with — cmd_list_groups hides it while empty and
+    shows it the moment it actually holds a workflow."""
+    from handlers.groups import GroupsMixin
+
+    backend = GroupsMixin()
+    group_store.ensure_default_group(LOCAL_WORKSPACE_ID)
+    group_store.create_group("Sales", workspace_id=LOCAL_WORKSPACE_ID)
+
+    with patch.object(GroupsMixin, "_sync_group_to_cloud", return_value=True):
+        names = [g["name"] for g in backend.cmd_list_groups({}, "r1")["groups"]]
+    assert names == ["Sales"]
+
+    workflow_store.create_workflow(
+        name="Orphan",
+        target_url="https://example.com",
+        workspace_id=LOCAL_WORKSPACE_ID,
+    )
+    with patch.object(GroupsMixin, "_sync_group_to_cloud", return_value=True):
+        names = [g["name"] for g in backend.cmd_list_groups({}, "r1")["groups"]]
+    assert sorted(names) == ["Default", "Sales"]

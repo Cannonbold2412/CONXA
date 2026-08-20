@@ -12,17 +12,17 @@ import re
 LOCAL_WORKSPACE_ID = "wrk_local"
 
 
-def company_slug(workspace_id: str, company_name: str) -> str:
-    """Derive the stable company slug used for skill-pack/installer paths.
+def workspace_dir_slug(workspace_id: str) -> str:
+    """Derive a filesystem/URL-safe slug for a workspace_id.
 
-    Company identity is a property of the workspace, not of any individual
-    workflow — every workflow in a workspace shares one skill package and one
-    installer, so this must not vary per-workflow.
+    One workspace has exactly one skill pack and one installer, forever —
+    workspace_id is the sole identity key (see CLAUDE.md Key Invariants).
+    This is purely a character-safety transform (skill-pack directories and
+    bundle slugs must match ``validate_bundle_slug``'s ``[a-z][a-z0-9_]*``),
+    not an identity derivation — unlike the old company_slug(), it takes no
+    name input and needs no uniqueness arbitration.
     """
-    from conxa_core.slugs import fit_slug
-
-    base = re.sub(r"[^a-z0-9]+", "_", company_name.lower()).strip("_") or "company"
+    base = re.sub(r"[^a-z0-9]+", "_", workspace_id.lower()).strip("_") or "ws"
     if not base[0].isalpha():
-        base = f"co_{base}"  # bundle slugs must start with a letter (see validate_bundle_slug)
-    suffix = re.sub(r"[^a-z0-9]+", "", workspace_id.lower())[:8] or "local"
-    return fit_slug(base, suffix, "_")
+        base = f"ws_{base}"
+    return base

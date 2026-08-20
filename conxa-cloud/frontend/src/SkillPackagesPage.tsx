@@ -1,8 +1,8 @@
 'use client'
 
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { fetchGroups, fetchSkillPacks, normalizeSkillPackList, type Group } from '@/api/workflowsApi'
+import { fetchSkillPack, fetchGroups } from '@/api/workflowsApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -62,64 +62,38 @@ function CompileCreditsSummary() {
   )
 }
 
-type GroupRow = Group & { company_slug: string; company_name: string }
-
 export function SkillPackagesPage() {
   const [downloadOpen, setDownloadOpen] = useState(false)
-  const packsQ = useQuery({ queryKey: queryKeys.skillPacks, queryFn: fetchSkillPacks, staleTime: 10_000 })
-  const packs = normalizeSkillPackList(packsQ.data)
-  const showCompany = packs.length > 1
-
-  const groupQueries = useQueries({
-    queries: packs.map((pack) => ({
-      queryKey: queryKeys.groups(pack.company_slug),
-      queryFn: () => fetchGroups(pack.company_slug),
-      staleTime: 15_000,
-      enabled: packsQ.isSuccess,
-    })),
-  })
-
-  const groupsLoading = packsQ.isSuccess && packs.length > 0 && groupQueries.some((q) => q.isLoading)
-  const groupsError = groupQueries.find((q) => q.isError)
-  const groups: GroupRow[] = packs.flatMap((pack, i) =>
-    (groupQueries[i]?.data?.groups ?? []).map((g) => ({
-      ...g,
-      company_slug: pack.company_slug,
-      company_name: pack.company_name,
-    })),
-  )
+  const packQ = useQuery({ queryKey: queryKeys.skillPack, queryFn: fetchSkillPack, staleTime: 10_000 })
+  const groupsQ = useQuery({ queryKey: queryKeys.groups, queryFn: fetchGroups, staleTime: 15_000 })
+  const groups = groupsQ.data?.groups ?? []
 
   return (
     <div className="h-full overflow-y-auto">
       <PageHeader
         title="Skill Packages"
         description={
-          packsQ.isSuccess && groups.length > 0
+          groupsQ.isSuccess && groups.length > 0
             ? `${groups.length} group${groups.length !== 1 ? 's' : ''}`
             : 'Groups of published skills for customer installation.'
         }
         actions={
           <>
-            {packs.map((pack) => (
-              <Button
-                key={pack.company_slug}
-                asChild
-                variant="outline"
-                size="sm"
-                className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
-              >
-                <Link href={`/packages/${encodeURIComponent(pack.company_slug)}`}>
-                  {showCompany ? `${pack.company_name} installer` : 'Installer'}
-                </Link>
-              </Button>
-            ))}
+            <Button
+              asChild
+              variant="outline"
+              size="sm"
+              className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
+            >
+              <Link href="/packages/installer">Installer</Link>
+            </Button>
             <OpenInStudioButton label="Open Build Studio" primary />
             <CompileCreditsSummary />
           </>
         }
       />
       <div className="flex w-full max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6">
-        {packsQ.isLoading || groupsLoading ? (
+        {packQ.isLoading || groupsQ.isLoading ? (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {[0, 1, 2].map((item) => (
               <Card key={item} size="sm" className="gap-0 border-white/8 bg-white/[0.03] py-3 shadow-none">
@@ -138,13 +112,13 @@ export function SkillPackagesPage() {
               </Card>
             ))}
           </div>
-        ) : packsQ.isError ? (
+        ) : packQ.isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(packsQ.error as Error).message}
+            {(packQ.error as Error).message}
           </div>
-        ) : groupsError ? (
+        ) : groupsQ.isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(groupsError.error as Error).message}
+            {(groupsQ.error as Error).message}
           </div>
         ) : groups.length === 0 ? (
           <Card className="border-white/8 bg-white/[0.03] shadow-none">
@@ -173,8 +147,8 @@ export function SkillPackagesPage() {
               const readyCount = g.workflows.filter((w) => w.has_ready_version).length
               return (
                 <Link
-                  key={`${g.company_slug}:${g.group_id || '_ungrouped'}`}
-                  href={`/packages/${encodeURIComponent(g.company_slug)}/groups/${encodeURIComponent(g.group_id)}`}
+                  key={g.group_id || '_ungrouped'}
+                  href={`/packages/groups/${encodeURIComponent(g.group_id)}`}
                   className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
                 >
                   <Card
@@ -187,9 +161,6 @@ export function SkillPackagesPage() {
                           <CardTitle className="truncate text-sm font-medium text-white">
                             {g.group_name || g.group_id || 'Ungrouped'}
                           </CardTitle>
-                          {showCompany ? (
-                            <p className="mt-0.5 truncate text-xs text-zinc-500">{g.company_name}</p>
-                          ) : null}
                         </div>
                         {readyCount > 0 && (
                           <Badge variant="outline" className="h-5 shrink-0 border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">

@@ -17,7 +17,6 @@ function formatTimestamp(seconds: number): string {
  * when, what changed, is it deployed, can it be released or rolled back.
  * Cloud-only: Build Studio's post-publish page no longer renders this. */
 export function ReleaseHistoryTable({
-  slug,
   skillSlug,
   versions,
   currentStableVersion,
@@ -26,7 +25,6 @@ export function ReleaseHistoryTable({
   onRolledBack,
   onSelectVersion,
 }: {
-  slug: string
   skillSlug: string
   versions: SkillPackVersion[]
   currentStableVersion: string | null
@@ -102,7 +100,6 @@ export function ReleaseHistoryTable({
                 <div className="flex items-center gap-2">
                   {canReleaseTo(v) && (
                     <ReleaseDialog
-                      slug={slug}
                       skillSlug={skillSlug}
                       version={v.version}
                       currentStableVersion={currentStableVersion}
@@ -111,7 +108,6 @@ export function ReleaseHistoryTable({
                   )}
                   {canRollbackTo(v, currentStableVersion) && (
                     <RollbackDialog
-                      slug={slug}
                       skillSlug={skillSlug}
                       version={v.version}
                       currentStableVersion={currentStableVersion}

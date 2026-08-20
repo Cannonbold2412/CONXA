@@ -22,13 +22,11 @@ import { Rocket } from 'lucide-react'
  * Cloud-only, admin-gated server-side (require_admin, same as rollback).
  * Only ever rendered for rows releaseState.canReleaseTo() says are eligible. */
 export function ReleaseDialog({
-  slug,
   skillSlug,
   version,
   currentStableVersion,
   onReleased,
 }: {
-  slug: string
   skillSlug: string
   version: string
   currentStableVersion: string | null
@@ -37,7 +35,7 @@ export function ReleaseDialog({
   const [open, setOpen] = useState(false)
   const [error, setError] = useState('')
   const mutation = useMutation({
-    mutationFn: () => releaseVersion(slug, skillSlug, version),
+    mutationFn: () => releaseVersion(skillSlug, version),
     onSuccess: (result) => {
       setError('')
       setOpen(false)

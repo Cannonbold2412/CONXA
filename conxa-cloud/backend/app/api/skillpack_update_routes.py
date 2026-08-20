@@ -86,8 +86,8 @@ def _check_rate_limit(token: str) -> None:
     _rate_limit_set(key, now)
 
 
-def _verify_sync_token(company: str, token: str | None) -> None:
-    """Validate the Bearer token against the per-company sync_token.
+def _verify_sync_token(workspace_id: str, token: str | None) -> None:
+    """Validate the Bearer token against the per-workspace sync_token.
 
     In production (SKILL_AUTH_REQUIRED=true) a valid sync token is required.
     The sync token is minted at publish time and embedded in the installer's
@@ -98,14 +98,14 @@ def _verify_sync_token(company: str, token: str | None) -> None:
     """
     if not settings.auth_required:
         return
-    stored = db_get("sync_tokens", company)
+    stored = db_get("sync_tokens", workspace_id)
     if not isinstance(stored, dict) or not stored.get("token"):
         raise HTTPException(status_code=401, detail="sync_token_not_configured")
     if not token or not secrets.compare_digest(str(stored["token"]), token):
         raise HTTPException(status_code=401, detail="invalid_sync_token")
 
 
-def _ensure_skill_pack_on_disk(company: str) -> None:
+def _ensure_skill_pack_on_disk(workspace_id: str) -> None:
     """Rehydrate the local skill-pack cache from Postgres if the disk was wiped.
 
     Render's free plan has no persistent disk and idles out, so the files written by
@@ -114,13 +114,13 @@ def _ensure_skill_pack_on_disk(company: str) -> None:
     """
     if not using_database():
         return
-    pack_path = skill_packs_dir(company) / "pack.json"
+    pack_path = skill_packs_dir(workspace_id) / "pack.json"
     if pack_path.is_file():
         return
-    rows = db_list_kv(skillpack_files_ns(company))
+    rows = db_list_kv(skillpack_files_ns(workspace_id))
     if not rows:
         return
-    packs_dir = skill_packs_dir(company)
+    packs_dir = skill_packs_dir(workspace_id)
     for rel, value in rows:
         if not isinstance(value, dict) or not value.get("content_base64"):
             continue
@@ -135,8 +135,8 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
-def _pack_version(company: str) -> str:
-    pack_path = skill_packs_dir(company) / "pack.json"
+def _pack_version(workspace_id: str) -> str:
+    pack_path = skill_packs_dir(workspace_id) / "pack.json"
     if not pack_path.is_file():
         return "0"
     try:
@@ -145,33 +145,33 @@ def _pack_version(company: str) -> str:
         return "0"
 
 
-def _skill_version(company: str, slug: str) -> str:
+def _skill_version(workspace_id: str, slug: str) -> str:
     """Each skill's own version, recorded independently in component_versions KV at
     publish time (see publish_routes.post_publish). Falls back to the shared pack-level
     version for skill packs published before independent per-skill versioning existed,
     so old publishes don't regress to "always changed"."""
-    rec = db_get("component_versions", f"skill_packs:{company}:{slug}")
+    rec = db_get("component_versions", f"skill_packs:{workspace_id}:{slug}")
     if isinstance(rec, dict) and rec.get("version"):
         return str(rec["version"])
-    return _pack_version(company)
+    return _pack_version(workspace_id)
 
 
-def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
+def _build_delta(workspace_id: str, since_map: dict[str, str]) -> dict[str, Any]:
     """Per-skill delta: each skill in the pack is compared independently against the
     client's last-known version for that specific skill, so only the skills that
-    actually changed are shipped — never the whole company just because one skill
+    actually changed are shipped — never the whole workspace just because one skill
     was republished."""
-    _ensure_skill_pack_on_disk(company)
-    packs_dir = skill_packs_dir(company)
+    _ensure_skill_pack_on_disk(workspace_id)
+    packs_dir = skill_packs_dir(workspace_id)
     pack_path = packs_dir / "pack.json"
     if not pack_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Skill pack not found: {company}")
+        raise HTTPException(status_code=404, detail=f"Skill pack not found: {workspace_id}")
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
     skill_groups = pack.get("skill_groups") or {}
 
     skills_out: list[dict[str, Any]] = []
     for slug in pack.get("skills", []):
-        current_version = _skill_version(company, slug)
+        current_version = _skill_version(workspace_id, slug)
         client_version = since_map.get(slug, "0")
         group_id = skill_groups.get(slug) or "_default"
         skill_dir = packs_dir / group_id / slug
@@ -204,19 +204,19 @@ def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
     return {"skills": skills_out}
 
 
-def _delta_impl(company: str, since: str, request: Request) -> dict[str, Any]:
-    """Shared by the legacy ``/skill-packs/{company}/delta`` route and the
-    versioned ``/workflows/{installer_version}/{company}/skill-packs/delta``
+def _delta_impl(workspace_id: str, since: str, request: Request) -> dict[str, Any]:
+    """Shared by the legacy ``/skill-packs/{workspace_id}/delta`` route and the
+    versioned ``/workflows/{installer_version}/{workspace_id}/skill-packs/delta``
     route. `since` is a JSON-encoded map of {skill_slug: last_known_version},
     letting each skill be compared and shipped independently instead of one
     shared pack version.
 
-    Authentication: Bearer token must match the per-company sync_token minted
+    Authentication: Bearer token must match the per-workspace sync_token minted
     at publish time and embedded in the installer's pack.json.
     Rate limited: 1 request per 5 minutes per token.
     """
     token = _extract_token(request) if request else None
-    _verify_sync_token(company, token)
+    _verify_sync_token(workspace_id, token)
     if token:
         _check_rate_limit(token)
     try:
@@ -225,26 +225,26 @@ def _delta_impl(company: str, since: str, request: Request) -> dict[str, Any]:
             since_map = {}
     except (json.JSONDecodeError, TypeError):
         since_map = {}
-    return _build_delta(company, {str(k): str(v) for k, v in since_map.items()})
+    return _build_delta(workspace_id, {str(k): str(v) for k, v in since_map.items()})
 
 
-@router.get("/{company}/delta")
-def get_skill_pack_delta(company: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
+@router.get("/{workspace_id}/delta")
+def get_skill_pack_delta(workspace_id: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
     """Legacy, unversioned delta route. Kept permanently for already-deployed
     runtimes — see ``get_skill_pack_delta_v2`` for the versioned equivalent."""
-    return _delta_impl(company, since, request)
+    return _delta_impl(workspace_id, since, request)
 
 
-@versioned_router.get("/{installer_version}/{company}/skill-packs/delta")
+@versioned_router.get("/{installer_version}/{workspace_id}/skill-packs/delta")
 def get_skill_pack_delta_v2(
-    installer_version: str, company: str, since: str = "{}", request: Request = None
+    installer_version: str, workspace_id: str, since: str = "{}", request: Request = None
 ) -> dict[str, Any]:
     """Versioned delta route. ``installer_version`` is validated but not yet
     branched on — reserved for a future skill-pack wire-format generation, not
     dead code to remove. The wire contract today is identical across
     generations; see ``_delta_impl``/``_build_delta``."""
     validate_installer_version(installer_version)
-    return _delta_impl(company, since, request)
+    return _delta_impl(workspace_id, since, request)
 
 
 # ─── Telemetry ────────────────────────────────────────────────────────────────
