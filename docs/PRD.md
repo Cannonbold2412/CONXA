@@ -11,6 +11,23 @@ an enterprise runs it across their own processes, and a vendor or consultancy sc
 distribution channel to their customers. Same product, one buyer growing into the next. See
 `Conxa-Pilot-Conclusions.pdf` (internal) for the full reasoning.
 
+**Revision note (2026-08-21):** Added the long-term direction — Learn → Execute → Scale → Understand →
+Optimise — as §14, restructured into Horizon 1 (current), Horizon 2 (future) and Horizon 3 (long-term).
+Horizon 1 gains one genuinely new requirement, **human review points** (§8), which reverses the previous
+position that a mid-flow human decision was a workflow to be split rather than recorded. Everything else
+about the current product, architecture and terminology is unchanged. The skills-marketplace long-term
+vision is superseded by this arc. Open architectural and commercial questions raised by Horizons 2 and 3
+are listed in §14.5 rather than answered.
+
+**Revision note (2026-08-21, later same day):** Settled the architectural doctrine that runs through all
+three horizons — *Conxa ships capability to where the work and the data already are; the cloud holds
+neither.* This closes four of the six questions §14.5 was opened with: Horizon 2's workers and queue run
+on customer-owned infrastructure, "pay for reach, not for runs" therefore survives every horizon (§11),
+and Horizon 3's intelligence layer deploys on the customer's own infrastructure — staged so its first
+version needs no GPU, with retraining orchestrated by Conxa and executed by the customer (§14.3). Two
+questions remain open: unattended session lifetime, and whose operations Horizon 3 describes in a
+reseller relationship.
+
 ---
 
 ## 1. Product Overview
@@ -21,7 +38,7 @@ distribution channel to their customers. Same product, one buyer growing into th
 
 **Mission:** Make every software platform operable by AI, exactly as humans operate it today.
 
-**Vision:** A world where AI agents handle repetitive software work end-to-end — not by navigating UIs from scratch on every run, but by executing precompiled, battle-tested skills that already know what to do, where to look, and how to recover when things go wrong. Conxa is the infrastructure that makes that possible.
+**Vision:** A world where an existing company can progressively become AI-operated — producing the same or greater output with less human effort spent on repetitive software work. Conxa gets there in a specific order: it **learns** how the company already works by recording it, **executes** that work reliably, **scales** it beyond what people can do sequentially, and eventually **understands** the company well enough to help **optimise** it. The differentiator is the starting point — Conxa begins with how the company actually operates today, not with an abstract model of how it might. §14 sets out the horizons this is delivered in; only Horizon 1 is current.
 
 ---
 
@@ -289,6 +306,12 @@ execution feeds the telemetry loop that makes the next compile better (see "What
 
 **Won when:** they resell it under their own name without us in the room.
 
+**One open question at this rung.** Horizon 3's operational intelligence (§14.3) assumes a workspace is
+understanding *its own* operations. When a vendor or consultancy distributes skills to thirty customers,
+the executions happen inside those customers' businesses — so who the resulting intelligence belongs to,
+and who may see it, is unresolved (§14.5). It changes nothing about what this rung buys today; it
+changes what we are able to promise it later, so it should not be promised yet.
+
 ### Verticals where this repeats
 
 CRM and sales platforms, ERPs, banking and insurance operations, marketing and growth tools, HR and
@@ -504,6 +527,36 @@ Two consequences worth stating explicitly. **Conxa never pays for recovery**, be
 tiers run on the agent subscription the customer already has. And **the cheap tiers do most of the
 work**, because a UI that changed slightly is a far more common event than a UI that changed
 fundamentally. `docs/TRD.md` §10.1 is the authoritative tier table.
+
+### Human review points
+
+Not every step in a real process can or should be automated. Some need an approval before the work
+continues, some need a judgement no recorded selector can express, and some need a person to take over
+entirely. A workflow can carry **human review points** that mark exactly where those are.
+
+Three shapes, all captured while the workflow is being recorded and edited rather than discovered at run
+time:
+
+- **Approve or reject** — the run pauses, a person confirms the work so far, and the run continues or
+  stops. Sign-off, four-eyes checks, anything a compliance rule requires a name against.
+- **Supply a judgement** — the run pauses and a person provides a value the workflow cannot derive for
+  itself: which category, which record, whether this one is a duplicate. Later steps consume that value.
+- **Hand over** — the run reaches something a person has to do themselves. Control passes to them, and
+  back again afterwards.
+
+**The review happens in the browser the runtime is already driving**, on the customer's own machine. The
+person sees the real page, in the state the workflow actually left it in, and answers there. Nothing
+about the run — the page, the data on it, or the decision made — has to leave the machine in order for a
+person to be involved. This is the same locality property that governs execution (§7), applied to the
+human half of the process.
+
+Two things follow. A workflow containing a genuine human decision is now an ordinary workflow, rather
+than one that has to be split in two around the person. And a review point is a *designed* state with an
+audit trail — distinct from the recovery cascade above it, which is what happens when something goes
+wrong.
+
+*Status: this is current Horizon 1 scope and is being built. Unlike the rest of §8, it does not describe
+behaviour that ships today — see §14.4.*
 
 ### Editing and repair
 
@@ -789,6 +842,29 @@ while paid tiers route to higher-quality models — compile quality determines s
 is where spending more genuinely buys a better product. Unit economics are modelled in
 `docs/cost_model.md`.
 
+### How the model extends as the product grows
+
+Decided 2026-08-21, following the doctrine in §14: because Conxa neither executes nor stores customer
+work at any horizon, no marginal cost ever appears that would force us into per-run or per-item
+metering. **"Pay for reach, not for runs" holds at every stage.** What changes is only what *reach*
+means:
+
+| Horizon | What "reach" measures |
+|---|---|
+| **1 — Learn and Execute** *(current)* | How far a skill travels: seats, machines, compile credits, and distribution rights |
+| **2 — Scale** *(future)* | How much work can be in flight: concurrency capacity, and a new and cheaper class of seat for people who resolve human reviews without building anything |
+| **3 — Understand and Optimise** *(long-term)* | How much of the organisation is instrumented |
+
+Three properties are preserved by construction at every stage: the axis is structural rather than
+consumption-based, a customer can plan around it, and nobody is ever charged more for a good month.
+
+Two things are deliberately *not* settled here. The specific metrics in the Horizon 2 and 3 rows are the
+natural expression of the principle, not ratified pricing. And these are **additive layers on the one
+ladder in §6, not parallel products** — nobody buys Scale without Build, or Intelligence without
+something to be intelligent about. That constraint matters: an earlier version of this document carried
+two competing products for two markets, and the 2026-08-08 revision exists specifically to resolve it.
+Expansion revenue must not reintroduce it.
+
 ### Where this model is exposed
 
 Two risks, stated rather than assumed away:
@@ -798,8 +874,11 @@ Two risks, stated rather than assumed away:
   grows.
 - **The value we charge for is created at build time, but felt at run time.** A customer who records
   ten skills in month one and nothing afterwards keeps receiving the benefit while their spend looks
-  like it should fall. This is a renewal-conversation risk, and the operations dashboard — which puts
-  a running figure on what the skills are actually doing — is the answer to it.
+  like it should fall. This is a renewal-conversation risk. The operations dashboard — which puts a
+  running figure on what the skills are actually doing — is today's answer to it, and a partial one.
+  The structural answer is the later horizons: throughput a company cannot hire its way to, and
+  questions about its own operations it cannot answer anywhere else. Expansion revenue is not a side
+  effect of Horizons 2 and 3; it is a substantial part of why they need to exist.
 
 ---
 
@@ -818,7 +897,11 @@ breaking hard is an execution architecture, not a compiler trick (`docs/TRD.md` 
 
 **The telemetry loop.** Every run, every recovery, and every failure flows back into how the next skill
 gets compiled. A competitor can copy the compiler in a quarter. They cannot copy years of accumulated
-evidence about how real interfaces actually drift and which remedies actually work.
+evidence about how real interfaces actually drift and which remedies actually work. Note that this loop
+is about *interfaces*, not about customers' businesses — it is execution metadata, and it is more
+valuable pooled. The operational intelligence in §14.3 is the opposite kind of data, stays on the
+customer's own infrastructure, and is not part of this loop. Keeping them separate costs the moat
+nothing, because neither one wants what the other has.
 
 **The cost structure.** Execution runs on the customer's machine, so it costs us nothing and we charge
 nothing for it. Any competitor executing in their own cloud has to meter runs to survive, and cannot
@@ -865,8 +948,11 @@ a conversation; discovering it in week six costs the account. Anyone can run it 
 - **Variation.** Does it run the same way every time, or does every third case need a judgment call?
   Some branching is supported; a process that is mostly exceptions is a process that mostly needs a
   human.
-- **Human decisions mid-flow.** Identify them explicitly. The workflow should either not contain them,
-  or be split so the automated parts sit either side of the person.
+- **Human decisions mid-flow.** Identify them explicitly — but finding one is no longer a reason to
+  reshape the workflow around it. A decision that genuinely needs a person becomes a recorded human
+  review point that the run pauses on (§8), in the browser the runtime is already driving. What still
+  matters is *how many*: a process where nearly every item needs a judgement call is a process that
+  mostly needs a human, and automating the thin margin around those calls rarely repays the compile.
 - **Session lifetime.** How long does an authenticated session survive before someone has to sign in
   again? This determines whether a run can be truly unattended or needs a person to start the day.
 - **Inputs and outputs.** Where does the data come from, and where does the result have to land?
@@ -905,6 +991,8 @@ is always a next one, and being the vendor who said no is worth more than the wo
 - Execution success rate (steps completed without Tier 3+ recovery)
 - Recovery success rate (failures resolved by Tier 1–4 before escalation)
 - Skill reuse rate across executions
+- Human-intervention rate — share of runs that reach a review point, and time spent waiting there
+- Unattended completion rate — runs that finish with no person involved at any point
 
 ### Business Traction
 
@@ -927,9 +1015,9 @@ is always a next one, and being the vendor who said no is worth more than the wo
 
 **Reliability over features.** A skill that works 99% of the time is worth more than ten features that work 70% of the time. Execution reliability is the core product promise — everything else is secondary.
 
-**Teach once, run forever.** The human's time is spent once, at recording. Every execution after that should require no human involvement unless something genuinely can't be recovered automatically.
+**Teach once, run forever.** The human's time is spent once, at recording. Every execution after that should require a person only where the recording said one is genuinely needed — an approval, a judgement, an exception — and never because something broke that could have been recovered automatically. Human review is a designed part of a process; human rescue is a failure. Keep the two apart.
 
-**Local execution, cloud coordination.** Customer data never transits through Conxa infrastructure during execution. The cloud coordinates — it does not execute. This is a security and trust property, not just an architecture choice.
+**Capability goes to the data; the cloud holds neither.** Customer data never transits through Conxa infrastructure. Compilation runs on the builder's machine, execution runs on the machine doing the work, and — as the product grows — scale and intelligence run on infrastructure the customer owns too (§14). The cloud coordinates: it hosts, versions, distributes, meters and bills. It does not execute, and it does not store the customer's business data. This is a security and trust property, not just an architecture choice, and it is the one property that must survive every future stage of the product intact.
 
 **Zero-cost recovery by default.** Tier 1 and 2 recovery cost nothing. LLM escalation is a last resort, not a default fallback. Skills should be compiled with enough redundancy that most real-world UI drift resolves without an LLM call.
 
@@ -937,15 +1025,356 @@ is always a next one, and being the vendor who said no is worth more than the wo
 
 ---
 
-## 14. Long-Term Vision
+## 14. Long-Term Direction — Horizon 1, 2 and 3
 
-Conxa's goal is to become the universal execution layer between AI agents and existing software.
+Conxa's long-term direction is a sequence, not a feature list: **learn how a company works, execute
+that work reliably, scale it beyond what people can do sequentially, understand what it reveals, and
+help the company optimise itself.** And because the system that understands the work is also the system
+performing it, the last stage feeds back into the first — the sequence closes into a loop rather than
+ending (§14.3, *Understanding that can act*).
 
-Near-term, this means every SaaS vendor can ship Claude-operable skills alongside their product — turning AI compatibility into a distribution feature, not an engineering project.
+The differentiation is the starting point. Conxa does not begin with a model that reasons about work in
+the abstract, or with a canvas on which someone designs a process that does not exist yet. It begins by
+watching how the company *already* operates — the real steps, the real exceptions, the real points
+where a person has to decide something — and turns that into something executable. Everything
+downstream (scale, intelligence, optimisation) rests on the fact that the recording happened first.
 
-Medium-term, this means enterprises running AI workforces where Claude handles entire operational domains — not occasionally, but as the primary operator — with Conxa skills as the execution substrate.
+**One doctrine runs through all three horizons.** *Conxa ships capability to where the work and the data
+already are. The cloud holds neither.* Compilation already runs on the builder's machine, and execution
+already runs on the customer's. Horizon 2's workers and queue and Horizon 3's intelligence layer follow
+the same rule for the same reason — which is why the security answer that clears a bank's review today
+is the same answer at every later stage, and why the pricing model survives intact (§11). This was
+settled on 2026-08-21 and is recorded in §14.5.
 
-Long-term, this means a marketplace of skills covering the SaaS ecosystem: any agent, any model, any workflow — recorded once by someone, available to everyone. Conxa becomes the npm of AI-executable software operations.
+**Read the horizon labels literally.** Horizon 1 is what we are building now and what a customer can
+buy today. Horizon 2 and Horizon 3 are direction, not commitments — nothing in them is a current
+requirement, a roadmap date, or something a salesperson should describe as existing. Where a Horizon 2
+or 3 capability depends on a decision we have not made, that decision is named in §14.5 rather than
+papered over.
+
+> **Naming note.** "Horizon" is used deliberately to avoid collision with two other numbered sequences
+> already in this repository: the four-phase *engineering* roadmap in `docs/Implementation-Plan.md`, and
+> the Rung 1/2/3 *customer* ladder in §6 of this document. A Horizon is a stage in the product's
+> direction; a Rung is a stage in a customer's adoption; a Phase is a stage in our engineering plan.
+> Three different axes — they do not map onto each other.
+
+---
+
+### 14.0 What each horizon earns the next one
+
+The order is not caution, and it is not a feature backlog with the hard parts at the end. Each horizon
+exists to produce the thing the next one requires — and could not be built first even with unlimited
+engineers, because its input would not exist yet.
+
+Horizon 1 earns four distinct assets, and they accrue at different speeds:
+
+| What Horizon 1 earns | How it feeds the later horizons | How fast it accrues |
+|---|---|---|
+| **Market** | The customers who automated one process become the accounts that need throughput. Rung 3 multiplies it — one services relationship puts the runtime inside many enterprises at once. | Per deal, immediately |
+| **Money** | Revenue that funds the Horizon 2 and 3 build, rather than raising against a vision | Per deal, immediately |
+| **Data** | The structured record of how a company actually operates — Horizon 3's only possible input, and one that cannot be reconstructed after the fact | Needs volume; slow at first |
+| **Recognition** | Permission to have a more senior conversation than the one that got us in the building | Needs volume *and* time |
+
+**Money is not only fuel.** §11 states plainly that we charge for what a workspace builds and how far it
+reaches, not for how much it runs — so a customer who records ten skills in month one and nothing
+afterwards keeps receiving the benefit while their spend flattens. That section names the operations
+dashboard as the answer to the resulting renewal conversation. Horizons 2 and 3 are the stronger answer:
+throughput a company cannot get from hiring, and questions about its own operations it cannot answer
+anywhere else. Expansion revenue is not a side effect of the later horizons — it is a substantial part of
+why they need to exist.
+
+**Recognition is the long pole, and it constrains the sequence more tightly than the engineering does.**
+Each horizon asks a customer to trust us with something larger than the last:
+
+- **Horizon 1** — *let it do the work while a person is there.*
+- **Horizon 2** — *let it do the work with nobody watching, at volume.*
+- **Horizon 3** — *let it tell you how your company should be run.*
+
+No operations leader grants the second before the first has been boring for a while, and no executive
+grants the third to a vendor they do not already trust operationally. That trust cannot be bought,
+demoed, or skipped — which means the real risk of reaching for Horizon 2 early is not a feature that
+disappoints. It is that one unattended failure at volume destroys more recognition than a year of
+uneventful Horizon 1 runs creates.
+
+**The corollary, and the reason §14.4 exists.** Because the later horizons are earned rather than
+scheduled, the only thing Horizon 1 owes them is that its byproducts come out in a usable shape. An
+execution record that captures "step 14 clicked a button in 220 ms" and nothing more is telemetry, not an
+operating picture — and the difference cannot be recovered later, because the information was never
+captured. That is what the foundations in §14.4 protect, and it is the whole of what we build early on
+the later horizons' behalf.
+
+---
+
+### 14.1 Horizon 1 — Learn and Execute *(CURRENT — this is what we are building)*
+
+**Learn.** A person performs a real workflow in the Build Studio and Conxa records how the work
+actually gets done: the automation steps, the conditions and branches, the exceptions, the recovery
+context — and the **human review points**, the places where a person genuinely has to approve
+something, supply a judgement, or take over.
+
+**Execute.** Conxa executes those workflows reliably on the machine where the work happens, with
+deterministic replay, compiled assertions, and the four-tier self-healing recovery cascade. Humans stay
+in the loop exactly where the recording said they were needed — not as a fallback when automation
+fails, but as a designed part of the process.
+
+Everything in §7 (Product Components), §8 (Key Capabilities), and §11 (Business Model) describes
+Horizon 1. It is the whole of the product a customer buys today.
+
+**What changes in Horizon 1 because of this direction.** One thing, and it is significant: human
+involvement stops being a disqualifier and becomes a first-class part of what a workflow *is*. The
+Workflow Qualification Checklist previously treated a mid-flow human decision as a shape problem to be
+engineered around by splitting the workflow in two. That is no longer the position — see §8, *Human
+review points*, and the revised shape check in the Workflow Qualification Checklist below.
+
+---
+
+### 14.2 Horizon 2 — Scale *(FUTURE — direction, not a commitment)*
+
+Once workflows execute reliably, the constraint stops being *can this run* and becomes *how much of it
+can run at once*. Today a workflow is invoked by a person, through their agent, on their machine, one
+run at a time. That is the right shape for Horizon 1 and the wrong shape for a company processing
+thousands of claims a day.
+
+Horizon 2 is the shift from a workflow a person runs to a **queue of work the organisation gets
+through**:
+
+```
+Human operators  →  Work Queue  →  Execution Workers  →  Conxa Runtime  →  Skills  →  Applications
+                         ↑
+                  Human Review Queue
+                  (only the items that
+                   genuinely need a person)
+```
+
+Three consequences worth stating:
+
+- **A work item becomes the unit of operation**, not a workflow invocation. One invoice, one claim, one
+  onboarding — with its own state, its own history, and its own outcome, independent of whichever
+  worker happened to process it.
+- **Human Review becomes a queue rather than an interruption.** In Horizon 1 a review point pauses one
+  run in front of one person. At scale, review items route to whoever is qualified to handle them, and
+  a reviewer works through a list instead of babysitting a run. This is the mechanism that lets human
+  judgement stay in the process without human throughput capping the process.
+- **Concurrency replaces sequence.** Independent work items are independent; the limit becomes how many
+  workers exist, not how many hours a person has.
+
+**Where this runs — decided.** The workers and the queue run on infrastructure the customer owns, per
+the doctrine above. Conxa does not execute work items and does not hold them. What this buys is that the
+three properties the business rests on survive the jump to scale unchanged: the cloud still never
+executes, execution still costs us nothing at the margin, and credentials and business data still never
+leave machines the customer controls. The security conversation at Horizon 2 is therefore the same
+conversation as at Horizon 1, which is the point.
+
+**What this costs us, stated plainly.** Customer-owned workers mean the customer has to provide and
+operate them — real machines, kept awake, kept logged in. That is a heavier ask than "sign up and it
+scales," and it is the honest price of the property above. It is also the model established automation
+vendors already use, so it is a familiar ask rather than a strange one. The harder half is not the
+machines: it is keeping sessions alive on them without a person present, which remains genuinely
+unsolved (§14.5).
+
+Two items already in the engineering backlog are the earliest concrete pieces of this direction: the
+standalone launcher and scheduler with parallel execution and a documented runner-machine profile, and
+unattended session lifetime. Neither was written as Horizon 2 work at the time; both turn out to be its
+foundations.
+
+---
+
+### 14.3 Horizon 3 — Understand and Optimise *(LONG-TERM — direction, not a commitment)*
+
+After a company has taught Conxa many workflows and Conxa has executed them at volume, something exists
+that did not exist before: **a structured, continuously updated record of how the company actually
+operates.** Not an org chart, not a process map someone drew in a workshop two years ago — observed
+execution.
+
+Horizon 3 builds an **Operational Intelligence** layer on that record, spanning:
+
+| Dimension | What it captures |
+|---|---|
+| Processes | What work the company actually performs, and how often |
+| Skills | Which compiled workflows exist, and their versions and health |
+| Applications | Which systems each process touches |
+| Work items | Volume, throughput, and outcome per unit of work |
+| Execution time | Where time is actually spent, step by step |
+| Failures and recovery | What breaks, how often, and at which tier it heals |
+| Human intervention | Where a person is still required, and how much of their time that costs |
+| Dependencies | Which processes feed which, and what blocks what |
+| Bottlenecks | Where work queues up, and why |
+| Operational cost | What a process costs to run, against stated assumptions |
+| Capacity | How much more the current setup could absorb |
+| Process ownership | Who owns each process, and where knowledge sits with one person |
+
+The eventual goal is that an executive can ask questions of this in plain language — *where are we
+wasting the most time and money, what should we automate next, where are our bottlenecks, where are we
+dependent on specific individuals, what happens if volume doubles, what should we redesign* — and get
+an answer grounded in what actually happened rather than in what someone believes happens.
+
+**Grounded, and honest about it.** Several of those questions need inputs that execution data cannot
+produce: the loaded cost of a person's hour, headcount, expected volume, who owns a process. Horizon 3
+therefore includes an explicit place for a company to state its own operational context — cost,
+ownership, and capacity assumptions — and every answer that depends on one is labelled as
+assumption-driven, with the assumption visible and editable. This extends the rule the operations
+dashboard already follows today (§8, *Telemetry and operations*): measured figures are labelled
+measured, estimated figures are labelled estimated. An intelligence layer that quietly invents a
+currency figure is worth less than one that says which number it was handed.
+
+#### How it deploys — on the customer's own infrastructure
+
+Horizon 3 does not work by sending a company's operational record to Conxa. It works the other way
+round: **the intelligence goes to the data.** Conxa ships the framework — the operational data model,
+the analysis layer, and the deployment and retraining machinery — and it runs where the company's data
+already is. Conxa orchestrates; the customer's infrastructure executes and stores.
+
+This is the same architectural move the product already makes twice, applied a third time:
+
+| | Where it happens | What the cloud does |
+|---|---|---|
+| **Compile** | Locally, in the Build Studio | Proxies model calls, hosts the published artifact |
+| **Execute** | Locally, on the machine doing the work | Versions, distributes, meters |
+| **Understand** | On the customer's own infrastructure | Ships the framework, orchestrates retraining |
+
+The consequence is worth stating in the plainest available terms, because it is the sentence that gets
+this product into an executive conversation in a regulated industry: **we have never asked a customer to
+send us their business data, and Horizon 3 does not change that.** Every process-mining and operational-
+analytics vendor in the market is a cloud data warehouse that requires exactly the opposite. We would be
+structurally unable to be one.
+
+**Staged, so the first version does not require a GPU.** The intelligence layer arrives in two stages,
+because most of the questions in §14.3 do not need a fine-tuned model to answer them:
+
+- **Stage one — the operational data model, queried by a general model.** The product is the structured
+  record itself: processes, work items, dependencies, timings, interventions, ownership, cost
+  assumptions. A general model translates a plain-language question into a query over it. This answers
+  most of the questions above, and it runs on ordinary server hardware.
+- **Stage two — a model fine-tuned on the company's own operational history**, for the point at which
+  answers need the company's own process vocabulary rather than a generic one, with continuous
+  retraining orchestrated through the Conxa platform and executed on the customer's infrastructure.
+
+**Three deployment targets, all customer-owned.** Ordinary server hardware for stage one; the customer's
+own cloud tenancy, which gives an organisation without on-premise capacity the same data boundary; and
+on-premise GPU infrastructure for organisations that already run their own model estate and want stage
+two. Which of the three a customer chooses changes nothing about the boundary — in every case the data
+and the model sit inside infrastructure they control.
+
+**Two loops, and they want opposite things.** This must not be read as giving up the telemetry loop
+described in *What Our IP Actually Is*. Those are two different loops with two different subjects. The
+existing loop is about **how interfaces drift and which recoveries work** — execution metadata, already
+flowing to the cloud today, not business data, and it is genuinely more valuable pooled across
+customers. The Horizon 3 model is about **how one company operates** — private by nature, per-customer,
+and of no use to anyone else even if we had it. Keeping the first shared and the second local is not a
+compromise between them; it is each one getting what it actually needs.
+
+#### Understanding that can act
+
+The layer that understands the company is also, structurally, able to operate it — because the skills are
+already there. A compiled skill is exposed as an agent tool over MCP (§7), and the intelligence layer is
+simply another caller of that same interface. Nothing new has to be built for understanding to become
+action; the two share one mechanism.
+
+That turns the sequence into a **loop rather than a line.** Understanding identifies the process costing
+the most, the bottleneck worth removing, or the work that should be automated next — and the same system
+can then record, compile and run the change. **Optimise feeds back into Learn.** A company's picture of
+how it operates and its ability to act on that picture stop being two systems owned by two teams that
+meet quarterly.
+
+This is the end state §1's vision describes: a company progressively becoming AI-operated, where the
+thing that knows how the work is done is also the thing doing it.
+
+**Three constraints, none of them optional.**
+
+**It changes nothing about the boundary.** The intelligence layer runs on the customer's infrastructure
+and calls runtimes on the customer's own machines. A local system, acting locally, through the interface
+that already exists.
+
+**The blast radius is categorically larger, so the safeguards have to scale with it.** A conclusion the
+system reached itself, driving an irreversible action across ten thousand work items, is not the same
+risk as one step in one run — even though the mechanism is identical and that is exactly why it is easy
+to miss. Everything that governs work a person initiated applies to work the intelligence layer
+initiates, and applies more strictly rather than less: human review points (§8), the sign-off gate,
+role-based access control, and the audit log. An action taken on the strength of the system's own
+analysis should require a named person to authorise it, and the record should show who.
+
+**Understanding what should change is not authority to change it.** The intelligence layer's job is to
+make the case, not to make the call. A recommendation that a process be redesigned — or that people move
+— is an input to the humans accountable for that decision, and the audit trail has to show that a human
+made it. A system that can both diagnose the organisation and act on the diagnosis without a person in
+between is not a product we are trying to build.
+
+**Scope note.** Intelligence is scoped to the workspace whose skills produced the executions. For a
+Rung 2 enterprise that is unambiguous — the company understands itself. For a Rung 3 vendor or
+consultancy distributing skills to *their* customers, whose operations are being understood is a
+genuine open question with commercial and contractual consequences (§14.5).
+
+---
+
+### 14.4 The foundations Horizon 1 must build *(CURRENT requirements)*
+
+The horizons above are only reachable if Horizon 1 gets its data model right. These are **current
+requirements**, not future work — but the reason they are requirements is future-facing, and stating
+that reason is the point of this section. Each row carries what actually exists today, so that this
+section cannot be misread as a description of shipped capability.
+
+| Foundation | Why later horizons need it | Status today |
+|---|---|---|
+| **Human Review** | Horizon 2's review queue can only route what Horizon 1 recorded. If review points aren't captured at record time, there is nothing to route. | **To build.** Recording, compiling, and pausing on human review points is new work. |
+| **Execution state** | Durable, inspectable run state is what lets a run pause for review, resume afterwards, and be reported on. Without it, a paused run is just a blocked process. | **Partly built.** Per-run status and the park-and-resume machinery exist; durable resumable state does not. |
+| **Work-item abstraction** | The unit a queue distributes, a reviewer acts on, and Horizon 3 counts. Retrofitting it later means rewriting telemetry, reporting, and the review model at once. | **To build.** Today a run is a workflow invocation with inputs, not an addressable item of work. |
+| **Structured telemetry** | The entire Horizon 3 layer is a query over this. Telemetry good enough for a health dashboard is not automatically good enough for operational analysis. | **Largely built, needs extending.** Execution telemetry is structured and flowing; not all of §14.3's dimensions are captured. |
+| **Workflow / process metadata** | Horizon 3 reasons about *processes*, not skills. A skill is an artifact; a process is a business activity that may span several skills and several people. | **Partly built.** Skills carry versions, groups, and intent; there is no process-level concept above them. |
+| **Ownership and versioning** | "Who owns this process" and "which version produced this result" are Horizon 3 answers that must be recorded at the time, not reconstructed afterwards. | **Largely built.** Publishing, release channels, RBAC, and the audit log already carry this. |
+| **Relationships and dependencies** | Bottleneck and impact analysis is a graph question. If the relationships between workflows are never recorded, the graph cannot be rebuilt retrospectively. | **To build.** Sequences of skills can be executed, but a sequence encodes no dependency the system can reason about. |
+
+**The rule this section exists to enforce:** where a Horizon 1 decision and a Horizon 2/3 need conflict,
+Horizon 1 wins on *scope* and Horizon 2/3 wins on *shape*. We do not build the queue now. We do make
+sure that what we build now can be put behind one later.
+
+---
+
+### 14.5 Decisions and open questions
+
+#### Decided — 2026-08-21
+
+Four questions that were open when this section was written have been settled, all by one decision. They
+are recorded here rather than deleted, because the reasoning is what makes the remaining questions
+answerable and because a future reader needs to know these were chosen rather than defaulted into.
+
+**The doctrine: Conxa ships capability to where the work and the data already are; the cloud holds
+neither.** From it:
+
+1. **Horizon 2's execution workers run on customer-owned infrastructure.** Conxa-hosted execution was
+   rejected: it would break all three of the properties the business rests on — the cloud never
+   executes, execution costs us nothing, credentials never leave the machine — and those three are what
+   the security answer, the pricing model, and the competitive position are all built on.
+2. **The work queue is customer-side, and Conxa does not hold work items.** This follows from the same
+   doctrine and closes the question of whether a work item may carry business payloads: we are not the
+   party holding it either way.
+3. **"Pay for reach, not for runs" survives Horizon 2.** Because we neither execute nor store at scale,
+   no marginal cost appears that would force per-item metering. What "reach" *means* extends rather than
+   changes — see §11.
+4. **The Horizon 3 intelligence layer runs on the customer's own infrastructure**, staged so that its
+   first version needs no GPU, with continuous retraining orchestrated by Conxa and executed by the
+   customer. See §14.3, *How it deploys*.
+
+**What this deliberately costs.** Customer-owned infrastructure at both horizons is a heavier ask than a
+hosted alternative, and it will lose deals to a competitor willing to run everything for the customer.
+That trade was made knowingly: the property being protected is the one that gets us into regulated
+industries at all, and it is not recoverable once given up.
+
+#### Still open
+
+Two questions remain genuinely unresolved. Neither should be answered by inference from the sections
+above.
+
+5. **Unattended session lifetime.** Horizon 1 treats a login demanding a fresh one-time code every time
+   as a hard blocker, and everything else as manageable because a person is at the machine. Horizon 2
+   removes the person. Session and credential lifetime for unattended, concurrent workers is the single
+   hardest unsolved problem between Horizon 1 and Horizon 2 — a prerequisite, not a detail.
+6. **Whose operations does Horizon 3 describe in a Rung 3 relationship?** When a vendor or consultancy
+   distributes skills to thirty customers, intelligence derived from those executions is commercially
+   valuable and contractually delicate. Whether it belongs to the distributor, to each end customer, or
+   to neither by default, is undecided. Note that the local-deployment decision above narrows this
+   without answering it: the data sits inside each end customer's infrastructure, which makes "the
+   distributor sees all thirty" a thing that would have to be deliberately built rather than something
+   that happens by default.
 
 ---
 
