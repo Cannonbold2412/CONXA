@@ -339,6 +339,7 @@ class WorkflowsMixin:
         sink = _event_sink(rid)
         result = build_installer(
             workspace_id,
+            company_slug=company_slug,
             logo_path=logo_path,
             version=version,
             release_notes=release_notes,

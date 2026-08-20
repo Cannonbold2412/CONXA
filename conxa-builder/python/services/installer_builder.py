@@ -15,7 +15,7 @@ from typing import Any, Callable
 def build_installer(
     workspace_id: str,
     *,
-    company_slug: str,
+    company_slug: str = "",
     logo_path: str | None = None,
     version: str | None = None,
     release_notes: str = "",

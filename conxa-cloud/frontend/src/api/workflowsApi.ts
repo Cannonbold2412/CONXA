@@ -32,7 +32,7 @@ export type SkillPack = {
 export type SkillPackResponse = { skill_pack: SkillPack }
 
 export function fetchSkillPack(): Promise<SkillPackResponse> {
-  return apiFetch('/workflows/skill-pack').then((r) => json<SkillPackResponse>(r))
+  return apiFetch('/workflows/skill-packs/current').then((r) => json<SkillPackResponse>(r))
 }
 
 // ─────────────────────────────────────────────────
