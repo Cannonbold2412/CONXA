@@ -325,6 +325,19 @@ class WorkflowsMixin:
             )
 
         installer_name = str(payload.get("installer_name") or "").strip() or None
+        if installer_name and self._auto_publish_enabled():
+            # Best-effort: persists the domain the user typed here so the Cloud
+            # Dashboard's own installer naming (publish_routes.py's
+            # get_installer_domain) stays consistent with what this local build
+            # just used — never blocks the build if the cloud is unreachable.
+            try:
+                self._cloud_json(
+                    "/api/v1/entitlements/installer-domain",
+                    method="POST",
+                    body={"domain": installer_name},
+                )
+            except Exception:
+                pass
         logo_path = str(payload.get("logo_path") or "").strip() or None
         if logo_path:
             # Custom installer icons are a paid-plan capability (see docs/PRD.md

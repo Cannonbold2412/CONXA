@@ -117,8 +117,13 @@ def build_installer(
     Returns dict with keys: installer_path, filename, workspace_id, version.
     Raises ValueError / RuntimeError on build failure.
 
-    company_slug parameter kept for backward compatibility but unused — all paths
-    now derive from workspace_id via workspace_dir_slug.
+    company_slug parameter kept for backward compatibility but unused — the built
+    pack is always located via workspace_dir_slug(workspace_id).
+
+    installer_name is the company's domain (unverified — plain text input until
+    domain verification ships). When given, it becomes both the installer filename
+    and, via workspace_dir_slug, the customer-visible skill-packs folder name.
+    Without it, both fall back to workspace_id-derived values.
     """
     from conxa_core.storage.skill_pack_store import get_skill_pack, set_installer
     from conxa_core.workspace import workspace_dir_slug
@@ -222,7 +227,14 @@ def build_installer(
         # for every later update, so there is no separate initial-install layout
         # to keep in sync with the versioned skill-packs/<company>/<skill>/<version>/
         # scheme (see runtime/version_manager.js) — sync.js already produces it.
-        staged_packs = tmp / "skill-packs" / company_slug
+        # installer_name now doubles as the (unverified, user-typed) company domain:
+        # it names the installer file below AND, via workspace_dir_slug, the on-disk
+        # skill-packs folder the customer actually gets — replacing the workspace_id
+        # they'd otherwise see. Falls back to company_slug (workspace_id-derived) when
+        # no domain is given, e.g. existing tests / local dev.
+        domain = (installer_name or "").strip()
+        dest_slug = workspace_dir_slug(domain) if domain else company_slug
+        staged_packs = tmp / "skill-packs" / dest_slug
         _log(f"Staging pack.json from {skill_pack_dir}…")
         staged_packs.mkdir(parents=True)
         pack_json_src = skill_pack_dir / "pack.json"
@@ -242,7 +254,7 @@ def build_installer(
         _log(f"Rendering NSIS script (workspace={workspace_id!r}, version={installer_version})…")
         nsi_path = _render_nsis_script(
             tmp,
-            company_slug,
+            dest_slug,
             display_name,
             installer_version,
             runtime_version=runtime_version,
@@ -252,9 +264,7 @@ def build_installer(
         _log(f"NSIS script written to {nsi_path}")
 
         # ── 5. Compile installer ──────────────────────────────────────────────
-        # installer_name is a user-supplied label for now (later: derived from
-        # verified domain / company identity). Falls back to display_name.
-        safe_name = (installer_name or display_name).strip().replace(" ", "") or display_name.replace(" ", "")
+        safe_name = (domain or display_name).strip().replace(" ", "") or display_name.replace(" ", "")
         installer_filename = f"{safe_name}-Agent-Setup.exe"
         installer_path = tmp / installer_filename
 

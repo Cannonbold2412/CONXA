@@ -203,7 +203,7 @@ export function BuildInstallerPage() {
                 <div className="rounded-lg border border-white/8 bg-white/[0.02] p-4">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                      Installer Name
+                      Company Domain
                     </p>
                     {!installerName.trim() && (
                       <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
@@ -215,11 +215,11 @@ export function BuildInstallerPage() {
                     type="text"
                     value={installerName}
                     onChange={(e) => setInstallerName(e.target.value)}
-                    placeholder="e.g. Acme Corp"
+                    placeholder="e.g. acme.com"
                     className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 outline-none transition-colors focus:border-white/25"
                   />
                   <p className="mt-2 text-[11px] text-zinc-600">
-                    Used to name the installer file. Later replaced by verified domain/company identity.
+                    Names the installer file and the folder it installs to. Not verified yet — domain verification is coming later.
                   </p>
                 </div>
 
