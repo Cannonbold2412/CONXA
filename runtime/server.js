@@ -1028,7 +1028,7 @@ async function _handleTool(name, args, extra) {
 
     // Auth pre-flight must cover every skill in the sequence, not just the first — a run with
     // 2+ skills shares one browser/context (see getCachedBrowser below, keyed off primary.entry
-    // .company for the whole sequence), so an app only the SECOND skill needs was previously
+    // .workspace_id for the whole sequence), so an app only the SECOND skill needs was previously
     // never gated on before step 0 of the FIRST skill ran, discovering it expired mid-sequence
     // instead of pre-flight. Union every skill's required_apps; if any skill's manifest predates
     // the required_apps field (undefined = legacy "gate on every app"), the whole union falls
@@ -1043,7 +1043,7 @@ async function _handleTool(name, args, extra) {
     // Acquire execution lock
     activeExecution = {
       slug:            primary.entry.slug,
-      company:         primary.entry.company,
+      workspace_id:    primary.entry.workspace_id,
       step:            0,
       total:           resolved.reduce((n, r) => n + r.steps.length, 0),
       startedAt:       new Date().toISOString(),
@@ -1094,7 +1094,7 @@ async function _handleTool(name, args, extra) {
       tool: name,
       run_count: resolved.length,
       skill: primary.entry.slug,
-      company: primary.entry.company,
+      workspace_id: primary.entry.workspace_id,
       total_steps: resolved.reduce((n, r) => n + r.steps.length, 0),
       watch,
       max_recovery_tier: MAX_RECOVERY_TIER,
@@ -1106,7 +1106,7 @@ async function _handleTool(name, args, extra) {
       runtime_version: RUNTIME_VERSION,
       workflow_id:      primary.entry.slug,
       workflow_version: primary.entry.manifest?.version || "0",
-      company_id:      primary.entry.company,
+      company_id:      primary.entry.workspace_id,
       log,
     });
     const _runId      = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1129,7 +1129,7 @@ async function _handleTool(name, args, extra) {
     let _park = null;
     if (_resumeOverride && _parkedRecovery
         && _parkedRecovery.slug === primary.entry.slug
-        && _parkedRecovery.company === primary.entry.company) {
+        && _parkedRecovery.workspace_id === primary.entry.workspace_id) {
       try {
         _parkedRecovery.page.url();
         // The recovery request described the page as it stood at park time. If it has since
@@ -1190,7 +1190,7 @@ async function _handleTool(name, args, extra) {
         appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
         _runTracker.emit("park_resumed", { si: primary.resumeFrom });
       } else {
-        const _authResult = await getCachedBrowser(primary.entry.company, authManager, {
+        const _authResult = await getCachedBrowser(primary.entry.workspace_id, authManager, {
           headless: !watch,
           logFn: log,
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
@@ -1314,7 +1314,7 @@ async function _handleTool(name, args, extra) {
             // CLAUDE.md group-auth notes / captureReAuth's host-matching fallback chain).
             const loginUrl = _failedPage.url() || entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url;
             appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
-            const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log, {
+            const refreshResult = await captureReAuth(entry.workspace_id, loginUrl, authManager, SESSIONS_DIR, log, {
               groupId: entry.manifest && entry.manifest.group_id,
               fallbackUrl: entry.manifest?.target_url,
             });
@@ -1347,11 +1347,11 @@ async function _handleTool(name, args, extra) {
       if (!_isGroupRun) {
         const state = await _context.storageState();
         try {
-          const sessionKey = await authManager.getSessionKey(primary.entry.company, log);
-          const encrypted = authManager.saveEncryptedSession(primary.entry.company, state, sessionKey, SESSIONS_DIR, log);
-          if (!encrypted) authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+          const sessionKey = await authManager.getSessionKey(primary.entry.workspace_id, log);
+          const encrypted = authManager.saveEncryptedSession(primary.entry.workspace_id, state, sessionKey, SESSIONS_DIR, log);
+          if (!encrypted) authManager.saveRawSession(primary.entry.workspace_id, state, SESSIONS_DIR, log);
         } catch (_) {
-          authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+          authManager.saveRawSession(primary.entry.workspace_id, state, SESSIONS_DIR, log);
         }
       }
 
@@ -1478,7 +1478,7 @@ async function _handleTool(name, args, extra) {
       if (parkable) {
         const timer = setTimeout(() => { _discardPark("ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
-        _parkedRecovery = { slug: primary.entry.slug, company: primary.entry.company,
+        _parkedRecovery = { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
           page: _failedPage, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
           pageFingerprint: await capturePageFingerprint(_failedPage) };
         // Only the parked page survives — any other tab this run opened (the failure wasn't
@@ -1514,12 +1514,12 @@ async function _handleTool(name, args, extra) {
   if (name.startsWith("skill_")) {
     const withoutPrefix = name.slice(6); // e.g. "render_create_a_service"
     const entry = Object.values(skillIndex).find(
-      (e) => `${e.company}_${e.slug.replace(/-/g, "_")}` === withoutPrefix
+      (e) => `${e.workspace_id}_${e.slug.replace(/-/g, "_")}` === withoutPrefix
     );
     if (!entry) return err(`Skill tool not found: ${name}. Call list_skills to see available skills.`);
     return _handleTool("execute_skill", {
       skill:   entry.slug,
-      company: entry.company,
+      workspace_id: entry.workspace_id,
       inputs:  args,
       watch:   true,
     });
@@ -1535,7 +1535,7 @@ async function _handleTool(name, args, extra) {
 // config-editing logic of its own.
 
 async function _phonehome() {
-  const companies = [...new Set(Object.values(skillIndex).map(s => s.company))];
+  const companies = [...new Set(Object.values(skillIndex).map(s => s.workspace_id))];
   const body = JSON.stringify({
     runtime_version: RUNTIME_VERSION,
     companies,

@@ -103,7 +103,11 @@ jobs:
             # fails to update discoverability files (caught by durable_context's
             # own try/catch in sync.js, so it degrades to a warning, not a crash
             # — but the feature would be dead in production without this).
-            "durable_context.js", "config_edit.js", "mcp_hosts.js"
+            "durable_context.js", "config_edit.js", "mcp_hosts.js",
+            # server.js requires this directly (not caught by any try/catch) — omitting
+            # it hard-crashes bootstrap.js on load with "Cannot find module './sync_errors'",
+            # which aborts even --install-playwright before Chromium ever downloads.
+            "sync_errors.js"
           )
           foreach ($f in $files) {
             javascript-obfuscator $f `
@@ -161,7 +165,7 @@ jobs:
             "skill_loader", "auth_manager", "tracker", "install_identity", "installed_versions",
             "bootstrap", "recovery", "resolve_adapter", "resolver", "tabs", "drift", "version_manager",
             "manifest_manager", "http_client", "page_scripts",
-            "durable_context", "config_edit", "mcp_hosts"
+            "durable_context", "config_edit", "mcp_hosts", "sync_errors"
           )
           foreach ($base in $files) {
             Copy-Item obfuscated/$base.js dist-app/$base.js

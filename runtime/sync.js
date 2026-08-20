@@ -257,10 +257,19 @@ async function _doSync(skillPacksDir, log) {
 // Public: run sync with a hard timeout.
 // Default 4s — skill packs are small JSON files; parallel downloads complete well within this.
 async function syncSkillPacks(skillPacksDir, { timeoutMs = 4000, log = console.error } = {}) {
-  await Promise.race([
-    _doSync(skillPacksDir, log),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("sync timeout")), timeoutMs)),
-  ]);
+  let timer;
+  try {
+    await Promise.race([
+      _doSync(skillPacksDir, log),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("sync timeout")), timeoutMs); }),
+    ]);
+  } finally {
+    // Promise.race doesn't cancel the loser: when _doSync wins (the normal case),
+    // this timer stays scheduled and keeps the event loop — and any caller blocking
+    // on this process, like the NSIS installer's install-time `sync` subcommand —
+    // alive until it fires, up to timeoutMs later. Clear it either way.
+    clearTimeout(timer);
+  }
 }
 
 module.exports = { syncSkillPacks };
