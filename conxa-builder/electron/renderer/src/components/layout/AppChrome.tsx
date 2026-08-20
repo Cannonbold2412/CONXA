@@ -187,10 +187,15 @@ function UserWidget() {
   const { identity, setIdentity } = useAuth()
   if (!identity) return null
   return (
-    <div className="flex items-center gap-2">
-      <span className="hidden truncate text-xs text-zinc-300 sm:block max-w-[160px]">
-        {identity.email}
+    <div className="flex shrink-0 items-center gap-2">
+      <span className="mr-1 hidden h-5 w-px bg-white/8 sm:block" aria-hidden />
+      <span
+        className="hidden size-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-[0.6875rem] font-semibold uppercase text-zinc-300 sm:flex"
+        aria-hidden
+      >
+        {identity.email.charAt(0)}
       </span>
+      <span className="hidden max-w-[180px] truncate text-xs text-zinc-400 sm:block">{identity.email}</span>
       <Button
         type="button"
         variant="ghost"

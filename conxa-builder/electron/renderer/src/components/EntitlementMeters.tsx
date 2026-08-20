@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { PencilLine, Users, Monitor, Zap, type LucideIcon } from 'lucide-react'
 import { fetchEntitlements, type EntitlementMeter, type EntitlementMeterKey } from '@/api/usageApi'
@@ -17,15 +16,6 @@ const ICONS: Record<EntitlementMeterKey, LucideIcon> = {
   machines: Monitor,
   compile_credits: Zap,
   human_edit_tokens: PencilLine,
-}
-
-/** What one unit of this meter buys, in plain language — used by the low-balance
- * warning so "8% left" reads as something the operator can act on. */
-const UNIT_NOUN: Record<EntitlementMeterKey, [string, string]> = {
-  seats: ['seat', 'seats'],
-  machines: ['machine', 'machines'],
-  compile_credits: ['compile', 'compiles'],
-  human_edit_tokens: ['token', 'tokens'],
 }
 
 const DEFAULT_METERS: EntitlementMeterKey[] = ['seats', 'machines', 'compile_credits', 'human_edit_tokens']
@@ -65,89 +55,12 @@ function formatResetDate(resetAt: string | undefined) {
 }
 
 /**
- * Compact toolbar pill for a single entitlement meter — label + used/limit + a
- * thin clay usage bar, with full detail on hover. Designed to sit in a page
- * toolbar. Must render inside a TooltipProvider. Renders nothing if the meter
- * is unavailable.
+ * Compact toolbar pill for a single entitlement meter — icon + label +
+ * used/limit, with a thin usage bar once the meter is actually metered, and
+ * full detail on hover. Sits in a page toolbar; must render inside a
+ * TooltipProvider. Renders nothing if the meter is unavailable.
  */
 export function MeterBadge({ meterKey, className }: { meterKey: EntitlementMeterKey; className?: string }) {
-  const key = meterKey
-  const usageQ = useQuery({
-    queryKey: ['entitlements'],
-    queryFn: fetchEntitlements,
-    staleTime: 30_000,
-    retry: 1,
-  })
-
-  if (usageQ.isLoading) {
-    return <div className={cn('hidden h-8 w-36 animate-pulse rounded-md border border-white/10 bg-white/[0.03] lg:block', className)} />
-  }
-
-  const meter = usageQ.data?.meters?.[key]
-  if (!meter || usageQ.isError || usageQ.data?.entitlements_unavailable) return null
-
-  const used = meter.used ?? 0
-  const unlimited = meter.unlimited || meter.limit == null
-  const pct = usedPct(meter)
-  const valueText = unlimited ? `${formatCount(used, key)} used` : `${formatCount(used, key)} / ${formatCount(meter.limit, key)}`
-  const remainingText = unlimited ? 'Unlimited' : `${formatCount(meter.remaining, key)} remaining`
-
-  return (
-    <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div
-            role="status"
-            aria-label={`${LABELS[key]}: ${valueText}, ${remainingText}`}
-            className={cn(
-              'hidden h-8 cursor-default items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-2.5 lg:flex',
-              className,
-            )}
-          >
-            <span className="text-[11px] font-medium text-zinc-400">{LABELS[key]}</span>
-            <span className="text-[11px] font-semibold tabular-nums text-zinc-200">{valueText}</span>
-            {!unlimited && (
-              <span className="h-1.5 w-10 overflow-hidden rounded-full bg-white/10">
-                <span className={cn('block h-full rounded-full', barColor(pct))} style={{ width: `${pct}%` }} />
-              </span>
-            )}
-          </div>
-        </TooltipTrigger>
-        <TooltipContent>
-          <div className="space-y-0.5">
-            <p className="font-medium text-zinc-100">{LABELS[key]}</p>
-            <p className="text-zinc-300">
-              {valueText}
-              {unlimited ? '' : ` · ${remainingText}`}
-            </p>
-          </div>
-        </TooltipContent>
-      </Tooltip>
-      <div className="mx-0.5 hidden h-5 w-px bg-white/10 lg:block" aria-hidden />
-    </>
-  )
-}
-
-function MeterCardShell({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <div
-      className={cn(
-        'flex min-w-0 flex-1 flex-col justify-between gap-2 rounded-lg border border-white/8 bg-white/[0.03] px-3.5 py-3 sm:max-w-64',
-        className,
-      )}
-    >
-      {children}
-    </div>
-  )
-}
-
-/**
- * A single entitlement meter as a card — the prominent, always-visible form of
- * MeterBadge above. Leads with what's *left* rather than what's been used,
- * because remaining balance is the number that changes what an operator does
- * next. Sits in a page's action strip; must render inside a TooltipProvider.
- */
-export function MeterCard({ meterKey, className }: { meterKey: EntitlementMeterKey; className?: string }) {
   const key = meterKey
   const Icon = ICONS[key]
   const usageQ = useQuery({
@@ -157,101 +70,69 @@ export function MeterCard({ meterKey, className }: { meterKey: EntitlementMeterK
     retry: 1,
   })
 
-  const heading = (
-    <span className="flex items-center gap-1.5 text-[0.6875rem] font-medium text-zinc-400">
-      <Icon className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
-      {LABELS[key]}
-    </span>
-  )
-
   if (usageQ.isLoading) {
-    return (
-      <MeterCardShell className={className}>
-        {heading}
-        <span className="h-4 w-20 animate-pulse rounded bg-white/8" />
-        <span className="h-1.5 w-full rounded-full bg-white/8" />
-      </MeterCardShell>
-    )
+    return <div className={cn('hidden h-8 w-36 animate-pulse rounded-md border border-white/8 bg-white/[0.03] sm:block', className)} />
   }
 
   const meter = usageQ.data?.meters?.[key]
+  if (!meter || usageQ.isError || usageQ.data?.entitlements_unavailable) return null
 
-  // A card holds a slot in the layout, so — unlike the hover pill, which can
-  // simply vanish — it says so out loud instead of leaving a hole.
-  if (!meter || usageQ.isError || usageQ.data?.entitlements_unavailable) {
-    return (
-      <MeterCardShell className={className}>
-        {heading}
-        <span className="text-sm font-medium text-zinc-500">Usage unavailable</span>
-        <span className="text-[0.6875rem] text-zinc-600">Reconnect to see your balance.</span>
-      </MeterCardShell>
-    )
-  }
-
+  const used = meter.used ?? 0
   const unlimited = meter.unlimited || meter.limit == null
   const pct = usedPct(meter)
-  const [unitOne, unitMany] = UNIT_NOUN[key]
-  const remaining = meter.remaining ?? 0
-  const resetsOn = formatResetDate(usageQ.data?.reset_at)
-  const plan = usageQ.data?.plan
-
-  const footerBits = [resetsOn ? `Resets ${resetsOn}` : null, plan ? `${plan} plan` : null].filter(Boolean)
+  const valueText = unlimited ? 'Unlimited' : `${formatCount(meter.remaining, key)} left`
+  const detailText = unlimited ? `${formatCount(used, key)} used` : `${formatCount(used, key)} of ${formatCount(meter.limit, key)} used`
 
   return (
-    <MeterCardShell className={className}>
-      <div className="flex items-baseline justify-between gap-2">
-        {heading}
-        {!unlimited && (
-          <span className="hidden shrink-0 text-[0.6875rem] tabular-nums text-zinc-500 sm:inline">
-            {formatCount(meter.used, key)} of {formatCount(meter.limit, key)}
-          </span>
-        )}
-      </div>
-
-      <p className="flex items-baseline gap-1.5 leading-none">
-        <span className="text-base font-semibold tabular-nums text-white">
-          {unlimited ? 'Unlimited' : formatCount(remaining, key)}
-        </span>
-        {!unlimited && <span className="text-xs text-zinc-500">left</span>}
-      </p>
-
-      {!unlimited && (
+    <Tooltip>
+      <TooltipTrigger asChild>
         <div
-          role="progressbar"
-          aria-valuenow={pct}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label={`${LABELS[key]} used`}
-          className="h-1.5 w-full overflow-hidden rounded-full bg-white/10"
+          role="status"
+          aria-label={`${LABELS[key]}: ${valueText}`}
+          className={cn(
+            'hidden h-8 cursor-default items-center gap-2 rounded-md border border-white/8 bg-white/[0.03] px-2.5 sm:flex',
+            className,
+          )}
         >
-          <div
-            className={cn('h-full rounded-full transition-[width] duration-300 ease-out motion-reduce:transition-none', barColor(pct))}
-            style={{ width: `${pct}%` }}
-          />
+          <Icon className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+          <span className="text-[11px] font-medium text-zinc-500">{LABELS[key]}</span>
+          <span className={cn('text-[11px] font-semibold tabular-nums', pct >= 90 && !unlimited ? 'text-status-error' : 'text-zinc-200')}>
+            {valueText}
+          </span>
+          {!unlimited && (
+            <span className="h-1 w-10 overflow-hidden rounded-full bg-white/10">
+              <span className={cn('block h-full rounded-full', barColor(pct))} style={{ width: `${pct}%` }} />
+            </span>
+          )}
         </div>
-      )}
-
-      {pct >= 90 && !unlimited ? (
-        <p className="text-status-error text-[0.6875rem]">
-          Running low — {formatCount(remaining, key)} {remaining === 1 ? unitOne : unitMany} left.
-        </p>
-      ) : footerBits.length > 0 ? (
-        <p className="hidden text-[0.6875rem] text-zinc-600 lg:block">{footerBits.join(' · ')}</p>
-      ) : null}
-    </MeterCardShell>
+      </TooltipTrigger>
+      <TooltipContent>
+        <div className="space-y-0.5">
+          <p className="font-medium text-zinc-100">{LABELS[key]}</p>
+          <p className="text-zinc-300">{detailText}</p>
+          {usageQ.data?.reset_at || usageQ.data?.plan ? (
+            <p className="text-zinc-500">
+              {[formatResetDate(usageQ.data?.reset_at) ? `Resets ${formatResetDate(usageQ.data?.reset_at)}` : null, usageQ.data?.plan ? `${usageQ.data.plan} plan` : null]
+                .filter(Boolean)
+                .join(' · ')}
+            </p>
+          ) : null}
+        </div>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
 /**
- * The Compile + Human Edit pair, shown in the action strip of the Workflows and
+ * The Compile + Human Edit pair, shown in the toolbar of the Workflows and
  * Group pages. These are the two metered resources the product bills on, so
  * they travel together and always in this order.
  */
 export function UsageCards({ className }: { className?: string }) {
   return (
-    <div className={cn('flex min-w-0 flex-1 items-stretch gap-2.5', className)}>
-      <MeterCard meterKey="compile_credits" />
-      <MeterCard meterKey="human_edit_tokens" />
+    <div className={cn('flex min-w-0 items-center gap-2', className)}>
+      <MeterBadge meterKey="compile_credits" />
+      <MeterBadge meterKey="human_edit_tokens" />
     </div>
   )
 }

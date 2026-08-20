@@ -27,8 +27,10 @@ export function PageHeader({ title, description, leading, actions, className }: 
   if (!actions && !leading) return null
 
   return (
-    <div className={cn('flex items-center gap-4 border-b border-white/8 px-4 py-3 sm:px-6', className)}>
-      {leading ? <div className="flex min-w-0 flex-1 items-center gap-2.5">{leading}</div> : null}
+    // A toolbar, not a second header: one row tall, tinted a shade darker than
+    // the canvas so it reads as chrome continuing from the title bar above it.
+    <div className={cn('flex min-h-12 items-center gap-4 border-b border-white/8 bg-white/[0.015] px-4 py-2 sm:px-6', className)}>
+      {leading ? <div className="flex min-w-0 flex-1 items-center gap-2">{leading}</div> : null}
       {actions ? (
         // Without a leading slot this is the sole child and stays shrinkable, so
         // wide toolbars (Human Edit's) compress on narrow windows exactly as
