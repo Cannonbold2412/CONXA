@@ -385,11 +385,11 @@ export function HumanEditPage() {
     }
     if (signOff.build_error) {
       toast.error(`Approved, but the package failed to build: ${signOff.build_error}`)
-    } else if (signOff.waiting_on.length > 0) {
-      toast.success(
-        `Approved. Waiting on ${signOff.waiting_on.length === 1 ? signOff.waiting_on[0] : `${signOff.waiting_on.length} other workflows`} before this plugin can build.`,
-      )
     } else {
+      // Sign-off now always attempts a build scoped to this one workflow (see
+      // cmd_sign_off_workflow) — a sibling workflow's readiness never blocks
+      // it, so `waiting_on` is always empty and `built` is only false when
+      // this workflow itself has no matching skill yet.
       toast.success(`${skillId} saved in place — same skill id as when you compiled from the recording.`)
     }
     navigate(fromPath ?? '/edit')
@@ -500,7 +500,7 @@ export function HumanEditPage() {
           actions={
             <>
               <Button variant="outline" size="sm" asChild className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08]">
-                <Link to="/record">
+                <Link to="/workflows">
                   <Home className="size-3.5" />
                   Home
                 </Link>
@@ -694,7 +694,7 @@ export function HumanEditPage() {
             <CardContent>
               <Button variant="default" asChild className="bg-white text-black hover:bg-zinc-200">
                 <Link to={fromPath ?? '/edit'}>
-                  {fromPath ? 'Back to Plugin' : 'Back to choose skill'}
+                  {fromPath ? 'Back to Workflow' : 'Back to choose skill'}
                 </Link>
               </Button>
             </CardContent>
@@ -713,12 +713,12 @@ export function HumanEditPage() {
               <CardTitle className="text-base text-white">No workflow data</CardTitle>
               <CardDescription className="text-zinc-400">
                 The compiled skill opened, but Build Studio did not receive a workflow payload. Go back to the
-                plugin and open the compiled workflow again.
+                workflow and open the compiled skill again.
               </CardDescription>
             </CardHeader>
             <CardContent>
               <Button variant="default" asChild className="bg-white text-black hover:bg-zinc-200">
-                <Link to={fromPath ?? '/plugins'}>{fromPath ? 'Back to Plugin' : 'Back to Plugins'}</Link>
+                <Link to={fromPath ?? '/workflows'}>{fromPath ? 'Back to Workflow' : 'Back to Workflows'}</Link>
               </Button>
             </CardContent>
           </Card>
@@ -823,7 +823,7 @@ export function HumanEditPage() {
                   <span className="hidden sm:inline">Back</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Back to plugin</TooltipContent>
+              <TooltipContent>Back to workflow</TooltipContent>
             </Tooltip>
           )}
           {/* Inspector tool-launchers live on the LEFT (secondary "views"); the primary

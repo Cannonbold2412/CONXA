@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowDownRight, ArrowUpRight, GitBranch, Network, Timer } from 'lucide-react'
-import { fetchTrackingDashboard, type TrackingWorkflowRow } from '@/api/pluginApi'
+import { fetchTrackingDashboard, type TrackingWorkflowRow } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { FleetTopology } from '@/components/viz/FleetTopology'
 import { Sparkline } from '@/components/viz/Sparkline'

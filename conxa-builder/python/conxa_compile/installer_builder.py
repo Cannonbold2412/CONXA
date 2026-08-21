@@ -7,7 +7,7 @@ The installer bundles:
 
 Usage:
     from conxa_compile.installer_builder import build_installer
-    result = build_installer(plugin_id, company_slug="acme")
+    result = build_installer(workspace_id, company_slug="acme")
 """
 
 from __future__ import annotations
@@ -103,24 +103,38 @@ def _stage_logo_icon(src: Path, tmp: Path, log: Callable[[str], None]) -> Path:
 
 
 def build_installer(
-    plugin_id: str,
+    workspace_id: str,
     *,
-    company_slug: str,
+    company_slug: str = "",
     logo_path: str | None = None,
     version: str | None = None,
     release_notes: str = "",
+    installer_name: str | None = None,
     realtime_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Package an already-built plugin into a Windows installer EXE.
+    """Package the workspace's already-built shared skill pack into a Windows installer EXE.
 
-    Returns dict with keys: installer_path, filename, company, plugin_id, version.
+    Returns dict with keys: installer_path, filename, workspace_id, version.
     Raises ValueError / RuntimeError on build failure.
-    """
-    from conxa_core.storage.plugin_store import get_plugin, set_installer
 
-    plugin = get_plugin(plugin_id)
-    if plugin is None:
-        raise ValueError(f"Plugin {plugin_id!r} not found.")
+    company_slug parameter kept for backward compatibility but unused — the built
+    pack is always located via workspace_dir_slug(workspace_id).
+
+    installer_name is the company's domain (unverified — plain text input until
+    domain verification ships). When given, it becomes both the installer filename
+    and, via workspace_dir_slug, the customer-visible skill-packs folder name.
+    Without it, both fall back to workspace_id-derived values.
+    """
+    from conxa_core.storage.skill_pack_store import get_skill_pack, set_installer
+    from conxa_core.workspace import workspace_dir_slug
+
+    # Named pack_meta (not `pack`) — the local variable further down holds the
+    # parsed pack.json dict, and both are needed at once.
+    pack_meta = get_skill_pack(workspace_id)
+    if pack_meta is None:
+        raise ValueError(f"No skill pack built yet for workspace {workspace_id!r}.")
+
+    company_slug = workspace_dir_slug(workspace_id)
 
     def _log(msg: str, **extra: Any) -> None:
         if realtime_sink:
@@ -138,23 +152,23 @@ def build_installer(
     _log(f"Found makensis at: {makensis}")
 
     # ── 1. Use the existing built skill pack ───────────────────────────────────
-    if plugin.build is None:
+    if pack_meta.build is None:
         raise RuntimeError(
-            "Plugin must be built before building the installer. "
-            "Run Build Plugin, then Test Plugin, then Build Installer."
+            "The skill package must be built before building the installer. "
+            "Run Build Skill Package, then Test Skill, then Build Installer."
         )
 
     skill_pack_dir = settings.data_dir / "skill-packs" / company_slug
     if not skill_pack_dir.is_dir():
         raise RuntimeError(
             f"Built skill pack not found: skill-packs/{company_slug}. "
-            "Run Build Plugin before building the installer."
+            "Run Build Skill Package before building the installer."
         )
     pack_json_path = skill_pack_dir / "pack.json"
     if not pack_json_path.is_file():
         raise RuntimeError(
             f"Built skill pack is missing pack.json: skill-packs/{company_slug}/pack.json. "
-            "Run Build Plugin before building the installer."
+            "Run Build Skill Package before building the installer."
         )
     try:
         pack = json.loads(pack_json_path.read_text(encoding="utf-8"))
@@ -183,7 +197,7 @@ def build_installer(
         )
 
     skills = [str(skill) for skill in pack.get("skills", []) if skill]
-    installer_version = str(version or pack.get("skill_pack_version") or plugin.build.version or runtime_version)
+    installer_version = str(version or pack.get("skill_pack_version") or pack_meta.build.version or runtime_version)
     # backend.py's _publish_skill_pack already stamps installer_version and the
     # correctly versioned sync_endpoint/tracking.tracking_url into pack.json at
     # publish time — this module has no cloud access of its own (conxa_compile
@@ -213,7 +227,14 @@ def build_installer(
         # for every later update, so there is no separate initial-install layout
         # to keep in sync with the versioned skill-packs/<company>/<skill>/<version>/
         # scheme (see runtime/version_manager.js) — sync.js already produces it.
-        staged_packs = tmp / "skill-packs" / company_slug
+        # installer_name now doubles as the (unverified, user-typed) company domain:
+        # it names the installer file below AND, via workspace_dir_slug, the on-disk
+        # skill-packs folder the customer actually gets — replacing the workspace_id
+        # they'd otherwise see. Falls back to company_slug (workspace_id-derived) when
+        # no domain is given, e.g. existing tests / local dev.
+        domain = (installer_name or "").strip()
+        dest_slug = workspace_dir_slug(domain) if domain else company_slug
+        staged_packs = tmp / "skill-packs" / dest_slug
         _log(f"Staging pack.json from {skill_pack_dir}…")
         staged_packs.mkdir(parents=True)
         pack_json_src = skill_pack_dir / "pack.json"
@@ -229,12 +250,12 @@ def build_installer(
                 _log(f"Warning: could not process logo ({exc}); proceeding without custom icon.")
 
         # ── 4. Render NSIS script ─────────────────────────────────────────────
-        company_name = plugin.name
-        _log(f"Rendering NSIS script (company={company_slug!r}, version={installer_version})…")
+        display_name = pack_meta.display_name or "Conxa Skills"
+        _log(f"Rendering NSIS script (workspace={workspace_id!r}, version={installer_version})…")
         nsi_path = _render_nsis_script(
             tmp,
-            company_slug,
-            company_name,
+            dest_slug,
+            display_name,
             installer_version,
             runtime_version=runtime_version,
             app_version=app_version,
@@ -243,11 +264,11 @@ def build_installer(
         _log(f"NSIS script written to {nsi_path}")
 
         # ── 5. Compile installer ──────────────────────────────────────────────
-        safe_name = company_name.replace(" ", "")
-        installer_name = f"{safe_name}-Agent-Setup.exe"
-        installer_path = tmp / installer_name
+        safe_name = (domain or display_name).strip().replace(" ", "") or display_name.replace(" ", "")
+        installer_filename = f"{safe_name}-Agent-Setup.exe"
+        installer_path = tmp / installer_filename
 
-        _log(f"Running makensis → {installer_name}…")
+        _log(f"Running makensis → {installer_filename}…")
         result = subprocess.run(
             [makensis, "/V2", f"/DOUTPUT_PATH={installer_path}", str(nsi_path)],
             check=False,
@@ -284,7 +305,7 @@ def build_installer(
         # ── 7. Persist installer ──────────────────────────────────────────────
         out_dir = settings.data_dir / "installers"
         out_dir.mkdir(parents=True, exist_ok=True)
-        dest = out_dir / installer_name
+        dest = out_dir / installer_filename
         _log(f"Copying installer to {dest}…")
         shutil.copy2(installer_path, dest)
         size_kb = dest.stat().st_size // 1024
@@ -293,9 +314,9 @@ def build_installer(
     # Persist installer record
     try:
         set_installer(
-            plugin_id,
+            workspace_id,
             installer_path=str(dest),
-            filename=installer_name,
+            filename=installer_filename,
             version=installer_version,
             runtime_version=runtime_version,
             release_notes=release_notes,
@@ -305,9 +326,8 @@ def build_installer(
 
     return {
         "installer_path": str(dest),
-        "filename":       installer_name,
-        "company":        company_slug,
-        "plugin_id":      plugin_id,
+        "filename":       installer_filename,
+        "workspace_id":   workspace_id,
         "version":        installer_version,
         "runtime_version": runtime_version,
         "release_notes":   release_notes,

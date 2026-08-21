@@ -1,6 +1,6 @@
 # App Flow Document
 
-**Status:** Current as of 2026-06-01  
+**Status:** Current as of 2026-08-08  
 **Scope:** All major user flows across Build Studio, Conxa Cloud, and Runtime
 
 ---
@@ -9,13 +9,12 @@
 
 1. [User Onboarding](#1-user-onboarding)
 2. [Build Studio Login](#2-build-studio-login)
-3. [Create a Plugin](#3-create-a-plugin)
-4. [Record Authentication Session](#4-record-authentication-session)
-5. [Record a Workflow](#5-record-a-workflow)
-6. [Pipeline & Compilation](#6-pipeline--compilation)
-7. [Workflow Editing (HumanEdit)](#7-workflow-editing-humanedit)
-8. [Build Plugin](#8-build-plugin)
-9. [Build Installer & Publish](#9-build-installer--publish)
+3. [Create a Workflow](#3-create-a-workflow)
+4. [Group Page — Workflow Lifecycle Rail (Record, Compile, Review, Test)](#4-group-page--workflow-lifecycle-rail)
+5. [Pipeline & Compilation](#5-pipeline--compilation)
+6. [Workflow Editing (HumanEdit)](#6-workflow-editing-humanedit)
+7. [Build Skill Package](#7-build-skill-package)
+8. [Publish & Build Installer](#8-publish--build-installer)
 10. [End-User Installation](#10-end-user-installation)
 11. [Runtime Registration & First Sync](#11-runtime-registration--first-sync)
 12. [MCP Skill Execution](#12-mcp-skill-execution)
@@ -24,6 +23,7 @@
 15. [Skill Sync (Runtime Side)](#15-skill-sync-runtime-side)
 16. [Runtime Self-Update](#16-runtime-self-update)
 17. [Failure Recovery (End User)](#17-failure-recovery-end-user)
+18. [Entitlement Gates (Trial, Machines, Distribution, BYOK)](#18-entitlement-gates-trial-machines-distribution-byok)
 
 ---
 
@@ -61,8 +61,8 @@ flowchart TD
 - All downloads are SHA-256 verified against values from the cloud manifest.
 - If on a corporate network, the bootstrap surfaces the exact URLs for IT whitelisting.
 - The update check (step U) is fail-open: if GitHub Releases is unreachable, the app proceeds normally. Updates are mandatory — the app cannot advance past the Update Required screen without installing.
-- On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or Record.
-- The standalone Dashboard page was merged into Record (2026-07): Record's left rail now owns plugin create/delete/search, so `/dashboard` and `/` redirect straight to `/record` (see `docs/UI-UX-Brief.md` §2.3, §2.5).
+- On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or Workflow list.
+- The Record page was removed (2026-08): the Workflow List (`/workflows`) is now the primary landing page. Its group cards drill into the Group Page (`/groups/:id`), which contains every recording/auth/compile/review/test control for that group's workflows inline — see §4. Root `/` redirects to `/workflows`; the old `/workflows/:id` per-workflow route (removed 2026-08-13) now redirects to the workflow's owning group.
 
 ---
 
@@ -95,74 +95,109 @@ sequenceDiagram
 
 ---
 
-## 3. Create a Plugin
+## 3. Create a Workflow
 
 ```mermaid
 flowchart LR
-    A[User on Record] --> B[Click 'New Plugin']
-    B --> C[Enter plugin name + target URL]
-    C --> D[Backend: cmd_create_plugin]
-    D --> E[Create Plugin record in plugin_store]
-    E --> F[Plugin ID assigned]
-    F --> G[Plugin appears in list with status: needs_auth]
+    A[User on Record] --> B[Click 'New Workflow']
+    B --> C[Enter workflow name + target URL]
+    C --> D[Backend: cmd_create_workflow]
+    D --> E[Create Workflow record in workflow_store]
+    E --> F[Workflow ID assigned]
+    F --> G[Workflow appears in list with status: needs_auth]
 ```
 
-**Data created:** `Plugin` model with `status="needs_auth"`, `auth=null`, `workflows=[]`.  
-**Storage:** `data/plugins/{id}/plugin.json`
+**Data created:** `Workflow` model with `status="needs_auth"`, `auth=null`, `workflows=[]`.  
+**Storage:** `data/workflows/{id}/workflow.json`
 
 ---
 
-## 4. Record Authentication Session
+## 4. Group Page — Workflow Lifecycle Rail
+
+The Group Page (`/groups/:groupId`) is the primary interface for recording and managing every workflow in a group — there is no separate per-workflow page (removed 2026-08-13; see `docs/UI-UX-Brief.md` §2.3a). Each workflow's row carries a five-node `WorkflowStageRail` — Record → Compile → Review → Test → Ready to Package — where each node is the action for that stage, gated on the previous one's completion. Creating or renaming the group in Build Studio also creates/renames the matching folder under Conxa Cloud Skill Packages (same id and name), even if no workflow in it has been published yet. Cloud is not a second place to create groups.
+
+### 4.1 Authentication is set up once per group, not per workflow
+
+As of the Workflow Groups change (see `docs/TRD.md` §5.2a), a workflow no longer records its own login — it inherits its group's app sessions. The same Group Page that hosts the workflow rows also hosts the group's own Applications panel (add/edit/remove apps, connect sessions); a workflow's Record node stays disabled with an explanatory tooltip until every app in its group is authenticated.
 
 ```mermaid
 flowchart TD
-    A[Plugin with status=needs_auth] --> B[User clicks 'Record Auth']
-    B --> C[Backend: cmd_start_recording with auth_mode=true]
-    C --> D[Playwright launches Chromium]
-    D --> E[Opens plugin.target_url]
-    E --> F[User logs into the target website, closes the browser when done]
-    F --> G[User clicks 'Save Session Now' in Build Studio]
-    G --> H[Backend: cmd_stop_recording with auth_mode=true]
-    H --> I[Playwright saves storageState to auth/auth.json]
-    I --> J[Detect final URL as protected_url]
-    J --> K[Plugin status updated to 'ready']
-    K --> L[Plugin shows auth captured]
+    A[Group has apps with missing/expired sessions] --> B["Group page shows 'Connect' per app"]
+    B --> C[User clicks Connect on an app]
+    C --> D[Backend: cmd_start_group_app_auth]
+    D --> E[Playwright launches Chromium at app.login_url]
+    E --> F[User logs into the target website]
+    F --> G["Recorder self-detects app.success_url (wait_for_url) and closes the browser"]
+    G --> H[Renderer polls get_recording_status, sees reached_wait_url]
+    H --> I[Backend: cmd_finish_group_app_auth]
+    I --> J[Playwright's storageState saved to data/groups/{group_id}/auth/{app_id}.json]
+    J --> K[Every workflow in the group flips to status=ready once all its apps are authenticated]
+    K --> L{More unauthenticated apps in the group?}
+    L -->|Yes| B
+    L -->|No| M[Group ready — every workflow in it can record/run immediately]
 ```
 
-**Key invariant:** `auth.json` lives at `data/plugins/{id}/auth/auth.json`. It is NEVER copied into the skill pack build output.
+**Key invariant:** each app's captured session lives at `data/groups/{group_id}/auth/{app_id}.json`. It is NEVER copied into the skill pack build output.
 
----
+### 4.1a Recording a workflow starts pre-authenticated to every app in its group
 
-## 5. Record a Workflow
+`cmd_start_recording` merges every authenticated app's storageState in the workflow's group into one seeded Playwright context (`conxa_core.storage.storage_state.merge_storage_states`) before opening the recorder — so a recording that crosses several of the group's apps starts signed in to all of them, with no per-site login step during the recording itself. Only the apps the workflow's own URLs actually resolve to (by hostname) have to be connected before recording can start — an app elsewhere in the group that this workflow never visits doesn't block it, mirroring the `required_apps` execution-time scoping in §4.1b below. Because recording seeds every captured app, not just the required ones, the gate also runs a bounded freshness check against every captured app (skipping any checked in the last 10 minutes) before recording opens: an expired *required* app blocks recording outright, while an expired *sibling* app only surfaces a warning in the response — the user is right there in the recorder window and can sign back in inline if that app actually comes up.
+
+Recording no longer discards what happens to the session while it's open: it autosaves into the same merged file it was seeded from, and when the recording stops (or is cancelled), each app's slice of that file — cookies and local storage the app already owned, nothing a sibling app in the same group picked up — gets written back to that app's own saved session. Signing in once now actually holds: routine cookie rotation, a refreshed token, or the user re-authenticating mid-recording because the seeded session had gone stale all stick, instead of being thrown away the moment the recording window closes.
+
+### 4.1b Testing/running a workflow only asks for the apps it actually visited — and never fails mid-run for a gap recording papered over
+
+Being pre-authenticated to every group app during recording does **not** mean every one of those apps has to be signed in before the workflow can *run*. At build time, each workflow's own start URL, the URL it lands on after auth (if any), **and every hostname the recording actually visited mid-flow** are matched by hostname against the group's apps, and only the apps that match are written into that workflow's compiled skill as `required_apps` — so a workflow that starts in one app but clicks through to a sibling app partway through gates on both, not just the one its start URL happens to resolve to. Testing or executing a workflow only *requires* signing in to an app in `required_apps` — a workflow that never touches a given app is never blocked on it — but it still *seeds* the browser session from every other app in the group that's currently signed in, the same "seed everything, require only what's needed" split recording already uses, so a workflow that unexpectedly wanders into an ungated sibling app still arrives signed in instead of hitting a login wall mid-run. If more than one required app needs signing in, every login window opens together with one message naming all of them, rather than one window per run attempt. See `docs/TRD.md` §5.2a ("Per-workflow app scoping").
+
+### 4.2 Record a Workflow (inline action)
 
 ```mermaid
 flowchart TD
-    A[Plugin with status=ready] --> B[User clicks 'New Workflow']
-    B --> C[Enter workflow name]
-    C --> D[Backend: cmd_start_recording with plugin_id + workflow_name]
+    A["Group page, workflow row, group auth ready"] --> B["Record rail node is enabled (only if no recording yet)"]
+    B --> C[User clicks the Record node]
+    C --> D[Backend: cmd_start_recording with workflow_id + auth_mode=false]
     D --> E[Load auth session from auth/auth.json]
     E --> F[Playwright launches with storageState]
-    F --> G[Navigate to plugin.protected_url]
+    F --> G[Navigate to workflow.protected_url]
     G --> H[bridge.js injected into all frames]
     H --> I[User performs workflow steps in browser]
     I --> J[Events captured: click, fill, select, navigate, etc.]
     J --> K[User closes the browser, clicks 'Save Workflow Now']
     K --> L[Backend: cmd_stop_recording]
-    L --> L2[Playwright context closes; recording.webm renamed into place]
+    L --> L2[Playwright context closes; each tab's recording.webm/recording-tab_N.webm renamed into place]
     L2 --> M[Events saved to sessions/session_id/events.jsonl]
-    M --> N[PluginWorkflow created with status=recorded]
-    N --> O[Workflow appears in plugin list]
+    M --> N[Workflow updated with status=recorded]
+    N --> O[Recording dialog closes, the row's rail advances to an enabled Compile node]
 ```
 
 **Event types captured by bridge.js:**
 `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.
 
-Stop-recording no longer waits on video frame extraction — it only renames Playwright's raw `.webm` to
-`recording.webm` and returns. Frame extraction (for vision anchors) now runs at compile time, see §6.
+Stop-recording no longer waits on video frame extraction — it only renames Playwright's raw `.webm`
+files into place and returns. Frame extraction (for vision anchors) now runs at compile time, see §5.
+
+**Recording across multiple tabs** works whether the site opens the new tab (a link or button
+that opens `target="_blank"`) or the user does (Ctrl+T): every tab the browser context opens is
+captured, not just the first. Open a new tab, do work there, switch back to the original tab and
+keep going — all of it is recorded, in order, with each event tagged to the tab it happened on.
+Compiling inserts a small marker step ("switched to a new tab" / "switched back to tab 1") at
+each crossing, and at replay time the runtime follows the same tabs the recording did — waiting
+for a tab the site is expected to open, or opening one itself for a tab the user opened manually.
+A file downloaded in one tab can also be picked up and uploaded again in a later tab, in the same
+run, with no extra step required. See `docs/TRD.md` §6.3, §7.1, §9.1a.
+
+**Recording a file upload** works exactly like any other step from the user's point of view: click the
+page's upload control, pick a file, done — except the dialog that opens is the Studio's own, not
+Chromium's native one, and it opens already pointed at the folder the most recent download landed
+in (or its extracted folder, for a downloaded zip). Three earlier attempts to make Chromium's own
+picker remember that folder never worked reliably, so recording now intercepts the picker request
+and shows its own dialog instead — see `docs/TRD.md` §7.1. What gets recorded is the file's *name*,
+never its path (browsers do not expose paths), so the compiled skill turns the upload into a required
+`file_path` input the calling agent must supply at run time. See `docs/TRD.md` §9.3.
 
 ---
 
-## 6. Pipeline & Compilation
+## 5. Pipeline & Compilation
 
 ```mermaid
 flowchart TD
@@ -187,7 +222,7 @@ flowchart TD
     Q -->|Yes| K
     Q -->|No| R[Assemble SkillPackage]
     R --> S[Save to data/skills/skill_id/skill.json]
-    S --> T[Update PluginWorkflow: status=compiled, skill_id set]
+    S --> T[Update WorkflowWorkflow: status=compiled, skill_id set]
     T --> U[Compile complete — step count shown to user]
 ```
 
@@ -215,7 +250,7 @@ re-attempts only the events still missing frames.
 
 ---
 
-## 7. Workflow Editing (HumanEdit)
+## 6. Workflow Editing (HumanEdit)
 
 ```mermaid
 flowchart TD
@@ -235,9 +270,7 @@ flowchart TD
     E --> U3[Edit nested branch-body step field] --> U4[cmd_patch_step with path='branch.steps N ']
     E --> U5["Confirm 'treat as optional?' suggestion"] --> U6[cmd_confirm_optional_interstitial → step becomes try_dismiss branch]
     E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true, edited_at=now]
-    W --> X{Every workflow in the plugin now compiled + signed off?}
-    X -->|No| Y[Return waiting_on: names of remaining workflows]
-    X -->|Yes| Z[Auto-invoke plugin_builder.build_plugin — see §8] --> AA[Return built=true; editor navigates to Test Skill]
+    W --> Z[Auto-invoke skill_package_builder.build_skill_package, only_workflow_id=this workflow — see §7] --> AA[Return built=true; only this workflow's skill built — a sibling workflow that isn't compiled/edited yet is never required or touched]
 ```
 
 **Patch gate:** Each edit increments the skill version. `revalidate_step()` checks that selector and intent remain coherent after the patch.
@@ -270,7 +303,7 @@ way a branch step gets created from a live recording without hand-editing JSON: 
 converts a flagged step on its own, honoring "branch steps compile only from observed states +
 human confirmation."
 
-**Auto-build on sign-off (2026-07 workflow redesign, Phase 1):** sign-off no longer just flips a flag. `cmd_sign_off_workflow` re-checks, after persisting `signed_off`/`edited_at`, whether every workflow belonging to the plugin is compiled and signed off — the same condition `plugin_builder.build_plugin` already gates on (§8). If so, it calls `build_plugin` itself, so the package exists the moment the gate is satisfied instead of requiring a separate visit to a build page (there is no such page anymore — see §8). The gate itself is unchanged; this only moves *when* the already-existing build call happens to fire.
+**Auto-build on sign-off (2026-07 workflow redesign, Phase 1):** sign-off no longer just flips a flag. `cmd_sign_off_workflow` re-checks, after persisting `signed_off`/`edited_at`, whether every workflow belonging to the workflow is compiled and signed off — the same condition `workflow_builder.build_workflow` already gates on (§8). If so, it calls `build_workflow` itself, so the package exists the moment the gate is satisfied instead of requiring a separate visit to a build page (there is no such page anymore — see §8). The gate itself is unchanged; this only moves *when* the already-existing build call happens to fire.
 
 **Re-target wizard (replaces the old direct "update visual bbox" flow):** `cmd_update_visual_bbox` still exists (bbox + vision-anchor regeneration only, no selector change) but the primary re-target entry point is the 3-phase wizard — Pick element → Review selectors → **Validation**. `cmd_retarget_preview` is read-only (generates and scores candidates + a validation diff without persisting); `cmd_retarget_apply` is the only command that writes, composing bbox + `target.primary_selector`/`fallback_selectors` + rebuilt `identity_bundle` + (optionally) regenerated `validation.wait_for`/`assertions` into a single document mutation and a single undo entry. See `docs/UI-UX-Brief.md` §2.8 for the UI.
 
@@ -290,82 +323,162 @@ Deterministic Human Edit actions are available without quota: patch, reorder, de
 
 ---
 
-## 8. Build Plugin
+## 7. Build Skill Package
 
-**Trigger (revised 2026-07):** there is no longer a "Build Plugin" page or button. `cmd_build_plugin` (and the `plugin_builder.build_plugin` call it wraps) fires automatically the moment sign-off's gate check passes (§7), or manually via the Inspector drawer's "Rebuild package" action (`docs/UI-UX-Brief.md` §2.13) — both call the exact same handler shown below.
+**Trigger (revised 2026-08, re-scoped 2026-08-19):** there is no longer a "Build Skill Package" page or button. `cmd_build_skill_package` (and the `skill_package_builder.build_skill_package` call it wraps) fires automatically the moment sign-off's gate check passes for **that one workflow** — a sibling workflow that isn't compiled/edited yet is never required or touched — or manually via the Inspector drawer's "Rebuild package" action (also single-workflow scoped) or the Publish page's per-skill "Rebuild" action. 1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1 independent release: `build_skill_package(workspace_id, only_workflow_id=...)` compiles just that workflow into its own subtree of the shared local package directory, merging into (never replacing) whatever sibling skills were already built there. An explicit full-workspace rebuild (`only_workflow_id=None`) still exists as a maintenance action but is no longer the path sign-off or Publish use.
 
 ```mermaid
 flowchart TD
-    A[Sign-off completes the gate, or user clicks Rebuild package in the Inspector] --> B[Backend: cmd_build_plugin]
-    B --> C[Read all compiled skills for plugin]
-    C --> D[plugin_builder.build_plugin]
-    D --> E["Create output/{company}-plugin/ folder"]
-    E --> F[Write plugin.json manifest]
-    E --> G[Render CLAUDE.md from template]
-    E --> H[Render index.md from template]
-    E --> I[For each workflow:]
-    I --> J["Write skills/{slug}/execution.json"]
-    I --> K["Write skills/{slug}/recovery.json"]
-    I --> L["Write skills/{slug}/inputs.json"]
-    J & K & L --> M["Copy to data/skill-packs/{company}/"]
-    M --> N[Write pack.json with version + skills list]
-    N --> O[Plugin build record saved: PluginBuild]
-    O --> P[Build complete — version shown]
+    A[Sign-off completes for one workflow, or user rebuilds that one skill from the Inspector/Publish page] --> B[Backend: cmd_build_skill_package, skill_slug=this workflow]
+    B --> C[Read only this ONE compiled + signed-off workflow]
+    C --> D[skill_package_builder.build_skill_package, only_workflow_id=this workflow]
+    D --> E["Create/reuse output/{workspace_dir_slug}-skill-package/ folder"]
+    E --> F[Merge this workflow's entry into skill_package.json — sibling skills' entries untouched]
+    E --> I["Write {skill_slug}/execution.json, recovery.json, inputs.json"]
+    I --> M["Copy to data/skill-packs/{workspace_dir_slug}/{group_id}/{skill_slug}/ — sibling skills' directories untouched"]
+    M --> N[Merge skills/skill_groups into pack.json — union, not replace]
+    N --> O[Skill package build record saved]
+    O --> P[Build complete — this skill ready to publish]
 ```
 
 **Security check:** Build output directory is scanned for `auth.json`. If found, the build is **refused** with `auth_file_in_build_input` error.
 
 ---
 
-## 9. Build Installer & Publish
+## 8. Publish & Build Installer
+
+**Publish is the primary, mandatory release action — and publishing is not
+the same as deploying.** Build Studio only ever gets a version to Conxa
+Cloud as an immutable, versioned artifact; a Cloud admin's explicit
+Release/Deploy action is what actually activates it and starts customer
+machines receiving it. Build Installer is a secondary, optional action for
+distributing an already-published skill package as a standalone `.exe`.
+
+```mermaid
+flowchart LR
+    subgraph Studio["Build Studio (BUILD/PUBLISH plane)"]
+        S1[Workflow] --> S2[Compile] --> S3[Test] --> S4[Publish]
+    end
+    subgraph Cloud["Conxa Cloud (RELEASE/DEPLOYMENT control plane)"]
+        C1["Ready for Release"] --> C2[Review: diff, test status, artifact] --> C3["Release / Deploy"] --> C4["Desired Version"]
+    end
+    subgraph Runtime["Runtime (customer machine)"]
+        R1[Sync] --> R2[Verify] --> R3[Install] --> R4[Execute] --> R5["Report Status"]
+    end
+    S4 --> C1
+    C4 --> R1
+```
+
+### 8.1 Publish Skill Package (Build Studio, Primary)
+
+The Publish page is scoped to ONE selected skill (workflow) via a skill
+picker: release candidate → what will change (deterministic diff against
+that skill's own previous version) → version + release notes → publish. Every
+skill has its own independent version number (a brand-new skill's first
+publish is v1.0.0, no previous-version requirement) and its own publish/test
+gate — publishing "Create a Lead" never requires, checks, or touches "Update
+Opportunity," even if "Update Opportunity" is failing its tests. Full
+mechanism in `docs/TRD.md` §5.5a; API contracts in `docs/Backend-Schema.md`
+§5.1d.
 
 ```mermaid
 flowchart TD
-    A[User clicks Build Installer] --> B[Backend: cmd_build_installer]
-    B --> C[Validate skill pack dir exists]
-    C --> D[Check no auth.json in build input]
-    D --> E[_publish_skill_pack_for_installer]
+    A[Skill package built; user visits Publish, picks a skill] --> A2["Studio previews: proposed version, diff vs. THIS skill's current stable, artifact hash"]
+    A2 --> B[User enters version + release notes + clicks Publish]
+    B --> C[Backend: cmd_publish_skill_pack, skill_slug=selected skill]
+    C --> D["Read only this skill's own files from data/skill-packs/{workspace_dir_slug}/{group_id}/{skill_slug}/"]
+    D --> E["POST .../skills/{skill_slug}/skill-packs/upload to Cloud"]
+    E --> F{Cloud: duplicate version or unchanged artifact — checked against THIS skill's own history?}
+    F -->|Yes| F2[409 — reject, Studio shows why, Publish button stays enabled to retry]
+    F -->|No| G["Cloud: write this skill's own immutable per-version snapshot"]
+    G --> H["Cloud: version-history row status=ready; register this skill+group in Cloud's Groups/Workflows index"]
+    H --> I["Cloud: return {tracking_token, sync_url, version} — the stable channel is NOT moved"]
+    I --> J[Rewrite local pack.json with tracking + sync_endpoint]
+    J --> K["Studio shows a bare confirmation: 'v{version} is Ready for Release in Conxa Cloud' — no deployment/audit UI rendered here"]
+```
+
+A failed publish (step F2, or a failure inside G-H) never creates a "ready"
+row — the UI states plainly that nothing was uploaded and what version failed.
+Because every step above is scoped to one skill, a failed publish (or a
+failing test gate) for one skill never blocks, retests, or republishes any
+other skill. Build Studio never renders release history, deployment status,
+or an audit log — those, along with Release/Deploy and Rollback, are
+Cloud-only (§8.1a).
+
+### 8.1a Release, Deploy, Rollback, and Deployment/Audit — Conxa Cloud (Primary)
+
+Everything downstream of "uploaded to Cloud" lives in the Cloud dashboard
+under Skill Packages → Group → Workflow, never in Build Studio:
+
+- **Ready for Release**: every "ready" version for the selected workflow,
+  each with its diff against the previous release, its test status
+  (`tests_passed`, reported by Build Studio at publish time), and its
+  artifact hash.
+- **Release / Deploy**: a Cloud admin picks a "ready" version and confirms
+  (current stable, target, effect shown explicitly). This is the *only*
+  action anywhere in the product that moves a skill's stable channel forward
+  — it refreshes that skill's files in the mutable mirror runtimes actually
+  sync from, records its `component_versions` entry, and flips the version
+  row to "published." Admin/owner only, enforced server-side
+  (`require_admin`), same gate as publish and rollback.
+- **Rollback**: from Release History, an admin/owner picks a previous
+  *already-published* version of the same skill and confirms. No artifact is
+  rebuilt or re-uploaded — that skill's stable channel pointer moves back to
+  the already-immutable snapshot, and only that skill's files in the mutable
+  mirror plus its own `component_versions` entry are refreshed from it; no
+  other skill's channel, files, or version history is touched, and the
+  company-level `pack.json` (target_url, tracking) is left as-is. **Rollback
+  is always scoped to one workflow/skill — never the whole group.**
+- **Deployment dashboard**: desired (stable) version vs. what each registered
+  machine last reported, derived only from data the runtime actually reports
+  (`runtime_registrations`) — never fabricated. Per-machine status is one of
+  `up_to_date`, `pending` (hasn't synced to the desired version yet),
+  `failed` (the runtime reported a sync error — checksum mismatch or
+  download/activation failure — that it hasn't since recovered from),
+  `offline` (not seen in 30 days), or `unknown` (a registration that predates
+  per-skill version reporting).
+- **Audit log**: every publish, release, rollback, and channel-change event
+  for the selected skill, attributed to the user who did it — a durable,
+  unbounded per-skill event log (mirrored into the global audit ring buffer
+  the rest of the dashboard already uses).
+
+Runtimes pick up a Release or a Rollback at their next regular delta-sync —
+the sync mechanism itself doesn't know the difference between the two, only
+that the stable channel moved.
+
+### 8.2 Build Installer (Secondary, Optional)
+
+```mermaid
+flowchart TD
+    A[Skill package published; user visits Build Installer page] --> B[User enters release notes + logo path + clicks Build]
+    B --> C[Backend: cmd_build_installer]
+    C --> D[Validate skill pack published]
+    D --> E[build_installer via NSIS]
+    E --> F[".exe created at output/{workspace_dir_slug}-Setup.exe"]
     
-    E --> F["Read all files from data/skill-packs/{company}/"]
-    F --> G[POST /api/v1/plugins/publish to Cloud]
-    G --> H[Cloud: claim slug ownership]
-    H --> I[Cloud: write skill pack files]
-    I --> J[Cloud: generate tracking token]
-    J --> K["Cloud: return {tracking_token, sync_url}"]
-    K --> L[Rewrite pack.json with tracking + sync_endpoint]
-    
-    L --> M[build_installer via NSIS]
-    M --> N[".exe created at output/{company}-Plugin-Setup.exe"]
-    
-    N --> O[_upload_installer_for_download]
-    O --> P["POST /api/v1/plugins/{slug}/installer/upload"]
-    P --> Q{Slug already has installer?}
-    Q -->|Yes| R[Allow newer version upload]
-    Q -->|No| S{Installer slot remaining?}
-    S -->|No| T[Block: installer_limit_exceeded]
-    S -->|Yes| R
-    R --> U[Cloud stores installer.exe + meta.json]
-    U --> V[Cloud returns download_url]
-    
-    V --> W[Show installer path + cloud download URL to user]
+    F --> G{User clicks Upload to Cloud?}
+    G -->|Yes| H["POST /api/v1/workflows/{installer_version}/installer/upload"]
+    G -->|No| I[Save installer locally, optionally skip cloud upload]
+    H --> J[Cloud stores installer.exe + meta.json]
+    J --> K[Cloud returns download_url]
+    K --> L[Show installer path + cloud download URL to user]
 ```
 
 **Installer contents:**
-- `skill-packs/{company}/` (pack.json with tracking config embedded)
+- `skill-packs/{workspace_dir_slug}/` (pack.json with tracking config embedded)
 - `runtime.exe` + `keytar.node` + `version.json`
 - Chromium browser (fetched at install time via `runtime.exe --install-playwright`, not bundled)
 
 **Customer-visible meters shown during this flow:**
-- Settings/Billing: seats, installer slots, compile credits, Human Edit pool.
-- Compile: compile credits for first compile and Human Edit pool for recompile.
-- Human Edit: Human Edit pool only for LLM-assisted actions.
-- Build Installer / Plugins: installer slots; same-slug version uploads are shown as existing-slot updates.
+- Settings/Billing: seats, machines, compile credits, Human Edit pool.
+- Publish: compile credits (paid monthly tier only).
+- Build Installer: optional cloud upload; no metering (upload can be skipped entirely).
 
-Workflow recording and local plugin creation remain unlimited.
+Workflow recording and local workflow creation remain unlimited.
 
 ---
 
-## 10. End-User Installation
+## 9. End-User Installation
 
 ```mermaid
 flowchart TD
@@ -394,16 +507,17 @@ flowchart TD
 
 ---
 
-## 11. Runtime Registration & First Sync
+## 10. Runtime Registration & First Sync
 
 ```mermaid
 flowchart TD
     A[conxa-runtime.exe starts via conxa-runtime/current junction] --> B[Resolve CONXA_DIR + CONXA_DATA_DIR]
-    B --> C[bootstrap.js: version_manager.resolveCurrent for conxa-app, load server.js]
+    B --> B2[bootstrap.js: GET manifest.json signature-verified, update conxa-app if newer — see §16]
+    B2 --> C[bootstrap.js: version_manager.resolveCurrent for conxa-app, min_host check, load server.js]
     C --> D[Load skill index from skill-packs/ cache]
     D --> E[Connect MCP to Claude Desktop]
     E --> F[Async: POST /telemetry/runtime-start fire-and-forget]
-    E --> G[Async: manifest_manager.checkForUpdates — GET manifest.json, 1h cached, signature-verified]
+    E --> G[Async: manifest_manager.checkForUpdates for conxa_runtime — reuses the manifest bootstrap already fetched]
     E --> H[Async: syncSkillPacks — per-skill delta, 4s timeout]
     H --> I[For each company in skill-packs/:]
     I --> J[getToken from OS keychain]
@@ -420,7 +534,7 @@ flowchart TD
 
 ---
 
-## 12. MCP Skill Execution
+## 11. MCP Skill Execution
 
 ```mermaid
 sequenceDiagram
@@ -468,7 +582,7 @@ signed in — see `docs/Auth-and-Updater.md` §1.3.
 
 ---
 
-## 13. Execution with Recovery
+## 12. Execution with Recovery
 
 Before step 0, the runtime runs an **advisory pre-execution drift check** (`runtime/drift.js`):
 it looks for the pack's recorded structural landmarks on the live page and, if most are gone
@@ -520,26 +634,29 @@ See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify
 
 ---
 
-## 14. Skill Pack Update (Company Side)
+## 13. Skill Pack Update (Company Side)
 
 ```mermaid
 flowchart TD
     A[Company re-records or edits a workflow] --> B[Compile new version]
-    B --> C[Build plugin with new version string]
-    C --> D[Build installer — OR — publish only]
-    D --> E[POST /api/v1/plugins/publish]
-    E --> F["Cloud writes new files to skill-packs/{co}/"]
-    F --> G[Cloud updates pack.json skill_pack_version]
-    G --> H[Customer runtimes detect version change on next sync]
-    H --> I[Delta delivered, files updated atomically]
-    I --> J[New skill version active on next execution]
+    B --> C[Build workflow with new version string]
+    C --> D[Build Studio: publish only]
+    D --> E[POST /api/v1/workflows/publish]
+    E --> F["Cloud writes this skill's immutable snapshot + version row, status=ready"]
+    F --> G["Cloud admin reviews in Skill Packages → Group → Workflow, clicks Release"]
+    G --> H["Cloud: mutable mirror + component_versions updated; stable channel moves — see §8.1a"]
+    H --> I[Customer runtimes detect version change on next sync]
+    I --> J[Delta delivered, files updated atomically]
+    J --> K[New skill version active on next execution]
 ```
 
-**No re-installer needed** for content-only updates. The runtime's delta sync handles delivery automatically.
+**No re-installer needed** for content-only updates — once released, the runtime's delta sync
+handles delivery automatically. **Publishing alone never reaches step H** — see §8.1/§8.1a for why
+that split exists and who does each half.
 
 ---
 
-## 15. Skill Sync (Runtime Side)
+## 14. Skill Sync (Runtime Side)
 
 ```mermaid
 flowchart TD
@@ -554,43 +671,52 @@ flowchart TD
     I --> J[Write files to skill-packs/co/skill/<version>/, SHA-256 verify each]
     J --> K[version_manager.activate — flip that skill's current junction, prune old versions]
     K --> L{Activation OK?}
-    L -->|Yes| M[Add to activated list]
-    L -->|No| N[Discard the partial version dir — that skill's current is untouched]
-    M --> O[Update pack.json last_synced]
+    L -->|Yes| M[Add to activated list; clear that skill's last_sync_errors entry]
+    L -->|No| N["Discard the partial version dir — that skill's current is untouched; record last_sync_errors[skill]={code, at}"]
+    M --> O[Update pack.json last_synced + last_sync_errors]
+    N --> O
     O --> P[Reload skill index]
+    P --> Q["Next phone-home reports last_sync_errors alongside skill_versions — feeds Cloud's Deployment dashboard 'failed' status (§8.1a)"]
 ```
 
-Each skill is compared and activated **independently** — republishing one skill never redownloads or re-touches the others (see TRD.md §5.9).
+Each skill is compared and activated **independently** — republishing one skill never redownloads or re-touches the others (see TRD.md §5.9). A checksum mismatch or a download/activation failure for one skill is recorded (`code`: `checksum_mismatch` | `download_failed` | `activation_failed`) and cleared the moment that skill next activates successfully — it never blocks or delays any other skill's sync.
 
 ---
 
-## 16. Runtime Self-Update
+## 15. Runtime Self-Update
 
 ```mermaid
 flowchart TD
-    A[Runtime cold start] --> B[Fetch GET /api/v1/manifest.json - 1h cache]
+    A[Runtime cold start — bootstrap.js, before the app layer is loaded] --> B[Fetch GET /api/v1/manifest.json — no local TTL, every launch fetches]
     B --> C[Verify Ed25519 signature against baked-in public key]
     C -->|Invalid| D[Discard — fall back to last verified cache, or skip check]
-    C -->|Valid| E[decideUpdate per component: semver + minimum_versions floor + rollout bucket]
+    C -->|Valid| E[decideUpdate conxa_app: semver + min_host floor + minimum_versions floor + rollout bucket]
 
-    E -->|conxa_runtime update decided| F[Download exe + keytar.node into conxa-runtime/<version>/]
+    E -->|update decided| L[Download zip on a tight budget — 2 retries x 5s, launch-blocking]
+    L --> M[SHA-256 verify, extract to conxa-app/<version>/, validate server.js present]
+    M --> N[version_manager.activate — flip conxa-app/current, prune old versions]
+    N --> O[Live on THIS launch — server.js has not been require'd yet]
+    E -->|no update, or any failure| P[Fall through — current junction left untouched]
+
+    O --> Q[require conxa-app/current/server.js]
+    P --> Q
+    Q --> R[startupSync: decideUpdate conxa_runtime, reusing the manifest bootstrap already fetched]
+
+    R -->|update decided| F[Download exe + keytar.node into conxa-runtime/<version>/]
     F --> G[SHA-256 verify each file]
     G --> H[Spawn new exe --selfcheck with its own CONXA_DIR]
     H -->|Fails| I[Abort — current untouched, old host keeps running]
     H -->|Passes| J[version_manager.activate — flip conxa-runtime/current, prune old versions]
-    J --> K[Takes effect on the NEXT process spawn — this process's own file was never touched]
-
-    E -->|conxa_app update decided, no active execution| L[Download zip, extract to conxa-app/<version>/]
-    L --> M[Validate server.js present]
-    M --> N[version_manager.activate — flip conxa-app/current, prune old versions]
-    N --> O[Takes effect on next cold start — this process already has server.js in its module cache]
+    J --> K[Takes effect on the NEXT process spawn — a process cannot replace its own running binary]
 ```
 
 Because each new version lands in its own directory rather than overwriting whatever file the *currently running* process loaded from, activation never needs to wait for a "safe restart" — there's nothing running that could be disrupted by it.
 
+The two legs are timed differently on purpose. The app layer is checked *before* anything loads it, so a new app version takes effect on the same launch that downloaded it — which is why its download budget is deliberately small and every failure is swallowed rather than surfaced. The host exe can't possibly apply until the next spawn, so it keeps a generous retry budget and runs in the background alongside skill sync. See `docs/TRD.md` §5.8.
+
 ---
 
-## 17. Failure Recovery (End User)
+## 16. Failure Recovery (End User)
 
 ```mermaid
 flowchart TD
@@ -610,18 +736,91 @@ flowchart TD
 
 ---
 
+## 17. Entitlement Gates (Trial, Machines, Distribution, BYOK)
+
+Added 2026-08-08 for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.4). These gates sit in
+front of steps 6 (Pipeline & Compilation) and 9 (Build Installer & Publish) above — they don't replace
+those flows, they can block entry into them.
+
+```mermaid
+flowchart TD
+    A[Build Studio calls a cloud-gated action] --> B{Which action?}
+    B -->|Compile / LLM proxy call| C[Send X-Conxa-Machine header]
+    C --> D{Known machine, or under machines limit?}
+    D -->|No, new device at limit| E[402 machine_limit_exceeded]
+    D -->|Yes| F{Free plan, trial expired?}
+    F -->|Yes| G[402 trial_expired]
+    F -->|No| H[Proceed: compile reserve / LLM proxy call]
+    H --> I{compile_pool = premium and BYOK configured?}
+    I -->|Yes| J[Route to workspace's Azure OpenAI deployment]
+    I -->|No| K[Route to shared pool: free or premium tier]
+
+    B -->|Installer upload| L{distribution=external requested?}
+    L -->|Yes| M{Plan distribution = external?}
+    M -->|No| N[402 distribution_not_permitted]
+    M -->|Yes| O{white_label requested?}
+    L -->|No| O
+    O -->|Yes| P{Plan white_label = true?}
+    P -->|No| Q[402 white_label_not_permitted]
+    P -->|Yes| R[Upload accepted, branded]
+    O -->|No| S[Upload accepted, Conxa-branded]
+    R --> AE{filename given explicitly?}
+    S --> AE
+    AE -->|Yes| AF[Use given filename]
+    AE -->|No, plan = free| AG[Random unbranded filename]
+    AE -->|No, plan != free| AH{Installer domain set?}
+    AH -->|Yes| AI[Use domain-based filename]
+    AH -->|No| AJ["Fallback: slug-Workflow-Setup.exe"]
+
+    B -->|Dashboard / audit / drift route| T{Workspace ops_tier vs. route's requirement}
+    T -->|Below requirement| U[403 ops_tier_required]
+    T -->|Meets requirement| V[Route returns data]
+
+    B -->|Build installer, before staging icon| AK{logo_path supplied?}
+    AK -->|No| AL[Build without custom icon]
+    AK -->|Yes| AM{Plan = free, or entitlements check fails?}
+    AM -->|Yes| AL
+    AM -->|No| AN[Build with supplied icon]
+```
+
+**First-time machine registration.** A brand-new device registers itself on its first gated call — there
+is no separate "register this machine" step in the Studio UI. Settings shows the resulting device list
+(`GET /entitlements/machines`) and lets an admin revoke one (`POST /entitlements/machines/revoke`); a
+revoked machine re-enters through the limit check on its next call, it doesn't silently reappear.
+
+**Trial banner.** While `trial_expired` is false but `trial_ends_at` is set, Studio and the dashboard
+show a countdown; once expired, the same building actions above 402, with a plain-language upgrade
+prompt (`docs/UI-UX-Brief.md`).
+
+**BYOK setup** (Enterprise only): Settings → configure Azure OpenAI endpoint/deployment/API key via
+`PUT /api/v1/workspace/llm-key`. Once configured, every subsequent compile and LLM proxy call for that
+workspace routes to the customer's own deployment instead of the shared pool — silently, with no
+per-call toggle. `GET` on the same endpoint never returns the key, only whether one is configured.
+
+**Plan-aware installer naming and icon**, added 2026-08-09 (`docs/TRD.md` §13.4a, `docs/Backend-Schema.md`
+§5.1c): a Free-tier installer that predates this feature would run and update on any machine — an
+earlier same-day attempt at hard-locking that (machine-hash stamped into `pack.json`, checked by the
+runtime and the delta-sync endpoint) was reverted for blocking legitimate reinstalls, so no such lock
+exists today (see `TODO.md` CLOUD-3, reopened). What ships instead is cosmetic, not restrictive: Free
+gets a randomly-named, unbranded `.exe` with no custom icon; paid plans get a filename derived from a
+workspace-set (but not yet ownership-verified — see `TODO.md` PROD-6) installer domain, and may embed a
+custom icon.
+
+---
+
 ## Flow Summary
 
 | Flow | Trigger | Systems Involved | Duration |
 |---|---|---|---|
 | Onboarding | First Build Studio launch | Build Studio, Cloud | ~5 min |
 | Login | User clicks Sign In | Build Studio, Clerk | <30s |
-| Record auth | Plugin setup | Build Studio, Target website | 2–5 min |
-| Record workflow | Plugin setup | Build Studio, Target website | 5–30 min |
+| Record auth | Workflow setup | Build Studio, Target website | 2–5 min |
+| Record workflow | Workflow setup | Build Studio, Target website | 5–30 min |
 | Compile | After recording | Build Studio, Cloud LLM proxy | 1–10 min |
 | Build installer | After compile | Build Studio, Cloud | 1–5 min |
 | Customer install | .exe runs | Runtime, Claude Desktop | 2–5 min |
 | Skill execution | Claude tool call | Runtime, Target website | 10s–5 min |
 | Recovery | Step failure | Runtime, Cloud (LLM at T3+) | +2–30s |
-| Skill update | Company publishes | Cloud, Runtime (next start) | <15s sync |
+| Skill update | Cloud admin releases a "ready" version | Build Studio (publish), Cloud (release), Runtime (next sync) | <15s sync after release |
 | Runtime update | Cold start check | Runtime, Cloud | Background |
+| Entitlement gate | Every compile/LLM/installer call | Build Studio, Cloud | <200ms |

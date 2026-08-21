@@ -62,17 +62,19 @@ function activateVersion(componentDir, versionName, populate) {
   fs.symlinkSync(versionDir, currentLink, process.platform === "win32" ? "junction" : "dir");
 }
 
-// skill-packs/<company>/pack.json stays flat; each skill under it becomes its own
-// versioned component: skill-packs/<company>/<slug>/<version>/ + current.
+// skill-packs/<workspace_id>/pack.json stays flat; each skill under it becomes its own
+// versioned component: skill-packs/<workspace_id>/<group_id>/<slug>/<version>/ + current.
+// The fixture's pack.json carries no skill_groups map, so skill_loader.js resolves
+// every skill's group as the "_default" sentinel — mirror that here.
 const skillPacksDir = path.join(conxaDir, "skill-packs");
-for (const company of fs.readdirSync(SKILL_PACK_SRC)) {
-  const companySrc = path.join(SKILL_PACK_SRC, company);
-  const companyDst = path.join(skillPacksDir, company);
-  fs.mkdirSync(companyDst, { recursive: true });
-  for (const e of fs.readdirSync(companySrc, { withFileTypes: true })) {
-    if (!e.isDirectory()) { fs.copyFileSync(path.join(companySrc, e.name), path.join(companyDst, e.name)); continue; }
+for (const workspace_id of fs.readdirSync(SKILL_PACK_SRC)) {
+  const workspaceSrc = path.join(SKILL_PACK_SRC, workspace_id);
+  const workspaceDst = path.join(skillPacksDir, workspace_id);
+  fs.mkdirSync(workspaceDst, { recursive: true });
+  for (const e of fs.readdirSync(workspaceSrc, { withFileTypes: true })) {
+    if (!e.isDirectory()) { fs.copyFileSync(path.join(workspaceSrc, e.name), path.join(workspaceDst, e.name)); continue; }
     const slug = e.name;
-    activateVersion(path.join(companyDst, slug), GATE_VERSION, (versionDir) => copyDir(path.join(companySrc, slug), versionDir));
+    activateVersion(path.join(workspaceDst, "_default", slug), GATE_VERSION, (versionDir) => copyDir(path.join(workspaceSrc, slug), versionDir));
   }
 }
 // Empty raw session → getAuthContext skips interactive login (protected_url is "").
@@ -166,7 +168,7 @@ function fail(msg) {
       name: "execute_skill",
       arguments: {
         skill: "gate-skill",
-        company: "gate",
+        workspace_id: "gate",
         inputs: { fixture_url: FIXTURE_URL },
         watch: false,
       },

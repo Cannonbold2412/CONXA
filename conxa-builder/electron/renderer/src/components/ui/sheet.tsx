@@ -27,21 +27,26 @@ function SheetPortal({
   return <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />
 }
 
-function SheetOverlay({
-  className,
-  ...props
-}: React.ComponentProps<typeof SheetPrimitive.Overlay>) {
-  return (
-    <SheetPrimitive.Overlay
-      data-slot="sheet-overlay"
-      className={cn(
-        "fixed inset-0 z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
-        className
-      )}
-      {...props}
-    />
-  )
-}
+// forwardRef (not a plain function component): SheetContent passes this as a
+// direct sibling child into SheetPortal, and radix-ui's Portal (asChild)
+// clones + attaches a ref to every one of its direct children individually —
+// a plain function component here makes React drop the ref and warn
+// "Function components cannot be given refs" on every open.
+const SheetOverlay = React.forwardRef<
+  React.ElementRef<typeof SheetPrimitive.Overlay>,
+  React.ComponentPropsWithoutRef<typeof SheetPrimitive.Overlay>
+>(({ className, ...props }, ref) => (
+  <SheetPrimitive.Overlay
+    ref={ref}
+    data-slot="sheet-overlay"
+    className={cn(
+      "fixed inset-0 z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+      className
+    )}
+    {...props}
+  />
+))
+SheetOverlay.displayName = "SheetOverlay"
 
 function SheetContent({
   className,

@@ -248,15 +248,15 @@ class ProductRoutesTests(unittest.TestCase):
                 headers=headers,
             )
             self.assertEqual(res.status_code, 403)
-            # Plugin create
+            # Workflow create
             res = client.post(
-                "/api/v1/plugins",
+                "/api/v1/workflows",
                 json={"name": "X", "target_url": "https://example.com"},
                 headers=headers,
             )
             self.assertEqual(res.status_code, 403)
-            # Plugin delete
-            res = client.delete("/api/v1/plugins/does-not-matter", headers=headers)
+            # Workflow delete
+            res = client.delete("/api/v1/workflows/does-not-matter", headers=headers)
             self.assertEqual(res.status_code, 403)
 
     def test_bundle_release_allows_admin(self) -> None:

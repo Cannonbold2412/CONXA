@@ -254,7 +254,9 @@ class TestSyncSkillPack:
         must produce that same versioned+current layout itself, offline.
         """
         source = tmp_path / "src" / "acme"
-        skill_src = source / "make-widget"
+        # Build output nests each skill under its group_id (skill_package_builder_output.py);
+        # pack.json's skill_groups is empty here, so sync_skill_pack falls back to "_default".
+        skill_src = source / "_default" / "make-widget"
         skill_src.mkdir(parents=True)
         (source / "pack.json").write_text(
             '{"skills":["make-widget"]}', encoding="utf-8"
@@ -269,7 +271,7 @@ class TestSyncSkillPack:
         with patch("conxa_compile.conxa_runtime.resolve_conxa_data_dir", return_value=tmp_path / "data"):
             sync_skill_pack(company="acme", source_dir=source, runtime_dir=runtime_dir)
 
-        slug_dir = runtime_dir / "skill-packs" / "acme" / "make-widget"
+        slug_dir = runtime_dir / "skill-packs" / "acme" / "_default" / "make-widget"
         current = slug_dir / "current"
         assert current.is_dir()
         assert (current / "manifest.json").is_file()
@@ -279,7 +281,7 @@ class TestSyncSkillPack:
     def test_re_sync_replaces_stale_version(self, tmp_path: Path) -> None:
         """Re-syncing after a version bump should drop the old version dir, not accumulate."""
         source = tmp_path / "src" / "acme"
-        skill_src = source / "make-widget"
+        skill_src = source / "_default" / "make-widget"
         skill_src.mkdir(parents=True)
         (source / "pack.json").write_text('{"skills":["make-widget"]}', encoding="utf-8")
         (skill_src / "manifest.json").write_text('{"version":"0.1.0"}', encoding="utf-8")
@@ -293,7 +295,7 @@ class TestSyncSkillPack:
             (skill_src / "manifest.json").write_text('{"version":"0.2.0"}', encoding="utf-8")
             sync_skill_pack(company="acme", source_dir=source, runtime_dir=runtime_dir)
 
-        slug_dir = runtime_dir / "skill-packs" / "acme" / "make-widget"
+        slug_dir = runtime_dir / "skill-packs" / "acme" / "_default" / "make-widget"
         assert not (slug_dir / "v0.1.0").exists()
         assert (slug_dir / "current").resolve() == (slug_dir / "v0.2.0").resolve()
 

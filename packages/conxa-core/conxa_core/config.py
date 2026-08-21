@@ -92,6 +92,7 @@ class ProviderConfig:
     api_key: str
     text_model: str
     vision_model: str
+    pool: str = "free"  # "free" | "premium" — see Settings.llm_premium_providers
 
 
 def _provider_env(name: str) -> AliasChoices:
@@ -188,7 +189,8 @@ class Settings(BaseSettings):
     # unaffected. Tests that need enforcement off flip these per-case.
     entitlements_enforce_compile: bool = True
     entitlements_enforce_human_edit: bool = True
-    entitlements_enforce_installers: bool = True
+    entitlements_enforce_distribution: bool = True
+    entitlements_enforce_machines: bool = True
     entitlements_reservation_ttl_secs: int = 30 * 60
 
     # Production backing services. The local MVP still has file-backed fallbacks.
@@ -212,6 +214,12 @@ class Settings(BaseSettings):
     # public/unsigned download behavior for local dev.
     installer_signing_key: str = ""
     installer_signing_window: int = 600  # seconds; longer than the proxy window — human download clicks, not machine calls
+
+    # Enterprise BYOK (Azure OpenAI) key-at-rest encryption. 32 raw bytes,
+    # base64-encoded (e.g. `python -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"`).
+    # Empty in dev — BYOK storage refuses to encrypt/decrypt without a real key
+    # rather than silently storing plaintext.
+    byok_encryption_key: str = Field(default="", validation_alias="SKILL_BYOK_ENCRYPTION_KEY")
 
     # Multi-provider LLM key pool (free-tier rotation)
     groq_enabled: bool = Field(default=True, validation_alias=_provider_env("GROQ_ENABLED"))
@@ -354,6 +362,9 @@ class Settings(BaseSettings):
     llm_router_max_retries: int = 3
     llm_router_request_timeout_ms: int = 30000
     llm_router_prefer_fast_for_text: bool = True
+    # Comma-separated provider names (e.g. "google_ai_studio,nvidia_nim") routed
+    # to Starter/Pro compiles; providers not listed here serve the Free pool.
+    llm_premium_providers: str = Field(default="", validation_alias=_provider_env("LLM_PREMIUM_PROVIDERS"))
 
     # Cashfree payment gateway. These intentionally do not use the SKILL_ prefix.
     cashfree_app_id: str = Field(default="", validation_alias="CASHFREE_APP_ID")
@@ -361,6 +372,7 @@ class Settings(BaseSettings):
     cashfree_webhook_secret: str = Field(default="", validation_alias="CASHFREE_WEBHOOK_SECRET")
     cashfree_starter_plan_id: str = Field(default="", validation_alias="CASHFREE_STARTER_PLAN_ID")
     cashfree_pro_plan_id: str = Field(default="", validation_alias="CASHFREE_PRO_PLAN_ID")
+    cashfree_addon_plan_id: str = Field(default="", validation_alias="CASHFREE_ADDON_PLAN_ID")
     cashfree_env: str = Field(default="TEST", validation_alias="CASHFREE_ENV")  # TEST | PROD
 
     @field_validator("environment", mode="before")
@@ -437,7 +449,13 @@ class Settings(BaseSettings):
         return keys
 
     def enabled_llm_providers(self) -> list[ProviderConfig]:
-        """Load all enabled LLM providers with their API keys, returning a flat pool."""
+        """Load all enabled LLM providers with their API keys, returning a flat pool.
+
+        Providers named in llm_premium_providers (comma-separated, e.g.
+        "google_ai_studio,nvidia_nim") are tagged pool="premium" — Starter/Pro
+        compile against them, Free stays on the untagged "free" pool
+        (docs/PRD.md §11's compile_pool capability)."""
+        premium = {p.strip() for p in self.llm_premium_providers.split(",") if p.strip()}
         providers_config = [
             ("groq", self.groq_enabled, self.groq_endpoint, self.groq_api_keys,
              self.groq_text_model, self.groq_vision_model),
@@ -468,6 +486,7 @@ class Settings(BaseSettings):
                     api_key=key,
                     text_model=text_model,
                     vision_model=vision_model,
+                    pool="premium" if provider_name in premium else "free",
                 ))
 
         return result

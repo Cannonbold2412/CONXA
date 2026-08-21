@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { errorMessage, fetchSkillPackageFiles, fetchSkillPackageList } from '@/api/workflowApi'
-import { buildPlugin, type Plugin } from '@/api/pluginApi'
+import { buildSkillPackage, type Workflow } from '@/api/workflowsApi'
 import { PanelChrome } from '@/components/ui/panel-chrome'
 import { StructureTrieRows } from '@/components/skillPackages/StructureTree'
 import {
@@ -19,12 +19,18 @@ import { FolderKanban, Hammer, Loader2 } from 'lucide-react'
 
 /** The demoted home for compiler/packaging internals (bundle_root path, raw
  * package file tree) that used to live on the top-level Packages page and on
- * every default surface. Reachable on demand from the plugin overview instead
+ * every default surface. Reachable on demand from the workflow overview instead
  * of being a wall the user has to climb — see conxa-builder-workflow-redesign.md
  * §3.3/§6 ("View Package" -> Inspector). Also hosts the manual "Rebuild
- * package" escape hatch now that Build Plugin no longer has its own page
- * (superseded by auto-build-on-sign-off, see cmd_sign_off_workflow). */
-export function InspectorDrawer({ plugin, trigger }: { plugin: Plugin; trigger: ReactNode }) {
+ * package" escape hatch now that Build Skill Package no longer has its own page
+ * (superseded by auto-build-on-sign-off, see cmd_sign_off_workflow).
+ *
+ * Every workflow's compiled skill lands in the same shared local package
+ * directory, so this drawer finds the one package containing this particular
+ * workflow's own compiled skill. "Rebuild package" only recompiles this one
+ * workflow (see buildSkillPackage's skillSlug param) — a sibling workflow
+ * that isn't ready yet is never touched or required. */
+export function InspectorDrawer({ workflow, trigger }: { workflow: Workflow; trigger: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [rebuilding, setRebuilding] = useState(false)
@@ -37,13 +43,10 @@ export function InspectorDrawer({ plugin, trigger }: { plugin: Plugin; trigger: 
     staleTime: 10_000,
   })
 
-  // A package built from this plugin shares its workflows' slugs — that's the
-  // only link between "plugin" and "package" the file-listing RPCs expose.
-  const workflowSlugs = useMemo(() => new Set(plugin.workflows.map((wf) => wf.slug)), [plugin.workflows])
   const matchedPackage = useMemo(() => {
     const packages = listQ.data?.packages ?? []
-    return packages.find((pkg) => pkg.workflows.some((wf) => workflowSlugs.has(wf.workflow_slug))) ?? null
-  }, [listQ.data, workflowSlugs])
+    return packages.find((pkg) => pkg.workflows.some((wf) => wf.workflow_slug === workflow.slug)) ?? null
+  }, [listQ.data, workflow.slug])
 
   const filesQ = useQuery({
     queryKey: ['skillPackageFiles', matchedPackage?.package_name],
@@ -84,12 +87,12 @@ export function InspectorDrawer({ plugin, trigger }: { plugin: Plugin; trigger: 
   async function handleRebuild() {
     setRebuilding(true)
     try {
-      await buildPlugin(plugin.id)
+      await buildSkillPackage(workflow.slug)
       toast.success('Package rebuilt.')
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['skillPackages'] }),
         qc.invalidateQueries({ queryKey: ['skillPackageFiles', matchedPackage?.package_name] }),
-        qc.invalidateQueries({ queryKey: ['plugin', plugin.id] }),
+        qc.invalidateQueries({ queryKey: ['workflow', workflow.id] }),
       ])
     } catch (err) {
       toast.error(errorMessage(err, 'Could not rebuild the package.'))
@@ -103,7 +106,7 @@ export function InspectorDrawer({ plugin, trigger }: { plugin: Plugin; trigger: 
       <SheetTrigger asChild>{trigger}</SheetTrigger>
       <SheetContent side="right" className="w-full gap-0 border-white/10 bg-[#0a0c0f] p-0 text-zinc-100 sm:max-w-2xl">
         <SheetHeader className="border-b border-white/8 px-5 py-4">
-          <SheetTitle className="text-white">Inspector — {plugin.name}</SheetTitle>
+          <SheetTitle className="text-white">Inspector — {workflow.name}</SheetTitle>
           <SheetDescription className="text-zinc-500">
             Package files and internals, for reference — not part of the everyday flow.
           </SheetDescription>

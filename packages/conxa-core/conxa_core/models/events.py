@@ -170,6 +170,21 @@ class FrameContext(BaseModel):
     chain: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TabContext(BaseModel):
+    """Which browser tab/page recorded this event. Defaulted so recordings made before
+    multi-tab support existed still validate — read-new-fallback-old, same as post_condition."""
+
+    id: str = "tab_0"
+    index: int = 0
+    # "initial" = the tab the recording started on; "site" = opened via window.open()/target=_blank
+    # (Playwright's `page.opener()` resolves it, e.g. a link click); "user" = no opener at all
+    # (Ctrl+T or similar) — the runtime must create this tab itself on replay instead of waiting
+    # for the site to open it.
+    opened_by: Literal["initial", "site", "user"] = "initial"
+    opener_tab: str | None = None
+    url: str = ""
+
+
 class Ancestor(BaseModel):
     """One ancestor element in the chain up to <body>."""
 
@@ -203,6 +218,7 @@ class RecordedEvent(BaseModel):
     timing: Timing
     extras: dict[str, Any] = Field(default_factory=dict)
     frame: FrameContext = Field(default_factory=FrameContext)
+    tab: TabContext = Field(default_factory=TabContext)
 
     # Optional — absent on recordings made before these existed (read-new-fallback-old).
     post_condition: PostCondition | None = None

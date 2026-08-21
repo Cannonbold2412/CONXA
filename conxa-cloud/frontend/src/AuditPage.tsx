@@ -246,7 +246,7 @@ export function AuditPage() {
     <div className="h-full overflow-y-auto">
       <PageHeader
         title="Audit"
-        description="Workspace event history for plugin operations, releases, billing, and administrative actions."
+        description="Workspace event history for skill package operations, releases, billing, and administrative actions."
         actions={
           <>
             <Button

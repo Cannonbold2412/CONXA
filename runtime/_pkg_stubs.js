@@ -4,6 +4,7 @@
 // the app layer (server.js, run.js, etc.) via global.__hostRequire.
 require("playwright");
 require("keytar");
+require("adm-zip");
 require("semver");
 require("jsonc-parser");
 require("yaml");

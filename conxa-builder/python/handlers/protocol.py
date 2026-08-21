@@ -107,31 +107,20 @@ def _runtime_result_text(result: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def _plugin_company_slug(plugin: Any) -> str:
-    build = getattr(plugin, "build", None)
-    output_path = str(getattr(build, "output_path", "") or "")
-    if output_path:
-        plugin_json = Path(output_path) / "plugin.json"
-        if plugin_json.is_file():
-            try:
-                payload = json.loads(plugin_json.read_text(encoding="utf-8"))
-                slug = str(payload.get("slug") or "").strip()
-                if slug:
-                    return slug
-            except Exception:
-                pass
-        folder = Path(output_path).name
-        if folder.endswith("-plugin"):
-            return folder[:-7]
-        if folder:
-            return folder
-    return str(getattr(plugin, "slug", "") or getattr(plugin, "id", "")).strip()
+def _stage_runtime_auth(workflow: Any, company: str, data_dir: Path) -> None:
+    """Copy every authenticated app in the workflow's group into the test
+    sandbox, one file per app (``{company}__{app_id}_raw_state.json``), plus a
+    ``{company}_groups.json`` descriptor the runtime resolves the group from
+    (mirrors what pack.json's ``groups`` block carries in production — see
+    runtime/browser.js).
+    """
+    from conxa_core.storage.group_store import get_group
 
-
-def _stage_runtime_auth(plugin: Any, company: str, data_dir: Path) -> None:
-    auth = getattr(plugin, "auth", None)
-    storage_state_path = Path(str(getattr(auth, "storage_state_path", "") or ""))
-    if not storage_state_path.is_file():
+    group_id = str(getattr(workflow, "group_id", "") or "")
+    if not group_id:
+        return
+    group = get_group(group_id)
+    if group is None or not group.apps:
         return
 
     import shutil
@@ -139,24 +128,23 @@ def _stage_runtime_auth(plugin: Any, company: str, data_dir: Path) -> None:
 
     sessions_dir = data_dir / "cache" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(storage_state_path, sessions_dir / f"{company}_raw_state.json")
 
-    protected_url = str(getattr(plugin, "protected_url", "") or getattr(plugin, "target_url", "") or "").strip()
-    if protected_url:
-        meta_path = sessions_dir / f"{company}_auth_meta.json"
-        meta = {}
-        if meta_path.is_file():
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except Exception:
-                meta = {}
-        meta.update(
-            {
-                "protected_url": protected_url,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    apps_descriptor = []
+    for app in group.apps:
+        apps_descriptor.append({"id": app.id, "name": app.name, "success_url": app.success_url, "login_url": app.login_url})
+        state_path = Path(str(app.storage_state_path or ""))
+        if state_path.is_file():
+            shutil.copy2(state_path, sessions_dir / f"{company}__{app.id}_raw_state.json")
+
+    groups_path = sessions_dir / f"{company}_groups.json"
+    groups_path.write_text(
+        json.dumps(
+            {"group_id": group.id, "name": group.name, "apps": apps_descriptor, "updated_at": datetime.now(timezone.utc).isoformat()},
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _skill_response(

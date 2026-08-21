@@ -82,25 +82,26 @@ class SkillPackagesMixin:
 
     def cmd_get_compiled_skill(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         from pathlib import Path
-        from conxa_core.storage.plugin_store import get_plugin
+        from conxa_core.storage.skill_pack_store import get_skill_pack
+        from conxa_core.workspace import LOCAL_WORKSPACE_ID
 
-        plugin_id = _safe_id(payload.get("plugin_id"), "plugin_id")
+        workspace_id = str(payload.get("workspace_id") or "").strip() or LOCAL_WORKSPACE_ID
         skill_slug = str(payload.get("skill_slug") or "").strip()
         if not skill_slug:
             raise _CommandError("invalid_input", "skill_slug is required")
-        plugin = get_plugin(plugin_id)
-        if plugin is None:
-            raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
-        if plugin.build is None:
-            raise _CommandError("not_built", "Plugin has not been built yet")
-        skill_dir = Path(plugin.build.output_path) / "skills" / skill_slug
+        pack = get_skill_pack(workspace_id)
+        if pack is None:
+            raise _CommandError("skill_pack_not_found", f"No skill pack built yet for workspace {workspace_id}")
+        if pack.build is None:
+            raise _CommandError("not_built", "The skill package has not been built yet")
+        skill_dir = Path(pack.build.output_path) / "skills" / skill_slug
         if not skill_dir.is_dir():
             raise _CommandError("skill_not_found", f"No compiled skill {skill_slug}")
         files: dict[str, Any] = {}
         for fname in ("execution.json", "recovery.json", "input.json"):
             fpath = skill_dir / fname
             files[fname] = json.loads(fpath.read_text(encoding="utf-8")) if fpath.is_file() else None
-        return {"plugin_id": plugin_id, "skill_slug": skill_slug, "files": files}
+        return {"workspace_id": workspace_id, "skill_slug": skill_slug, "files": files}
 
     # ─── skill packages ──────────────────────────────────────────────────────
 

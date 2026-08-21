@@ -13,7 +13,7 @@ ORCHESTRATION_SCHEMA_JSON = json.dumps(
             "type": "object",
             "required": ["skill"],
             "properties": {
-                "skill": {"type": "string", "description": "Skill name from plugin index"},
+                "skill": {"type": "string", "description": "Skill name from skill package index"},
                 "inputs": {
                     "type": "object",
                     "description": "Input values for the skill",
@@ -27,14 +27,14 @@ ORCHESTRATION_SCHEMA_JSON = json.dumps(
 )
 
 
-def orchestration_index_md(plugin_name: str, plugin_slug: str, skill_names: list[str]) -> str:
+def orchestration_index_md(company_name: str, company_slug: str, skill_names: list[str]) -> str:
     skill_list = "\n".join(f"- `{s}`" for s in skill_names) if skill_names else "- (none yet)"
     return (
-        f"# {plugin_name} Plugin - Orchestration Guide\n\n"
+        f"# {company_name} Skill Package - Orchestration Guide\n\n"
         "## Entry Point\n\n"
-        f"Start from `../{plugin_slug}.json` - the machine-readable index of all available skills.\n\n"
+        f"Start from `../{company_slug}.json` - the machine-readable index of all available skills.\n\n"
         "## How to Use\n\n"
-        f"1. Read `../{plugin_slug}.json` to see all available skills and their inputs\n"
+        f"1. Read `../{company_slug}.json` to see all available skills and their inputs\n"
         "2. Pick the skill(s) that match the user's request\n"
         "3. Read `planner.md` for how to sequence skills and gather inputs\n"
         "4. Return a plan matching `schema.json` so the conxa runtime can execute it\n\n"
@@ -43,19 +43,19 @@ def orchestration_index_md(plugin_name: str, plugin_slug: str, skill_names: list
     )
 
 
-def orchestration_planner_md(plugin_slug: str) -> str:
+def orchestration_planner_md(company_slug: str) -> str:
     return (
         "# Planner Guide\n\n"
         "## Your Job\n\n"
         "Convert a user request into a JSON plan that the conxa runtime can execute.\n\n"
         "## Steps\n\n"
-        f"1. Read `../{plugin_slug}.json` to see available skills\n"
+        f"1. Read `../{company_slug}.json` to see available skills\n"
         "2. Identify which skill(s) the user needs (one or more, in order)\n"
         "3. For each chosen skill, read `../skills/<skill-name>/input.json` for required inputs\n"
         "4. Ask the user for any missing inputs - ask once, not repeatedly\n"
         "5. Return ONLY the JSON plan matching `schema.json`, no explanations\n\n"
         "## Rules\n\n"
-        f"* ONLY use skills listed in `../{plugin_slug}.json`\n"
+        f"* ONLY use skills listed in `../{company_slug}.json`\n"
         "* DO NOT invent or guess skill names\n"
         "* DO NOT output anything outside the JSON plan\n"
         "* Recovery is automatic - do not plan for failure explicitly\n"

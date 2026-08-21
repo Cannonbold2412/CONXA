@@ -12,7 +12,7 @@ class RunsMixin:
         from pathlib import Path
         from conxa_core.config import settings
 
-        plugin_id = payload.get("plugin_id")
+        workflow_id = payload.get("workflow_id")
         since = payload.get("since")
         runs_dir = Path(settings.data_dir) / "runs"
         runs = []
@@ -25,7 +25,7 @@ class RunsMixin:
                             continue
                         try:
                             record = json.loads(line)
-                            if plugin_id and record.get("plugin_id") != plugin_id:
+                            if workflow_id and record.get("workflow_id") != workflow_id:
                                 continue
                             if since is not None and record.get("ts", 0) < float(since):
                                 continue
@@ -67,7 +67,7 @@ class RunsMixin:
     def cmd_get_metrics(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         from pathlib import Path
         from conxa_core.config import settings
-        from conxa_core.storage.plugin_store import list_plugins
+        from conxa_core.storage.workflow_store import list_workflows
 
         data_dir = Path(settings.data_dir)
         skills_dir = data_dir / "skills"
@@ -80,7 +80,7 @@ class RunsMixin:
         pack_count = sum(1 for d in packs_dir.iterdir() if d.is_dir()) if packs_dir.is_dir() else 0
         return {
             "skill_count": skill_count,
-            "plugin_count": len(list_plugins()),
+            "workflow_count": len(list_workflows()),
             "pack_count": pack_count,
         }
 

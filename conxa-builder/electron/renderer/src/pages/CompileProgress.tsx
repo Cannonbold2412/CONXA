@@ -1,67 +1,46 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { cmd } from "@/lib/ipc";
-import { errorMessage } from "@/api/workflowApi";
-import { useBackendEvents } from "@/hooks/usePythonCmd";
-
-type StepState = "pending" | "running" | "done" | "error";
-
-interface CompileStep {
-  id: string;
-  label: string;
-  state: StepState;
-  startedAt?: number;
-  endedAt?: number;
-}
-
-interface LogEntry {
-  ts: number;
-  message: string;
-  level: string;
-}
-
-interface ApiCallEntry {
-  task: string;
-  kind: string;
-  duration_ms: number;
-  status: string;
-}
-
-interface CompileResult {
-  skill_id: string;
-  version: number;
-  step_count: number;
-  compile_status: "ok" | "review_needed" | "failed" | null;
-  compile_min_confidence: number | null;
-  compile_steps_with_warnings: number | null;
-}
-
-const PIPELINE_STEPS: Omit<CompileStep, "state">[] = [
-  { id: "normalize", label: "Normalize events" },
-  { id: "dedupe", label: "Deduplicate actions" },
-  { id: "enrich", label: "Enrich with DOM snapshots" },
-  { id: "selectors", label: "Generate selectors" },
-  { id: "assertions", label: "Build assertions" },
-  { id: "recovery", label: "Build recovery blocks" },
-  { id: "package", label: "Package skill" },
-];
+import {
+  PIPELINE_STEPS,
+  useCompileStore,
+  type ApiCallEntry,
+  type CompileStep,
+  type LogEntry,
+  type StepState,
+} from "@/store/compileStore";
 
 export function CompileProgress() {
-  const { pluginId, sessionId } = useParams<{ pluginId: string; sessionId: string }>();
+  const { workflowId, sessionId } = useParams<{ workflowId: string; sessionId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const mode = searchParams.get("mode") === "recompile" ? "recompile" : "compile";
-  const [steps, setSteps] = useState<CompileStep[]>(
-    PIPELINE_STEPS.map((s) => ({ ...s, state: "pending" as StepState }))
-  );
-  const [overallStatus, setOverallStatus] = useState<"running" | "done" | "error">("running");
-  const [skillId, setSkillId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [apiCalls, setApiCalls] = useState<ApiCallEntry[]>([]);
+
+  // The run lives in a store, not in this component, so it keeps going (and keeps
+  // reporting) when the user navigates away. See compileStore.ts.
+  const run = useCompileStore((s) => s.run);
+  const start = useCompileStore((s) => s.start);
+  const [blocked, setBlocked] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
-  const firedFor = useRef<string | null>(null);
   const [now, setNow] = useState(Date.now());
+
+  const key = workflowId && sessionId ? `${workflowId}:${sessionId}:${mode}` : null;
+  const isThisRun = !!key && run?.key === key;
+
+  // Idempotent: arriving fresh starts the compile, returning mid-run re-attaches
+  // to the one already going rather than starting (and billing) a second.
+  useEffect(() => {
+    if (!workflowId || !sessionId) return;
+    setBlocked(start({ workflowId, sessionId, mode }) === "busy");
+  }, [workflowId, sessionId, mode, start]);
+
+  const steps: CompileStep[] = isThisRun
+    ? run.steps
+    : PIPELINE_STEPS.map((s) => ({ ...s, state: "pending" as StepState }));
+  const logs: LogEntry[] = isThisRun ? run.logs : [];
+  const apiCalls: ApiCallEntry[] = isThisRun ? run.apiCalls : [];
+  const overallStatus: "running" | "done" | "error" = isThisRun ? run.status : "running";
+  const error = isThisRun ? run.error : null;
+  const skillId = isThisRun ? run.skillId : null;
 
   useEffect(() => {
     if (overallStatus !== "running") return;
@@ -69,150 +48,64 @@ export function CompileProgress() {
     return () => clearInterval(id);
   }, [overallStatus]);
 
-  useEffect(() => {
-    if (!pluginId || !sessionId) return;
-    const key = `${pluginId}:${sessionId}:${mode}`;
-    if (firedFor.current === key) return;
-    firedFor.current = key;
-    setOverallStatus("running");
-    setSkillId(null);
-    setError(null);
-    setLogs([]);
-    setApiCalls([]);
-    setSteps(
-      PIPELINE_STEPS.map((s, i) => ({
-        ...s,
-        state: i === 0 ? "running" : "pending",
-        startedAt: i === 0 ? Date.now() : undefined,
-        endedAt: undefined,
-      }))
-    );
-    cmd<CompileResult>("compile", { plugin_id: pluginId, session_id: sessionId, mode })
-      .then((result) => {
-        setSkillId(result.skill_id);
-        setOverallStatus("done");
-        setSteps((prev) =>
-          prev.map((s) => ({ ...s, state: "done", endedAt: s.endedAt ?? Date.now() }))
-        );
-      })
-      .catch((e) => {
-        setError(errorMessage(e, "Compile failed."));
-        setOverallStatus("error");
-        setSteps((prev) =>
-          prev.map((s) =>
-            s.state === "running" ? { ...s, state: "error", endedAt: Date.now() } : s
-          )
-        );
-      });
-  }, [pluginId, sessionId, mode]);
-
-  // auto-scroll log panel
+  // auto-scroll log panel — keyed on the count, not the array, since the
+  // not-this-run branch hands back a fresh [] on every render.
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [logs]);
-
-  useBackendEvents((ev) => {
-    const now = Date.now();
-
-    if (ev.phase === "compile_log") {
-      setLogs((prev) => [
-        ...prev,
-        {
-          ts: (ev.ts as number) ?? now / 1000,
-          message: String(ev.message ?? ""),
-          level: String(ev.level ?? "info"),
-        },
-      ]);
-    }
-
-    if (ev.phase === "api_call") {
-      setApiCalls((prev) => [
-        ...prev,
-        {
-          task: String(ev.task ?? ""),
-          kind: String(ev.kind ?? "text"),
-          duration_ms: Number(ev.duration_ms ?? 0),
-          status: String(ev.status ?? "ok"),
-        },
-      ]);
-    }
-
-    if (ev.phase === "pipeline_done") {
-      setSteps((prev) =>
-        prev.map((s, i) => {
-          if (i <= 2) return { ...s, state: "done", endedAt: now };
-          if (s.id === "selectors") return { ...s, state: "running", startedAt: now };
-          return s;
-        })
-      );
-    }
-
-    if (ev.phase === "compiler_start") {
-      setSteps((prev) =>
-        prev.map((s) =>
-          s.id === "selectors" && s.state !== "done"
-            ? { ...s, state: "running", startedAt: s.startedAt ?? now }
-            : s
-        )
-      );
-    }
-
-    if (ev.phase === "compile_step") {
-      const { step, status } = ev as unknown as { phase: string; step: string; status: string };
-      setSteps((prev) => {
-        const idx = prev.findIndex((s) => s.id === step);
-        if (idx === -1) return prev;
-        return prev.map((s, i) => {
-          if (i === idx) {
-            return {
-              ...s,
-              state: status as StepState,
-              startedAt: status === "running" ? (s.startedAt ?? now) : s.startedAt,
-              endedAt: status === "done" || status === "error" ? now : s.endedAt,
-            };
-          }
-          if (i === idx + 1 && status === "done") {
-            return { ...s, state: "running", startedAt: now };
-          }
-          return s;
-        });
-      });
-    }
-
-    if (ev.phase === "compile_done") {
-      setOverallStatus("done");
-      setSkillId(ev.skill_id as string | null);
-    }
-
-    if (ev.phase === "compile_error") {
-      const failedStep = String(ev.failed_step ?? "");
-      setOverallStatus("error");
-      setError(String(ev.message ?? "Compile failed"));
-      setSteps((prev) =>
-        prev.map((s) =>
-          s.state === "running" || s.id === failedStep
-            ? { ...s, state: "error", endedAt: now }
-            : s
-        )
-      );
-    }
-  });
+  }, [logs.length]);
 
   function goToEditor() {
     if (!skillId) return;
-    const fromParam = pluginId ? `?from=${encodeURIComponent(`/plugins/${pluginId}`)}` : "";
+    const fromParam = workflowId ? `?from=${encodeURIComponent(`/workflows/${workflowId}`)}` : "";
     navigate(`/edit/${encodeURIComponent(skillId)}${fromParam}`);
   }
 
-  function goToPlugin() {
-    if (!pluginId) return;
-    navigate(`/plugins/${encodeURIComponent(pluginId)}`);
+  function goToWorkflow() {
+    if (!workflowId) return;
+    navigate(`/workflows/${encodeURIComponent(workflowId)}`);
   }
 
   const doneCount = steps.filter((s) => s.state === "done").length;
   const pct = Math.round((doneCount / steps.length) * 100);
+
+  // Only one compile can be tracked at a time, so say so plainly rather than
+  // silently showing another workflow's progress under this one's name.
+  if (blocked) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="text-sm font-medium text-zinc-300">Another workflow is compiling</p>
+        <p className="max-w-sm text-xs text-zinc-500">
+          Compiles run one at a time. This one will start as soon as the current compile finishes.
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={goToWorkflow}
+            className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/[0.07] hover:text-white"
+          >
+            Back
+          </button>
+          {run && (
+            <button
+              type="button"
+              onClick={() =>
+                navigate(
+                  `/workflows/${encodeURIComponent(run.workflowId)}/compile/${encodeURIComponent(run.sessionId)}${
+                    run.mode === "recompile" ? "?mode=recompile" : ""
+                  }`,
+                )
+              }
+              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/[0.07] hover:text-white"
+            >
+              View the running compile
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 0 }}>
@@ -220,7 +113,7 @@ export function CompileProgress() {
       <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid var(--border)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
           <button
-            onClick={goToPlugin}
+            onClick={goToWorkflow}
             style={{
               background: "none",
               border: "1px solid var(--border)",

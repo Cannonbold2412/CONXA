@@ -5,15 +5,18 @@ import { usePageHeaderContext } from '@/contexts/PageHeaderContext'
 type PageHeaderProps = {
   title: string
   description?: ReactNode
+  /** Left half of the strip — status/usage content that reads before the buttons. */
+  leading?: ReactNode
   actions?: ReactNode
   className?: string
 }
 
 /** Registers this page's title/description into AppChrome's sticky top bar
  * (next to the user/logout widget) so it's never repeated in the page body.
- * Only renders something here when `actions` are supplied — a right-aligned
- * strip for page-level buttons that stay put in the body. */
-export function PageHeader({ title, description, actions, className }: PageHeaderProps) {
+ * Only renders something here when `leading` or `actions` are supplied — a
+ * two-part strip that stays put in the body: standing information on the left,
+ * page-level buttons on the right. */
+export function PageHeader({ title, description, leading, actions, className }: PageHeaderProps) {
   const { setHeader } = usePageHeaderContext()
 
   useEffect(() => {
@@ -21,11 +24,20 @@ export function PageHeader({ title, description, actions, className }: PageHeade
     return () => setHeader(null)
   }, [title, description, setHeader])
 
-  if (!actions) return null
+  if (!actions && !leading) return null
 
   return (
-    <div className={cn('flex items-center justify-end gap-2 border-b border-white/8 px-4 py-3 sm:px-6', className)}>
-      {actions}
+    // A toolbar, not a second header: one row tall, tinted a shade darker than
+    // the canvas so it reads as chrome continuing from the title bar above it.
+    <div className={cn('flex min-h-12 items-center gap-4 border-b border-white/8 bg-white/[0.015] px-4 py-2 sm:px-6', className)}>
+      {leading ? <div className="flex min-w-0 flex-1 items-center gap-2">{leading}</div> : null}
+      {actions ? (
+        // Without a leading slot this is the sole child and stays shrinkable, so
+        // wide toolbars (Human Edit's) compress on narrow windows exactly as
+        // they did before the slot existed. With one, the leading content is
+        // what gives — the buttons keep their size.
+        <div className={cn('ml-auto flex items-center gap-2', leading ? 'shrink-0' : 'min-w-0')}>{actions}</div>
+      ) : null}
     </div>
   )
 }

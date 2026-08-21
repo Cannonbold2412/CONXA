@@ -14,7 +14,7 @@ Mixed skill levels operate Build Studio: non-technical staff (product managers, 
 
 ## Product Purpose
 
-Build Studio turns a single recorded browser session into a distributed, self-healing skill package, entirely on the operator's local machine. The task flow is a linear pipeline — Record → Compile → Human Edit (fix issues) → Test Plugin → Publish → Build Installer — and each screen is one stage of that pipeline. Success is a compiled skill that a customer's AI agent can execute reliably without the operator ever writing a selector by hand.
+Build Studio turns recorded browser workflows into a distributed, self-healing skill package, entirely on the operator's local machine. The task flow is a linear pipeline — Workflows (create + record) → Compile → Human Edit (fix issues) → Test Skill → Publish Skill Package → Build Installer — and each screen is one stage of that pipeline. Success is a compiled skill package that a customer's AI agent can execute reliably without the operator ever writing a selector by hand. Many workflows can target the same company and compile together into one shared skill package, rather than creating separate packages per recording.
 
 ## Positioning
 

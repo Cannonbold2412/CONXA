@@ -35,10 +35,16 @@ export const errorMessages: Record<string, string> = {
     "You've used all of this month's compile credits. Upgrade your plan or wait for the next cycle.",
   human_edit_pool_exceeded:
     "You've used all of this month's Human Edit tokens. Upgrade your plan or wait for the next cycle.",
-  installer_limit_exceeded:
-    "You've reached the number of installers allowed on your plan. Upgrade to publish more.",
   seat_limit_exceeded:
     "Your workspace is at its seat limit. Upgrade your plan to add more members.",
+  machine_limit_exceeded:
+    "This workspace's plan allows fewer build machines than are currently registered. Revoke an old machine in Settings, or upgrade.",
+  trial_expired:
+    "Your 30-day free trial has ended. Upgrade to keep building and publishing.",
+  distribution_not_permitted:
+    "This plan can only build installers for your own team. Upgrade to Pro to distribute to customers.",
+  white_label_not_permitted:
+    "White-label installer branding requires the Enterprise plan.",
   invalid_usage_class: "Something went wrong charging this action. Please try again.",
 
   // Recording / auth
@@ -48,20 +54,41 @@ export const errorMessages: Record<string, string> = {
     "The recorder browser couldn't start. Close any leftover browser windows and try again.",
   empty_recording: "No actions were recorded. Record at least one step before continuing.",
   no_events: "This session has no recorded actions to work with.",
-  auth_required:
-    "Please record a sign-in for this workflow first, then try again.",
+  // auth_required is deliberately NOT mapped here — the backend's own message (from
+  // handlers/session.py's pre-flight gate) already names the specific app(s) that need
+  // authentication ("Authenticate Salesforce before recording." / "Re-authenticate Salesforce
+  // before recording — the saved session has expired."), which is strictly more useful than any
+  // generic copy this map could substitute. Falls through to errorMessage()'s second branch
+  // (the raw backend message) by design. The Record action's error handler also opens
+  // GroupAuthWizard scoped to the named app(s) — see RecordWorkflowDialog.tsx.
   auth_capture_failed:
     "The sign-in window closed before it could be saved. Please record auth again.",
   auth_file_in_build_input:
     "Sign-in credentials were found in the build folder and can't be shipped. Remove them and rebuild.",
 
+  // Release Center (publish / rollback) — conxa-cloud/backend/app/api/publish_routes.py
+  // and app/api/release_routes.py
+  skill_pack_version_exists:
+    "This version was already published and can never be overwritten. Bump the version and publish again.",
+  skill_pack_artifact_unchanged:
+    "Nothing has changed since the current stable release — this exact skill pack is already published.",
+  release_not_found: "That release no longer exists.",
+  release_not_published: "That release never finished publishing, so it can't be rolled back to.",
+  already_stable: "That release is already the stable channel — there's nothing to roll back.",
+  release_snapshot_unavailable:
+    "This release predates version history and has no saved snapshot, so it can't be rolled back to.",
+  slug_owned_by_another_workspace:
+    "This skill pack's slug is already published by a different Conxa workspace.",
+  "admin role required":
+    "Publishing and rollback require an admin or owner role in this Conxa workspace.",
+
   // Build / compile / test
   pack_not_built: "Build this skill pack before continuing.",
-  plugin_not_built: "Build the plugin before testing its workflows.",
-  not_built: "This plugin hasn't been built yet.",
+  skill_package_not_built: "Build the skill package before testing its workflows.",
+  not_built: "The skill package hasn't been built yet.",
   workflow_not_compiled: "Compile this workflow before testing it.",
   workflow_test_failed: "The workflow test didn't pass. Review the steps and try again.",
-  invalid_plugin: "This plugin is missing required information and can't be used.",
+  skill_pack_not_found: "No skill package has been built for this workspace yet.",
   invalid_document: "This skill file is missing its skills and can't be opened.",
   invalid_bbox: "That selection isn't a valid region. Try drawing the box again.",
   invalid_selector:
@@ -128,7 +155,6 @@ export const errorMessages: Record<string, string> = {
 
   // Not found
   not_found: "We couldn't find what you were looking for.",
-  plugin_not_found: "That plugin no longer exists.",
   workflow_not_found: "That workflow no longer exists.",
   session_not_found: "That recording session no longer exists.",
   skill_not_found: "That skill no longer exists.",

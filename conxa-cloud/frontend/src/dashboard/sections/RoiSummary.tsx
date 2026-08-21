@@ -1,6 +1,6 @@
 'use client'
 
-import type { TrackingRoi } from '@/api/pluginApi'
+import type { TrackingRoi } from '@/api/workflowsApi'
 import { fmtNumber } from '../dashboardData'
 
 function money(amount: number, currency: string): string {

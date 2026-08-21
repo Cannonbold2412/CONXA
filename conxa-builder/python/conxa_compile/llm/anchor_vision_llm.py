@@ -6,6 +6,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,28 @@ def _parse_viewport_wh(viewport: str) -> tuple[int | None, int | None]:
         return None, None
 
 
+_VISION_MAX_DIMENSION = 1024
+
+
+def _downscale_and_encode(im: Image.Image, *, max_dimension: int = _VISION_MAX_DIMENSION) -> bytes:
+    """Bound an image to ``max_dimension`` on its longest side and encode as JPEG.
+
+    Vision LLM cost scales with image resolution, not source format, so every image
+    handed to a vision provider goes through this — never a raw full-resolution frame.
+    """
+    im = im.copy()
+    im.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.convert("RGB").save(buf, format="JPEG", quality=settings.screenshot_jpeg_quality, optimize=True)
+    return buf.getvalue()
+
+
+def _bounded_jpeg_bytes(image_bytes: bytes, *, max_dimension: int = _VISION_MAX_DIMENSION) -> bytes:
+    """Re-encode arbitrary image bytes (e.g. a raw PNG video frame) as bounded JPEG."""
+    with Image.open(io.BytesIO(image_bytes)) as im:
+        return _downscale_and_encode(im.convert("RGB"), max_dimension=max_dimension)
+
+
 def _apply_bbox_highlight(
     image_bytes: bytes,
     bbox: dict[str, Any],
@@ -92,6 +115,12 @@ def _apply_bbox_highlight(
     *,
     highlight_alpha: float,
 ) -> bytes:
+    """Highlight the target bbox and return bounded-resolution JPEG bytes.
+
+    Every return path — including a missing/degenerate bbox that skips highlighting —
+    goes through ``_downscale_and_encode`` so the vision LLM never receives a raw,
+    full-resolution PNG video frame (recorder frames are 1280x720 PNGs).
+    """
     alpha = max(0.0, min(1.0, float(highlight_alpha)))
     try:
         x = float(bbox.get("x") or 0)
@@ -99,31 +128,28 @@ def _apply_bbox_highlight(
         w = float(bbox.get("w") or 0)
         h = float(bbox.get("h") or 0)
     except (TypeError, ValueError):
-        return image_bytes
-    if w < 1 or h < 1:
-        return image_bytes
+        x = y = w = h = 0.0
+
     with Image.open(io.BytesIO(image_bytes)) as im:
         im = im.convert("RGB")
-        vw, vh = _parse_viewport_wh(viewport)
-        dpr_x = (im.size[0] / vw) if vw and vw > 0 else 1.0
-        dpr_y = (im.size[1] / vh) if vh and vh > 0 else dpr_x
-        x1 = max(0, int(round(x * dpr_x)))
-        y1 = max(0, int(round(y * dpr_y)))
-        x2 = min(im.size[0], int(round((x + w) * dpr_x)))
-        y2 = min(im.size[1], int(round((y + h) * dpr_y)))
-        if x2 <= x1 or y2 <= y1:
-            return image_bytes
-        overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        fill = (255, 0, 0, int(255 * alpha))
-        outline = (255, 80, 80, 255)
-        draw.rectangle((x1, y1, x2, y2), fill=fill, outline=outline, width=int(max(2, min(im.size) // 400)))
-        base = im.convert("RGBA")
-        base = Image.alpha_composite(base, overlay)
-        base = base.convert("RGB")
-        buf = io.BytesIO()
-        base.save(buf, format="JPEG", quality=settings.screenshot_jpeg_quality, optimize=True)
-        return buf.getvalue()
+        if w >= 1 and h >= 1:
+            vw, vh = _parse_viewport_wh(viewport)
+            dpr_x = (im.size[0] / vw) if vw and vw > 0 else 1.0
+            dpr_y = (im.size[1] / vh) if vh and vh > 0 else dpr_x
+            x1 = max(0, int(round(x * dpr_x)))
+            y1 = max(0, int(round(y * dpr_y)))
+            x2 = min(im.size[0], int(round((x + w) * dpr_x)))
+            y2 = min(im.size[1], int(round((y + h) * dpr_y)))
+            if x2 > x1 and y2 > y1:
+                overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+                draw = ImageDraw.Draw(overlay)
+                fill = (255, 0, 0, int(255 * alpha))
+                outline = (255, 80, 80, 255)
+                draw.rectangle(
+                    (x1, y1, x2, y2), fill=fill, outline=outline, width=int(max(2, min(im.size) // 400))
+                )
+                im = Image.alpha_composite(im.convert("RGBA"), overlay).convert("RGB")
+        return _downscale_and_encode(im)
 
 
 def resolve_screenshot_path(session_root: Path, rel: str) -> Path:
@@ -158,6 +184,8 @@ def generate_anchors_for_step_or_raise(
     step_index: int,
 ) -> list[dict[str, Any]]:
     """Return vision-only anchors or raise VisionAnchorGenerationError."""
+    if os.environ.get("CONXA_DISABLE_VISION_ANCHORS", "").strip().lower() in ("1", "true", "yes"):
+        raise VisionAnchorGenerationError("llm_anchor_vision_disabled", step_index=step_index)
     if not bool(_vision_cfg(policy).get("enabled", True)):
         raise VisionAnchorGenerationError("vision_anchors_disabled_in_policy", step_index=step_index)
 
@@ -281,6 +309,7 @@ def generate_anchors_from_image_bytes(
         return []
 
     try:
+        image_bytes = _bounded_jpeg_bytes(image_bytes)
         with Image.open(io.BytesIO(image_bytes)) as _im:
             bw, bh = int(_im.size[0]), int(_im.size[1])
     except Exception:

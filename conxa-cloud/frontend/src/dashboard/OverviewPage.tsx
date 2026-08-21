@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { Activity, AlertTriangle, HeartPulse, Radio, TrendingUp, Waypoints } from 'lucide-react'
-import { fetchTrackingDashboard } from '@/api/pluginApi'
+import { fetchTrackingDashboard } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { TrendChart } from '@/components/viz/TrendChart'
 import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry } from './DashboardStates'

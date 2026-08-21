@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import shutil
 import tempfile
 import unittest
@@ -147,9 +149,12 @@ class PhaseTests(unittest.TestCase):
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
         self.assertEqual(pkg.meta.id, "skill_test")
-        self.assertEqual(len(pkg.skills[0].steps), 1)
-        self.assertEqual(pkg.skills[0].steps[0].action, "click")
-        dumped = pkg.skills[0].steps[0].model_dump()
+        # steps[0] is the leading synthetic navigate to the recording's starting page
+        # (compiler/build.py::_insert_start_navigate_step) — the click under test is steps[1].
+        self.assertEqual(len(pkg.skills[0].steps), 2)
+        self.assertEqual(pkg.skills[0].steps[0].action, "navigate")
+        self.assertEqual(pkg.skills[0].steps[1].action, "click")
+        dumped = pkg.skills[0].steps[1].model_dump()
         self.assertIn("signals", dumped)
         self.assertIn("decision_policy", dumped)
         self.assertIn("intent", dumped)
@@ -206,7 +211,9 @@ class PhaseTests(unittest.TestCase):
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
 
-        step = pkg.skills[0].steps[0].model_dump(mode="json")
+        # steps[0] is the leading synthetic navigate to the recording's starting page; the
+        # click under test (with the frame chain) is steps[1].
+        step = pkg.skills[0].steps[1].model_dump(mode="json")
         # Cutover: structural marker keeps url/url_pattern only (no selector field).
         assert step["frame"]["chain"][0]["url_pattern"] == url_pattern
         assert "selector" not in step["frame"]["chain"][0]
@@ -337,7 +344,9 @@ class PhaseTests(unittest.TestCase):
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
         doc = pkg.model_dump(mode="json")
-        step = doc["skills"][0]["steps"][0]
+        # steps[0] is the leading synthetic navigate to the recording's starting page; the
+        # click under test is steps[1].
+        step = doc["skills"][0]["steps"][1]
         step["intent"] = ""
         rec = dict(step.get("recovery") or {})
         rec["intent"] = ""
@@ -352,9 +361,9 @@ class PhaseTests(unittest.TestCase):
             source="test",
         )
         with patch("conxa_compile.compiler.patch.enrich_semantic", return_value=fake):
-            patched = apply_step_patch(doc, 0, {"target": {"primary_selector": "#go"}})
+            patched = apply_step_patch(doc, 1, {"target": {"primary_selector": "#go"}})
 
-        out_rec = patched["skills"][0]["steps"][0]["recovery"]
+        out_rec = patched["skills"][0]["steps"][1]["recovery"]
         self.assertEqual(out_rec.get("intent"), "navigate_to_checkout")
         self.assertEqual(out_rec.get("final_intent"), "navigate_to_checkout")
         self.assertNotIn("url_state_match", out_rec.get("strategies") or [])
@@ -1207,7 +1216,10 @@ class PhaseTests(unittest.TestCase):
                     title="t",
                     version=1,
                 )
-                step = pkg.skills[0].steps[0].model_dump()
+                # steps[0] is the leading synthetic navigate to the recording's starting page;
+                # the click under test is steps[1]. Its baked-in step_index (set before the
+                # navigate is prepended) stays 0, so that assertion below is unchanged.
+                step = pkg.skills[0].steps[1].model_dump()
                 anchors = step.get("signals", {}).get("anchors") or []
                 self.assertTrue(anchors)
                 self.assertIn("submit", " ".join(str(a.get("element") or "") for a in anchors))
@@ -1244,7 +1256,9 @@ class PhaseTests(unittest.TestCase):
                     title="t",
                     version=1,
                 )
-                step = pkg.skills[0].steps[0].model_dump()
+                # steps[0] is the leading synthetic navigate to the recording's starting page;
+                # the click under test is steps[1].
+                step = pkg.skills[0].steps[1].model_dump()
                 assertions = step.get("validation", {}).get("assertions") or []
                 self.assertTrue(any(a.get("type") == "state_changed" for a in assertions))
                 cw = (step.get("confidence_protocol") or {}).get("compile_warnings") or {}
@@ -1289,6 +1303,48 @@ class PhaseTests(unittest.TestCase):
         self.assertIn("Relation direction is TARGET relative to ANCHOR", user_text)
         self.assertIn('"element":"email label","relation":"below"', user_text)
         self.assertIn('"element":"password input","relation":"above"', user_text)
+
+    def test_vision_payload_is_always_bounded_jpeg_even_with_degenerate_bbox(self) -> None:
+        """A missing/zero-size bbox used to skip highlighting AND skip re-encoding,
+        shipping the raw full-resolution PNG video frame straight to the vision LLM.
+        Every path must now produce a bounded-resolution JPEG."""
+        from conxa_compile.llm.anchor_vision_llm import generate_anchors_for_step_or_raise
+        from conxa_compile.policy.bundle import get_policy_bundle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "images").mkdir()
+            # Matches the real recorder frame format/size (1280x720 PNG, see frame_extractor.py).
+            Image.new("RGB", (1280, 720), "white").save(root / "images" / "a.png", "PNG")
+            with (
+                patch.object(settings, "data_dir", root),
+                patch("conxa_core.llm._router", _FakeRouter()),
+                patch("conxa_compile.llm.anchor_vision_llm.supports_multimodal_chat", return_value=True),
+                patch(
+                    "conxa_compile.llm.anchor_vision_llm.call_llm",
+                    return_value={"primary_phrase": "email field", "secondary": []},
+                ) as call,
+            ):
+                generate_anchors_for_step_or_raise(
+                    {
+                        "visual": {
+                            "full_screenshot": "images/a.png",
+                            "bbox": {"x": 0, "y": 0, "w": 0, "h": 0},  # degenerate: skips highlighting
+                            "viewport": "1280x720",
+                        }
+                    },
+                    session_root=root,
+                    final_intent="enter_email",
+                    policy=get_policy_bundle().data,
+                    step_index=0,
+                )
+
+        payload = call.call_args.args[1]
+        self.assertEqual(payload["image_mime"], "image/jpeg")
+        image_bytes = base64.standard_b64decode(payload["image_base64"])
+        self.assertTrue(image_bytes.startswith(b"\xff\xd8"))  # JPEG magic bytes, not PNG's \x89PNG
+        with Image.open(io.BytesIO(image_bytes)) as im:
+            self.assertLessEqual(max(im.size), 1024)
 
 
 if __name__ == "__main__":

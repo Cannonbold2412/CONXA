@@ -7,6 +7,8 @@ const httpClient = require("./http_client");
 const crypto = require("crypto");
 const semver = (global.__hostRequire || require)("semver");
 const { loadInstallId } = require("./install_identity");
+const { installedSkillVersions } = require("./installed_versions");
+const { collectSyncErrors } = require("./sync_errors");
 const pageScripts = require("./page_scripts");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
@@ -252,11 +254,15 @@ let checkRetryBudget;
 let isAuthFailure;
 let stepAssertions;
 let frameScopedInventory;
+let uniqueDownloadName;
+let sweepOldRuns;
+let extractZipOnce;
 let getCachedBrowser;
 let captureReAuth;
 let gracefulShutdown;
 let createTracker;
 let mapErrorToCode;
+let closeExtraTabs;
 
 try {
   ({ Server }               = (global.__hostRequire || require)("@modelcontextprotocol/sdk/server/index.js"));
@@ -266,9 +272,10 @@ try {
   skillLoader  = require("./skill_loader");
   sync         = require("./sync");
   authManager  = require("./auth_manager");
-  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory } = require("./run"));
+  ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
   ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
+  ({ closeExtraTabs } = require("./tabs"));
 } catch (e) {
   log("error", "runtime_bootstrap_failed", { error: e.message, stack: e.stack });
   process.exit(1);
@@ -435,8 +442,8 @@ function _skillToolDefinitions() {
 
     const needsStr = required.length ? ` Needs: ${required.join(", ")}.` : "";
     tools.push({
-      name: `skill_${entry.company}_${entry.slug.replace(/-/g, "_")}`,
-      description: `Conxa: ${entry.manifest.name || entry.slug} on ${entry.company}. ${entry.manifest.description || ""}${needsStr}`,
+      name: `skill_${entry.workspace_id}_${entry.slug.replace(/-/g, "_")}`,
+      description: `Conxa: ${entry.manifest.name || entry.slug} on ${entry.workspace_id}. ${entry.manifest.description || ""}${needsStr}`,
       inputSchema: { type: "object", properties, required },
     });
   }
@@ -448,11 +455,11 @@ function _toolDefinitions() {
   return [
     {
       name: "list_skills",
-      description: "Conxa automation: list all installed workflow skills. ALWAYS call this first when the user mentions Conxa or wants to automate any task on a web app (Render, GitHub, Jira, Stripe, etc.). Returns available companies and skill slugs so you can match the user's intent to the right skill.",
+      description: "Conxa automation: list all installed workflow skills. ALWAYS call this first when the user mentions Conxa or wants to automate any task on a web app (Render, GitHub, Jira, Stripe, etc.). Returns available workspaces and skill slugs so you can match the user's intent to the right skill.",
       inputSchema: {
         type: "object",
         properties: {
-          company: { type: "string", description: "Filter to a specific company slug (optional)" },
+          workspace_id: { type: "string", description: "Filter to a specific workspace (optional)" },
         },
         required: [],
       },
@@ -464,7 +471,7 @@ function _toolDefinitions() {
         type: "object",
         properties: {
           skill:       { type: "string",  description: "Skill slug from list_skills" },
-          company:     { type: "string",  description: "Company slug (required if skill slug is not unique)" },
+          workspace_id:     { type: "string",  description: "Workspace ID (required if skill slug is not unique)" },
           inputs:      { type: "object",  description: "Input values. Call get_skill_inputs first to see the schema." },
           resume_from: { type: "integer", description: "0-based step index to resume from after a failure (the value reported in the failure response)." },
           step_overrides: {
@@ -488,7 +495,7 @@ function _toolDefinitions() {
               type: "object",
               properties: {
                 skill:   { type: "string" },
-                company: { type: "string" },
+                workspace_id: { type: "string" },
                 inputs:  { type: "object" },
                 resume_from:    { type: "integer", description: "0-based step index to resume from after a failure." },
                 step_overrides: { type: "object", description: "Tier 3/4 self-healing selector overrides, keyed by step index (see execute_skill)." },
@@ -508,7 +515,7 @@ function _toolDefinitions() {
         type: "object",
         properties: {
           skill:   { type: "string" },
-          company: { type: "string" },
+          workspace_id: { type: "string" },
         },
         required: ["skill"],
       },
@@ -529,28 +536,28 @@ function _toolDefinitions() {
 }
 
 // ─── Resolve skill from index ─────────────────────────────────────────────────
-function _resolveSkill(skillSlug, company) {
+function _resolveSkill(skillSlug, workspace_id) {
   if (!skillSlug) return null;
   const normalSlug = skillSlug.replace(/-/g, "_");
 
   // Exact match
-  if (company) {
-    const entry = skillIndex[`${company}:${skillSlug}`];
+  if (workspace_id) {
+    const entry = skillIndex[`${workspace_id}:${skillSlug}`];
     if (entry) return entry;
     // Try underscore/dash normalization
     for (const v of Object.values(skillIndex)) {
-      if (v.company === company && v.slug.replace(/-/g, "_") === normalSlug) return v;
+      if (v.workspace_id === workspace_id && v.slug.replace(/-/g, "_") === normalSlug) return v;
     }
   }
 
-  // Slug-only match across all companies
+  // Slug-only match across all workspaces
   for (const v of Object.values(skillIndex)) {
     if (v.slug === skillSlug || v.slug.replace(/-/g, "_") === normalSlug) return v;
   }
   return null;
 }
 
-// ─── Sync status per company ──────────────────────────────────────────────────
+// ─── Sync status per workspace ──────────────────────────────────────────────────
 function _syncStatus(pack) {
   if (!pack.last_synced) return "unknown";
   return (Date.now() - new Date(pack.last_synced).getTime()) < 3600000 ? "current" : "stale";
@@ -841,12 +848,12 @@ async function _handleTool(name, args, extra) {
 
   // ── list_skills ──────────────────────────────────────────────────────────────
   if (name === "list_skills") {
-    const filterCompany = args.company ? String(args.company) : null;
+    const filterWorkspace = args.workspace_id ? String(args.workspace_id) : null;
     const skills = Object.values(skillIndex)
-      .filter(s => !filterCompany || s.company === filterCompany)
+      .filter(s => !filterWorkspace || s.workspace_id === filterWorkspace)
       .map(s => ({
         skill:           s.slug,
-        company:         s.company,
+        workspace_id:         s.workspace_id,
         name:            s.manifest.name || s.slug,
         description:     s.manifest.description || "",
         inputs_required: s.manifest.inputs_required || [],
@@ -858,7 +865,7 @@ async function _handleTool(name, args, extra) {
 
   // ── get_skill_inputs ─────────────────────────────────────────────────────────
   if (name === "get_skill_inputs") {
-    const entry = _resolveSkill(String(args.skill || ""), args.company ? String(args.company) : null);
+    const entry = _resolveSkill(String(args.skill || ""), args.workspace_id ? String(args.workspace_id) : null);
     if (!entry) return err(`Skill not found: ${args.skill}. Call list_skills first.`);
     const inputsPath = path.join(entry.skillDir, "inputs.json");
     // Fall back to legacy input.json
@@ -897,16 +904,16 @@ async function _handleTool(name, args, extra) {
 
     const packsMap = {};
     for (const entry of Object.values(skillIndex)) {
-      const co = entry.company;
-      if (!packsMap[co]) {
-        packsMap[co] = {
-          company: co,
+      const ws = entry.workspace_id;
+      if (!packsMap[ws]) {
+        packsMap[ws] = {
+          workspace_id: ws,
           skill_pack_version: entry.pack?.skill_pack_version || "unknown",
           required_runtime: entry.pack?.required_runtime || "unknown",
           skills: [],
         };
       }
-      packsMap[co].skills.push(entry.slug);
+      packsMap[ws].skills.push(entry.slug);
     }
 
     return text(JSON.stringify({
@@ -927,7 +934,7 @@ async function _handleTool(name, args, extra) {
     const watch = args.watch !== false;
     const runs = name === "execute_sequence"
       ? (Array.isArray(args.skills) ? args.skills : [])
-      : [{ skill: args.skill, company: args.company, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides }];
+      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides }];
 
     if (runs.length === 0) return err("No skills provided.");
 
@@ -945,7 +952,7 @@ async function _handleTool(name, args, extra) {
     const resolved = [];
     let _overrideAppliedCount = 0;
     for (const run of runs) {
-      const entry = _resolveSkill(String(run.skill || ""), run.company ? String(run.company) : null);
+      const entry = _resolveSkill(String(run.skill || ""), run.workspace_id ? String(run.workspace_id) : null);
       if (!entry) return err(`Skill not found: ${run.skill}. Call list_skills.`);
 
       // Integrity gate
@@ -1018,13 +1025,25 @@ async function _handleTool(name, args, extra) {
 
     // Retry budget check on resume
     const primary = resolved[0];
+
+    // Auth pre-flight must cover every skill in the sequence, not just the first — a run with
+    // 2+ skills shares one browser/context (see getCachedBrowser below, keyed off primary.entry
+    // .workspace_id for the whole sequence), so an app only the SECOND skill needs was previously
+    // never gated on before step 0 of the FIRST skill ran, discovering it expired mid-sequence
+    // instead of pre-flight. Union every skill's required_apps; if any skill's manifest predates
+    // the required_apps field (undefined = legacy "gate on every app"), the whole union falls
+    // back to that same safe legacy behavior rather than silently narrowing to only the skills
+    // that do declare it.
+    const _requiredAppIdsUnion = resolved.some((r) => !Array.isArray(r.entry.manifest.required_apps))
+      ? undefined
+      : Array.from(new Set(resolved.flatMap((r) => r.entry.manifest.required_apps)));
     if (primary.isResume && !checkRetryBudget(primary.entry.slug, primary.resumeFrom))
       return err(`Retry budget exhausted at step ${primary.resumeFrom}. Fix the root cause in execution.json before retrying from step 0.`);
 
     // Acquire execution lock
     activeExecution = {
       slug:            primary.entry.slug,
-      company:         primary.entry.company,
+      workspace_id:    primary.entry.workspace_id,
       step:            0,
       total:           resolved.reduce((n, r) => n + r.steps.length, 0),
       startedAt:       new Date().toISOString(),
@@ -1075,7 +1094,7 @@ async function _handleTool(name, args, extra) {
       tool: name,
       run_count: resolved.length,
       skill: primary.entry.slug,
-      company: primary.entry.company,
+      workspace_id: primary.entry.workspace_id,
       total_steps: resolved.reduce((n, r) => n + r.steps.length, 0),
       watch,
       max_recovery_tier: MAX_RECOVERY_TIER,
@@ -1085,9 +1104,9 @@ async function _handleTool(name, args, extra) {
     // Set up lightweight tracker for this execution
     const _tracker    = createTracker(primary.entry.pack?.tracking || {}, {
       runtime_version: RUNTIME_VERSION,
-      plugin_id:       primary.entry.slug,
-      plugin_version:  primary.entry.manifest?.version || "0",
-      company_id:      primary.entry.company,
+      workflow_id:      primary.entry.slug,
+      workflow_version: primary.entry.manifest?.version || "0",
+      company_id:      primary.entry.workspace_id,
       log,
     });
     const _runId      = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1110,7 +1129,7 @@ async function _handleTool(name, args, extra) {
     let _park = null;
     if (_resumeOverride && _parkedRecovery
         && _parkedRecovery.slug === primary.entry.slug
-        && _parkedRecovery.company === primary.entry.company) {
+        && _parkedRecovery.workspace_id === primary.entry.workspace_id) {
       try {
         _parkedRecovery.page.url();
         // The recovery request described the page as it stood at park time. If it has since
@@ -1157,6 +1176,12 @@ async function _handleTool(name, args, extra) {
 
     let page = null;
     let _browser, _context, _protectedUrl;
+    // EXEC-14: track every tab opened during this run (populated once `_context` is known,
+    // below) so closeExtraTabs (tabs.js) can close it alongside `page` on every exit path —
+    // success, cancelled, session-expired, and non-parkable failure all need this, not just
+    // success, so it's declared here rather than inside the try block, where the catch block
+    // below couldn't see it.
+    const _openedTabs = new Set();
     try {
       if (_park) {
         ({ browser: _browser, context: _context } = _park);
@@ -1165,7 +1190,12 @@ async function _handleTool(name, args, extra) {
         appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
         _runTracker.emit("park_resumed", { si: primary.resumeFrom });
       } else {
-        const _authResult = await getCachedBrowser(primary.entry.company, authManager, { headless: !watch, logFn: log });
+        const _authResult = await getCachedBrowser(primary.entry.workspace_id, authManager, {
+          headless: !watch,
+          logFn: log,
+          groupId: primary.entry.manifest && primary.entry.manifest.group_id,
+          requiredAppIds: _requiredAppIdsUnion,
+        });
         if (_authResult.authPending) {
           // No valid session — a login window was just opened for the user. Nothing ran yet,
           // so there's no failedAt/page to report; the outer catch below turns this into an
@@ -1175,16 +1205,31 @@ async function _handleTool(name, args, extra) {
         }
         ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = _authResult);
         page = await _context.newPage();
-        if (_protectedUrl) {
+        // Packs compiled after the leading-navigate change (compiler/build.py
+        // _insert_start_navigate_step) open with their own `navigate` step to the page they
+        // were recorded on, so landing on _protectedUrl (the group app's landing page) first is
+        // a wasted page load — and, when the two are different sites, a misleading one. Older
+        // packs have no such step and still need this. The auth storage state is already loaded
+        // into _context above either way, so the skill's own navigation is authenticated with
+        // no re-login.
+        if (_protectedUrl && primary.steps[0]?.type !== "navigate") {
           await page.goto(_protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
         }
       }
 
       const runtimeLog = { consoleErrors: [], pageErrors: [], failedRequests: [] };
-      const _downloadsDir = path.join(CONXA_DIR, "downloads", _runId);
+      // Isolated per-run workspace, not the OS Downloads folder and not CONXA_DIR (that's the
+      // read-only install dir — see the header comment above). sweepOldRuns() clears stale
+      // sibling run dirs before this one is created, so cleanup happens on every execution
+      // regardless of how the *previous* run ended.
+      const _runsBaseDir = path.join(CONXA_DATA_DIR, "runs");
+      sweepOldRuns(_runsBaseDir, undefined, _runId);
+      const _downloadsDir = path.join(_runsBaseDir, _runId);
       const _downloads = [];
       const _downloadSaves = [];
       const _downloadQueue = [];
+
+      const _takenNames = new Set();
 
       // Attach page diagnostic listeners — called on initial page and again after re-auth context rebuild.
       const _attachPageListeners = (pg) => {
@@ -1201,23 +1246,46 @@ async function _handleTool(name, args, extra) {
           let resolveEntry;
           const entryPromise = new Promise(resolve => { resolveEntry = resolve; });
           _downloadQueue.push(entryPromise);
+          // Reserved synchronously, before the async save — see uniqueDownloadName (EXEC-11).
+          const fname = uniqueDownloadName(download.suggestedFilename() || `download_${Date.now()}`, _takenNames);
           const savePromise = (async () => {
             fs.mkdirSync(_downloadsDir, { recursive: true });
-            const fname = download.suggestedFilename() || `download_${Date.now()}`;
-            const dest  = path.join(_downloadsDir, fname);
+            const dest = path.join(_downloadsDir, fname);
             await download.saveAs(dest);
             _downloads.push(dest);
-            resolveEntry({ filename: fname, path: dest });
+            // Extraction happens here — at download time, unconditionally — not lazily when
+            // some later upload step happens to resolve to a .zip path. Keeps replay symmetric
+            // with recording (session.py::_on_download does the same) and lets the compiler's
+            // {{downloaded_file_N_dir}} binding point at a folder that's already real by the
+            // time any step needs it. See run.js::resolveUploadPaths for the upload-side half.
+            const extractedDir = fname.toLowerCase().endsWith(".zip") ? extractZipOnce(dest) : null;
+            resolveEntry({ filename: fname, path: dest, extractedDir });
           })().catch(() => { resolveEntry(null); });
           _downloadSaves.push(savePromise);
         });
       };
 
       _attachPageListeners(page);
+      // Multi-tab: a download (or console/page error) triggered from a tab other than the
+      // initial one used to be invisible entirely — this listener was only ever attached to
+      // `page`. Every tab opened during this run (site-opened or Ctrl+T — see tabs.js) now gets
+      // the same diagnostics/download capture the initial tab has.
+      _context.on("page", _attachPageListeners);
+      // Feeds _openedTabs (declared above, outside this try block, so every exit path's
+      // closeExtraTabs(_openedTabs, ...) call below can see it). Never fires for `page` itself
+      // (created via _context.newPage() before this listener attaches) or for a page from a
+      // resumed park (opened in a prior call's closure) — only genuinely new tabs opened by
+      // *this* run's steps land here.
+      _context.on("page", (pg) => { _openedTabs.add(pg); });
 
       for (let si = 0; si < resolved.length; si++) {
         const { entry, steps, inputs, resumeFrom } = resolved[si];
         const startAt = si === 0 ? resumeFrom : 0;
+        // Backs a compiled bulk-upload step's {{downloaded_files_dir}} placeholder (see
+        // conxa_compile/compiler/upload_binding.py's _BindingState) — resolveUploadPaths already
+        // expands a folder into every file inside it, so this run's own isolated download folder
+        // just works.
+        inputs.downloaded_files_dir = _downloadsDir;
 
         try {
           const result = await runPlan(page, steps, inputs, startAt, entry.slug, {
@@ -1226,21 +1294,42 @@ async function _handleTool(name, args, extra) {
             tracker:       _runTracker,
             downloadQueue: _downloadQueue,
             structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
+            watch,
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
         } catch (runErr) {
-          // Auth-failure recovery: detect a login redirect and open a (non-blocking) re-auth
-          // window. The user signs in on their own time and calls execute_skill again with
-          // resume_from — see the session_expired handling in the outer catch below, which
-          // builds that instruction.
+          // Auth-failure handling: detect a login redirect and fail immediately, naming the
+          // app whose session died. Authentication is pre-flight only — no re-auth window
+          // opens here. The next execute_skill call's normal pre-flight gate (getGroupAuthContext)
+          // re-validates this exact app and opens its login window then; see captureReAuth's
+          // comment in browser.js for why that's deliberate, not a missing feature.
           const failedStep = runErr.failedAt ?? null;
-          if (failedStep !== null && await isAuthFailure(page)) {
-            const loginUrl = entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url || page.url();
+          // Multi-tab: check auth on the tab the step actually failed on, not always the
+          // initial tab — a login redirect in a second tab would otherwise go undetected.
+          const _failedPage = runErr.failedPage || page;
+          if (failedStep !== null && await isAuthFailure(_failedPage)) {
+            // The page that actually bounced to a login screen is the right host to resolve
+            // the dead app from — for a group pack, entry.manifest.target_url is the START
+            // app, which is wrong when a SIBLING app's session is the one that died (see
+            // CLAUDE.md group-auth notes / captureReAuth's host-matching fallback chain).
+            const loginUrl = _failedPage.url() || entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url;
             appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
-            const refreshResult = await captureReAuth(entry.company, loginUrl, authManager, SESSIONS_DIR, log);
+            const refreshResult = await captureReAuth(entry.workspace_id, loginUrl, authManager, SESSIONS_DIR, log, {
+              groupId: entry.manifest && entry.manifest.group_id,
+              fallbackUrl: entry.manifest?.target_url,
+            });
             throw Object.assign(
               new Error(refreshResult.message),
-              { session_expired: true, login_url: refreshResult.loginUrl || loginUrl, failedAt: failedStep, fromEntry: entry }
+              {
+                session_expired: true,
+                login_url: refreshResult.loginUrl || loginUrl,
+                failedAt: failedStep,
+                fromEntry: entry,
+                // No window was opened for this failure (see captureReAuth) — the shared
+                // session_expired handler below must not tell the user "once signed in", since
+                // nothing has prompted them to sign in yet at this point.
+                authWindowOpened: false,
+              }
             );
           }
           runErr.fromEntry = entry;
@@ -1250,13 +1339,20 @@ async function _handleTool(name, args, extra) {
 
       // Success — save session. Encrypt via the per-machine keytar-backed key;
       // only fall back to a plaintext write if encryption itself fails (SG-11).
-      const state = await _context.storageState();
-      try {
-        const sessionKey = await authManager.getSessionKey(primary.entry.company, log);
-        const encrypted = authManager.saveEncryptedSession(primary.entry.company, state, sessionKey, SESSIONS_DIR, log);
-        if (!encrypted) authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
-      } catch (_) {
-        authManager.saveRawSession(primary.entry.company, state, SESSIONS_DIR, log);
+      // Skipped for a Workflow Group run: the context holds N apps' sessions
+      // merged together, and dumping that back under the single company key
+      // would blur per-app boundaries — each app's own session is refreshed
+      // independently via getGroupAuthContext's per-app validate/re-auth.
+      const _isGroupRun = !!(primary.entry.manifest && primary.entry.manifest.group_id);
+      if (!_isGroupRun) {
+        const state = await _context.storageState();
+        try {
+          const sessionKey = await authManager.getSessionKey(primary.entry.workspace_id, log);
+          const encrypted = authManager.saveEncryptedSession(primary.entry.workspace_id, state, sessionKey, SESSIONS_DIR, log);
+          if (!encrypted) authManager.saveRawSession(primary.entry.workspace_id, state, SESSIONS_DIR, log);
+        } catch (_) {
+          authManager.saveRawSession(primary.entry.workspace_id, state, SESSIONS_DIR, log);
+        }
       }
 
       const url  = page.url();
@@ -1265,6 +1361,7 @@ async function _handleTool(name, args, extra) {
         : null;
       await Promise.allSettled(_downloadSaves);
       await page.close().catch(() => {});
+      await closeExtraTabs(_openedTabs);
       if (watch) {
         await _context.close().catch(() => {});
         await _browser.close().catch(() => {});
@@ -1316,6 +1413,7 @@ async function _handleTool(name, args, extra) {
         const wasDeadline = activeExecution && activeExecution.deadlineExceeded;
         const stalledStep = activeExecution ? activeExecution.step : null;
         if (page) await page.close().catch(() => {});
+        await closeExtraTabs(_openedTabs);
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
@@ -1342,38 +1440,57 @@ async function _handleTool(name, args, extra) {
       // expired before any step ran) never has a `page` to build a response around.
       if (runErr.session_expired) {
         if (page) await page.close().catch(() => {});
+        await closeExtraTabs(_openedTabs);
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
         }
         const failedAt = typeof runErr.failedAt === "number" ? runErr.failedAt : null;
-        const resumeHint = AGENT_RECOVERY_ENABLED && failedAt !== null
-          ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
-          : ` Once signed in, call execute_skill again to run this skill.`;
+        // A mid-run failure (authWindowOpened: false — see captureReAuth) never opened a
+        // window; runErr.message already tells the caller to call execute_skill again to get
+        // prompted. Only add the resume_from mechanics there, not "once signed in" — nobody's
+        // been prompted to sign in yet. The pre-flight case (authWindowOpened left undefined —
+        // a window WAS just opened before any step ran) keeps the original "once signed in" hint.
+        const resumeHint = runErr.authWindowOpened === false
+          ? (AGENT_RECOVERY_ENABLED && failedAt !== null
+              ? ` Pass resume_from: ${failedAt} on that next call to continue from where this one stopped.`
+              : "")
+          : (AGENT_RECOVERY_ENABLED && failedAt !== null
+              ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
+              : ` Once signed in, call execute_skill again to run this skill.`);
         return err(`${runErr.message}${resumeHint}`);
       }
 
-      const failResp = page
-        ? await _buildFailureResponse(page, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null)
+      // Multi-tab: use the tab the failing step actually ran on, not always the initial tab —
+      // the recovery request (and its DOM fingerprint) must describe the page that failed.
+      const _failedPage = runErr.failedPage || page;
+
+      const failResp = _failedPage
+        ? await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null)
         : err(runErr.message);
 
       // Park the live failed page for an agent-mediated (Tier 3/4) resume instead of tearing it
       // down — so the corrected selector lands on the same DOM the recovery request describes.
       // Only for single-run selector/verify failures with agent recovery enabled; auth/cancel
       // and Studio-ceiling failures are terminal and clean up normally.
-      const parkable = page && AGENT_RECOVERY_ENABLED && resolved.length === 1
+      const parkable = _failedPage && AGENT_RECOVERY_ENABLED && resolved.length === 1
         && typeof runErr.failedAt === "number" && !runErr.session_expired && !runErr.cancelled;
       if (parkable) {
         const timer = setTimeout(() => { _discardPark("ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
-        _parkedRecovery = { slug: primary.entry.slug, company: primary.entry.company,
-          page, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
-          pageFingerprint: await capturePageFingerprint(page) };
+        _parkedRecovery = { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
+          page: _failedPage, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
+          pageFingerprint: await capturePageFingerprint(_failedPage) };
+        // Only the parked page survives — any other tab this run opened (the failure wasn't
+        // necessarily on the newest tab) is closed now rather than left to leak.
+        await closeExtraTabs(_openedTabs, _failedPage);
         appendRecoveryEvent({ event: "recovery_park_created", slug: primary.entry.slug, step_index: runErr.failedAt, ttl_ms: PARK_TTL_MS });
         log("info", "recovery_park_created", { skill: primary.entry.slug, step_index: runErr.failedAt });
         _runTracker.emit("park_created", { si: runErr.failedAt });
       } else {
         if (page) await page.close().catch(() => {});
+        if (_failedPage && _failedPage !== page) await _failedPage.close().catch(() => {});
+        await closeExtraTabs(_openedTabs);
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
@@ -1397,12 +1514,12 @@ async function _handleTool(name, args, extra) {
   if (name.startsWith("skill_")) {
     const withoutPrefix = name.slice(6); // e.g. "render_create_a_service"
     const entry = Object.values(skillIndex).find(
-      (e) => `${e.company}_${e.slug.replace(/-/g, "_")}` === withoutPrefix
+      (e) => `${e.workspace_id}_${e.slug.replace(/-/g, "_")}` === withoutPrefix
     );
     if (!entry) return err(`Skill tool not found: ${name}. Call list_skills to see available skills.`);
     return _handleTool("execute_skill", {
       skill:   entry.slug,
-      company: entry.company,
+      workspace_id: entry.workspace_id,
       inputs:  args,
       watch:   true,
     });
@@ -1418,12 +1535,18 @@ async function _handleTool(name, args, extra) {
 // config-editing logic of its own.
 
 async function _phonehome() {
-  const companies = [...new Set(Object.values(skillIndex).map(s => s.company))];
+  const companies = [...new Set(Object.values(skillIndex).map(s => s.workspace_id))];
   const body = JSON.stringify({
     runtime_version: RUNTIME_VERSION,
     companies,
     platform: process.platform,
     install_id: INSTALL_ID,
+    // Added for the release system's Deployment view (docs/App-Flow.md) — optional
+    // server-side, so an older cloud that doesn't know this field yet is unaffected.
+    skill_versions: installedSkillVersions(skillIndex),
+    // Per-skill sync failures (checksum mismatch, download/activation error) —
+    // lets the Deployment dashboard show "failed" instead of just "pending".
+    sync_errors: collectSyncErrors(SKILL_PACKS_DIR),
   });
   await new Promise((resolve) => {
     const req = httpClient.request(`${CONXA_API}/api/v1/telemetry/runtime-start`, {

@@ -10,6 +10,7 @@ const { resolve: resolveSignals, scoreCandidate } = require("./resolver");
 const { signalToLocator, gatherCandidates, bundleFingerprint, _extractDescriptor } = require("./resolve_adapter");
 const { detectPreExecDrift } = require("./drift");
 const pageScripts = require("./page_scripts");
+const { createTabRegistry, resolveStepPage, stepInheritsPage } = require("./tabs");
 
 const CONXA_DIR = process.env.CONXA_DIR || path.join(os.homedir(), ".conxa");
 
@@ -22,10 +23,11 @@ const CAPTURE_PRESTEP      = process.env.CONXA_CAPTURE_PRESTEP !== "0";
 const ACTION_TIMEOUT_MS = envNumber("CONXA_ACTION_TIMEOUT_MS", 2500);
 const SECONDARY_ACTION_TIMEOUT_MS = envNumber("CONXA_SECONDARY_ACTION_TIMEOUT_MS", 2500);
 const RECOVERY_LOCATOR_TIMEOUT_MS = envNumber("CONXA_RECOVERY_LOCATOR_TIMEOUT_MS", 3000);
-const PAGE_LOAD_TIMEOUT_MS = envNumber("CONXA_PAGE_LOAD_TIMEOUT_MS", 8000);
+const PAGE_LOAD_TIMEOUT_MS = envNumber("CONXA_PAGE_LOAD_TIMEOUT_MS", 60000);
 
 const RETRY_BUDGET_MAX = 3;
 const DOWNLOAD_WAIT_TIMEOUT_MS = envNumber("CONXA_DOWNLOAD_WAIT_MS", 120000);
+const RUN_RETENTION_MS = envNumber("CONXA_RUN_RETENTION_DAYS", 7) * 86400000;
 const RECOVERY_LOG = path.join(CONXA_DIR, "logs", "recovery.log");
 const RECOVERY_LOG_MAX = 10 * 1024 * 1024;
 
@@ -36,16 +38,30 @@ const INTERACTIVE_STEP_TYPES = new Set([
   "drag_drop", "keyboard_shortcut", "upload",
 ]);
 
+// tab_open/tab_switch/popup are NOT here (see tabs.js): the tab switch they mark already
+// happened via resolveStepPage() before executeStep() runs for any step, including these
+// markers, so their own handlers really are empty — but they're declared explicitly below,
+// not folded into this blanket list, so "no-op step type" isn't read as "nothing happens
+// around this step" for the one category where something very much does.
 const NOOP_STEP_TYPES = [
-  "tab_open", "tab_switch", "popup", "frame_enter", "frame_exit",
+  "frame_enter", "frame_exit",
+  // "upload_intent" (native-OS-file-picker provenance) never actually reaches this dispatch as
+  // its own type in a real skill pack — skill_package_builder_saved_skill.py's
+  // _saved_step_to_execution_step collapses it to type "upload" (real handler below) at build
+  // time, same value/selector. Kept here only as defensive dead code in case that collapsing
+  // rule ever regresses; don't read it as "upload_intent uploads are a no-op" — they aren't.
   "upload_intent", "dialog_appeared", "dialog_accept",
   "dialog_dismiss", "file_chooser_opened", "clipboard_copy", "clipboard_paste",
 ];
 
-// Step types that may trigger a real page navigation and need waitForLoadState after them
+// Step types that may trigger a real page navigation and need waitForLoadState after them.
+// tab_open/tab_switch/popup are included so the first real step after a tab-boundary marker
+// gets a load wait too — the marker itself is a no-op, but the tab it names may still be
+// mid-navigation (e.g. a target=_blank popup that opens at about:blank).
 const NAVIGATION_STEP_TYPES = new Set([
   "navigate", "click", "dblclick", "right_click", "keyboard_shortcut",
   "if_present", "try_dismiss", "wait_for_one_of",
+  "tab_open", "tab_switch", "popup",
 ]);
 
 const DIALOG_CONTAINERS = ['[role="dialog"]', '[role="alertdialog"]', '[aria-modal="true"]', ".modal"];
@@ -90,7 +106,9 @@ async function waitForPageLoad(page, prevType) {
 
   await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
   if (process.env.CONXA_WAIT_NETWORKIDLE === "1") {
-    await page.waitForLoadState("networkidle", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
+    // networkidle never fires on analytics-heavy sites, so it never inherits the full
+    // page-load budget — capped independently of how high PAGE_LOAD_TIMEOUT_MS is set.
+    await page.waitForLoadState("networkidle", { timeout: Math.min(PAGE_LOAD_TIMEOUT_MS, 8000) }).catch(() => {});
   }
 }
 
@@ -102,6 +120,101 @@ async function waitForPageLoad(page, prevType) {
 function interpolate(value, inputs) {
   if (typeof value !== "string") return value;
   return value.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (_, key) => String(inputs[key] ?? ""));
+}
+
+// Mirrors conxa_compile/compiler/upload_binding.py's _RUNTIME_ONLY_PLACEHOLDER_RE — the names the
+// compiler binds an upload step to when it matched a same-run download, never declared as a real
+// skill input (see filter_runtime_only_inputs). Used only to tell a genuinely-missing declared
+// input apart from a download that never produced a file — see the `upload` handler below.
+const DOWNLOAD_ONLY_PLACEHOLDER_RE = /^\{\{\s*(downloaded_file(_\d+)?(_dir)?|downloaded_files_dir)\s*\}\}$/;
+
+// An upload input's resolved value is either one file path or a *folder* path, and a folder
+// means "every file directly inside it". This is what makes a 20-file (or 200-file) upload
+// expressible at all: the agent pastes one directory location instead of shuttling every file
+// through the conversation, and a multi-select recorded in the Studio replays as the multi-
+// select it was. Playwright's setInputFiles takes an array, so the single-file case is just an
+// array of one and there is no second code path.
+//
+// Sorted naturally (file-2 before file-10) rather than by raw codepoint, because for a batch
+// upload the *order* is part of the outcome the user is checking — see EXEC-15.
+// Extract a zip into a sibling folder inside the same run's workspace — still covered by
+// sweepOldRuns, no separate cleanup needed. Idempotent so a retried step or a second
+// reference to the same zip doesn't re-extract; uniqueDownloadName (EXEC-11) already
+// guarantees the zip's own filename is unique within the run's folder, so the derived
+// extraction folder name is unique too.
+function extractZipOnce(zipPath) {
+  const dest = path.join(path.dirname(zipPath), path.basename(zipPath, path.extname(zipPath)));
+  if (!fs.existsSync(dest)) {
+    const AdmZip = (global.__hostRequire || require)("adm-zip");
+    new AdmZip(zipPath).extractAllTo(dest, true);
+    // An empty zip leaves nothing on disk to extract — create the (empty) folder anyway so
+    // the empty-folder check a few lines below in resolveUploadPaths can fire its own clear
+    // error instead of readdirSync throwing ENOENT here.
+    fs.mkdirSync(dest, { recursive: true });
+  }
+  // A zip that just wraps one top-level folder (the common case when a tool zips a
+  // directory) — descend into it once so the folder-expansion step below sees files,
+  // not one subdirectory it would otherwise skip (folder expansion is non-recursive).
+  const entries = fs.readdirSync(dest, { withFileTypes: true });
+  if (entries.length === 1 && entries[0].isDirectory()) {
+    return path.join(dest, entries[0].name);
+  }
+  return dest;
+}
+
+function resolveUploadPaths(rawValue) {
+  let target = String(rawValue ?? "").trim();
+  // Windows Explorer's "Copy as path" wraps any path containing spaces in double quotes.
+  if (target.length >= 2 && target.startsWith('"') && target.endsWith('"')) {
+    target = target.slice(1, -1).trim();
+  }
+  if (!target) {
+    throw new Error("upload step has no file path — supply the skill's file_path input");
+  }
+
+  if (target.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(target);
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "string") {
+        const paths = parsed.map((item) => String(item ?? "").trim()).filter(Boolean);
+        if (!paths.length) {
+          throw new Error("upload step has no file path — supply the skill's file_path input");
+        }
+        return paths;
+      }
+    } catch {
+      // Not a JSON path list — fall through to single-path handling.
+    }
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    // Let setInputFiles raise its own not-found error for a plain file path — it names the
+    // path and is already clear. Only a directory needs the expansion below.
+    return [target];
+  }
+  // A .zip target uploads verbatim — replay must upload exactly what was picked while
+  // recording (the zip itself, or specific files already extracted from it), never silently
+  // substitute one for the other. Extraction now happens eagerly at download time (server.js's
+  // download listener calls extractZipOnce right after saveAs), so an upload step bound to the
+  // extracted contents already points at that sibling folder, not at the zip's own path — see
+  // conxa_compile/compiler/upload_binding.py's binding rules (moved out of
+  // skill_package_builder_saved_skill.py::_bind_downloads_to_uploads, now a 3-line delegate).
+  if (!stat.isDirectory()) return [target];
+
+  const files = fs.readdirSync(target, { withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => entry.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+    .map(name => path.join(target, name));
+  // Same reasoning as the empty-value throw above: an empty folder must fail loudly, not
+  // upload nothing and report success.
+  if (!files.length) {
+    throw new Error(`upload folder has no files in it: ${target}`);
+  }
+  return files;
 }
 
 function unique(values) {
@@ -313,8 +426,9 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
         return await fn(locator);
       } catch (err) {
         lastErr = err;
-        // Ambiguity / recompile-required cannot be fixed by waiting — surface immediately.
-        if (err && (err.ambiguous || err.recompileRequired)) throw err;
+        // Ambiguity / recompile-required / bad input cannot be fixed by waiting — surface
+        // immediately rather than re-resolving until the action deadline.
+        if (err && (err.ambiguous || err.recompileRequired || err.badInput)) throw err;
         if (Date.now() >= deadline) throw err;
         await page.waitForTimeout(120);
       }
@@ -641,7 +755,7 @@ const HANDLERS = {
   },
 
   navigate: async (page, step, inputs) => {
-    await page.goto(interpolate(step.url || "", inputs), { timeout: 15000, waitUntil: "domcontentloaded" });
+    await page.goto(interpolate(step.url || "", inputs), { timeout: PAGE_LOAD_TIMEOUT_MS, waitUntil: "domcontentloaded" });
   },
 
   scroll: async (page, step, inputs) => {
@@ -794,24 +908,37 @@ const HANDLERS = {
   },
 
   upload: async (page, step, inputs) => {
-    let filePath = interpolate(step.value || "", inputs).trim();
-    // Windows Explorer's "Copy as path" wraps any path containing spaces in double quotes.
-    // Node only recognizes a bare drive letter ("C:\...") as absolute, so a quoted path is
-    // silently treated as relative and joined onto the runtime's own working directory instead
-    // of erroring clearly. Strip one matching pair before it ever reaches setInputFiles.
-    if (filePath.length >= 2 && filePath.startsWith('"') && filePath.endsWith('"')) {
-      filePath = filePath.slice(1, -1).trim();
+    const rawValue = String(step.value || "");
+    const resolved = interpolate(rawValue, inputs);
+    // A bare {{downloaded_file...}}-style placeholder that resolved to "" isn't a missing
+    // declared input — filter_runtime_only_inputs (compiler) deliberately never declares these,
+    // so telling the user to "supply" one is a dead end. It means the recorded download for this
+    // step didn't produce a file during this run (timed out, or the download never fired).
+    if (!resolved.trim() && DOWNLOAD_ONLY_PLACEHOLDER_RE.test(rawValue.trim())) {
+      throw new Error(
+        "upload step has no file path — the recorded download for this step didn't produce a " +
+        "file during this run (it may have timed out or never started)",
+      );
     }
-    // Deliberately NOT the best-effort skip used by check/assert: silently not uploading a
-    // document while reporting the step as successful is the worst failure mode this action
-    // has. server.js's required-input gate should already reject a missing file_path, so this
-    // is defence-in-depth for a hand-authored step whose value never resolves.
-    if (!filePath) {
-      throw new Error("upload step has no file path — supply the skill's file_path input");
-    }
+    const filePaths = resolveUploadPaths(resolved);
 
-    await runLocatorStep(page, step, inputs, locator => {
-      return locator.setInputFiles(filePath, { timeout: ACTION_TIMEOUT_MS });
+    await runLocatorStep(page, step, inputs, async locator => {
+      // Whether this control takes one file or many is a property of the live page, not of
+      // what happened to be picked while recording — so ask the element, which stays correct
+      // for packs compiled before this existed and for a site that changes the control later.
+      // Only worth a round-trip when more than one file is actually on the table.
+      if (filePaths.length > 1) {
+        // Unknown (detached, cross-origin, evaluate blocked) stays permissive: let
+        // setInputFiles have its say rather than blocking an upload on a failed probe.
+        const acceptsMultiple = await locator.evaluate(el => el.multiple === true).catch(() => true);
+        if (!acceptsMultiple) {
+          throw Object.assign(new Error(
+            `this upload control accepts only one file, but ${filePaths.length} files were given ` +
+            `— pass a single file path instead of a folder`,
+          ), { badInput: true });
+        }
+      }
+      return locator.setInputFiles(filePaths, { timeout: ACTION_TIMEOUT_MS });
     });
   },
 
@@ -873,15 +1000,84 @@ for (const type of NOOP_STEP_TYPES) {
   HANDLERS[type] = async () => {};
 }
 
-HANDLERS["download_observed"] = async (_page, _step, _inputs, ctx) => {
+// The `page` handed to these handlers is already the resolved target tab (resolveStepPage ran
+// before executeStep for this step like every other) — there is nothing left to do here.
+HANDLERS["tab_open"] = async () => {};
+HANDLERS["tab_switch"] = async () => {};
+HANDLERS["popup"] = async () => {};
+
+HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   const queue = ctx && ctx.downloadQueue;
-  if (!queue || !queue.length) return;
+  if (!queue) return;
+  // server.js's `page.on("download", ...)` listener only pushes onto this queue once Playwright's
+  // download event actually fires — which can trail the triggering click by real wall-clock time
+  // (server round-trip, header negotiation). Checking the queue once and bailing when it's still
+  // empty raced that arrival far too often: this step would silently skip binding
+  // downloaded_file*, and a later upload step would fail with a "no file path" error that looked
+  // like a missing input rather than a download that just hadn't started yet. Wait for an entry
+  // to arrive, bounded by the same budget used below for the download itself to finish.
+  if (!queue.length) {
+    await pollPositive(() => queue.length > 0, DOWNLOAD_WAIT_TIMEOUT_MS);
+  }
+  if (!queue.length) return;
   const pending = queue.shift();
-  await Promise.race([
+  const entry = await Promise.race([
     pending,
     new Promise(resolve => setTimeout(resolve, DOWNLOAD_WAIT_TIMEOUT_MS)),
   ]);
+  // Bind the saved path into `inputs` so a later `upload` step in this same run can reference
+  // it — `downloaded_file` always holds the latest download, `downloaded_file_N` (1-indexed,
+  // in download order) disambiguates when several downloads happen in one run. See
+  // conxa_compile/compiler/upload_binding.py's _BindingState for how the compiler decides which
+  // one an upload step's value points at (EXEC-10/W-2 — previously a compiled skill had no way
+  // to hand a file from one tab to another without an LLM round-trip per file).
+  if (entry && entry.path) {
+    inputs.downloaded_file = entry.path;
+    const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
+    inputs[`downloaded_file_${n}`] = entry.path;
+    // A zip is always extracted at download time (server.js) — bind its sibling extraction
+    // folder too, so an upload step the compiler matched against specific files inside that
+    // zip (upload_binding.py's _BindingState) has somewhere to resolve `{{downloaded_file_dir}}`
+    // / `{{downloaded_file_N_dir}}` against. Absent entirely for a non-zip download.
+    if (entry.extractedDir) {
+      inputs.downloaded_file_dir = entry.extractedDir;
+      inputs[`downloaded_file_${n}_dir`] = entry.extractedDir;
+    }
+  }
 };
+
+// Two downloads in one run can suggest the same filename (`invoice.pdf` from a per-record
+// export), and saving both to one path silently loses the first (EXEC-11). Reserve a distinct
+// name in `taken` — callers must do this synchronously, before any await, so concurrent
+// download events can't both claim the same one.
+function uniqueDownloadName(fname, taken) {
+  const ext  = path.extname(fname);
+  const base = path.basename(fname, ext);
+  let candidate = fname;
+  for (let n = 2; taken.has(candidate); n++) candidate = `${base} (${n})${ext}`;
+  taken.add(candidate);
+  return candidate;
+}
+
+// Nothing else ever deletes a finished run's workspace (W-7), so files accumulate under
+// {CONXA_DATA_DIR}/runs/ forever. Sweep it at the start of every execution — rather than
+// hooking success/failure/cancel/park separately — so cleanup runs no matter how the
+// *previous* run ended. Never touches the run currently starting up.
+function sweepOldRuns(runsBaseDir, maxAgeMs = RUN_RETENTION_MS, excludeRunId = null) {
+  let entries;
+  try { entries = fs.readdirSync(runsBaseDir, { withFileTypes: true }); }
+  catch (_) { return; }
+  const cutoff = Date.now() - maxAgeMs;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === excludeRunId) continue;
+    const dir = path.join(runsBaseDir, entry.name);
+    try {
+      if (fs.statSync(dir).mtimeMs < cutoff) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (_) { /* retried on next run */ }
+  }
+}
 
 async function executeStep(page, step, inputs, ctx = {}) {
   const handler = HANDLERS[step.type];
@@ -971,11 +1167,19 @@ async function anyRootHasMatch(roots, target) {
   return false;
 }
 
+const URL_ASSERTION_TYPES = new Set(["url_changed", "url_exact", "url_pattern", "url"]);
+
 async function evaluateAssertion(roots, page, a, inputs, baseline) {
   const type = String(a.type || "").toLowerCase();
   const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
   const required = a.required !== false;
-  const timeout = Number(a.timeout_ms) || 3000;
+  // A URL assertion following navigation shares the page's real load budget, not the compiler's
+  // narrower default (compiled packs can carry a short wait_for timeout from before the page-load
+  // budget was raised) — otherwise a slow navigation fails its own assertion before the page ever
+  // finishes loading.
+  const timeout = URL_ASSERTION_TYPES.has(type)
+    ? Math.max(Number(a.timeout_ms) || 0, PAGE_LOAD_TIMEOUT_MS)
+    : (Number(a.timeout_ms) || 3000);
   const startedAt = Date.now();
   let ok = true;
 
@@ -1384,19 +1588,32 @@ function stepFailure(step, stepIndex, cause, preShot) {
       err.overrideCandidates = cause.overrideCandidates;
     }
     if (cause.frameNotFound) err.frameNotFound = true;
+    if (cause.tabNotFound) err.tabNotFound = true;
+    if (cause.failedPage) err.failedPage = cause.failedPage;
   }
   return err;
 }
 
-async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, downloadQueue, structuralFingerprint } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, downloadQueue, structuralFingerprint, watch } = {}) {
   const t = tracker || { emit: () => {} };
+  // Every invocation starts with a fresh budget. The success path also clears it, but a
+  // *failed* run used to leave its attempt counts behind in this long-lived process, so the
+  // next run of the same skill started already exhausted and recovery never engaged (EXEC-12).
+  clearRetryBudget(slug);
   let recoveredSteps = 0;
   let hasExecutedStep = false;
   let prevStepType = null;
+  let prevPage = null;
+
+  // Multi-tab: each step declares which tab it runs on (step.tab — see tabs.js). The registry
+  // binds tab_0 to startPage and starts listening for new pages immediately, before any step
+  // runs, so a tab opened by an early step is queued even if a later step is the first to ask
+  // for it.
+  const tabs = createTabRegistry(startPage);
 
   // Settle the page before the first step so step 0 doesn't fire against a still-hydrating SPA.
   // Uses the same timeout constant as navigation waits; best-effort (catch swallowed).
-  await page.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
+  await startPage.waitForLoadState("domcontentloaded", { timeout: PAGE_LOAD_TIMEOUT_MS }).catch(() => {});
 
   // Pre-execution drift gate (advisory only). On a fresh run, check whether the
   // pack's recorded structural landmarks are still present. If most have vanished
@@ -1404,14 +1621,14 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
   // This NEVER blocks: execution proceeds and per-step recovery still applies.
   if (startFrom === 0 && structuralFingerprint && Array.isArray(structuralFingerprint.landmarks) && structuralFingerprint.landmarks.length) {
     try {
-      const verdict = await detectPreExecDrift(page, structuralFingerprint);
+      const verdict = await detectPreExecDrift(startPage, structuralFingerprint);
       if (verdict.drift) {
         t.emit("drift_detected", {
           total: verdict.total,
           missing: verdict.missing,
           drift_ratio: Number(verdict.driftRatio.toFixed(3)),
           missing_intents: (verdict.missingIntents || []).slice(0, 5),
-          url: (() => { try { return page.url(); } catch (_) { return ""; } })(),
+          url: (() => { try { return startPage.url(); } catch (_) { return ""; } })(),
         });
       }
     } catch (_) { /* advisory gate never affects execution */ }
@@ -1424,7 +1641,28 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
 
     const step = steps[i];
     if (onStep) onStep(i);
-    if (hasExecutedStep) await waitForPageLoad(page, prevStepType);
+
+    // Resolve which live page this step runs on. Never falls back to the previous step's page
+    // on a miss (see resolveStepPage) — a same-looking element on the wrong tab is worse than
+    // a clean failure here. Exception: a tab_open/tab_switch/popup marker that carries no `tab`
+    // block names no tab at all (a recorder mis-stamp, e.g. a popup event attributed to the
+    // page that was active when the event drained rather than the page that fired it) — treating
+    // that as "go to tab_0" bounces execution back to wherever it started. Since these steps are
+    // no-ops (see NOOP marker handlers below) and every real step still resolves its own tab
+    // independently, simply staying on the current page is always safe here.
+    let page;
+    if (hasExecutedStep && prevPage && stepInheritsPage(step)) {
+      page = prevPage;
+    } else {
+      try {
+        page = await resolveStepPage(tabs, step, { watch, loadTimeoutMs: PAGE_LOAD_TIMEOUT_MS });
+      } catch (tabErr) {
+        t.emit("step_fail", { si: i, fc: "tab_not_found" });
+        throw stepFailure(step, i, tabErr, null);
+      }
+    }
+
+    if (hasExecutedStep && page === prevPage) await waitForPageLoad(page, prevStepType);
 
     const preShot = await maybeCapturePreStep(page, step);
     const primarySelector = baseSelector(step, inputs);
@@ -1457,10 +1695,21 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
       t.emit("tier_ok", { si: i, tier: "tier1_compiled" });
       hasExecutedStep = true;
       prevStepType = step.type;
+      prevPage = page;
       continue;
     } catch (err) {
       primaryErr = err;
       primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page, step, inputs);
+      primaryErr.failedPage = page;
+    }
+
+    // Same reasoning as the auth check below: the caller supplied input the page cannot accept
+    // (a folder of 20 files for a single-file upload control). No amount of re-finding the
+    // element fixes that, and letting it reach Tier 3+ would spend LLM tokens on a mistake the
+    // error message already explains. Fail straight through with that message intact.
+    if (primaryErr && primaryErr.badInput) {
+      t.emit("step_fail", { si: i, fc: "bad_input" });
+      throw stepFailure(step, i, primaryErr, preShot);
     }
 
     // A login redirect is an auth condition, not a selector/DOM problem the T1/T2 cascade can
@@ -1491,12 +1740,15 @@ async function runPlan(page, steps, inputs, startFrom, slug, { onStep, cancelChe
     recoveredSteps++;
     hasExecutedStep = true;
     prevStepType = step.type;
+    prevPage = page;
   }
 
   return { recoveredSteps };
 }
 
-// Auth-failure detection — login redirect or session-expired page heuristics.
+// Auth-failure detection — login redirect or session-expired page heuristics. Deliberately
+// broader/unanchored than browser.js's LOGIN_PATH_RE (which answers a different question —
+// "has login-completion happened yet" — see its comment); don't merge them.
 const AUTH_FAILURE_URL_RE = /\/(login|signin|sign-in|auth|logout|session-expired)(\/|$|\?)/i;
 const AUTH_FAILURE_TITLE_RE = /sign\s*in|log\s*in|session\s*expired|authentication\s*required/i;
 
@@ -1513,10 +1765,14 @@ async function isAuthFailure(page) {
 module.exports = {
   appendRecoveryEvent,
   interpolate,
+  resolveUploadPaths,
+  extractZipOnce,
   tryLocator,
   enrichStepsWithRecovery,
   applyStepOverrides,
   executeStep,
+  uniqueDownloadName,
+  sweepOldRuns,
   runPlan,
   checkRetryBudget,
   clearRetryBudget,

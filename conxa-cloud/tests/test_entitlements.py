@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from conxa_core.config import settings
@@ -7,13 +8,13 @@ from conxa_core.db import db_set
 from app.main import app
 from app.services import llm_metering
 from app.services.entitlements import current_period, usage_key
-from app.services.saas import upsert_billing
+from app.services.saas import Principal, upsert_billing
 
 client = TestClient(app)
 STUDIO_HEADER = {"X-Conxa-Client": settings.llm_proxy_client_header}
 
 
-def _set_plan(plan: str, **limits: int) -> None:
+def _set_plan(plan: str, **limits: object) -> None:
     patch: dict[str, object] = {"plan": plan}
     if limits:
         patch["entitlement_overrides"] = limits
@@ -31,9 +32,12 @@ def test_basic_plan_maps_to_starter(monkeypatch, tmp_path):
     body = r.json()
     assert body["plan"] == "starter"
     assert body["meters"]["seats"]["limit"] == 3
-    assert body["meters"]["skill_pack_slots"]["limit"] == 3
-    assert body["meters"]["compile_credits"]["limit"] == 300
-    assert body["meters"]["human_edit_tokens"]["limit"] == 10_000_000
+    assert body["meters"]["machines"]["limit"] == 3
+    assert body["meters"]["compile_credits"]["limit"] == 200
+    assert body["meters"]["human_edit_tokens"]["limit"] == 2_500_000
+    assert body["capabilities"]["distribution"] == "external"
+    assert body["capabilities"]["white_label"] is False
+    assert body["capabilities"]["ops_tier"] == "basic"
 
 
 def test_paid_usage_window_follows_razorpay_payment_date(monkeypatch, tmp_path):
@@ -73,7 +77,6 @@ def test_compile_reserve_commit_release_idempotency(monkeypatch, tmp_path):
 
     body = {
         "reservation_id": "cmp_test_one",
-        "plugin_id": "plugin_1",
         "workflow_id": "wf_1",
         "session_id": "sess_1",
     }
@@ -85,8 +88,8 @@ def test_compile_reserve_commit_release_idempotency(monkeypatch, tmp_path):
 
     assert first.status_code == 200, first.text
     assert duplicate.status_code == 200, duplicate.text
-    assert first.json()["remaining_compile_credits"] == 49
-    assert duplicate.json()["remaining_compile_credits"] == 49
+    assert first.json()["remaining_compile_credits"] == 24
+    assert duplicate.json()["remaining_compile_credits"] == 24
     assert commit.status_code == 200, commit.text
     assert duplicate_commit.status_code == 200, duplicate_commit.text
     assert release_after_commit.status_code == 200, release_after_commit.text
@@ -94,7 +97,7 @@ def test_compile_reserve_commit_release_idempotency(monkeypatch, tmp_path):
 
     entitlements = client.get("/api/v1/entitlements/current").json()
     assert entitlements["meters"]["compile_credits"]["used"] == 1
-    assert entitlements["meters"]["compile_credits"]["remaining"] == 49
+    assert entitlements["meters"]["compile_credits"]["remaining"] == 24
 
 
 def test_compile_reserve_blocks_last_credit_concurrently(monkeypatch, tmp_path):
@@ -170,7 +173,7 @@ def test_compile_llm_usage_does_not_consume_human_edit_pool(monkeypatch, tmp_pat
     from app.api import llm_proxy_routes
 
     class FakeRouter:
-        def route_text(self, task, payload, timeout_ms, *, error_detail=None):
+        def route_text(self, task, payload, timeout_ms, *, error_detail=None, pool=None):
             return {"text": "ok"}
 
     before = llm_metering.get_usage("wrk_local")["requests"]
@@ -187,32 +190,29 @@ def test_compile_llm_usage_does_not_consume_human_edit_pool(monkeypatch, tmp_pat
     assert entitlements["meters"]["human_edit_tokens"]["used"] == 0
 
 
-def test_installer_upload_duplicate_version_rejected_but_new_version_allowed(monkeypatch, tmp_path):
-    """Installer upload is no longer slot-gated (that moved to skill-pack publish,
-    see test_skill_pack_slots_block_new_slug_but_allow_same_slug_update below) —
-    only the per-version duplicate-upload guard remains here."""
+def test_installer_upload_duplicate_version_rejected_but_new_slug_allowed(monkeypatch, tmp_path):
+    """There is no per-slug slot limit any more (removed 2026-08-08) — a
+    workspace may publish under unlimited slugs on any plan. Only the
+    per-version duplicate-upload guard, and the internal/external distribution
+    gate (see test_distribution_gating_on_installer_upload below), remain."""
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    monkeypatch.setattr(settings, "entitlements_enforce_installers", True)
-    _set_plan("free", skill_pack_slots=1)
+    _set_plan("free")
 
     first = client.post(
-        "/api/v1/plugins/slot-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
+        "/api/v1/workflows/slug-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
         content=b"MZfirst",
     )
     duplicate = client.post(
-        "/api/v1/plugins/slot-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=Duplicate",
+        "/api/v1/workflows/slug-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=Duplicate",
         content=b"MZduplicate",
     )
     update = client.post(
-        "/api/v1/plugins/slot-one/installer/upload?filename=Setup.exe&version=1.0.1&release_notes=Second",
+        "/api/v1/workflows/slug-one/installer/upload?filename=Setup.exe&version=1.0.1&release_notes=Second",
         content=b"MZsecond",
     )
-    # Installer upload alone never consumed a slot even before this rename — but now
-    # it doesn't check the limit at all, so a second company's installer upload
-    # succeeds even at the plan's 1-slot limit (skill-pack publish is what's gated).
-    unblocked = client.post(
-        "/api/v1/plugins/slot-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
+    another_slug = client.post(
+        "/api/v1/workflows/slug-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=First",
         content=b"MZother",
     )
 
@@ -220,39 +220,213 @@ def test_installer_upload_duplicate_version_rejected_but_new_version_allowed(mon
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "installer_version_exists"
     assert update.status_code == 200, update.text
-    assert unblocked.status_code == 200, unblocked.text
+    assert another_slug.status_code == 200, another_slug.text
 
 
-def test_skill_pack_slots_block_new_slug_but_allow_same_slug_update(monkeypatch, tmp_path):
+def _publish(slug: str, skill_slug: str, version: str):
+    import base64
+
+    # A byte-identical artifact is now rejected outright (skill_pack_artifact_unchanged
+    # — see release-system plan §5), so give each call a distinct marker file rather
+    # than the empty file list every prior version shared. One skill per call — see
+    # the per-skill publishing architecture (1 Workflow = 1 Skill = 1 Skill Package).
+    marker = base64.b64encode(f"{skill_slug}:{version}".encode()).decode()
+    return client.post(
+        "/api/v1/workflows/publish",
+        json={
+            "slug": slug,
+            "skill_slug": skill_slug,
+            "skill_pack_version": version,
+            "files": [{"path": "execution.json", "content_base64": marker}],
+        },
+    )
+
+
+def test_downgrade_soft_locks_oldest_excess_workflows(monkeypatch, tmp_path):
+    """A workspace that published up to its plan's cap, then downgrades to a
+    lower cap, keeps every workflow it built — but only the newest N stay
+    active. The rest are locked (not deleted) until it upgrades again, and
+    republishing a locked workflow, or publishing a brand-new one past the
+    cap, is blocked."""
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    monkeypatch.setattr(settings, "entitlements_enforce_installers", True)
-    _set_plan("free", skill_pack_slots=1)
+    monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
+    _set_plan("free", compile_credits=2)
 
-    def _publish(slug: str, version: str) -> object:
-        return client.post(
-            "/api/v1/plugins/publish",
-            json={"slug": slug, "skill_pack_version": version, "release_notes": "notes", "skills": [], "files": []},
-        )
-
-    first = _publish("slot-one", "1.0.0")
-    duplicate = _publish("slot-one", "1.0.0")
-    update = _publish("slot-one", "1.0.1")
-    blocked = _publish("slot-two", "1.0.0")
+    first = _publish("acme", "wf1", "1.0.0")
+    second = _publish("acme", "wf2", "1.0.0")
+    over_cap = _publish("acme", "wf3", "1.0.0")
 
     assert first.status_code == 200, first.text
-    assert duplicate.status_code == 409
-    assert duplicate.json()["detail"] == "skill_pack_version_exists"
-    assert update.status_code == 200, update.text
-    assert blocked.status_code == 402
-    assert blocked.json()["detail"] == "installer_limit_exceeded"
+    assert second.status_code == 200, second.text
+    assert over_cap.status_code == 402, over_cap.text
+    assert over_cap.json()["detail"] == "workflow_limit_exceeded"
+
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    assert entitlements["workflow_lock"]["active"] == 2
+    assert entitlements["workflow_lock"]["locked"] == 0
+
+    # Downgrade below the current workflow count.
+    _set_plan("free", compile_credits=1)
+
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    assert entitlements["workflow_lock"]["active"] == 1
+    assert entitlements["workflow_lock"]["locked"] == 1
+    locked_ids = {
+        row["workflow_id"] for row in entitlements["workflow_lock"]["workflows"] if row["locked"]
+    }
+    assert locked_ids == {"wf1"}  # oldest published stays locked, wf2 (newer) stays active
+
+    republish_locked = _publish("acme", "wf1", "1.0.3")
+    republish_active = _publish("acme", "wf2", "1.0.4")
+
+    assert republish_locked.status_code == 402, republish_locked.text
+    assert republish_locked.json()["detail"] == "workflow_locked"
+    assert republish_active.status_code == 200, republish_active.text
+
+    # Upgrading again reopens room and unlocks the oldest workflow back up.
+    _set_plan("free", compile_credits=2)
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    assert entitlements["workflow_lock"]["locked"] == 0
+    assert entitlements["workflow_lock"]["active"] == 2
+
+
+def test_distribution_gating_on_installer_upload(monkeypatch, tmp_path):
+    """Free builds internal-only installers; Starter/Pro/Enterprise may
+    distribute externally (Starter's volume is naturally bounded by its
+    compile-credit ceiling, not a distribution flag). Custom branding is
+    Enterprise-only. Enforced server-side in
+    publish_routes._upload_installer_impl, not just UI-hidden."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_distribution", True)
+    _set_plan("free")
+
+    internal_ok = client.post(
+        "/api/v1/workflows/dist-one/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x",
+        content=b"MZinternal",
+    )
+    external_blocked = client.post(
+        "/api/v1/workflows/dist-two/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
+        content=b"MZexternal",
+    )
+
+    assert internal_ok.status_code == 200, internal_ok.text
+    assert external_blocked.status_code == 402
+    assert external_blocked.json()["detail"] == "distribution_not_permitted"
+
+    _set_plan("starter")
+    starter_external_ok = client.post(
+        "/api/v1/workflows/dist-starter/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
+        content=b"MZstarterexternal",
+    )
+    assert starter_external_ok.status_code == 200, starter_external_ok.text
+
+    _set_plan("pro")
+    external_ok = client.post(
+        "/api/v1/workflows/dist-three/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external",
+        content=b"MZexternal2",
+    )
+    white_label_blocked = client.post(
+        "/api/v1/workflows/dist-four/installer/upload"
+        "?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external&white_label=true",
+        content=b"MZbranded",
+    )
+
+    assert external_ok.status_code == 200, external_ok.text
+    assert white_label_blocked.status_code == 402
+    assert white_label_blocked.json()["detail"] == "white_label_not_permitted"
+
+    _set_plan("enterprise", distribution="external", white_label=True)
+    white_label_ok = client.post(
+        "/api/v1/workflows/dist-five/installer/upload"
+        "?filename=Setup.exe&version=1.0.0&release_notes=x&distribution=external&white_label=true",
+        content=b"MZbranded2",
+    )
+    assert white_label_ok.status_code == 200, white_label_ok.text
+
+
+def test_machine_limit_blocks_new_device_but_allows_known_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    from app.services.entitlements import EntitlementError, ensure_machine_slot
+
+    _set_plan("free")  # free's machine limit is 1
+    principal = Principal(
+        user_id="u1", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+
+    first = ensure_machine_slot(principal, "machine-a", "10.0.0.1")
+    assert first["used"] == 1
+
+    with pytest.raises(EntitlementError) as exc_info:
+        ensure_machine_slot(principal, "machine-b", "10.0.0.2")
+    assert exc_info.value.code == "machine_limit_exceeded"
+
+    # Re-registering the already-known machine keeps working — it doesn't
+    # double-count against the limit.
+    again = ensure_machine_slot(principal, "machine-a", "10.0.0.1")
+    assert again["used"] == 1
+
+
+
+def test_trial_expired_blocks_compile_but_not_sync(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
+    import time as time_mod
+
+    upsert_billing("wrk_local", {"plan": "free", "trial_started_at": time_mod.time() - 31 * 86400})
+
+    entitlements = client.get("/api/v1/entitlements/current")
+    reserve = client.post("/api/v1/usage/compile/reserve", json={"reservation_id": "cmp_trial_expired"})
+
+    assert entitlements.status_code == 200, entitlements.text
+    assert entitlements.json()["trial_expired"] is True
+    assert reserve.status_code == 402
+    assert reserve.json()["detail"] == "trial_expired"
+
+
+def test_ops_tier_gates_dashboard_and_drift_by_plan(monkeypatch, tmp_path):
+    """Free: no dashboard at all. Starter ("basic"): runs list yes, drift no.
+    Pro ("full"): everything. Mirrors the capability ladder in docs/PRD.md §11."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    _set_plan("free")
+    free_dashboard = client.get("/api/v1/tracking/dashboard")
+    assert free_dashboard.status_code == 403
+    assert free_dashboard.json()["detail"] == "ops_tier_required"
+
+    _set_plan("starter")
+    starter_runs = client.get("/api/v1/tracking/some-company/runs")
+    starter_drift = client.get("/api/v1/tracking/drift")
+    assert starter_runs.status_code == 200, starter_runs.text
+    assert starter_drift.status_code == 403
+    assert starter_drift.json()["detail"] == "ops_tier_required"
+
+    _set_plan("pro")
+    pro_drift = client.get("/api/v1/tracking/drift")
+    assert pro_drift.status_code == 200, pro_drift.text
+
+
+def test_addon_compile_packs_stack_on_top_of_plan_credits(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _set_plan("starter")  # 200 compile credits/mo base
+
+    upsert_billing("wrk_local", {"addon_compile_packs": 2})
+    entitlements = client.get("/api/v1/entitlements/current")
+
+    assert entitlements.status_code == 200, entitlements.text
+    assert entitlements.json()["meters"]["compile_credits"]["limit"] == 250  # 200 + 2*25
 
 
 def test_development_plan_is_unlimited(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
-    monkeypatch.setattr(settings, "entitlements_enforce_installers", True)
     _set_plan("development")
 
     entitlements = client.get("/api/v1/entitlements/current")
@@ -260,6 +434,6 @@ def test_development_plan_is_unlimited(monkeypatch, tmp_path):
 
     assert entitlements.status_code == 200, entitlements.text
     assert entitlements.json()["meters"]["compile_credits"]["unlimited"] is True
-    assert entitlements.json()["meters"]["skill_pack_slots"]["unlimited"] is True
+    assert entitlements.json()["meters"]["machines"]["unlimited"] is True
     assert reserve.status_code == 200, reserve.text
     assert reserve.json()["remaining_compile_credits"] is None

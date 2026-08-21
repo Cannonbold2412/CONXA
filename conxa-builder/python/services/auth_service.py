@@ -30,6 +30,11 @@ _TOKEN_KEY = "session"
 _REFRESH_LEEWAY_S = 60
 
 
+def _is_dev_env() -> bool:
+    raw = os.environ.get("CONXA_ENV", "").strip().lower()
+    return raw in ("dev", "development", "local")
+
+
 def _keyring_service() -> str:
     """Dev/prod-scoped keyring service name.
 
@@ -37,9 +42,26 @@ def _keyring_service() -> str:
     logged in via `npm run dev` (dev Clerk instance) never gets picked up
     by a packaged/prod install's whoami check, and vice versa.
     """
-    raw = os.environ.get("CONXA_ENV", "").strip().lower()
-    is_dev = raw in ("dev", "development", "local")
-    return f"{_KEYRING_SERVICE}-dev" if is_dev else _KEYRING_SERVICE
+    return f"{_KEYRING_SERVICE}-dev" if _is_dev_env() else _KEYRING_SERVICE
+
+
+_DEV_IDENTITY = {
+    "org_id": "dev-org",
+    "user_id": "dev-user",
+    "name": "Dev User",
+    "email": "dev@conxa.local",
+}
+
+
+def _dev_skip_auth() -> bool:
+    """CONXA_DEV_SKIP_AUTH=1 skips Clerk login entirely — dev lane only.
+
+    Explicit opt-in (not just CONXA_ENV=dev) so `dev-studio.ps1` still
+    exercises the real Clerk flow by default; only set the var when you
+    want to work on Studio UI without a browser round-trip.
+    """
+    return _is_dev_env() and os.environ.get("CONXA_DEV_SKIP_AUTH", "").strip().lower() in ("1", "true", "yes")
+
 
 _PAGE_CSS = """
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -225,6 +247,8 @@ class AuthService:
 
     def login(self, *, on_event=None) -> dict[str, Any]:
         """Run the interactive PKCE login. Returns ``{org_id, user_id, ...}``."""
+        if _dev_skip_auth():
+            return dict(_DEV_IDENTITY)
         if not self._clerk_domain or not self._client_id:
             raise RuntimeError("auth_not_configured")
         verifier, challenge = _pkce_pair()
@@ -380,6 +404,8 @@ class AuthService:
 
     def get_token(self) -> str:
         """Return a valid access token, refreshing if near expiry. Raises if logged out."""
+        if _dev_skip_auth():
+            return "dev-skip-auth-token"
         with self._lock:
             tokens = self._load()
             if not tokens:
@@ -470,6 +496,8 @@ class AuthService:
         an expired access token with a dead/revoked refresh token must not
         read as "signed in".
         """
+        if _dev_skip_auth():
+            return dict(_DEV_IDENTITY)
         if not self._load():
             return None
         try:

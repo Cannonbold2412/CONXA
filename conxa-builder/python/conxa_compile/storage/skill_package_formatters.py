@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 
-def format_plugin_index_json(bundle_slug: str, skills: list[dict[str, str]]) -> str:
-    """Machine-readable plugin index used to discover available skills."""
+def format_skill_package_index_json(bundle_slug: str, skills: list[dict[str, str]]) -> str:
+    """Machine-readable skill package index used to discover available skills."""
 
     return (
         json.dumps(
             {
-                "plugin": bundle_slug,
+                "skill_package": bundle_slug,
                 "version": "1.0.0",
                 "skills": [
                     {
@@ -30,14 +30,14 @@ def format_plugin_index_json(bundle_slug: str, skills: list[dict[str, str]]) -> 
     )
 
 
-def format_plugin_readme_text(bundle_slug: str, skills: list[dict[str, str]]) -> str:
+def format_skill_package_readme_text(bundle_slug: str, skills: list[dict[str, str]]) -> str:
     """Human-readable README generated from the bundle's skill manifests."""
 
     title = bundle_slug.replace("_", " ").title()
     lines = [
-        f"# {title} Plugin",
+        f"# {title}",
         "",
-        f"Automation plugin for {title}.",
+        f"Automation skill package for {title}.",
         "",
         "## Available Skills",
         "",
@@ -65,18 +65,18 @@ def format_plugin_readme_text(bundle_slug: str, skills: list[dict[str, str]]) ->
     return "\n".join(lines)
 
 
-def format_plugin_claude_md_text(bundle_slug: str, skills: list[dict[str, str]]) -> str:
+def format_skill_package_claude_md_text(bundle_slug: str, skills: list[dict[str, str]]) -> str:
     """Instructions for Claude — describes every skill and how to orchestrate them."""
 
     title = bundle_slug.replace("_", " ").title()
     lines = [
-        f"# {title} Plugin — Claude Instructions",
+        f"# {title} — Claude Instructions",
         "",
-        "You are orchestrating an automation plugin. Read this file to understand what skills are available, what each skill does, and how to combine them to fulfil user requests.",
+        "You are orchestrating an automation skill package. Read this file to understand what skills are available, what each skill does, and how to combine them to fulfil user requests.",
         "",
-        "## Plugin Structure",
+        "## Package Structure",
         "",
-        "- `plugin.json` — machine-readable manifest listing all skills and auth config",
+        "- `skill_package.json` — machine-readable manifest listing all skills and auth config",
         "- `auth/auth.json` — saved browser session (restored before every skill run)",
         "- `auth/login/` — login skill, runs automatically if session expires",
         "- `skills/{name}/SKILL.md` — step-by-step description of each skill",
@@ -120,7 +120,7 @@ def infer_auth_config(all_inputs: list[dict[str, str]]) -> dict[str, object]:
         auth_type = "password"
     else:
         auth_type = "none"
-    return {"type": auth_type, "description": f"Authentication for this plugin ({auth_type})"}
+    return {"type": auth_type, "description": f"Authentication for this skill package ({auth_type})"}
 
 
 def format_auth_json_text(auth_dict: dict[str, object]) -> str:

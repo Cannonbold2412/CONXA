@@ -19,13 +19,17 @@ from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
 from app.api.deps import current_principal, entitlement_http_error
+from app.api.machine_binding import register_request_machine
 from app.llm.router import get_router
 from app.services import llm_metering
+from app.services.byok import byok_pool_entry_for
 from app.services.entitlements import (
     ALLOWED_USAGE_CLASSES,
     EntitlementError,
+    compile_pool_for,
     current_entitlements,
     ensure_human_edit_available,
+    ensure_trial_active,
     record_llm_usage,
 )
 
@@ -54,6 +58,12 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
     if usage_class not in ALLOWED_USAGE_CLASSES:
         raise HTTPException(status_code=400, detail="invalid_usage_class")
 
+    try:
+        ensure_trial_active(principal)
+        register_request_machine(request, principal)
+    except EntitlementError as exc:
+        raise entitlement_http_error(exc) from exc
+
     if usage_class == "compile" and llm_metering.quota_exceeded(org_id, settings.llm_proxy_monthly_token_quota):
         raise HTTPException(status_code=429, detail="quota_exceeded")
 
@@ -67,13 +77,21 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
     router_impl = get_router()
     error_detail: list[str] = []
     try:
-        if vision:
+        byok_entry = byok_pool_entry_for(principal)
+        if byok_entry is not None:
+            # Enterprise BYOK: exactly one deployment, no pool selection.
+            result = router_impl.call_entry_directly(
+                byok_entry, body.task, body.payload, body.timeout_ms, error_detail=error_detail
+            )
+        elif vision:
             result = router_impl.route_vision(
-                body.task, body.payload, body.timeout_ms, error_detail=error_detail
+                body.task, body.payload, body.timeout_ms,
+                error_detail=error_detail, pool=compile_pool_for(principal),
             )
         else:
             result = router_impl.route_text(
-                body.task, body.payload, body.timeout_ms, error_detail=error_detail
+                body.task, body.payload, body.timeout_ms,
+                error_detail=error_detail, pool=compile_pool_for(principal),
             )
     except RuntimeError as exc:
         # No providers configured — treat as upstream unavailable.

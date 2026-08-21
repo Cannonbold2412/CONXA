@@ -262,7 +262,7 @@ export function BillingPage() {
             <div>
               <h2 className="text-sm font-semibold text-white">Subscription Plans</h2>
               <p className="text-xs text-zinc-500">
-                Upgrade limits without changing local plugin or workflow creation.
+                Upgrade limits without changing local workflow creation.
               </p>
             </div>
             {/* removed legacy plan badge per request */}
@@ -596,7 +596,7 @@ function PaymentOperationsPanel({
         <div className="rounded-md border border-white/8 bg-black/20 p-2.5">
           <p className="text-sm font-medium text-cyan-300">Metering policy</p>
           <p className="mt-1.5 text-xs text-zinc-500">
-            Plugin creation and workflow recording stay unlimited. Only seats, installer slots, compile credits, and Human Edit pool are customer-visible meters.
+            Workflow creation and recording stay unlimited. Only seats, installer slots, compile credits, and Human Edit pool are customer-visible meters.
           </p>
         </div>
       </CardContent>

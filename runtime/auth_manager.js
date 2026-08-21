@@ -41,7 +41,7 @@ function _getKeytar(logFn) {
 }
 
 // ─── Per-machine session-encryption key ──────────────────────────────────────
-// A unique random key is generated per machine per company on first use and
+// A unique random key is generated per machine per workspace on first use and
 // stored in the OS keychain.  It is used as HKDF key material to encrypt the
 // target-platform browser session at rest (AES-256-GCM).  Keeping it separate
 // from the installer-embedded sync_token means a leaked installer cannot
@@ -50,13 +50,13 @@ function _getKeytar(logFn) {
 const _SESSION_KEY_SVC = "conxa-session";
 const HKDF_INFO = Buffer.from("conxa-session-v1");
 
-async function getSessionKey(company, logFn) {
+async function getSessionKey(workspace_id, logFn) {
   const keytar = _getKeytar(logFn);
-  let raw = await keytar.getPassword(_SESSION_KEY_SVC, company);
+  let raw = await keytar.getPassword(_SESSION_KEY_SVC, workspace_id);
   if (!raw) {
     // First use: generate a fresh random 32-byte key, store as hex.
     const key = crypto.randomBytes(32).toString("hex");
-    await keytar.setPassword(_SESSION_KEY_SVC, company, key);
+    await keytar.setPassword(_SESSION_KEY_SVC, workspace_id, key);
     raw = key;
   }
   return raw;
@@ -68,7 +68,7 @@ function _deriveKey(sessionKeyHex) {
 
 // Returns true on success, false on failure — callers must check this before
 // deciding whether a plaintext fallback write is warranted (SG-11).
-function saveEncryptedSession(company, state, sessionKeyHex, sessionsDir, logFn) {
+function saveEncryptedSession(workspace_id, state, sessionKeyHex, sessionsDir, logFn) {
   try {
     const key    = _deriveKey(sessionKeyHex);
     const iv     = crypto.randomBytes(12);
@@ -81,16 +81,16 @@ function saveEncryptedSession(company, state, sessionKeyHex, sessionsDir, logFn)
       data: enc.toString("base64"),
     });
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(path.join(sessionsDir, `${company}_state.json`), payload);
+    fs.writeFileSync(path.join(sessionsDir, `${workspace_id}_state.json`), payload);
     return true;
   } catch (e) {
-    if (logFn) logFn("warn", "session_encryption_failed", { company, error: e.message });
+    if (logFn) logFn("warn", "session_encryption_failed", { workspace_id, error: e.message });
     return false;
   }
 }
 
-function loadDecryptedSession(company, sessionKeyHex, sessionsDir) {
-  const sessionPath = path.join(sessionsDir, `${company}_state.json`);
+function loadDecryptedSession(workspace_id, sessionKeyHex, sessionsDir) {
+  const sessionPath = path.join(sessionsDir, `${workspace_id}_state.json`);
   if (!fs.existsSync(sessionPath)) return null;
   try {
     const { iv, tag, data } = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
@@ -107,23 +107,23 @@ function loadDecryptedSession(company, sessionKeyHex, sessionsDir) {
 // Save unencrypted session — only called as an explicit fallback once
 // saveEncryptedSession() has reported failure (SG-11). Logs visibly since
 // this leaves live target-platform credentials on disk unencrypted.
-function saveRawSession(company, state, sessionsDir, logFn) {
-  if (logFn) logFn("warn", "plaintext_session_written", { company });
+function saveRawSession(workspace_id, state, sessionsDir, logFn) {
+  if (logFn) logFn("warn", "plaintext_session_written", { workspace_id });
   try {
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(
-      path.join(sessionsDir, `${company}_raw_state.json`),
+      path.join(sessionsDir, `${workspace_id}_raw_state.json`),
       JSON.stringify(state, null, 2),
       { mode: 0o600 }
     );
   } catch (_) {}
 }
 
-function loadRawSession(company, sessionsDir, logFn) {
-  const p = path.join(sessionsDir, `${company}_raw_state.json`);
+function loadRawSession(workspace_id, sessionsDir, logFn) {
+  const p = path.join(sessionsDir, `${workspace_id}_raw_state.json`);
   try {
     if (!fs.existsSync(p)) return null;
-    if (logFn) logFn("warn", "plaintext_session_loaded", { company });
+    if (logFn) logFn("warn", "plaintext_session_loaded", { workspace_id });
     return JSON.parse(fs.readFileSync(p, "utf8"));
   } catch (_) { return null; }
 }
@@ -140,7 +140,7 @@ async function reencryptPlaintextSessions(sessionsDir, getSessionKeyFn, logFn) {
   const suffix = "_raw_state.json";
   for (const name of entries) {
     if (!name.endsWith(suffix)) continue;
-    const company = name.slice(0, -suffix.length);
+    const workspace_id = name.slice(0, -suffix.length);
     const rawPath = path.join(sessionsDir, name);
     let state;
     try {
@@ -149,75 +149,27 @@ async function reencryptPlaintextSessions(sessionsDir, getSessionKeyFn, logFn) {
       continue; // corrupted — leave it, don't lose the only copy
     }
     try {
-      const sessionKey = await getSessionKeyFn(company, logFn);
-      const ok = saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
+      const sessionKey = await getSessionKeyFn(workspace_id, logFn);
+      const ok = saveEncryptedSession(workspace_id, state, sessionKey, sessionsDir, logFn);
       if (ok) {
         fs.unlinkSync(rawPath);
-        if (logFn) logFn("info", "plaintext_session_reencrypted", { company });
+        if (logFn) logFn("info", "plaintext_session_reencrypted", { workspace_id });
       } else if (logFn) {
-        logFn("warn", "plaintext_session_reencrypt_failed", { company });
+        logFn("warn", "plaintext_session_reencrypt_failed", { workspace_id });
       }
     } catch (e) {
-      if (logFn) logFn("warn", "plaintext_session_reencrypt_failed", { company, error: e.message });
+      if (logFn) logFn("warn", "plaintext_session_reencrypt_failed", { workspace_id, error: e.message });
     }
   }
 }
 
-// Max attempts before escalating to Tier 5 (human review).
-const AUTH_REFRESH_MAX_ATTEMPTS = 3;
-const _authRefreshAttempts = new Map();
-
-/**
- * Attempt to re-authenticate an expired target-platform session.
- *
- * - Headed mode (Windows or DISPLAY set): opens Playwright to loginUrl, waits
- *   for the user to complete login (up to 3 min), saves fresh storageState.
- * - Headless (no DISPLAY on Linux): returns immediately with an error payload
- *   so Claude can surface "Re-login required" to the user — never hangs.
- *
- * Returns { ok: true } on success, { ok: false, session_expired: true, login_url, message } on failure.
- */
-async function refreshSession(company, loginUrl, context, sessionsDir, logFn) {
-  const attempts = (_authRefreshAttempts.get(company) || 0) + 1;
-  _authRefreshAttempts.set(company, attempts);
-  if (attempts > AUTH_REFRESH_MAX_ATTEMPTS) {
-    return { ok: false, session_expired: true, login_url: loginUrl, message: "Auth refresh failed 3 times — escalating to human review." };
-  }
-
-  const headless = process.platform !== "win32" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
-  if (headless) {
-    return { ok: false, session_expired: true, login_url: loginUrl, message: "Re-login required (headless mode — no browser available)." };
-  }
-
-  const MAX_CLOSE_RETRIES = 2;
-  for (let retry = 0; retry <= MAX_CLOSE_RETRIES; retry++) {
-    let authPage = null;
-    try {
-      authPage = await context.newPage();
-      await authPage.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await authPage.waitForURL(
-        (url) => !AUTH_FAILURE_URL_RE.test(url.pathname),
-        { timeout: 180_000 }
-      );
-      const state = await context.storageState();
-      const sessionKey = await getSessionKey(company, logFn);
-      const encrypted = saveEncryptedSession(company, state, sessionKey, sessionsDir, logFn);
-      if (!encrypted) saveRawSession(company, state, sessionsDir, logFn);
-      _authRefreshAttempts.delete(company);
-      return { ok: true };
-    } catch (e) {
-      const browserClosed = /Target page|context or browser|browser has been closed|page has been closed/i.test(e.message);
-      if (browserClosed && retry < MAX_CLOSE_RETRIES) continue;
-      return { ok: false, session_expired: true, login_url: loginUrl, message: `Re-login timed out or failed: ${e.message}` };
-    } finally {
-      if (authPage) await authPage.close().catch(() => {});
-    }
-  }
-  return { ok: false, session_expired: true, login_url: loginUrl, message: "Re-login cancelled: login window was closed. Please run the skill again." };
-}
-
-// Regex re-export so run.js can share the same pattern without duplicating it.
-const AUTH_FAILURE_URL_RE = /\/(login|signin|sign-in|auth|logout|session-expired)(\/|$|\?)/i;
+// A blocking, in-context mid-run re-login (open a page inside the LIVE execution context and
+// wait up to 3 minutes for the user) used to live here as `refreshSession`. Removed — it had
+// zero production callers (only its own now-removed test) and directly contradicted the
+// pre-flight-only authentication model: authentication is validated once, before a run starts
+// (see browser.js's getGroupAuthContext) and a mid-run auth failure always fails immediately
+// (see run.js's isAuthFailure / server.js's session_expired handling) rather than attempting
+// any in-place recovery. Do not reintroduce a mid-run re-login path.
 
 module.exports = {
   getSessionKey,
@@ -226,5 +178,4 @@ module.exports = {
   saveRawSession,
   loadRawSession,
   reencryptPlaintextSessions,
-  refreshSession,
 };

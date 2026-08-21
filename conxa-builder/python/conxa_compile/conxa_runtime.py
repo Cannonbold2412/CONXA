@@ -395,9 +395,9 @@ def sync_skill_pack(
 ) -> None:
     """Copy source_dir → <runtime_dir>/skill-packs/<company>/, then bust the manifest cache.
 
-    Each skill is written straight into a <slug>/v<version>/ directory with a `current`
-    junction pointing at it: runtime/skill_loader.js only ever reads
-    <slug>/current/manifest.json, and that junction is normally created by
+    Each skill is written straight into a <group_id>/<slug>/v<version>/ directory with a
+    `current` junction pointing at it: runtime/skill_loader.js only ever reads
+    <group_id>/<slug>/current/manifest.json, and that junction is normally created by
     runtime/sync.js after a real cloud delta sync. A locally built, unpublished (or
     rebuilt-since-published) skill pack never carries a sync_token, so that sync always
     no-ops (runtime/sync.js:77-81) — reproduce the same end state locally here, offline,
@@ -423,8 +423,12 @@ def sync_skill_pack(
     except Exception:
         pack = {}
 
+    skill_groups = pack.get("skill_groups") or {}
     for slug in pack.get("skills") or []:
-        src_slug_dir = source_dir / slug
+        # Build output nests each skill under its group_id (skill_package_builder_output.py),
+        # and skill_loader.js reads it back the same way (_skillCurrentDir) — mirror that here.
+        group = skill_groups.get(slug) or "_default"
+        src_slug_dir = source_dir / group / slug
         manifest_src = src_slug_dir / "manifest.json"
         if not manifest_src.is_file():
             continue
@@ -434,7 +438,7 @@ def sync_skill_pack(
             continue
 
         version = str(manifest.get("version") or "0.0.0")
-        slug_dir = dest / slug
+        slug_dir = dest / group / slug
         version_dir = slug_dir / f"v{version}"
 
         # The local sandbox only ever needs one active version — drop any other.

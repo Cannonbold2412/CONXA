@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import type { TrackingDashboardRange } from '@/api/pluginApi'
+import type { TrackingDashboardRange } from '@/api/workflowsApi'
 
 export const RANGES: Array<{ value: TrackingDashboardRange; label: string; long: string }> = [
   { value: '24h', label: '24h', long: 'Last 24 hours' },

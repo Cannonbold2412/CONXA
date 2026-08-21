@@ -301,7 +301,7 @@ def _new_manual_step(action_kind: str, page_url: str) -> dict[str, Any]:
     }
     if kind == "navigate":
         step["validation"] = {
-            "wait_for": {"type": "url_change", "target": url, "timeout": 15000},
+            "wait_for": {"type": "url_change", "target": url, "timeout": 60000},
             "success_conditions": {"url": url},
         }
     if kind in {"check", "assert"}:

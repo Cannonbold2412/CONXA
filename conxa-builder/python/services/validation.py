@@ -1,7 +1,7 @@
 """Input sanitization for IPC command payloads.
 
 The Electron <-> Python bridge is localhost stdin/stdout, but identifiers from
-the renderer still flow into filesystem paths (session dirs, plugin folders,
+the renderer still flow into filesystem paths (session dirs, workflow folders,
 skill-pack slugs). Reject anything that could traverse out of the data dir.
 """
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { cmd, type UpdateCheckResult } from '@/lib/ipc'
 import { AuthContext, performLogout, type Identity } from '@/contexts/AuthContext'
 import { AppChrome } from '@/components/layout/AppChrome'
@@ -7,20 +8,19 @@ import { LoginOverlay } from '@/components/LoginOverlay'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { BootstrapScreen } from '@/pages/BootstrapScreen'
 import { UpdateRequiredScreen } from '@/pages/UpdateRequiredScreen'
+import { fetchWorkflow } from '@/api/workflowsApi'
 
 // Pages
-import { PluginDetailPage } from '@/pages/PluginDetailPage'
+import { WorkflowListPage } from '@/pages/WorkflowListPage'
+import { GroupPage } from '@/pages/GroupPage'
 import { HumanEditPage } from '@/pages/HumanEditPage'
-import { RecordPage } from '@/pages/RecordPage'
-import { CompilePage } from '@/pages/CompilePage'
 import { HumanEditListPage } from '@/pages/HumanEditListPage'
 import { PublishPage } from '@/pages/PublishPage'
 import { BuildInstallerPage } from '@/pages/BuildInstallerPage'
-import { TestPluginPage } from '@/pages/TestPluginPage'
+import { TestSkillPage } from '@/pages/TestSkillPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 
 // Studio-exclusive pages (keep existing)
-import { RecordingFeed } from '@/pages/RecordingFeed'
 import { CompileProgress } from '@/pages/CompileProgress'
 
 function SplashScreen() {
@@ -35,12 +35,35 @@ function DeepLinkHandler() {
   const navigate = useNavigate()
   useEffect(() => {
     return window.conxa.onDeepLink((url) => {
-      const pluginMatch = url.match(/[?&]plugin=([^&]+)/)
-      const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : null
-      navigate(pluginId ? `/plugins/${pluginId}` : '/record')
+      const workflowMatch = url.match(/[?&]workflow=([^&]+)/)
+      const workflowId = workflowMatch ? decodeURIComponent(workflowMatch[1]) : null
+      navigate(workflowId ? `/workflows/${workflowId}` : '/workflows')
     })
   }, [navigate])
   return null
+}
+
+/** `/` has no id to route on — the group list (`/workflows`) is the home. */
+function DefaultRedirect() {
+  return <Navigate to="/workflows" replace />
+}
+
+/** The per-workflow detail page was folded into its owning group's page (every
+ * action it offered — record/compile/review/test — now lives on the group
+ * page's workflow row). This keeps old `/workflows/:workflowId` links (deep
+ * links, the compile page's "back", Human Edit's `?from=`) working by
+ * resolving the workflow and forwarding to its group. */
+function WorkflowRedirect() {
+  const { workflowId } = useParams<{ workflowId: string }>()
+  const q = useQuery({
+    queryKey: ['workflow', workflowId],
+    queryFn: () => fetchWorkflow(workflowId!),
+    enabled: !!workflowId,
+  })
+
+  if (q.isLoading) return null
+  if (q.isError || !q.data) return <Navigate to="/workflows" replace />
+  return <Navigate to={`/groups/${encodeURIComponent(q.data.workflow.group_id)}`} replace />
 }
 
 type DepUpdateBanner =
@@ -161,27 +184,19 @@ export function App() {
         <AppChrome>
           <DeepLinkHandler />
           <Routes>
-            <Route path="/" element={<Navigate to="/record" replace />} />
-            <Route path="/dashboard" element={<Navigate to="/record" replace />} />
-            <Route path="/plugins" element={<Navigate to="/record" replace />} />
-            <Route path="/plugins/:pluginId" element={<PluginDetailPage />} />
-            <Route path="/plugins/:pluginId/record/:workflowName" element={<RecordingFeed />} />
-            <Route path="/plugins/:pluginId/compile/:sessionId" element={<CompileProgress />} />
+            <Route path="/" element={<DefaultRedirect />} />
+            <Route path="/workflows" element={<WorkflowListPage />} />
+            <Route path="/workflows/:workflowId" element={<WorkflowRedirect />} />
+            <Route path="/workflows/:workflowId/compile/:sessionId" element={<CompileProgress />} />
+            <Route path="/groups/:groupId" element={<GroupPage />} />
             <Route path="/edit" element={<HumanEditPage />} />
             <Route path="/edit/:skillId" element={<HumanEditPage />} />
-            <Route path="/record" element={<RecordPage />} />
-            <Route path="/compile" element={<CompilePage />} />
             <Route path="/human-edit" element={<HumanEditListPage />} />
-            <Route path="/test" element={<TestPluginPage />} />
+            <Route path="/test" element={<TestSkillPage />} />
             <Route path="/publish" element={<PublishPage />} />
             <Route path="/build-installer" element={<BuildInstallerPage />} />
-            {/* Build Plugin is superseded by auto-build on sign-off (see cmd_sign_off_workflow);
-                Packages moves into the Inspector drawer (T1.4). Both routes redirect rather
-                than 404 for anyone with an old bookmark or deep link. */}
-            <Route path="/build" element={<Navigate to="/record" replace />} />
-            <Route path="/packages" element={<Navigate to="/record" replace />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Navigate to="/record" replace />} />
+            <Route path="*" element={<Navigate to="/workflows" replace />} />
           </Routes>
         </AppChrome>
       </ErrorBoundary>

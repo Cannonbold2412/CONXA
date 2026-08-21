@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, GitCompare, ListOrdered, Radio, Waypoints } from 'lucide-react'
-import { fetchTrackingWorkflow } from '@/api/pluginApi'
+import { fetchTrackingWorkflow } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { RecoverySankey } from '@/components/viz/RecoverySankey'
 import { TrendChart } from '@/components/viz/TrendChart'

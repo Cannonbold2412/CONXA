@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { CalendarClock, ShieldAlert, Sparkles, Waypoints } from 'lucide-react'
-import { fetchTrackingDashboard, fetchTrackingDrift } from '@/api/pluginApi'
+import { fetchTrackingDashboard, fetchTrackingDrift } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { Heatmap } from '@/components/viz/Heatmap'
 import { RecoverySankey } from '@/components/viz/RecoverySankey'
@@ -114,10 +114,10 @@ export function HealingPage() {
           ) : drift.data?.queue.length ? (
             <ul className="space-y-2.5">
               {drift.data.queue.slice(0, 8).map((row) => (
-                <li key={`${row.plugin_id}:${row.plugin_ver}:${row.step_id}`}>
+                <li key={`${row.workflow_id}:${row.workflow_ver}:${row.step_id}`}>
                   <div className="flex items-baseline justify-between gap-3">
                     <span className="truncate text-[13px] text-zinc-200">
-                      {row.plugin_id}
+                      {row.workflow_id}
                       <span className="text-zinc-600"> · step {row.step_id ?? '—'}</span>
                     </span>
                     <span className="shrink-0 text-[11px] tabular-nums text-amber-300">
@@ -125,7 +125,7 @@ export function HealingPage() {
                     </span>
                   </div>
                   <p className="mt-0.5 truncate text-[11px] text-zinc-600">
-                    v{row.plugin_ver} · healed by {row.dominant_method} at {row.dominant_tier} ·{' '}
+                    v{row.workflow_ver} · healed by {row.dominant_method} at {row.dominant_tier} ·{' '}
                     {fmtRelative(row.last_seen)}
                   </p>
                 </li>

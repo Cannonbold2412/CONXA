@@ -1,6 +1,6 @@
 # Security Gaps
 
-**Status:** Current as of 2026-07-02  
+**Status:** Current as of 2026-08-09  
 **Scope:** Conxa platform — Build Studio, Conxa Cloud, Runtime  
 **Audience:** Internal engineering, security reviewers, auditors
 
@@ -36,6 +36,11 @@ This document is the detailed reference for known security gaps across all three
 | [SG-11](#sg-11-plaintext-session-fallback-is-silent) | Plaintext session fallback is silent on keytar failure | Runtime | Medium ✅ Fixed | `runtime/auth_manager.js` |
 | [SG-12](#sg-12-company-name-used-in-file-paths-without-re-validation) | Company name used in file paths without re-validation | Runtime | Low | `runtime/auth_manager.js`, `runtime/sync.js` |
 | [SG-13](#sg-13-no-per-user-identity-at-runtime) | No per-user identity at runtime — `uid` is spoofable | Runtime | Low | `runtime/server.js`, `runtime/tracker.js` |
+| [SG-14](#sg-14-byok-key-at-rest) | Enterprise BYOK key encryption depends entirely on one env var | Cloud API | Medium | `app/services/byok.py` |
+| [SG-15](#sg-15-machine-fingerprint-handling) | Machine-fingerprint handling — hash-only by design, still a stable per-device identifier | Cloud API | Low | `app/api/machine_binding.py`, `app/services/entitlements.py` |
+| [SG-16](#sg-16-analytics-retention-as-data-minimisation) | Analytics retention is a billing control, not (yet) enforced deletion | Cloud API | Low | `app/services/tracking.py` |
+| [SG-17](#sg-17-starter-external-distribution-is-detectable-not-blocked) | Starter external distribution is detectable, not blocked | Distribution | Low (by design) | `app/api/publish_routes.py` |
+| [SG-18](#sg-18-seat-limit-not-enforced) | Seat limit not enforced — team invites bypass the backend entirely | Cloud API | Low | `app/services/entitlements.py` |
 
 ---
 
@@ -46,7 +51,7 @@ This document is the detailed reference for known security gaps across all three
 
 ### Description
 
-`app/services/rbac.py` exposes only `require_admin()`, which checks that a `Principal`'s role is `"admin"` or `"owner"`. As of this writing, this function is called in **exactly one place**: `app/api/razorpay_routes.py` (subscription creation). Every other authenticated endpoint enforces workspace membership (`ensure_principal`) and, for mutation endpoints, workspace ownership of the target slug (`_assert_owner`), but not role-based access.
+`app/services/rbac.py` exposes only `require_admin()`, which checks that a `Principal`'s role is `"admin"` or `"owner"`. As of this writing, this function is called in **exactly one place**: the subscription-creation route (`app/api/razorpay_routes.py` at the time of writing; the payment gateway has since moved to Cashfree — `app/api/cashfree_routes.py`). Every other authenticated endpoint enforces workspace membership (`ensure_principal`) and, for mutation endpoints, workspace ownership of the target slug (`_assert_owner`), but not role-based access.
 
 Consequence: any authenticated workspace `"member"` can publish skill packs, upload installers, read all tracking data, and consume LLM quota — all operations that should be gated to `"admin"` or `"owner"`.
 
@@ -62,12 +67,14 @@ Wire `require_admin()` (or a new `require_role(principal, min_role)`) into publi
 
 `require_admin` is now called immediately after `ensure_principal(principal)` on every mutating endpoint that previously accepted any workspace member:
 
-- `app/api/publish_routes.py` — `post_publish()` (POST `/api/v1/plugins/publish`), `post_installer_upload()` (POST `/api/v1/plugins/{slug}/installer/upload`), `get_installer_versions()` (GET `/api/v1/plugins/{slug}/installer/versions`)
-- `app/api/plugin_routes.py` — `post_create_plugin()` (POST `/plugins`), `delete_plugin_endpoint()` (DELETE `/plugins/{id}`)
+- `app/api/publish_routes.py` — `post_publish()` (POST `/api/v1/workflows/publish`), `post_installer_upload()` (POST `/api/v1/workflows/{slug}/installer/upload`), `get_installer_versions()` (GET `/api/v1/workflows/{slug}/installer/versions`)
+- `app/api/workflow_routes.py` — `post_create_workflow()` (POST `/workflows`), `delete_workflow_endpoint()` (DELETE `/workflows/{id}`)
 - `app/api/product_routes.py` — `patch_bundle_release()` (PATCH `/packages/bundles/{slug}/release`)
 - `app/api/cashfree_routes.py` — subscription creation (`create_subscription`)
 
-Any caller whose `principal.role` is not `"admin"` or `"owner"` receives `HTTP 403`. Local dev is unaffected (the anonymous local `Principal` defaults to `role="owner"`). Intentionally-public runtime phone-home endpoints (`/api/v1/telemetry/runtime-start`, the tracking-event ingest prefixes, skill-pack sync, installer downloads — see `PUBLIC_PATHS`/`PUBLIC_PATH_PREFIXES` in `app/api/security.py`) remain open by design — they carry no workspace-mutation risk and are authenticated by sync token, not Clerk role. Tested in `tests/test_product_routes.py` (member→403, admin→200).
+Any caller whose `principal.role` is not `"admin"` or `"owner"` receives `HTTP 403`. Local dev is unaffected (the anonymous local `Principal` defaults to `role="owner"`).
+
+> **Follow-up (2026-08-04):** enforcing this exposed a role-normalization bug. A signed-in user with **no active Clerk org** is in their own personal workspace (`personal_{user_id}`) and is its sole member, but `_normalize_org_role()` defaulted their empty role to `basic_member` — so every solo user got 403 on publish, workflow create/delete, and subscribe. It now normalizes to `owner` when `org_id` is absent, on both the trusted-proxy and Clerk-JWT identity paths. This does not widen access: a personal workspace is unreachable by any other principal. Tested in `tests/test_llm_proxy_and_publish.py`. Intentionally-public runtime phone-home endpoints (`/api/v1/telemetry/runtime-start`, the tracking-event ingest prefixes, skill-pack sync, installer downloads — see `PUBLIC_PATHS`/`PUBLIC_PATH_PREFIXES` in `app/api/security.py`) remain open by design — they carry no workspace-mutation risk and are authenticated by sync token, not Clerk role. Tested in `tests/test_product_routes.py` (member→403, admin→200).
 
 > **Correction (2026-07-04):** this note previously referenced `run_routes.py`, which does not exist in the current codebase — corrected above to the actual public-path list in `security.py`.
 
@@ -236,7 +243,7 @@ Long-term: require the end user to be authenticated with the company's identity 
 
 ### Fix Applied
 
-`get_installer()` and `get_installer_version()` now require `ts`+`sig` query params whenever `SKILL_INSTALLER_SIGNING_KEY` is configured — `sig` is `HMAC-SHA256(key, f"{ts}:{slug}:{version or ''}")`, checked with `secrets.compare_digest` and a max age of `SKILL_INSTALLER_SIGNING_WINDOW` (default 600s). This mirrors the timestamped-HMAC pattern already used for the SG-02 proxy-identity fix (`app/services/saas.py:_trusted_proxy_identity()`), rather than the Ed25519 scheme used for manifest signing — signing and verification both happen on the same backend here, so symmetric HMAC is simpler and sufficient. The authenticated, `require_admin`-gated `get_installer_versions()` endpoint mints fresh signed `download_url` values on every call, so the dashboard always hands out valid links. **The `ts`+`sig` requirement is skipped entirely when `SKILL_INSTALLER_SIGNING_KEY` is unset**, preserving the previous public-download behavior for local dev — `_validate_production_config()` now requires the key when `SKILL_AUTH_REQUIRED=true`, so production can't boot without it. The dashboard's `PluginVersionsPage.tsx` no longer constructs an unsigned fallback URL client-side (impossible without shipping the secret to the browser) — its legacy single-row fallback for pre-versioning plugins now disables the download button instead. Tested in `tests/test_llm_proxy_and_publish.py`.
+`get_installer()` and `get_installer_version()` now require `ts`+`sig` query params whenever `SKILL_INSTALLER_SIGNING_KEY` is configured — `sig` is `HMAC-SHA256(key, f"{ts}:{slug}:{version or ''}")`, checked with `secrets.compare_digest` and a max age of `SKILL_INSTALLER_SIGNING_WINDOW` (default 600s). This mirrors the timestamped-HMAC pattern already used for the SG-02 proxy-identity fix (`app/services/saas.py:_trusted_proxy_identity()`), rather than the Ed25519 scheme used for manifest signing — signing and verification both happen on the same backend here, so symmetric HMAC is simpler and sufficient. The authenticated, `require_admin`-gated `get_installer_versions()` endpoint mints fresh signed `download_url` values on every call, so the dashboard always hands out valid links. **The `ts`+`sig` requirement is skipped entirely when `SKILL_INSTALLER_SIGNING_KEY` is unset**, preserving the previous public-download behavior for local dev — `_validate_production_config()` now requires the key when `SKILL_AUTH_REQUIRED=true`, so production can't boot without it. The dashboard's `SkillPackageVersionsPage.tsx` no longer constructs an unsigned fallback URL client-side (impossible without shipping the secret to the browser) — its legacy single-row fallback for pre-versioning skill packages now disables the download button instead. Tested in `tests/test_llm_proxy_and_publish.py`.
 
 ---
 
@@ -247,7 +254,7 @@ Long-term: require the end user to be authenticated with the company's identity 
 
 ### Description
 
-The sync token (`secrets.token_urlsafe(32)`) is minted at first publish and reused across all subsequent publishes and all installer copies for that company. Every end user who installs the plugin has the same token embedded in their `pack.json`. The token grants read access to the company's current skill pack delta endpoint.
+The sync token (`secrets.token_urlsafe(32)`) is minted at first publish and reused across all subsequent publishes and all installer copies for that company. Every end user who installs the skill package has the same token embedded in their `pack.json`. The token grants read access to the company's current skill pack delta endpoint.
 
 Because the token is in `pack.json` inside every installer binary, it is effectively a publicly-distributable credential for anyone with access to the installer file (see SG-07).
 
@@ -277,6 +284,8 @@ The runtime self-update mechanism downloaded `runtime-win.exe` from a URL suppli
 The Enterprise-Grade Auto-Update Architecture (2026-07-01) replaced the unsigned manifest with a single Ed25519-signed `GET /api/v1/manifest.json`. `runtime/manifest_manager.js:verifyManifestSignature()` verifies the signature against a public key baked into the host exe at build time (`global.__manifestPublicKey`, stamped from `package.json`) — the trust anchor lives in the already-installed binary, not fetched from the network, exactly as the original recommendation asked. A manifest that fails verification is discarded outright and treated identically to a network failure (falls back to the last previously-verified cache). `updateHostComponent()` additionally spawns the freshly-downloaded exe with `--selfcheck` before `current` is ever pointed at it.
 
 ### Still Open (binary half)
+
+**Hardening since (2026-08-04):** `app/main.py::_validate_production_config()` now refuses to boot the backend when `SKILL_AUTH_REQUIRED=true` and `CONXA_MANIFEST_SIGNING_KEY` is unset. Without the key, `manifest_signer.load_signing_key()` returns `None` and `/api/v1/manifest.json` is served **unsigned** — which every runtime then discards as unverifiable, silently halting self-updates platform-wide with no error surfaced on either side. Failing the boot converts that into a loud misconfiguration.
 
 The downloaded `conxa-runtime.exe` itself is still **not Authenticode-signed** — only its SHA-256 (sourced from the now-signed manifest) is checked. If the manifest signing key (`CONXA_MANIFEST_SIGNING_KEY`, server-side only) were ever compromised, an attacker could still ship an arbitrary signed manifest entry pointing at a malicious binary. `build-runtime-host.yml` has no `signtool` step for `conxa-runtime.exe` (unlike the Studio Electron installer — see Sales-Blockers.md 2.5, which has inert `electron-builder.yml` signing scaffolding for the *Studio* installer, not this binary).
 
@@ -312,7 +321,7 @@ When `_getKeytar()` fails to load the native `keytar.node` module (e.g. ABI mism
 
 The end user sees no warning. The file mode is `0o600`, which on Windows is not meaningfully enforced.
 
-This window is most dangerous during the keytar ABI swap in `_applyPendingUpdate()`: between moving `keytar.node.next` and the next process restart, `keytar.node` is temporarily the new ABI but the running process still has the old ABI loaded.
+This window used to be most dangerous during the keytar ABI swap in the old `_applyPendingUpdate()` flow: between moving `keytar.node.next` and the next process restart, `keytar.node` was temporarily the new ABI while the running process still had the old ABI loaded. That specific window is gone — the versioned-directory model (SG-10) ships `keytar.node` inside `conxa-runtime/<version>/` and never swaps a file underneath a running process. An ABI mismatch can still occur for other reasons (a hand-copied module, a partially-restored install), so the fallback behaviour below still matters.
 
 ### Current Mitigation
 
@@ -382,6 +391,133 @@ This means telemetry run counts are advisory and can be spoofed, and there is no
 ### Recommended Fix
 
 This is acceptable for the current product stage where Conxa is a per-company distribution model. Document that `uid` is an installation identifier, not a user identifier, and do not surface it as a "user" metric in the dashboard.
+
+---
+
+## SG-14 — BYOK Key-at-Rest
+
+**Severity:** Medium  
+**Component:** Cloud API — `app/services/byok.py`
+
+### Description
+
+Enterprise workspaces may configure their own Azure OpenAI deployment (`docs/PRD.md` §11, `docs/TRD.md`
+§13.5). The API key is AES-256-GCM encrypted before storage in the `workspace_llm_keys` KV namespace,
+under a single symmetric key read from `SKILL_BYOK_ENCRYPTION_KEY`. Consequences of that design:
+
+1. Every workspace's BYOK secret is encrypted under the **same** key — a leak of
+   `SKILL_BYOK_ENCRYPTION_KEY` decrypts every stored Azure key at once, not just one workspace's.
+2. There is no key rotation mechanism. Rotating `SKILL_BYOK_ENCRYPTION_KEY` would need to
+   decrypt-then-re-encrypt every stored record with the old key still available — not automated today.
+3. The unconfigured-key failure mode is safe by design (`byok_not_configured`, refuses to
+   encrypt/decrypt rather than falling back to plaintext), but that only protects against
+   misconfiguration, not against the key itself leaking (e.g. via the deploy environment).
+
+### Recommended Fix
+
+Acceptable at current BYOK adoption (a handful of Enterprise workspaces). Move to a per-workspace data
+key wrapped by a managed KMS (envelope encryption) before BYOK adoption scales — that bounds a single
+key leak to one workspace and makes rotation tractable.
+
+---
+
+## SG-15 — Machine-Fingerprint Handling
+
+**Severity:** Low  
+**Component:** Cloud API — `app/api/machine_binding.py`, `app/services/entitlements.py`
+
+### Description
+
+Machine binding (`docs/TRD.md` §13.4a) sends `X-Conxa-Machine`, a SHA-256 hash of the Windows
+`MachineGuid`, on every build-side cloud call. The raw GUID never leaves the machine — only the hash is
+transmitted and stored (`workspace_devices` KV). That said, a SHA-256 hash of a stable, low-entropy
+identifier (a per-Windows-install GUID) is itself a **stable cross-session identifier**: it does not
+protect against re-identifying the same machine over time, only against recovering the original GUID
+value. This is the intended behavior — machine binding's entire purpose is stable re-identification —
+but it means the hash should be treated as PII-adjacent (a device fingerprint), not as an anonymous
+token, for any future data-handling or retention policy.
+
+### Recommended Fix
+
+No fix needed for current use (workspace-scoped device counting). If machine hashes are ever
+aggregated or exposed cross-workspace, treat them with the same care as any other device fingerprint.
+
+---
+
+## SG-16 — Analytics Retention As Data Minimisation
+
+**Severity:** Low  
+**Component:** Cloud API — `app/services/tracking.py`
+
+### Description
+
+Per-plan analytics retention (`docs/TRD.md` §13.4 — Free 0 days, Starter 90, Pro 365, Enterprise
+custom) is enforced by filtering `_visible_run_records`/`_visible_runtime_registrations` **on read**.
+There is no write-side prune: telemetry older than a workspace's retention window still exists in
+storage, it's just no longer returned by the query paths a workspace's own dashboard uses. This is
+correctness-complete for the customer-facing promise ("you can't see data older than N days") but not
+a real deletion guarantee — the raw event rows remain in `tracking/{company}` KV until something else
+removes them.
+
+### Recommended Fix
+
+Add an amortised prune job (on ingest or a periodic sweep) that deletes rows past the longest
+contractually-possible retention window. Tracked in `TODO.md` — deferred in the 2026-08-08
+restructuring because it required either a workspace-id-keyed billing read that doesn't cleanly fit the
+existing `Principal`-based `billing_for()` API, or accepting a correctness compromise; read-side
+filtering was judged sufficient for the customer-facing guarantee at current scale.
+
+---
+
+## SG-17 — Starter External Distribution Is Detectable, Not Blocked
+
+**Severity:** Low (by design)  
+**Component:** Distribution — `app/api/publish_routes.py`
+
+### Description
+
+Free and Starter workspaces are gated to `distribution="internal"` installers; Pro and Enterprise may
+distribute externally (`docs/TRD.md` §13.4, `ensure_distribution_allowed`). That gate is enforced on
+what the Studio *declares* via the `distribution` query param at installer upload — a Starter customer
+who deliberately uploads with `distribution=external` omitted, then hands the resulting "internal"
+installer to their own external customers anyway, is not technically prevented from doing so. Conxa has
+no way to inspect what a downloaded `.exe` is later used for.
+
+### Recommended Fix
+
+This is a deliberate trade-off, not an oversight (see `docs/TRD.md` §13.4): hard-blocking based on
+runtime install behavior would mean building DRM into the installer, which the product doesn't want.
+The boundary that's actually enforced is what the installer is *stamped and branded* as (internal vs.
+external, Conxa vs. white-label) — visible in the dashboard and telemetry, and a contract violation a
+Starter customer can be caught committing, not one that's cryptographically prevented. No fix planned;
+document the limit explicitly wherever Starter's distribution terms are described so it doesn't read as
+an oversight later.
+
+---
+
+## SG-18 — Seat Limit Not Enforced
+
+**Severity:** Low  
+**Component:** Billing — `app/services/entitlements.py`, team invites
+
+### Description
+
+`PLAN_LIMITS[plan]["seats"]` (1/3/10 for free/starter/pro) is never enforced. Unlike machines
+(`ensure_machine_slot`, which blocks a *new* machine once the workspace is at its plan's cap while
+grandfathering already-registered ones) and every LLM/compile/distribution entitlement (all re-derived
+live from current billing on every check — see `ensure_ops_tier`, `ensure_distribution_allowed`,
+`reserve_compile_credit`), there is no equivalent gate for seats. Team invites bypass the backend
+entirely: they go straight from the dashboard's Clerk UI component to Clerk's own API, so the backend
+never observes an invite happening. `membership_count_for` only feeds a read-only usage meter on the
+dashboard — a workspace can invite unlimited members on any plan today, and downgrading a plan doesn't
+remove anyone either. See `TODO.md` CLOUD-9.
+
+### Recommended Fix
+
+Add a Clerk webhook (`organizationMembership.created`) that checks the new member count against the
+workspace's plan limit and revokes the membership via Clerk's API if over — this is the only
+interception point available, since invites never pass through our own API. Not yet built; tracked as
+`TODO.md` CLOUD-9 (Complexity M).
 
 ---
 

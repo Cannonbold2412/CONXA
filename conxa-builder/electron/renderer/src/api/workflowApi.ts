@@ -144,7 +144,10 @@ export function deleteSkillPackage(skillId: string): Promise<{ skill_id: string;
 }
 
 export function fetchWorkflow(skillId: string): Promise<WorkflowResponse> {
-  return cmd<WorkflowResponse>('get_workflow', { skill_id: skillId })
+  // 'get_skill_workflow' — distinct from 'get_workflow', which now fetches the
+  // top-level Workflow entity (see api/workflowsApi.ts). This one still fetches
+  // a compiled skill's step-editor payload by skill_id, unchanged otherwise.
+  return cmd<WorkflowResponse>('get_skill_workflow', { skill_id: skillId })
 }
 
 export function fetchRecordingScreenshots(skillId: string): Promise<{

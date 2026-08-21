@@ -554,6 +554,7 @@ def step_to_dto(
         final_intent=final_intent,
         url=_step_url(step),
         frame=dict(step.get("frame") or {}),
+        tab=dict(step.get("tab") or {}),
         target=merged_target,
         selectors=dict(signals.get("selectors") or {}),
         compiled_selectors=_compiled_selectors(step),

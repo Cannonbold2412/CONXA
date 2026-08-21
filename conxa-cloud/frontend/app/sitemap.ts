@@ -11,6 +11,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
+      url: absoluteUrl('/pricing'),
+      lastModified: PUBLIC_DOCS_LAST_MODIFIED,
+      changeFrequency: 'weekly',
+      priority: 0.9,
+    },
+    {
       url: absoluteUrl('/docs'),
       lastModified: PUBLIC_DOCS_LAST_MODIFIED,
       changeFrequency: 'weekly',

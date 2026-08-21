@@ -1,6 +1,6 @@
 # Conxa Cost & Revenue Model
 
-**Last Updated:** July 2, 2026
+**Last Updated:** August 9, 2026
 **Status:** Living document — iterate as assumptions change
 
 ---
@@ -71,7 +71,15 @@ Selector strings are generated deterministically by `IdentityBundle` + `selector
 | **Enterprise** | **GPT-5.4 + Claude Sonnet 4.6 Vision** | Highest-quality compilation and vision handling for complex customer workflows |
 
 **Why separate paid pools:**
-Companies compile in bursts — not a constant drip all day. When someone hits compile, the job should finish in seconds. Free-tier providers have tight rate limits (30 req/min on Groq) that cause queuing under burst load.
+Companies compile in bursts — not a constant drip all day. When someone hits compile, the job should finish in seconds. Free-tier providers have tight rate limits that cause queuing under burst load:
+
+| Free-tier provider | Confirmed limits (Aug 2026) | Note |
+|---|---|---|
+| Groq | 30 req/min, 6,000 TPM, 14,400 req/day (org-level — extra API keys don't add capacity) | No per-token charge on the free tier, just rate gates; a card-verified "Developer Tier" (no spend required) lifts this to ~10x plus a 25% token discount if the free tier proves too tight |
+| Google AI Studio | 5–15 req/min, up to 1,000 req/day | **Changed April 1, 2026:** Pro-family Gemini models were pulled from the free tier — only Flash and Flash-Lite remain free. The vision-anchor free-pool call must target a Flash-family model; a Pro-family request will fail or bill, not silently degrade |
+| NVIDIA NIM | ~40 req/min, 1,000 free credits, no card required | Forever-free developer plan; credits function as a soft usage cap rather than a hard rate limit |
+
+Sources: [Groq pricing/limits](https://www.cloudzero.com/blog/groq-pricing/), [Google AI Studio free tier](https://www.nocode.mba/articles/google-ai-studio-pricing), [NVIDIA NIM free tier](https://decodethefuture.org/en/nvidia-nim-api-pricing-limits-guide/).
 
 - **Starter / Pro**: GPT-5.4-mini handles vision anchors and selector generation; Gemma 4 31B handles intent and text fallback work.
 - **Enterprise**: GPT-5.4 handles the core compilation path; Claude Sonnet 4.6 Vision is reserved for the most complex screenshot and visual-anchor cases.
@@ -85,26 +93,29 @@ Paid plans still avoid free-tier queueing. Starter and Pro optimize for cost and
 
 #### Current Provider Prices Used
 
-Pricing checked against provider docs on June 3, 2026:
+Pricing re-checked against provider docs on August 9, 2026 — **unchanged since the last check (June 3, 2026)** for every model already in the pool:
 
 | Provider / model | Input | Output | Relevant limit / note | Source |
 |------------------|-------|--------|-----------------------|--------|
-| GPT-5.4-mini | $0.75 / 1M tokens | $4.50 / 1M tokens | Tier 4: 10M TPM; Tier 5: 180M TPM | [OpenAI GPT-5.4-mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini), [OpenAI pricing](https://openai.com/api/pricing/) |
-| GPT-5.4 | $2.50 / 1M tokens | $15.00 / 1M tokens | Tier 4: 4M TPM; Tier 5: 40M TPM | [OpenAI GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4), [OpenAI pricing](https://openai.com/api/pricing/) |
+| GPT-5.4-mini | $0.75 / 1M tokens | $4.50 / 1M tokens | Tier 4: 10M TPM; Tier 5: 180M TPM | [OpenAI GPT-5.4-mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini), [OpenAI pricing](https://developers.openai.com/api/docs/pricing) |
+| GPT-5.4 (<272K context) | $2.50 / 1M tokens | $15.00 / 1M tokens | Tier 4: 4M TPM; Tier 5: 40M TPM | [OpenAI GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4), [OpenAI pricing](https://developers.openai.com/api/docs/pricing) |
 | Together AI Gemma 4 31B | $0.39 / 1M tokens | $0.97 / 1M tokens | Serverless limits are dynamic; use dedicated endpoints for predictable bursts | [Together pricing](https://www.together.ai/pricing), [Together rate limits](https://docs.together.ai/docs/serverless/rate-limits) |
 | Claude Sonnet 4.6 Vision | $3.00 / 1M tokens | $15.00 / 1M tokens | Use Priority Tier or custom Enterprise limits for bursty vision work | [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Anthropic rate limits](https://platform.claude.com/docs/en/api/rate-limits) |
+| Claude Opus 4.8 / Opus 5 | $5.00 / 1M tokens | $25.00 / 1M tokens | Quality upgrade path only — materially more expensive than Sonnet | [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
 
-Claude Opus is a quality upgrade path, not the default Enterprise cost model. It is materially more expensive than Sonnet and should only be used when Sonnet 4.6 Vision cannot resolve the workflow.
+Claude Opus (currently Opus 4.8 or Opus 5, both priced identically at $5/$25 per MTok) is a quality upgrade path, not the default Enterprise cost model — it should only be used when Sonnet 4.6 Vision cannot resolve the workflow.
+
+**New since the last check — Claude Sonnet 5:** Anthropic shipped Claude Sonnet 5 with *introductory* pricing of $2.00 / $10.00 per MTok through **August 31, 2026**, reverting to standard $3.00 / $15.00 (identical to Sonnet 4.6) on September 1, 2026. That's a real ~33% discount vs. Sonnet 4.6 Vision for the next three weeks, but it converges to the same price the day after, so it is not worth a router migration for this pricing window alone — re-evaluate only if Sonnet 5's vision quality is materially better than 4.6's, independent of the temporary discount. [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing)
 
 #### Cost Per Compilation by Plan
 
 **Free plan (free-tier providers):**
 
-Token costs at Groq (text) + Google AI Studio (vision):
-- Intent: ~200 tokens → **~$0.00001** (negligible)
-- Vision anchor: ~15K tokens at $0.075/1M → **~$0.001/step**
+Token costs at Groq (text) + Google AI Studio (vision) — **actually billed to Conxa: $0**, both are free-tier key rotation; the figures below are a notional shadow price (what the same calls would cost at each provider's cheapest paid rate) used only to compare against the paid pools:
+- Intent: ~200 tokens → **~$0.00001 notional** (negligible)
+- Vision anchor: ~15K tokens at $0.10/1M (Gemini Flash-Lite input rate — the only free-tier-eligible Gemini family since Google pulled Pro models from the free tier on April 1, 2026) → **~$0.002/step notional**
 - Selectors: **$0** (deterministic — no LLM)
-- **Total/step: ~$0.001 | Per compilation (15 steps): ~$0.015**
+- **Total/step: ~$0.002 notional | Per compilation (15 steps): ~$0.03 notional (real cost: $0)**
 
 **Starter / Pro paid plans (GPT-5.4-mini + Together AI Gemma 4 31B):**
 
@@ -124,13 +135,13 @@ Token costs at Groq (text) + Google AI Studio (vision):
 - **Cached recompilation (3 changed steps): ~$0.162**
 - **Blended monthly average (20% fresh, 80% cached): ~$0.292/compilation**
 
-| Scenario | Free cost | Starter / Pro cost | Enterprise cost |
+| Scenario | Free cost (notional; real cost $0) | Starter / Pro cost | Enterprise cost |
 |----------|------------|--------------------|-----------------|
-| Short workflow (5 steps) | ~$0.005 | ~$0.070 | ~$0.27 |
-| Medium workflow (15 steps) | ~$0.015 | **~$0.21** | **~$0.81** |
-| Long workflow (30 steps) | ~$0.030 | ~$0.42 | ~$1.62 |
-| Recompilation (cached, 3 changed steps) | ~$0.003 | **~$0.042** | **~$0.162** |
-| **Blended (80% recompiles, 15 steps avg)** | **~$0.005** | **~$0.075** | **~$0.292** |
+| Short workflow (5 steps) | ~$0.01 | ~$0.070 | ~$0.27 |
+| Medium workflow (15 steps) | ~$0.03 | **~$0.21** | **~$0.81** |
+| Long workflow (30 steps) | ~$0.06 | ~$0.42 | ~$1.62 |
+| Recompilation (cached, 3 changed steps) | ~$0.006 | **~$0.042** | **~$0.162** |
+| **Blended (80% recompiles, 15 steps avg)** | **~$0.011** | **~$0.075** | **~$0.292** |
 
 **Key insight on continuous iteration:** Both intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps — the rest are cache hits. This makes daily iteration cheap regardless of provider. Selector strings are generated deterministically at zero token cost in all cases.
 
@@ -146,9 +157,9 @@ Token costs at Groq (text) + Google AI Studio (vision):
 These are compilation/recompilation costs, not execution costs, because customer-side workflow execution still runs locally. The pool is tracked as a visible monthly customer meter but should not become surprise per-token billing.
 
 **Example — Company on Starter (paid plan), 1 plugin, 50 workflows:**
-- Initial build: 50 × $0.54 = **$27 one-time**
-- Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.11 = **$3.30/month**
-- Human Edit repair: draws from the included **10M text + vision token reserve**
+- Initial build: 50 × $0.54 = **$27 one-time** (50 compile credits spent)
+- Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.11 = **$3.30/month** (30 more compile credits spent — recompiles meter the same as first compiles)
+- Selector/anchor repair on existing workflows: draws from the included **10M text + vision token Human Edit reserve**
 
 | Component | Free | Starter | Pro | Enterprise |
 |-----------|-------|---------|-----|------------|
@@ -271,7 +282,7 @@ These are per-workflow-run figures, not per-step — most steps in a healthy wor
 
 The end customer (the person running the installed `.exe` via Claude Desktop) is not billed by Conxa at all for execution — it draws entirely against **their own Claude Pro/Max subscription usage allowance** (or their own API key, if that's how their Claude Desktop is configured). There is no incremental dollar cost as long as they're inside their plan's existing session limit — the only "cost" is how many of their allotted messages a workflow run consumes.
 
-Anthropic doesn't publish exact message counts (they vary by message/attachment length, conversation length, and model — see the Claude Help Center's ["How do usage and length limits work?"](https://support.claude.com/en/articles/11647753-how-do-usage-and-length-limits-work)), but commonly-cited approximate 5-hour session allowances are:
+Anthropic doesn't publish exact message counts (they vary by message/attachment length, conversation length, and model — see the Claude Help Center's ["How do usage and length limits work?"](https://support.claude.com/en/articles/11647753-how-do-usage-and-length-limits-work)), and that remains true as of the August 2026 re-check — the support article describes the mechanism, not fixed counts. Commonly-cited approximate 5-hour session allowances (re-confirmed against current community reporting, which puts Pro at roughly 10–45, Max 5x at 50–225, and Max 20x at 200–900) are:
 
 | Plan | Price | ~Messages / 5-hour session |
 |---|---|---|
@@ -308,7 +319,17 @@ Assumes blended compilation cost before Human Edit reserve: **~$0.075** for Star
 
 ## Revenue Model
 
-Companies pay Conxa to **build and maintain** their Claude-compatible plugin. They think about it the same way they think about their mobile app on the App Store — there's a platform fee to be listed and maintained, not a per-download fee.
+**Revision note (2026-08-08):** Repriced and repositioned following the Centelon pilot demo (7 Aug 2026)
+around a capability ladder rather than a flat feature list — see `docs/PRD.md` §11 and
+`docs/Implementation-Plan.md`. Pricing moved from USD to INR; the installer-slot meter was removed
+entirely (a workspace may publish under unlimited product slugs on any tier); a machines meter replaced
+it as the trial-abuse control; and Free became a 30-day trial rather than a permanent tier. Revenue
+figures below are in INR; LLM provider COGS is still billed in USD by the providers, converted here at
+an indicative ₹83/USD — recompute against the live rate before using these numbers for planning.
+
+Companies pay Conxa to **build and maintain** their Claude-compatible plugin. They think about it the
+same way they think about their mobile app on the App Store — there's a platform fee to be listed and
+maintained, not a per-download fee.
 
 ### Tier Design Principles
 
@@ -319,9 +340,20 @@ Companies pay Conxa to **build and maintain** their Claude-compatible plugin. Th
 - They iterate heavily during the first month, then settle into lower-volume maintenance.
 - They do not want to think in tokens, credits, or per-compilation billing.
 
-**The public pricing axis is subscription tier + four visible meters.** Customers see seats, installer slots, monthly compile credits, and the monthly Human Edit pool. Local plugin creation and workflow recording are unlimited; workflow count is no longer a visible quota.
+**Pricing is a capability ladder, not just four bigger numbers.** Each tier unlocks what a workspace can
+*do*, not only how much: Free proves the product works on one machine before a 30-day trial ends,
+Starter and Pro run it internally across a team, and Pro and Enterprise can distribute externally to
+customers (Conxa-branded on Pro, white-label on Enterprise). See the capability ladder in
+`docs/PRD.md` §11.
 
-This keeps the buying motion close to "Claude Pro / Max" instead of "cloud API usage." A customer chooses the plan that matches the size of the product they want to distribute, then Conxa quietly manages compile cost behind the scenes.
+**The public pricing axis is subscription tier + four visible meters.** Customers see seats, machines,
+monthly compile credits, and the monthly Human Edit pool. Local plugin creation and workflow recording
+are unlimited; workflow count and product-slug count are no longer visible quotas — reach is gated by
+distribution capability, not a count.
+
+This keeps the buying motion close to "Claude Pro / Max" instead of "cloud API usage." A customer
+chooses the plan that matches how far they need to reach, then Conxa quietly manages compile cost
+behind the scenes.
 
 ---
 
@@ -337,7 +369,7 @@ After that, the same company often updates only 1–2 workflows per month. At th
 | Maintenance months | 1–2 workflow updates/month, occasional plugin rebuilds | Low LLM usage; dashboard/telemetry/signing dominate | Plugin remains live, signed, tracked, updateable, and supported |
 | Conxa platform updates | Conxa ships runtime, healing, recovery, or signing updates | Mostly platform engineering and update-sync cost | Customers benefit even without recompiling their workflows |
 
-Example: a Starter customer with 1 live plugin and 50 workflows might recompile heavily in month 1 while polishing the installer. That build-heavy month is protected by an internal fair-use envelope. In month 2, the same customer might update only 1-2 workflows, while still paying for dashboard analytics, signing, telemetry retention, update delivery, and Conxa runtime/healing improvements.
+Example: a Starter customer with 1 live plugin and 50 workflows might recompile heavily in month 1 while polishing the installer. That build-heavy month is bounded directly by the plan's monthly compile-credit allowance (recompiles spend a credit just like first compiles), plus add-on credit packs if they run out. In month 2, the same customer might update only 1-2 workflows, while still paying for dashboard analytics, signing, telemetry retention, update delivery, and Conxa runtime/healing improvements.
 
 This is why margins improve after the first build month. The cap protects Conxa during build-heavy periods; the subscription captures the ongoing value after the plugin is live.
 
@@ -347,11 +379,17 @@ This is why margins improve after the first build month. The cap protects Conxa 
 
 **Customer-facing meters:**
 - **Seats** - people who can use the dashboard / Build Studio for the workspace.
-- **Installer slots** - unique cloud-hosted plugin slugs with an uploaded installer. Uploading a newer installer version for the same slug is an update and does not consume another slot.
-- **Compile credits** - monthly UTC fresh-compile credits. A fresh workflow compile consumes 1 credit.
-- **Human Edit pool** - monthly UTC token pool for LLM-assisted recompile, selector repair, semantic repair, visual re-anchor, screenshot/bbox anchor regeneration, and raw-recording recompile.
+- **Machines** - distinct devices a workspace can build from. Replaces the old installer-slot meter (removed 2026-08-08 — a workspace may now publish under unlimited product slugs on every tier); this is the control that keeps a single-machine free trial from quietly becoming a free Pro seat.
+- **Compile credits** - monthly UTC fresh-compile credits. A fresh workflow compile consumes 1 credit. Starter and Pro can buy +25 credits/mo add-on packs (₹4,999 each) that stack on the base allowance.
+- **Human Edit pool** - monthly UTC token pool for editor-triggered LLM work only: selector repair (1-click fix), semantic repair, visual re-anchor, and screenshot/bbox anchor regeneration (the "draw a new region" retarget wizard). Recompiling a whole workflow is billed like a first compile — see Compile credits above — not from this pool.
 
 Local plugin creation, workflow recording, plugin package builds before testing, deterministic Human Edit patches, reorder/delete/input edits, validation edits, and sign-off remain unlimited.
+
+**Capability gates (not numeric meters):**
+- **Distribution** - internal-only (Free, Starter) vs. external distribution to customers (Pro, Enterprise). Free is additionally capped at 1 install.
+- **Installer branding** - Conxa-branded through Pro; white-label is Enterprise only.
+- **Ops tier** - none (Free) / basic, runs list only (Starter) / full, + drift detection, healing, audit export (Pro, Enterprise).
+- **BYOK** - Enterprise only, Azure OpenAI. Compile credits still apply on BYOK — credits meter reach, not Conxa's token cost.
 
 **Internal controls, not public meters:**
 - Active installs
@@ -362,73 +400,89 @@ Local plugin creation, workflow recording, plugin package builds before testing,
 
 | | **Free** | **Starter** | **Pro** | **Enterprise** |
 |--|----------|-------------|---------|----------------|
-| **Price** | **$0** | **$299/mo** | **$799/mo** | Custom annual |
+| **Price** | **₹0 · 30-day trial** | **₹19,999/mo** | **₹49,999/mo** | Custom, from ₹99,999/mo |
 | **Seats** | 1 | 3 | 10 | Custom override |
-| **Installer slots** | 1 | 3 | 10 | Custom override |
-| **Compile credits / month** | 50 | 300 | 1,000 | Custom override |
-| **Human Edit pool / month** | 1M tokens | 10M tokens | 50M tokens | Custom override |
-| **Analytics retention** | 14 days | 90 days | 1 year | Custom |
+| **Machines** | 1 | 3 | 10 | Custom override |
+| **Compile credits / month** | 25 | 200 | 500 | Unlimited |
+| **Human Edit pool / month** | 500K tokens | 2.5M tokens | 10M tokens | Custom override |
+| **Distribution** | Internal, 1 install | Internal | External, Conxa-branded | External, white-label |
+| **Ops tier** | None | Basic | Full | Full + SSO |
+| **Analytics retention** | None | 90 days | 1 year | Custom |
 | **Build speed** | Standard queue | Priority | Highest priority | SLA-backed |
-| **White-label installer** | No | Yes | Yes | Yes |
-| **Support** | Email | Priority email | Priority + onboarding | SLA / private channel |
+| **BYOK** | No | No | No | Yes (Azure OpenAI) |
+| **Support** | Community | Priority email | Priority + onboarding | SLA / private channel |
 
 **Why compile credits are visible:**
-Fresh compile is the clearest proxy for expensive extraction work. Customers can record as many workflows as they need locally, but each workflow they ask Conxa to compile into execution data consumes 1 monthly compile credit.
+Compiling is the clearest proxy for expensive extraction work. Customers can record and re-record as many workflows as they need locally at no cost, but every time they ask Conxa to turn a workflow into execution data — whether that's the first compile or a recompile after re-recording — it consumes 1 monthly compile credit.
 
 **Why Human Edit is separate:**
-Recompile and LLM-assisted repair are not the same product action as first compile. They are quality-improvement loops after the workflow exists, so they draw from the Human Edit token pool. Deterministic edits stay available even when the pool is exhausted.
+Editing an already-compiled workflow (selector repair, semantic repair, visual re-anchor) is a different product action from compiling — it's a targeted quality-improvement loop on an existing skill, not a full recompile, so it draws from the Human Edit token pool instead. Deterministic edits stay available even when the pool is exhausted.
 
 **Recommended hard gates:**
-- Fresh compile is blocked when monthly compile credits are exhausted.
-- Recompile and LLM-assisted Human Edit actions are blocked when the Human Edit pool is exhausted.
-- Installer upload is blocked only when the slug is new and used installer slots are already at the plan limit.
-- Same-slug installer upload for a newer version remains allowed at the installer limit; exact duplicate installer versions are rejected separately.
+- Compile is blocked — first compile or recompile alike — when monthly compile credits are exhausted, or when a free trial has passed its 30-day window.
+- LLM-assisted Human Edit actions (selector/semantic repair, visual re-anchor) are blocked when the Human Edit pool is exhausted.
+- A new build machine is blocked once the plan's machine limit is reached; a machine already registered keeps working.
+- Publishing an external, customer-facing installer is blocked below Pro; custom branding is blocked below Enterprise.
 - Seat usage is metered immediately. Hard enforcement requires a Conxa-controlled invite API or Clerk webhook cleanup.
 
-**Upgrade path:** Free lets a company prove one serious plugin. Starter is the first paid product-team tier. Pro is for larger compile volume, more installers, and larger teams. Enterprise is for SLA, security, procurement, and explicit custom usage overrides.
+**Upgrade path:** Free proves the product works, on one machine, for 30 days. Starter is the first paid tier — one team automating its own processes internally. Pro adds external distribution, the full ops dashboard, and drift detection — an enterprise running its own org, or a vendor scaling as a channel. Enterprise adds white-label distribution, BYOK, SSO, and explicit custom usage overrides — a SaaS vendor or consultancy shipping to its own customers.
 
 ---
 
 ### Cost Per Tier (What Conxa Spends)
 
-Using recalculated LLM costs from current provider pricing. The customer sees subscriptions; Conxa models an internal build-heavy month for margin planning.
+Using recalculated LLM costs from current provider pricing. The customer sees subscriptions; Conxa
+models an internal build-heavy month for margin planning. Revenue is INR (what's actually charged);
+COGS is estimated in USD (what LLM providers actually bill) and converted at an indicative ₹83/USD for
+the margin line — **recompute against the live rate and current provider pricing before using these
+numbers for planning.** Compile credits and the Human Edit pool both dropped from the prior pricing
+sheet (Starter: 300→200 credits, 10M→2.5M Human Edit tokens; Pro: 1,000→500 credits, 50M→10M tokens),
+so build-heavy-month COGS should scale down roughly in proportion — the ranges below are a first pass,
+not a re-derivation from current per-token provider pricing.
 
 | | **Free** | **Starter** | **Pro** | **Enterprise** |
 |--|-----------|-------------|---------|----------------|
-| LLM provider | Free-tier rotation + standard queue | GPT-5.4-mini + Together Gemma 4 31B | GPT-5.4-mini + Together Gemma 4 31B, priority queue | Contract model mix |
+| LLM provider | Free-tier rotation + standard queue | Premium pool (`compile_pool="premium"`) | Premium pool, priority queue | BYOK (Azure OpenAI) or premium |
 | Seats | 1 | 3 | 10 | Contracted |
-| Installer slots | 1 | 3 | 10 | Contracted |
-| Compile credits / month | 50 | 300 | 1,000 | Contracted |
-| Human Edit pool | 1M text + vision tokens | 10M text + vision tokens | 50M text + vision tokens | Contracted |
-| Internal build-month envelope | ~50 fresh compiles | ~300 fresh compiles | ~1,000 fresh compiles | Contracted |
-| Compile + Human Edit planning cost | **~$2–$8** | **~$28–$45** | **~$88–$120** | Contracted |
-| Infra, telemetry, installer, payment-fee reserve | **~$10–$20** | **~$30–$50** | **~$80–$130** | Contracted |
-| **Total cost/company in build-heavy month** | **~$12–$28 CAC** | **~$58–$95** | **~$168–$250** | Contracted |
-| **Revenue** | $0 | **$299** | **$799** | Custom |
-| **Build-heavy gross margin** | — | **~68–81%** | **~69–79%** | Contract-dependent |
+| Machines | 1 | 3 | 10 | Contracted |
+| Compile credits / month | 25 | 200 | 500 | Unlimited |
+| Human Edit pool | 500K tokens | 2.5M tokens | 10M tokens | Contracted |
+| Internal build-month envelope | ~25 fresh compiles | ~200 fresh compiles | ~500 fresh compiles | Contracted |
+| Compile + Human Edit planning cost (indicative) | **~$1–$5** | **~$14–$23** | **~$44–$60** | Contracted |
+| Infra, telemetry, installer, payment-fee reserve | **~$10–$20** | **~$25–$40** | **~$65–$105** | Contracted |
+| **Total cost/company in build-heavy month (indicative)** | **~$11–$25 CAC** | **~$39–$63** | **~$109–$165** | Contracted |
+| **Revenue** | ₹0 | **₹19,999 (~$241)** | **₹49,999 (~$602)** | Custom, from ₹99,999 |
+| **Build-heavy gross margin (indicative)** | — | **~74–84%** | **~73–82%** | Contract-dependent |
 | **Maintenance-month gross margin** | — | **~90%+** | **~90%+** | Contract-dependent |
 
-**Blended paid-plan compilation cost** = (20% fresh x $0.21) + (80% cached x $0.042) = ~$0.075/compilation before Human Edit reserve.
-
-**Pricing implication:** The four visible meters keep expectations clear while protecting Conxa from unbounded compile and repair loops. Starter can offer 300 fresh compile credits and 10M Human Edit tokens at $299 only if deterministic local editing, workflow recording, and plugin package builds remain unlimited but quota-gated LLM work is enforced. Pro becomes the highest self-serve tier; anything beyond Pro should move to Enterprise with explicit usage overrides.
+**Pricing implication:** The four visible meters keep expectations clear while protecting Conxa from
+unbounded compile and repair loops. The 30-day trial replaces the old "free forever" framing as the
+qualification motion; revenue now comes entirely from Starter, Pro, and Enterprise. Pro is the highest
+self-serve tier and where external distribution unlocks; anything beyond Pro — white-label, BYOK, SSO,
+explicit usage overrides — moves to Enterprise.
 
 ---
 
 ## Unit Economics
 
-These scenarios assume a conservative build-heavy month using midpoint cost estimates from the tier table. Maintenance months are materially cheaper because live plugins usually receive only 1-2 workflow updates while still paying for dashboard, signing, telemetry, support, update delivery, and Conxa healing/runtime improvements.
+These scenarios assume a conservative build-heavy month using midpoint cost estimates from the tier
+table, converted at the same indicative ₹83/USD used above. Maintenance months are materially cheaper
+because live plugins usually receive only 1-2 workflow updates while still paying for dashboard,
+signing, telemetry, support, update delivery, and Conxa healing/runtime improvements.
 
 ### Scenario A: MVP (10 Companies)
 Mix: 7 Starter, 3 Pro
 
 | | Value |
 |-|-------|
-| **Monthly Revenue** | (7 x $299) + (3 x $799) = **$4,490** |
-| Build-heavy COGS | **~$1,090** |
-| **Gross Margin** | **~76%** |
-| **Monthly Profit** | **~+$3,400** |
+| **Monthly Revenue** | (7 x ₹19,999) + (3 x ₹49,999) = **₹2,89,990** (~$3,494) |
+| Build-heavy COGS (indicative) | **~₹64,000** (~$770) |
+| **Gross Margin (indicative)** | **~78%** |
+| **Monthly Profit (indicative)** | **~+₹2,26,000** |
 
-**Break-even:** 1-2 paying companies covers baseline cloud infrastructure. Free tier costs should be treated as acquisition spend and protected with one-free-workspace limits.
+**Break-even:** 1-2 paying companies covers baseline cloud infrastructure. The 30-day free trial's
+costs should be treated as acquisition spend, bounded by the machine-limit control rather than an
+open-ended free tier.
 
 ---
 
@@ -437,10 +491,10 @@ Mix: 70 Starter, 30 Pro
 
 | | Value |
 |-|-------|
-| **Monthly Revenue** | (70 x $299) + (30 x $799) = **$44,900** |
-| Build-heavy COGS | **~$10,850** |
-| **Gross Margin** | **~76%** |
-| **Monthly Profit** | **~+$34,050** |
+| **Monthly Revenue** | (70 x ₹19,999) + (30 x ₹49,999) = **₹28,99,900** (~$34,938) |
+| Build-heavy COGS (indicative) | **~₹6,40,000** (~$7,700) |
+| **Gross Margin (indicative)** | **~78%** |
+| **Monthly Profit (indicative)** | **~+₹22,60,000** |
 
 ---
 
@@ -449,24 +503,26 @@ Mix: 300 Starter, 200 Pro
 
 | | Value |
 |-|-------|
-| **Monthly Revenue** | (300 x $299) + (200 x $799) = **$249,500** |
-| Build-heavy COGS | **~$60,500** |
-| **Gross Margin** | **~76%** |
-| **Monthly Profit** | **~+$189,000** |
+| **Monthly Revenue** | (300 x ₹19,999) + (200 x ₹49,999) = **₹1,59,99,500** (~$192,765) |
+| Build-heavy COGS (indicative) | **~₹35,20,000** (~$42,400) |
+| **Gross Margin (indicative)** | **~78%** |
+| **Monthly Profit (indicative)** | **~+₹1,24,80,000** |
 
 ---
 
 ### Scenario D: Enterprise-Heavy (2,000 Companies)
-Mix: 1,000 Starter, 800 Pro, 200 Enterprise at $10K average contract value
+Mix: 1,000 Starter, 800 Pro, 200 Enterprise at ₹8,30,000 (~$10K) average contract value
 
 | | Value |
 |-|-------|
-| **Monthly Revenue** | **~$2.94M** |
-| Build-heavy COGS | **~$720K** |
-| **Gross Margin** | **~75%** |
-| **Monthly Profit** | **~+$2.22M** (~$26.6M/year) |
+| **Monthly Revenue (indicative)** | **~₹18.9 crore** (~$2.28M) |
+| Build-heavy COGS (indicative) | **~₹4.65 crore** (~$560K) |
+| **Gross Margin (indicative)** | **~75%** |
+| **Monthly Profit (indicative)** | **~+₹14.3 crore** (~$1.72M, ~$20.6M/year) |
 
-Enterprise contracts should be priced from the customer's requested seats, installer slots, compile credits, Human Edit pool, active installs, telemetry retention, support SLA, and model-quality pool. Do not sell "unlimited" Enterprise unless the contract has a negotiated usage envelope behind it.
+Enterprise contracts should be priced from the customer's requested seats, machines, compile credits,
+Human Edit pool, active installs, telemetry retention, support SLA, BYOK, and SSO. Do not sell
+"unlimited" Enterprise unless the contract has a negotiated usage envelope behind it.
 
 ---
 
@@ -474,11 +530,11 @@ Enterprise contracts should be priced from the customer's requested seats, insta
 
 | Milestone | Companies | Monthly Revenue | Monthly Cost | Profit | Key Actions |
 |-----------|-----------|-----------------|--------------|--------|-------------|
-| **MVP live** | 10 | ~$4.5K | ~$1.1K | +$3.4K | Ship subscription billing; enforce compile credits, Human Edit pool, and installer slots |
-| **Beta** | 50 | ~$22.5K | ~$5.4K | +$17.1K | Dashboard usage meters for seats, installer slots, compile credits, and Human Edit pool |
-| **Growth** | 100 | ~$44.9K | ~$10.9K | +$34.0K | Priority build queue, internal COGS alerts, fair-use throttles |
-| **Scale** | 500 | ~$249.5K | ~$60.5K | +$189.0K | Negotiate provider discounts; add Enterprise sales motion |
-| **Enterprise** | 2,000 | ~$2.94M | ~$720K | +$2.22M | SLA support, custom retention, reserved provider capacity |
+| **MVP live** | 10 | ~₹2.9L | ~₹0.64L | +₹2.26L | Ship subscription billing; enforce compile credits, Human Edit pool, machine limit, and trial expiry |
+| **Beta** | 50 | ~₹14.5L | ~₹3.2L | +₹11.3L | Dashboard usage meters for seats, machines, compile credits, and Human Edit pool |
+| **Growth** | 100 | ~₹29.0L | ~₹6.4L | +₹22.6L | Priority build queue, internal COGS alerts, fair-use throttles |
+| **Scale** | 500 | ~₹1.6Cr | ~₹35.2L | +₹1.25Cr | Negotiate provider discounts; add Enterprise sales motion |
+| **Enterprise** | 2,000 | ~₹18.9Cr | ~₹4.65Cr | +₹14.3Cr | SLA support, custom retention, reserved provider capacity |
 
 ---
 
@@ -503,11 +559,11 @@ It's worth being explicit about the value proposition so pricing feels justified
 - Keep the plugin signed, trackable, updateable, and supported after the build-heavy first month
 - Receive Conxa runtime/healing improvements without rebuilding the product from scratch
 
-**At $0 Free:** A company gets 1 seat, 1 installer slot, 50 monthly compile credits, and 1M monthly Human Edit tokens, enough to prove that Conxa works on their product before paying.
+**At ₹0, 30-day trial (Free):** A company gets 1 seat, 1 machine, 25 monthly compile credits, and 500K monthly Human Edit tokens — full self-healing, internal use only, one install — enough to prove that Conxa works on their product before paying.
 
-**At $299/month (Starter):** A company gets 3 seats, 3 installer slots, 300 monthly compile credits, 10M monthly Human Edit tokens, white-label installer support, priority builds, and longer analytics retention. This is the main product-team tier.
+**At ₹19,999/month (Starter):** A company gets 3 seats, 3 machines, 200 monthly compile credits, 2.5M monthly Human Edit tokens, priority builds, and 90-day analytics retention. Distribution stays internal-only. This is the first paid, one-team tier.
 
-**At $799/month (Pro):** A company gets 10 seats, 10 installer slots, 1,000 monthly compile credits, 50M monthly Human Edit tokens, highest-priority self-serve builds, larger rollout assumptions, and onboarding support. This is the highest self-serve tier for vendors turning Conxa into a serious distribution channel.
+**At ₹49,999/month (Pro):** A company gets 10 seats, 10 machines, 500 monthly compile credits, 10M monthly Human Edit tokens, external distribution with a Conxa-branded installer, the full ops dashboard with drift detection, highest-priority self-serve builds, and 1-year retention. This is the highest self-serve tier — an enterprise running its own org, or a vendor scaling as a channel.
 
 ---
 
@@ -521,8 +577,8 @@ Intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anc
 **2. Usage naturally drops after launch**
 Most companies spend the first month building and polishing the plugin, then move to 1–2 updates per month. This makes ongoing LLM cost much lower than the full-cap build-month model while subscription revenue continues for dashboard, signing, telemetry retention, support, update delivery, and Conxa healing/runtime updates.
 
-**3. Four visible meters**
-Seats, installer slots, compile credits, and Human Edit pool are the cleanest customer-visible controls. Workflow recording and plugin creation stay unlimited, while expensive cloud-hosted installer distribution and LLM-heavy extraction/repair loops are bounded.
+**3. Four visible meters, plus capability gates**
+Seats, machines, compile credits, and Human Edit pool are the cleanest customer-visible numeric controls. Workflow recording and plugin creation stay unlimited — there is no limit on how many product slugs a workspace can publish under — while expensive LLM-heavy extraction/repair loops are bounded by the meters, and external distribution reach is bounded by which tier a workspace is on rather than a count.
 
 **4. Vision anchor cache hit rate**
 Vision anchor calls dominate compilation cost. Cache hits (same screenshot hash) cost zero tokens. Apps that recompile with minimal visual DOM change will have high anchor cache hit rates, making recompiles near-free. The cache key is the screenshot hash — stable page designs recompile at ~80% lower cost. Adding a "cache hit %" column to the build report gives companies visibility into their recompile efficiency.
@@ -534,7 +590,7 @@ At $10K+/month provider spend (~500 companies), negotiate committed-use pricing 
 At Enterprise scale (300M events/month), aggregation is important. Roll up raw events into daily summaries after 7 days. Companies rarely need to query individual run-level data older than 1 week. Reduces storage cost by 70–80%.
 
 **7. Free tier is customer acquisition cost**
-Free now includes one installer slot, 50 compile credits, and 1M Human Edit tokens, so it should be protected by one-free-workspace enforcement, standard queue priority, and free-tier provider routing where possible. It is still worth offering because it proves product value before procurement.
+Free is now a 30-day trial capped at 1 machine, 25 compile credits, and 500K Human Edit tokens, so it should be protected by the machine-limit enforcement and free-tier provider routing. It is still worth offering because it proves product value before procurement — and the trial window bounds how long that acquisition cost runs.
 
 **8. Update CDN costs**
 Already negligible. Only matters if plugins become large (>100MB). Keep plugin packages data-only (no embedded browser binaries). Currently well-controlled.
@@ -546,10 +602,10 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
 | Customers expect unlimited fresh compiles because recording is unlimited | Support and compile surface grows without matching revenue | Show compile credits explicitly; block first compile when credits are exhausted |
-| Customer tries to create installers for more slugs than their plan allows | Plan limits become unenforceable | Block installer upload for a new slug at the installer-slot limit; allow same-slug newer versions |
+| A Starter/Free workspace tries to distribute externally to bypass the ladder | Undermines the Pro/Enterprise revenue tier | Server-side distribution gate on installer upload and publish, independent of Studio UI hiding |
 | Human Edit pool is exhausted by repeated repair loops | Margin erosion and degraded edit experience | Track text + vision token usage by workspace; block only LLM-assisted edits when the pool is exhausted |
 | Telemetry volume explodes unexpectedly | $500 -> $5K/month infra cost | Implement event sampling for healthy runs; keep 100% of failures and recovery events |
-| Enterprise customer asks for "unlimited" under a fixed price | Contract becomes negative margin | Sell Enterprise as custom usage envelope: seats, installer slots, compile credits, Human Edit pool, active installs, retention, SLA, model pool |
+| Enterprise customer asks for "unlimited" under a fixed price | Contract becomes negative margin | Sell Enterprise as custom usage envelope: seats, machines, compile credits, Human Edit pool, active installs, retention, SLA, BYOK |
 | High churn because customers don't adopt `.exe` | Companies cancel from low ROI | Instrument adoption rate; alert company when <20% of target customers installed |
 | Concurrency spikes during compilation | Build queue backs up or providers return 429 | Async compilation with job queue (`/api/v1/jobs`); use provider priority tiers and reserved capacity only when cohort demand proves it |
 
@@ -572,10 +628,10 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 
 ### Subscription Capacity (Track Daily)
 - Seats used vs. plan limit
-- Installer slots used vs. plan limit
-- Compile credits used/reserved vs. monthly limit
+- Machines used vs. plan limit
+- Compile credits used/reserved vs. monthly limit (including add-on packs)
 - Human Edit pool used vs. monthly limit
-- Blocked fresh compile, LLM-assisted Human Edit, and new-installer attempts
+- Blocked fresh compile, LLM-assisted Human Edit, new-machine, external-distribution, and trial-expired attempts
 - Upgrade prompts shown and conversion rate
 
 ### Plugin Adoption (Track Daily)
@@ -586,9 +642,16 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 
 ### Telemetry Quality (Track Daily)
 - Total runs reported
-- Success rate (Tier 1 selector hit)
-- Recovery rate (needed Tier 2–5)
-- Unresolved failures (Tier 5 escalation)
+- Success rate (primary selector hit, no recovery)
+- Recovery rate (needed Tier 1–4 — there are four tiers, not five; see `docs/TRD.md` §10.1)
+- Free-repair share: steps that finished **without ever** reaching a paid Tier 3/4 LLM call. Count
+  outcomes per step, not attempts — counting attempts double-counts a step that tried two free
+  methods and wrongly counts a step that tried a free method, failed, then paid for an LLM call
+- Unresolved failures (all four tiers exhausted)
+
+As of 2026-08-07 these are no longer manual queries — the operations dashboard computes them
+(`app/services/tracking_analytics.py`, surfaced on `/dashboard/healing` and the overview health
+score), so the figures in this doc can be checked against measured fleet data rather than estimates.
 
 ### Infrastructure Cost (Track Monthly)
 - Compilation LLM cost vs. forecast
@@ -617,12 +680,15 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 - [x] Track Human Edit text + vision token usage against the plan pool.
 - [x] Show companies simple subscription usage: seats, installer slots, compile credits, Human Edit pool.
 - [ ] Add internal fair-use alerts for repeated compile/Human Edit outliers and reserve exhaustion.
-- [ ] Build customer alerts at 80% of compile credits, Human Edit pool, installer slots, and seats.
-- [ ] Test billing end-to-end: Free -> Starter -> visible limit hit -> upgrade -> limits reset.
+- [ ] Build customer alerts at 80% of compile credits, Human Edit pool, machines, and seats.
+- [ ] Test billing end-to-end: Free trial -> Starter -> visible limit hit -> upgrade -> limits reset.
+- [x] Repriced to the capability ladder (2026-08-08): removed the installer-slot limit, added machines,
+  30-day trial expiry, distribution/white-label/ops_tier/BYOK capability gates, and a compile-credit
+  add-on. See `docs/PRD.md` §11 and `docs/Implementation-Plan.md`.
 
 ### Month 2: Validation
-- [ ] Onboard 5–10 pilot companies on Free tier
-- [ ] Measure workflows per plugin, installer slots per workspace, installer rebuild frequency, fresh compiles, Human Edit use, and active installs.
+- [ ] Onboard 5–10 pilot companies on the Free trial
+- [ ] Measure workflows per plugin, product slugs per workspace, installer rebuild frequency, fresh compiles, Human Edit use, and active installs.
 - [ ] Measure internal P50/P95 compilations per active workflow so compile-credit envelopes can be tuned.
 - [ ] Validate whether Starter's 300 compile credits and 10M Human Edit tokens feel like the natural product-team tier.
 - [ ] Collect feedback: do customers understand the four meters without asking for a workflow-count meter?
@@ -648,6 +714,9 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-08-09 | Kiran | v19: Re-verified all LLM provider pricing against current provider docs (previously checked June 3, 2026) — GPT-5.4-mini, GPT-5.4, Together AI Gemma 4 31B, and Claude Sonnet 4.6 are all **unchanged**. Added real Claude Opus 4.8/5 pricing ($5/$25 per MTok, down from the retired Opus 4.1's $15/$75) in place of the old unpriced "quality upgrade path" note. Flagged new Claude Sonnet 5 introductory pricing ($2/$10 through Aug 31, 2026, converging to Sonnet 4.6's $3/$15 on Sept 1) — not worth a router migration for the discount alone. Replaced the free-tier plan's vague "$0.075/1M" shadow price with the actual current Gemini Flash-Lite rate ($0.10/1M) and recomputed the notional free-plan cost figures accordingly (real Conxa cost remains $0). Documented concrete, sourced free-tier rate limits for Groq (30 req/min, 6,000 TPM, 14,400 req/day), Google AI Studio (5–15 req/min, 1,000 req/day — noting Google pulled Pro-family Gemini models from the free tier on April 1, 2026, leaving only Flash/Flash-Lite eligible), and NVIDIA NIM (~40 req/min, 1,000 free credits). Fixed the stale "Last Updated" header, which still read July 2 despite the doc's own revision history extending to Aug 8. No changes to Conxa's own subscription pricing, tier structure, or unit economics — this pass only re-verified upstream LLM provider costs. |
+| 2026-08-08 | Kiran | v18: Repriced around the capability ladder following the Centelon pilot demo (docs/PRD.md §11). Switched headline pricing from USD to INR (Starter ₹19,999/mo, Pro ₹49,999/mo, Enterprise from ₹99,999/mo). Removed the installer-slot meter entirely — no limit on how many product slugs a workspace publishes under; added a machines meter (1/3/10) as the trial-abuse and seat-integrity control instead. Free became a 30-day trial, capped at 1 install, rather than a permanent tier. Lowered compile credits (25/200/500) and Human Edit pool (500K/2.5M/10M) from the prior numbers. Added capability gates that aren't numeric meters: distribution (internal-only on Free/Starter, external on Pro/Enterprise), installer branding (Conxa on Pro, white-label on Enterprise), ops tier (none/basic/full), and BYOK (Azure OpenAI, Enterprise only). Added a compile-credit add-on (+25/mo for ₹4,999, Starter/Pro). Unit-economics scenarios and cost-per-tier tables recomputed at the new numbers; margins are marked indicative pending a full re-derivation from current per-token provider pricing. |
+| 2026-08-07 | Kiran | v17: No economics changes. Corrected the "Telemetry Quality" metric list, which still referred to a five-tier cascade (there are four), and added the free-repair-share metric with its per-outcome counting rule. Noted that these metrics are now computed by the operations dashboard rather than estimated. |
 | 2026-07-02 | Kiran | v16: Added "Execution-Time Recovery Tiers" section documenting per-tier token/time cost during customer-side execution (Tier 1/2 zero-token, Tier 3/4 ~2,500–3,500 tokens + 10–15s added per occurrence), based on a live manual test of the recovery cascade. Added a Tier 3-only vs Tier 4-only cost breakdown (~1,625 / ~1,575 tokens respectively vs. ~3,000 combined — they always fire bundled today) and worked full-workflow examples at 0/1/2/3 recovery occurrences (~1,200 / ~4,200 / ~7,200 / ~10,200 tokens). Also added "What This Costs the End Customer Running a Plugin Locally" — translates that into Claude Pro/Max 5-hour session message allowances (~45/225/900 msgs) and approximate workflow-runs-per-session at 0/1/2 avg. recoveries. All of this is customer-paid, not a Conxa cost — included for compile-time decision guidance and customer-facing messaging. |
 | 2026-06-30 | Kiran | v15: Removed LLM selector generation from cost model — `IdentityBundle` + `selector_grammar.py` are now the sole selector generators (deterministic, zero tokens). Per-step LLM calls drop from 2–7 to a fixed 2 (intent + vision anchor). All cost tables, tier margins, scenario COGS, and cost levers updated accordingly. Build-heavy gross margin improves from ~56–67% to ~68–81% for Starter. |
 | 2026-06-10 | Kiran | v14: Replaced visible workflow/plugin caps with four customer meters: seats, installer slots, monthly compile credits, and monthly Human Edit pool |

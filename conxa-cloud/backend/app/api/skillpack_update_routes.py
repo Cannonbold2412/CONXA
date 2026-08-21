@@ -1,4 +1,10 @@
-"""Endpoints consumed by conxa-runtime.exe at startup for skill pack sync."""
+"""Endpoints consumed by conxa-runtime.exe at startup for skill pack sync.
+
+Every route here is package-token authenticated (or public), never Clerk —
+see app.api.security.PUBLIC_SKILL_PACK_SYNC_PREFIXES, which treats the whole
+"/api/v1/skill-packs/" prefix as bypassing the Clerk gate. Dashboard-facing
+SkillPack list/detail views live in workflow_routes.py instead, precisely to
+avoid landing on this public prefix."""
 
 from __future__ import annotations
 
@@ -20,10 +26,10 @@ from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
 from app.services.saas import principal_from_request, ensure_principal
 
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
-# Versioned equivalent of the delta route below, nested under /plugins so it
+# Versioned equivalent of the delta route below, nested under /workflows so it
 # shares one mental model with the other three per-company endpoints
 # (publish, installer upload, tracking) — see publish_routes.py.
-versioned_router = APIRouter(prefix="/plugins", tags=["skill-packs"])
+versioned_router = APIRouter(prefix="/workflows", tags=["skill-packs"])
 
 _STALE_RUNTIME_DAYS = 30
 
@@ -80,8 +86,8 @@ def _check_rate_limit(token: str) -> None:
     _rate_limit_set(key, now)
 
 
-def _verify_sync_token(company: str, token: str | None) -> None:
-    """Validate the Bearer token against the per-company sync_token.
+def _verify_sync_token(workspace_id: str, token: str | None) -> None:
+    """Validate the Bearer token against the per-workspace sync_token.
 
     In production (SKILL_AUTH_REQUIRED=true) a valid sync token is required.
     The sync token is minted at publish time and embedded in the installer's
@@ -92,14 +98,14 @@ def _verify_sync_token(company: str, token: str | None) -> None:
     """
     if not settings.auth_required:
         return
-    stored = db_get("sync_tokens", company)
+    stored = db_get("sync_tokens", workspace_id)
     if not isinstance(stored, dict) or not stored.get("token"):
         raise HTTPException(status_code=401, detail="sync_token_not_configured")
     if not token or not secrets.compare_digest(str(stored["token"]), token):
         raise HTTPException(status_code=401, detail="invalid_sync_token")
 
 
-def _ensure_skill_pack_on_disk(company: str) -> None:
+def _ensure_skill_pack_on_disk(workspace_id: str) -> None:
     """Rehydrate the local skill-pack cache from Postgres if the disk was wiped.
 
     Render's free plan has no persistent disk and idles out, so the files written by
@@ -108,13 +114,13 @@ def _ensure_skill_pack_on_disk(company: str) -> None:
     """
     if not using_database():
         return
-    pack_path = skill_packs_dir(company) / "pack.json"
+    pack_path = skill_packs_dir(workspace_id) / "pack.json"
     if pack_path.is_file():
         return
-    rows = db_list_kv(skillpack_files_ns(company))
+    rows = db_list_kv(skillpack_files_ns(workspace_id))
     if not rows:
         return
-    packs_dir = skill_packs_dir(company)
+    packs_dir = skill_packs_dir(workspace_id)
     for rel, value in rows:
         if not isinstance(value, dict) or not value.get("content_base64"):
             continue
@@ -129,8 +135,8 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
-def _pack_version(company: str) -> str:
-    pack_path = skill_packs_dir(company) / "pack.json"
+def _pack_version(workspace_id: str) -> str:
+    pack_path = skill_packs_dir(workspace_id) / "pack.json"
     if not pack_path.is_file():
         return "0"
     try:
@@ -139,37 +145,48 @@ def _pack_version(company: str) -> str:
         return "0"
 
 
-def _skill_version(company: str, slug: str) -> str:
+def _skill_version(workspace_id: str, slug: str) -> str:
     """Each skill's own version, recorded independently in component_versions KV at
     publish time (see publish_routes.post_publish). Falls back to the shared pack-level
     version for skill packs published before independent per-skill versioning existed,
     so old publishes don't regress to "always changed"."""
-    rec = db_get("component_versions", f"skill_packs:{company}:{slug}")
+    rec = db_get("component_versions", f"skill_packs:{workspace_id}:{slug}")
     if isinstance(rec, dict) and rec.get("version"):
         return str(rec["version"])
-    return _pack_version(company)
+    return _pack_version(workspace_id)
 
 
-def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
+def _build_delta(workspace_id: str, since_map: dict[str, str]) -> dict[str, Any]:
     """Per-skill delta: each skill in the pack is compared independently against the
     client's last-known version for that specific skill, so only the skills that
-    actually changed are shipped — never the whole company just because one skill
+    actually changed are shipped — never the whole workspace just because one skill
     was republished."""
-    _ensure_skill_pack_on_disk(company)
-    packs_dir = skill_packs_dir(company)
+    _ensure_skill_pack_on_disk(workspace_id)
+    packs_dir = skill_packs_dir(workspace_id)
     pack_path = packs_dir / "pack.json"
     if not pack_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Skill pack not found: {company}")
+        raise HTTPException(status_code=404, detail=f"Skill pack not found: {workspace_id}")
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    skill_groups = pack.get("skill_groups") or {}
 
     skills_out: list[dict[str, Any]] = []
     for slug in pack.get("skills", []):
-        current_version = _skill_version(company, slug)
+        current_version = _skill_version(workspace_id, slug)
         client_version = since_map.get(slug, "0")
-        skill_dir = packs_dir / slug
+        group_id = skill_groups.get(slug) or "_default"
+        skill_dir = packs_dir / group_id / slug
+        if not skill_dir.is_dir():
+            # Packs published before group-nesting shipped still have their files at the
+            # old flat `packs_dir/slug/` location on cloud storage — serve from there so
+            # already-published companies don't go stuck on "no_change" forever just
+            # because they haven't republished. `group_id` is still reported below so the
+            # client writes its copy into the new nested location regardless.
+            legacy_dir = packs_dir / slug
+            if legacy_dir.is_dir():
+                skill_dir = legacy_dir
 
         if current_version == client_version or not skill_dir.is_dir():
-            skills_out.append({"name": slug, "action": "no_change"})
+            skills_out.append({"name": slug, "action": "no_change", "group": group_id})
             continue
 
         files: list[dict[str, Any]] = []
@@ -182,24 +199,24 @@ def _build_delta(company: str, since_map: dict[str, str]) -> dict[str, Any]:
                 "sha256": _sha256_file(fpath),
                 "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
             })
-        skills_out.append({"name": slug, "version": current_version, "action": "update", "files": files})
+        skills_out.append({"name": slug, "version": current_version, "action": "update", "group": group_id, "files": files})
 
     return {"skills": skills_out}
 
 
-def _delta_impl(company: str, since: str, request: Request) -> dict[str, Any]:
-    """Shared by the legacy ``/skill-packs/{company}/delta`` route and the
-    versioned ``/plugins/{installer_version}/{company}/skill-packs/delta``
+def _delta_impl(workspace_id: str, since: str, request: Request) -> dict[str, Any]:
+    """Shared by the legacy ``/skill-packs/{workspace_id}/delta`` route and the
+    versioned ``/workflows/{installer_version}/{workspace_id}/skill-packs/delta``
     route. `since` is a JSON-encoded map of {skill_slug: last_known_version},
     letting each skill be compared and shipped independently instead of one
     shared pack version.
 
-    Authentication: Bearer token must match the per-company sync_token minted
+    Authentication: Bearer token must match the per-workspace sync_token minted
     at publish time and embedded in the installer's pack.json.
     Rate limited: 1 request per 5 minutes per token.
     """
     token = _extract_token(request) if request else None
-    _verify_sync_token(company, token)
+    _verify_sync_token(workspace_id, token)
     if token:
         _check_rate_limit(token)
     try:
@@ -208,26 +225,26 @@ def _delta_impl(company: str, since: str, request: Request) -> dict[str, Any]:
             since_map = {}
     except (json.JSONDecodeError, TypeError):
         since_map = {}
-    return _build_delta(company, {str(k): str(v) for k, v in since_map.items()})
+    return _build_delta(workspace_id, {str(k): str(v) for k, v in since_map.items()})
 
 
-@router.get("/{company}/delta")
-def get_skill_pack_delta(company: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
+@router.get("/{workspace_id}/delta")
+def get_skill_pack_delta(workspace_id: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
     """Legacy, unversioned delta route. Kept permanently for already-deployed
     runtimes — see ``get_skill_pack_delta_v2`` for the versioned equivalent."""
-    return _delta_impl(company, since, request)
+    return _delta_impl(workspace_id, since, request)
 
 
-@versioned_router.get("/{installer_version}/{company}/skill-packs/delta")
+@versioned_router.get("/{installer_version}/{workspace_id}/skill-packs/delta")
 def get_skill_pack_delta_v2(
-    installer_version: str, company: str, since: str = "{}", request: Request = None
+    installer_version: str, workspace_id: str, since: str = "{}", request: Request = None
 ) -> dict[str, Any]:
     """Versioned delta route. ``installer_version`` is validated but not yet
     branched on — reserved for a future skill-pack wire-format generation, not
     dead code to remove. The wire contract today is identical across
     generations; see ``_delta_impl``/``_build_delta``."""
     validate_installer_version(installer_version)
-    return _delta_impl(company, since, request)
+    return _delta_impl(workspace_id, since, request)
 
 
 # ─── Telemetry ────────────────────────────────────────────────────────────────
@@ -237,6 +254,17 @@ class TelemetryBody(BaseModel):
     companies: list[str] = []
     platform: str = ""
     install_id: str = ""
+    # Optional: {company: {skill_slug: installed_version}}, as reported by
+    # runtime/server.js's _phonehome (added for the release-system's deployment
+    # view — see docs/App-Flow.md). Absent for any runtime that hasn't picked up
+    # that change yet; those registrations read as deployment status "unknown"
+    # rather than a fabricated "up to date".
+    skill_versions: dict[str, dict[str, str]] = {}
+    # Optional: {company: {skill_slug: {code, at}}} — per-skill sync failures
+    # (checksum mismatch, download/activation error), reported by
+    # runtime/sync_errors.js via the same phone-home. Lets get_deployments
+    # (release_routes.py) show a real "failed" status instead of "pending".
+    sync_errors: dict[str, dict[str, dict[str, str]]] = {}
 
 
 telemetry_router = APIRouter(prefix="/telemetry", tags=["telemetry"])
@@ -263,19 +291,31 @@ def post_telemetry_runtime_start(body: TelemetryBody) -> dict[str, Any]:
 
         key = f"{company}:{install_id or platform}"
         existing = db_get("runtime_registrations", key) or {}
-        db_set(
-            "runtime_registrations",
-            key,
-            {
-                "company": company,
-                "install_id": install_id,
-                "platform": platform,
-                "runtime_version": (body.runtime_version or "").strip(),
-                "workspace_id": workspace_id,
-                "last_seen": now,
-                "first_seen": existing.get("first_seen", now),
-            },
-        )
+        company_skill_versions = body.skill_versions.get(company) if isinstance(body.skill_versions, dict) else None
+        row: dict[str, Any] = {
+            "company": company,
+            "install_id": install_id,
+            "platform": platform,
+            "runtime_version": (body.runtime_version or "").strip(),
+            "workspace_id": workspace_id,
+            "last_seen": now,
+            "first_seen": existing.get("first_seen", now),
+        }
+        # Only overwrite skill_versions when this phone-home actually reported
+        # it — an older runtime that hasn't self-updated yet keeps reporting
+        # nothing for this field, and its last-known value (if any) shouldn't
+        # be wiped back to "unknown" just because it phoned home again.
+        if company_skill_versions:
+            row["skill_versions"] = company_skill_versions
+        elif isinstance(existing.get("skill_versions"), dict):
+            row["skill_versions"] = existing["skill_versions"]
+
+        company_sync_errors = body.sync_errors.get(company) if isinstance(body.sync_errors, dict) else None
+        # Always overwrite (unlike skill_versions above) — sync_errors reflects
+        # only the most recent sync pass, so an empty {} here is a real signal
+        # ("nothing failed this time"), not a gap to preserve the old value for.
+        row["sync_errors"] = company_sync_errors if isinstance(company_sync_errors, dict) else {}
+        db_set("runtime_registrations", key, row)
 
     return {"ok": True}
 

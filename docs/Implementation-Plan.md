@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status:** Current as of 2026-07-04 — **Phase 1 COMPLETE** (1.1–1.8 all done, superseded, or moot). Phase 2 mostly done (2.1, 2.2, 2.3, 2.5 code/wiring, 2.6, 2.7, 2.8, 2.9, runtime-split + auto-update arch); 2.4 (macOS) and 2.5's certificate procurement remain open — see `TODO.md`.
+**Status:** Current as of 2026-08-08 — **Phase 1 COMPLETE** (1.1–1.8, 1.10, 1.12 all done, superseded, or moot; 1.9 open). Phase 2 mostly done (2.1, 2.2, 2.3, 2.5 code/wiring, 2.6, 2.7, 2.8, 2.9, runtime-split + auto-update arch); 2.4 (macOS) and 2.5's certificate procurement remain open — see `TODO.md`. 1.12 is the pricing/positioning restructure following the Centelon pilot demo.
 **Audience:** Engineering team
 
 This plan is grounded in the actual codebase. Each item references the specific file or system that needs to change. Items are ordered by risk and dependency, not effort.
@@ -181,6 +181,14 @@ plugin selection instead of four independent per-page rails.
 - Phase 2 — explicit, asynchronous, concurrent Compile with a background job model (today's
   `cmd_compile` is synchronous; a process-global LLM router (`conxa_core.llm.set_router`)
   must be made concurrency-safe first — see the redesign doc's T0.2).
+  **Partially unblocked 2026-08-15 (renderer side only):** the run now lives in
+  `store/compileStore.ts` with the event subscription in `AppChrome`, so a compile survives
+  navigation and the page reattaches to it. This also fixed a live billing bug — remounting
+  `CompileProgress` used to re-fire `cmd('compile')` and reserve a *second* compile credit for
+  the same recording; `start()` is now idempotent on `workflowId:sessionId:mode`. Still open
+  and unchanged: real concurrency. Only one run is tracked, because `window.conxa.cmd` never
+  exposes the backend request id, so streamed events can't be correlated to a run — plumbing a
+  request id through `main.js` + `preload.js` is the prerequisite, alongside T0.2.
 - Phase 3 — Human Edit/Test Skill polish. ✅ **Confidence banner DONE 2026-07-10** (delivered as
   part of the broader Human Edit vs. Skill Package redesign, not standalone — see §1.11 below):
   `CompileHealthBanner.tsx`, mounted under the page header, shows `compile_report.status`/
@@ -336,10 +344,103 @@ before this change — see `TODO.md`).
 
 ---
 
+### ✅ 1.12 Pricing & Positioning Restructure — DONE 2026-08-08
+
+**What was broken:** Following the Centelon pilot demo, the PRD carried two competing primary
+customers (SaaS vendors, enterprises) with no resolution between them, the marketing site showed
+single-app tasks instead of business processes, and pricing existed with four different numbers across
+`PLAN_LIMITS`, `docs/cost_model.md`, `cashfree_routes.TIER_INFO`, and `docs/PRD.md`. See
+`Conxa-Pilot-Conclusions.pdf` (internal) for the full pilot writeup.
+
+**What shipped:**
+- **Positioning** — `docs/PRD.md` rewritten around a single capability ladder (Free proves it works →
+  Starter/Pro run an organization → Pro/Enterprise ship to customers), the "own the process, not the
+  software" reframe, a new "What Our IP Actually Is" section, and the workflow qualification checklist.
+  Marketing site: new `/pricing` page rendering live from `GET /api/v1/subscriptions/plans`, rewritten
+  `Examples.tsx` (cross-system processes instead of single-app tasks), new FAQ entries, `publicDocs.ts`
+  cleanup.
+- **Pricing model** — `PLAN_LIMITS` (`conxa-cloud/backend/app/services/entitlements.py`) extended with
+  capability keys (`distribution`, `white_label`, `ops_tier`, `compile_pool`, `byok`, `trial_days`,
+  `analytics_retention_days`) alongside the four numeric meters. INR pricing: Starter ₹19,999/mo, Pro
+  ₹49,999/mo, Enterprise custom from ₹99,999/mo.
+- **Skill pack slots removed entirely** — no limit on how many product slugs a workspace publishes
+  under. Replaced by `machines` as the numeric meter (`workspace_devices` KV, machine-hash header
+  `X-Conxa-Machine`) — the actual trial-abuse/seat-integrity control.
+- **New enforcement**: 30-day Free trial expiry (`ensure_trial_active`, every building chokepoint);
+  machine binding at the LLM proxy and compile-reserve chokepoints; distribution/white-label gating on
+  installer upload and publish; `ops_tier` gating across the dashboard/audit/drift routes; analytics
+  retention filtering on read; a compile-credit add-on (+25/mo, stacks via Cashfree); a tiered
+  free/premium LLM router pool.
+- **Enterprise BYOK** (Azure OpenAI) — `app/services/byok.py`, AES-256-GCM key-at-rest, new
+  `PUT/GET/DELETE /api/v1/workspace/llm-key` routes, `LLMRouter.call_entry_directly` for the one-off
+  deployment call path.
+- **Deferred, not built** (see `TODO.md`): Free's running-side 1-install cap (the obvious enforcement
+  point is deliberately public/unauthenticated telemetry — a real gate needs an authenticated
+  install-provisioning step); write-side telemetry retention pruning (read-side filtering is
+  correctness-complete); build-queue priority (no server-side job queue exists to prioritize —
+  `jobs.py::enqueue_job` has zero callers today); Bedrock/Vertex BYOK; a Settings BYOK/device-list UI
+  panel.
+
+**Files:** `conxa-cloud/backend/app/services/entitlements.py`, `app/services/byok.py`,
+`app/services/saas.py`, `app/services/tracking.py`, `app/api/llm_proxy_routes.py`,
+`app/api/entitlement_routes.py`, `app/api/machine_binding.py`, `app/api/byok_routes.py`,
+`app/api/publish_routes.py`, `app/api/tracking_routes.py`, `app/api/product_routes.py`,
+`app/api/cashfree_routes.py`, `app/llm/router.py`, `packages/conxa-core/conxa_core/config.py`,
+`conxa-builder/python/services/machine_id.py`, `conxa-builder/python/services/llm_proxy_client.py`,
+`conxa-builder/python/backend.py`, `conxa-cloud/frontend/app/(marketing)/pricing/page.tsx`,
+`conxa-cloud/frontend/src/components/marketing/sections/PricingTable.tsx`, `docs/PRD.md`,
+`docs/cost_model.md`, `docs/TRD.md` §13, `docs/Backend-Schema.md` §5.3/§5.4/§7.
+
+**Verified:** 715 backend tests passing (`cd conxa-cloud && pytest -q tests`), including new coverage
+for machine limits, trial expiry, distribution gating, ops_tier gating, addon stacking, and BYOK
+routing. Frontend `npm run lint` and `npm run build` both clean, `/pricing` renders as a static route.
+
+---
+
+### ✅ 1.13 Plugin → Workflow/SkillPack Data Model Rename — DONE 2026-08-12
+
+**What was changed:** The core data model and API contracts were fundamentally restructured to reflect the new cardinality: N Workflows per Workspace : 1 SkillPack per Company.
+
+**Old model:** One `Plugin` per company, holding a list of `PluginWorkflow` children and shared `build`/`installer` metadata. Multiple recordings per automation required cloning the Plugin entity.
+
+**New model:**
+- **`Workflow`** — flat, exactly ONE login session + ONE recording + ONE compiled skill per workflow entity. Fields: id, slug, name, status (needs_auth/ready/error), auth (optional WorkflowAuth), recording_status (recorded/compiled/error), skill_id, compile_status, etc. Stored per-workflow.
+- **`SkillPack`** — workspace-scoped (keyed by workspace_id), shared across all workflows in that workspace. Holds the single build + installer metadata. One per workspace, forever.
+
+**What shipped (2026-08-12):**
+- **Core models:** `packages/conxa-core/conxa_core/models/workflow.py` (new `Workflow`, `WorkflowAuth`, `SkillPack`, `SkillPackBuild`, `SkillPackInstaller`); old `plugin.py` deleted.
+- **Storage:** `workflow_store.py` (replaces `plugin_store.py`, KV namespace `workflows`), `skill_pack_store.py` (new, KV namespace `skill_packs_meta`, keyed by workspace_id).
+- **Studio Python backend:** `handlers/workflows.py` (replaces `handlers/plugins.py`), `skill_package_builder.py` (replaces `plugin_builder.py`), updated `handlers/compile.py`, `handlers/session.py`, `handlers/runs.py`.
+- **Cloud backend:** `/api/v1/workflows/*` routes (replace `/api/v1/plugins/*`), telemetry field renames (`plugin_id`/`plugin_ver` → `workflow_id`/`workflow_ver` in wire format `wfid`/`wfv`), updated `tracking_routes.py`, `publish_routes.py`, `skillpack_update_routes.py`, `entitlements.py`.
+- **Runtime:** telemetry wire format `wfid`/`wfv` (was `pid`/`pv`), server.js MCP tools updated, tracker.js + test fixtures.
+- **Studio UI:** `/workflows` (Workflow List) replaces `/record`, `/workflows/:id` (Workflow Detail) replaces Plugin Detail + Record, inline auth + recording actions, deleted Record page entirely. `WorkflowSwitcher` replaces `PluginSwitcher`.
+- **Cloud dashboard:** `/packages` (Skill Packages List, replaces `/plugins`) `/packages/:workspace_id` (Skill Package Versions, replaces Plugin Detail), scoped to workspace_id.
+- **Docs:** `docs/Backend-Schema.md` §2 (data models), §6.1 (ERD), §7 (KV namespaces) rewritten; `docs/App-Flow.md` restructured (Workflow Detail inline actions); `docs/UI-UX-Brief.md` redesigned (Workflow List/Detail specs); `docs/Implementation-Plan.md` updated; `CLAUDE.md` updated for new file/symbol references.
+
+**Files (non-exhaustive):** `packages/conxa-core/conxa_core/models/workflow.py`, `storage/workflow_store.py`, `storage/skill_pack_store.py`, `conxa-builder/python/handlers/workflows.py`, `conxa_compile/skill_package_builder.py`, `conxa-cloud/backend/app/api/workflow_routes.py`, `publish_routes.py`, `skillpack_update_routes.py`, `tracking_routes.py`, `conxa-builder/electron/renderer/src/pages/WorkflowListPage.tsx`, `WorkflowPage.tsx`, `api/workflowsApi.ts`, `conxa-cloud/frontend/src/SkillPackagesPage.tsx`, `docs/*.md`.
+
+**Tests:** 721/722 backend tests passing, 54/54 runtime tests passing, Studio UI tsc clean, cloud frontend lint + build clean. One pre-existing external-API test skipped.
+
+**Breaking change (customer impact):** API routes moved from `/api/v1/plugins/...` to `/api/v1/workflows/...`. Old installed customer runtimes (using baked-in `/api/v1/plugins/...` endpoints) will break until reinstalled. This was an explicit accepted tradeoff per the design decision — no backward-compat support.
+
+**Deferred (still open):** End-to-end UI/backend functional tests (e2e: create workflow → record login → record workflow → compile → edit → sign-off → build skill package, confirming two workflows share one skill package + installer). Tracked in `TODO.md`.
+
+---
+
+### ✅ 1.14 Group Page absorbs the Workflow Detail page — DONE 2026-08-13
+
+**What was changed:** The standalone `/workflows/:workflowId` detail page (`WorkflowPage.tsx`, added in 1.13) was removed. Every action it owned — record, compile/recompile, review (Human Edit), test, and (once passing) hand-off to Publish — now lives inline on each workflow's row on its group's page (`GroupPage.tsx`), as a five-node `WorkflowStageRail` (Record → Compile → Review → Test → Ready to Package) replacing the old read-only `StagePath` dots. `RecordWorkflowDialog` and `DeleteWorkflowButton` were extracted into standalone components so the group page's row could reuse them; the Test node expands `WorkflowTestRow` inline instead of navigating to Test Skill. `GroupAuthWizard` gained an `editable` mode (per-app edit/remove) so the group page no longer needs a separate app list. `/workflows/:workflowId` now redirects to the workflow's owning group, keeping existing deep links, the compile page's "← Back", and Human Edit's `?from=` working unchanged. `store/selectionStore.ts` (the removed page's only consumer) was deleted.
+
+**Files:** `conxa-builder/electron/renderer/src/pages/GroupPage.tsx`, `App.tsx`, `components/StagePath.tsx` (`WorkflowStageRail`), `components/RecordWorkflowDialog.tsx` (new), `components/DeleteWorkflowButton.tsx` (new), `components/GroupAuthWizard.tsx`, `components/EntitlementMeters.tsx` (`MeterBadge`); deleted `pages/WorkflowPage.tsx`, `store/selectionStore.ts`. Docs: `docs/UI-UX-Brief.md` §2.3a/§2.8/§2.12, `docs/App-Flow.md` §4.
+
+**Verified:** `npx tsc --noEmit` and `npm run build:renderer` clean, `npm run lint` clean (0 errors, 2 pre-existing unrelated warnings).
+
+---
+
 **Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
-phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10) is done, superseded, or moot;
+phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10-1.13) is done, superseded, or moot;
 other open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
-billing enforcement, error-message UX).
+billing enforcement, error-message UX) and new discoveries (e2e testing, orphaned dev scripts).
 
 ---
 
@@ -478,6 +579,11 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 **Result:** Instant no-network rollback (vs. one-step-only before); tamper-proof update manifest (vs. unsigned); staged rollout capability (vs. all-or-nothing); per-skill update granularity (vs. whole-company re-sync).
 
+**Follow-ups since:**
+- **Same-launch app updates + `min_host` enforcement (2026-08-03).** The `conxa_app` check moved out of `server.js`'s `startupSync` and into `bootstrap.js`, running *before* the app layer is `require()`'d — so a new app version is live on the launch that downloaded it instead of the next one. The manifest's local TTL cache was dropped (every launch fetches fresh, cache is failure-fallback only), `checkForUpdates()` gained a `components` filter, and the host leg now reuses the manifest bootstrap already fetched. A `min_host` floor is checked at decision time as well as load time, so a too-new app layer is never installed on an old host rather than being activated and rolled back on every launch. The pre-load leg runs on a deliberately tight budget (3s manifest, 2 retries × 5s zip) with every failure swallowed. `runtime/bootstrap.js`, `manifest_manager.js`, `server.js`, `test/test_manifest_manager.js`; TRD §4.3/§5.8/§11.3.
+- **Signing key required in production (2026-08-04).** `_validate_production_config()` now refuses to boot without `CONXA_MANIFEST_SIGNING_KEY`. Absent it, the manifest is served unsigned and every runtime silently discards it — self-updates would stop fleet-wide with no error on either end. `conxa-cloud/backend/app/main.py`, `tests/test_product_routes.py`.
+- **CI execution gate re-enabled (2026-08-04).** `build-runtime-app.yml` replays a real skill against the declared `MIN_HOST` exe before the zip/release/publish steps. Its first run caught a stale `MIN_HOST` (`host-v1.1.2` → `host-v2.0.0`); every app layer published since 2026-07-30 had been shipping a false `min_host` claim. See TODO.md ARCH-2.
+
 **Files:** `runtime/version_manager.js` (new), `runtime/manifest_manager.js` (new), `runtime/bootstrap.js`, `runtime/server.js`, `runtime/sync.js`, `runtime/skill_loader.js`, `runtime/test/test_version_manager.js` (new), `runtime/test/test_manifest_manager.js` (new), `runtime/test/gate_replay.js`, `packages/conxa-core/conxa_core/models/manifest.py` (new), `conxa-cloud/backend/app/api/manifest_signer.py` (new), `conxa-cloud/backend/app/api/updates_routes.py`, `skillpack_update_routes.py`, `publish_routes.py`, `conxa-cloud/tests/test_manifest_signing.py` (new), `conxa-builder/python/conxa_compile/installer_builder.py`, `conxa-builder/python/conxa_compile/installer_templates/setup.nsi.tmpl`, `.github/workflows/build-runtime-host.yml`, `build-runtime-app.yml`
 
 ---
@@ -602,14 +708,162 @@ CompileProgress, RecordingFeed, SetupWizard, LoginOverlay) now route through the
 
 ---
 
-### 3.4 Workflow Version History & Rollback
+### ✅ 3.4 Workflow Version History & Rollback — DONE 2026-08-19
 
-- Store previous SkillPackage versions (not just the latest).
-- Allow publishing a previous version via the dashboard.
-- Delta sync serves whichever version the company selects.
-- UI shows version timeline.
+**What was built:** the full Enterprise Skill Package Release System — immutable
+per-version artifact snapshots, a stable-channel pointer, rollback, a deterministic
+diff, a per-slug release audit trail, and a Release Center UI in Build Studio (primary)
+with a read-only mirror on the Cloud dashboard.
 
-**Files:** `publish_routes.py`, `skillpack_update_routes.py`, Cloud dashboard
+- **Cloud (`app/api/skillpack_storage.py`):** new immutable per-version snapshot
+  storage (`skillpack_release_files_ns`/`skill_pack_release_dir`,
+  `write_release_snapshot`/`read_release_snapshot`) alongside the existing mutable
+  "currently live" mirror (`write_mutable_mirror_files`, `write_pack_json_mirror`/
+  `read_pack_json_mirror`) that `_build_delta` already served unchanged.
+- **Cloud (`app/services/release_channel.py`, new):** the stable-channel pointer
+  (`skillpack_channels` KV, one row per slug) and the per-slug, unbounded release
+  event log (`skillpack_release_events__{slug}`), mirrored into the existing
+  `saas.add_audit_event` so the dashboard's Audit page needed no changes.
+- **Cloud (`app/services/release_diff.py`, new):** deterministic (stdlib `difflib`,
+  no LLM) diff between two release file sets, aligning execution steps by a
+  semantic content key rather than position so a re-healed selector reads as
+  "modified", not "removed + added".
+- **Cloud (`app/api/publish_routes.py`):** `_publish_skill_pack_impl` rewritten as
+  a release transaction — immutable snapshot + pending version row + mutable
+  mirror + manifest, all written before the channel pointer moves as the final,
+  single act of activation; a duplicate version or a byte-identical republish is
+  rejected outright (409 `skill_pack_version_exists` / `skill_pack_artifact_unchanged`).
+- **Cloud (`app/api/release_routes.py`, new):** `POST .../releases/preview`,
+  `GET .../releases/{version}`, `GET .../releases/{version}/diff`,
+  `POST .../releases/{version}/rollback`, `GET .../deployments`,
+  `GET .../releases/events` — all under `/api/v1/workflows/{installer_version}/...`, workspace derived from Clerk session, `require_admin`-gated.
+- **Cloud (`app/api/skillpack_update_routes.py`):** telemetry's `TelemetryBody`
+  gained an optional `skill_versions` field; `_build_delta`/`_skill_version`
+  themselves are **unchanged** — rollback restores the mutable mirror + `component_versions`
+  from the immutable snapshot, so the sync hot path never needs to know about channels.
+- **Build Studio (`python/handlers/workflows.py`, `python/backend.py`):** thin
+  proxy RPC handlers (`cmd_release_preview`, `cmd_release_detail`, `cmd_release_diff`,
+  `cmd_rollback_release`, `cmd_list_deployments`, `cmd_release_events`); publish now
+  emits real `stage` markers (`validated`/`uploading`/`published`/`failed`) instead
+  of one opaque log line.
+- **Build Studio (`renderer/src/pages/PublishPage.tsx`):** rewritten into the full
+  Release Center (candidate → diff → where-it-goes → history → deployment → audit),
+  with explicit idle/publishing/success/failure states. New pure-logic module
+  `renderer/src/lib/releaseState.ts` (state derivation, diff summarization, badges)
+  covered by `test/releaseState.test.mjs` (`node --experimental-strip-types --test`).
+- **Cloud dashboard (`SkillPackageVersionsPage.tsx`):** read-only Release History +
+  Deployment sections — no publish/rollback controls; those stay Studio-only.
+- **Runtime (`server.js`, `installed_versions.js` new):** phone-home telemetry now
+  reports installed skill versions per company, read off the same `current`
+  junction / `version.json` sync.js already writes. Optional field — an
+  already-deployed runtime that hasn't self-updated yet just reports nothing for it.
+
+**Known limitations (by design, not oversight):** rollback is only available for
+releases published after this change (pre-existing published packs have no
+per-version snapshot to roll back to). The "Build Studio (primary) with a
+read-only mirror on Cloud" ownership split described above, and the
+up-to-date/pending/offline/unknown-only deployment status, were both
+superseded by §3.4a below — Cloud is now the release/deployment/audit owner,
+and deployment status has a real `failed` state.
+
+**Files:** `app/api/publish_routes.py`, `app/api/release_routes.py` (new),
+`app/api/skillpack_storage.py`, `app/api/skillpack_update_routes.py`,
+`app/services/release_channel.py` (new), `app/services/release_diff.py` (new),
+`app/main.py`, `conxa-cloud/tests/test_release_channel.py` (new, 17 tests),
+`python/handlers/workflows.py`, `python/backend.py`,
+`renderer/src/pages/PublishPage.tsx`, `renderer/src/lib/releaseState.ts` (new),
+`renderer/src/components/release/*` (new), `runtime/server.js`,
+`runtime/installed_versions.js` (new), Cloud dashboard `SkillPackageVersionsPage.tsx`
+
+---
+
+### ✅ 3.4a Build Studio / Cloud Publish-Release Separation — DONE 2026-08-19
+
+**Supersedes §3.4's "Build Studio (primary) with a read-only mirror on Cloud"
+framing and closes its "updating/failed" known limitation.** Publishing and
+deploying were the same atomic transaction — clicking Publish in Build Studio
+immediately activated the version for every customer machine. Redesigned so
+Build Studio is BUILD/PUBLISH only and Conxa Cloud is the sole
+RELEASE/DEPLOYMENT control plane: `Workflow → Compile → Test → Publish` (Studio)
+→ `Ready for Release → Review → Release/Deploy → Desired Version` (Cloud) →
+`Sync → Verify → Install → Execute → Report Status` (Runtime). See
+`docs/App-Flow.md` §8/§8.1/§8.1a and `docs/TRD.md` §5.5a for the full mechanism.
+
+- **Cloud (`app/api/publish_routes.py`):** `_publish_skill_pack_impl` now stops
+  after writing the immutable snapshot + a version row with the new status
+  `"ready"` — it no longer touches the mutable mirror, `component_versions`, the
+  manifest, or the stable channel. `PublishBody` gained `group_name`,
+  `workflow_name` (display-only, for Cloud's Groups/Workflows nav) and
+  `tests_passed` (Build Studio's local test-gate result, shown to Cloud
+  reviewers).
+- **Cloud (`app/api/release_routes.py`):** new `POST .../releases/{version}/release`
+  — Cloud-only, `require_admin`-gated, the only endpoint that activates a
+  `"ready"` version (mirrors `.../rollback`'s structure, opposite precondition).
+  New `GET .../groups` backing the Skill Packages → Group → Workflow nav.
+  `GET .../deployments` gained a `failed` status derived from telemetry (below).
+- **Cloud (`app/api/skillpack_storage.py`):** new `skillpack_known_skills` KV
+  (`record_known_skill`/`list_known_skills`), upserted at publish time —
+  deliberately independent of `pack.json`'s `skills`/`skill_groups` union (which
+  still only updates at Release) so an unreleased "ready" skill is still visible
+  to Cloud admins.
+- **Cloud (`app/services/release_channel.py`):** new `EVT_RELEASE_STARTED`/
+  `_SUCCEEDED`/`_FAILED` events, parallel to the existing publish/rollback pairs.
+- **Runtime (`sync.js`, `sync_errors.js` new):** a checksum mismatch or
+  download/activation failure is now recorded per-skill in
+  `pack.json.last_sync_errors`, cleared on the next successful activation, and
+  reported (not sticky, unlike `skill_versions`) at the next phone-home — this
+  is what closes §3.4's "failed" gap without a new transport, reusing the
+  existing `runtime-start` telemetry endpoint.
+- **Build Studio (`renderer/src/pages/PublishPage.tsx`):** trimmed to a bare
+  post-publish confirmation ("v{version} is Ready for Release in Conxa Cloud")
+  — Release History, Deployment, Audit, and Rollback no longer render here.
+  `ReleaseHistoryTable.tsx`/`DeploymentPanel.tsx`/`ReleaseAuditLog.tsx`/
+  `RollbackDialog.tsx` deleted from Build Studio; `cmd_rollback_release`,
+  `cmd_list_deployments`, `cmd_release_events` removed from
+  `python/handlers/workflows.py` (no longer called from Studio's UI).
+- **Cloud dashboard:** the former read-only mirror is now the authoritative,
+  interactive surface — new `GroupPage.tsx`, `WorkflowReleasePage.tsx`, and a
+  ported `components/release/*` (with a new `ReleaseDialog.tsx` for the
+  Release/Deploy action) under Skill Packages → Group → Workflow.
+
+**Files:** `app/api/publish_routes.py`, `app/api/release_routes.py`,
+`app/api/skillpack_storage.py`, `app/api/skillpack_update_routes.py`,
+`app/services/release_channel.py`, `conxa-cloud/tests/test_release_channel.py`,
+`conxa-cloud/tests/test_llm_proxy_and_publish.py`,
+`conxa-cloud/tests/test_build_studio_backend.py`,
+`python/handlers/workflows.py`, `python/backend.py`,
+`renderer/src/pages/PublishPage.tsx`, `renderer/src/lib/releaseState.ts`,
+`renderer/src/api/workflowsApi.ts`, `electron/test/releaseState.test.mjs`,
+`runtime/sync.js`, `runtime/sync_errors.js` (new), `runtime/server.js`,
+`runtime/test/test_sync.js`, `runtime/test/test_sync_errors.js` (new),
+`conxa-cloud/backend/app/api/skillpack_update_routes.py`,
+Cloud frontend `SkillPackagesPage.tsx`, `SkillPackageVersionsPage.tsx`,
+`GroupPage.tsx` (new), `WorkflowReleasePage.tsx` (new), `api/workflowsApi.ts`,
+`lib/releaseState.ts` (new), `lib/queryKeys.ts`, `components/release/*` (new),
+`test/releaseState.test.mjs` (new)
+
+---
+
+### ✅ 3.4b Studio groups sync to Cloud Skill Packages — DONE 2026-08-20
+
+Creating or renaming a group in Build Studio now upserts the same id and name
+onto Conxa Cloud (`PUT .../groups/{group_id}` + `skillpack_known_groups` KV).
+`GET .../groups` unions that registry with publish-time known-skills, so an
+empty folder appears on Skill Packages immediately. Default is not synced
+until renamed. Delete in Studio does not remove the Cloud folder.
+
+---
+
+### ✅ 3.4c Remove Publish Ownership (Slug Claiming) — DONE 2026-08-21
+
+One workspace now has exactly one SkillPack, forever. The `publish_owners` KV
+namespace (which tracked slug ownership for workspaces that claimed multiple
+company slugs) has been removed entirely. All models, routes, and KV stores
+now key by workspace_id directly. SkillPack, tracking_tokens, and sync_tokens
+are now workspace-scoped, not slug-scoped. Dashboard routes derive workspace
+from authenticated principal; runtime routes use {workspace_id} in the path.
+
+**Files:** `conxa-core/conxa_core/models/workflow.py`, `conxa-cloud/backend/app/api/publish_routes.py`, `app/api/release_routes.py`, `app/api/skillpack_update_routes.py`, `app/api/tracking_routes.py`, removed `app/api/product_ownership.py`'s `_assert_owner`/`_claim_owner` logic.
 
 ---
 

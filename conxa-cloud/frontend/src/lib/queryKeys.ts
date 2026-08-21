@@ -10,9 +10,17 @@ export const queryKeys = {
   entitlements: ['entitlements'] as const,
   subscription: ['subscription'] as const,
   billingPlans: ['billing-plans'] as const,
-  plugins: ['plugins'] as const,
-  plugin: (id: string) => ['plugin', id] as const,
-  installerVersions: (slug: string | undefined) => ['installer-versions', slug] as const,
+  skillPack: ['skill-pack'] as const,
+  installerVersions: ['installer-versions'] as const,
+  groups: ['groups'] as const,
+  skillPackVersions: (skillSlug: string | undefined) =>
+    ['skill-pack-versions', skillSlug] as const,
+  deployments: (skillSlug: string | undefined) =>
+    ['deployments', skillSlug] as const,
+  releaseEvents: (skillSlug: string | undefined) =>
+    ['release-events', skillSlug] as const,
+  releaseDiff: (skillSlug: string | undefined, version: string | undefined) =>
+    ['release-diff', skillSlug, version] as const,
   auditEvents: (scope?: string) =>
     (scope ? ['auditEvents', scope] : ['auditEvents']) as readonly string[],
   trackingDashboard: (range: string) => ['tracking-dashboard', range] as const,

@@ -2,7 +2,7 @@ import type { ComponentType } from 'react'
 import { FileCode2, FileJson, FileText, ImageIcon } from 'lucide-react'
 
 const ROOT_FILE_ORDER = [
-  'plugin.json', 'plugin.config.json', 'README.md', 'CLAUDE.md', 'Claude.md', 'index.md', 'LICENSE',
+  'skill_package.json', 'README.md', 'CLAUDE.md', 'Claude.md', 'index.md', 'LICENSE',
   'schema.json', 'package.json', 'index.js', 'skill.json', 'README.md', 'index.json',
 ]
 const SKILL_FILE_ORDER = ['SKILL.md', 'execution.json', 'recovery.json', 'input.json', 'manifest.json']
@@ -76,7 +76,7 @@ export function buildPathTrie(orderedPaths: readonly string[]): PathTrieNode {
 export function defaultSkillPackageActiveKey(keys: string[]): string | null {
   if (keys.length === 0) return null
   const ordered = orderedSkillPackageKeys(keys)
-  const preferred = ordered.find((k) => k === 'plugin.config.json' || k === 'README.md' || k.endsWith('/SKILL.md'))
+  const preferred = ordered.find((k) => k === 'skill_package.json' || k === 'README.md' || k.endsWith('/SKILL.md'))
   return preferred ?? ordered[0] ?? null
 }
 

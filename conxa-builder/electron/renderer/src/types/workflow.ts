@@ -105,6 +105,8 @@ export type StepEditorDTO = {
   final_intent: string
   url: string
   frame: Record<string, unknown>
+  /** Which browser tab this step runs on — empty means the initial tab. */
+  tab?: { id: string; index?: number; opened_by?: 'initial' | 'site' | 'user'; opener_tab?: string | null; url?: string }
   target: Record<string, unknown>
   selectors: Record<string, unknown>
   compiled_selectors?: string[]

@@ -42,17 +42,18 @@ from services import bootstrap as _bootstrap_pkg  # noqa: E402
 # without this, launches on a non-bootstrap startup fail with "Executable doesn't exist".
 _bootstrap_pkg.configure_playwright_browsers_path()
 
-# Pre-import the recorder, plugin store, and command handlers at startup (main
+# Pre-import the recorder, workflow store, and command handlers at startup (main
 # thread, before serve() starts blocking on stdin). Importing these lazily in a
 # dispatch thread causes a deadlock: two simultaneous record clicks hit Python's
 # per-module import lock while conxa_core.config.Settings() tries to read the
 # repo .env from a piped-stdin context. The handlers.* imports below transitively
-# import conxa_compile.recorder.session and conxa_core.storage.plugin_store, so
+# import conxa_compile.recorder.session and conxa_core.storage.workflow_store, so
 # this ordering also pre-warms those modules.
 from handlers.protocol import _CommandError, _write  # noqa: E402
 from handlers.session import SessionMixin  # noqa: E402
 from handlers.compile import CompileMixin  # noqa: E402
-from handlers.plugins import PluginsMixin  # noqa: E402
+from handlers.workflows import WorkflowsMixin  # noqa: E402
+from handlers.groups import GroupsMixin  # noqa: E402
 from handlers.workflow_editor import WorkflowEditorMixin  # noqa: E402
 from handlers.visual import VisualMixin  # noqa: E402
 from handlers.skill_packages import SkillPackagesMixin  # noqa: E402
@@ -101,7 +102,8 @@ class _Loop:
 class Backend(
     SessionMixin,
     CompileMixin,
-    PluginsMixin,
+    WorkflowsMixin,
+    GroupsMixin,
     WorkflowEditorMixin,
     VisualMixin,
     SkillPackagesMixin,
@@ -122,6 +124,7 @@ class Backend(
         self._undo_stacks: dict[str, list] = {}
         self._redo_stacks: dict[str, list] = {}
         self._installer_generation_cache: str | None = None
+        self._synced_company_slug: str | None = None
 
     # -- undo / redo helpers -------------------------------------------------
 
@@ -193,7 +196,7 @@ class Backend(
         if self._installer_generation_cache is not None:
             return self._installer_generation_cache
         try:
-            payload = self._cloud_json("/api/v1/plugins/generations")
+            payload = self._cloud_json("/api/v1/workflows/generations")
             generation = str(payload.get("current") or "").strip() or "v2"
         except Exception:
             generation = "v2"
@@ -218,11 +221,16 @@ class Backend(
     def _cloud_json(self, path: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> dict[str, Any]:
         import urllib.request
 
+        from services.machine_id import get_machine_id_hash
+
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = urllib.request.Request(f"{self._cloud_api_base()}{path}", data=data, method=method)
         if body is not None:
             req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self._cloud_token()}")
+        machine_hash = get_machine_id_hash()
+        if machine_hash:
+            req.add_header("X-Conxa-Machine", machine_hash)
         try:
             with urllib.request.urlopen(req, timeout=45) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
@@ -244,22 +252,24 @@ class Backend(
         messages = {
             "compile_credit_limit_exceeded": "Monthly compile credits are exhausted for this workspace.",
             "human_edit_pool_exceeded": "Monthly Human Edit pool is exhausted for this workspace.",
-            "installer_limit_exceeded": "Installer slot limit reached for this workspace.",
             "seat_limit_exceeded": "Seat limit reached for this workspace.",
+            "machine_limit_exceeded": "This workspace's plan is limited to fewer build machines than are currently registered.",
+            "trial_expired": "The 30-day free trial has ended. Upgrade to keep building.",
+            "distribution_not_permitted": "This plan can only build installers for internal use. Upgrade to Pro to distribute to customers.",
+            "white_label_not_permitted": "White-label installer branding requires the Enterprise plan.",
             "entitlements_unavailable": "Cloud entitlements are unavailable, so quota-gated actions are blocked.",
             "invalid_usage_class": "Invalid LLM usage class.",
         }
         return messages.get(code, code)
 
-    def _compile_reservation_id(self, rid: str, plugin_id: str, workflow_id: str, session_id: str) -> str:
-        raw = f"cmp_{rid}_{plugin_id}_{workflow_id}_{session_id}"
+    def _compile_reservation_id(self, rid: str, workflow_id: str, session_id: str) -> str:
+        raw = f"cmp_{rid}_{workflow_id}_{session_id}"
         return re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)[:240]
 
     def _reserve_compile_credit(
         self,
         *,
         reservation_id: str,
-        plugin_id: str,
         workflow_id: str,
         session_id: str,
     ) -> dict[str, Any]:
@@ -268,7 +278,6 @@ class Backend(
             method="POST",
             body={
                 "reservation_id": reservation_id,
-                "plugin_id": plugin_id,
                 "workflow_id": workflow_id,
                 "session_id": session_id,
             },
@@ -291,38 +300,45 @@ class Backend(
         except Exception:
             pass
 
-    def _publish_skill_pack(
-        self,
-        *,
-        company_slug: str,
-        plugin: Any,
-        version: str,
-        release_notes: str,
-        sink: Callable[[dict[str, Any]], None],
-    ) -> dict[str, Any]:
-        """Publish the built skill pack and rewrite local pack.json with cloud tracking.
-
-        Mandatory operation: any real-cloud failure raises _CommandError (see
-        cmd_publish_skill_pack). Only a local dev cloud that's simply unreachable
-        is swallowed — see _auto_publish_enabled.
-        """
+    def _read_pack_json(self, company_slug: str) -> tuple[Path, dict[str, Any]]:
+        """Locate + parse the already-built pack.json for a company slug.
+        Read-only — callers that need to mutate it write it back themselves."""
         from conxa_core.config import settings as _settings
-        import base64
-        import urllib.request
 
-        data_dir = Path(_settings.data_dir)
-        packs_dir = data_dir / "skill-packs" / company_slug
+        packs_dir = Path(_settings.data_dir) / "skill-packs" / company_slug
         pack_path = packs_dir / "pack.json"
         if not pack_path.is_file():
             raise _CommandError("pack_not_built", f"No built skill pack for {company_slug}")
+        return pack_path, json.loads(pack_path.read_text(encoding="utf-8"))
 
-        pack = json.loads(pack_path.read_text(encoding="utf-8"))
-        pack["skill_pack_version"] = version
-        pack["release_notes"] = release_notes
-        pack_path.write_text(json.dumps(pack, indent=2, ensure_ascii=False), encoding="utf-8")
+    def _skill_group_id(self, company_slug: str, skill_slug: str) -> str:
+        """This skill's group folder name, as already written into the local
+        pack.json mirror by ``_write_skill_packs_format`` (falls back to
+        "_default", matching that function's own fallback)."""
+        _pack_path, pack = self._read_pack_json(company_slug)
+        return str((pack.get("skill_groups") or {}).get(skill_slug) or "_default")
 
+    def _collect_skill_pack_files(self, company_slug: str, skill_slug: str) -> list[dict[str, str]]:
+        """Every file under ONE skill's own directory (``{group_id}/{skill_slug}/``
+        under the built pack's root — see skill_package_builder_output.py's
+        ``_write_skill_packs_format``), base64-encoded the same way a publish
+        upload encodes them. Paths stay relative to the pack root (not the skill
+        directory) so they round-trip unchanged through the cloud's mutable
+        mirror and delta-sync, which both key on ``{group_id}/{skill_slug}/...``.
+
+        Shared by ``_publish_skill_pack`` (the real upload) and
+        ``cmd_release_preview`` (a read-only dry run against the exact same
+        bytes, so the preview never drifts from what publish sends). Never
+        walks the whole company directory — that would upload every other
+        skill's files on every single-skill publish."""
+        from conxa_core.config import settings as _settings
+        import base64
+
+        packs_dir = Path(_settings.data_dir) / "skill-packs" / company_slug
+        group_id = self._skill_group_id(company_slug, skill_slug)
+        skill_dir = packs_dir / group_id / skill_slug
         files: list[dict[str, str]] = []
-        for fpath in sorted(packs_dir.rglob("*")):
+        for fpath in sorted(skill_dir.rglob("*")):
             if fpath.is_file():
                 files.append(
                     {
@@ -330,25 +346,81 @@ class Backend(
                         "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
                     }
                 )
+        return files
+
+    def _publish_skill_pack(
+        self,
+        *,
+        company_slug: str,
+        company_name: str,
+        skill_slug: str,
+        version: str,
+        release_notes: str,
+        group_id: str,
+        group_name: str = "",
+        workflow_name: str = "",
+        tests_passed: bool = False,
+        sink: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        """Publish ONE skill's built files and rewrite local pack.json with cloud
+        tracking. Never uploads a sibling skill's files — see
+        ``_collect_skill_pack_files``.
+
+        This only ever gets the version to "ready" in Conxa Cloud — it does
+        NOT deploy it. A Cloud admin's explicit Release/Deploy action is what
+        moves the stable channel and makes runtimes start receiving it; see
+        docs/App-Flow.md.
+
+        Mandatory operation: any real-cloud failure raises _CommandError (see
+        cmd_publish_skill_pack). Only a local dev cloud that's simply unreachable
+        is swallowed — see _auto_publish_enabled.
+        """
+        import urllib.request
+
+        pack_path, pack = self._read_pack_json(company_slug)
+        # Display-only, best-effort: each skill has its own independent version
+        # now (see the cloud's per-skill version history), so this local field
+        # just reflects whichever skill was most recently published — it's read
+        # only as installer_builder.py's last-resort fallback when no explicit
+        # version is passed to Build Installer.
+        pack["skill_pack_version"] = version
+        pack["release_notes"] = release_notes
+        pack_path.write_text(json.dumps(pack, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Collected AFTER the write above so pack.json's own uploaded bytes (if
+        # ever included) would carry this release's release_notes. Deliberately
+        # uses the on-disk snapshot's own group id to find the built files —
+        # that's wherever the last build actually wrote them — which can lag
+        # behind `group_id` (the workflow's *current* group, passed in by the
+        # caller) if the workflow was reassigned to a different group after
+        # its last build. The two are independent on purpose: reporting the
+        # live group_id to Cloud is what keeps Skill Packages from splitting
+        # one group into two when that happens; the disk lookup must still use
+        # the snapshot's id or it won't find the files at all.
+        files = self._collect_skill_pack_files(company_slug, skill_slug)
 
         cloud_api = self._cloud_api_base()
         generation = self._installer_generation()
         body = json.dumps(
             {
-                "slug": company_slug,
-                "display_name": str(getattr(plugin, "name", "") or company_slug),
-                "target_url": str(getattr(plugin, "target_url", "") or pack.get("target_url") or ""),
-                "protected_url": str(getattr(plugin, "protected_url", "") or pack.get("protected_url") or ""),
+                "skill_slug": skill_slug,
+                "group_id": group_id,
+                "group_name": group_name,
+                "workflow_name": workflow_name,
+                "display_name": company_name or company_slug,
+                "target_url": str(pack.get("target_url") or ""),
+                "protected_url": str(pack.get("protected_url") or ""),
                 "skill_pack_version": version,
                 "release_notes": release_notes,
-                "skills": list(pack.get("skills") or []),
+                "tests_passed": tests_passed,
                 "files": files,
             }
         ).encode("utf-8")
-        sink({"kind": "skill_pack_publish", "message": f"Publishing {company_slug} skill pack to Conxa Cloud..."})
+        sink({"kind": "skill_pack_publish", "stage": "validated", "message": f"Validated {len(files)} files for {skill_slug}."})
+        sink({"kind": "skill_pack_publish", "stage": "uploading", "message": f"Publishing {skill_slug} to Conxa Cloud..."})
         try:
             req = urllib.request.Request(
-                f"{cloud_api}/api/v1/plugins/{generation}/{quote(company_slug)}/skill-packs/upload",
+                f"{cloud_api}/api/v1/workflows/{generation}/skill-packs/upload",
                 data=body,
                 method="POST",
             )
@@ -360,11 +432,19 @@ class Backend(
                 published = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             # The cloud responded — it's reachable but rejected the request (bad auth,
-            # bad payload, duplicate version, etc). Always a real failure, local cloud or not.
+            # bad payload, duplicate version, unchanged artifact, etc). Always a real
+            # failure, local cloud or not — the stable channel was never touched (see
+            # publish_routes._publish_skill_pack_impl's write ordering).
             try:
                 body_text = exc.read().decode("utf-8", errors="replace")
             except Exception:
                 body_text = ""
+            if exc.code == 409 and "skill_pack_artifact_unchanged" in body_text:
+                raise _CommandError(
+                    "skill_pack_artifact_unchanged",
+                    f"Nothing changed since the current stable release of {company_slug} — "
+                    "this exact skill pack is already published. Make a change before republishing.",
+                ) from exc
             if exc.code == 409:
                 raise _CommandError(
                     "skill_pack_version_exists",
@@ -372,6 +452,7 @@ class Backend(
                 ) from exc
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": f"Cloud publish failed — Conxa Cloud responded {exc.code}: {body_text or exc}",
             })
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc} — {body_text}") from exc
@@ -384,11 +465,13 @@ class Backend(
             if not self._auto_publish_enabled():
                 sink({
                     "kind": "skill_pack_publish",
+                    "stage": "skipped",
                     "message": f"Cloud publish skipped — {cloud_api} is not reachable ({exc})",
                 })
                 return {"skipped": True, "slug": company_slug, "version": version}
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": f"Cloud publish failed — could not reach {cloud_api} ({exc})",
             })
             raise _CommandError("cloud_publish_failed", f"Cloud publish failed: {exc}") from exc
@@ -397,6 +480,7 @@ class Backend(
         if not tracking.get("tracking_token"):
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": "Cloud publish failed — Conxa Cloud accepted the upload but did not return a tracking token.",
             })
             raise _CommandError("cloud_publish_failed", "Cloud publish did not return a tracking token.")
@@ -405,6 +489,7 @@ class Backend(
         if not sync_token:
             sink({
                 "kind": "skill_pack_publish",
+                "stage": "failed",
                 "message": "Cloud publish failed — Conxa Cloud accepted the upload but did not return a sync_token.",
             })
             raise _CommandError(
@@ -416,7 +501,7 @@ class Backend(
 
         # sync_url/tracking_url are already correctly versioned by the cloud (see
         # publish_routes._publish_skill_pack_impl) — just qualify the relative sync_url.
-        sync_url = str(published.get("sync_url") or f"/api/v1/plugins/{generation}/{company_slug}/skill-packs/delta")
+        sync_url = str(published.get("sync_url") or f"/api/v1/workflows/{generation}/{company_slug}/skill-packs/delta")
         pack["tracking"] = tracking
         pack["sync_endpoint"] = f"{cloud_api}{sync_url}"
         pack["sync_token"] = sync_token
@@ -431,10 +516,11 @@ class Backend(
         sink(
             {
                 "kind": "skill_pack_publish",
+                "stage": "published",
                 "message": (
-                    "Cloud tokens embedded in pack.json "
-                    f"(workspace {workspace_id or 'unknown'}, sync_token present, "
-                    f"tracking_token present, url {tracking.get('tracking_url', '')})"
+                    f"Uploaded {company_slug} v{version} — Ready for Release in Conxa Cloud "
+                    f"(workspace {workspace_id or 'unknown'}). A Cloud admin must Release/Deploy "
+                    f"it before any runtime receives it."
                 ),
             }
         )
@@ -476,7 +562,7 @@ class Backend(
                 "release_notes": release_notes,
             }
         )
-        url = f"{cloud_api}/api/v1/plugins/{generation}/{quote(company_slug)}/installer/upload?{params}"
+        url = f"{cloud_api}/api/v1/workflows/{generation}/installer/upload?{params}"
         req = urllib.request.Request(url, data=installer_path.read_bytes(), method="POST")
         req.add_header("Content-Type", "application/octet-stream")
         req.add_header("Authorization", f"Bearer {self._cloud_token()}")
@@ -491,7 +577,7 @@ class Backend(
                 detail = str(error_payload.get("detail") or "")
             except Exception:
                 detail = ""
-            if detail in {"installer_limit_exceeded", "entitlements_unavailable"}:
+            if detail in {"distribution_not_permitted", "white_label_not_permitted", "entitlements_unavailable"}:
                 raise _CommandError(detail, self._entitlement_error_message(detail)) from exc
             if exc.code == 409:
                 raise _CommandError(

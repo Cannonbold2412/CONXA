@@ -1,4 +1,4 @@
-"""Phase 1: LLM proxy metering + plugin publish / installer hosting."""
+"""Phase 1: LLM proxy metering + workflow publish / installer hosting."""
 
 from __future__ import annotations
 
@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
-from conxa_core.storage.plugin_store import create_plugin, list_plugins
+from conxa_core.storage.skill_pack_store import list_skill_packs
 from app.main import app
 from app.services import llm_metering
+from app.services.saas import upsert_billing
 
 client = TestClient(app)
 STUDIO_HEADER = {"X-Conxa-Client": settings.llm_proxy_client_header}
@@ -26,7 +27,8 @@ def _reset_quota(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "entitlements_enforce_compile", False)
     monkeypatch.setattr(settings, "entitlements_enforce_human_edit", False)
-    monkeypatch.setattr(settings, "entitlements_enforce_installers", False)
+    monkeypatch.setattr(settings, "entitlements_enforce_distribution", False)
+    monkeypatch.setattr(settings, "entitlements_enforce_machines", False)
     yield
     settings.llm_proxy_monthly_token_quota = original
     settings.api_proxy_shared_secret = original_proxy_secret
@@ -44,7 +46,7 @@ def test_proxy_forwards_and_meters(monkeypatch):
     from app.api import llm_proxy_routes
 
     class FakeRouter:
-        def route_text(self, task, payload, timeout_ms, *, error_detail=None):
+        def route_text(self, task, payload, timeout_ms, *, error_detail=None, pool=None):
             return {"text": "ok", "output": "ok"}
 
     monkeypatch.setattr(llm_proxy_routes, "get_router", lambda: FakeRouter())
@@ -92,28 +94,33 @@ def test_publish_and_sync_roundtrip():
         {"path": "deploy/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
     ]
     r = client.post(
-        "/api/v1/plugins/publish",
+        "/api/v1/workflows/publish",
         json={
             "slug": "acme-test",
             "display_name": "Acme Test",
             "target_url": "https://acme.test",
             "protected_url": "https://acme.test/app",
             "skill_pack_version": "0.3.0",
-            "skills": ["deploy"],
+            "skill_slug": "deploy",
             "files": files,
         },
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["slug"] == "acme-test"
+    assert body["slug"] == "wrk_local"
     assert body["files_written"] == 2
-    assert body["tracking"]["tracking_url"].endswith("/api/tracking/acme-test/events")
+    assert body["tracking"]["tracking_url"].endswith("/api/tracking/wrk_local/events")
     assert body["tracking"]["tracking_token"]
-    assert db_get("tracking_tokens", "acme-test")["workspace_id"] == "wrk_local"
-    assert any(p.slug == "acme-test" for p in list_plugins(workspace_id="wrk_local"))
+    assert db_get("tracking_tokens", "wrk_local")["workspace_id"] == "wrk_local"
+    packs = list_skill_packs(workspace_id="wrk_local")
+    assert any(p.workspace_id == "wrk_local" and p.display_name == "Acme Test" for p in packs)
+
+    # Publish alone never makes a skill runtime-visible — release it first.
+    rel = client.post("/api/v1/workflows/v2/releases/0.3.0/release?skill_slug=deploy")
+    assert rel.status_code == 200, rel.text
 
     # The delta endpoint should now serve the published pack, per skill.
-    d = client.get("/api/v1/skill-packs/acme-test/delta?since=%7B%7D")
+    d = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D")
     assert d.status_code == 200
     skills = {s["name"]: s for s in d.json()["skills"]}
     assert skills["deploy"]["action"] == "update"
@@ -121,43 +128,50 @@ def test_publish_and_sync_roundtrip():
 
     companies = client.get("/api/v1/tracking/companies")
     assert companies.status_code == 200
-    assert any(row["company"] == "acme-test" for row in companies.json()["companies"])
+    assert any(row["company"] == "Acme Test" for row in companies.json()["companies"])
 
 
 def test_delta_ships_only_the_skill_that_actually_changed():
     """Two skills under one company must version and sync independently — bumping one
-    skill's component_versions record must not affect the other's delta result."""
+    skill's component_versions record must not affect the other's delta result. Each
+    is published independently (one skill per publish call — see the per-skill
+    publishing architecture), never bundled into one call together."""
     import json as _json
 
-    files = [
-        {"path": "pack.json", "content_base64": base64.b64encode(b'{"company":"multi-skill-test"}').decode()},
-        {"path": "invoice-automation/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
-        {"path": "approval-workflow/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
-    ]
-    r = client.post(
-        "/api/v1/plugins/publish",
-        json={
-            "slug": "multi-skill-test",
-            "display_name": "Multi Skill Test",
-            "target_url": "https://multi.test",
-            "skill_pack_version": "1.0.0",
-            "skills": ["invoice-automation", "approval-workflow"],
-            "files": files,
-        },
-    )
-    assert r.status_code == 200, r.text
+    for skill_slug in ("invoice-automation", "approval-workflow"):
+        r = client.post(
+            "/api/v1/workflows/publish",
+            json={
+                "slug": "multi-skill-test",
+                "display_name": "Multi Skill Test",
+                "target_url": "https://multi.test",
+                "skill_pack_version": "1.0.0",
+                "skill_slug": skill_slug,
+                "files": [
+                    {
+                        "path": f"{skill_slug}/execution.json",
+                        "content_base64": base64.b64encode(b'{"steps":[]}').decode(),
+                    }
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        rel = client.post(
+            f"/api/v1/workflows/v2/releases/1.0.0/release?skill_slug={skill_slug}"
+        )
+        assert rel.status_code == 200, rel.text
 
     # Simulate an independent version bump for one skill only (a future enhanced
     # publish flow would do this directly; today the KV record is what the delta
     # endpoint actually reads, per _skill_version()).
     db_set(
         "component_versions",
-        "skill_packs:multi-skill-test:invoice-automation",
+        "skill_packs:wrk_local:invoice-automation",
         {"version": "1.1.0", "released_at": "2026-07-01T00:00:00Z", "files": []},
     )
 
     since = _json.dumps({"invoice-automation": "1.0.0", "approval-workflow": "1.0.0"})
-    d = client.get(f"/api/v1/skill-packs/multi-skill-test/delta?since={since}")
+    d = client.get(f"/api/v1/skill-packs/wrk_local/delta?since={since}")
     assert d.status_code == 200, d.text
     skills = {s["name"]: s for s in d.json()["skills"]}
 
@@ -172,23 +186,25 @@ def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
     wiping local disk between requests and asserts the Postgres-backed copy heals it."""
     monkeypatch.setattr("app.api.publish_routes.using_database", lambda: True)
     monkeypatch.setattr("app.api.skillpack_update_routes.using_database", lambda: True)
-    slug = "wipe-skillpack-test"
+    slug = "wrk_local"
     files = [
-        {"path": "pack.json", "content_base64": base64.b64encode(b'{"company":"wipe-skillpack-test"}').decode()},
+        {"path": "pack.json", "content_base64": base64.b64encode(b'{"workspace_id":"wrk_local"}').decode()},
         {"path": "deploy/execution.json", "content_base64": base64.b64encode(b'{"steps":[]}').decode()},
     ]
     r = client.post(
-        "/api/v1/plugins/publish",
+        "/api/v1/workflows/publish",
         json={
             "slug": slug,
             "display_name": "Wipe Skillpack Test",
             "target_url": "https://wipe.test",
             "skill_pack_version": "1.0.0",
-            "skills": ["deploy"],
+            "skill_slug": "deploy",
             "files": files,
         },
     )
     assert r.status_code == 200, r.text
+    rel = client.post("/api/v1/workflows/v2/releases/1.0.0/release?skill_slug=deploy")
+    assert rel.status_code == 200, rel.text
 
     import shutil
     shutil.rmtree(tmp_path / "skill-packs", ignore_errors=True)
@@ -202,34 +218,38 @@ def test_skill_pack_delta_survives_disk_wipe(monkeypatch, tmp_path):
     assert "execution.json" in {f["path"] for f in skills["deploy"]["files"]}
 
 
-def test_publish_upsert_updates_existing_plugin_slug(monkeypatch, tmp_path):
+def test_publish_upsert_updates_existing_skill_pack_slug(monkeypatch, tmp_path):
+    """Publishing twice under the same slug updates the one SkillPack record
+    for that slug rather than creating a duplicate."""
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
-    existing = create_plugin(
-        name="Render",
-        target_url="https://dashboard.render.com",
-        workspace_id="wrk_local",
-    )
-    assert existing.slug != "render"
 
-    r = client.post(
-        "/api/v1/plugins/publish",
-        json={
-            "slug": "render",
-            "display_name": "Render",
-            "target_url": "https://dashboard.render.com",
-            "skill_pack_version": "1.0.0",
-            "skills": [],
-            "files": [],
-        },
-    )
+    body = {
+        "slug": "render",
+        "display_name": "Render",
+        "target_url": "https://dashboard.render.com",
+        "skill_pack_version": "1.0.0",
+        "skill_slug": "deploy",
+        "files": [],
+    }
+    r1 = client.post("/api/v1/workflows/publish", json=body)
+    assert r1.status_code == 200, r1.text
 
-    assert r.status_code == 200, r.text
-    plugins = [p for p in list_plugins(workspace_id="wrk_local") if p.name == "Render"]
-    assert len(plugins) == 1
-    assert plugins[0].id == existing.id
-    assert plugins[0].slug == "render"
-    assert plugins[0].workspace_id == "wrk_local"
+    # A second publish must carry a different artifact — an identical one is
+    # rejected as skill_pack_artifact_unchanged (see release-system plan §5).
+    body2 = {
+        **body,
+        "skill_pack_version": "1.0.1",
+        "files": [{"path": "pack.json", "content_base64": base64.b64encode(b'{"marker":"v2"}').decode()}],
+    }
+    r2 = client.post("/api/v1/workflows/publish", json=body2)
+    assert r2.status_code == 200, r2.text
+
+    packs = list_skill_packs(workspace_id="wrk_local")
+    assert len(packs) == 1
+    assert packs[0].display_name == "Render"
+    assert packs[0].build.version == "1.0.1"
+    assert packs[0].workspace_id == "wrk_local"
 
 
 def test_skill_pack_delta_requires_sync_token_when_cloud_auth_required(monkeypatch, tmp_path):
@@ -260,25 +280,25 @@ def test_skill_pack_delta_requires_sync_token_when_cloud_auth_required(monkeypat
 
 def test_tracking_ingest_requires_published_token_and_lists_runs():
     pub = client.post(
-        "/api/v1/plugins/publish",
-        json={"slug": "track-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+        "/api/v1/workflows/publish",
+        json={"slug": "wrk_local", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
     )
     assert pub.status_code == 200, pub.text
     token = pub.json()["tracking"]["tracking_token"]
 
     denied = client.post(
-        "/api/tracking/track-test/events",
+        "/api/tracking/wrk_local/events",
         json={"rid": "run-denied", "evts": [{"e": "wf_start", "ts": 1}]},
         headers={"X-Tracking-Token": "wrong"},
     )
     assert denied.status_code == 401
 
     accepted = client.post(
-        "/api/tracking/track-test/events",
+        "/api/tracking/wrk_local/events",
         json={
             "rid": "run-ok",
-            "pid": "delete-a-service",
-            "pv": "1.0.0",
+            "wfid": "delete-a-service",
+            "wfv": "1.0.0",
             "rv": "1.0.0",
             "evts": [{"e": "wf_start", "ts": 1}, {"e": "wf_ok", "ts": 2, "dur": 10, "tot": 2, "rec": 0}],
         },
@@ -286,7 +306,7 @@ def test_tracking_ingest_requires_published_token_and_lists_runs():
     )
     assert accepted.status_code == 202
 
-    runs = client.get("/api/v1/tracking/track-test/runs")
+    runs = client.get("/api/v1/tracking/wrk_local/runs")
     assert runs.status_code == 200
     assert runs.json()["runs"][0]["run_id"] == "run-ok"
 
@@ -303,7 +323,7 @@ def test_tracking_runs_report_workspace_mismatch(monkeypatch, tmp_path):
         "/api/tracking/workspace-hidden-test/events",
         json={
             "rid": "run-hidden",
-            "pid": "hidden-skill",
+            "wfid": "hidden-skill",
             "evts": [{"e": "wf_start", "ts": 1}],
         },
         headers={"X-Tracking-Token": "hidden-token"},
@@ -384,7 +404,7 @@ def test_tracking_dashboard_aggregates_workspace_metrics(monkeypatch, tmp_path):
         "/api/tracking/acme/events",
         json={
             "rid": "run-ok",
-            "pid": "workflow-a",
+            "wfid": "workflow-a",
             "uid": "install-a",
             "evts": [
                 {"e": "wf_start", "ts": now_ms - 60_000},
@@ -405,7 +425,7 @@ def test_tracking_dashboard_aggregates_workspace_metrics(monkeypatch, tmp_path):
         "/api/tracking/acme/events",
         json={
             "rid": "run-fail",
-            "pid": "workflow-b",
+            "wfid": "workflow-b",
             "uid": "install-b",
             "evts": [
                 {"e": "wf_start", "ts": now_ms - 20_000},
@@ -421,7 +441,7 @@ def test_tracking_dashboard_aggregates_workspace_metrics(monkeypatch, tmp_path):
         "/api/tracking/hidden/events",
         json={
             "rid": "run-hidden",
-            "pid": "hidden-workflow",
+            "wfid": "hidden-workflow",
             "evts": [{"e": "wf_start", "ts": now_ms}, {"e": "wf_fail", "ts": now_ms, "dur": 1}],
         },
         headers={"X-Tracking-Token": "hidden-token"},
@@ -494,7 +514,7 @@ def test_tracking_companies_discovers_token_backed_events_without_plugin(monkeyp
 
     accepted = client.post(
         "/api/tracking/token-only-company/events",
-        json={"rid": "run-token-only", "pid": "skill-a", "evts": [{"e": "wf_start", "ts": 1}]},
+        json={"rid": "run-token-only", "wfid": "skill-a", "evts": [{"e": "wf_start", "ts": 1}]},
         headers={"X-Tracking-Token": "token-only-secret"},
     )
     assert accepted.status_code == 202
@@ -523,7 +543,7 @@ def test_tracking_companies_hides_other_workspace(monkeypatch, tmp_path):
 
     accepted = client.post(
         "/api/tracking/other-workspace-company/events",
-        json={"rid": "run-other", "pid": "skill-b", "evts": [{"e": "wf_start", "ts": 1}]},
+        json={"rid": "run-other", "wfid": "skill-b", "evts": [{"e": "wf_start", "ts": 1}]},
         headers={"X-Tracking-Token": "other-workspace-secret"},
     )
     assert accepted.status_code == 202
@@ -537,6 +557,10 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "api_proxy_shared_secret", "proxy-secret")
+    # Dashboard/runs endpoints are ops_tier-gated (Free has none) — this test is
+    # about workspace-scoping visibility, not billing tiers, so give the org
+    # workspace dashboard access rather than asserting against the Free default.
+    upsert_billing("org_same", {"plan": "pro"})
     personal_headers = {
         "x-conxa-proxy-secret": "proxy-secret",
         "x-conxa-user-id": "user_same",
@@ -548,42 +572,42 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
     }
 
     pub = client.post(
-        "/api/v1/plugins/publish",
+        "/api/v1/workflows/publish",
         json={
             "slug": "personal-visible",
             "display_name": "Personal Visible",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
         headers=personal_headers,
     )
     assert pub.status_code == 200, pub.text
-    token_record = db_get("tracking_tokens", "personal-visible")
+    token_record = db_get("tracking_tokens", "personal_user_same")
     assert token_record["workspace_id"] == "personal_user_same"
     assert token_record["owner_user_id"] == "user_same"
 
     accepted = client.post(
-        "/api/tracking/personal-visible/events",
+        "/api/tracking/personal_user_same/events",
         json={
             "rid": "run-personal-visible",
-            "pid": "skill-visible",
+            "wfid": "skill-visible",
             "evts": [{"e": "wf_start", "ts": 1}, {"e": "wf_ok", "ts": 2, "dur": 10, "tot": 1, "rec": 0}],
         },
         headers={"X-Tracking-Token": pub.json()["tracking"]["tracking_token"]},
     )
     assert accepted.status_code == 202
 
-    plugins = client.get("/api/v1/plugins", headers=org_headers)
-    assert plugins.status_code == 200
-    assert any(plugin["slug"] == "personal-visible" for plugin in plugins.json()["plugins"])
+    packs = client.get("/api/v1/workflows/skill-packs", headers=org_headers)
+    assert packs.status_code == 200
+    assert any(p["workspace_id"] == "personal_user_same" and p["display_name"] == "Personal Visible" for p in packs.json()["skill_packs"])
 
     companies = client.get("/api/v1/tracking/companies", headers=org_headers)
     assert companies.status_code == 200
-    assert any(row["company"] == "personal-visible" for row in companies.json()["companies"])
+    assert any(row["company"] == "Personal Visible" for row in companies.json()["companies"])
 
-    runs = client.get("/api/v1/tracking/personal-visible/runs", headers=org_headers)
+    runs = client.get("/api/v1/tracking/personal_user_same/runs", headers=org_headers)
     assert runs.status_code == 200
     assert runs.json()["runs"][0]["run_id"] == "run-personal-visible"
 
@@ -606,13 +630,13 @@ def test_org_member_without_a_role_is_not_admin(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "api_proxy_shared_secret", "proxy-secret")
 
     pub = client.post(
-        "/api/v1/plugins/publish",
+        "/api/v1/workflows/publish",
         json={
             "slug": "org-no-role",
             "display_name": "Org No Role",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
         headers={
@@ -629,15 +653,16 @@ def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_p
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "api_proxy_shared_secret", "proxy-secret")
+    upsert_billing("org_same", {"plan": "pro"})
 
     pub = client.post(
-        "/api/v1/plugins/publish",
+        "/api/v1/workflows/publish",
         json={
             "slug": "personal-hidden",
             "display_name": "Personal Hidden",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
         headers={
@@ -652,9 +677,9 @@ def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_p
         "x-conxa-user-id": "user_same",
         "x-conxa-org-id": "org_same",
     }
-    plugins = client.get("/api/v1/plugins", headers=org_headers)
-    assert plugins.status_code == 200
-    assert all(plugin["slug"] != "personal-hidden" for plugin in plugins.json()["plugins"])
+    packs = client.get("/api/v1/workflows/skill-packs", headers=org_headers)
+    assert packs.status_code == 200
+    assert all(p["display_name"] != "Personal Hidden" for p in packs.json()["skill_packs"])
 
     companies = client.get("/api/v1/tracking/companies", headers=org_headers)
     assert companies.status_code == 200
@@ -664,8 +689,8 @@ def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_p
 def test_publish_rejects_path_traversal():
     files = [{"path": "../escape.json", "content_base64": base64.b64encode(b"x").decode()}]
     r = client.post(
-        "/api/v1/plugins/publish",
-        json={"slug": "trav-test", "skill_pack_version": "1.0.0", "skills": [], "files": files},
+        "/api/v1/workflows/publish",
+        json={"slug": "trav-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": files},
     )
     assert r.status_code == 400
     assert "invalid_file_path" in r.json()["detail"]
@@ -674,7 +699,7 @@ def test_publish_rejects_path_traversal():
 def test_installer_upload_and_public_download():
     payload = b"MZ\x90\x00fake-exe-bytes"
     up = client.post(
-        "/api/v1/plugins/dl-test/installer/upload?filename=Acme-Setup.exe&version=1.2.0&release_notes=Initial%20release",
+        "/api/v1/workflows/dl-test/installer/upload?filename=Acme-Setup.exe&version=1.2.0&release_notes=Initial%20release",
         content=payload,
     )
     assert up.status_code == 200, up.text
@@ -694,7 +719,7 @@ def test_installer_upload_and_public_download():
 def test_installer_upload_allows_build_artifact_larger_than_json_cap():
     payload = b"MZ" + (b"x" * (settings.max_json_body_bytes + 1024))
     up = client.post(
-        "/api/v1/plugins/big-dl-test/installer/upload?filename=Big-Setup.exe&version=1.2.0&release_notes=Large%20installer",
+        "/api/v1/workflows/big-dl-test/installer/upload?filename=Big-Setup.exe&version=1.2.0&release_notes=Large%20installer",
         content=payload,
     )
     assert up.status_code == 200, up.text
@@ -707,20 +732,20 @@ def test_installer_upload_rejects_duplicate_version_and_preserves_history():
     slug = "versioned-dl-test"
 
     up1 = client.post(
-        f"/api/v1/plugins/{slug}/installer/upload?filename=Versioned-Setup.exe&version=1.2.0&release_notes=First%20release",
+        f"/api/v1/workflows/{slug}/installer/upload?filename=Versioned-Setup.exe&version=1.2.0&release_notes=First%20release",
         content=first,
     )
     assert up1.status_code == 200, up1.text
 
     duplicate = client.post(
-        f"/api/v1/plugins/{slug}/installer/upload?filename=Versioned-Setup.exe&version=1.2.0&release_notes=Duplicate",
+        f"/api/v1/workflows/{slug}/installer/upload?filename=Versioned-Setup.exe&version=1.2.0&release_notes=Duplicate",
         content=second,
     )
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "installer_version_exists"
 
     up2 = client.post(
-        f"/api/v1/plugins/{slug}/installer/upload?filename=Versioned-Setup.exe&version=1.2.1&release_notes=Second%20release",
+        f"/api/v1/workflows/{slug}/installer/upload?filename=Versioned-Setup.exe&version=1.2.1&release_notes=Second%20release",
         content=second,
     )
     assert up2.status_code == 200, up2.text
@@ -733,7 +758,7 @@ def test_installer_upload_rejects_duplicate_version_and_preserves_history():
     assert old.status_code == 200
     assert old.content == first
 
-    versions = client.get(f"/api/v1/plugins/{slug}/installer/versions")
+    versions = client.get(f"/api/v1/workflows/{slug}/installer/versions")
     assert versions.status_code == 200, versions.text
     rows = versions.json()["versions"]
     assert [row["version"] for row in rows[:2]] == ["1.2.1", "1.2.0"]
@@ -755,7 +780,7 @@ def test_installer_history_survives_disk_wipe_but_binary_does_not(monkeypatch, t
     second = b"MZsecond-wipe"
 
     up1 = client.post(
-        f"/api/v1/plugins/{slug}/installer/upload?filename=Wipe-Setup.exe&version=1.0.0&release_notes=v1",
+        f"/api/v1/workflows/{slug}/installer/upload?filename=Wipe-Setup.exe&version=1.0.0&release_notes=v1",
         content=first,
     )
     assert up1.status_code == 200, up1.text
@@ -764,12 +789,12 @@ def test_installer_history_survives_disk_wipe_but_binary_does_not(monkeypatch, t
     shutil.rmtree(tmp_path / "installers", ignore_errors=True)
 
     up2 = client.post(
-        f"/api/v1/plugins/{slug}/installer/upload?filename=Wipe-Setup.exe&version=1.0.1&release_notes=v2",
+        f"/api/v1/workflows/{slug}/installer/upload?filename=Wipe-Setup.exe&version=1.0.1&release_notes=v2",
         content=second,
     )
     assert up2.status_code == 200, up2.text
 
-    versions = client.get(f"/api/v1/plugins/{slug}/installer/versions")
+    versions = client.get(f"/api/v1/workflows/{slug}/installer/versions")
     assert versions.status_code == 200, versions.text
     rows = {row["version"]: row for row in versions.json()["versions"]}
     assert set(rows) == {"1.0.0", "1.0.1"}
@@ -794,32 +819,32 @@ def test_installer_history_survives_disk_wipe_but_binary_does_not(monkeypatch, t
     assert latest_download.json()["detail"] == "installer_not_published"
 
 
-def test_installer_upload_updates_plugin_latest_metadata():
-    slug = "plugin-meta-installer"
+def test_installer_upload_updates_skill_pack_latest_metadata():
+    slug = "skill-pack-meta-installer"
     pub = client.post(
-        "/api/v1/plugins/publish",
+        "/api/v1/workflows/publish",
         json={
             "slug": slug,
-            "display_name": "Plugin Meta Installer",
+            "display_name": "Skill Pack Meta Installer",
             "target_url": "https://example.test",
             "skill_pack_version": "1.0.0",
-            "skills": [],
+            "skill_slug": "deploy",
             "files": [],
         },
     )
     assert pub.status_code == 200, pub.text
 
     up = client.post(
-        f"/api/v1/plugins/{slug}/installer/upload?filename=Meta-Setup.exe&version=1.4.0&release_notes=Dashboard%20release",
+        f"/api/v1/workflows/{slug}/installer/upload?filename=Meta-Setup.exe&version=1.4.0&release_notes=Dashboard%20release",
         content=b"MZmeta",
     )
     assert up.status_code == 200, up.text
 
-    plugins = client.get("/api/v1/plugins")
-    assert plugins.status_code == 200
-    plugin = next(row for row in plugins.json()["plugins"] if row["slug"] == slug)
-    assert plugin["installer"]["version"] == "1.4.0"
-    assert plugin["installer"]["release_notes"] == "Dashboard release"
+    packs = client.get("/api/v1/workflows/skill-packs")
+    assert packs.status_code == 200
+    pack = next(row for row in packs.json()["skill_packs"] if row["display_name"] == "Skill Pack Meta Installer")
+    assert pack["installer"]["version"] == "1.4.0"
+    assert pack["installer"]["release_notes"] == "Dashboard release"
 
 
 def test_installer_download_missing_is_404():
@@ -869,8 +894,8 @@ def test_tracking_ingest_caps_oversized_batch_and_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "tracking_max_field_chars", 10)
 
     pub = client.post(
-        "/api/v1/plugins/publish",
-        json={"slug": "cap-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+        "/api/v1/workflows/publish",
+        json={"slug": "cap-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
     )
     assert pub.status_code == 200, pub.text
     token = pub.json()["tracking"]["tracking_token"]
@@ -895,8 +920,8 @@ def test_tracking_ingest_caps_oversized_batch_and_fields(monkeypatch, tmp_path):
 def test_tracking_ingest_passes_through_normal_batches_unchanged(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     pub = client.post(
-        "/api/v1/plugins/publish",
-        json={"slug": "no-cap-test", "skill_pack_version": "1.0.0", "skills": [], "files": []},
+        "/api/v1/workflows/publish",
+        json={"slug": "no-cap-test", "skill_pack_version": "1.0.0", "skill_slug": "deploy", "files": []},
     )
     assert pub.status_code == 200, pub.text
     token = pub.json()["tracking"]["tracking_token"]
@@ -920,7 +945,7 @@ def test_installer_download_requires_signature_when_configured(monkeypatch):
     monkeypatch.setattr(settings, "installer_signing_key", "installer-secret")
     payload = b"MZ\x90\x00signed-exe-bytes"
     up = client.post(
-        "/api/v1/plugins/signed-dl-test/installer/upload?filename=Signed-Setup.exe&version=1.0.0&release_notes=v1",
+        "/api/v1/workflows/signed-dl-test/installer/upload?filename=Signed-Setup.exe&version=1.0.0&release_notes=v1",
         content=payload,
     )
     assert up.status_code == 200, up.text
@@ -953,12 +978,12 @@ def test_installer_versions_endpoint_mints_signed_download_urls(monkeypatch):
     payload = b"MZversioned"
     slug = "signed-versions-test"
     up = client.post(
-        f"/api/v1/plugins/{slug}/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=v1",
+        f"/api/v1/workflows/{slug}/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=v1",
         content=payload,
     )
     assert up.status_code == 200, up.text
 
-    versions = client.get(f"/api/v1/plugins/{slug}/installer/versions")
+    versions = client.get(f"/api/v1/workflows/{slug}/installer/versions")
     assert versions.status_code == 200, versions.text
     row = versions.json()["versions"][0]
     assert "ts=" in row["download_url"] and "sig=" in row["download_url"]
@@ -972,7 +997,7 @@ def test_installer_download_stays_public_when_signing_key_unset():
     """Dev-mode fallback: SKILL_INSTALLER_SIGNING_KEY unset -> unsigned downloads still work."""
     payload = b"MZunsigned"
     up = client.post(
-        "/api/v1/plugins/unsigned-dl-test/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=v1",
+        "/api/v1/workflows/unsigned-dl-test/installer/upload?filename=Setup.exe&version=1.0.0&release_notes=v1",
         content=payload,
     )
     assert up.status_code == 200, up.text

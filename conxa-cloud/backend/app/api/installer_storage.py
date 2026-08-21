@@ -1,6 +1,6 @@
 """Installer artifact storage layout, signed download links, and Postgres fallback.
 
-The built ``{Company}-Plugin-Setup.exe`` is cached on local disk and mirrored to
+The built ``{Company}-Setup.exe`` is cached on local disk and mirrored to
 the KV store (Postgres in prod) so downloads survive Render's ephemeral disk.
 Download links are HMAC-signed and time-limited when a signing key is configured.
 Shared by ``publish_routes`` (upload/list/stream).

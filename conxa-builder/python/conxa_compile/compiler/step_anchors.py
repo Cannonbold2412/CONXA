@@ -166,11 +166,20 @@ def _frame_signature(step: Step) -> str:
     )
 
 
+def _tab_signature(step: Step) -> str:
+    """Stable per-tab identity — the multi-tab twin of _frame_signature. Two steps recorded on
+    different tabs must never share a target key even if every DOM signal happens to match
+    (e.g. two tabs on the same site with identical layout)."""
+    tab = step.get("tab") or {}
+    return str(tab.get("id") or "tab_0") if isinstance(tab, dict) else "tab_0"
+
+
 def _target_key(step: Step) -> str:
     target = step.get("target") or {}
     selectors = step.get("selectors") or {}
     return "|".join(
         [
+            _tab_signature(step),
             _frame_signature(step),
             str(selectors.get("aria") or ""),
             str(selectors.get("text_based") or ""),

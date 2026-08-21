@@ -142,8 +142,24 @@ def extract_frames_for_session(
     """
     video_path = session_dir / "recording.webm"
     events_path = session_dir / "events.jsonl"
+    videos_json_path = session_dir / "videos.json"
 
-    if not video_path.is_file():
+    # Multi-tab: videos.json (written by session.py::_finalize_video_file_sync) maps each tab
+    # id to its own video file — every tab records independently, at its own start time. Absent
+    # for sessions recorded before multi-tab support (or single-tab ones that never wrote it),
+    # in which case every event falls back to recording.webm, identical to pre-multi-tab behavior.
+    tab_videos: dict[str, Path] = {}
+    if videos_json_path.is_file():
+        try:
+            raw = json.loads(videos_json_path.read_text(encoding="utf-8"))
+            for tab_id, meta in (raw or {}).items():
+                fname = str((meta or {}).get("file") or "")
+                if fname:
+                    tab_videos[tab_id] = session_dir / fname
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if not video_path.is_file() and not any(p.is_file() for p in tab_videos.values()):
         raise FileNotFoundError(f"recording.webm not found in {session_dir}")
     if not events_path.is_file():
         raise FileNotFoundError(f"events.jsonl not found in {session_dir}")
@@ -188,13 +204,23 @@ def extract_frames_for_session(
                 f"event index {i} has no visual.timestamp_ms; non-auth events must have one"
             )
 
+        # Cut this event's frames from its own tab's video — a cross-tab timestamp cut from
+        # the wrong tab's video is worse than no frames at all, so a missing/unreadable tab
+        # video is this event's own failure, not a session-wide one (other tabs' events are
+        # unaffected).
+        tab_id = str((ev.get("tab") or {}).get("id") or "tab_0")
+        event_video_path = tab_videos.get(tab_id, video_path)
+        if not event_video_path.is_file():
+            failures.append((i, f"video not found for tab {tab_id}: {event_video_path}"))
+            continue
+
         try:
             frames: dict[str, str] = {}
             for label, offset_ms in offsets:
                 frame_path = frames_dir / f"evt_{i + 1:04d}_{label}.png"
                 if not (frame_path.is_file() and frame_path.stat().st_size > 0):
                     target_ms = int(ts_ms) + offset_ms
-                    _extract_frame(ffmpeg, video_path, frame_path, target_ms)
+                    _extract_frame(ffmpeg, event_video_path, frame_path, target_ms)
                 frames[label] = f"frames/evt_{i + 1:04d}_{label}.png"
 
             # Set the default representative: before_near frame (T-250ms).

@@ -1,6 +1,6 @@
 """FastAPI entrypoint for the thin Conxa cloud SaaS.
 
-The cloud serves the metered LLM proxy, auth, billing, dashboard, plugin/installer
+The cloud serves the metered LLM proxy, auth, billing, dashboard, workflow/installer
 hosting, runtime sync/update manifests, and telemetry. Recording, compiling, and
 building all happen locally in the Build Studio.
 """
@@ -19,12 +19,14 @@ from conxa_core.db import healthcheck, init_db, using_database
 from conxa_core.storage.selector_cache import cleanup_expired_entries
 from conxa_core.storage.snapshots_gc import cleanup_old_snapshots
 
+from app.api.byok_routes import router as byok_router
 from app.api.entitlement_routes import router as entitlement_router
 from app.api.job_routes import router as job_router
 from app.api.llm_proxy_routes import router as llm_proxy_router
-from app.api.plugin_routes import router as plugin_router
+from app.api.workflow_routes import router as workflow_router
 from app.api.product_routes import router as product_router
 from app.api.publish_routes import admin_router as publish_admin_router, installers_router, router as publish_router
+from app.api.release_routes import router as release_router
 from app.api.cashfree_routes import router as cashfree_router
 from app.api.security import ProductionRequestMiddleware
 from app.api.skillpack_update_routes import router as skillpack_update_router
@@ -130,12 +132,14 @@ app.add_middleware(
 app.add_middleware(ProductionRequestMiddleware)
 
 app.include_router(job_router, prefix="/api/v1")
+app.include_router(byok_router, prefix="/api/v1")
 app.include_router(entitlement_router, prefix="/api/v1")
 app.include_router(product_router, prefix="/api/v1")
-app.include_router(plugin_router, prefix="/api/v1")
+app.include_router(workflow_router, prefix="/api/v1")
 app.include_router(llm_proxy_router, prefix="/api/v1")
 app.include_router(publish_router, prefix="/api/v1")
 app.include_router(publish_admin_router, prefix="/api/v1")
+app.include_router(release_router, prefix="/api/v1")
 app.include_router(installers_router, prefix="/api/v1")
 app.include_router(cashfree_router, prefix="/api/v1")
 app.include_router(skillpack_update_router, prefix="/api/v1")

@@ -9,6 +9,32 @@ const versionManager = require("./version_manager");
 // disk-loaded layer (server.js, run.js, sync.js) and child spawn inherits the
 // same isolated path roots + update channel. See env.js for the safety default.
 const envInfo = require("./env").apply();
+// Expose the resolved environment to disk-loaded layers without re-deriving it.
+global.__conxaEnv = envInfo;
+
+// Expose bundled npm modules and host metadata to disk-loaded app code. Must run
+// before the register-mcp/unregister-mcp and sync early-return branches below —
+// both dispatch straight into disk-loaded app-layer files (mcp_register.js ->
+// config_edit*.js; cli_sync.js -> sync.js -> durable_context.js -> config_edit.js)
+// that resolve npm packages via (global.__hostRequire || require)(...). Setting
+// this up only after those branches left the fallback `require()` to look on
+// disk, where packages like jsonc-parser/yaml/adm-zip don't exist — durable_context
+// updates during install-time sync silently warned-and-skipped instead of writing
+// their discoverability files (sync.js catches the failure, so it degrades rather
+// than crashes, but the feature is dead without this).
+// App JS files use (global.__hostRequire || require)('playwright') etc.
+// __runtimeVersion lets server.js (loaded from disk) read the version baked
+// into the host exe without doing require('./package.json') relative to conxa-app/current/.
+// __versionManager lets every disk-loaded layer (app, skill sync) share the exact same
+// junction-handling code the host uses, instead of shipping/duplicating their own copy.
+// __manifestPublicKey lets manifest_manager.js (loaded from disk) verify the signed
+// manifest without shipping the key itself in the app-layer zip — it's baked into the
+// host exe at build time (same stamping step as host_version/version).
+global.__hostRequire      = (id) => require(id);
+global.__hostPkg          = !!process.pkg;
+global.__runtimeVersion   = require("./package.json").version;
+global.__versionManager   = versionManager;
+global.__manifestPublicKey = require("./package.json").ed25519_public_key || "";
 
 // `register-mcp` / `unregister-mcp` are host-exe-layer subcommands: they must
 // work even when no app layer is installed yet (a thin installer stages this
@@ -23,23 +49,17 @@ const HOST_VERSION = require("./package.json").host_version || "host-v1.0.0";
 const CONXA_DIR    = process.env.CONXA_DIR; // set by env.apply() above
 // APP_ROOT is the component root (contains v1.0.0/, v1.1.0/, current/) — not the live dir itself.
 const APP_ROOT = process.env.CONXA_APP_DIR;
-// Expose the resolved environment to disk-loaded layers without re-deriving it.
-global.__conxaEnv = envInfo;
 
-// Expose bundled npm modules and host metadata to disk-loaded app code.
-// App JS files use (global.__hostRequire || require)('playwright') etc.
-// __runtimeVersion lets server.js (loaded from disk) read the version baked
-// into the host exe without doing require('./package.json') relative to conxa-app/current/.
-// __versionManager lets every disk-loaded layer (app, skill sync) share the exact same
-// junction-handling code the host uses, instead of shipping/duplicating their own copy.
-// __manifestPublicKey lets manifest_manager.js (loaded from disk) verify the signed
-// manifest without shipping the key itself in the app-layer zip — it's baked into the
-// host exe at build time (same stamping step as host_version/version).
-global.__hostRequire      = (id) => require(id);
-global.__hostPkg          = !!process.pkg;
-global.__runtimeVersion   = require("./package.json").version;
-global.__versionManager   = versionManager;
-global.__manifestPublicKey = require("./package.json").ed25519_public_key || "";
+// `sync` is an install-time-only subcommand: the NSIS installer's SkillPacks
+// section already staged the app layer (SEC_RUNTIME runs first), so this just
+// calls the same delta-sync server.js runs on every launch, but earlier and
+// visibly, so a large enterprise pack downloads during install instead of
+// stalling the first MCP tool call. Runs and exits here, same as
+// register-mcp/unregister-mcp above.
+if (process.argv[2] === "sync") {
+  require("./cli_sync").run(CONXA_DIR, APP_ROOT, versionManager);
+  return;
+}
 
 // App-layer pre-load self-update. Unlike the conxa_runtime leg (still checked from
 // server.js's startupSync, post-load — a running binary can't replace itself, and that

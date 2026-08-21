@@ -57,6 +57,9 @@ class StepEditorDTO(BaseModel):
     final_intent: str = ""
     url: str = ""
     frame: dict[str, Any] = Field(default_factory=dict)
+    # Which browser tab this step runs on ({id, index, opened_by, opener_tab}) — empty means
+    # the initial tab. Drives the tab-boundary dividers in WorkflowViewer.tsx.
+    tab: dict[str, Any] = Field(default_factory=dict)
     target: dict[str, Any] = Field(default_factory=dict)
     selectors: dict[str, Any] = Field(default_factory=dict)
     compiled_selectors: list[str] = Field(default_factory=list)

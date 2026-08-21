@@ -12,10 +12,10 @@ from __future__ import annotations
 from app.services.tracking import _assertion_health_by_step, _drift_review_queue
 
 
-def _record(company: str, plugin_id: str, events: list[dict], *, plugin_ver: str = "1.0.0", run_id: str = "") -> dict:
+def _record(company: str, workflow_id: str, events: list[dict], *, workflow_ver: str = "1.0.0", run_id: str = "") -> dict:
     return {
         "company": company,
-        "summary": {"plugin_id": plugin_id, "plugin_ver": plugin_ver, "run_id": run_id},
+        "summary": {"workflow_id": workflow_id, "workflow_ver": workflow_ver, "run_id": run_id},
         "events": events,
     }
 
@@ -73,7 +73,7 @@ def _repair(step_id: int, *, tier: str = "L2", method: str = "a11y", ts: int = 1
 
 
 def test_drift_queue_computes_occurrence_rate_against_distinct_runs():
-    # Step 4 needed repair in 4 of 5 distinct runs of this plugin version — one run
+    # Step 4 needed repair in 4 of 5 distinct runs of this workflow version — one run
     # (run-3) never touched the repair path at all (no repair_event emitted for it).
     records = [
         _record("acme", "checkout", [_repair(4)], run_id="run-1"),
@@ -120,7 +120,7 @@ def test_drift_queue_reports_dominant_tier_and_method():
 
 def test_drift_queue_sorts_by_occurrence_rate_before_raw_count():
     # Step 1 has more raw occurrences but a lower rate (many runs, few hit it); step 2
-    # has fewer occurrences but hits every run of a low-traffic plugin — rate wins.
+    # has fewer occurrences but hits every run of a low-traffic workflow — rate wins.
     records = [
         *[_record("acme", "high-traffic", [_repair(1)], run_id=f"ht-{i}") for i in range(10)],
         *[_record("acme", "high-traffic", [], run_id=f"ht-clean-{i}") for i in range(90)],
@@ -134,15 +134,15 @@ def test_drift_queue_sorts_by_occurrence_rate_before_raw_count():
     assert queue[1]["occurrence_rate_pct"] == 10.0
 
 
-def test_drift_queue_scopes_total_runs_per_plugin_version_not_globally():
+def test_drift_queue_scopes_total_runs_per_workflow_version_not_globally():
     records = [
-        _record("acme", "checkout", [_repair(1)], plugin_ver="1.0.0", run_id="v1-run-1"),
-        _record("acme", "checkout", [], plugin_ver="2.0.0", run_id="v2-run-1"),
-        _record("acme", "checkout", [], plugin_ver="2.0.0", run_id="v2-run-2"),
-        _record("acme", "checkout", [], plugin_ver="2.0.0", run_id="v2-run-3"),
+        _record("acme", "checkout", [_repair(1)], workflow_ver="1.0.0", run_id="v1-run-1"),
+        _record("acme", "checkout", [], workflow_ver="2.0.0", run_id="v2-run-1"),
+        _record("acme", "checkout", [], workflow_ver="2.0.0", run_id="v2-run-2"),
+        _record("acme", "checkout", [], workflow_ver="2.0.0", run_id="v2-run-3"),
     ]
     queue = _drift_review_queue(records)
-    entry = next(e for e in queue if e["plugin_ver"] == "1.0.0")
+    entry = next(e for e in queue if e["workflow_ver"] == "1.0.0")
     # v2.0.0's three unrelated runs must not dilute v1.0.0's own rate.
     assert entry["total_runs"] == 1
     assert entry["occurrence_rate_pct"] == 100.0

@@ -59,4 +59,22 @@ export default tseslint.config(
       ],
     },
   },
+
+  // Plain node:test files that import a .ts module directly via Node's native
+  // type-stripping (see releaseState.test.mjs) — genuinely ESM, unlike the
+  // CommonJS bridge test above.
+  {
+    files: ['test/**/*.mjs'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' },
+      ],
+    },
+  },
 )

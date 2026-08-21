@@ -153,7 +153,7 @@ def _normalize_org_role(role: str | None, *, personal_workspace: bool = False) -
     # No active Clerk org means the principal is in their own personal workspace
     # (`personal_{user_id}`), which nobody else can reach — they are its sole member
     # and owner. Defaulting them to `basic_member` locked them out of every
-    # `require_admin` route (publish, plugin create/delete, subscribe).
+    # `require_admin` route (publish, workflow create/delete, subscribe).
     return "owner" if personal_workspace else "basic_member"
 
 
@@ -380,6 +380,10 @@ def ensure_principal(principal: Principal) -> None:
                 "customer_id": None,
                 "subscription_id": None,
                 "current_period_end": None,
+                # Stamped once, on first-ever sight of this workspace, so the free
+                # plan's 30-day trial clock starts here rather than at first billing
+                # read. Paid plans never consult this field (see entitlements.trial_expired).
+                "trial_started_at": now,
                 "updated_at": now,
             },
         )
@@ -431,7 +435,26 @@ def billing_for(principal: Principal) -> dict[str, Any]:
     with _lock:
         state = _read_state()
         billing = dict(state.get("billing", {}).get(principal.workspace_id) or {})
+        # Backstop for workspaces created before trial_started_at existed: stamp
+        # it now rather than leaving it missing, which would otherwise read as
+        # "trial started at the epoch" and expire instantly (see entitlements.trial_expired).
+        if not billing.get("trial_started_at"):
+            billing["trial_started_at"] = time.time()
+            state.setdefault("billing", {})[principal.workspace_id] = billing
+            _write_state(state)
     billing.setdefault("plan", "development" if principal.auth_provider == "local" else "free")
+    billing.setdefault("status", "inactive")
+    return billing
+
+
+def billing_for_workspace(workspace_id: str) -> dict[str, Any]:
+    """Read-only billing lookup by workspace_id alone, for call sites (like
+    delta-sync) that only have a sync_token's workspace_id, not a full
+    Principal. Unlike billing_for, does not create/backstop workspace state."""
+    with _lock:
+        state = _read_state()
+        billing = dict(state.get("billing", {}).get(workspace_id) or {})
+    billing.setdefault("plan", "free")
     billing.setdefault("status", "inactive")
     return billing
 

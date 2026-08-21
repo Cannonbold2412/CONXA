@@ -93,8 +93,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path obfuscated
           $files = @(
             "server.js", "sync.js", "run.js", "browser.js",
-            "skill_loader.js", "tracker.js", "install_identity.js",
-            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js",
+            "skill_loader.js", "tracker.js", "install_identity.js", "installed_versions.js",
+            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js", "tabs.js",
             "drift.js", "version_manager.js", "manifest_manager.js", "http_client.js",
             # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (see
             # runtime/durable_context.js) — all three must ship in the app layer
@@ -103,7 +103,11 @@ jobs:
             # fails to update discoverability files (caught by durable_context's
             # own try/catch in sync.js, so it degrades to a warning, not a crash
             # — but the feature would be dead in production without this).
-            "durable_context.js", "config_edit.js", "mcp_hosts.js"
+            "durable_context.js", "config_edit.js", "mcp_hosts.js",
+            # server.js requires this directly (not caught by any try/catch) — omitting
+            # it hard-crashes bootstrap.js on load with "Cannot find module './sync_errors'",
+            # which aborts even --install-playwright before Chromium ever downloads.
+            "sync_errors.js"
           )
           foreach ($f in $files) {
             javascript-obfuscator $f `
@@ -158,10 +162,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist-app
           $files = @(
             "server", "sync", "run", "browser",
-            "skill_loader", "auth_manager", "tracker", "install_identity",
-            "bootstrap", "recovery", "resolve_adapter", "resolver", "drift", "version_manager",
+            "skill_loader", "auth_manager", "tracker", "install_identity", "installed_versions",
+            "bootstrap", "recovery", "resolve_adapter", "resolver", "tabs", "drift", "version_manager",
             "manifest_manager", "http_client", "page_scripts",
-            "durable_context", "config_edit", "mcp_hosts"
+            "durable_context", "config_edit", "mcp_hosts", "sync_errors"
           )
           foreach ($base in $files) {
             Copy-Item obfuscated/$base.js dist-app/$base.js

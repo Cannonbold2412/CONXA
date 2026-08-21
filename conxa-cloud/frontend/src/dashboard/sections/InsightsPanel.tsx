@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { AlertOctagon, AlertTriangle, ArrowRight, CheckCircle2, Info } from 'lucide-react'
-import type { TrackingInsight } from '@/api/pluginApi'
+import type { TrackingInsight } from '@/api/workflowsApi'
 import { cn } from '@/lib/utils'
 
 const SEVERITY = {

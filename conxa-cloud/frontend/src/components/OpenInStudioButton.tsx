@@ -6,21 +6,21 @@ import { Button } from '@/components/ui/button'
 import { StudioDownloadDialog } from '@/components/StudioDownloadDialog'
 
 interface Props {
-  pluginId?: string
+  workflowId?: string
   /** Button size. Defaults to 'sm' (icon-only ghost). Pass 'default' for labelled outline button. */
   size?: 'sm' | 'default'
   /** Override the button label. Only shown when size='default'. Defaults to 'Open in Studio'. */
   label?: string
-  /** Render as a filled primary button (e.g. for "Create a Plugin" CTAs). */
+  /** Render as a filled primary button (e.g. for "Create a Workflow" CTAs). */
   primary?: boolean
 }
 
-export function OpenInStudioButton({ pluginId, size = 'sm', label = 'Open in Studio', primary = false }: Props) {
+export function OpenInStudioButton({ workflowId, size = 'sm', label = 'Open in Studio', primary = false }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const deepLink = pluginId
-    ? `conxa-studio://open?plugin=${encodeURIComponent(pluginId)}`
+  const deepLink = workflowId
+    ? `conxa-studio://open?workflow=${encodeURIComponent(workflowId)}`
     : 'conxa-studio://open'
 
   function launch(e: React.MouseEvent) {

@@ -25,23 +25,21 @@ class CompileMixin:
         from conxa_compile.compiler.build import compile_skill_package
         from conxa_compile.pipeline.run import run_pipeline
         from conxa_core.storage.json_store import read_skill, write_skill
-        from conxa_core.storage.plugin_store import get_plugin, save_plugin
+        from conxa_core.storage.workflow_store import get_workflow, save_workflow
         from conxa_core.storage.session_events import read_session_events, session_events_path
         from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
         registry = _recorder_registry
 
         session_id = _safe_id(payload.get("session_id"), "session_id")
-        plugin_id = str(payload.get("plugin_id") or "").strip()
-        plugin = None
+        workflow_id = str(payload.get("workflow_id") or "").strip()
         workflow = None
-        if plugin_id:
-            plugin_id = _safe_id(plugin_id, "plugin_id")
-            plugin = get_plugin(plugin_id)
-            if plugin is None:
-                raise _CommandError("plugin_not_found", f"No plugin {plugin_id}")
-            workflow = next((wf for wf in plugin.workflows if wf.session_id == session_id), None)
+        if workflow_id:
+            workflow_id = _safe_id(workflow_id, "workflow_id")
+            workflow = get_workflow(workflow_id)
             if workflow is None:
-                raise _CommandError("workflow_not_found", f"No workflow recorded for session {session_id}")
+                raise _CommandError("workflow_not_found", f"No workflow {workflow_id}")
+            if workflow.session_id != session_id:
+                raise _CommandError("workflow_not_found", f"Workflow {workflow_id} has no recording for session {session_id}")
 
         title = str(payload.get("skill_title") or "").strip()
         if not title and workflow is not None:
@@ -49,8 +47,7 @@ class CompileMixin:
         if not title:
             raise _CommandError("invalid_input", "skill_title is required")
 
-        is_recompile = bool(workflow and workflow.skill_id) or str(payload.get("mode") or "").strip() == "recompile"
-        usage_class = "human_edit" if is_recompile else "compile"
+        usage_class = "compile"
         reservation_id: str | None = None
         reservation_committed = False
 
@@ -59,19 +56,14 @@ class CompileMixin:
         def _log(message: str, level: str = "info") -> None:
             sink({"phase": "compile_log", "message": message, "level": level, "ts": _time.time()})
 
-        if not is_recompile:
-            workflow_id = str(getattr(workflow, "id", "") or "")
-            reservation_id = self._compile_reservation_id(rid, plugin_id, workflow_id, session_id)
-            _log("Reserving one compile credit...")
-            reserve = self._reserve_compile_credit(
-                reservation_id=reservation_id,
-                plugin_id=plugin_id,
-                workflow_id=workflow_id,
-                session_id=session_id,
-            )
-            sink({"phase": "quota", "meter": "compile_credits", "status": "reserved", **reserve})
-        else:
-            _log("Recompile selected: LLM work will use the Human Edit pool.")
+        reservation_id = self._compile_reservation_id(rid, workflow_id, session_id)
+        _log("Reserving one compile credit...")
+        reserve = self._reserve_compile_credit(
+            reservation_id=reservation_id,
+            workflow_id=workflow_id,
+            session_id=session_id,
+        )
+        sink({"phase": "quota", "meter": "compile_credits", "status": "reserved", **reserve})
 
         sink({"phase": "pipeline_start"})
         sink({"phase": "compile_step", "step": "normalize", "status": "running"})
@@ -94,6 +86,8 @@ class CompileMixin:
             if (session_dir / "recording.webm").is_file():
                 from conxa_compile.recorder.frame_extractor import extract_frames_for_session
 
+                _log("Extracting frames from the recording…")
+
                 def _on_frame_progress(done: int, total: int) -> None:
                     _log(f"Extracted frames for event {done}/{total}.")
 
@@ -109,6 +103,7 @@ class CompileMixin:
                     for idx, message in frame_failures:
                         _log(f"Warning: frame_extraction_error: event {idx + 1}: {message}", level="warn")
 
+            _log("Reading normalized events from disk…")
             raw = read_session_events(session_id)
         except Exception:
             if reservation_id and not reservation_committed:
@@ -181,19 +176,26 @@ class CompileMixin:
             raise
 
         write_skill(skill_id, package.model_dump(mode="json"))
+        from conxa_compile.editor.workflow_mutations import reconcile_inputs_with_step_values
+        from conxa_compile.compiler.upload_binding import filter_runtime_only_inputs
+
+        doc = read_skill(skill_id) or package.model_dump(mode="json")
+        doc, _ = reconcile_inputs_with_step_values(doc)
+        doc["inputs"] = filter_runtime_only_inputs(list(doc.get("inputs") or []))
+        write_skill(skill_id, doc)
         step_count = len(package.skills[0].steps)
         sink({"phase": "compiler_done", "step_count": step_count})
         for step in ("selectors", "assertions", "recovery", "package"):
             sink({"phase": "compile_step", "step": step, "status": "done"})
             _log(f"Completed: {step}")
         compile_report = package.compile_report or {}
-        if plugin is not None and workflow is not None:
+        if workflow is not None:
             workflow.skill_id = skill_id
-            workflow.status = "compiled"
+            workflow.recording_status = "compiled"
             workflow.compile_status = compile_report.get("status")
             workflow.compile_min_confidence = compile_report.get("min_confidence")
             workflow.compile_steps_with_warnings = compile_report.get("steps_with_warnings")
-            save_plugin(plugin)
+            save_workflow(workflow)
         _log(f"Skill packaged: {skill_id} (version {version}, {step_count} steps)")
         sink({"phase": "compile_done", "skill_id": skill_id, "version": version, "step_count": step_count})
         return {

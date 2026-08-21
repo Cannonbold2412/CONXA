@@ -30,10 +30,32 @@ class PoolEntry:
     api_key: str
     text_model: str
     vision_model: str
+    pool: str = "free"  # "free" | "premium" — see Settings.llm_premium_providers
+    # "bearer" (Authorization: Bearer <key>, every pooled provider) or
+    # "api_key_header" (api-key: <key> — Azure OpenAI's REST auth, used only
+    # by BYOK entries; see app/services/byok.py).
+    auth_style: str = "bearer"
     requests_sent: int = 0
     requests_429: int = 0
     last_used_at: float = 0.0
     cooled_until: float = 0.0
+
+
+def _parse_retry_after_secs(headers: Any) -> float | None:
+    """Parse a numeric Retry-After header into seconds, or None if absent/invalid.
+
+    Providers send this in seconds (not HTTP-date form) for rate-limit responses.
+    """
+    raw = headers.get("Retry-After") if headers is not None else None
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0 or value > 3600:
+        return None
+    return value
 
 
 _SECRET_KEYS = {
@@ -139,6 +161,10 @@ class LLMRouter:
         self.cooldown_secs: int = settings.llm_router_cooldown_secs
         self.max_retries: int = settings.llm_router_max_retries
         self.request_timeout_ms: int = settings.llm_router_request_timeout_ms
+        # Bound on how long a single route_text/route_vision call will block waiting for a
+        # cooled-down key to clear, instead of failing the request outright. Keeps a transient
+        # 429 from costing a full compile step while never blocking past a caller's patience.
+        self.wait_ceiling_secs: float = 8.0
         self.prefer_fast_for_text: bool = settings.llm_router_prefer_fast_for_text
         self._request_counter: int = 0
         self._last_lru_index: int = 0
@@ -151,11 +177,17 @@ class LLMRouter:
                 api_key=provider_cfg.api_key,
                 text_model=provider_cfg.text_model,
                 vision_model=provider_cfg.vision_model,
+                pool=provider_cfg.pool,
             )
             self.pool.append(entry)
 
-    def _next_available_entry(self, *, for_vision: bool = False) -> PoolEntry | None:
-        """Pick next available entry from pool using LRU, skipping cooled entries."""
+    def _next_available_entry(self, *, for_vision: bool = False, pool: str | None = None) -> PoolEntry | None:
+        """Pick next available entry from pool using LRU, skipping cooled entries.
+
+        ``pool`` (None = no filter) restricts to "free" or "premium" entries —
+        the caller passes the requesting workspace's compile_pool capability
+        (docs/PRD.md §11). A pool with no matching entries falls through to
+        None just like an exhausted pool, rather than silently mixing tiers."""
         if not self.pool:
             return None
 
@@ -176,30 +208,57 @@ class LLMRouter:
             if for_vision and not entry.vision_model:
                 continue
 
+            if pool is not None and entry.pool != pool:
+                continue
+
             return entry
 
         return None
 
-    def route_text(
+    def _soonest_cooldown(self, *, for_vision: bool) -> float | None:
+        """Earliest ``cooled_until`` (monotonic) among entries matching ``for_vision``,
+        or None if no such entries exist at all (a config gap, not a cooldown)."""
+        candidates = [e for e in self.pool if not for_vision or e.vision_model]
+        if not candidates:
+            return None
+        return min(e.cooled_until for e in candidates)
+
+    def _route(
         self,
         task: str,
         payload: dict[str, Any],
         timeout_ms: int,
         *,
-        error_detail: list[str] | None = None,
+        for_vision: bool,
+        error_detail: list[str] | None,
+        pool: str | None,
     ) -> dict[str, Any] | None:
-        """Route a text-only LLM call to an available provider."""
-        if not self.pool:
-            raise RuntimeError(
-                "No LLM providers enabled. Set at least one *_API_KEYS and "
-                "*_ENABLED=true in .env (e.g. GROQ_API_KEYS=gsk_... + GROQ_ENABLED=true)."
-            )
+        """Shared route_text/route_vision body: pick an entry, fall back across pools,
+        and — once per call — wait for the soonest cooled-down key to clear (bounded by
+        ``wait_ceiling_secs``) instead of instantly failing on a transient 429."""
+        waited_once = False
 
         for attempt in range(self.max_retries):
-            entry = self._next_available_entry(for_vision=False)
+            entry = self._next_available_entry(for_vision=for_vision, pool=pool)
+            if entry is None and pool is not None:
+                _debug_log(f"router: pool={pool} exhausted{' for vision' if for_vision else ''}, falling back to any pool")
+                entry = self._next_available_entry(for_vision=for_vision)
+
+            if entry is None and not waited_once:
+                waited_once = True
+                soonest = self._soonest_cooldown(for_vision=for_vision)
+                if soonest is not None:
+                    wait_s = soonest - time.monotonic()
+                    if 0 < wait_s <= self.wait_ceiling_secs:
+                        _debug_log(f"router: all entries cooled, waiting {wait_s:.1f}s for soonest to clear")
+                        time.sleep(wait_s)
+                        entry = self._next_available_entry(for_vision=for_vision, pool=pool)
+                        if entry is None and pool is not None:
+                            entry = self._next_available_entry(for_vision=for_vision)
+
             if entry is None:
                 _debug_log("router: all providers cooled or exhausted")
-                if error_detail:
+                if error_detail is not None:
                     error_detail.append("router: all providers cooled or exhausted")
                 break
 
@@ -220,6 +279,27 @@ class LLMRouter:
 
         return None
 
+    def route_text(
+        self,
+        task: str,
+        payload: dict[str, Any],
+        timeout_ms: int,
+        *,
+        error_detail: list[str] | None = None,
+        pool: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Route a text-only LLM call to an available provider.
+
+        ``pool`` restricts to "free" or "premium" providers; if the requested
+        pool has no available entry, falls back to any pool rather than
+        failing a paying customer's compile over a provider misconfiguration."""
+        if not self.pool:
+            raise RuntimeError(
+                "No LLM providers enabled. Set at least one *_API_KEYS and "
+                "*_ENABLED=true in .env (e.g. GROQ_API_KEYS=gsk_... + GROQ_ENABLED=true)."
+            )
+        return self._route(task, payload, timeout_ms, for_vision=False, error_detail=error_detail, pool=pool)
+
     def route_vision(
         self,
         task: str,
@@ -227,37 +307,37 @@ class LLMRouter:
         timeout_ms: int,
         *,
         error_detail: list[str] | None = None,
+        pool: str | None = None,
     ) -> dict[str, Any] | None:
-        """Route a vision-capable LLM call to an available provider."""
+        """Route a vision-capable LLM call to an available provider. See
+        route_text for the ``pool`` fallback behavior."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
                 "*_ENABLED=true in .env. Note: vision tasks require providers with a vision_model."
             )
+        return self._route(task, payload, timeout_ms, for_vision=True, error_detail=error_detail, pool=pool)
 
-        for attempt in range(self.max_retries):
-            entry = self._next_available_entry(for_vision=True)
-            if entry is None:
-                _debug_log("router: no providers with vision support available")
-                if error_detail:
-                    error_detail.append("router: no providers with vision support available")
-                break
-
-            result = self._call_provider(
-                entry,
-                task,
-                payload,
-                timeout_ms,
-                error_detail=error_detail,
-                attempt=attempt,
-            )
-
+    def call_entry_directly(
+        self,
+        entry: PoolEntry,
+        task: str,
+        payload: dict[str, Any],
+        timeout_ms: int,
+        *,
+        error_detail: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Single-attempt call against a caller-supplied entry, bypassing pool
+        selection and cross-provider failover entirely. Used for BYOK — there's
+        exactly one deployment to call, so the shared pool's rotate/cool-down/
+        drop-on-401 machinery (which assumes many interchangeable keys) doesn't
+        apply; the entry is never added to self.pool, so it's never dropped
+        from anything. One retry mirrors the pooled paths' minimum useful
+        resilience against a single transient failure."""
+        for attempt in range(min(2, self.max_retries)):
+            result = self._call_provider(entry, task, payload, timeout_ms, error_detail=error_detail, attempt=attempt)
             if result is not None:
                 return result
-
-            # Continue to next provider on failure
-            _debug_log(f"router: retry {attempt + 1}/{self.max_retries} for vision task {task}")
-
         return None
 
     def _call_provider(
@@ -295,15 +375,16 @@ class LLMRouter:
         # Build OpenAI-compatible request
         if not _is_openai_compatible_endpoint(entry.endpoint):
             _debug_log(f"router: endpoint not openai-compatible {entry.endpoint}")
-            if error_detail:
+            if error_detail is not None:
                 error_detail.append(f"endpoint not openai-compatible: {entry.endpoint}")
             return None
 
         ep = _chat_completions_url(entry.endpoint)
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {entry.api_key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        if entry.auth_style == "api_key_header":
+            headers["api-key"] = entry.api_key
+        else:
+            headers["Authorization"] = f"Bearer {entry.api_key}"
 
         timeout_s = max(0.2, timeout_ms / 1000.0)
 
@@ -342,7 +423,7 @@ class LLMRouter:
                 msg = f"unexpected_json_root: {type(data_raw).__name__}"
                 _debug_log(f"router: {msg}")
                 _log_llm_exception(req_id, entry, ep, model, task, attempt, status_code, duration_ms, msg)
-                if error_detail:
+                if error_detail is not None:
                     error_detail.append(msg)
                 return None
 
@@ -367,7 +448,7 @@ class LLMRouter:
                         "response_preview": _redacted_preview(data_raw),
                     },
                 )
-                if error_detail:
+                if error_detail is not None:
                     error_detail.append(f"provider_error: {prov_msg}")
                 return None
 
@@ -399,14 +480,17 @@ class LLMRouter:
             snippet = _safe_error_snippet(bod or str(exc.reason or exc))
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
-            # Handle 429 rate limit: cool this key
+            # Handle 429 rate limit: cool this key. Honour the provider's own Retry-After
+            # when present — a provider asking for 2s shouldn't cost the pool 60s.
             if exc.code == 429:
                 entry.requests_429 += 1
-                entry.cooled_until = now + self.cooldown_secs
-                msg = f"HTTPError 429 rate_limited (cooled {self.cooldown_secs}s): {snippet}"
+                retry_after = _parse_retry_after_secs(exc.headers)
+                cooldown = retry_after if retry_after is not None else self.cooldown_secs
+                entry.cooled_until = now + cooldown
+                msg = f"HTTPError 429 rate_limited (cooled {cooldown:g}s): {snippet}"
                 _debug_log(f"router: {msg}")
                 _log_llm_exception(req_id, entry, ep, model, task, attempt, exc.code, duration_ms, msg)
-                if error_detail:
+                if error_detail is not None:
                     error_detail.append(msg)
                 return None
 
@@ -415,7 +499,7 @@ class LLMRouter:
                 msg = f"HTTPError {exc.code} auth_failed (dropping key): {snippet}"
                 _debug_log(f"router: {msg}")
                 _log_llm_exception(req_id, entry, ep, model, task, attempt, exc.code, duration_ms, msg)
-                if error_detail:
+                if error_detail is not None:
                     error_detail.append(msg)
                 # Remove this entry from pool
                 if entry in self.pool:
@@ -427,7 +511,7 @@ class LLMRouter:
             entry.cooled_until = now + self.cooldown_secs
             _debug_log(f"router: {msg} (cooled {self.cooldown_secs}s)")
             _log_llm_exception(req_id, entry, ep, model, task, attempt, exc.code, duration_ms, msg)
-            if error_detail:
+            if error_detail is not None:
                 error_detail.append(msg)
             return None
 
@@ -437,7 +521,7 @@ class LLMRouter:
             _debug_log(f"router: transient_error (cooled {self.cooldown_secs}s) {msg}")
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             _log_llm_exception(req_id, entry, ep, model, task, attempt, None, duration_ms, msg)
-            if error_detail:
+            if error_detail is not None:
                 error_detail.append(msg)
             return None
 
@@ -447,7 +531,7 @@ class LLMRouter:
             _debug_log(f"router: parse_error (cooled {self.cooldown_secs}s) {msg}")
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             _log_llm_exception(req_id, entry, ep, model, task, attempt, None, duration_ms, msg)
-            if error_detail:
+            if error_detail is not None:
                 error_detail.append(msg)
             return None
 
@@ -459,6 +543,7 @@ class LLMRouter:
                 {
                     "provider": entry.provider,
                     "endpoint": entry.endpoint,
+                    "pool": entry.pool,
                     "requests_sent": entry.requests_sent,
                     "requests_429": entry.requests_429,
                     "cooled": entry.cooled_until > time.monotonic(),

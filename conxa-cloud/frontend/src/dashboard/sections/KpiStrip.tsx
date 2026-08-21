@@ -1,7 +1,7 @@
 'use client'
 
 import { ArrowDownRight, ArrowRight, ArrowUpRight } from 'lucide-react'
-import type { TrackingKpi } from '@/api/pluginApi'
+import type { TrackingKpi } from '@/api/workflowsApi'
 import { Sparkline } from '@/components/viz/Sparkline'
 import { cn } from '@/lib/utils'
 import { fmtDuration, fmtNumber, fmtPercent } from '../dashboardData'

@@ -1,6 +1,6 @@
 {
-  "company": "gate",
-  "company_display": "CI Gate",
+  "workspace_id": "gate",
+  "display_name": "CI Gate",
   "skill_pack_version": "0.0.1",
   "required_runtime": ">=1.0.0",
   "target_url": "",

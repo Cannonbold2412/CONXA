@@ -31,21 +31,26 @@ function DialogClose({
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
 }
 
-function DialogOverlay({
-  className,
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
-  return (
-    <DialogPrimitive.Overlay
-      data-slot="dialog-overlay"
-      className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
-        className
-      )}
-      {...props}
-    />
-  )
-}
+// forwardRef (not a plain function component): DialogContent passes this as a
+// direct sibling child into DialogPortal, and radix-ui's Portal (asChild)
+// clones + attaches a ref to every one of its direct children individually —
+// a plain function component here makes React drop the ref and warn
+// "Function components cannot be given refs" on every open.
+const DialogOverlay = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Overlay>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
+>(({ className, ...props }, ref) => (
+  <DialogPrimitive.Overlay
+    ref={ref}
+    data-slot="dialog-overlay"
+    className={cn(
+      "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+      className
+    )}
+    {...props}
+  />
+))
+DialogOverlay.displayName = "DialogOverlay"
 
 function DialogContent({
   className,

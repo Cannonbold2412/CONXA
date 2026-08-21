@@ -1,5 +1,8 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { useBackendEvents } from '@/hooks/usePythonCmd'
+import { useCompileStore } from '@/store/compileStore'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAuth, performLogout } from '@/contexts/AuthContext'
@@ -9,30 +12,29 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import {
   ChevronLeft,
   ChevronRight,
-  Cpu,
   Layers,
+  ListChecks,
   LogOut,
   PackageCheck,
   PencilLine,
   PlayCircle,
   Settings,
   UploadCloud,
-  Video,
 } from 'lucide-react'
 
 const SIDEBAR_KEY = 'conxa-sidebar-collapsed'
 
-// One button per stage of Record -> Compile -> Human Edit -> Test Skill ->
-// Publish Skill Package -> Build Installer, so the sidebar mirrors the flow
-// itself instead of the compiler's internal pipeline stages. Record is the
-// app home — it also owns plugin create/delete/search (folded in from the
-// old standalone Dashboard page) alongside the recording workspace.
+// One button per stage of Workflows -> Human Edit -> Test Skill -> Publish
+// Skill Package -> Build Installer, so the sidebar mirrors the flow itself
+// instead of the compiler's internal pipeline stages. Workflows is the app
+// home — it owns groups, workflow create/delete/search, and compile (each
+// workflow's own page owns Compile/Recompile — there is no standalone
+// Compile page or nav entry).
 const navGroups = [
   {
     label: 'Operate',
     items: [
-      { to: '/record', label: 'Record', icon: Video },
-      { to: '/compile', label: 'Compile', icon: Cpu },
+      { to: '/workflows', label: 'Workflows', icon: ListChecks },
       { to: '/human-edit', label: 'Human Edit', icon: PencilLine },
       { to: '/test', label: 'Test Skill', icon: PlayCircle },
       { to: '/publish', label: 'Publish Skill Package', icon: UploadCloud },
@@ -113,7 +115,7 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
     <nav className="space-y-1.5" aria-label="Primary">
       {navGroups.map((group) => (
         <div key={group.label} className="space-y-1.5">
-          <p className={cn('px-3 pt-3 text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-600', collapsed && 'sr-only')}>
+          <p className={cn('px-3 pt-3 text-[0.6875rem] font-medium text-zinc-500', collapsed && 'sr-only')}>
             {group.label}
           </p>
           {group.items.map((item) => (
@@ -134,7 +136,7 @@ function DesktopSidebar({ collapsed, setCollapsed }: { collapsed: boolean; setCo
       )}
     >
       <div className="flex items-center gap-3 border-b border-white/8 px-4 py-4">
-        <NavLink to="/record" className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
+        <NavLink to="/workflows" className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
           <ProductMark />
           {!collapsed && (
             <div className="min-w-0">
@@ -185,10 +187,15 @@ function UserWidget() {
   const { identity, setIdentity } = useAuth()
   if (!identity) return null
   return (
-    <div className="flex items-center gap-2">
-      <span className="hidden truncate text-xs text-zinc-300 sm:block max-w-[160px]">
-        {identity.email}
+    <div className="flex shrink-0 items-center gap-2">
+      <span className="mr-1 hidden h-5 w-px bg-white/8 sm:block" aria-hidden />
+      <span
+        className="hidden size-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-[0.6875rem] font-semibold uppercase text-zinc-300 sm:flex"
+        aria-hidden
+      >
+        {identity.email.charAt(0)}
       </span>
+      <span className="hidden max-w-[180px] truncate text-xs text-zinc-400 sm:block">{identity.email}</span>
       <Button
         type="button"
         variant="ghost"
@@ -203,8 +210,24 @@ function UserWidget() {
   )
 }
 
+/**
+ * The single app-wide subscription to backend compile events. It lives here, not
+ * on the compile page, so a compile keeps reporting progress after the user
+ * navigates away — and so the usage cards refresh the moment a credit is spent.
+ */
+function useCompileEventBridge() {
+  const qc = useQueryClient()
+  const applyEvent = useCompileStore((s) => s.applyEvent)
+
+  useBackendEvents((ev) => {
+    applyEvent(ev)
+    if (ev.phase === 'quota') qc.invalidateQueries({ queryKey: ['entitlements'] })
+  })
+}
+
 export function AppChrome({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
+  useCompileEventBridge()
 
   useEffect(() => {
     setCollapsed(window.localStorage.getItem(SIDEBAR_KEY) === 'true')

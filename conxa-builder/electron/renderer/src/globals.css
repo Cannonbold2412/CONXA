@@ -152,6 +152,14 @@
   }
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 .app-region-drag {
   -webkit-app-region: drag;
 }
@@ -195,5 +203,71 @@
 @media (prefers-reduced-motion: reduce) {
   .anim-pop[data-state] {
     animation-duration: 0.01ms;
+  }
+}
+
+/* ── Folder cards (Workflows group grid) ─────────────────────────────────
+   A group is drawn as an actual folder silhouette rather than a rectangle:
+   a tab notch with an angled shoulder is cut out of the card itself. Since
+   `border` can't follow a clip-path, the outline is two stacked layers that
+   share the polygon — the outer one filled with the border colour, the inner
+   one inset by 1px and filled with the surface colour. Flat, no shadow, per
+   DESIGN.md §4 (The Flat Workbench Rule). `border-radius` still applies under
+   a clip-path, so the bottom corners stay soft while the tab stays crisp. */
+.folder-card {
+  /* Fixed, not a percentage: a card this wide would turn a 46% tab into a full
+     header bar, which stops reading as a folder entirely. */
+  --folder-tab-w: min(170px, 60%);
+  --folder-tab-h: 26px;
+  --folder-shoulder: 18px;
+  clip-path: polygon(
+    0 0,
+    calc(var(--folder-tab-w) - var(--folder-shoulder)) 0,
+    var(--folder-tab-w) var(--folder-tab-h),
+    100% var(--folder-tab-h),
+    100% 100%,
+    0 100%
+  );
+}
+
+.folder-card-inner {
+  --folder-tab-h: 25px;
+  clip-path: polygon(
+    0 0,
+    calc(var(--folder-tab-w) - var(--folder-shoulder)) 0,
+    var(--folder-tab-w) var(--folder-tab-h),
+    100% var(--folder-tab-h),
+    100% 100%,
+    0 100%
+  );
+}
+
+/* Pushes body content clear of the tab notch. */
+.folder-body {
+  padding-top: calc(var(--folder-tab-h, 26px) + 0.875rem);
+}
+
+/* Exactly four folders per viewport: two columns, and rows sized to half the
+   scroll container's own height. Everything past the fourth is honest scroll.
+   The `minmax` floor stops a short window from crushing the folder; the plain
+   `1fr` line below is the fallback if `cqh` is ever unavailable. */
+.folder-scroll {
+  container-type: size;
+}
+
+.folder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  /* The floor is the folder's own content height. Below it the page scrolls
+     rather than clipping a card mid-row — four-at-a-time is the goal, never at
+     the cost of hiding half a line of text. */
+  grid-auto-rows: minmax(260px, 1fr);
+  grid-auto-rows: minmax(260px, calc((100cqh - 1.25rem - 3rem) / 2));
+}
+
+@media (max-width: 639px) {
+  .folder-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

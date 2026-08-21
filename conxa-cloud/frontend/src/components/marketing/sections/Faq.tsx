@@ -27,6 +27,18 @@ const QA = [
     a: 'Anything that runs in a browser: Salesforce, SAP, cloud consoles, and the internal tools that never got an API.',
   },
   {
+    q: "Why not just build an API for the system we need to connect to?",
+    a: "For the one system you own, that's often the right call. It's not true for the other four systems in the process that you don't control, and it's not true for the long-tail workflow that's too small to ever get its own sprint. We can put a number on it: the hours this process costs you per month against what building and maintaining five integrations would take, versus recording it once.",
+  },
+  {
+    q: 'What if the software we need to automate blocks bots or requires MFA?',
+    a: "We check before we promise. Aggressive bot protection targets datacenter traffic, not an employee's own machine on a corporate IP in a real browser — most line-of-business software has none of it. A fresh one-time code on every login is the one thing that genuinely can't be automated unattended, so we screen for MFA policy, bot protection, terms of service, and session lifetime before any workflow is qualified.",
+  },
+  {
+    q: 'How is this different from Comet or Claude in Chrome?',
+    a: "Different category, not a better version of the same one. Those assistants rediscover the interface every run — per-session, non-deterministic, token cost each time — which is right for a person doing a one-off task. Conxa compiles a workflow once and replays it deterministically, with recovery, for a process that runs unattended a thousand times.",
+  },
+  {
     q: 'What platforms are supported?',
     a: 'Windows today. macOS is on the roadmap.',
   },

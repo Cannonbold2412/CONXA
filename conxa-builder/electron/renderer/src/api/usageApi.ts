@@ -1,6 +1,6 @@
 import { cmd } from '@/lib/ipc'
 
-export type EntitlementMeterKey = 'seats' | 'skill_pack_slots' | 'compile_credits' | 'human_edit_tokens'
+export type EntitlementMeterKey = 'seats' | 'machines' | 'compile_credits' | 'human_edit_tokens'
 
 export interface EntitlementMeter {
   used: number

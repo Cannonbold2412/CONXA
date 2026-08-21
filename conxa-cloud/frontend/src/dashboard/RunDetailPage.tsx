@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ListOrdered } from 'lucide-react'
-import { fetchTrackingRun } from '@/api/pluginApi'
+import { fetchTrackingRun } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { ExecutionFlow } from '@/components/viz/ExecutionFlow'
 import { cn } from '@/lib/utils'
@@ -33,14 +33,14 @@ export function RunDetailPage({ company, runId }: { company: string; runId: stri
     <DashboardPageBody>
       <div className="min-w-0">
         <Link
-          href={`/dashboard/workflows/${encodeURIComponent(company)}/${encodeURIComponent(data.plugin_id)}?range=${range}`}
+          href={`/dashboard/workflows/${encodeURIComponent(company)}/${encodeURIComponent(data.workflow_id)}?range=${range}`}
           className="inline-flex items-center gap-1 text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
         >
           <ArrowLeft className="size-3" aria-hidden />
-          {data.plugin_id}
+          {data.workflow_id}
         </Link>
         <h1 className="mt-1 flex flex-wrap items-center gap-2 text-lg font-semibold text-zinc-100">
-          <span className="truncate">{data.plugin_id}</span>
+          <span className="truncate">{data.workflow_id}</span>
           <span
             className={cn(
               'rounded-full px-2 py-0.5 text-[11px] font-medium',
@@ -55,7 +55,7 @@ export function RunDetailPage({ company, runId }: { company: string; runId: stri
           </span>
         </h1>
         <p className="truncate text-[11px] text-zinc-600">
-          {company} · v{data.plugin_ver} · runtime {data.runtime_ver} ·{' '}
+          {company} · v{data.workflow_ver} · runtime {data.runtime_ver} ·{' '}
           {summary?.started_at ? fmtRelative(summary.started_at) : 'unknown time'}
         </p>
       </div>

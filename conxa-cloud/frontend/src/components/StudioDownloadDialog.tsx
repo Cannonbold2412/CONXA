@@ -10,7 +10,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
-import { getStudioManifest } from '@/api/pluginApi'
+import { getStudioManifest } from '@/api/workflowsApi'
 
 interface Props {
   open: boolean
@@ -51,8 +51,8 @@ export function StudioDownloadDialog({ open, onOpenChange }: Props) {
           </div>
           <DialogDescription>
             {downloaded
-              ? 'Run the downloaded installer, then come back here and click "Create a Plugin" to start recording.'
-              : 'Build Studio is a Windows desktop app where you record and publish workflows. Download it once, then use it to create plugins.'}
+              ? 'Run the downloaded installer, then come back here and click "New Workflow" to start recording.'
+              : 'Build Studio is a Windows desktop app where you record and publish workflows. Download it once, then use it to create workflows.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -66,7 +66,7 @@ export function StudioDownloadDialog({ open, onOpenChange }: Props) {
                   <ol className="list-decimal list-inside space-y-0.5 text-emerald-400">
                     <li>Run the downloaded <span className="font-mono">.exe</span> installer</li>
                     <li>Launch Conxa Build Studio</li>
-                    <li>Come back and click &quot;Create a Plugin&quot;</li>
+                    <li>Come back and click &quot;New Workflow&quot;</li>
                   </ol>
                 </div>
               </div>
@@ -94,7 +94,7 @@ export function StudioDownloadDialog({ open, onOpenChange }: Props) {
               <ol className="list-decimal list-inside space-y-1">
                 <li>Download and run the Build Studio installer below</li>
                 <li>Record a browser workflow inside Build Studio</li>
-                <li>Publish — your plugin appears here automatically</li>
+                <li>Publish — your skill package appears here automatically</li>
               </ol>
             </div>
             <Button

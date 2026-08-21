@@ -1,7 +1,7 @@
 'use client'
 
 import { Building2, Download, Users, WifiOff } from 'lucide-react'
-import type { TrackingDashboardResponse } from '@/api/pluginApi'
+import type { TrackingDashboardResponse } from '@/api/workflowsApi'
 import { cn } from '@/lib/utils'
 import { fmtNumber } from '../dashboardData'
 

@@ -6,8 +6,8 @@ demanding a value the user explicitly said was optional."""
 from __future__ import annotations
 
 from conxa_compile.editor.workflow_mutations import _validate_skill_inputs
-from conxa_compile.plugin_builder_output import _compute_inputs_required
-from conxa_compile.plugin_builder_saved_skill import _normalize_saved_skill_inputs
+from conxa_compile.skill_package_builder_output import _compute_inputs_required
+from conxa_compile.skill_package_builder_saved_skill import _normalize_saved_skill_inputs
 
 
 def test_optional_input_excluded_from_inputs_required():

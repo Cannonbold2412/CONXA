@@ -79,6 +79,10 @@ User clicks "Sign in"
 - **Cloudflare workaround.** The token endpoint at `clerk.conxa.in` is behind Cloudflare, which blocks Python's default user-agent. The code sends a Chrome-style `User-Agent` header.
 - **Userinfo size limit.** Windows Credential Manager has a ~2500-byte limit. Only 5 fields are kept from `/oauth/userinfo`: `sub`, `email`, `name`, `full_name`, `org_id`.
 
+#### Dev-only auth bypass
+
+Setting `CONXA_DEV_SKIP_AUTH=1` alongside `CONXA_ENV=dev` makes `login()` and `current_identity()` (`auth_service.py`) short-circuit to a fixed `dev-user`/`dev-org` identity instead of running the Clerk PKCE flow — no browser round-trip, no keyring read. It requires both vars (not just the dev lane) so `dev-studio.ps1` still exercises real Clerk login by default; set the flag only when iterating on Studio UI and you don't need a real identity. Never honored outside `CONXA_ENV=dev`.
+
 #### Token refresh
 
 On every `get_token()` call (which happens before every LLM proxy request), the service checks if the access token expires within 60 seconds. If so, it silently calls `POST /oauth/token` with `grant_type=refresh_token` and saves the new token set to the keyring. The app never shows a re-login prompt unless the refresh token itself has expired.
@@ -116,7 +120,7 @@ All Conxa Cloud API endpoints except a small public allowlist require a valid Cl
 - `POST /api/v1/tracking/{co}/events` — telemetry ingestion (package token, not Clerk)
 
 **Protected (Clerk JWT required):**
-Everything else — LLM proxy, plugin publishing, billing, dashboard.
+Everything else — LLM proxy, skill pack publishing, billing, dashboard.
 
 Verification (`app/api/security.py`):
 1. Extract `Authorization: Bearer {token}` header
@@ -251,89 +255,112 @@ On cold start (packaged only):
 
 ---
 
-### 2.2 Runtime Self-Updater (server.js + updates_routes.py)
+### 2.2 Runtime Self-Updater (bootstrap.js + server.js + manifest_signer.py)
 
-The runtime updates itself on every cold start. Three interdependent files are staged and applied together — they must stay in sync or the runtime crashes:
+> The flat-file `update.bat` / `runtime.exe.next` / `runtime-update-pending.json` mechanism described
+> in earlier revisions of this doc **no longer exists**. It was replaced by versioned directories +
+> one signed manifest. `docs/TRD.md` §5.8 has the full sequence diagrams; this section is the
+> operational summary.
 
-| File | Why it must match | Staged as |
-|---|---|---|
-| `runtime-win.exe` | The Node pkg bundle itself | `runtime.exe.next` |
-| `keytar.node` | Native module compiled against a specific Node ABI | `keytar.node.next` |
-| Chromium | Playwright expects a specific revision baked in `browsers.json` | Downloaded by `--install-playwright` |
+The runtime ships as two independently-updatable layers (see `docs/TRD.md` §4.4): the **host exe**
+(`conxa-runtime/`, the pkg bundle + `keytar.node`) and the **app layer** (`conxa-app/`, the
+JavaScript that actually implements the MCP server). Each lands in its own versioned directory and
+`current` is a junction pointed at the active one, so an update never overwrites the file the
+running process was loaded from — and a rollback is just flipping the junction back, with no
+re-download.
 
-**Full update sequence on cold start:**
+**One signed manifest drives both.** `GET /api/v1/manifest.json` (public, no auth) returns every
+component's version, download URL, SHA-256, rollout percentage, `minimum_versions` floor, and — for
+`conxa_app` — a `min_host` floor. It is Ed25519-signed server-side with `CONXA_MANIFEST_SIGNING_KEY`
+(never in CI); the runtime verifies it against a public key baked into the host exe at build time.
+**A manifest that fails verification is discarded outright**, treated exactly like a network failure
+— the last verified cache is used, or the check is skipped entirely on a first run. There is no
+local TTL: every launch fetches fresh, falling back to cache only on failure.
+
+**Two call sites, two different timings:**
+
+| Layer | Checked by | When | Effective |
+|---|---|---|---|
+| `conxa_app` | `bootstrap.js` (baked into the host exe) | **Pre-load** — before `server.js` is ever `require()`'d | **This launch.** Nothing has the old code in the module cache yet |
+| `conxa_runtime` | `server.js`'s `startupSync`, reusing the manifest `bootstrap.js` already fetched (`global.__conxaManifest`) | Post-load, in parallel with skill sync | Next cold start — a process cannot replace its own running binary |
 
 ```
-1. Check runtime-update-pending.json
-   └─ If ready + runtime.exe.next exists:
-        Write update.bat (random suffix, tmpdir)
-        Spawn detached cmd.exe /C update.bat → exit process
+bootstrap.js (host exe)                     Cloud
+───────────────────────                     ─────
+GET /api/v1/manifest.json (3s timeout) ───► signed manifest
+verify Ed25519 vs baked-in public key
+decideUpdate("conxa_app"):
+  semver > current?
+  min_host <= HOST_VERSION?
+  minimum_versions floor / rollout bucket?
+  └─ yes → download zip (2 retries × 5s)
+           SHA-256 verify → extract to conxa-app/<version>/
+           validate server.js present
+           version_manager.activate() → flip `current` junction, prune
+  any failure → swallowed; `current` left exactly where it was
+re-check min_host on whatever `current` now points at
+require(conxa-app/current/server.js)   ← runs the version just activated
 
-        update.bat (runs after 3s, detached):
-          move /Y runtime.exe.next   → runtime.exe
-          move /Y keytar.node.next   → keytar.node   (if present)
-          runtime.exe --install-playwright             (idempotent)
-          del update.bat
-
-2. Check runtime-update-cache.json (24h TTL)
-   └─ Cache miss: GET /api/v1/updates/runtime-manifest → cache result
-
-3. Compare manifest.version vs RUNTIME_VERSION
-   └─ If newer:
-        GET manifest.url           → SHA-256 verify → write runtime.exe.next
-        GET manifest.keytar_url    → SHA-256 verify → write keytar.node.next
-        Write runtime-update-pending.json {version, ready, has_keytar}
-        (applied on NEXT cold start)
+server.js startupSync (app layer)
+─────────────────────────────────
+decideUpdate("conxa_runtime")  ← reuses bootstrap's manifest, no second fetch
+  └─ yes → download conxa-runtime.exe + keytar.node into conxa-runtime/<version>/
+           SHA-256 verify each → spawn new exe with --selfcheck (own CONXA_DIR)
+           exit 0 → version_manager.activate();  non-zero → abort, `current` untouched
 ```
 
-`--install-playwright` uses `playwright-core/cli` bundled inside the exe — no system npm/npx required. Playwright checks whether the exact Chromium revision from `browsers.json` is already on disk; if so, exits immediately. Only downloads (~120 MB) when the Playwright version actually bumped.
+Two properties worth keeping straight:
 
-#### How the manifest works
+- **The app-layer leg is launch-blocking, so its budget is deliberately tight** (3s manifest fetch,
+  2 retries × 5s for the ~60 KB zip) and every failure path — network, signature, download, decode —
+  is caught and swallowed. Typical added latency: well under a second with no update pending.
+- **The host leg is not launch-blocking** and keeps a generous retry-with-backoff budget, because it
+  cannot take effect until the next cold start regardless.
+- **`min_host` is enforced twice** — once when deciding whether to download an app-layer update at
+  all (so a too-new app layer is never installed on an old host), and once at load time against
+  whatever `current` points at. `runtime/test/gate_replay.js` runs in `build-runtime-app.yml` before
+  the release step, replaying a real skill against the declared `MIN_HOST` exe — a red gate there
+  usually means `MIN_HOST` is stale, not that the gate is wrong.
 
-The Cloud API exposes `GET /api/v1/updates/runtime-manifest` (public, no auth). This returns:
+`--selfcheck` exists because a matching SHA-256 only proves the download wasn't corrupted, not that
+the binary boots. `--install-playwright` (bundled `playwright-core/cli`, no system npm needed)
+remains idempotent: it exits immediately when the Chromium revision from `browsers.json` is already
+on disk, and only downloads (~120 MB) when the Playwright version actually bumped.
 
-```json
-{
-  "version": "runtime-v1.0.0",
-  "url": "https://github.com/Cannonbold2412/CONXA/releases/download/runtime-v1.0.0/runtime-win.exe",
-  "sha256": "<hex>",
-  "keytar_url": "https://github.com/Cannonbold2412/CONXA/releases/download/runtime-v1.0.0/keytar.node",
-  "keytar_sha256": "<hex>",
-  "playwright_version": "1.61.0",
-  "chromium_revision": "1228"
-}
-```
-
-`keytar_url` and `keytar_sha256` are required so the runtime can update `keytar.node` (a native module compiled against a specific Node ABI) alongside the exe. All values are driven by Render environment variables. To release a new runtime version:
-1. CI runs `build-runtime` workflow → publishes `runtime-win.exe` + `keytar.node` to GitHub Releases
-2. CI calls `POST /api/v1/updates/runtime-manifest-admin` with new version/url/sha256/keytar fields
-3. Render env vars (`CONXA_RUNTIME_VERSION`, `CONXA_RUNTIME_WIN_URL`, `CONXA_KEYTAR_WIN_URL`, etc.) update automatically
+**Deprecated shims:** `GET /api/v1/updates/conxa-runtime-manifest` and
+`GET /api/v1/updates/conxa-app-manifest` still serve, deriving from the same `component_versions` KV
+data, purely for runtimes that predate the manifest-driven updater. The older single
+`updates/runtime-manifest` endpoint is gone.
 
 #### Skill pack delta sync
 
-On every cold start the runtime also syncs skill packs:
+Skill packs are versioned per skill, not per pack — republishing one skill never re-downloads the
+others. On every cold start (skipped if synced under 5 minutes ago):
 
 ```
 runtime/sync.js                           Conxa Cloud API
 ───────────────                           ────────────────
 For each company in ~/.conxa/data/skill-packs/:
-  Read pack.json → get sync_endpoint + skill_pack_version
-  GET {sync_endpoint}?since={skill_pack_version}
+  Read pack.json → sync_endpoint
+  Read each skill's OWN version from skills/<slug>/current/version.json
+  GET {sync_endpoint}?since={JSON map of slug:version}
     Authorization: Bearer {company_token}
-                                           Returns delta:
-                                           { files: [{path, sha256, content_base64|content_url}],
-                                             current_version }
-  For each file in delta:
-    Download content (base64 inline or URL)
-    Write to .tmp
-    Verify SHA-256
-    Atomic rename to final path
-  Bump pack.json → skill_pack_version = current_version
-
-  If any file fails: restore all backups, skip this company
+                                           Returns per-skill delta:
+                                           { skills: [{name, action, version?,
+                                               files: [{path, sha256,
+                                                        content_base64|content_url}]}] }
+  Download every changed skill's files in parallel first, then per skill:
+    Write into skills/<slug>/<version>/ via atomicWrite (SHA-256 verified)
+    version_manager.activate(requiredFiles: ["manifest.json"], keep: 3)
+      → flip that skill's `current` junction, prune old versions
+    Activation failure → discard the partial version dir; that skill's `current` is untouched
+  Update pack.json.last_synced → reload the skill index
 ```
 
-**Integrity guarantee:** Every file write goes through `atomicWrite()` — write to `.tmp`, verify SHA-256, then `rename()`. If verification fails the temp file is deleted and the old backup is restored. The runtime never runs from a partially-written skill pack.
+**Integrity guarantee:** every file write goes through `atomicWrite()` — write to `.tmp`, verify
+SHA-256, then `rename()`. A failed verification deletes the temp file and leaves the previous
+version directory live. The runtime never runs from a partially-written skill pack, and a bad
+publish for one skill can never take down the others.
 
 ---
 
@@ -367,7 +394,7 @@ The manifest is fetched from `GET /api/v1/updates/deps-manifest` (public — cal
 ```
 Token                     Lives in                  Used for
 ───────────────────────   ──────────────────────    ────────────────────────────────────────
-Clerk access token        OS keyring (Python)       Cloud LLM proxy, plugin publish, billing
+Clerk access token        OS keyring (Python)       Cloud LLM proxy, skill pack publish, billing
 Clerk refresh token       OS keyring (Python)       Refreshing the access token silently
 Sync token                pack.json (per company)    Skill-pack delta sync (TRD.md §5.4) — no keychain, no refresh
 Per-company session key   OS keyring (Node/keytar)  Encrypting Playwright storageState at rest

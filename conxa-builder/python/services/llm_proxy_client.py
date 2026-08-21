@@ -14,6 +14,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable
 
+from services.machine_id import get_machine_id_hash
+
 # Minimum HTTP timeout for proxied calls (double-hop: Studio → cloud → LLM provider).
 # The per-task timeout_ms (e.g. llm_text_timeout_ms=2000) was designed for direct
 # LLM endpoints; proxied calls need a much larger budget.
@@ -99,6 +101,9 @@ class LLMProxyClient:
         req.add_header("Content-Type", "application/json")
         req.add_header("X-Conxa-Client", self._client_header)
         req.add_header("Authorization", f"Bearer {self._token_provider()}")
+        machine_hash = get_machine_id_hash()
+        if machine_hash:
+            req.add_header("X-Conxa-Machine", machine_hash)
 
         # Use a minimum 90s budget for proxied calls; the caller's timeout_ms is
         # calibrated for direct LLM endpoints, not a double-hop proxy.
@@ -123,21 +128,34 @@ class LLMProxyClient:
                 )
             if exc.code == 429:
                 raise QuotaExceeded("Monthly LLM quota reached") from exc
-            detail = ""
+            detail: Any = ""
             try:
                 error_body = json.loads(exc.read().decode("utf-8"))
-                detail = str(error_body.get("detail") or "")
+                detail = error_body.get("detail")
             except Exception:
                 detail = ""
-            if detail in {
+            detail_str = detail if isinstance(detail, str) else ""
+            if detail_str in {
                 "compile_credit_limit_exceeded",
                 "human_edit_pool_exceeded",
+                "machine_limit_exceeded",
+                "trial_expired",
                 "entitlements_unavailable",
                 "invalid_usage_class",
             }:
-                raise EntitlementBlocked(detail) from exc
+                raise EntitlementBlocked(detail_str) from exc
             if error_detail is not None:
-                error_detail.append(f"proxy HTTP {exc.code}")
+                # 502 llm_all_providers_failed carries {"message": ..., "error_detail": [...]}
+                # (llm_proxy_routes.py) — surface the provider's real failure reason instead
+                # of just the HTTP status, so a 429 doesn't look identical to every other 502.
+                if isinstance(detail, dict):
+                    message = str(detail.get("message") or "")
+                    error_detail.append(f"proxy HTTP {exc.code}: {message}" if message else f"proxy HTTP {exc.code}")
+                    nested = detail.get("error_detail")
+                    if isinstance(nested, list):
+                        error_detail.extend(str(item) for item in nested)
+                else:
+                    error_detail.append(f"proxy HTTP {exc.code}")
             return None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             # urllib wraps connect/header timeouts in URLError; Windows raises the
