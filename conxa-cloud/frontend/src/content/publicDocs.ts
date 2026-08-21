@@ -385,7 +385,281 @@ export const publicDocs = [
         ],
       },
     ],
-    relatedSlugs: ['platform', 'cloud', 'runtime', 'billing'],
+    relatedSlugs: ['platform', 'cloud', 'runtime', 'billing', 'build-studio-guide'],
+  },
+  {
+    slug: 'build-studio-guide',
+    category: 'product',
+    title: 'Build Studio: Step-By-Step Guide',
+    eyebrow: 'Product docs',
+    description:
+      'A plain-language walkthrough of installing Build Studio, recording an automation, reviewing it, and publishing it to your team, plus troubleshooting and FAQ.',
+    lastUpdated: 'August 22, 2026',
+    readingTime: '11 min read',
+    summary: [
+      'Recording, compiling, reviewing, and publishing an automation is one continuous flow inside a single group page.',
+      'Apps are connected once per group, not once per automation, and every recording starts already signed in.',
+      'Publishing prepares a release; a separate, deliberate step in Conxa Cloud is what actually sends it to your team.',
+    ],
+    sections: [
+      {
+        id: 'what-it-does',
+        title: 'What this guide covers',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'This is a practical, step-by-step companion to the Build Studio overview above. It walks through installing the app, recording a task, fixing anything that looks off, and getting it in front of your team, plus what to do when something goes wrong.',
+              'It is written for anyone using Build Studio day to day, not just engineers. Technical setup details are called out separately where they matter.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'install',
+        title: 'Installing Build Studio',
+        blocks: [
+          {
+            type: 'numbered',
+            items: [
+              'Sign up at the Conxa dashboard and download the Build Studio installer for Windows.',
+              'Run the installer. The first launch downloads a few one-time dependencies, including a bundled browser engine, which can take a few minutes on a slow connection.',
+              'Sign in when prompted. This opens your normal web browser to a secure sign-in page; Build Studio picks up the result automatically once you finish there.',
+            ],
+          },
+          {
+            type: 'callout',
+            title: 'On a locked-down network',
+            body: 'If downloads stall, the setup screen shows the exact web addresses it is trying to reach. Give those to your IT team to allow through the firewall or proxy.',
+          },
+        ],
+      },
+      {
+        id: 'connecting-apps',
+        title: "Connecting the apps you'll automate",
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              "Automations are organized into groups, like folders for a business area such as Sales or Finance. Before recording the first automation in a group, connect the apps (websites) it uses, once per group rather than once per automation.",
+            ],
+          },
+          {
+            type: 'numbered',
+            items: [
+              "Open a group and find the Applications panel.",
+              "Add an app: give it a name, its login page, and the page you land on once signed in successfully.",
+              "Click Connect next to the app. A browser window opens to its login page, sign in normally.",
+              "Once you land on the page you specified as signed in, the window closes on its own and the app shows as connected.",
+            ],
+          },
+          {
+            type: 'callout',
+            title: 'Saved logins stay local',
+            body: 'Every automation recorded in that group starts already signed in to every connected app. Saved sessions are stored locally and encrypted on your machine, and are never included in anything you publish or in any installer you build.',
+          },
+        ],
+      },
+      {
+        id: 'recording',
+        title: 'Recording an automation',
+        blocks: [
+          {
+            type: 'numbered',
+            items: [
+              'In a group, create a new automation with a name and a starting web address.',
+              'Start the recording. A browser window opens, already signed in to the group\'s connected apps.',
+              'Do the task exactly as you normally would: click, type, select menus, fill forms, switch tabs, upload files.',
+              'Close the recording window and save it once you are done.',
+            ],
+          },
+          {
+            type: 'bullets',
+            items: [
+              'Multiple tabs: opening a new tab mid-task, or switching between tabs, is captured in order and replayed the same way later.',
+              "File uploads: Build Studio remembers the file's name, not its location on your computer, so anyone running the automation later supplies their own copy.",
+              'Optional pop-ups: a cookie banner or confirm dialog you interacted with is flagged during review as a candidate to treat as optional, rather than guessed at automatically.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'compile',
+        title: 'Compiling',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'Compiling turns a saved recording into a structured automation, typically in under a minute to a few minutes depending on the length of the recording, with a progress view while it works.',
+              'A first compile uses one of your compile credits. Re-compiling an automation you have already compiled draws from a separate, smaller Human Edit pool instead. Both meters are visible at the top of the screen.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'reviewing',
+        title: 'Reviewing in Human Edit',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'After compiling, open the automation for review. This is where every step gets checked and fixed before it goes live.',
+            ],
+          },
+          {
+            type: 'bullets',
+            items: [
+              'Edit what a step does, or which input field it fills.',
+              'Reorder, insert, or delete steps.',
+              'Turn a value typed during recording into a variable the AI assistant asks for each time, instead of a fixed value.',
+              'Re-target a step pointing at the wrong element: draw a box around the correct one, review the suggested options, and confirm what should be checked afterward to know it worked.',
+            ],
+          },
+          {
+            type: 'paragraphs',
+            items: [
+              'A banner at the top honestly reports whether the whole automation looks solid or has steps that need a second look, with links straight to any flagged step. Approving the automation packages it automatically if every automation in the group is compiled and approved, with no separate build step to remember.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'testing',
+        title: 'Testing',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'Before publishing, run the automation once against the local Conxa runtime to watch it complete, or see exactly where it fails, before your team relies on it.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'publishing',
+        title: 'Publishing and releasing',
+        blocks: [
+          {
+            type: 'numbered',
+            items: [
+              'Open Publish Skill Package and pick the automation being released.',
+              'Review the plain-language summary of what is changing compared to the last published version.',
+              'Enter a version number and short release notes, then publish.',
+            ],
+          },
+          {
+            type: 'callout',
+            title: 'Publishing is not the same as releasing',
+            body: 'Publishing prepares an immutable, versioned release. Making it actually go live to your team is a separate, deliberate action taken by an admin in the Conxa Cloud dashboard, so a publish never quietly reaches everyone without a second confirmation. Once released, everyone\'s installed runtime picks up the update automatically, typically within a minute, with nothing to reinstall.',
+          },
+        ],
+      },
+      {
+        id: 'installer',
+        title: 'Building an installer',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'Most routine updates never need this: publishing is enough for anyone who already has Conxa installed. Building an installer is only needed to distribute Conxa to a machine for the first time, and requires that at least one automation has already been published.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'troubleshooting',
+        title: 'Troubleshooting',
+        blocks: [
+          {
+            type: 'table',
+            columns: ['Problem', 'What to do'],
+            rows: [
+              [
+                'Setup or a download got stuck.',
+                'Re-launch Build Studio; setup resumes and skips anything already installed. On a corporate network, allow the addresses shown on the setup screen through your firewall.',
+              ],
+              [
+                'Signed in, but the app did not notice.',
+                'The sign-in window can take a few minutes to time out. Close and reopen Build Studio, then try Sign In again.',
+              ],
+              [
+                'An app shows as expired or not connected, but you are logged in on the website itself.',
+                "Build Studio keeps its own saved login separate from your regular browser. Reconnect (or Connect) that app's row and sign in inside the window it opens.",
+              ],
+              [
+                'Recording will not start.',
+                'Recording is blocked until every app the automation needs is connected in that group. Check the Applications panel for anything still needing sign-in.',
+              ],
+              [
+                'A step keeps failing when testing.',
+                "Open the step's reliability details in review; it usually shows the recorded element could not be found the same way anymore. Re-target it by drawing a box around the correct element, then re-test.",
+              ],
+              [
+                'Out of compile credits or Human Edit uses.',
+                'Check the usage meters at the top of the screen for what is left and when they reset. Editing steps directly does not use quota; only AI-assisted actions like re-generating a selector do.',
+              ],
+              [
+                'Publish failed.',
+                'Build Studio states plainly what did not upload and why, and nothing partial is marked as published. Fix the issue shown and publish again; it is safe to retry.',
+              ],
+              [
+                'Installer build says a skill pack has not been published yet.',
+                'Publish an automation first; the installer packages an already-published release rather than creating one.',
+              ],
+            ],
+          },
+        ],
+      },
+      {
+        id: 'faq-access',
+        title: 'Does Build Studio need special access to the websites I automate?',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'No. It works the same way a person does, by opening a real browser and interacting with the page. There is nothing to configure on the target website itself.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'faq-logins',
+        title: 'Where do the recorded logins get stored?',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              "Locally on your computer, encrypted. They are never uploaded, published, or included in anything distributed to customers or teammates.",
+            ],
+          },
+        ],
+      },
+      {
+        id: 'faq-redesign',
+        title: 'What happens if the website changes after I publish an automation?',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'Small changes, like a moved button or a renamed label, are adapted to automatically. A bigger redesign may need a human to look at it again; that is flagged the same way a failed run is, rather than failing silently and repeatedly.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'faq-rollback',
+        title: 'I released a bad version, can I undo it?',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              "Yes. From that automation's release history in the Conxa Cloud dashboard, an admin can roll back to any previously released version with no rebuild needed, and it only affects that one automation.",
+            ],
+          },
+        ],
+      },
+    ],
+    relatedSlugs: ['build-studio', 'platform', 'runtime', 'support'],
   },
   {
     slug: 'cloud',
@@ -1667,7 +1941,7 @@ export const publicDocCategories = [
     title: 'Product docs',
     description:
       'How Conxa supports Claude Desktop automation, where work happens, and how packages reach installed runtimes.',
-    slugs: ['platform', 'claude-automation', 'build-studio', 'cloud', 'runtime'],
+    slugs: ['platform', 'claude-automation', 'build-studio', 'build-studio-guide', 'cloud', 'runtime'],
   },
   {
     id: 'trust',
