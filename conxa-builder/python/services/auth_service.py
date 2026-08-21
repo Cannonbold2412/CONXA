@@ -414,7 +414,11 @@ class AuthService:
                 refresh = tokens.get("refresh_token")
                 if not refresh:
                     raise RuntimeError("session_expired")
+                old_userinfo = tokens.get("userinfo") or {}
                 tokens = self._refresh(refresh)
+                # _refresh() doesn't return userinfo — carry the cached profile
+                # forward, or retry fetching it if a prior fetch never succeeded.
+                tokens["userinfo"] = old_userinfo or self._fetch_userinfo_with_retry(tokens["access_token"])
                 self._save(tokens)
             return tokens["access_token"]
 
