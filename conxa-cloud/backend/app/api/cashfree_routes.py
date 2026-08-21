@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 from app.api.deps import current_principal
-from app.services.entitlements import PLAN_LIMITS
+from app.services.entitlements import ADDON_TIERS, PLAN_LIMITS
 from app.services.rbac import require_admin
 from app.services.saas import Principal, upsert_billing
 
@@ -124,14 +124,22 @@ TIER_INFO = {
         "period": "monthly",
         "features": _plan_features("enterprise"),
     },
-    "credits_addon_25": {
-        "name": "+25 compile credits",
-        "amount": 4_999,  # INR/month, stacks on Starter or Pro
-        "currency": "INR",
-        "period": "monthly",
-        "features": ["+25 compile credits/month, stacks with Starter or Pro"],
-    },
 }
+# Compile add-on packs stack on Starter or Pro (catalog + limits math live in
+# entitlements.ADDON_TIERS; ₹3,999 for +20 compiles + 200k Human Edit tokens,
+# larger packs priced proportionally).
+for _addon_tier, _addon in ADDON_TIERS.items():
+    TIER_INFO[_addon_tier] = {
+        "name": f"+{_addon['compile_credits']} compiles",
+        "amount": _addon["amount"],
+        "currency": _addon["currency"],
+        "period": "monthly",
+        "features": [
+            f"+{_addon['compile_credits']} compile credits/month",
+            f"+{_addon['human_edit_tokens']:,} Human Edit tokens/month",
+            "Stacks with Starter or Pro",
+        ],
+    }
 
 
 def _normalize_tier(tier: str) -> str:
@@ -165,18 +173,34 @@ def _configured_plan_id(tier: str) -> str:
         return settings.cashfree_starter_plan_id.strip()
     if tier == "pro":
         return settings.cashfree_pro_plan_id.strip()
-    if tier == "credits_addon_25":
-        return settings.cashfree_addon_plan_id.strip()
-    return ""
+    addon_fields = {
+        "credits_addon_20": settings.cashfree_addon_20_plan_id,
+        "credits_addon_50": settings.cashfree_addon_50_plan_id,
+        "credits_addon_100": settings.cashfree_addon_100_plan_id,
+        "credits_addon_250": settings.cashfree_addon_250_plan_id,
+    }
+    return str(addon_fields.get(tier, "") or "").strip()
 
 
-def _bump_addon_packs(workspace_id: str, delta: int) -> None:
-    """+1 on addon activation, -1 (floored at 0) on addon cancellation. Reads
-    current count via upsert_billing's own read-then-merge rather than adding a
-    second billing-read path — an empty patch returns the record unchanged."""
+def _bump_addon_packs(workspace_id: str, tier: str, delta: int) -> None:
+    """+1 on add-on activation, -1 (floored at 0) on cancellation, per pack
+    tier. Reads current state via upsert_billing's own read-then-merge rather
+    than adding a second billing-read path — an empty patch returns the record
+    unchanged."""
     current = upsert_billing(workspace_id, {})
-    packs = max(0, int(current.get("addon_compile_packs") or 0) + delta)
-    upsert_billing(workspace_id, {"addon_compile_packs": packs})
+    addons = dict(current.get("addons") or {})
+    addons[tier] = max(0, int(addons.get(tier) or 0) + delta)
+    upsert_billing(workspace_id, {"addons": addons})
+
+
+def _record_addon_subscription(workspace_id: str, tier: str, subscription_id: str) -> None:
+    """Remember which Cashfree mandate backs a given add-on tier so the Billing
+    page can cancel it later. One entry per tier — re-buying an already-active
+    tier replaces the remembered id with the newer mandate."""
+    current = upsert_billing(workspace_id, {})
+    subs = dict(current.get("addon_subscriptions") or {})
+    subs[tier] = subscription_id
+    upsert_billing(workspace_id, {"addon_subscriptions": subs})
 
 
 def _plan_store_path() -> Path:
@@ -217,7 +241,10 @@ def _tier_for_plan_id(plan_id: str) -> str | None:
     configured = {
         "starter": settings.cashfree_starter_plan_id.strip(),
         "pro": settings.cashfree_pro_plan_id.strip(),
-        "credits_addon_25": settings.cashfree_addon_plan_id.strip(),
+        "credits_addon_20": settings.cashfree_addon_20_plan_id.strip(),
+        "credits_addon_50": settings.cashfree_addon_50_plan_id.strip(),
+        "credits_addon_100": settings.cashfree_addon_100_plan_id.strip(),
+        "credits_addon_250": settings.cashfree_addon_250_plan_id.strip(),
     }
     for tier, configured_plan_id in configured.items():
         if configured_plan_id and plan_id == configured_plan_id:
@@ -328,8 +355,9 @@ async def create_subscription(
     """Create a Cashfree subscription for a tier. Returns subscription_id and auth_link."""
     require_admin(principal)
     tier = _normalize_tier(body.get("tier", ""))
-    if tier not in ["starter", "pro", "credits_addon_25"]:
-        raise HTTPException(status_code=400, detail="tier must be 'starter', 'pro', or 'credits_addon_25'")
+    allowed = ["starter", "pro", *ADDON_TIERS]
+    if tier not in allowed:
+        raise HTTPException(status_code=400, detail="tier must be 'starter', 'pro', or an add-on tier")
     try:
         plan_id = _ensure_plan(tier)
         info = TIER_INFO[tier]
@@ -413,10 +441,11 @@ async def verify_subscription(
         tier = _tier_for_plan_id(plan_id)
         if not tier or tier == "free":
             raise HTTPException(status_code=400, detail="unknown_plan")
-        if tier == "credits_addon_25":
+        if tier in ADDON_TIERS:
             # Stacks on top of whatever plan is already active — never touches
             # plan/status/current_period_end, which belong to the base subscription.
-            _bump_addon_packs(principal.workspace_id, 1)
+            _bump_addon_packs(principal.workspace_id, tier, 1)
+            _record_addon_subscription(principal.workspace_id, tier, subscription_id)
         else:
             upsert_billing(principal.workspace_id, {
                 "plan": tier,
@@ -435,6 +464,63 @@ async def verify_subscription(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"verify_error: {_exception_detail(exc)}") from exc
+
+
+@router.get("/addons")
+def list_addons() -> dict[str, Any]:
+    """Public add-on catalog for the Billing page. Add-ons are checkout items,
+    deliberately excluded from /plans — this is their dedicated read side."""
+    return {
+        "addons": [
+            {"tier": tier, **TIER_INFO[tier], **ADDON_TIERS[tier]}
+            for tier in sorted(ADDON_TIERS, key=lambda t: ADDON_TIERS[t]["compile_credits"])
+        ]
+    }
+
+
+@router.post("/addon/cancel")
+def cancel_addon_subscription(
+    body: dict[str, str],
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Cancel one compile add-on pack's mandate at Cashfree. Body: {tier} —
+    e.g. credits_addon_20. The pack count is decremented by the webhook handler
+    when Cashfree confirms cancellation; this endpoint never touches the
+    addons map itself, so a webhook replay can't double-decrement."""
+    require_admin(principal)
+    tier = _normalize_tier(body.get("tier", ""))
+    if tier not in ADDON_TIERS:
+        raise HTTPException(status_code=400, detail="unknown_addon_tier")
+    billing = upsert_billing(principal.workspace_id, {})
+    subscription_id = str((billing.get("addon_subscriptions") or {}).get(tier) or "")
+    packs = int((billing.get("addons") or {}).get(tier) or 0)
+    if not packs or not subscription_id:
+        raise HTTPException(status_code=400, detail="no_active_addon")
+    try:
+        resp = _cf_request("POST", f"/api/v2/subscriptions/{subscription_id}/cancel")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"cashfree_addon_cancel_failed: {_exception_detail(exc)}",
+        ) from exc
+    if resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=502,
+            detail=f"cashfree_addon_cancel_failed: {resp.text}",
+        )
+    # Forget the mandate immediately so a second cancel can't hit it again;
+    # the webhook owns the pack decrement.
+    current = upsert_billing(principal.workspace_id, {})
+    subs = dict(current.get("addon_subscriptions") or {})
+    subs.pop(tier, None)
+    upsert_billing(principal.workspace_id, {"addon_subscriptions": subs})
+    logger.info(
+        "cashfree_addon_cancel_requested workspace_id=%s tier=%s subscription_id=%s",
+        principal.workspace_id,
+        tier,
+        subscription_id,
+    )
+    return {"cancelled": True, "tier": tier, "subscription_id": subscription_id}
 
 
 def _cf_webhook_signature(payload: dict[str, Any], secret: str) -> str:
@@ -478,8 +564,9 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
         ):
             try:
                 tier = _tier_for_plan_id(plan_id) or _normalize_tier(mapping.get("tier", ""))
-                if tier == "credits_addon_25":
-                    _bump_addon_packs(workspace_id, 1)
+                if tier in ADDON_TIERS:
+                    _bump_addon_packs(workspace_id, tier, 1)
+                    _record_addon_subscription(workspace_id, tier, sub_reference_id)
                 elif tier and tier != "free":
                     upsert_billing(
                         workspace_id,
@@ -502,10 +589,11 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
         if workspace_id:
             try:
                 cancelled_tier = _tier_for_plan_id(plan_id) or _normalize_tier(mapping.get("tier", ""))
-                if cancelled_tier == "credits_addon_25":
-                    # An add-on pack expiring only removes that pack's 25 credits —
-                    # the base plan and its own subscription are untouched.
-                    _bump_addon_packs(workspace_id, -1)
+                if cancelled_tier in ADDON_TIERS:
+                    # An add-on pack expiring only removes that pack's credits and
+                    # Human Edit tokens — the base plan and its own subscription
+                    # are untouched.
+                    _bump_addon_packs(workspace_id, cancelled_tier, -1)
                 else:
                     upsert_billing(
                         workspace_id,

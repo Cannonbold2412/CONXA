@@ -105,6 +105,43 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Compile add-on packs (2026-08-22): purchasable checkout items, not plans.
+# Each pack stacks +compile_credits AND +human_edit_tokens on top of the
+# workspace's plan for as long as its Cashfree subscription is active —
+# priced proportionally off the 20-compile anchor (₹3,999 / 200k tokens,
+# rounded down to ₹…,999 charm points). Stored on billing as
+# ``{"addons": {tier: active_pack_count}}``; see cashfree_routes._bump_addon_packs.
+ADDON_TIERS: dict[str, dict[str, Any]] = {
+    "credits_addon_20": {
+        "name": "+20 compiles",
+        "amount": 3_999,
+        "currency": "INR",
+        "compile_credits": 20,
+        "human_edit_tokens": 200_000,
+    },
+    "credits_addon_50": {
+        "name": "+50 compiles",
+        "amount": 9_999,
+        "currency": "INR",
+        "compile_credits": 50,
+        "human_edit_tokens": 500_000,
+    },
+    "credits_addon_100": {
+        "name": "+100 compiles",
+        "amount": 19_999,
+        "currency": "INR",
+        "compile_credits": 100,
+        "human_edit_tokens": 1_000_000,
+    },
+    "credits_addon_250": {
+        "name": "+250 compiles",
+        "amount": 49_999,
+        "currency": "INR",
+        "compile_credits": 250,
+        "human_edit_tokens": 2_500_000,
+    },
+}
+
 _lock = threading.RLock()
 
 
@@ -285,13 +322,20 @@ def _limits_from_billing(billing: dict[str, Any]) -> dict[str, Any]:
         raw_value = overrides.get("trial_days")
         limits["trial_days"] = None if raw_value in (None, "") else max(0, int(raw_value))
 
-    # Credit add-on packs (+25 compile credits/mo each) stack on top of the
-    # plan's base compile_credits — stored directly on billing, not inside
+    # Compile add-on packs stack on top of the plan's base compile_credits and
+    # human_edit_tokens — stored directly on billing, not inside
     # entitlement_overrides, since Cashfree activates/cancels them independently
     # of the base subscription (see cashfree_routes._bump_addon_packs).
-    addon_packs = int(billing.get("addon_compile_packs") or 0)
-    if addon_packs and limits["compile_credits"] is not None:
-        limits["compile_credits"] = int(limits["compile_credits"]) + 25 * addon_packs
+    addons = billing.get("addons") or {}
+    for addon_tier, packs in addons.items():
+        info = ADDON_TIERS.get(str(addon_tier))
+        count = int(packs or 0)
+        if not info or not count:
+            continue
+        if limits["compile_credits"] is not None:
+            limits["compile_credits"] = int(limits["compile_credits"]) + info["compile_credits"] * count
+        if limits["human_edit_tokens"] is not None:
+            limits["human_edit_tokens"] = int(limits["human_edit_tokens"]) + info["human_edit_tokens"] * count
 
     return limits
 
@@ -613,6 +657,10 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
         "reset_at": reset_at,
         "trial_ends_at": trial_ends_at(billing),
         "trial_expired": trial_expired(billing),
+        "addons": {
+            tier: int((billing.get("addons") or {}).get(tier) or 0)
+            for tier in ADDON_TIERS
+        },
         "meters": {
             "seats": _meter(
                 _clerk_org_member_count(principal) or membership_count_for(workspace_id),

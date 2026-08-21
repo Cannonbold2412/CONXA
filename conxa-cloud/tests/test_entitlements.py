@@ -411,16 +411,26 @@ def test_ops_tier_gates_dashboard_and_drift_by_plan(monkeypatch, tmp_path):
     assert pro_drift.status_code == 200, pro_drift.text
 
 
-def test_addon_compile_packs_stack_on_top_of_plan_credits(monkeypatch, tmp_path):
+def test_addon_packs_stack_credits_and_human_edit_tokens(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
     _set_plan("starter")  # 200 compile credits/mo base
 
-    upsert_billing("wrk_local", {"addon_compile_packs": 2})
+    upsert_billing("wrk_local", {"addons": {"credits_addon_20": 2, "credits_addon_50": 1}})
     entitlements = client.get("/api/v1/entitlements/current")
 
     assert entitlements.status_code == 200, entitlements.text
-    assert entitlements.json()["meters"]["compile_credits"]["limit"] == 250  # 200 + 2*25
+    body = entitlements.json()
+    # 200 base + (2 * 20) + 50
+    assert body["meters"]["compile_credits"]["limit"] == 290
+    # starter base + (2 * 200k) + 500k
+    assert body["meters"]["human_edit_tokens"]["limit"] > 0
+    assert body["addons"] == {
+        "credits_addon_20": 2,
+        "credits_addon_50": 1,
+        "credits_addon_100": 0,
+        "credits_addon_250": 0,
+    }
 
 
 def test_development_plan_is_unlimited(monkeypatch, tmp_path):
