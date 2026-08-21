@@ -944,6 +944,8 @@ For a brand-new skill (no previous publish), `previous_version` is `null` and th
 - `skill_versions: {company: {skill_slug: version}}`, populated by `runtime/installed_versions.js` off the same `current` junction / `version.json` §5.9/§8 already describe. Omitted entirely by a runtime that hasn't self-updated to report it yet — its registrations just read as `unknown` above rather than a fabricated `up_to_date`. Sticky: an omission never overwrites a previously-reported value (an older runtime that stops sending it doesn't regress an already-known state to `unknown`).
 - `sync_errors: {company: {skill_slug: {code, at}}}`, populated by `runtime/sync_errors.js` off `pack.json.last_sync_errors` — the per-skill failures `runtime/sync.js` records on a checksum mismatch, download failure, or activation failure, and clears the moment that skill next activates successfully. **Not sticky**: always overwritten in full on every phone-home, since an empty `{}` is itself a real signal ("nothing failed this round"), unlike `skill_versions`.
 
+**Machine Registry fields (added 2026-08-22)** — `hostname`, `username`, `os_release`, `os_arch` (strings, from Node's `os` module) and `capabilities` (`{max_recovery_tier, update_channel}`, feature flags only — not a tool list). All five are optional and sticky like `skill_versions`. `username` is the local OS account running the agent — there is no Clerk/end-user identity on an installed runtime, so this is the only available "who" signal. See §5.9a for the fleet-visibility read/revoke API these back.
+
 **KV namespaces (re-keyed 2026-08-19 to include `skill_slug`):** `skillpack_release_files__{slug}__{skill_slug}__{version}`, `skillpack_channels` (composite row key `"{slug}:{skill_slug}"`), `skillpack_release_events__{slug}__{skill_slug}`, `skillpack_known_skills` (composite row key `"{slug}:{skill_slug}"`, publish-time index, see above) — see §7.
 
 ### 5.1b Installer Upload + History (installer becomes a secondary, advanced artifact)
@@ -1002,6 +1004,7 @@ Response:
   "reset_at": "2026-06-29T00:00:00Z",
   "trial_ends_at": null,
   "trial_expired": false,
+  "addons": {"credits_addon_20": 0, "credits_addon_50": 1, "credits_addon_100": 0, "credits_addon_250": 0},
   "meters": {
     "seats": {"used": 2, "limit": 3, "remaining": 1, "unlimited": false},
     "machines": {"used": 1, "limit": 3, "remaining": 2, "unlimited": false},
@@ -1031,9 +1034,13 @@ Response:
 
 For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`). `trial_ends_at`/`trial_expired` are non-null only for the `free` plan.
 
+**Added 2026-08-22 — `addons`.** Per-tier counts of active compile-credit add-on packs from the billing record (`{tier: count}` for every tier in `entitlements.ADDON_TIERS`, zeros included), surfaced so the Billing page can show add-on state without inferring it from the bumped meter limits. Supersedes the earlier single-scalar `addon_compile_packs` field from the same day.
+
 **GET /api/v1/entitlements/machines** (owner/admin) — registered build devices, `[{machine_hash, last_ip, first_seen, last_seen, revoked?}]`, newest `last_seen` first. Includes revoked devices for history.
 
 **POST /api/v1/entitlements/machines/revoke** (owner/admin) — `{machine_hash}` → frees that slot; the same hash re-registers as a brand-new device on its next call, re-entering through the limit check.
+
+Dashboard: the "Build Studio Devices" card on `conxa-cloud/frontend/src/SettingsPage.tsx` (added 2026-08-22, closing the frontend gap tracked as `TODO.md` CLOUD-6) — these two routes were the whole backend for it already.
 
 **POST /api/v1/usage/compile/reserve**
 
@@ -1109,7 +1116,7 @@ Request:
 {"tier": "starter", "customer_email": "...", "customer_phone": "..."}
 ```
 
-`tier` accepts `starter`, `pro`, or `credits_addon_25` (the compile-credit add-on — `enterprise` is
+`tier` accepts `starter`, `pro`, or one of the compile-credit add-on tiers (see below — `enterprise` is
 sales-assisted, never self-serve checkout). Calls Cashfree's
 `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns:
 ```json
@@ -1125,14 +1132,36 @@ sales-assisted, never self-serve checkout). Calls Cashfree's
 
 The workspace↔subscription↔tier mapping is stored server-side in the `cashfree_sub_workspace` KV namespace (keyed by `subReferenceId`) for later webhook lookup, since Cashfree webhooks only carry the subscription reference id, not the originating workspace. The frontend redirects the user to `auth_link` to complete payment.
 
-**Credit add-on** (`tier: "credits_addon_25"`, ₹4,999/mo, stacks on Starter or Pro): activation and
-cancellation branch separately from the base-plan path in both `/verify` and the webhook handler —
-`_bump_addon_packs` increments/decrements `addon_compile_packs` on the billing record without ever
-touching `plan`/`status`/`current_period_end`, which belong to the base subscription. Cancelling an
-add-on pack removes only that pack's 25 credits; cancelling the base subscription resets `plan` to
-`free` as before and leaves any add-on packs' billing untouched (their own subscriptions cancel
-independently). `entitlements._limits_from_billing` adds `25 * addon_compile_packs` to
-`compile_credits` whenever the base limit isn't already `None` (unlimited).
+**Compile credit add-ons** (rewritten 2026-08-22 — four self-serve SKUs, each a monthly Cashfree
+subscription stacking on Starter or Pro; catalog in `entitlements.ADDON_TIERS`):
+
+| tier | price | grants per month |
+|---|---|---|
+| `credits_addon_20` | ₹3,999/mo | +20 compile credits + 200k Human Edit tokens |
+| `credits_addon_50` | ₹9,999/mo | +50 compile credits + 500k Human Edit tokens |
+| `credits_addon_100` | ₹19,999/mo | +100 compile credits + 1M Human Edit tokens |
+| `credits_addon_250` | ₹49,999/mo | +250 compile credits + 2.5M Human Edit tokens |
+
+(The original single `credits_addon_25` pack at ₹4,999/mo was retired in favour of this ladder.)
+Activation and cancellation branch separately from the base-plan path in both `/verify` and the
+webhook handler — `_bump_addon_packs` increments/decrements the per-tier counts in
+`billing["addons"]` without ever touching `plan`/`status`/`current_period_end`, which belong to the
+base subscription. Cancelling an add-on removes only that pack's credits/tokens; cancelling the base
+subscription resets `plan` to `free` as before and leaves add-on packs' billing untouched (their own
+subscriptions cancel independently). `entitlements._limits_from_billing` adds each active pack's
+`compile_credits`/`human_edit_tokens` grant on top of the plan limits whenever the base limit isn't
+already `None` (unlimited). Per-tier mandate ids are kept in `billing["addon_subscriptions"]`
+(written by both `/verify` and the webhook activation branch) so the Billing page can cancel a
+specific pack. The catalog is also served read-only at **GET /api/v1/subscriptions/addons**.
+
+**POST /api/v1/subscriptions/addon/cancel** (owner/admin, added 2026-08-22)
+
+Request: `{"tier": "credits_addon_20"}`. Cancels that compile-credit add-on pack's mandate
+server-side via Cashfree's `POST /api/v2/subscriptions/{subscription_id}/cancel`, using the id
+recorded under `addon_subscriptions[tier]`. Returns `{"cancelled": true, "tier": "...",
+"subscription_id": "..."}`; errors with `unknown_addon_tier` (400) or `no_active_addon` (400)
+when nothing is active. The endpoint never touches the `addons` map itself — the decrement
+happens in the webhook cancellation branch, so a webhook replay can't double-decrement.
 
 **POST /api/v1/subscriptions/verify**
 
@@ -1392,6 +1421,14 @@ mechanism was removed the same day — see §5.1c and `docs/TRD.md` §13.4.
 
 **KV namespace:** `sync_tokens` — keyed by slug, stores `{token, company, version, workspace_id, owner_user_id, updated_at}`.
 
+### 5.9a Company Agent Fleet — Read + Revoke (Machine Registry)
+
+**GET /api/v1/telemetry/runtimes?limit=100&offset=0** (authenticated, workspace-scoped) — paginated `runtime_registrations` for the caller's workspace. `limit` clamps to 1–500 (default 100), `offset` clamps to ≥0. `stale_count`/`version_distribution` are computed over the **full** filtered set (not just the returned page) so they never undercount past page one. Each row gets a computed `status` (`revoked` | `active` | `stale`) alongside the existing `stale` bool. Response adds `total`, `limit`, `offset` to the pre-existing `registrations`/`stale_count`/`version_distribution` shape. Pagination is an in-process slice over `db_list` — not a DB-level query — a deliberate simplification good to roughly 10k rows per workspace; revisit if that changes.
+
+**POST /api/v1/telemetry/runtimes/revoke** (owner/admin) — `{install_id}` → sets `revoked: true` on every `runtime_registrations` row for that `install_id` within the caller's workspace. **This is a dashboard label only** — unlike CBS's `machine_limit_exceeded` enforcement (§5.3/§13.4a), Company Agent carries no machine limit and revoke never touches `_delta_impl` (skill sync), `post_telemetry_runtime_start` (phone-home), or execution. There is no un-revoke endpoint; a reinstall generates a fresh `install_id` (`runtime/install_identity.js`) that registers clean.
+
+Dashboard: `conxa-cloud/frontend/src/FleetPage.tsx` (route `/fleet`) — search/filter table over these registrations, styled to match the CBS device list (`SettingsPage.tsx`) and the per-skill Deployment panel (`DeploymentPanel.tsx`).
+
 ### 5.10 Backend JSON-RPC Protocol (Build Studio)
 
 **Protocol:** Newline-delimited JSON over stdin/stdout.
@@ -1616,7 +1653,7 @@ erDiagram
 | `tracking/{company}` | `{run_id}` | `[event_batch, ...]` | Runtime, Cloud dashboard |
 | `runs` | `{workflow_id}` | `[run_record, ...]` | Cloud, Build Studio |
 | `selector_cache` | `{dom_hash}:{bbox}:{model}` | Selector candidates | Compiler |
-| `runtime_registrations` | `{company}:{install_id or platform}` | `{company, install_id, platform, runtime_version, workspace_id, last_seen, first_seen, skill_versions?, sync_errors?}` | 2.1 device registration. `skill_versions` (`{skill_slug: installed_version}`) is optional and sticky (an omission never wipes a prior value), added for §5.1d's Deployment view. `sync_errors` (`{skill_slug: {code, at}}`) is optional and **not** sticky — always overwritten in full each phone-home — and is what lets Deployment show a real `failed` status |
+| `runtime_registrations` | `{company}:{install_id or platform}` | `{company, install_id, platform, runtime_version, workspace_id, last_seen, first_seen, revoked, skill_versions?, sync_errors?, hostname?, username?, os_release?, os_arch?, capabilities?}` | 2.1 device registration. `skill_versions` (`{skill_slug: installed_version}`) is optional and sticky (an omission never wipes a prior value), added for §5.1d's Deployment view. `sync_errors` (`{skill_slug: {code, at}}`) is optional and **not** sticky — always overwritten in full each phone-home — and is what lets Deployment show a real `failed` status. `hostname`/`username`/`os_release`/`os_arch`/`capabilities` (Machine Registry, added 2026-08-22) are optional and sticky like `skill_versions` — an older runtime that hasn't self-updated just omits them without wiping a newer value. `capabilities` is a small feature-flags object (`max_recovery_tier`, `update_channel`), not a tool list. `revoked` is admin-only (`POST /telemetry/runtimes/revoke`, §5.9a) — the runtime itself never sends it, and it never affects sync/telemetry/execution, only what the Fleet dashboard shows |
 | `audit_log` | `{workspace_id}` | `[{id, user_id, action, resource_type, resource_id, metadata, created_at, ip}, ...]` | 2.3 audit trail |
 | `rate_limits` | `{sha256(token)[:16]}` | `{last_ts}` | Skill-pack sync rate limiter — persisted so the 5-min window survives restarts and is shared across instances (1.5). In-memory dict fallback when no database is configured |
 | `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |

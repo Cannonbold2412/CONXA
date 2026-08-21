@@ -238,6 +238,7 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
 | `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, workflow create/delete) — `ops_tier` "basic"+; export is a documented follow-up, not yet a separate endpoint | Clerk JWT |
 | `POST /api/v1/subscriptions/create` | Create Cashfree subscription (`subscription_id`, `auth_link`, `plan_id`) | Clerk JWT |
+| `POST /api/v1/subscriptions/addon/cancel` | Cancel the compile-credit add-on mandate at Cashfree; webhook decrements packs | Clerk JWT, owner/admin |
 | `POST /api/v1/subscriptions/webhooks/cashfree` | Cashfree webhook | Webhook secret HMAC over sorted `cf_`-prefixed fields |
 | `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
 | `GET /api/v1/workflows` | Workflow list + skill pack status | Clerk JWT |
@@ -1968,6 +1969,37 @@ uploaded) is plan-gated in Build Studio itself: `handlers/workflows.py::cmd_buil
 fails — fail-safe defaults to no icon). This is distinct from `ensure_white_label_allowed`
 (`white_label`), which stays Enterprise-only for whatever else custom branding covers — see
 `docs/PRD.md` §11.
+
+### 13.4b Company Agent Fleet (Machine Registry, unlimited — added 2026-08-22)
+
+Deliberately the opposite control from §13.4a: **no limit, ever.** Company Agent (the customer-facing
+runtime, `runtime/`) registers every install with the cloud purely for fleet visibility, security, and
+support triage — never for billing or a slot count. This distinction is load-bearing: registration code
+for this path must never call `ensure_machine_slot`/read `PLAN_LIMITS["machines"]` — that meter is
+CBS-only (§13.4a).
+
+- `runtime/server.js::_phonehome()` already posted `install_id`, `platform`, `runtime_version`, and the
+  workspace_id(s) served by this install to `POST /api/v1/telemetry/runtime-start` on every startup
+  (§5.1a's Deployment view predates this). It now also sends `hostname`, `username` (the local OS
+  account — there's no Clerk/end-user identity on an installed runtime, so this is the only "who"
+  signal available), `os_release`, `os_arch` (all via Node's stdlib `os` module, no new dependency), and
+  a small `capabilities` object (`max_recovery_tier` from the same `CONXA_MAX_RECOVERY_TIER` ceiling
+  `recovery.js`/`server.js` already read — Studio=2, MCP=4, see `docs/App-Flow.md`'s recovery cascade —
+  and `update_channel` from the same `CONXA_UPDATE_CHANNEL` the self-updater already reads). All five
+  are optional and sticky (an omission never wipes a previously-reported value), matching the existing
+  `skill_versions` pattern.
+- `GET /api/v1/telemetry/runtimes` (authenticated, workspace-scoped) gained `limit`/`offset` pagination
+  (clamped 1–500 / ≥0) so a 1,000+-machine enterprise fleet doesn't come back as one unbounded response;
+  `stale_count`/`version_distribution` are still computed over the full filtered set, not just the
+  returned page — an in-process slice, not a DB-level query, good to roughly 10k rows per workspace.
+- `POST /api/v1/telemetry/runtimes/revoke` (owner/admin, new) sets `revoked: true` on a `runtime_registrations`
+  row by `install_id`. This is a dashboard label only — it never touches `_delta_impl` (skill sync),
+  `post_telemetry_runtime_start` (phone-home), or execution, matching this section's own rule that the
+  cloud never enforces on the running side. There is no un-revoke; a reinstall generates a fresh
+  `install_id` and registers clean.
+- Dashboard: `conxa-cloud/frontend/src/FleetPage.tsx` (route `/fleet`) — search/filter table with a
+  computed `status` (`active`/`stale`/`revoked`) per row, styled after the existing per-skill
+  `DeploymentPanel.tsx`. See `docs/Backend-Schema.md` §5.9a for the full API contract.
 
 ### 13.5 Enterprise BYOK (Azure OpenAI)
 

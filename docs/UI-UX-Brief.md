@@ -540,7 +540,8 @@ with a muted dash instead of a cyan tick — a tick beside a negative statement 
 
 **UX issues:**
 - No invoice history.
-- **Not yet built (2026-08-08):** a trial countdown banner (backend already exposes `trial_ends_at`/`trial_expired` on `GET /entitlements/current` — nothing in this page consumes them yet), a purchase/cancel control for the compile-credit add-on (`credits_addon_25`, backend supports it end-to-end via `/subscriptions/create`), and a device list + revoke control for the `machines` meter (backend: `GET/POST /entitlements/machines[/revoke]`). Tracked in `TODO.md`.
+- **Compile Credit Add-Ons panel (shipped 2026-08-22, four-SKU ladder same day):** a card between the usage meters and the plan grid lists every add-on from `GET /subscriptions/addons` — ₹3,999/+20 compiles+200k tokens, ₹9,999/+50+500k, ₹19,999/+100+1M, ₹49,999/+250+2.5M (Human Edit tokens ride along at ~10k per compile). Each row shows its active-pack badge (`addons` on `GET /entitlements/current`), a Buy button running the standard Cashfree checkout flow (`POST /subscriptions/create` with that tier), and a Cancel button (`POST /subscriptions/addon/cancel` with `{tier}`) that cancels the mandate at Cashfree; the webhook then decrements the pack count.
+- **Free-trial banner (shipped 2026-08-22):** a global banner under the dashboard topbar (not page-local) consumes `trial_ends_at`/`trial_expired` from `GET /entitlements/current`. Amber countdown with days remaining while the free trial runs, red expiry notice once `trial_expired` is set; both deep-link to `/billing`. Hidden for paid plans.
 
 ---
 
@@ -560,10 +561,7 @@ with a muted dash instead of a cyan tick — a tick beside a negative statement 
 **User goal:** Confirm they are in the right workspace and quickly reach the admin areas that change company state.
 **Status:** Implemented as a read-oriented settings page backed by `/me`; real mutations remain in Team, Billing, and Audit instead of being implied by inactive settings controls.
 
-**Not yet built (2026-08-08):** an Enterprise BYOK panel for configuring the workspace's own Azure
-OpenAI deployment. The backend is complete and independently usable
-(`PUT/GET/DELETE /api/v1/workspace/llm-key`, `docs/TRD.md` §13.5) — this page just doesn't surface it
-yet. Tracked in `TODO.md`.
+**Bring Your Own LLM Key panel (shipped 2026-08-22):** a card at the bottom of the page surfaces the Enterprise BYOK configuration (`PUT/GET/DELETE /api/v1/workspace/llm-key`, `docs/TRD.md` §13.5). Owner/admin only — members see a note instead of the controls. Shows provider/endpoint/deployment/API-version when configured (the key itself is never returned), with a form to set or replace the Azure OpenAI key and a confirm-guarded remove that falls compiles back to the shared managed pool.
 
 ---
 

@@ -4,6 +4,37 @@
 
 ---
 
+---
+
+## The credit add-on is now a ladder of four sizes instead of one — 2026-08-22
+The Billing page's compile-credit add-on used to be a single pack (25 credits at ₹4,999/month). It's now four sizes so workspaces can buy closer to what they need: +20 compiles with 200k Human Edit tokens for ₹3,999/month, +50 with 500k for ₹9,999, +100 with 1M for ₹19,999, and +250 with 2.5M for ₹49,999. Every add-on now also tops up the Human Edit pool alongside the compile credits (the old 25-pack didn't). Each size is bought through the same checkout as before and can be cancelled independently; active packs show as "Active ×N" badges next to their row.
+ - 2026-08-22
+
+## Customers can now manage their own LLM key, credit add-on, and see their trial countdown — 2026-08-22
+Three things the backend already supported but nobody could actually do from the dashboard are now self-serve. First, Enterprise customers can plug in their own Azure OpenAI key on the Settings page — compiles then run against the customer's own deployment instead of Conxa's shared pool, which unblocks security reviews at banks and similar companies (the key is stored encrypted and never shown again after saving). Second, the Billing page has a Compile Credit Add-On card: buy an extra pack of 25 credits per month through the normal checkout, or cancel it — cancellation now talks to Cashfree directly instead of requiring a support request. Third, workspaces on the free trial now see a banner at the top of every dashboard page showing how many days are left, turning red with an upgrade prompt once the trial ends.
+ — 2026-08-22
+
+## Shortened page descriptions and added an info icon - 2026-08-22
+Page headers used to carry long sentences (the Fleet page description was especially wordy). Every page now shows just a short one-line description next to the title, plus a small (i) icon - hovering it reveals the full details in a tooltip. Done consistently across Dashboard, Skill Packages, Installer, Audit, Fleet, Team, Billing, and Settings.
+
+## Fixed page titles getting cut off in the merged top bar - 2026-08-22
+After merging the two top bars into one, long page descriptions (like the one on the Fleet page) were squeezing the page title, so Fleet showed as Fle... Titles now always show in full, and the description takes whatever room is left and fades/truncates instead.
+
+## Merged the two top bars on the dashboard into one - 2026-08-22
+On the cloud dashboard (and other pages), the right side of the screen used to show two stacked bars: one with the organisation switcher and profile picture, and below it another with the page title (Operations) and the time-range/refresh controls. These are now merged into a single bar - the page title, its description, the time-range/refresh buttons, the organisation switcher, and the profile picture all sit in one row. That row is now exactly the same height as the Kiran's Organisation Workspace header in the left sidebar, so everything lines up neatly across the top. On small screens (phones) the old separate top bar is still shown, since there is not room for everything in one row there.
+
+## Published the Build Studio how-to guide on the public docs website — 2026-08-22
+The plain-language guide added earlier today now lives on the actual public docs site (conxa.in/docs), not just inside the codebase where nobody outside the team could see it. It covers installing Build Studio, connecting the apps you automate, recording a task, reviewing and fixing it, and publishing it to your team, plus a troubleshooting table and FAQ. It shows up alongside the existing product docs and uses the same look and navigation as the rest of the docs site.
+ — 2026-08-22
+
+## Added a way to see every machine running Conxa's software — 2026-08-22
+Two kinds of machines run Conxa: a small number of Build Studio computers at each customer company, and potentially thousands of end-user computers running the Company Agent that actually does the automation work. Build Studio machines already counted against a plan limit behind the scenes, but nobody could see or manage that list — that screen now exists in Settings. Company Agent machines were never limited (and still never will be — installing it on more computers is always free), but there was no way to see the whole fleet: which computer, whose account, what version, how recently it checked in. There's now a dedicated Fleet page showing all of that, with a way to flag a machine as revoked for security review (revoking never stops that machine from working — it only changes what shows on the dashboard).
+ — 2026-08-22
+
+## Fixed Build Studio forgetting your name and email after signing in — 2026-08-22
+People were seeing "Unknown user" in the sidebar instead of their own name, sometimes right after installing and signing in. The cause: every time the app quietly renewed your login behind the scenes (something it does regularly to keep you signed in), it was throwing away your saved profile info and never asking for it again — like renewing a library card but the new one comes back blank. Now it keeps your profile info when it renews your login, and if it was already blank for you, it will look it up again the next time your login renews.
+ — 2026-08-22
+
 ## Fixed Build Studio crashing right after install for some accounts — 2026-08-22
 After installing and signing in, some people saw the whole screen break with an error message instead of the app loading. The app was trying to show the first letter of your email as your profile icon, but for some accounts the email wasn't available yet at that moment, and grabbing a letter from nothing crashed the page — like reaching into an empty box expecting something to be there. Now it falls back to your name's initial, or shows "Unknown user" instead of crashing.
  — 2026-08-22
