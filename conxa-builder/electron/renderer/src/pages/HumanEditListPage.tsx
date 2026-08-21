@@ -5,7 +5,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { WorkflowStageBadge, type WorkflowStage } from '@/components/StagePath'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { Cpu, PencilLine } from 'lucide-react'
+import { AlertCircle, Cpu, Loader2, PencilLine } from 'lucide-react'
 
 // Workflows waiting on a human decision surface first; already-approved ones sink down.
 const STAGE_PRIORITY: Record<WorkflowStage, number> = {
@@ -46,14 +46,29 @@ export function HumanEditListPage() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {q.isLoading ? (
-          <p className="px-6 py-6 text-sm text-zinc-500">Loading…</p>
+          <div className="flex items-center gap-2 px-6 py-6 text-zinc-500">
+            <Loader2 className="size-4 animate-spin" />
+            <span className="text-sm">Loading…</span>
+          </div>
         ) : q.isError || !q.data ? (
-          <p className="px-6 py-6 text-sm text-red-400">{(q.error as Error)?.message ?? 'Not found'}</p>
+          <div className="mx-6 mt-6 flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
+            <AlertCircle className="mt-0.5 size-4 shrink-0 text-red-400" />
+            <p className="text-sm text-red-300">{(q.error as Error)?.message ?? 'Not found'}</p>
+          </div>
         ) : compiled.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-            <Cpu className="size-7 text-zinc-700" />
-            <p className="text-sm font-medium text-zinc-400">Nothing compiled yet</p>
-            <Button size="sm" variant="outline" onClick={() => navigate('/compile')}>Go to Compile</Button>
+            <div className="rounded-full border border-white/8 bg-white/[0.03] p-5">
+              <Cpu className="size-9 text-zinc-700" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-zinc-400">Nothing compiled yet</p>
+              <p className="mt-1 max-w-xs text-xs text-zinc-600">
+                Record a workflow, then compile it — it'll show up here for review.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" className="mt-1" onClick={() => navigate('/workflows')}>
+              Go to Workflows
+            </Button>
           </div>
         ) : (
           <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">

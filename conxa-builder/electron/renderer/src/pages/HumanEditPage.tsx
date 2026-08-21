@@ -595,9 +595,13 @@ export function HumanEditPage() {
                     </Button>
                   </div>
                   {skillsListQ.isError ? (
-                    <p className="text-sm text-red-300" role="alert">
-                      {(skillsListQ.error as Error).message}
-                    </p>
+                    <div
+                      className="flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2.5"
+                      role="alert"
+                    >
+                      <AlertCircle className="mt-0.5 size-4 shrink-0 text-red-400" />
+                      <p className="text-sm text-red-300">{(skillsListQ.error as Error).message}</p>
+                    </div>
                   ) : null}
                 </fieldset>
 
