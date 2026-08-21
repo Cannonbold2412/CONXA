@@ -11,7 +11,11 @@ GUID is not something we want to collect or transmit.
 from __future__ import annotations
 
 import hashlib
-import winreg
+
+try:
+    import winreg
+except ImportError:  # non-Windows
+    winreg = None
 
 _CACHE: str | None = None
 
@@ -24,6 +28,9 @@ def get_machine_id_hash() -> str:
     in this codebase when the signal is unavailable."""
     global _CACHE
     if _CACHE is not None:
+        return _CACHE
+    if winreg is None:
+        _CACHE = ""
         return _CACHE
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
