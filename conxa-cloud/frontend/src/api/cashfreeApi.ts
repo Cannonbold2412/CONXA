@@ -22,12 +22,29 @@ export type VerifySubscriptionResponse = {
   success: boolean
 }
 
+export type CheckoutTier = 'starter' | 'pro' | 'credits_addon_20' | 'credits_addon_50' | 'credits_addon_100' | 'credits_addon_250'
+
+export type AddonOffer = {
+  tier: string
+  name: string
+  amount: number
+  currency: string
+  period?: string | null
+  features: string[]
+  compile_credits: number
+  human_edit_tokens: number
+}
+
 export function listPlans(): Promise<{ plans: Plan[] }> {
   return apiFetch('/subscriptions/plans').then((r) => json<{ plans: Plan[] }>(r))
 }
 
+export function listAddons(): Promise<{ addons: AddonOffer[] }> {
+  return apiFetch('/subscriptions/addons').then((r) => json<{ addons: AddonOffer[] }>(r))
+}
+
 export function createCashfreeSubscription(
-  tier: 'starter' | 'pro',
+  tier: CheckoutTier,
   customer_email?: string,
   customer_phone?: string,
 ): Promise<CreateSubscriptionResponse> {

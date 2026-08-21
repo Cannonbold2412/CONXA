@@ -12,7 +12,7 @@ import {
 } from '@/billing/billingData'
 
 import { useEffect, useMemo, useState, type ComponentType } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
@@ -29,11 +29,14 @@ import {
 } from 'lucide-react'
 import {
   createCashfreeSubscription,
+  listAddons,
   listPlans,
   verifyCashfreeSubscription,
+  type CheckoutTier,
   type Plan,
 } from '@/api/cashfreeApi'
 import {
+  cancelCompileCreditAddon,
   fetchEntitlements,
   fetchSubscription,
   type EntitlementMeter,
@@ -176,14 +179,15 @@ export function BillingPage() {
   async function subscribe(tier: string) {
     const normalizedTier = normalizePlan(tier)
 
-    if (normalizedTier !== 'starter' && normalizedTier !== 'pro') {
+    const checkoutTiers: readonly CheckoutTier[] = ['starter', 'pro', 'credits_addon_20', 'credits_addon_50', 'credits_addon_100', 'credits_addon_250']
+    if (!checkoutTiers.includes(normalizedTier as CheckoutTier)) {
       toast.info('This plan does not require checkout.')
       return
     }
 
     setProcessingTier(normalizedTier)
     try {
-      const order = await createCashfreeSubscription(normalizedTier)
+      const order = await createCashfreeSubscription(normalizedTier as CheckoutTier)
       if (!order.auth_link) {
         setProcessingTier(null)
         toast.error('Cashfree checkout link not received. Please try again.')
@@ -202,7 +206,8 @@ export function BillingPage() {
     <div className="h-full overflow-y-auto bg-[#0b0d10]">
       <PageHeader
         title="Billing"
-        description="Plans, usage, and payment controls for this workspace."
+        description="Plans and payment controls."
+        info="Plans, usage, and payment controls for this workspace."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -256,6 +261,13 @@ export function BillingPage() {
             ))}
           </div>
         </section>
+
+        <CompileCreditAddonPanel
+          activeAddons={entitlements?.addons ?? {}}
+          loading={entitlementsQuery.isLoading}
+          processingTier={processingTier}
+          onBuy={(tier) => void subscribe(tier)}
+        />
 
         <section className="space-y-3">
           <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between">
@@ -381,6 +393,143 @@ function UsageMeterCard({
               </div>
             </div>
           </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function formatTokens(tokens: number) {
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(tokens)
+}
+
+function CompileCreditAddonPanel({
+  activeAddons,
+  loading,
+  processingTier,
+  onBuy,
+}: {
+  activeAddons: Record<string, number>
+  loading?: boolean
+  processingTier: string | null
+  onBuy: (tier: string) => void
+}) {
+  const queryClient = useQueryClient()
+  const [cancellingTier, setCancellingTier] = useState<string | null>(null)
+  const addonsQuery = useQuery({ queryKey: queryKeys.billingAddons, queryFn: listAddons })
+  const addons = useMemo(() => addonsQuery.data?.addons ?? [], [addonsQuery.data])
+
+  const cancelM = useMutation({
+    mutationFn: cancelCompileCreditAddon,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.entitlements })
+      toast.success('Add-on cancellation requested. Its credits are removed when Cashfree confirms the mandate is cancelled.')
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to cancel the add-on')
+    },
+  })
+
+  return (
+    <Card className="gap-0 border-white/8 bg-white/[0.025] py-0 shadow-none">
+      <CardHeader className="border-b border-white/8 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base text-white">Compile Credit Add-Ons</CardTitle>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              Extra monthly compile credits with Human Edit tokens on top — stacks on Starter or Pro.
+            </p>
+          </div>
+          <div className="rounded-md border border-white/8 bg-black/20 p-1.5 text-zinc-400">
+            <Code2 className="h-3.5 w-3.5" />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="p-4 pt-0">
+        {addonsQuery.isLoading || loading ? (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 pt-4">
+            {[0, 1, 2, 3].map((card) => (
+              <div key={card} className="min-h-[13rem] animate-pulse rounded-lg border border-white/8 bg-black/20" />
+            ))}
+          </div>
+        ) : addonsQuery.isError ? (
+          <p className="pt-4 text-sm text-red-300">{(addonsQuery.error as Error).message}</p>
+        ) : (
+          <div className="grid gap-3 pt-4 md:grid-cols-2 xl:grid-cols-4">
+            {addons.map((addon) => {
+              const active = activeAddons[addon.tier] ?? 0
+              const buying = processingTier === addon.tier
+              const busy = Boolean(processingTier) || cancelM.isPending
+              return (
+                <div
+                  key={addon.tier}
+                  className={`flex min-h-[13rem] flex-col rounded-lg border p-4 ${
+                    active > 0 ? 'border-emerald-500/30 bg-white/[0.03]' : 'border-white/8 bg-white/[0.02]'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-semibold text-white">{addon.name}</p>
+                    {active > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="h-6 shrink-0 rounded-full border-emerald-500/30 bg-white/[0.03] px-2 text-[11px] text-emerald-300"
+                      >
+                        Active ×{active}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <div className="mt-1.5 flex items-baseline gap-1.5">
+                    <span className="text-lg font-semibold tabular-nums text-white">
+                      ₹{addon.amount.toLocaleString()}
+                    </span>
+                    <span className="text-xs text-zinc-600">/ month</span>
+                  </div>
+                  <div className="mt-3 flex flex-1 flex-col gap-1.5">
+                    <div className="flex items-center gap-2 text-xs leading-5 text-zinc-300">
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+                      +{addon.compile_credits} compile credits / mo
+                    </div>
+                    <div className="flex items-center gap-2 text-xs leading-5 text-zinc-300">
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+                      +{formatTokens(addon.human_edit_tokens)} Human Edit tokens / mo
+                    </div>
+                  </div>
+                  <div className="mt-auto flex gap-2 pt-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      className="h-8 flex-1 cursor-pointer border-cyan-400/30 bg-white/[0.04] text-cyan-200 hover:bg-white/[0.06]"
+                      onClick={() => onBuy(addon.tier)}
+                    >
+                      {buying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {buying ? 'Redirecting…' : 'Buy'}
+                    </Button>
+                    {active > 0 ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 text-zinc-400 hover:text-red-300"
+                        disabled={busy}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Cancel the ${addon.name} subscription at Cashfree? Future charges stop and its credits are removed once confirmed.`,
+                            )
+                          ) {
+                            setCancellingTier(addon.tier)
+                            cancelM.mutate(addon.tier, { onSettled: () => setCancellingTier(null) })
+                          }
+                        }}
+                      >
+                        {cancellingTier === addon.tier ? 'Cancelling…' : 'Cancel'}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         )}
       </CardContent>
     </Card>
