@@ -17,13 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set, db_list, db_list_kv, using_database
 from app.api.product_ownership import validate_installer_version
 from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
 from app.services.saas import principal_from_request, ensure_principal
+from app.services.rbac import require_admin
 
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
 # Versioned equivalent of the delta route below, nested under /workflows so it
@@ -265,6 +266,14 @@ class TelemetryBody(BaseModel):
     # runtime/sync_errors.js via the same phone-home. Lets get_deployments
     # (release_routes.py) show a real "failed" status instead of "pending".
     sync_errors: dict[str, dict[str, dict[str, str]]] = {}
+    # Optional fleet-visibility fields (Machine Registry) — all sticky like
+    # skill_versions above, since an older runtime that hasn't self-updated
+    # yet simply omits them and shouldn't blank out a previously-reported value.
+    hostname: str = ""
+    username: str = ""
+    os_release: str = ""
+    os_arch: str = ""
+    capabilities: dict[str, str] = {}
 
 
 telemetry_router = APIRouter(prefix="/telemetry", tags=["telemetry"])
@@ -300,6 +309,8 @@ def post_telemetry_runtime_start(body: TelemetryBody) -> dict[str, Any]:
             "workspace_id": workspace_id,
             "last_seen": now,
             "first_seen": existing.get("first_seen", now),
+            # Runtime never sends this — admin-only, set via /telemetry/runtimes/revoke.
+            "revoked": bool(existing.get("revoked")) if isinstance(existing, dict) else False,
         }
         # Only overwrite skill_versions when this phone-home actually reported
         # it — an older runtime that hasn't self-updated yet keeps reporting
@@ -315,19 +326,37 @@ def post_telemetry_runtime_start(body: TelemetryBody) -> dict[str, Any]:
         # only the most recent sync pass, so an empty {} here is a real signal
         # ("nothing failed this time"), not a gap to preserve the old value for.
         row["sync_errors"] = company_sync_errors if isinstance(company_sync_errors, dict) else {}
+
+        # Fleet-visibility fields — sticky: keep the last-known value when this
+        # phone-home didn't report one (older runtime, or a field that failed
+        # to read on this OS).
+        for field in ("hostname", "username", "os_release", "os_arch"):
+            reported = (getattr(body, field) or "").strip()
+            row[field] = reported or (existing.get(field, "") if isinstance(existing, dict) else "")
+        row["capabilities"] = body.capabilities if body.capabilities else (
+            existing.get("capabilities", {}) if isinstance(existing, dict) else {}
+        )
+
         db_set("runtime_registrations", key, row)
 
     return {"ok": True}
 
 
 @telemetry_router.get("/runtimes")
-def get_runtime_registrations(request: Request) -> dict[str, Any]:
+def get_runtime_registrations(request: Request, limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """Return runtime device registrations for the authenticated workspace.
 
     Filters to the caller's workspace; flags runtimes not seen in 30 days.
+    Paginated via limit/offset (ponytail: in-process slice, not a DB-level
+    query — fine up to roughly 10k rows per workspace, revisit if that
+    changes). stale_count/version_distribution are computed over the full
+    filtered set, not just the returned page.
     """
     principal = principal_from_request(request)
     ensure_principal(principal)
+
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
 
     stale_cutoff = time.time() - _STALE_RUNTIME_DAYS * 86400
     all_regs = db_list("runtime_registrations")
@@ -346,11 +375,51 @@ def get_runtime_registrations(request: Request) -> dict[str, Any]:
             stale_count += 1
         v = reg.get("runtime_version") or "unknown"
         version_counts[v] = version_counts.get(v, 0) + 1
-        registrations.append({**reg, "stale": is_stale})
+        status = "revoked" if reg.get("revoked") else ("stale" if is_stale else "active")
+        registrations.append({**reg, "stale": is_stale, "status": status})
 
     registrations.sort(key=lambda r: r.get("last_seen", 0), reverse=True)
+    total = len(registrations)
     return {
-        "registrations": registrations,
+        "registrations": registrations[offset:offset + limit],
         "stale_count": stale_count,
         "version_distribution": version_counts,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
     }
+
+
+class RevokeRuntimeBody(BaseModel):
+    install_id: str = Field(..., min_length=1, max_length=96)
+
+
+@telemetry_router.post("/runtimes/revoke")
+def post_revoke_runtime(body: RevokeRuntimeBody, request: Request) -> dict[str, Any]:
+    """Admin-only. Marks a runtime registration as revoked for dashboard
+    visibility/audit only — this never blocks skill sync, telemetry ingest,
+    or execution, matching the architectural rule that the cloud never
+    enforces on the running side (docs/TRD.md §13.4a). There is no un-revoke;
+    a reinstall generates a fresh install_id and re-registers clean.
+    """
+    principal = principal_from_request(request)
+    ensure_principal(principal)
+    require_admin(principal)
+
+    install_id = "".join(c for c in body.install_id.strip() if c.isalnum() or c in "-_")[:96]
+    if not install_id:
+        raise HTTPException(status_code=400, detail="invalid_install_id")
+
+    revoked_any = False
+    for reg in db_list("runtime_registrations"):
+        if not isinstance(reg, dict):
+            continue
+        if reg.get("workspace_id") != principal.workspace_id or reg.get("install_id") != install_id:
+            continue
+        key = f"{reg.get('company', '')}:{install_id or reg.get('platform', '')}"
+        db_set("runtime_registrations", key, {**reg, "revoked": True})
+        revoked_any = True
+
+    if not revoked_any:
+        raise HTTPException(status_code=404, detail="runtime_not_found")
+    return {"install_id": install_id, "revoked": True}

@@ -1547,6 +1547,17 @@ async function _phonehome() {
     // Per-skill sync failures (checksum mismatch, download/activation error) —
     // lets the Deployment dashboard show "failed" instead of just "pending".
     sync_errors: collectSyncErrors(SKILL_PACKS_DIR),
+    // Fleet-visibility fields (Machine Registry) — all optional server-side,
+    // an older cloud that doesn't know them yet just ignores the extra keys.
+    hostname: (() => { try { return os.hostname(); } catch (_) { return ""; } })(),
+    username: (() => { try { return os.userInfo().username; } catch (_) { return ""; } })(),
+    os_release: (() => { try { return os.release(); } catch (_) { return ""; } })(),
+    os_arch: (() => { try { return os.arch(); } catch (_) { return ""; } })(),
+    // Feature flags only, not a tool list — see docs/TRD.md Machine Registry note.
+    capabilities: {
+      max_recovery_tier: String(MAX_RECOVERY_TIER),
+      update_channel: process.env.CONXA_UPDATE_CHANNEL || "stable",
+    },
   });
   await new Promise((resolve) => {
     const req = httpClient.request(`${CONXA_API}/api/v1/telemetry/runtime-start`, {
