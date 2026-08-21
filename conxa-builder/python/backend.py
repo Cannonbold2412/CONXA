@@ -25,7 +25,7 @@ import time
 import traceback
 import re
 from pathlib import Path
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import urlencode, urlparse
 from typing import Any, Callable
 
 # Make this `python` dir importable (for the local `services` package and the

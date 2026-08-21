@@ -356,7 +356,7 @@ class GroupsMixin:
         whether the recorder self-detected success_url or the user closed the
         browser manually. Widens workflow status for every workflow in the
         group once this app (and all its siblings) are authenticated."""
-        from conxa_core.storage.group_store import get_group, set_group_app_auth, set_group_app_error, group_auth_dir
+        from conxa_core.storage.group_store import set_group_app_auth, set_group_app_error, group_auth_dir
         from conxa_core.storage.workflow_store import list_workflows, set_workflow_status_from_group_auth
 
         session_id = _safe_id(payload.get("session_id"), "session_id")
