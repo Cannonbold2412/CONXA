@@ -335,7 +335,11 @@ export function TeamPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <PageHeader title="Team" description="Manage members, roles, and seats." />
+      <PageHeader
+        title="Team"
+        description="Members, roles, and seats."
+        info="Manage workspace members, their roles, and seat assignments."
+      />
 
       <div className="flex w-full max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6">
         <TeamSummary

@@ -22,10 +22,12 @@ import {
   Home,
   Menu,
   PackageCheck,
+  Server,
   Settings,
   Users,
 } from 'lucide-react'
 import { clerkAppearance } from '@/lib/clerkAppearance'
+import { TrialBanner } from '@/components/layout/TrialBanner'
 
 const SIDEBAR_KEY = 'conxa-sidebar-collapsed'
 
@@ -35,6 +37,7 @@ const operateNavGroup = {
     { to: '/dashboard', label: 'Dashboard', icon: Home },
     { to: '/packages', label: 'Skill Packages', icon: PackageCheck },
     { to: '/audit', label: 'Audit', icon: ClipboardCheck },
+    { to: '/fleet', label: 'Fleet', icon: Server },
   ],
 } as const
 
@@ -192,8 +195,8 @@ export function AppChrome({ children }: { children: ReactNode }) {
         <DesktopSidebar collapsed={collapsed} setCollapsed={setCollapsed} />
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {/* Global topbar */}
-          <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0b0d10]/88 backdrop-blur">
+          {/* Mobile-only topbar — desktop merges the account controls into the page header */}
+          <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0b0d10]/88 backdrop-blur md:hidden">
             <div className="flex min-h-14 items-center gap-3 px-4 sm:px-6">
               {/* Mobile nav sheet */}
               <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
@@ -260,6 +263,8 @@ export function AppChrome({ children }: { children: ReactNode }) {
               />
             </div>
           </header>
+
+          <TrialBanner />
 
           <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
         </div>

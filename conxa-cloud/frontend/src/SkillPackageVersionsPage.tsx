@@ -93,7 +93,8 @@ export function SkillPackageVersionsPage() {
     <div className="h-full overflow-y-auto">
       <PageHeader
         title={pack?.display_name ?? 'Installer'}
-        description="Installer downloads and published workflow groups."
+        description="Installers and published groups."
+        info="Installer downloads and published workflow groups."
         actions={
           <Button
             asChild

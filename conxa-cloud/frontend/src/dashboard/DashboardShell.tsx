@@ -112,7 +112,8 @@ export function DashboardShell({ children }: { children: ReactNode }) {
     <div className="flex h-full flex-col overflow-hidden">
       <PageHeader
         title="Operations"
-        description="Live health, reliability, and business impact across every deployed workflow."
+        description="Health across deployed workflows."
+        info="Live health, reliability, and business impact across every deployed workflow."
         actions={
           <Suspense fallback={null}>
             <div className="flex items-center gap-2">

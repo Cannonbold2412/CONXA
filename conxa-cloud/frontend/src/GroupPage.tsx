@@ -24,6 +24,8 @@ export function GroupPage({ groupId }: { groupId: string }) {
     <div className="h-full overflow-y-auto">
       <PageHeader
         title={group?.group_name || groupId || 'Ungrouped'}
+        description="Skill group."
+        info="A publishable group of related workflow skills for customer installation."
         actions={
           <Button
             asChild

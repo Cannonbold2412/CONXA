@@ -75,8 +75,9 @@ export function SkillPackagesPage() {
         description={
           groupsQ.isSuccess && groups.length > 0
             ? `${groups.length} group${groups.length !== 1 ? 's' : ''}`
-            : 'Groups of published skills for customer installation.'
+            : 'Published skills for customers.'
         }
+        info="Groups of published skills that customers install via the Company Agent."
         actions={
           <>
             <Button
