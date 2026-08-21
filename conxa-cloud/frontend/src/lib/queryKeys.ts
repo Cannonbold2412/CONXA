@@ -10,6 +10,7 @@ export const queryKeys = {
   entitlements: ['entitlements'] as const,
   subscription: ['subscription'] as const,
   billingPlans: ['billing-plans'] as const,
+  billingAddons: ['billing-addons'] as const,
   skillPack: ['skill-pack'] as const,
   installerVersions: ['installer-versions'] as const,
   groups: ['groups'] as const,
@@ -30,4 +31,7 @@ export const queryKeys = {
     ['tracking-workflow', company, slug, range] as const,
   trackingRun: (company: string, runId: string) => ['tracking-run', company, runId] as const,
   roiAssumptions: () => ['roi-assumptions'] as const,
+  machines: ['machines'] as const,
+  llmKey: ['llm-key'] as const,
+  runtimes: (limit?: number, offset?: number) => ['runtimes', limit, offset] as const,
 } as const
