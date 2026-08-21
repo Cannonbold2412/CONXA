@@ -13,7 +13,7 @@ import { queryKeys } from '@/lib/queryKeys'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry } from './DashboardStates'
+import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry, UpgradeRequired, isUpgradeRequiredError } from './DashboardStates'
 import { SectionCard } from './SectionCard'
 import { fmtNumber } from './dashboardData'
 import { rangeLongLabel, useRange } from './useRange'
@@ -158,6 +158,7 @@ export function ImpactPage() {
   })
 
   if (dashboard.isPending) return <DashboardSkeleton />
+  if (isUpgradeRequiredError(dashboard.error)) return <DashboardPageBody><UpgradeRequired /></DashboardPageBody>
   if (dashboard.isError || !dashboard.data) return <DashboardError onRetry={() => dashboard.refetch()} />
 
   const data = dashboard.data

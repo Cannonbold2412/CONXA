@@ -1,9 +1,17 @@
 'use client'
 
 import type { ReactNode } from 'react'
+import Link from 'next/link'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+
+/** True when a dashboard query failed because the workspace's plan doesn't include
+ * operations analytics, not because anything is actually broken (see `ensure_ops_tier`
+ * in the tracking API). Callers should route this to `UpgradeRequired`, not `DashboardError`. */
+export function isUpgradeRequiredError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'ops_tier_required'
+}
 
 /** Page container — same rhythm on every dashboard section. */
 export function DashboardPageBody({ children }: { children: ReactNode }) {
@@ -64,6 +72,39 @@ export function DashboardError({ onRetry }: { onRetry?: () => void }) {
         ) : null}
       </div>
     </DashboardPageBody>
+  )
+}
+
+/**
+ * Plan-gated state — the workspace's tier doesn't include operations analytics
+ * (`ensure_ops_tier`). This is permanent, not transient, so unlike `DashboardError`
+ * it never offers a retry — it offers the one action that actually resolves it.
+ */
+export function UpgradeRequired() {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-xl border border-white/8 bg-white/[0.02] px-6 py-14 text-center">
+      <svg width="52" height="52" viewBox="0 0 52 52" fill="none" aria-hidden className="text-zinc-700">
+        <rect x="9" y="21" width="34" height="22" rx="4" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M16 21v-6a10 10 0 0 1 20 0v6" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx="26" cy="31" r="2.25" fill="var(--tier-3)" />
+        <path d="M26 33.25V37" stroke="var(--tier-3)" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+      <div>
+        <p className="text-sm font-medium text-zinc-200">Operations analytics isn&apos;t on your plan</p>
+        <p className="mx-auto mt-1.5 max-w-md text-[11px] leading-relaxed text-zinc-500">
+          Health, reliability, and recovery data across your deployed workflows is a Starter-plan
+          feature. Your workflows keep running either way — execution is local and unaffected.
+        </p>
+      </div>
+      <Button
+        asChild
+        size="sm"
+        className="border-white/10 bg-white/[0.03] text-zinc-200 hover:bg-white/[0.07]"
+        variant="outline"
+      >
+        <Link href="/billing">View plans</Link>
+      </Button>
+    </div>
   )
 }
 

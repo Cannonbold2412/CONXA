@@ -3,6 +3,7 @@ import { queryKeys } from '@/lib/queryKeys'
 
 import { useMemo, useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import Link from 'next/link'
 import { fetchAuditEvents, type AuditEvent } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState, ErrorState, LoadingState } from '@/components/product/ProductPrimitives'
@@ -276,7 +277,19 @@ export function AuditPage() {
 
       <div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-4 sm:px-6">
         {auditQ.isLoading ? <LoadingState /> : null}
-        {auditQ.isError ? <ErrorState message={(auditQ.error as Error).message} /> : null}
+        {auditQ.isError && (auditQ.error as Error).message === 'ops_tier_required' ? (
+          <EmptyState
+            title="Audit log isn't on your plan"
+            description="Workspace event history for skill package operations, releases, billing, and administrative actions is a Starter-plan feature."
+            action={
+              <Button asChild size="sm" variant="outline" className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08]">
+                <Link href="/billing">View plans</Link>
+              </Button>
+            }
+          />
+        ) : auditQ.isError ? (
+          <ErrorState message={(auditQ.error as Error).message} />
+        ) : null}
         {auditQ.data ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

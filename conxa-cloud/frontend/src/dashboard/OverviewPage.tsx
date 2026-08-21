@@ -5,7 +5,7 @@ import { Activity, AlertTriangle, HeartPulse, Radio, TrendingUp, Waypoints } fro
 import { fetchTrackingDashboard } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { TrendChart } from '@/components/viz/TrendChart'
-import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry } from './DashboardStates'
+import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry, UpgradeRequired, isUpgradeRequiredError } from './DashboardStates'
 import { SectionCard } from './SectionCard'
 import { FootprintStrip } from './sections/FootprintStrip'
 import { HealthPanel } from './sections/HealthPanel'
@@ -26,6 +26,7 @@ export function OverviewPage() {
   })
 
   if (dashboard.isPending) return <DashboardSkeleton />
+  if (isUpgradeRequiredError(dashboard.error)) return <DashboardPageBody><UpgradeRequired /></DashboardPageBody>
   if (dashboard.isError || !dashboard.data) return <DashboardError onRetry={() => dashboard.refetch()} />
 
   const data = dashboard.data

@@ -112,10 +112,6 @@ export function SkillPackagesPage() {
               </Card>
             ))}
           </div>
-        ) : packQ.isError ? (
-          <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(packQ.error as Error).message}
-          </div>
         ) : groupsQ.isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
             {(groupsQ.error as Error).message}

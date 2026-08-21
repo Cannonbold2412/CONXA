@@ -8,7 +8,7 @@ import { Heatmap } from '@/components/viz/Heatmap'
 import { RecoverySankey } from '@/components/viz/RecoverySankey'
 import { TierLadder } from '@/components/viz/TierLadder'
 import { cn } from '@/lib/utils'
-import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry } from './DashboardStates'
+import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry, UpgradeRequired, isUpgradeRequiredError } from './DashboardStates'
 import { SectionCard } from './SectionCard'
 import { fmtNumber, fmtPercent, fmtRelative } from './dashboardData'
 import { rangeLongLabel, useRange } from './useRange'
@@ -34,6 +34,7 @@ export function HealingPage() {
   })
 
   if (dashboard.isPending) return <DashboardSkeleton />
+  if (isUpgradeRequiredError(dashboard.error)) return <DashboardPageBody><UpgradeRequired /></DashboardPageBody>
   if (dashboard.isError || !dashboard.data) return <DashboardError onRetry={() => dashboard.refetch()} />
 
   const data = dashboard.data

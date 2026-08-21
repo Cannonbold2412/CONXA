@@ -2,7 +2,7 @@ import { createContext, useContext } from 'react'
 import { cmd } from '@/lib/ipc'
 
 export type Identity = {
-  email: string
+  email: string | null
   name?: string
   user_id?: string
   org_id?: string

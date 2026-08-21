@@ -193,9 +193,9 @@ function UserWidget() {
         className="hidden size-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-[0.6875rem] font-semibold uppercase text-zinc-300 sm:flex"
         aria-hidden
       >
-        {identity.email.charAt(0)}
+        {(identity.email || identity.name || '?').charAt(0)}
       </span>
-      <span className="hidden max-w-[180px] truncate text-xs text-zinc-400 sm:block">{identity.email}</span>
+      <span className="hidden max-w-[180px] truncate text-xs text-zinc-400 sm:block">{identity.email || identity.name || 'Unknown user'}</span>
       <Button
         type="button"
         variant="ghost"
