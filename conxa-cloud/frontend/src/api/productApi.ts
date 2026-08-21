@@ -70,6 +70,9 @@ export type EntitlementsResponse = {
   plan: string
   period: string
   reset_at: string
+  trial_ends_at?: string | null
+  trial_expired?: boolean
+  addons?: Record<string, number>
   meters: Record<EntitlementMeterKey, EntitlementMeter>
 }
 
@@ -166,4 +169,64 @@ export function patchRelease(
 
 export function fetchAuditEvents(limit = 100): Promise<{ audit_events: AuditEvent[] }> {
   return apiFetch(`/audit-events?limit=${limit}`).then((r) => json<{ audit_events: AuditEvent[] }>(r))
+}
+
+export type MachineDevice = {
+  workspace_id: string
+  machine_hash: string
+  last_ip?: string
+  first_seen: string
+  last_seen: string
+  revoked?: boolean
+}
+
+export function fetchMachines(): Promise<{ machines: MachineDevice[] }> {
+  return apiFetch('/entitlements/machines').then((r) => json<{ machines: MachineDevice[] }>(r))
+}
+
+export function revokeMachine(machineHash: string): Promise<{ machine_hash: string; revoked: boolean }> {
+  return apiFetch('/entitlements/machines/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ machine_hash: machineHash }),
+  }).then((r) => json<{ machine_hash: string; revoked: boolean }>(r))
+}
+
+export type ByokKeyStatus = {
+  configured: boolean
+  provider?: string | null
+  endpoint?: string | null
+  deployment?: string | null
+  api_version?: string | null
+}
+
+export type SetByokKeyBody = {
+  endpoint: string
+  deployment: string
+  api_version?: string
+  api_key: string
+}
+
+export function fetchLlmKey(): Promise<ByokKeyStatus> {
+  return apiFetch('/workspace/llm-key').then((r) => json<ByokKeyStatus>(r))
+}
+
+export function setLlmKey(body: SetByokKeyBody): Promise<ByokKeyStatus> {
+  return apiFetch('/workspace/llm-key', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((r) => json<ByokKeyStatus>(r))
+}
+
+export function deleteLlmKey(): Promise<{ deleted: boolean }> {
+  return apiFetch('/workspace/llm-key', { method: 'DELETE' }).then((r) => json<{ deleted: boolean }>(r))
+}
+
+export function cancelCompileCreditAddon(tier: string): Promise<{ cancelled: boolean; tier: string; subscription_id: string }> {
+  return apiFetch('/subscriptions/addon/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tier }),
+  }).then((r) => json<{ cancelled: boolean; tier: string; subscription_id: string }>(r))
 }
