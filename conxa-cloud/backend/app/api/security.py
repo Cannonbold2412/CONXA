@@ -83,6 +83,8 @@ def _body_limit_for_path(path: str) -> int:
     normalized = path.rstrip("/") or "/"
     if normalized.endswith(BUILD_ARTIFACT_UPLOAD_PATHS) or normalized == "/api/v1/workflows/publish":
         return settings.build_artifact_upload_max_bytes
+    if normalized == "/api/v1/llm/proxy/vision":
+        return settings.llm_vision_proxy_max_bytes
     return settings.max_json_body_bytes
 
 

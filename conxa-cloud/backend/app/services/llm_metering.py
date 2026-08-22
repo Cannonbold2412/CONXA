@@ -84,8 +84,48 @@ def _stringify(payload: Any) -> str:
         return str(payload)
 
 
+# Rough per-image input cost for a vision call (~1000 tokens for a 1024px
+# image across mainstream providers). Base64 payloads are excluded from the
+# char-based estimate entirely — an ~80-200KB blob is not 20k-50k tokens.
+_IMAGE_TOKEN_ESTIMATE = 1000
+
+_BLOB_KEYS = {"image_base64", "base64"}
+
+
+def _strip_base64_blobs(payload: Any) -> tuple[Any, int]:
+    """Return (payload with base64 blobs removed, count of blobs removed).
+
+    Mirrors the blob-detection pattern in app/llm/router.py's _redact_value.
+    """
+    if isinstance(payload, dict):
+        out: dict[str, Any] = {}
+        count = 0
+        for key, item in payload.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if lowered in _BLOB_KEYS and isinstance(item, str):
+                count += 1
+            elif isinstance(item, str) and item.startswith("data:") and ";base64," in item[:80]:
+                count += 1
+            else:
+                stripped, sub = _strip_base64_blobs(item)
+                out[key_text] = stripped
+                count += sub
+        return out, count
+    if isinstance(payload, list):
+        out_list: list[Any] = []
+        count = 0
+        for item in payload:
+            stripped, sub = _strip_base64_blobs(item)
+            out_list.append(stripped)
+            count += sub
+        return out_list, count
+    return payload, 0
+
+
 def estimate_request_tokens(payload: dict[str, Any]) -> int:
-    return estimate_tokens(_stringify(payload))
+    stripped, image_count = _strip_base64_blobs(payload)
+    return estimate_tokens(_stringify(stripped)) + image_count * _IMAGE_TOKEN_ESTIMATE
 
 
 def estimate_response_tokens(response: dict[str, Any] | None) -> int:

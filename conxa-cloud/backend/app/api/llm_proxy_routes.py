@@ -12,6 +12,7 @@ rather than CORS.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -34,6 +35,38 @@ from app.services.entitlements import (
 )
 
 router = APIRouter(prefix="/llm/proxy", tags=["llm-proxy"], include_in_schema=False)
+
+# One workspace's compile burst used to be able to drain the shared provider pool
+# (every entry cooled/quarantined) into 502s for every other tenant. Caps
+# concurrent in-flight LLM calls per workspace; over the cap gets a 429 with
+# Retry-After — cheap to hold since it's just a counter, not a real semaphore
+# blocking a thread.
+_inflight_lock = threading.Lock()
+_inflight_by_workspace: dict[str, int] = {}
+
+
+class _TooManyInFlight(Exception):
+    pass
+
+
+def _acquire_workspace_slot(workspace_id: str) -> None:
+    limit = settings.llm_proxy_max_concurrent_per_workspace
+    if limit <= 0:
+        return
+    with _inflight_lock:
+        current = _inflight_by_workspace.get(workspace_id, 0)
+        if current >= limit:
+            raise _TooManyInFlight()
+        _inflight_by_workspace[workspace_id] = current + 1
+
+
+def _release_workspace_slot(workspace_id: str) -> None:
+    with _inflight_lock:
+        current = _inflight_by_workspace.get(workspace_id, 0)
+        if current <= 1:
+            _inflight_by_workspace.pop(workspace_id, None)
+        else:
+            _inflight_by_workspace[workspace_id] = current - 1
 
 
 class ProxyBody(BaseModel):
@@ -74,6 +107,15 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
         except EntitlementError as exc:
             raise entitlement_http_error(exc) from exc
 
+    try:
+        _acquire_workspace_slot(org_id)
+    except _TooManyInFlight:
+        raise HTTPException(
+            status_code=429,
+            detail="workspace_concurrency_limit",
+            headers={"Retry-After": "3"},
+        ) from None
+
     router_impl = get_router()
     error_detail: list[str] = []
     try:
@@ -96,6 +138,8 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
     except RuntimeError as exc:
         # No providers configured — treat as upstream unavailable.
         raise HTTPException(status_code=502, detail=f"llm_unavailable: {exc}") from exc
+    finally:
+        _release_workspace_slot(org_id)
 
     if result is None:
         raise HTTPException(

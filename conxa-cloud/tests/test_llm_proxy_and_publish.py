@@ -36,6 +36,33 @@ def _reset_quota(monkeypatch, tmp_path):
 
 # --- LLM proxy ---------------------------------------------------------------
 
+def test_estimate_request_tokens_excludes_base64_blobs():
+    blob = base64.b64encode(b"x" * 200_000).decode()
+    payload = {
+        "prompt": "hello world",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "anchor?"},
+                {"type": "image", "image_base64": f"data:image/jpeg;base64,{blob}"},
+            ]},
+        ],
+    }
+    tokens = llm_metering.estimate_request_tokens(payload)
+    # ~4 chars/token on the remaining text (a few dozen chars), plus the fixed
+    # per-image estimate — NOT the ~50k a naive json.dumps would count.
+    assert 1000 <= tokens < 3000
+    # The original payload is not mutated.
+    assert len(payload["messages"][0]["content"][1]["image_base64"]) > 100_000
+
+
+def test_estimate_request_tokens_plain_text_unchanged():
+    import json as _json
+
+    payload = {"prompt": "a" * 40}
+    expected = llm_metering.estimate_tokens(_json.dumps(payload, ensure_ascii=False))
+    assert llm_metering.estimate_request_tokens(payload) == expected
+
+
 def test_proxy_requires_studio_header():
     r = client.post("/api/v1/llm/proxy/text", json={"task": "intent", "payload": {}})
     assert r.status_code == 403
@@ -79,6 +106,45 @@ def test_proxy_enforces_quota(monkeypatch):
     )
     assert r.status_code == 429
     assert r.json()["detail"] == "quota_exceeded"
+
+
+def test_proxy_enforces_per_workspace_concurrency_limit(monkeypatch):
+    """One workspace's compile burst must not be able to hold every concurrency
+    slot the shared pool has — over the cap gets 429 + Retry-After instead of
+    queuing indefinitely or (pre-fix) draining the pool into 502s for everyone."""
+    from app.api import llm_proxy_routes
+
+    monkeypatch.setattr(settings, "llm_proxy_max_concurrent_per_workspace", 1)
+    llm_proxy_routes._inflight_by_workspace.clear()
+
+    class FakeRouter:
+        def route_text(self, task, payload, timeout_ms, *, error_detail=None, pool=None):
+            return {"text": "ok", "output": "ok"}
+
+    monkeypatch.setattr(llm_proxy_routes, "get_router", lambda: FakeRouter())
+    settings.llm_proxy_monthly_token_quota = 1_000_000
+
+    # Simulate one call already in flight for this workspace.
+    llm_proxy_routes._acquire_workspace_slot("wrk_local")
+    try:
+        r = client.post(
+            "/api/v1/llm/proxy/text",
+            json={"task": "intent", "payload": {"prompt": "x"}},
+            headers=STUDIO_HEADER,
+        )
+        assert r.status_code == 429
+        assert r.json()["detail"] == "workspace_concurrency_limit"
+        assert r.headers.get("retry-after")
+    finally:
+        llm_proxy_routes._release_workspace_slot("wrk_local")
+
+    # Slot freed — the next call goes through normally.
+    r2 = client.post(
+        "/api/v1/llm/proxy/text",
+        json={"task": "intent", "payload": {"prompt": "x"}},
+        headers=STUDIO_HEADER,
+    )
+    assert r2.status_code == 200, r2.text
 
 
 # --- Publish + installer hosting --------------------------------------------
