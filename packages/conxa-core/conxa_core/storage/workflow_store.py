@@ -255,6 +255,9 @@ def clear_recording(workflow_id: str) -> Workflow | None:
     workflow.session_id = None
     workflow.recorded_at = None
     workflow.recording_status = None
+    # Stale hosts from the discarded recording must not keep feeding platform-tag
+    # matching for a recording that no longer exists.
+    workflow.visited_hosts = []
     return save_workflow(workflow)
 
 

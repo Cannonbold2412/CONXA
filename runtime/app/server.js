@@ -205,6 +205,7 @@ let captureReAuth;
 let gracefulShutdown;
 let resolveGroup;
 let filterRequiredApps;
+let resolveTargetHosts;
 let createTracker;
 let mapErrorToCode;
 let closeExtraTabs;
@@ -220,6 +221,7 @@ try {
   ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
   ({ getCachedBrowser, releaseCachedBrowser, captureReAuth, gracefulShutdown,
      _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
+  ({ resolveTargetHosts } = require("./target_hosts"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
   ({ closeExtraTabs } = require("./tabs"));
 } catch (e) {
@@ -449,39 +451,6 @@ function _trackingStatus(pack) {
 }
 
 
-
-// ─── Target host resolution (RT-3 follow-up: host_lock.js) ────────────────────
-function _hostOf(url) {
-  try { return new URL(url).hostname; } catch (_) { return ""; }
-}
-
-// Every hostname a run's resolved skill(s) will actually interact with, for host_lock.js to
-// serialize against a sibling run touching the same platform. Group skills (browser.js's
-// getGroupAuthContext) resolve to every REQUIRED app's host, exactly matching the same
-// pack.json `groups` lookup already used for auth pre-flight above — a skill's manifest is the
-// only source of truth this has to consult, since resolving skills never navigates a page.
-// An unresolvable/legacy manifest contributes no host (fail OPEN, not closed — there's nothing
-// concrete to lock, and refusing to run over a metadata gap would be a worse outcome than the
-// platform-level race this exists to reduce).
-function _resolveTargetHosts(resolved) {
-  const hosts = new Set();
-  for (const r of resolved) {
-    const m = r.entry.manifest;
-    if (m && m.group_id) {
-      const group = resolveGroup(r.entry.workspace_id, m.group_id);
-      if (group && Array.isArray(group.apps)) {
-        for (const app of filterRequiredApps(group.apps, m.required_apps)) {
-          const h = _hostOf(app.success_url || app.login_url);
-          if (h) hosts.add(h);
-        }
-        continue;
-      }
-    }
-    const h = _hostOf(m?.target_url || m?.entry_url || m?.login_url);
-    if (h) hosts.add(h);
-  }
-  return [...hosts];
-}
 
 // ─── Concurrency cap message (RT-3) ────────────────────────────────────────────
 // Shared by the fast pre-resolve refusal and the atomic admission check at exec-creation —
@@ -932,7 +901,7 @@ async function _handleTool(name, args, extra) {
       } else {
         // Serialize against any sibling run touching the same external platform(s) before doing
         // any browser work at all (RT-3 follow-up) — a run on a different platform never waits.
-        const _targetHosts = _resolveTargetHosts(resolved);
+        const _targetHosts = resolveTargetHosts(resolved, { resolveGroup, filterRequiredApps });
         exec.waitingForHost = _targetHosts;
         const _lock = await hostLock.acquireHosts(_targetHosts, { runId: _runId, slug: primary.entry.slug }, {
           isDone: _execCancelled, // same cancel/deadline check runPlan uses — see host_lock.js

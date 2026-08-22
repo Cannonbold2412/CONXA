@@ -422,20 +422,9 @@ def _extract_visited_hosts(cleaned_events: list[dict[str, Any]]) -> list[str]:
     (ev.page.url) and any tab opened during the recording (ev.tab.url) — so
     SkillMeta.visited_hosts can gate required_apps on everywhere the workflow
     goes, not just where it starts. See group_store.apps_for_workflow."""
-    from urllib.parse import urlparse
+    from conxa_compile.recorder.session import extract_visited_hosts
 
-    hosts: set[str] = set()
-    for ev in cleaned_events:
-        for url in ((ev.get("page") or {}).get("url"), (ev.get("tab") or {}).get("url")):
-            if not url:
-                continue
-            try:
-                host = (urlparse(url).hostname or "").lower()
-            except ValueError:
-                host = ""
-            if host:
-                hosts.add(host)
-    return sorted(hosts)
+    return extract_visited_hosts(cleaned_events)
 
 
 def build_signal_reference(ev: dict[str, Any]) -> dict[str, Any]:

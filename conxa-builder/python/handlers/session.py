@@ -359,13 +359,22 @@ class SessionMixin:
             if self._active_recording == session_id:
                 self._active_recording = None
         if workflow_id:
-            from conxa_core.storage.workflow_store import clear_recording
+            from conxa_core.storage.workflow_store import clear_recording, get_workflow, save_workflow
 
             workflow_id = _safe_id(workflow_id, "workflow_id")
             _refresh_group_app_sessions(workflow_id)
             if len(events) == 0:
                 clear_recording(workflow_id)
                 raise _CommandError("empty_recording", "No workflow actions were recorded.")
+            # Persist every host this recording navigated to (same extraction the
+            # compiler later stores in SkillMeta.visited_hosts) so the group page can
+            # show all touched platform apps before the first compile.
+            from conxa_compile.recorder.session import extract_visited_hosts
+
+            wf = get_workflow(workflow_id)
+            if wf is not None:
+                wf.visited_hosts = extract_visited_hosts(events)
+                save_workflow(wf)
             return {
                 "session_id": session_id,
                 "event_count": len(events),

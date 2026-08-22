@@ -62,6 +62,11 @@ class Workflow(BaseModel):
     session_id: str | None = None
     recorded_at: float | None = None
     recording_status: Literal["recorded", "compiled", "error"] | None = None
+    # Every hostname the saved recording navigated to (extracted from session
+    # events at stop_recording time, before any compile). Lets the group page
+    # show all touched platform apps pre-compile and feed required_apps-style
+    # matching — see conxa_compile.recorder.session.extract_visited_hosts.
+    visited_hosts: list[str] = Field(default_factory=list)
     skill_id: str | None = None
     edited_at: float | None = None
     last_test_at: float | None = None

@@ -204,6 +204,15 @@ class GroupsMixin:
                 continue
             data = wf.model_dump(mode="json")
             data["stage"] = derive_workflow_stage(wf)
+            # Which of the group's apps this workflow actually touches — same
+            # matcher (and same inputs: start URLs + recorded hosts) as build-time
+            # required_apps, so the card's platform chips can never disagree with
+            # runtime auth gating. visited_hosts is captured at stop_recording, so
+            # chips appear before the first compile.
+            from conxa_core.storage.group_store import apps_for_workflow
+
+            touched = apps_for_workflow(group.apps, wf.target_url, wf.protected_url, *wf.visited_hosts)
+            data["used_apps"] = [{"id": a.id, "name": a.name} for a in touched]
             workflows.append(data)
         return {"group": group.model_dump(mode="json"), "auth": group_auth_status(group), "workflows": workflows}
 

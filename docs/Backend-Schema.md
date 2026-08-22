@@ -193,6 +193,20 @@ still validates, required or not, so a workflow that wanders into an
 ungated sibling app mid-run still arrives signed in instead of hitting a
 login wall.
 
+**Platform tags (2026-08-23):** `Workflow.visited_hosts: list[str]` records the
+hostnames a saved recording navigated, extracted from session events at
+"Save Workflow Now" (`cmd_stop_recording`) — before any compile; a discarded or
+empty recording clears it (`clear_recording`). `cmd_get_group` returns each
+workflow with `used_apps: [{id, name}]` — every group app whose
+`login_url`/`success_url` hostname matches the workflow's start URLs **or** its
+`visited_hosts`, via the same `apps_for_workflow` matcher that computes
+build-time `required_apps`. The group page renders these as platform chips
+(e.g. `Render` `Vercel` on one card). At execution time the same union drives
+concurrency: the runtime adds every required app's host to the run's
+`host_lock` set, so runs sharing any touched platform serialize while
+disjoint-platform runs execute in parallel (see `docs/TRD.md` §4.5 and
+§5.2a "Platform tags").
+
 ### 2.3 SkillPack (Workspace-Level, Shared)
 
 ```python

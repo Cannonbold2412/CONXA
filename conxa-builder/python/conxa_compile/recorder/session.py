@@ -81,6 +81,32 @@ def url_matches_pattern(url: str, pattern: str, *, exclude_prefix: str = "") -> 
     return bool(prefix) and url.startswith(prefix)
 
 
+def extract_visited_hosts(events: list[dict[str, Any]]) -> list[str]:
+    """Every hostname a recording actually navigated to — main frame
+    (ev.page.url) and any tab opened during the recording (ev.tab.url).
+
+    Shared by the compiler (SkillMeta.visited_hosts, which gates build-time
+    required_apps via group_store.apps_for_workflow) and the recording save
+    path (handlers/session.py persists it onto Workflow.visited_hosts so
+    platform tags show before the first compile). Kept here so both callers
+    derive identical hosts from identical events.
+    """
+    from urllib.parse import urlparse
+
+    hosts: set[str] = set()
+    for ev in events:
+        for url in ((ev.get("page") or {}).get("url"), (ev.get("tab") or {}).get("url")):
+            if not url:
+                continue
+            try:
+                host = (urlparse(url).hostname or "").lower()
+            except ValueError:
+                host = ""
+            if host:
+                hosts.add(host)
+    return sorted(hosts)
+
+
 def _probe_app_session_sync(app: GroupApp) -> Literal["ready", "expired"]:
     """The actual headless probe body — see check_app_session_sync for the
     policy this implements. Split out so it can be run on a bounded thread."""

@@ -17,6 +17,9 @@ export type Workflow = {
   session_id: string | null
   recorded_at: number | null
   recording_status: 'recorded' | 'compiled' | 'error' | null
+  /** Every hostname the saved recording navigated to — captured at "Save Workflow
+   * Now", feeds used_apps platform-tag matching (see handlers/groups.py). */
+  visited_hosts?: string[]
   skill_id: string | null
   edited_at: number | null
   last_test_at: number | null
@@ -27,6 +30,9 @@ export type Workflow = {
   compile_status: 'ok' | 'review_needed' | 'failed' | null
   compile_min_confidence: number | null
   compile_steps_with_warnings: number | null
+  /** Group apps this workflow actually touches (start URLs + visited_hosts via the
+   * same matcher as build-time required_apps) — rendered as platform chips. */
+  used_apps?: { id: string; name: string }[]
   stage: 'recording' | 'ready_to_compile' | 'queued' | 'compiling' | 'needs_review' | 'needs_test' | 'ready' | 'error'
   step_count?: number
 }
