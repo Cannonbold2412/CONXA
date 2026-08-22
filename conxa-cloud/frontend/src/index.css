@@ -159,3 +159,56 @@ code {
     }
   }
 }
+
+/* ── Folder cards (Skill Packages group grid) ────────────────────────────
+   Same treatment as Build Studio's Workflows page: a group is drawn as an
+   actual folder silhouette rather than a rectangle — a tab notch with an
+   angled shoulder cut out of the card itself via clip-path. `border` can't
+   follow a clip-path, so the outline is two stacked layers that share the
+   polygon: the outer one filled with the border colour, the inner one inset
+   by 1px and filled with the surface colour. */
+.folder-card {
+  --folder-tab-w: min(170px, 60%);
+  --folder-tab-h: 26px;
+  --folder-shoulder: 18px;
+  clip-path: polygon(
+    0 0,
+    calc(var(--folder-tab-w) - var(--folder-shoulder)) 0,
+    var(--folder-tab-w) var(--folder-tab-h),
+    100% var(--folder-tab-h),
+    100% 100%,
+    0 100%
+  );
+}
+
+.folder-card-inner {
+  --folder-tab-h: 25px;
+  clip-path: polygon(
+    0 0,
+    calc(var(--folder-tab-w) - var(--folder-shoulder)) 0,
+    var(--folder-tab-w) var(--folder-tab-h),
+    100% var(--folder-tab-h),
+    100% 100%,
+    0 100%
+  );
+}
+
+/* Pushes body content clear of the tab notch. */
+.folder-body {
+  padding-top: calc(var(--folder-tab-h, 26px) + 0.875rem);
+}
+
+.folder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  /* Floor is the folder's own content height; below it the page scrolls
+     rather than clipping a card mid-row. */
+  grid-auto-rows: minmax(260px, auto);
+}
+
+@media (max-width: 639px) {
+  .folder-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

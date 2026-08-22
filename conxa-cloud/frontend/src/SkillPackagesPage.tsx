@@ -2,21 +2,26 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { fetchSkillPack, fetchGroups } from '@/api/workflowsApi'
+import { fetchSkillPack, fetchGroups, type Group, type GroupWorkflowSummary } from '@/api/workflowsApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { OpenInStudioButton } from '@/components/OpenInStudioButton'
 import { StudioDownloadDialog } from '@/components/StudioDownloadDialog'
-import { ChevronRight, Download, FolderOpen } from 'lucide-react'
+import { Download, FolderKanban, FolderOpen } from 'lucide-react'
 import { useState } from 'react'
+import { cn } from '@/lib/utils'
 import { queryKeys } from '@/lib/queryKeys'
 
 function formatCount(value: number | null | undefined) {
   if (value == null) return 'Unlimited'
   return new Intl.NumberFormat().format(value)
+}
+
+/** ● published · ○ not yet released — glyph carries status as well as colour. */
+function workflowGlyph(w: GroupWorkflowSummary) {
+  return w.has_ready_version ? '●' : '○'
 }
 
 function CompileCreditsSummary() {
@@ -62,6 +67,114 @@ function CompileCreditsSummary() {
   )
 }
 
+/** What's actually in the folder — a preview of the published workflows. */
+function FolderContents({ group }: { group: Group }) {
+  const preview = group.workflows.slice(0, 4)
+  const hidden = group.workflows.length - preview.length
+
+  if (group.workflows.length === 0) {
+    return (
+      <p className="text-xs text-zinc-600">
+        Empty — publish a workflow from Build Studio to fill this folder.
+      </p>
+    )
+  }
+
+  return (
+    <ul className="space-y-1.5">
+      {preview.map((w) => (
+        <li key={w.skill_slug} className="flex items-center gap-2 text-xs">
+          <span
+            aria-hidden
+            className={cn(
+              'shrink-0 text-[11px] leading-none',
+              w.has_ready_version ? 'text-emerald-400' : 'text-zinc-500',
+            )}
+          >
+            {workflowGlyph(w)}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-zinc-300">{w.workflow_name}</span>
+          <span className="shrink-0 text-[0.6875rem] text-zinc-600">
+            {w.has_ready_version ? 'Ready' : 'Draft'}
+          </span>
+        </li>
+      ))}
+      {hidden > 0 && <li className="pl-4 text-[0.6875rem] text-zinc-600">+{hidden} more</li>}
+    </ul>
+  )
+}
+
+/** A group rendered as an actual folder — the tab notch is cut out of the card
+ * itself (see `.folder-card` in index.css), not drawn on top of a rectangle.
+ * Mirrors the Workflows page folder cards in Build Studio. */
+function FolderCard({ group }: { group: Group }) {
+  const released = group.workflows.filter((w) => w.has_ready_version).length
+  const summary =
+    group.workflows.length === 0
+      ? 'No workflows yet'
+      : `${released} of ${group.workflows.length} published`
+
+  return (
+    <Link
+      href={`/packages/groups/${encodeURIComponent(group.group_id || '_ungrouped')}`}
+      aria-label={`${group.group_name || 'Ungrouped'} — ${summary}`}
+      className="group block focus-visible:outline-none"
+    >
+      <span
+        className={cn(
+          'folder-card relative flex h-full flex-col rounded-[10px] bg-white/10 text-left',
+          'transition-[transform,background-color] duration-150 ease-out',
+          'group-hover:-translate-y-0.5 group-hover:bg-white/20 motion-reduce:transform-none motion-reduce:transition-none',
+        )}
+      >
+        {/* Inner layer — opaque so it masks the outer layer, leaving only a
+            hairline of it visible as an outline that follows the folder edge. */}
+        <span
+          aria-hidden
+          className={cn(
+            'folder-card-inner absolute inset-px rounded-[10px] bg-card transition-colors duration-150',
+            'group-hover:bg-accent',
+          )}
+        />
+
+        <span className="absolute left-4 top-0 flex h-[26px] max-w-[150px] items-center truncate text-[0.6875rem] font-medium text-zinc-400">
+          {group.workflows.length} workflow{group.workflows.length === 1 ? '' : 's'}
+        </span>
+
+        <div className="folder-body relative flex h-full flex-col gap-4 px-4 pb-4">
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-zinc-400 transition-colors group-hover:border-sky-500/40 group-hover:text-sky-300">
+              <FolderKanban className="size-4" />
+            </span>
+            <p className="min-w-0 flex-1 truncate text-base font-semibold text-white">
+              {group.group_name || group.group_id || 'Ungrouped'}
+            </p>
+          </div>
+
+          <div className="flex-1 border-t border-white/10 pt-3">
+            <FolderContents group={group} />
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5 text-xs">
+              <span
+                aria-hidden
+                className={cn(
+                  'text-[13px] leading-none',
+                  released > 0 ? 'text-emerald-400' : 'text-amber-400',
+                )}
+              >
+                {released > 0 ? '●' : '▲'}
+              </span>
+              <span className={released > 0 ? 'text-emerald-400' : 'text-amber-400'}>{summary}</span>
+            </div>
+          </div>
+        </div>
+      </span>
+    </Link>
+  )
+}
+
 export function SkillPackagesPage() {
   const [downloadOpen, setDownloadOpen] = useState(false)
   const packQ = useQuery({ queryKey: queryKeys.skillPack, queryFn: fetchSkillPack, staleTime: 10_000 })
@@ -95,22 +208,20 @@ export function SkillPackagesPage() {
       />
       <div className="flex w-full max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6">
         {packQ.isLoading || groupsQ.isLoading ? (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {[0, 1, 2].map((item) => (
-              <Card key={item} size="sm" className="gap-0 border-white/8 bg-white/[0.03] py-3 shadow-none">
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      <div className="h-4 w-28 animate-pulse rounded bg-white/10" />
-                      <div className="h-3 w-44 animate-pulse rounded bg-white/[0.06]" />
-                    </div>
-                    <div className="h-5 w-14 animate-pulse rounded-full bg-white/[0.06]" />
+          <div className="folder-grid">
+            {[0, 1, 2, 3].map((item) => (
+              <div key={item} className="folder-card rounded-[10px] bg-white/10">
+                <div className="folder-body relative flex h-full flex-col gap-4 px-4 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="size-9 animate-pulse rounded-lg bg-white/[0.06]" />
+                    <div className="h-4 w-32 animate-pulse rounded bg-white/[0.08]" />
                   </div>
-                </CardHeader>
-                <CardContent className="space-y-2 pt-0">
-                  <div className="h-3 w-36 animate-pulse rounded bg-white/[0.06]" />
-                </CardContent>
-              </Card>
+                  <div className="flex-1 space-y-2 border-t border-white/10 pt-3">
+                    <div className="h-3 w-44 animate-pulse rounded bg-white/[0.06]" />
+                    <div className="h-3 w-36 animate-pulse rounded bg-white/[0.05]" />
+                  </div>
+                </div>
+              </div>
             ))}
           </div>
         ) : groupsQ.isError ? (
@@ -139,48 +250,10 @@ export function SkillPackagesPage() {
             </CardContent>
           </Card>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {groups.map((g) => {
-              const readyCount = g.workflows.filter((w) => w.has_ready_version).length
-              return (
-                <Link
-                  key={g.group_id || '_ungrouped'}
-                  href={`/packages/groups/${encodeURIComponent(g.group_id)}`}
-                  className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-                >
-                  <Card
-                    size="sm"
-                    className="h-full gap-0 border-white/8 bg-white/[0.035] py-3 shadow-none transition-colors group-hover:border-white/15 group-hover:bg-white/[0.05]"
-                  >
-                    <CardHeader className="pb-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <CardTitle className="truncate text-sm font-medium text-white">
-                            {g.group_name || g.group_id || 'Ungrouped'}
-                          </CardTitle>
-                        </div>
-                        {readyCount > 0 && (
-                          <Badge variant="outline" className="h-5 shrink-0 border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">
-                            {readyCount} ready
-                          </Badge>
-                        )}
-                      </div>
-                    </CardHeader>
-                    <CardContent className="pt-0">
-                      <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
-                        <span>
-                          {g.workflows.length} workflow{g.workflows.length !== 1 ? 's' : ''}
-                        </span>
-                        <span className="inline-flex items-center gap-1 text-zinc-400 transition-colors group-hover:text-white">
-                          Open
-                          <ChevronRight className="size-3.5" />
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </Link>
-              )
-            })}
+          <div className="folder-grid">
+            {groups.map((g) => (
+              <FolderCard key={g.group_id || '_ungrouped'} group={g} />
+            ))}
           </div>
         )}
       </div>
