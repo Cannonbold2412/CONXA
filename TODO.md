@@ -66,17 +66,99 @@ Counts below are computed straight from the section headers in this file (unique
 - **Success criteria:** all four docs' test plans executed with results recorded; every failure either fixed or filed as its own TODO item with a repro; LLM providers confirmed healthy via the reconfigured keys before the first suite ran.
 - **Found via:** direct founder instruction (2026-08-22).
 
-### RT-3 — Reliable parallel workflow execution at runtime
+### ~~RT-3 — Reliable parallel workflow execution at runtime~~ — done 2026-08-22
+Decided model: true parallel execution, per-run browser context, capped at `CONXA_MAX_CONCURRENT_RUNS`
+(default 5) — not a serialized queue, since Claude Desktop abandons a `tools/call` at ~240s and one
+run's own wall-clock budget is already 210s, so a queued run would typically time out before it
+started. New `runtime/app/run_registry.js` replaces server.js's old single `activeExecution` slot
+with per-`runId` tracking; past the cap, `execute_skill`/`execute_sequence` are refused with a
+message naming the runs already in flight and pointing at the new `get_execution_status` tool — it
+never tells the caller to `cancel_execution`, which is what let one chat's agent kill another
+chat's run. `cancel_execution` now takes an optional `run_id`, required once more than one run is
+active. `browser.js`'s per-workspace headless browser cache became a lease (`busy` flag +
+`releaseCachedBrowser`) so two concurrent runs never share one live Playwright context — the actual
+collision that let one run's tab-popup registry and download listener fire for another run's pages
+— which also fixed a standalone bug where the old always-armed 90s idle timer could close a headless
+run's browser out from under it mid-execution. `recovery_park.js`'s single park slot became a `Map`
+keyed `${workspace_id}:${slug}` so one run parking a Tier 3/4 failure never discards a sibling run's
+parked recovery window; a park now holds its browser lease for its full TTL rather than the shorter
+idle-cache window. `run.js`/`tabs.js`/the tracker were already per-run (zero module-level mutable
+state) and needed no change. Deliberately left as-is: the retry budget (`retry_budget.js`) still
+keys by `${slug}:${stepIndex}` only, not by run — see its `ponytail:` comment and RT-3-RETRY-BUDGET
+below for why and the bounded worst case. Tests: `test/unit/test_run_registry.js` (admission/cap/
+cancel-routing/park-map isolation) and `test/e2e/integration_parallel_runs.js` (real Chromium: two
+concurrent `runPlan`s + two concurrent `getCachedBrowser` leases never share a context). Docs:
+`docs/TRD.md` §4.5 (new), `CLAUDE.md`/`AGENTS.md`/`README.md` tool-table corrections (also dropped
+the long-stale `refresh_skills` tool, which was never implemented).
+
+### RT-3-RETRY-BUDGET — Per-skill retry budget shared across concurrent same-skill runs
+- **Category:** Runtime / Execution & Recovery
+- **Description:** `retry_budget.js` keys attempts by `${slug}:${stepIndex}` only (see its
+  `ponytail:` comment, added alongside RT-3). Two concurrent runs of the *same* skill share one
+  counter: a successful sibling's `clearRetryBudget(slug)` resets a still-struggling sibling's
+  count, and a struggling sibling can burn a shared budget faster than solo. Not fixed as part of
+  RT-3 because keying by `runId` would silently remove the budget's actual purpose — persisting
+  *across* MCP calls so an agent can't retry a broken step forever by always starting a fresh run.
+- **Why required:** low severity today (bounded — a few extra retries for a sibling, never
+  corruption) but worth a deliberate fix once same-skill parallel runs are common in practice.
+- **Suggested fix:** key the in-run attempt count by `${runId}:${slug}:${stepIndex}`, and keep a
+  separate `${slug}:${stepIndex}` counter that only clears on cross-call resume — same-skill
+  siblings stop sharing attempts without losing the cross-call ceiling.
+- **Dependencies:** none blocking.
+- **Suggested order:** low priority — revisit if fleet telemetry shows same-skill parallel runs are
+  common.
+- **Complexity:** S.
+- **Found via:** RT-3 audit (2026-08-22).
+
+### ~~RT-3-HOST-LOCK — Prevent two concurrent runs from racing the same external platform~~ — done 2026-08-22
+RT-3's per-run isolation (browser context, download dir, recovery park, retry budget) only
+protects the runtime's OWN bookkeeping — it does nothing to stop two concurrently-running
+workflows that both touch the same external platform (e.g. one workflow's Render step and a
+different workflow's Render step, running at the same time) from racing at that platform's own
+application layer: a lost update when both mutate the same resource, one deploy cancelling
+another mid-flight, or bot/rate-limit detection tripped by two near-simultaneous automated
+sessions on one account. New `runtime/app/host_lock.js` adds a mutex keyed per external hostname
+— resolved from a non-group skill's `target_url`, or every required app's host for a Workflow
+Group (same `pack.json` `groups` lookup already used for auth pre-flight). A run acquires every
+host it will touch, atomically, before any browser work begins; a run needing an already-held
+host blocks (polling every 250ms) rather than racing it — **runs on different platforms still
+execute fully in parallel**, only genuine overlap serializes. The lock is held through a park
+exactly like the browser lease (a parked page is a live, uncommitted platform interaction) and
+released on every exit path, including a discarded/TTL'd park (`server.js`'s `_discardPark`
+wrapper). A blocked run's wait counts against its own execution deadline via the same
+`cancelCheck` function `runPlan` already uses, so a run that waits too long fails with the
+existing actionable deadline message (naming the blocking host/run) instead of hanging silently.
+`get_execution_status` now surfaces a blocked run's `waiting_for_host` field. Tests:
+`test/unit/test_host_lock.js` (atomicity, blocking, give-up-never-sticks, multi-host
+never-half-held, order-independence) and `test/e2e/integration_host_lock.js` (real MCP server,
+two skills sharing a target host — proves the second call visibly queues behind the first via
+`get_execution_status`, then both complete). Docs: `docs/TRD.md` §4.5, `CLAUDE.md`/`AGENTS.md`.
+- **Found via:** direct founder question (2026-08-22) — "what happens when two parallel workflows
+  both touch the same platform, is that a risk?"
+
+### RT-3-CAP-SIZING — Derive the concurrency cap from machine specs instead of a flat number
 - **Category:** Runtime / MCP / Execution & Recovery
-- **Description:** Today the runtime effectively assumes one workflow run at a time per machine. A customer's real usage doesn't: they open chat 1 in Claude Desktop and ask it to run a workflow, switch to chat 2 and run another there, then chat 3 and run a third — three concurrent `execute_skill` calls into the same runtime process — or in a single chat/session they tell the agent to run several workflows at once ("do these three in parallel"), which the agent fulfills by issuing concurrent MCP tool calls. Verify what actually happens today when two or more runs execute concurrently against one runtime install, then make it reliable end to end. Known collision surfaces to audit and fix: the shared Playwright browser lifecycle (`browser.js` — one run closing/relaunching the browser out from under another); per-run state keyed by `runId` but sharing directories, downloads workspaces (`runs/{runId}/`), and the group-auth session store (`browser.js` loads group sessions); the retry-budget and recovery-park state shared across runs in-process; telemetry batching (`tracker.js`); and any global "current page/tab" assumptions left in `run.js`'s seams. Also decide and document the concurrency model explicitly — true parallel browser contexts vs. serialized execution queue — since "reliably" may legitimately mean an honest queue with clear status reporting rather than N simultaneous Chromium instances.
-- **Why required:** multi-chat and parallel-in-one-chat usage is exactly how MCP clients behave in practice; if the second call corrupts or kills the first run (or both fail on a browser lock), customers hit it on day one and it looks like random flakiness, not a known limit.
-- **Business value:** parallel execution is table stakes for the "your AI does the process from then on" pitch — a customer running invoices while their teammate runs lead creation on the same machine must not have to take turns manually.
-- **Technical value:** forces the runtime's hidden single-run assumptions to the surface as explicit, tested seams — the same discipline RT-REFACTOR-1 applied to code structure, applied here to concurrency state.
-- **Dependencies:** none blocking; builds naturally on EXEC-22's durable/resumable execution-state work (run state that survives a crash is also state that survives a sibling run).
-- **Suggested order:** immediate — top of the P0 queue alongside TEST-11.
-- **Complexity:** M–L — the audit is M; making the chosen model real (per-run browser contexts, isolated auth/session handling, safe cross-run status via `get_execution_status`/`cancel_execution`) is L.
-- **Success criteria:** two workflows execute concurrently (two separate MCP client sessions, and two calls in one session) and both complete correctly with correct outputs, correct download isolation under their own `runs/{runId}/`, and no interference in recovery/retry state; `execute_sequence` and `cancel_execution` behave sanely mid-parallel-run; a `runtime/test/` fixture covers the two-runs-at-once case so it can't silently regress.
-- **Found via:** direct founder instruction (2026-08-22). Related but distinct: PROD-5 (standalone launcher/scheduler + parallel execution across machines/scheduled runs) — RT-3 scopes only same-machine concurrency of the shipped runtime.
+- **Description:** `CONXA_MAX_CONCURRENT_RUNS` defaults to a flat `5` regardless of the host
+  machine's specs — same number on an 8GB laptop and a 64GB workstation. Considered and
+  deliberately deferred during RT-3 follow-up: a *default* derived from `os.totalmem()` at process
+  startup (e.g. roughly one run per 1.5–2GB of total RAM, clamped to a sane min/max like 2–8),
+  still overridable via the env var for IT-managed fleets. A **live** per-call resource check
+  (e.g. `os.freemem()` at admission time) was explicitly ruled out, not just deferred: it makes
+  admission non-deterministic (the same call can pass or fail depending on what else is open on
+  the machine at that instant) and doesn't protect against a run's memory footprint growing after
+  admission; `os.loadavg()` is also unusable for this on Windows (always returns `[0,0,0]` —
+  a known Node.js limitation), so there is no reliable live CPU signal to gate on at all.
+- **Why required:** a flat cap either wastes headroom on a well-specced machine or risks OOM on a
+  modest one; each concurrent run is a full Chromium instance (~300–500MB+).
+- **Suggested fix:** compute the default at startup from `os.totalmem()` (one-time, not
+  per-call — keeps admission deterministic), clamp to a min/max range, keep
+  `CONXA_MAX_CONCURRENT_RUNS` as the override for anyone who wants to set it explicitly.
+- **Dependencies:** none blocking.
+- **Suggested order:** low priority — revisit if fleet telemetry shows the flat default is a real
+  bottleneck (refused-past-cap events) or a real risk (OOM reports) on either end of the spectrum.
+- **Complexity:** S.
+- **Found via:** direct founder question (2026-08-22) — "can we cap concurrency to whatever the
+  laptop supports instead of a fixed number?"
 
 ### ~~BUILD-16 — "Testing os picker" compile did not finish: recording on disk, no compiled skill~~ — RESOLVED 2026-08-18
 - **Category:** Builder / Compile

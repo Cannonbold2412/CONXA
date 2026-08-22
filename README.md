@@ -236,9 +236,8 @@ For every step, tiers run in order and LLM fires only at Tier 3+ — see `docs/T
 | `execute_sequence` | Execute an ordered list of skills in one shared browser session. |
 | `list_skills` | List all installed company workflow skills. Call once before planning. |
 | `get_skill_inputs` | Return the input schema for a skill. Call before `execute_skill`. |
-| `get_execution_status` | Return the status of any currently running execution. |
-| `cancel_execution` | Cancel the currently running execution. Safe to call at any time. |
-| `refresh_skills` | Force an immediate skill pack sync from Conxa servers. |
+| `get_execution_status` | List every currently running execution — more than one can be active at once. |
+| `cancel_execution` | Cancel a running execution. Pass `run_id` when more than one is active. Safe to call at any time. |
 | `get_runtime_status` | Return runtime diagnostics: loaded packs, sync URLs, log paths. |
 
 ---

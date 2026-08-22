@@ -16,9 +16,8 @@
 | `get_skill_inputs(skill, company?)` | Return required inputs for a skill — call this before execute_skill |
 | `execute_skill(skill, inputs, watch?)` | Run a workflow. Default watch: true. |
 | `execute_sequence(skills, watch?)` | Run multiple skills in one shared browser session |
-| `get_execution_status()` | Status of the currently running execution |
-| `cancel_execution()` | Cancel the currently running execution |
-| `refresh_skills(company?)` | Force a skill pack sync from Conxa servers |
+| `get_execution_status()` | List every currently running execution (more than one can be active at once) |
+| `cancel_execution(run_id?)` | Cancel a running execution. Pass `run_id` when more than one is active. |
 
 ---
 

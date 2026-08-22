@@ -339,10 +339,13 @@ Defined in `server.js` `_toolDefinitions()`:
 | `execute_skill` | Execute a single workflow skill |
 | `execute_sequence` | Execute an ordered list of skills in one browser session |
 | `get_skill_inputs` | Return input schema for a skill |
-| `get_execution_status` | Status of current execution |
-| `cancel_execution` | Stop the running execution |
-| `refresh_skills` | Force immediate skill pack sync |
+| `get_execution_status` | List every currently-running execution (there may be more than one — see §4.5) |
+| `cancel_execution` | Cancel a running execution; pass `run_id` when more than one is active |
 | `get_runtime_status` | Runtime diagnostics (non-mutating) |
+
+There is no `refresh_skills` tool — skill pack sync runs automatically on startup
+(`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails; nothing
+triggers it on demand today.
 
 ### 4.2a MCP Registration (`register-mcp` / `unregister-mcp`)
 
@@ -465,6 +468,66 @@ that works without requiring admin rights or Developer Mode.
     │   └── checkpoint.json
     └── runs/{workflow_id}.jsonl
 ```
+
+### 4.5 Concurrency Model (RT-3)
+
+Real MCP usage is concurrent by default: separate chats each running a workflow against the same
+installed runtime, or one chat firing several `execute_skill` calls at once. The runtime supports
+**true parallel execution, capped**, not a serialized queue — a queue was rejected because Claude
+Desktop abandons a `tools/call` at ~240s and one run's own wall-clock budget
+(`CONXA_EXECUTION_DEADLINE_MS`, §9) is already 210s, so a queued run would typically time out
+before it ever started.
+
+- **Admission.** `run_registry.js` tracks every active run by its own `runId`, admitted up to
+  `CONXA_MAX_CONCURRENT_RUNS` (default 5, flat — same number regardless of the host machine's
+  specs; see `RT-3-CAP-SIZING` in `TODO.md` for a since-proposed memory-derived default that was
+  deliberately deferred, not forgotten). Past the cap, `execute_skill`/`execute_sequence` are
+  refused with a message naming the runs already in flight and pointing at
+  `get_execution_status` — it never suggests calling `cancel_execution`, since the caller didn't
+  start those runs. `cancel_execution` takes an optional `run_id`: required once more than one run
+  is active (a bare call is only unambiguous with exactly zero or one runs active).
+- **Browser isolation.** `browser.js`'s per-workspace headless browser cache is a *lease*, not a
+  free-for-all: a run holds its cache entry `busy` for the whole execution, and a concurrent call
+  that finds the slot already leased gets its own independent, uncached browser rather than
+  sharing one — two live runs must never drive the same Playwright context, since `tabs.js`'s
+  popup registry and the per-run download listener both assume exactly one run is driving it. The
+  idle-close timer only starts once a lease is released, which also fixes a former bug where a
+  headless run longer than the old always-armed 90s timer had its browser closed out from under
+  it mid-execution.
+- **Recovery park isolation.** The Tier 3/4 parked-failure page (`recovery_park.js`) is keyed per
+  `${workspace_id}:${slug}`, not a single process-wide slot — one run failing and parking must
+  never discard a sibling run's parked recovery window. A park holds its browser lease for its
+  full TTL (`CONXA_RECOVERY_PARK_TTL_MS`, default 180s) rather than the idle cache's shorter
+  window.
+- **Per-host platform serialization (`host_lock.js`).** RT-3's runtime-level isolation above does
+  NOT protect the *external platform* itself: two independently-isolated runs both mutating the
+  same Render/Vercel/etc. project concurrently is still a real risk — lost updates on a shared
+  resource, one deploy cancelling another mid-flight, or bot/rate-limit detection tripped by two
+  near-simultaneous automated sessions on one account. `host_lock.js` closes that gap with a
+  mutex keyed per external hostname (resolved from a non-group skill's `manifest.target_url`, or
+  every required app's host for a Workflow Group — the same `pack.json` `groups` lookup already
+  used for auth pre-flight). A run acquires every host it will touch, atomically, before any
+  browser work begins (including auth); a run needing a host another run already holds blocks
+  (polling every 250ms) rather than racing it. **This deliberately serializes only runs that
+  overlap on a platform — two runs on different platforms still execute fully in parallel**, which
+  is the reason a per-host lock was chosen over falling back to a single global queue. The lock is
+  held through a park exactly like the browser lease (a parked page is a live, uncommitted
+  platform interaction). A blocked run's wait counts against its own `EXECUTION_DEADLINE_MS`
+  (§4.3) via the same `cancelCheck`/`isDone` function `runPlan` uses, so a run that waits too long
+  fails with the existing actionable deadline message (naming the host and the blocking run) —
+  it never hangs silently. `get_execution_status` (`run_registry.js`) surfaces a blocked run's
+  `waiting_for_host` field so an agent can see *why* a run's step count isn't advancing.
+- **Everything else is already per-run.** `run.js`'s step loop, the tab registry (`tabs.js`), the
+  telemetry tracker, the `runs/{runId}/` download workspace, and the deadline/cancel flags all
+  live in the closure of one `execute_skill` call — no module-level shared state to isolate.
+- **Deliberately unchanged: the retry budget.** `retry_budget.js` keys attempts by
+  `${slug}:${stepIndex}` only, so two concurrent runs of the *same* skill share one counter — see
+  the `ponytail:` comment there for why (the budget exists to persist across MCP calls, which
+  per-run keying would defeat) and the bounded worst case (a sibling gets a few extra retries, not
+  corruption).
+- **Known limitation.** In `watch: true` mode each parallel run is its own visible Chromium
+  window, and `tabs.js`'s `bringToFront()` means concurrent visible runs compete for OS foreground
+  focus — correct execution, a noisy desktop.
 
 ---
 
