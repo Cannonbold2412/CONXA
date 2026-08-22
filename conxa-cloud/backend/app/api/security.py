@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 from collections.abc import Callable
 from typing import Any
@@ -93,6 +94,17 @@ def _bearer_token(request: Request) -> str:
     return token.strip()
 
 
+# Server-side admin credential (CONXA_ADMIN_TOKEN). Requests bearing it are
+# machine calls (CI, ops scripts, admin endpoints like
+# /api/v1/entitlements/admin/billing) that have no Clerk session — they skip the
+# Clerk gate and each route enforces the token itself via updates_routes._require_admin.
+_ADMIN_TOKEN = os.environ.get("CONXA_ADMIN_TOKEN", "")
+
+
+def _is_admin_token(token: str) -> bool:
+    return bool(_ADMIN_TOKEN) and secrets.compare_digest(token, _ADMIN_TOKEN)
+
+
 def verify_clerk_jwt(token: str) -> dict[str, Any]:
     """Verify a Clerk JWT when SKILL_AUTH_REQUIRED is enabled.
 
@@ -149,7 +161,11 @@ class ProductionRequestMiddleware(BaseHTTPMiddleware):
         is_public = _is_public_path(request.url.path, request.method)
         if settings.auth_required and not is_public:
             try:
-                claims = verify_clerk_jwt(_bearer_token(request))
+                token = _bearer_token(request)
+                if _is_admin_token(token):
+                    claims = {"sub": "admin", "auth_source": "admin_token"}
+                else:
+                    claims = verify_clerk_jwt(token)
             except HTTPException as exc:
                 return JSONResponse(
                     {"detail": exc.detail, "request_id": rid},
