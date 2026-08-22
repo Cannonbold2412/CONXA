@@ -120,23 +120,41 @@ conxa-cloud/                Thin cloud SaaS — proxy / auth / billing / dashboa
   tests/                    pytest suite (core + compile + cloud)
   pytest.ini                pythonpath = backend ../conxa-builder/python ../packages/conxa-core
 
-runtime/                    Node.js MCP server — ships to ~/.conxa/ on customer machine
-  bootstrap.js              Entry point loaded by host exe; enforces min_host compat; loads disk-resident app layer
-  _pkg_stubs.js             Static dependency stubs bundled into host exe (makes node_modules available to app layer)
-  server.js                 MCP stdio server (@modelcontextprotocol/sdk) — lives in conxa-app layer on disk
-  run.js                    Step executor + GATE/VERIFY logic; delegates element resolution to resolve_adapter.js
-  resolver.js               Pure, browser-independent element resolver — durability-walk + uniqueness/margin gate
-  resolve_adapter.js        Browser-side adapter: pre-gathers candidate descriptors from live Playwright page for resolver.js
-  recovery.js               L1 exception ladder + L2 re-hover / a11y cascade (Tier 1–2, zero LLM tokens)
-  install_identity.js       Writes version.json and integrity metadata for the app layer on first install
-  skill_loader.js           Skill pack loading + input validation
-  browser.js                Playwright browser lifecycle
-  auth_manager.js           Per-company token via keytar; AES-256-GCM session encryption
-  sync.js                   Skill pack delta sync with SHA-256 atomic writes
-  tracker.js                Telemetry batching → POST /tracking/{co}/events
+runtime/                    Node.js MCP server — ships to ~/.conxa/ on customer machine.
+                            Two source folders make the release boundary visible:
+                            edit host/ → ship a host-vX.Y.Z release; edit app/ → ship
+                            an app-vX.Y.Z release (host-manifest.json + check scripts
+                            at runtime/ root enforce the exact membership in CI).
+  host/                     Files FROZEN INTO THE HOST EXE (pkg bundles these from
+                            bootstrap.js's require graph — see host-manifest.json):
+    bootstrap.js            Entry point loaded by host exe; enforces min_host compat; loads disk-resident app layer
+    _pkg_stubs.js           Static dependency stubs bundled into host exe (makes node_modules available to app layer)
+    mcp_register.js         register-mcp / unregister-mcp orchestrator (+ mcp_hosts_toml/yaml, config_edit_toml/yaml)
+    cli_sync.js             Install-time `sync` subcommand (min_host-gated)
+    min_host_gate.js        Pure, unit-tested min_host semver gate (shared with cli_sync)
+  app/                      Disk-resident app layer (obfuscated JS, ships as conxa-app zip).
+                            Some files here (env, http_client, host_bridge, version_manager,
+                            manifest_manager, install_identity, config_edit, mcp_hosts) are ALSO
+                            bundled into the exe — dual-shipped, listed in host-manifest.json:
+    server.js               MCP stdio server (@modelcontextprotocol/sdk); extracts to cli_installer.js,
+                            recovery_park.js, failure_response.js, tool_defs.js beside it
+    run.js                  Run-plan orchestration + public barrel; engine seams extracted to
+                            interpolate/step_utils/run_config/recovery_log/retry_budget/resolution/
+                            assertions/locators/handlers/cascade/uploads (one-way deps)
+    resolver.js             Pure, browser-independent element resolver — durability-walk + uniqueness/margin gate
+    resolve_adapter.js      Browser-side adapter: pre-gathers candidate descriptors from live Playwright page for resolver.js
+    recovery.js             L1 exception ladder + L2 re-hover / a11y cascade (Tier 1–2, zero LLM tokens;
+                            purity CI-guarded by app/check_recovery_purity.js)
+    install_identity.js     Writes version.json and integrity metadata for the app layer on first install
+    skill_loader.js         Skill pack loading + input validation
+    browser.js              Playwright browser lifecycle
+    auth_manager.js         Per-company token via keytar; AES-256-GCM session encryption
+    sync.js                 Skill pack delta sync with SHA-256 atomic writes
+    tracker.js              Telemetry batching → POST /tracking/{co}/events
   package.json              @yao-pkg/pkg bundles for win/mac; version = host exe version
-  test/                     Unit + integration tests: test_resolver.js, test_resolve_adapter.js,
-                            test_recovery.js, gate_replay.js (execution gate CI fixture)
+  test/unit/                Offline unit tests (`npm test`)
+  test/e2e/                 Browser/exe-dependent gates: gate_replay.js (execution gate CI fixture),
+                            gate_recovery_ceiling.js, integration scripts
 
 data/                       Runtime state: sessions/, workflows/, skills/, saas/, cache/, chromium/
 
@@ -264,8 +282,8 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Recorder event types | `conxa_compile/recorder/bridge.js` → `pipeline/` → `compiler/build.py` → `runtime/run.js` |
 | IdentityBundle / signal compilation | `conxa_compile/compiler/identity_bundle.py`, `selector_grammar.py`, `stable_hash.py` |
 | Selector scoring / anchor quality | `conxa_compile/compiler/selector_score.py`, `selector_filters.py` (anchor quality gates) |
-| Runtime element resolution | `runtime/resolver.js` (pure, unit-testable) + `runtime/resolve_adapter.js` (Playwright adapter) |
-| Runtime recovery cascade | `runtime/recovery.js` — L1 exception ladder + L2 a11y/fallback (Tier 1–2, zero tokens) |
+| Runtime element resolution | `runtime/app/resolver.js` (pure, unit-testable) + `runtime/app/resolve_adapter.js` (Playwright adapter) |
+| Runtime recovery cascade | `runtime/app/recovery.js` — L1 exception ladder + L2 a11y/fallback (Tier 1–2, zero tokens) |
 | Assertions / outcome validation | `conxa_compile/compiler/validation_planner.py`; runtime `verifyAssertions()` in `run.js` |
 | Skill package building | `conxa_compile/skill_package_builder.py` (data-only output, auth excluded) |
 | LLM calls (compile side) | task clients in `conxa_compile/llm/` → `conxa_core.llm.get_router()` → cloud proxy |
@@ -273,14 +291,14 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Frame / iframe handling | `docs/TRD.md` § "Iframe Pipeline"; `bridge.js`, `session.py`, `build.py`, `run.js` |
 | Shared data models | `packages/conxa-core/conxa_core/models/` — SkillPackage, RecordedEvent, Workflow, SkillPack |
 | Auth (Build Studio) | `conxa-builder/python/services/auth_service.py` — Clerk PKCE → OS keyring |
-| Auth (Runtime) | `runtime/auth_manager.js` — per-company token in keytar; AES-256-GCM session |
+| Auth (Runtime) | `runtime/app/auth_manager.js` — per-company token in keytar; AES-256-GCM session |
 | Auth (Cloud API) | `conxa-cloud/backend/app/api/security.py` — Clerk JWT via PyJWT + JWKS |
-| Telemetry | `runtime/tracker.js` → `conxa-cloud/backend/app/api/tracking_routes.py` |
-| Skill pack sync | `runtime/sync.js` ↔ `app/api/skillpack_update_routes.py` |
-| Runtime two-layer bootstrap | `runtime/bootstrap.js` — min_host check, app-layer load, versioned-directory fallback |
+| Telemetry | `runtime/app/tracker.js` → `conxa-cloud/backend/app/api/tracking_routes.py` |
+| Skill pack sync | `runtime/app/sync.js` ↔ `app/api/skillpack_update_routes.py` |
+| Runtime two-layer bootstrap | `runtime/host/bootstrap.js` — min_host check, app-layer load, versioned-directory fallback |
 | Host / app update manifests | `conxa-cloud/backend/app/api/updates_routes.py` (manifest_version 2; deps: `conxa-runtime`, `conxa-app`) |
 | Studio sandbox for workflow tests | `conxa-builder/python/conxa_compile/conxa_runtime.py` — stages host exe + app layer under `sandbox/.conxa/` |
-| CI execution gate | `runtime/test/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay, **active** in both `build-runtime-host.yml` (vs. the freshly built exe) and `build-runtime-app.yml` (vs. the `MIN_HOST` exe). A red app-layer gate usually means `MIN_HOST` is stale, not that the gate is wrong |
+| CI execution gate | `runtime/test/e2e/gate_replay.js` + `runtime/test/gate-skill/` — real skill replay, **active** in both `build-runtime-host.yml` (vs. the freshly built exe) and `build-runtime-app.yml` (vs. the `MIN_HOST` exe). A red app-layer gate usually means `MIN_HOST` is stale, not that the gate is wrong |
 | Frontend screens | `conxa-cloud/frontend/src/` — Dashboard, Skill Packages, Billing, Team, Settings |
 
 ---

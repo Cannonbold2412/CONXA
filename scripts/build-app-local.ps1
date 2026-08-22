@@ -25,10 +25,9 @@
 
   Run this after editing server.js, run.js, resolver.js, recovery.js, or any
   other app-layer file. For bootstrap.js itself (the packed exe's own entry
-  point) use build-runtime-local.ps1 instead — an obfuscated copy of
-  bootstrap.js ships here too (matching build-runtime-app.yml's file list
-  exactly), but it is never actually loaded from here; the pkg-baked copy
-  inside conxa-runtime.exe is what runs.
+  point) use build-runtime-local.ps1 instead — bootstrap.js is NOT staged here
+  (it runs only from inside conxa-runtime.exe; nothing on disk ever loads a
+  conxa-app/ copy of it).
 
   Requires build-runtime-local.ps1 to have been run at least once (for the host
   exe) — this script only touches the app layer.
@@ -54,7 +53,7 @@ Write-Host "-- obfuscating app layer -------------------------------------------
 $files = @(
   "server.js", "sync.js", "run.js", "browser.js",
   "skill_loader.js", "tracker.js", "install_identity.js", "installed_versions.js",
-  "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js", "tabs.js",
+  "recovery.js", "resolve_adapter.js", "resolver.js", "tabs.js",
   "drift.js", "version_manager.js", "manifest_manager.js", "auth_manager.js",
   "http_client.js", "page_scripts.js",
   # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (mirrors

@@ -4,13 +4,13 @@
   "host_version": "host-v0.0.0-dev",
   "ed25519_public_key": "",
   "description": "Conxa local AI runtime — MCP server for company workflow skills",
-  "main": "server.js",
+  "main": "app/server.js",
   "scripts": {
-    "start": "node server.js",
-    "build:win": "npx @yao-pkg/pkg bootstrap.js --targets node24-win-x64 --output dist/conxa-runtime.exe --public --no-bytecode --public-packages \"*\"",
-    "build:mac": "npx @yao-pkg/pkg bootstrap.js --targets node24-mac-x64 --output dist/conxa-runtime-mac --public --no-bytecode --public-packages \"*\"",
+    "start": "node app/server.js",
+    "build:win": "npx @yao-pkg/pkg host/bootstrap.js --targets node24-win-x64 --output dist/conxa-runtime.exe --public --no-bytecode --public-packages \"*\"",
+    "build:mac": "npx @yao-pkg/pkg host/bootstrap.js --targets node24-mac-x64 --output dist/conxa-runtime-mac --public --no-bytecode --public-packages \"*\"",
     "build:all": "npm run build:win && npm run build:mac",
-    "test": "node --test"
+    "test": "node --test \"test/unit/*.js\""
   },
   "pkg": {
     "targets": [
@@ -22,8 +22,8 @@
       "node_modules/playwright-core/browsers.json"
     ],
     "scripts": [
-      "bootstrap.js",
-      "_pkg_stubs.js",
+      "host/bootstrap.js",
+      "host/_pkg_stubs.js",
       "node_modules/playwright-core/lib/cli/program.js",
       "node_modules/playwright-core/lib/utilsBundle.js",
       "node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js"

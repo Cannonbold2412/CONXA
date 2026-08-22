@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "HOST vs APP boundary — the release-decision rule:",
+    "  runtime/host/   = frozen into the host exe. ANY edit here is dormant until the",
+    "                    next host-vX.Y.Z release; treat every diff in this folder as a",
+    "                    host-release change and tag accordingly.",
+    "  runtime/app/    = ships in the app-layer zip (app-vX.Y.Z), updated frequently.",
+    "                    Some app/ modules are ALSO bundled into the exe (bootstrap.js",
+    "                    requires them across the folder line); they are listed below under",
+    "                    'dual_shipped' so their edits still count as host changes too.",
+    "check_host_manifest.js (CI: build-runtime-host.yml) verifies this manifest matches the",
+    "actual require closure of host/bootstrap.js. Add entries whenever that graph changes."
+  ],
+  "entry": "host/bootstrap.js",
+  "modules": [
+    "host/_pkg_stubs.js",
+    "host/bootstrap.js",
+    "host/cli_sync.js",
+    "host/config_edit_toml.js",
+    "host/config_edit_yaml.js",
+    "host/mcp_hosts_toml.js",
+    "host/mcp_hosts_yaml.js",
+    "host/mcp_register.js",
+    "host/min_host_gate.js",
+    "app/config_edit.js",
+    "app/env.js",
+    "app/host_bridge.js",
+    "app/http_client.js",
+    "app/install_identity.js",
+    "app/manifest_manager.js",
+    "app/marker_span.js",
+    "app/mcp_hosts.js",
+    "app/version_manager.js"
+  ]
+}

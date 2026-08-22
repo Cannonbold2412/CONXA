@@ -4,6 +4,11 @@
 
 ---
 
+## Stopped shipping a useless copy of the launcher inside every app update — 2026-08-22
+The runtime has two layers: the "host" (a big program that rarely changes) and the "app layer" (a small ~60 KB update that ships often). The host contains its own built-in copy of `bootstrap.js` (the startup file), and nothing on a customer's machine ever uses a disk copy of it — but every app-layer release was still bundling an extra obfuscated copy of it anyway, purely out of habit from before the two-layer split existed. That dead weight is now removed: it's gone from the cloud build recipe (`build-runtime-app.yml`) and from the local build script (`build-app-local.ps1`), with comments explaining why it's intentionally absent. Nothing else changed — all 335 runtime tests still pass, and the update checks only ever look for `server.js`, so removing this file can't break anything.
+
+---
+
 ## Full health check of the cloud dashboard's website code — 2026-08-22
 Ran a deep review-only audit of the `conxa-cloud/frontend` codebase (four parallel investigation passes: UI components, marketing pages, app routes/API layer, and build configuration) and wrote up the findings in `conxa-cloud/frontend/REFACTOR-REPORT.md`. **No code was changed** — this is purely a report. The good news: the code is solid overall (strict typing, consistent data fetching, clean structure). The report flags one security gap (the API proxy currently forwards requests even when nobody is logged in — it should reject them), about 45 MB of unused 3D-graphics libraries that can be deleted, roughly 900 lines of dead code (unused components, functions, and leftover files), a lot of copy-pasted pieces that could be merged into shared building blocks (status badges exist in six different versions), an animation on the homepage that runs forever even when you scroll away or switch tabs (drains battery), and a 934 KB logo file that should be a few kilobytes. The report ends with a prioritized plan: quick wins first (deletions, CI checks, the proxy fix), then merging duplicates, then splitting oversized files.
 
@@ -241,3 +246,44 @@ All 335 unit tests pass; all three new CI guards pass locally. Docs updated (TRD
 **Why:** To close the gaps found in the audit - untested safety checks, hidden host-release coupling, duplicated logic that could drift, and two monolith files - without breaking any existing behavior.
 
 **Files touched:** runtime/ (new: min_host_gate.js, host_bridge.js, cli_installer.js, recovery_park.js, failure_response.js, tool_defs.js, run_config.js, recovery_log.js, interpolate.js, host-manifest.json, check_host_manifest.js, check_pkg_stubs.js, check_recovery_purity.js, test/unit/test_min_host_gate.js, test/unit/test_invariants.js, test/unit/test_failure_response.js, test/unit/test_skill_loader.js; modified: bootstrap.js, server.js, run.js, browser.js, sync.js, auth_manager.js, manifest_manager.js, http_client.js, cli_sync.js, config_edit.js, config_edit_yaml.js, resolver.js, package.json; moved: test suite into unit/ and e2e/; deleted: test/e2e/test_mcp_client.js), .github/workflows/build-runtime-host.yml, .github/workflows/build-runtime-app.yml, docs/TRD.md, TODO.md, FIX.md.
+
+## Committed all pending non-runtime work in labeled commits - 2026-08-22
+The finished-but-uncommitted work was sorted and saved into five clearly described checkpoints: (1) compile add-on packs became one-time wallet purchases across backend, frontend, env templates, tests, and billing docs, with the TRD split so only its billing sections were committed; (2) a compiler fix so the "Workflow plan" panel fills in on first compiles; (3) three new manual testing guides under docs/testing/; (4) archived audit reports and edge-case/skill-pack explainers under docs/archive/; (5) FIX.md/TODO.md log updates. The runtime folder refactor (runtime/ code, its test restructure, both runtime CI workflows, and the three runtime-related TRD paragraphs) was deliberately left uncommitted for now.
+
+
+## 2026-08-22 - Runtime sources split into host/ and app/ folders (release boundary made physical)
+
+**What changed:** The runtime code used to sit as one flat pile of ~50 JS files, and the only way to know which ones were frozen into the host exe was to read a JSON manifest. Now there are two visible folders: `runtime/host/` holds the nine exe-frozen files (bootstrap, pkg stubs, MCP registration + its TOML/YAML editors, install-time sync, version gate) - if you change anything here, you must ship a new `host-vX.Y.Z` release. `runtime/app/` holds everything that ships in the frequently-updated app layer (`app-vX.Y.Z`). A few app files are also baked into the exe (shared helpers like env/http_client/version_manager); those are called out in host-manifest.json so their edits still count as host changes.
+
+This lands alongside the finished run.js decomposition: run.js went from ~1,790 lines to a ~300-line orchestrator with the engine split into ten focused modules behind an unchanged public API. Three test regressions from that split were caught and fixed immediately by the existing suite. All build scripts, CI workflows, gate fixtures, guard scripts, and every require path were updated for the folders; the deployed layout on customer machines is unchanged (still flat), so nothing about installs or updates moves.
+
+All 335 unit tests pass; all three CI guards pass; every file syntax-checks.
+
+**Why:** So any human can tell at a glance which folder a change belongs to and which release train it rides - no more hidden host-release coupling from casual edits.
+
+**Files touched:** runtime/host/* (9 moved files), runtime/app/* (39 moved/new files), runtime/check_host_manifest.js, runtime/check_pkg_stubs.js, runtime/host-manifest.json, runtime/package.json, .github/workflows/build-runtime-host.yml, .github/workflows/build-runtime-app.yml, AGENTS.md, docs/TRD.md, TODO.md, FIX.md.
+
+## 2026-08-22 - Added P0 item: run multiple workflows at the same time reliably
+
+**What changed:** Added a new top-priority (P0) backlog item to TODO.md called RT-3. The idea: today a customer can ask their AI assistant to run a workflow from chat window 1, then another from chat 2, another from chat 3 - or ask for several workflows to run side-by-side in one conversation. But the runtime was built assuming one workflow runs at a time on a machine, so running several at once could make them crash into each other (shared browser, shared folders, shared recovery state). The new item says: check what actually breaks today when two workflows run at once, then fix it so parallel runs are dependable - whether that means truly running them together or honestly lining them up one after another with clear status reporting.
+
+The dashboard counts at the top of TODO.md were updated to match (one more open item).
+
+**Why:** Running several automations without taking turns is a basic expectation for real users and paying customers; if it silently breaks it looks like random flakiness.
+
+**Files touched:** TODO.md, FIX.md.
+
+
+## 2026-08-22 - Closed the last two runtime-refactor follow-ups (register orchestrators + marker-block editing)
+
+**What changed:** Two final cleanups from the runtime refactor audit, both in the code that registers Conxa into AI-agent config files:
+
+1. The register/uninstall command used to have three almost-identical copies of the same orchestration code - one for JSON-style agent configs (Claude, Cursor, VS Code, ...), one for TOML files (Codex, Vibe), and one for YAML files (Goose, Hermes). Now the differences (which hosts, which files, how to write an entry) are declared as three small adapter tables, and one shared runner owns everything they used to duplicate: detection checks, --only filtering, multi-file handling, result shapes, and error counting. Same output, same exit codes, ~90 fewer duplicated lines.
+
+2. Two modules each carried their own copy of the "edit only our marked block inside a customer's file" logic (~35 lines x 2) - one for TOML configs, one for the AGENTS.md-style discoverability notes. Both now call a single shared module (marker_span.js). The existing test suite immediately earned its keep here: a first draft read the config file twice where the original read it once, which weakened the "file changed underneath us" protection - a test caught it, and the fix routes the foreign-entry check through that single shared read.
+
+All 335 unit tests pass; all three CI guards pass. The shared editor module is correctly registered as dual-shipped (frozen into the exe AND shipped in the app layer), so host-manifest.json now lists 17 modules.
+
+**Why:** These were the last two duplication hotspots from the audit - copy-pasted control flow that could silently drift apart between config formats.
+
+**Files touched:** runtime/host/mcp_register.js, runtime/host/config_edit_toml.js, runtime/app/durable_context.js, runtime/app/marker_span.js (new), runtime/host-manifest.json, .github/workflows/build-runtime-app.yml, runtime/test/e2e/gate_replay.js, runtime/test/e2e/gate_recovery_ceiling.js, TODO.md, FIX.md.

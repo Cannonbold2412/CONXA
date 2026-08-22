@@ -51,7 +51,7 @@ jobs:
       #   - jsonc-parser in _pkg_stubs.js (added 2026-07-21), which the app layer's
       #     config_edit.js reaches through __hostRequire for MCP host registration —
       #     first shipped in a host release with host-v2.0.0.
-      # Verified by running runtime/test/gate_replay.js against both: host-v1.1.2 fails
+        # Verified by running runtime/test/e2e/gate_replay.js against both: host-v1.1.2 fails
       # to load the app layer at all, host-v2.0.0 replays to "Done." (2026-08-04).
       MIN_HOST:    "host-v2.0.0"
 
@@ -84,76 +84,72 @@ jobs:
         working-directory: runtime
         run: npm ci
 
+      - name: Guard — app-layer manifest covers every module and require
+        # app-layer-files.json is the single source of truth for what ships in
+        # the zip (shared with scripts/build-app-local.ps1 so dev and prod can
+        # never drift). Machine-checks that it lists every runtime/app/*.js AND
+        # that every relative require in a listed file is itself listed — the
+        # exact failure shape of the sync_errors.js and run.js-seam gaps.
+        working-directory: runtime
+        run: node check_app_layer_files.js
+
+      - name: Guard — recovery.js stays zero-network (Tier 1/2 = zero LLM tokens)
+        # Machine-checks the invariant that nothing reachable from the Tier 1/2
+        # cascade can perform network I/O. LLM fires at Tier 3+ only.
+        working-directory: runtime
+        run: node app/check_recovery_purity.js
+
       - name: Install obfuscation tools
         run: npm install -g javascript-obfuscator
 
       - name: Obfuscate app JS files
+        # File list + per-file obfuscation profile come from app-layer-files.json
+        # (see its $comment for why bootstrap.js is absent and why two files need
+        # reduced protection). build-app-local.ps1 consumes the same JSON, so the
+        # local dev build runs the exact same pipeline as this one.
+        #
+        # App layer ships as plain obfuscated JS (NOT V8 bytecode) — see the
+        # header comment at the top of this workflow for the segfault history.
         working-directory: runtime
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path obfuscated
-          $files = @(
-            "server.js", "sync.js", "run.js", "browser.js",
-            "skill_loader.js", "tracker.js", "install_identity.js", "installed_versions.js",
-            "bootstrap.js", "recovery.js", "resolve_adapter.js", "resolver.js", "tabs.js",
-            "drift.js", "version_manager.js", "manifest_manager.js", "http_client.js",
-            # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (see
-            # runtime/durable_context.js) — all three must ship in the app layer
-            # too, not just be bundled into the host exe, since sync.js loads
-            # them from disk at runtime. Missing here means every sync silently
-            # fails to update discoverability files (caught by durable_context's
-            # own try/catch in sync.js, so it degrades to a warning, not a crash
-            # — but the feature would be dead in production without this).
-            "durable_context.js", "config_edit.js", "mcp_hosts.js",
-            # server.js requires this directly (not caught by any try/catch) — omitting
-            # it hard-crashes bootstrap.js on load with "Cannot find module './sync_errors'",
-            # which aborts even --install-playwright before Chromium ever downloads.
-            "sync_errors.js"
-          )
-          foreach ($f in $files) {
-            javascript-obfuscator $f `
-              --output obfuscated/$f `
-              --compact true `
-              --self-defending true `
-              --identifier-names-generator mangled `
-              --string-array true `
-              --string-array-encoding rc4 `
-              --string-array-rotate true `
-              --string-array-shuffle true `
-              --string-array-threshold 0.75 `
-              --dead-code-injection false `
-              --debug-protection false
-            Write-Output "Obfuscated: $f"
+          $manifest = Get-Content app-layer-files.json -Raw | ConvertFrom-Json
+          foreach ($entry in $manifest.files) {
+            $f = $entry.name
+            $obArgs = @("app/$f", "--output", "obfuscated/$f",
+              "--compact", "true",
+              "--identifier-names-generator", "mangled",
+              "--string-array-rotate", "true",
+              "--string-array-shuffle", "true",
+              "--dead-code-injection", "false",
+              "--debug-protection", "false")
+            switch ($entry.profile) {
+              "no-self-defending" {
+                # process.dlopen / native-module patterns are incompatible with
+                # --self-defending (auth_manager.js).
+                $obArgs += @("--self-defending", "false",
+                  "--string-array", "true",
+                  "--string-array-encoding", "rc4",
+                  "--string-array-threshold", "0.75")
+              }
+              "in-page" {
+                # Functions Playwright serializes into the browser page realm —
+                # string-array/self-defending break them once re-parsed there
+                # (page_scripts.js). Mangled identifiers stay safe.
+                $obArgs += @("--self-defending", "false",
+                  "--string-array", "false")
+              }
+              default {
+                $obArgs += @("--self-defending", "true",
+                  "--string-array", "true",
+                  "--string-array-encoding", "rc4",
+                  "--string-array-threshold", "0.75")
+              }
+            }
+            javascript-obfuscator @obArgs
+            Write-Output "Obfuscated: $f ($($entry.profile))"
           }
-          # auth_manager.js uses process.dlopen and native module patterns that are
-          # incompatible with --self-defending obfuscation; obfuscate without it.
-          javascript-obfuscator auth_manager.js `
-            --output obfuscated/auth_manager.js `
-            --compact true `
-            --identifier-names-generator mangled `
-            --string-array true `
-            --string-array-encoding rc4 `
-            --string-array-rotate true `
-            --string-array-shuffle true `
-            --string-array-threshold 0.75 `
-            --dead-code-injection false `
-            --debug-protection false `
-            --self-defending false
-          Write-Output "Obfuscated: auth_manager.js (no self-defending)"
-          # page_scripts.js holds functions Playwright serializes and runs inside the browser
-          # page (not this Node process) — --string-array/--self-defending rewrite a function
-          # body to reference a module-scope decoder/guard var that does not exist once the
-          # source is re-parsed in the browser, breaking those functions at runtime. Keep
-          # mangled identifiers (safe: renames only in-function locals) but disable both.
-          javascript-obfuscator page_scripts.js `
-            --output obfuscated/page_scripts.js `
-            --compact true `
-            --identifier-names-generator mangled `
-            --string-array false `
-            --dead-code-injection false `
-            --debug-protection false `
-            --self-defending false
-          Write-Output "Obfuscated: page_scripts.js (no string-array, no self-defending — runs in-page)"
-        shell: pwsh
 
       - name: Stage obfuscated JS to dist-app
         working-directory: runtime
@@ -163,9 +159,11 @@ jobs:
           $files = @(
             "server", "sync", "run", "browser",
             "skill_loader", "auth_manager", "tracker", "install_identity", "installed_versions",
-            "bootstrap", "recovery", "resolve_adapter", "resolver", "tabs", "drift", "version_manager",
+            "recovery", "resolve_adapter", "resolver", "tabs", "drift", "version_manager",
             "manifest_manager", "http_client", "page_scripts",
-            "durable_context", "config_edit", "mcp_hosts", "sync_errors"
+            "durable_context", "config_edit", "mcp_hosts", "marker_span", "sync_errors", "env", "host_bridge",
+            "cli_installer", "recovery_park", "failure_response", "tool_defs",
+            "run_config", "recovery_log", "interpolate"
           )
           foreach ($base in $files) {
             Copy-Item obfuscated/$base.js dist-app/$base.js
@@ -234,12 +232,32 @@ jobs:
           $exeUrl = "https://github.com/${{ github.repository }}/releases/download/$hostVersion/conxa-runtime.exe"
           Invoke-WebRequest -Uri $exeUrl -OutFile $exe -UseBasicParsing
           Write-Output "Running replay gate (app layer = dist-app) against $hostVersion…"
-          node test/gate_replay.js $exe dist-app
+          node test/e2e/gate_replay.js $exe dist-app
           if ($LASTEXITCODE -ne 0) {
             Write-Error "EXECUTION GATE FAILED: app layer replay did not reach 'Done.' under $hostVersion"
             exit 1
           }
           Write-Output "Execution gate passed: app layer replays cleanly under $hostVersion"
+
+      - name: Recovery ceiling gate — Tier 1/2 stay zero-token under MIN_HOST
+        # Proves the recovery-tier CEILING through the real exe: a step no
+        # zero-token tier can resolve fails terminally at the configured tier
+        # with NO agent-recovery payload when CONXA_MAX_RECOVERY_TIER=2, and
+        # produces the structured Tier 3/4 payload only at tier 4. This is the
+        # executable check behind the "Tier 1/2 cost zero LLM tokens"
+        # invariant (AGENTS.md) — previously verified manually only.
+        working-directory: runtime
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
+        run: |
+          $exe = "$env:TEMP\gate-host.exe"   # downloaded by the execution-gate step above
+          node test/e2e/gate_recovery_ceiling.js $exe
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "RECOVERY CEILING GATE FAILED under $env:MIN_HOST"
+            exit 1
+          }
 
       - name: Zip app layer
         working-directory: runtime

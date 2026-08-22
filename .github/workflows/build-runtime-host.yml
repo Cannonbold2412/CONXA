@@ -61,21 +61,27 @@ jobs:
         working-directory: runtime
         run: npm ci
 
-      - name: Unit tests — MCP registration (register-mcp / unregister-mcp)
-        # Explicit file list, not `npm test`/bare `node --test`: several
-        # pre-existing files in test/ need Playwright browsers, external
-        # services, or the disabled execution gate (see TODO.md) that aren't
-        # set up in this job — running the whole directory here would block
-        # every release on unrelated, already-tracked gaps. These are
-        # fixture-only (os.tmpdir() + env overrides, no network, no browser)
-        # and sandbox os.homedir() so they never touch the runner's real
-        # filesystem state — see the header comment in test_mcp_register.js.
+      - name: Guard — package.json deps are all stubbed into the host exe
+        # _pkg_stubs.js is what makes pkg bundle the npm deps; a dep missing
+        # from it works in dev and breaks only inside the packaged exe.
         working-directory: runtime
-        run: >
-          node --test
-          test/test_config_edit.js test/test_config_edit_toml.js test/test_config_edit_yaml.js
-          test/test_mcp_hosts.js test/test_mcp_register.js test/test_mcp_register_toml.js
-          test/test_mcp_register_yaml.js test/test_durable_context.js test/test_sync.js
+        run: node check_pkg_stubs.js
+
+      - name: Guard — host-manifest.json matches bootstrap's require closure
+        # Every module reachable from bootstrap.js is frozen into this exe;
+        # the manifest makes that membership visible and reviewable (edits to
+        # listed files are dormant until the next host-vX.Y.Z release).
+        working-directory: runtime
+        run: node check_host_manifest.js
+
+      - name: Unit tests — offline suite (test/unit/)
+        # `npm test` = `node --test test/unit/`: only the sandboxed, offline
+        # unit tests (os.tmpdir() + env overrides, no network, no browser —
+        # they never touch the runner's real filesystem state; see the header
+        # comment in test_mcp_register.js). Browser/exe-dependent scripts live
+        # in test/e2e/ and are run explicitly by their own gate steps below.
+        working-directory: runtime
+        run: npm test
 
       - name: Stamp version, host_version, and manifest public key
         working-directory: runtime
@@ -125,7 +131,7 @@ jobs:
         # would have caught the pkg-bytecode regression (selector engine returning 0
         # elements). The app layer defaults to the current runtime/ source.
         working-directory: runtime
-        run: node test/gate_replay.js dist/conxa-runtime.exe
+        run: node test/e2e/gate_replay.js dist/conxa-runtime.exe
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
 
@@ -212,7 +218,7 @@ jobs:
   #     APPLE_CSC_KEY_PASSWORD) and notarytool creds (APPLE_ID, APPLE_APP_PASSWORD,
   #     APPLE_TEAM_ID),
   #   * a macOS installer format (.pkg/.dmg) — no macOS installer_builder exists yet,
-  #   * runtime/bootstrap.js + version_manager.js verified on darwin.
+  #   * runtime/host/bootstrap.js + runtime/app/version_manager.js verified on darwin.
   # `runtime/package.json` already exposes `build:mac` (pkg node24-mac-x64).
   build-conxa-runtime-macos:
     if: false
