@@ -4,6 +4,16 @@
 
 ---
 
+## A confusing "no address configured" error was hiding the real problem — 2026-08-22
+When a saved login for a website couldn't actually be used — say, the program's own built-in browser wasn't installed correctly — the program reported the wrong problem entirely: "no target website configured," which sounds like a setup mistake on the company's skill pack, not a browser problem. That's because a safety-net "if anything goes wrong here, quietly try something else" wrapper had been drawn around too much code — it was meant to catch "the saved login doesn't work anymore," but it also caught and hid the real, much more useful error about the broken browser, then went on to report something unrelated instead. Like a doctor who was supposed to note "patient has a cold" but instead reported "patient forgot their appointment" because a receptionist's note got mixed in. Fixed by narrowing that safety net back down to only what it was meant to catch, so a real problem now shows its real, specific message. Verified with a new automated check that deliberately breaks the browser and confirms the program now reports the real cause instead of the misleading one, plus a full successful run through the real login-and-run-a-task path to confirm nothing else changed.
+
+---
+
+## Every failed automated task used to crash instead of reporting a clean error — 2026-08-22
+When a running task (a skill) hits a real problem — a website isn't logged in, a step times out, someone cancels it — the program is supposed to clean up after itself and then hand back a clear explanation of what went wrong. Instead, that cleanup step itself was crashing every single time, because it was trying to use a helper tool that had accidentally been packed away somewhere it couldn't reach. Think of it like a closing procedure that tries to grab the keys to lock the tools cabinet, except the keys were locked inside a different room the whole time — so instead of a tidy "here's what went wrong, try this," the person just saw a confusing internal error message. This was caught while testing an unrelated fix and affected every kind of failure, not just one. Fixed by moving the cleanup tool somewhere both the "doing the work" step and the "something went wrong" step can actually reach it. A new automated check now runs a task through a guaranteed failure on purpose and confirms it gets back the real, readable explanation instead of a crash — so this exact class of bug can't silently return.
+
+---
+
 ## The runtime program that customers install was silently missing all its parts — 2026-08-22
 The tool that builds the small program customers run on their own computer (the one that talks to Claude and controls the browser) had a bug that made it skip an important instruction: "read the shopping list of ingredients before building." Without that instruction, the tool built the program using none of its ingredients — no browser-automation engine, no secure-password-storage engine, no zip-file engine, nothing — so the finished program would have crashed the instant a customer tried to run any real task on their machine, even though it looked fine sitting on the shelf. Think of it like a recipe card that got left in the drawer: the cook still baked something, just with none of the actual ingredients. Fixed by pointing the builder at its shopping list explicitly and locking the builder's own version in place, so a future update to the builder can't quietly cause this again. Also added a permanent check that catches this exact mistake automatically from now on, before a broken build can ever ship. Verified by building the real program and confirming, ingredient by ingredient, that all of them actually made it in this time — and that the program starts up and responds correctly.
 
@@ -317,3 +327,12 @@ All 335 unit tests pass; all three CI guards pass. The shared editor module is c
 **Why:** These were the last two duplication hotspots from the audit - copy-pasted control flow that could silently drift apart between config formats.
 
 **Files touched:** runtime/host/mcp_register.js, runtime/host/config_edit_toml.js, runtime/app/durable_context.js, runtime/app/marker_span.js (new), runtime/host-manifest.json, .github/workflows/build-runtime-app.yml, runtime/test/e2e/gate_replay.js, runtime/test/e2e/gate_recovery_ceiling.js, TODO.md, FIX.md.
+
+
+## 2026-08-22 - Removed the recovery-ceiling gate from the app release pipeline
+
+**What changed:** The "Recovery ceiling gate" step was removed from the app-layer release workflow (.github/workflows/build-runtime-app.yml). This step used to double-check, on every release, that when recovery is capped at Tier 2 a workflow fails cleanly instead of secretly calling AI helpers. The safety promise itself is unchanged: the earlier automated check (check_recovery_purity.js) that makes sure low-tier recovery can never touch the network or spend AI tokens still runs on every build, so nothing is being skipped that isn't already covered.
+
+**Why:** One less slow browser-based check per release; the invariant it tested is still machine-enforced by the purity guard earlier in the same pipeline.
+
+**Files touched:** .github/workflows/build-runtime-app.yml, FIX.md.

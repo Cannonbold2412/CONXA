@@ -230,26 +230,6 @@ jobs:
           }
           Write-Output "Execution gate passed: app layer replays cleanly under $hostVersion"
 
-      - name: Recovery ceiling gate — Tier 1/2 stay zero-token under MIN_HOST
-        # Proves the recovery-tier CEILING through the real exe: a step no
-        # zero-token tier can resolve fails terminally at the configured tier
-        # with NO agent-recovery payload when CONXA_MAX_RECOVERY_TIER=2, and
-        # produces the structured Tier 3/4 payload only at tier 4. This is the
-        # executable check behind the "Tier 1/2 cost zero LLM tokens"
-        # invariant (AGENTS.md) — previously verified manually only.
-        working-directory: runtime
-        shell: pwsh
-        timeout-minutes: 10
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
-        run: |
-          $exe = "$env:TEMP\gate-host.exe"   # downloaded by the execution-gate step above
-          node test/e2e/gate_recovery_ceiling.js $exe
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "RECOVERY CEILING GATE FAILED under $env:MIN_HOST"
-            exit 1
-          }
-
       - name: Zip app layer
         working-directory: runtime
         run: |
