@@ -164,7 +164,7 @@ class LLMRouter:
         # Bound on how long a single route_text/route_vision call will block waiting for a
         # cooled-down key to clear, instead of failing the request outright. Keeps a transient
         # 429 from costing a full compile step while never blocking past a caller's patience.
-        self.wait_ceiling_secs: float = 8.0
+        self.wait_ceiling_secs: float = settings.llm_router_wait_ceiling_secs
         self.prefer_fast_for_text: bool = settings.llm_router_prefer_fast_for_text
         self._request_counter: int = 0
         self._last_lru_index: int = 0
@@ -234,9 +234,9 @@ class LLMRouter:
         pool: str | None,
     ) -> dict[str, Any] | None:
         """Shared route_text/route_vision body: pick an entry, fall back across pools,
-        and — once per call — wait for the soonest cooled-down key to clear (bounded by
-        ``wait_ceiling_secs``) instead of instantly failing on a transient 429."""
-        waited_once = False
+        and wait for cooled-down keys to clear (bounded by a total ``wait_ceiling_secs``
+        budget across the whole call) instead of instantly failing on a transient 429."""
+        wait_budget = self.wait_ceiling_secs
 
         for attempt in range(self.max_retries):
             entry = self._next_available_entry(for_vision=for_vision, pool=pool)
@@ -244,17 +244,19 @@ class LLMRouter:
                 _debug_log(f"router: pool={pool} exhausted{' for vision' if for_vision else ''}, falling back to any pool")
                 entry = self._next_available_entry(for_vision=for_vision)
 
-            if entry is None and not waited_once:
-                waited_once = True
+            if entry is None and wait_budget > 0:
                 soonest = self._soonest_cooldown(for_vision=for_vision)
                 if soonest is not None:
                     wait_s = soonest - time.monotonic()
-                    if 0 < wait_s <= self.wait_ceiling_secs:
+                    if 0 < wait_s <= wait_budget:
                         _debug_log(f"router: all entries cooled, waiting {wait_s:.1f}s for soonest to clear")
                         time.sleep(wait_s)
+                        wait_budget -= wait_s
                         entry = self._next_available_entry(for_vision=for_vision, pool=pool)
                         if entry is None and pool is not None:
                             entry = self._next_available_entry(for_vision=for_vision)
+                    else:
+                        wait_budget = 0
 
             if entry is None:
                 _debug_log("router: all providers cooled or exhausted")

@@ -68,7 +68,27 @@ CEREBRAS_ENABLED=false
 TOGETHER_ENABLED=false
 OPENROUTER_ENABLED=false
 MISTRAL_ENABLED=false
+FREELLMAPI_ENABLED=false
 ```
+
+### FreeLLMAPI (optional free-tier aggregator)
+
+[FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) is a self-hosted,
+OpenAI-compatible proxy that stacks the free tiers of ~28 providers behind one
+`/v1` endpoint. The router treats it as a single pool entry — one unified
+`freellmapi-…` key unlocks all upstream free tiers configured inside it.
+
+```env
+FREELLMAPI_ENABLED=true
+FREELLMAPI_ENDPOINT=http://127.0.0.1:3001/v1   # wherever you run the proxy
+FREELLMAPI_API_KEYS=freellmapi-your-unified-key
+FREELLMAPI_TEXT_MODEL=auto                     # proxy picks a model with quota
+FREELLMAPI_VISION_MODEL=                       # pin a vision-capable model, e.g. google/gemini-2.5-flash
+```
+
+Caution: upstream free tiers carry experimentation-only ToS — keep at least one
+direct provider in the pool as fallback for real customer traffic.
+
 
 ### 3. Router Behavior (Optional Tuning)
 

@@ -357,12 +357,37 @@ class Settings(BaseSettings):
         default="pixtral-large-latest",
         validation_alias=_provider_env("MISTRAL_VISION_MODEL"),
     )
+    # FreeLLMAPI (github.com/tashfeenahmed/freellmapi) — self-hosted OpenAI-compatible
+    # proxy that stacks 28 providers' free tiers behind one /v1 endpoint. The key is
+    # FreeLLMAPI's own unified "freellmapi-…" bearer, not any upstream provider key;
+    # upstream free-tier keys are configured inside the proxy itself.
+    freellmapi_enabled: bool = Field(
+        default=False,
+        validation_alias=_provider_env("FREELLMAPI_ENABLED"),
+    )
+    freellmapi_endpoint: str = Field(
+        default="http://127.0.0.1:3001/v1",
+        validation_alias=_provider_env("FREELLMAPI_ENDPOINT"),
+    )
+    freellmapi_api_keys: str = Field(default="", validation_alias=_provider_env("FREELLMAPI_API_KEYS"))
+    freellmapi_text_model: str = Field(
+        default="auto",  # let the proxy's router pick a model with remaining quota
+        validation_alias=_provider_env("FREELLMAPI_TEXT_MODEL"),
+    )
+    freellmapi_vision_model: str = Field(
+        default="",  # vision-capable model must be pinned explicitly (e.g. google/gemini-2.5-flash)
+        validation_alias=_provider_env("FREELLMAPI_VISION_MODEL"),
+    )
 
     # Router behavior
     llm_router_cooldown_secs: int = 60
     llm_router_max_retries: int = 3
     llm_router_request_timeout_ms: int = 30000
     llm_router_prefer_fast_for_text: bool = True
+    # How long route_text/route_vision will block waiting for a cooled-down provider
+    # to clear before giving up. Must be >= llm_router_cooldown_secs or every provider
+    # hitting a flat (no Retry-After) 429 cooldown together will never be waited out.
+    llm_router_wait_ceiling_secs: float = 65.0
     # Comma-separated provider names (e.g. "google_ai_studio,nvidia_nim") routed
     # to Starter/Pro compiles; providers not listed here serve the Free pool.
     llm_premium_providers: str = Field(default="", validation_alias=_provider_env("LLM_PREMIUM_PROVIDERS"))
@@ -476,6 +501,8 @@ class Settings(BaseSettings):
              self.openrouter_api_keys, self.openrouter_text_model, self.openrouter_vision_model),
             ("mistral", self.mistral_enabled, self.mistral_endpoint,
              self.mistral_api_keys, self.mistral_text_model, self.mistral_vision_model),
+            ("freellmapi", self.freellmapi_enabled, self.freellmapi_endpoint,
+             self.freellmapi_api_keys, self.freellmapi_text_model, self.freellmapi_vision_model),
         ]
 
         result: list[ProviderConfig] = []
