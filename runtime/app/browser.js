@@ -228,6 +228,15 @@ async function _persistSession(workspace_id, state, authManager, sessionsDir, lo
 // supposed to prevent. Kept short (not zero — that would defeat the point of caching for a fast
 // back-to-back sequence) rather than re-validating on every hit, which would add a probe's worth
 // of latency to the common, nothing-expired case.
+//
+// RT-3: each cache entry is a LEASE, not a free-for-all. A run holds it `busy` for the whole
+// execution (and through a parked recovery, if the run ends by parking); the idle timer only
+// starts counting once the lease is released. Two concurrent runs must never share one live
+// context (tabs.js's popup registry and the per-run download listener both assume exactly one
+// run is driving a context), so a call that finds its slot already busy gets its own independent,
+// uncached browser instead of waiting for or stealing the lease. This also fixes a standalone
+// bug the old always-armed timer had: a headless run longer than IDLE_MS used to have its
+// browser closed out from under it mid-execution — busy entries are now exempt.
 const _cache    = new Map();
 const IDLE_MS   = 90 * 1000;
 
@@ -251,26 +260,48 @@ async function getCachedBrowser(workspace_id, authManager, opts = {}) {
   const cacheKey = opts.groupId ? `${workspace_id}::${opts.groupId}::${appsKey}` : workspace_id;
   if (headless) {
     const entry = _cache.get(cacheKey);
-    if (entry && entry.browser && entry.context) {
+    if (entry && !entry.busy && entry.browser && entry.context) {
       try {
         entry.context.pages(); // throws if closed
-        _scheduleCleanup(cacheKey);
-        return { browser: entry.browser, context: entry.context, protectedUrl: entry.protectedUrl, cached: true };
+        clearTimeout(entry.idleTimer); // leased — not idle until released
+        entry.busy = true;
+        return { browser: entry.browser, context: entry.context, protectedUrl: entry.protectedUrl, cached: true, leaseKey: cacheKey };
       } catch (_) {
         _cache.delete(cacheKey);
       }
     }
+    // Entry missing, dead, or already leased by a concurrent run — build independently rather
+    // than waiting for or stealing the lease. Falls through to getAuthContext below.
   }
   const result = await getAuthContext(workspace_id, authManager, {
     headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds,
   });
   // authPending means no browser/context was built (a login window was opened instead) —
-  // nothing to cache.
-  if (headless && !result.authPending) {
-    _cache.set(cacheKey, { browser: result.browser, context: result.context, protectedUrl: result.protectedUrl, idleTimer: null });
-    _scheduleCleanup(cacheKey);
+  // nothing to cache or lease.
+  if (result.authPending) return { ...result, cached: false, leaseKey: null };
+
+  // Only claim the cache slot when it's genuinely free — a concurrent call may have filled it
+  // between the busy-check above and here (both saw it missing and raced getAuthContext). The
+  // loser of that race gets a leaseKey of null: its browser is real and usable for this run, but
+  // it is this call's alone, never entered into the cache, and must be closed directly by the
+  // caller at teardown rather than released back to a slot it doesn't own.
+  if (headless && (!_cache.has(cacheKey) || _cache.get(cacheKey).browser === undefined)) {
+    _cache.set(cacheKey, { browser: result.browser, context: result.context, protectedUrl: result.protectedUrl, idleTimer: null, busy: true });
+    return { ...result, cached: false, leaseKey: cacheKey };
   }
-  return { ...result, cached: false };
+  return { ...result, cached: false, leaseKey: null };
+}
+
+// Ends a run's lease on a cached browser (no-op for a null leaseKey — that browser was never in
+// the cache and the caller closes it directly instead). Re-arms the idle timer from this moment,
+// not from when the lease was originally acquired, so a long-running execution never gets its
+// browser reaped mid-run for merely having been checked out for a while.
+function releaseCachedBrowser(leaseKey) {
+  if (!leaseKey) return;
+  const entry = _cache.get(leaseKey);
+  if (!entry) return;
+  entry.busy = false;
+  _scheduleCleanup(leaseKey);
 }
 
 // ─── Session management ───────────────────────────────────────────────────────
@@ -647,6 +678,7 @@ async function gracefulShutdown() {
 
 module.exports = {
   getCachedBrowser,
+  releaseCachedBrowser,
   getAuthContext,
   getGroupAuthContext,
   _filterRequiredApps,

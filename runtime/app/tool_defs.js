@@ -75,7 +75,18 @@ const CORE_TOOL_DEFS = [
   },
   {
     name: "cancel_execution",
-    description: "Conxa automation: cancel the currently running skill execution. Safe to call at any time.",
+    description: "Conxa automation: cancel a running skill execution. Several may be running at once (e.g. one per chat) — pass run_id (from execute_skill's response or get_execution_status) to cancel a specific one. Omitting run_id only works when exactly one execution is active; with several active it returns their run_ids instead of guessing which to cancel. Safe to call at any time.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        run_id: { type: "string", description: "The run to cancel (from execute_skill's response text or get_execution_status). Optional only when a single execution is active." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_execution_status",
+    description: "Conxa automation: list every currently running execution (there may be more than one — separate chats, or several skills started at once). Each entry includes run_id, skill, step progress, and elapsed time.",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
