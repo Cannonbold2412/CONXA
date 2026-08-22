@@ -11,7 +11,7 @@ export default function OnboardingPage() {
         </p>
       </div>
       <CreateOrganization
-        afterCreateOrganizationUrl="/dashboard"
+        afterCreateOrganizationUrl="/onboarding/company-domain"
         appearance={clerkAppearance}
         skipInvitationScreen
       />

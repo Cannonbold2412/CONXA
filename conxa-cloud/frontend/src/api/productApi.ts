@@ -142,6 +142,18 @@ export function fetchSubscription(): Promise<SubscriptionResponse> {
   return apiFetch('/billing/subscription').then((r) => json<SubscriptionResponse>(r))
 }
 
+export function fetchInstallerDomain(): Promise<{ domain: string }> {
+  return apiFetch('/entitlements/installer-domain').then((r) => json<{ domain: string }>(r))
+}
+
+export function setInstallerDomain(domain: string): Promise<{ domain: string }> {
+  return apiFetch('/entitlements/installer-domain', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ domain }),
+  }).then((r) => json<{ domain: string }>(r))
+}
+
 export function fetchJobs(): Promise<{ jobs: JobRecord[] }> {
   return apiFetch('/jobs').then((r) => json<{ jobs: JobRecord[] }>(r))
 }
