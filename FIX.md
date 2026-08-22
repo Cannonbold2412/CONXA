@@ -4,6 +4,9 @@
 
 ---
 
+## All pending work organized into clean, labeled commits — 2026-08-22
+A batch of finished but uncommitted work (seat limits, admin access, the optional AI provider, the smarter compile behavior, the signup domain question, and the new folder look) had piled up as one big pile of changed files. It's now been sorted and saved into eight separate, clearly described checkpoints — one per change — so if anything ever needs to be reviewed, undone, or traced back later, each change can be looked at on its own instead of untangling one giant blob.
+
 ---
 
 ## Team seat limits are now actually enforced, not just displayed — 2026-08-22
