@@ -4,6 +4,26 @@
 
 ---
 
+## Full health check of the cloud dashboard's website code — 2026-08-22
+Ran a deep review-only audit of the `conxa-cloud/frontend` codebase (four parallel investigation passes: UI components, marketing pages, app routes/API layer, and build configuration) and wrote up the findings in `conxa-cloud/frontend/REFACTOR-REPORT.md`. **No code was changed** — this is purely a report. The good news: the code is solid overall (strict typing, consistent data fetching, clean structure). The report flags one security gap (the API proxy currently forwards requests even when nobody is logged in — it should reject them), about 45 MB of unused 3D-graphics libraries that can be deleted, roughly 900 lines of dead code (unused components, functions, and leftover files), a lot of copy-pasted pieces that could be merged into shared building blocks (status badges exist in six different versions), an animation on the homepage that runs forever even when you scroll away or switch tabs (drains battery), and a 934 KB logo file that should be a few kilobytes. The report ends with a prioritized plan: quick wins first (deletions, CI checks, the proxy fix), then merging duplicates, then splitting oversized files.
+
+---
+
+## A guide explaining exactly what gets installed on customer computers — 2026-08-22
+Created `docs/Skill-Pack-Contents.md`. It explains in plain language what actually lands on an end customer's machine inside the `~/.conxa/skill-packs/` folder, file by file: the company-level `pack.json` (list of skills, groups, where to download updates from), and per-skill files — `manifest.json` (version info, required inputs, tamper-checksums, "does the website still look right?" landmarks), `execution.json` (the recorded workflow as a step list with multiple ways to find each button so skills survive redesigns), `recovery.json` (backup hints for when a click fails), and `inputs.json` (what the user must fill in). It also clears up a common confusion: there is no `execution.js` or `recovery.js` in a skill pack — those are part of the separately-installed runtime engine; skill packs are pure data with zero code.
+
+---
+
+## Added a hands-on stress-test guide you can follow yourself — 2026-08-22
+Created `docs/testing/STRESS-TEST-GUIDE.md`. It's a step-by-step manual testing playbook organized into 10 suites: simple sanity checks, big 100+ step workflows to prove the scale advantage, tricky element-finding cases (buttons with changing IDs, identical rows), deliberate break-it-after-compiling tests to show off self-healing, hard structural cases (iframes, popups, file uploads, canvas apps), slow-network and mid-run chaos tests, weird input values, update/sync checks, and billing limits. Every test now names a **real free practice website** with ready logins (SauceDemo checkout, ParaBank banking, OrangeHRM dashboard, Computer Database, the-internet.herokuapp.com, DemoQA, and more), so you can start clicking immediately without hunting for targets. Each test says exactly what to click, what "pass" looks like, what counts as a real bug versus a by-design safety stop, and what evidence (logs, screenshots) to save. It ends with a scorecard that turns your results into demo material for sales.
+
+---
+
+## The "Workflow plan" panel no longer comes up empty on a first compile — 2026-08-22
+When you compiled a brand-new recording, the "Workflow plan" tab in the review screen was always blank, but recompiling the same workflow filled it in. Here's why: the plan is written by one AI call that runs at the very end of a compile. A first compile fires a burst of AI calls before it (describing each button, looking at screenshots), and on the free AI plans we use, that burst temporarily uses up everyone's turn — so by the time the plan's turn came, every AI key was resting, the call failed quietly, and the app saved an empty plan without telling anyone. On a recompile, the earlier work is remembered from last time, so the AI keys were free and the plan succeeded. Three fixes: the compiler now tries the plan call a second time after a short pause instead of giving up; successful plans are remembered locally so they're never paid for twice; and if the plan still can't be generated, the compile log now clearly says so (with the real reason) and tells you that recompiling later will usually fill it in, instead of failing silently.
+
+---
+
 ## All pending work organized into clean, labeled commits — 2026-08-22
 A batch of finished but uncommitted work (seat limits, admin access, the optional AI provider, the smarter compile behavior, the signup domain question, and the new folder look) had piled up as one big pile of changed files. It's now been sorted and saved into eight separate, clearly described checkpoints — one per change — so if anything ever needs to be reviewed, undone, or traced back later, each change can be looked at on its own instead of untangling one giant blob.
 
@@ -114,3 +134,110 @@ Every paying account used to have an extra, invisible layer in how its automatio
 **Why:** The full technical reference was dense and easy to misread. Anyone new to the codebase (or just curious how self-healing works) now has one friendly document to start from.
 
 **Files touched:** docs/recovery-tiers-explained.md (new), FIX.md.
+
+## Wrote a step-by-step manual testing guide for plan limits - 2026-08-22
+
+**What changed:** Added a new document, `docs/Manual-Tier-Limit-Testing.md`, that explains in easy language how to manually check that every paid-plan limit actually works. It covers all four plans (Free, Starter, Pro, Enterprise) and every limit: monthly compile credits, AI editing tokens, how many computers can use the Studio, team member seats, how many workflows can stay published, the 30-day free trial running out, who is allowed to share installers outside the company, custom branding (Enterprise only), analytics dashboards and data history, using your own AI key, extra credit packs, and a way to double-check that the "off switches" for each limit are not left turned off.
+
+**Why:** We enforce these limits in code, but nobody had written down how to prove by hand that each one blocks what it should. The guide gives copy-paste commands, the exact error message to expect when a limit trips, and common reasons a test might behave oddly.
+
+**Files touched:** docs/Manual-Tier-Limit-Testing.md (new), FIX.md.
+
+## 2026-08-22 — Production readiness manual testing guide
+Added docs/testing/Production-Readiness-Manual-Testing.md — a simple step-by-step checklist for manually testing everything before going live: backend health, frontend, login and team roles, recording/compiling/building in Studio, publishing, installing on a clean machine, skill execution, recovery, billing, auto-updates, security spot checks, and a final go/no-go sign-off page.
+
+## 2026-08-22
+- Added a new P0 item (TEST-11) to TODO.md: run the full manual testing suite from docs/testing/ (long-chain workflows, stress tests, production readiness, tier limits). Before testing starts, LLM provider keys must be re-invoked and re-configured so tests don't fail on expired keys.
+
+## 2026-08-22 - Synced cost model doc with PRD and real code pricing
+**What changed:** Fixed `docs/cost_model.md` so its numbers match the PRD (section 11) and what the billing code actually enforces. The AI-editing token allowances still showed the old bigger numbers (1M/10M/50M) - corrected to 500K/2.5M/10M for Free/Starter/Pro. Some compilation cost examples still used old prices that contradicted the doc's own math - corrected them ($0.21 per fresh workflow, $0.04 per recompile, not $0.54/$0.11). The extra credit packs section described a "+25 pack for Rs 4,999" that doesn't exist - replaced with the real packs: +20 for Rs 3,999, +50 for Rs 9,999, +100 for Rs 19,999, +250 for Rs 49,999. The free plan was described as "capped at 1 install", but installs are unlimited on every tier including Free (per the PRD) - it's the build machine that is capped at 1. Added a row showing every paid plan can put a custom icon on the installer. Marked one old completed checklist item as superseded.
+
+**Why:** The doc had drifted after the August 8 repricing; anyone planning margins or writing pricing copy from it would have used wrong numbers.
+
+**Files touched:** docs/cost_model.md, FIX.md.
+
+## 2026-08-22 - Added the missing Cashfree compile add-on settings to backend env files
+**What changed:** The four new compile add-on packs (+20/+50/+100/+250 compiles per month) each need their own Cashfree plan ID in the backend's environment settings. The main .env.example already listed them, but the dev template (.env.dev.example), the actual dev file (.env.dev), and the production template (.env.prod.example) were still missing all four lines (CASHFREE_ADDON_20_PLAN_ID through CASHFREE_ADDON_250_PLAN_ID). Added them right under the existing Starter/Pro plan IDs, with a short comment explaining what the packs are and how much they cost. Also noted in the dev files that they stay blank unless you create sandbox test plans.
+
+**Why:** Without these lines in prod, buying an add-on pack from the Billing page would fail with a "plan ID not configured" error even though everything else is set up. The templates are also the checklist for what production needs.
+
+**Files touched:** conxa-cloud/backend/.env.dev.example, conxa-cloud/backend/.env.dev, conxa-cloud/backend/.env.prod.example, FIX.md.
+
+## 2026-08-22 - Added future-horizon revenue projections to the cost model
+**What changed:** Added a new section to `docs/cost_model.md` called "Future Horizons - Revenue Projections & Cost Posture", taken from the PRD's long-term direction (sections 11 and 14). It explains in planning terms how pricing extends beyond today's plans: Horizon 2 (Scale) would add concurrency capacity and a cheaper "review-resolver" seat type, with execution workers running on customer machines so our costs stay near zero; Horizon 3 (Understand and Optimise) would charge for how much of a company is instrumented, running on customer infrastructure so we never pay for data warehouses or GPUs. It also covers what each stage earns for the next one, the two still-unanswered questions that block pricing any of it, and clear guidance: don't put these future numbers into real forecasts until they are officially decided.
+
+**Why:** The cost doc only described today's product. Anyone doing financial planning or fundraising needed to see where revenue comes from next and why the zero-cost-per-run promise survives growth.
+
+**Files touched:** docs/cost_model.md, FIX.md.
+
+## 2026-08-22 - Read-only refactor audit of the cloud backend (no code changed)
+**What was done:** Audited conxa-cloud/backend and its tests before any future refactor work. Key findings: (1) The old Phase 4 report's failed config.py split taught that tests depend on ONE shared settings object - don't try to split it into separate copies again. (2) Test suite is currently healthy: 885 passed, 1 real failure (	est_entitlements.py::test_addon_packs_stack_credits_and_human_edit_tokens - add-on credit stacking returns 200 instead of 290, likely broken by the four-tier add-on ladder change). (3) Several backend modules have zero test coverage: rbac.py, jobs.py/job_routes.py, machine_binding.py, product_ownership.py, workflow_routes.py, main.py startup validation. (4) Dependencies use loose minimum-version pins (no lockfile) so builds aren't fully reproducible. (5) Busiest backend files are publish_routes, skillpack_update_routes, updates_routes, saas.py - refactor those last.
+
+**Why:** To have a clear picture of what's safe to touch and what needs test coverage first, before anyone starts refactoring the cloud backend.
+
+**Files touched:** FIX.md only (read-only audit).
+
+## 2026-08-22 - Report on the shared conxa-core package (no code changed)
+**What was done:** Wrote a plain-language report (docs/conxa-core-split-report.md) answering whether packages/conxa-core should be split between the apps. Key findings: only two apps actually use it (Build Studio and Cloud backend) - the Node runtime never imports it. Most of what's left in it genuinely must stay shared (the data models, the database layer, the LLM router seam). A few storage modules could move to the Studio, but there's no good reason yet. The big config file could be split one day, but a previous attempt failed and doing it properly means touching ~50 files - documented as a future project. Also flagged that runtime data is piling up inside the package's own folder, which should be cleaned up separately.
+
+**Why:** The question keeps coming up ("why is this shared?"), and now there's a written answer with evidence so nobody re-attempts the known-bad config split or breaks the Studio/Cloud contract by copying models.
+
+**Files touched:** docs/conxa-core-split-report.md, FIX.md.
+
+## 2026-08-22 - Full refactor audit report for the cloud backend (no code changed)
+**What was done:** Spawned 4 parallel audit agents over conxa-cloud/backend and wrote the full plain-language report to REFACTOR_AUDIT_backend.md. Headline findings: (1) three probable real bugs - Cashfree webhooks may be blocked by the auth middleware in production, the subscriptions webhook signature check passes when no signature is sent, and the workflows/generations endpoint returns 404 because another route shadows it. (2) Two separate systems count LLM token usage with different rules, so billing answers can disagree. (3) Route files borrow each other's private helper functions, so refactoring one file can silently break others. (4) Magic strings (storage keys, plan names, release statuses) are copy-pasted across many files. (5) One billing test is currently failing, and a few modules have zero test coverage, so those need tests before any refactor. The report ends with a prioritised action list: fix the bugs first, then do the small high-value cleanups (one error handler, shared constants, single usage counter), then bigger file splits later.
+
+**Why:** To give anyone planning backend work a single trusted map of what is safe to change, what is broken, and what order to do it in.
+
+**Files touched:** REFACTOR_AUDIT_backend.md, FIX.md only (read-only audit).
+
+## 2026-08-22 — Refactor audit of conxa-builder (report only, no code changed)
+We ran a full health-check of the Build Studio code (the desktop app that records and compiles workflows) and saved the findings in conxa-builder/REFACTOR-AUDIT.md. Four review areas were checked: the Python backend that talks to the UI, the compiler that turns recordings into skills, the packaging/storage/editor parts, and the Electron interface itself. The main issues found: one part of the backend swaps a shared AI connection per request which could mix up billing between tasks; a few very large files doing too many jobs (a 1,600-line compiler file and two huge UI screens); a lot of copy-pasted error handling; and about 1,400 lines of leftover code that nothing uses anymore. The report lists everything with exact file locations and a suggested order for fixing it, starting with quick safety fixes and dead-code removal. No actual code was changed yet.
+
+## 2026-08-22 - Refactor audit of the runtime folder (report only, no code changed)
+**What was done:** Ran 5 parallel review passes over the runtime/ folder (the MCP server that runs skills on customer machines) and saved the full plain-language report to runtime-refactor-audit.md. Headline findings: (1) the "host exe is just two files" claim is wrong - about 13 more files are secretly frozen into it with no list and no CI check, so casual edits become hidden host-release changes; (2) one install-time path skips the version-compatibility check entirely; (3) dev-vs-prod path settings are re-derived in several files that can quietly disagree; (4) the two biggest files (run.js ~1,800 lines, server.js ~1,600 lines) each do five jobs at once and server.js has zero unit tests. On the bright side: no circular dependencies, the element-resolver is exemplary, and the CI replay gate is strong. The report ends with a phased fix plan - add safety tests first, then small correctness fixes, then split the big files.
+
+**Why:** Same reason as the backend/builder audits - a single trusted map of what is safe to change in runtime/, so refactoring does not break the host/app update boundary or the recovery guarantees.
+
+**Files touched:** runtime-refactor-audit.md, FIX.md only (read-only audit).
+
+## 2026-08-22 - Compile add-on packs changed from monthly subscriptions to one-time purchases
+**What changed:** The extra compile credit packs (+20/+50/+100/+250) used to work like small monthly subscriptions - you paid every month until you cancelled. Now they are one-time purchases: pay once, and the credits land in a "wallet" that never expires. The system only dips into this wallet after your plan's normal monthly allowance runs out, so nothing about your regular plan changes. The Billing page now shows your wallet balance instead of "Active x2"-style badges, the Cancel buttons for add-ons are gone (nothing to cancel - you already paid), and buying redirects to a Cashfree payment page and credits automatically when you come back. Because one-time payments don't use Cashfree "plans" at all, the four CASHFREE_ADDON_*_PLAN_ID settings were removed from every env file - Starter and Pro subscriptions keep theirs.
+
+**Why:** Add-ons were always meant to be one-time top-ups, not recurring charges. This also removes setup friction: production now needs just the two base plan IDs plus the Cashfree keys.
+
+**Files touched:** conxa-cloud/backend/app/api/cashfree_routes.py, conxa-cloud/backend/app/services/entitlements.py, packages/conxa-core/conxa_core/config.py, conxa-cloud/backend/.env(.example/.dev/.dev.example/.prod.example), conxa-cloud/frontend/src/BillingPage.tsx, conxa-cloud/frontend/src/api/cashfreeApi.ts, conxa-cloud/frontend/src/api/productApi.ts, conxa-cloud/tests/test_entitlements.py, docs/TRD.md, docs/Backend-Schema.md, docs/cost_model.md, FIX.md.
+
+## Edge-case audit (full codebase)
+
+Ran parallel audits of every subsystem and wrote all findings to a new file: EDGE_CASES.md.
+It lists ~230 edge cases in plain language — what breaks, where the code is, how bad, how likely. Highlights:
+
+- Two critical security holes: payment webhooks can be forged if the signature header is simply left out, and one company can overwrite another company's installer download.
+- The recorder silently drops common actions (clicks on plain divs, scrolling inside panels, dragging) so recorded workflows are missing steps without warning.
+- Typed secrets like card numbers and API keys can be saved in plain text during recording.
+- Many places write files in a way that can corrupt data if two things run at once or the power goes out.
+- The runtime's self-check after updates doesn't actually check anything, so broken updates can slip through.
+
+No code was changed — this was an audit only.
+
+
+## 2026-08-22 - Implemented the runtime refactor plan (safety nets, correctness fixes, file splits)
+
+**What changed:** Turned the earlier runtime audit report into actual code changes, phase by phase, without changing how anything behaves for users.
+
+Phase 0 - safety nets first: The version-compatibility check that decides whether the app can load (the min_host gate) is now its own small, pure module with 9 unit tests - it previously had zero tests. The most important constant in element-finding (the uniqueness margin of 0.15) is now pinned by a test so nobody can quietly weaken it. Tests are reorganized: offline unit tests live in test/unit/ and run with `npm test`; scripts needing a real browser or the packaged exe live in test/e2e/ and run only in their own CI steps. A previously manual-only recovery-ceiling check is now wired into CI.
+
+Phase 1 - small correctness fixes: All files now read dev-vs-prod folder settings from one shared source instead of each re-deriving them (which could silently disagree). The install-time skill sync now runs the same version-compatibility check as normal startup, so an incompatible app layer can't execute against an old host during installation. Removed two pieces of dead code, including a status field that reported a file nothing writes anymore. Two near-identical download/upload helper pairs were merged into one shared implementation. A new build guard fails CI if a package dependency is missing from the packaging stub list (a silent packaged-exe-only breakage class).
+
+Phase 2 - make the invisible boundary visible: A new host-manifest.json lists every file frozen into the host exe, with a CI check that verifies the list matches reality - so edits to frozen files are now visible at review time. A new host_bridge.js replaces the half-dozen different hand-rolled patterns for reaching host-provided globals with one tested access point.
+
+Phase 3 - split the giant files (partially): From server.js: the --install-playwright installer mode, the parked-page recovery state, the failure-message builder (now unit-tested), and the static MCP tool definitions. From run.js: environment-tunable constants, the recovery log, and input interpolation. The public exports of both files are unchanged, so everything that imports them still works.
+
+Phase 4 - polish: A new mechanical CI guard proves the zero-token recovery tiers can never touch the network. The skill loader got a real validation test suite (7 tests) covering broken packs, checksum mismatches, and hot reload. A dead test script with a hardcoded machine path was deleted.
+
+All 335 unit tests pass; all three new CI guards pass locally. Docs updated (TRD.md runtime sections, TODO.md entry RT-REFACTOR-1). Remaining follow-ups (browser.js split, full server.js orchestrator extraction, mcp_register unification) are tracked in TODO.md. Note: changes to files frozen into the host exe ship with the next host release; the rest ship with the next app-layer release.
+
+**Why:** To close the gaps found in the audit - untested safety checks, hidden host-release coupling, duplicated logic that could drift, and two monolith files - without breaking any existing behavior.
+
+**Files touched:** runtime/ (new: min_host_gate.js, host_bridge.js, cli_installer.js, recovery_park.js, failure_response.js, tool_defs.js, run_config.js, recovery_log.js, interpolate.js, host-manifest.json, check_host_manifest.js, check_pkg_stubs.js, check_recovery_purity.js, test/unit/test_min_host_gate.js, test/unit/test_invariants.js, test/unit/test_failure_response.js, test/unit/test_skill_loader.js; modified: bootstrap.js, server.js, run.js, browser.js, sync.js, auth_manager.js, manifest_manager.js, http_client.js, cli_sync.js, config_edit.js, config_edit_yaml.js, resolver.js, package.json; moved: test suite into unit/ and e2e/; deleted: test/e2e/test_mcp_client.js), .github/workflows/build-runtime-host.yml, .github/workflows/build-runtime-app.yml, docs/TRD.md, TODO.md, FIX.md.

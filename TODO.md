@@ -41,18 +41,30 @@ Counts below are computed straight from the section headers in this file (unique
 
 | Priority | Remaining | Total | Resolved |
 |---|---|---|---|
-| P0 — Critical / Time-Sensitive | 6 | 16 | 10 |
+| P0 — Critical / Time-Sensitive | 7 | 17 | 10 |
 | P1 — Blocking / Foundational | 5 | 6 | 1 |
 | P2 — High Value, Do Soon | 27 | 30 | 3 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
 | P4 — Low Urgency, Opportunistic | 29 | 36 | 7 |
-| **Total** | **90** | **111** | **21** |
+| **Total** | **91** | **112** | **21** |
 
 ---
 
-## P0 — Critical / Time-Sensitive (6 remaining / 16 total)
+## P0 — Critical / Time-Sensitive (7 remaining / 17 total)
 
 **Added 2026-08-09, direct from the founders — supersedes every previously-tracked priority in this file.** The four items below are the reason the rest of this backlog shifted down one tier (old P0 → P1, old P1 → P2, old P2 → P3, old P3 → P4); no other item content changed, only the section labels. See the "Fourth pass" note at the bottom of this file.
+
+### TEST-11 — Run the full manual testing suite in `docs/testing/` (re-invoke & reconfigure LLM keys first)
+- **Category:** Testing & Cleanup
+- **Description:** Execute every test plan currently living in [`docs/testing/`](docs/testing/) — `exec-10-long-chain-workflows.md`, `STRESS-TEST-GUIDE.md`, `Production-Readiness-Manual-Testing.md`, and `Manual-Tier-Limit-Testing.md` — end to end, and fix whatever they surface. **Before any testing begins**, the LLM provider keys must be re-invoked (regenerated/refreshed) and re-configured: existing keys may be expired, rotated, or rate-limited, and a compile- or recovery-tier test failing on auth would waste the run and mask real defects. Re-run the router setup per `conxa-cloud/backend/ROUTER_SETUP.md` and verify each configured provider responds before starting the suites.
+- **Why required:** the testing docs encode the verification plans for recently shipped work (long-chain multi-tab workflows, stress behavior, production readiness, tier limits) but none of them have been executed as a full pass; running them is the only way to confirm the platform actually holds up.
+- **Business value:** catches customer-facing failures now, on our own machines, instead of in front of an enterprise buyer.
+- **Technical value:** a full pass across all four docs exercises compile, runtime execution/recovery, cloud billing/tier limits, and stress paths in one sweep — the same coverage the individual fixes were unit-tested against, now verified end to end.
+- **Dependencies:** LLM keys re-invoked and re-configured *first* (see above) — several suites depend on working LLM calls through the proxy.
+- **Suggested order:** immediate — top of the P0 queue.
+- **Complexity:** L — four separate suites plus whatever fixes they surface.
+- **Success criteria:** all four docs' test plans executed with results recorded; every failure either fixed or filed as its own TODO item with a repro; LLM providers confirmed healthy via the reconfigured keys before the first suite ran.
+- **Found via:** direct founder instruction (2026-08-22).
 
 ### ~~BUILD-16 — "Testing os picker" compile did not finish: recording on disk, no compiled skill~~ — RESOLVED 2026-08-18
 - **Category:** Builder / Compile
@@ -117,6 +129,9 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 - **Dependencies:** none — the underlying group-auth code already ships.
 - **Complexity:** S.
 - **Update (2026-08-12):** skill-pack directories now nest under `{group_id}/` on disk (`skill-packs/{company}/{group_id}/{skill_slug}/`, see `docs/TRD.md` §5.2a/§11.1) — `skill_loader.js` requires this layout unconditionally, so `gate_replay.js`'s fixture-staging loop was updated to stage `gate-skill` under a `_default/` folder (matching the fallback `skill_loader.js` uses when a pack has no `skill_groups` map), keeping the gate green. That's the minimum fix to not break the gate — this item's original, broader scope (a real `groups` array + group-scoped app auth in the fixture, so `_resolveGroup`/`getGroupAuthContext` get exercised too, not just path resolution) is still open.
+
+### ~~RT-REFACTOR-1 — Runtime refactor audit follow-up: safety nets, boundary, monolith seams~~ — mostly done 2026-08-22
+Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): **Phase 0** — `runtime/min_host_gate.js` (pure min_host evaluation, 9 unit tests), invariant pins (`resolver.DEFAULT_UNIQUE_MARGIN===0.15`, `run.NOOP_STEP_TYPES` membership in `test/unit/test_invariants.js`), test restructure (`runtime/test/unit/` offline vs `test/e2e/` browser/exe scripts; `npm test` = unit only; both CI workflows updated; `gate_recovery_ceiling.js` wired into `build-runtime-app.yml`). **Phase 1** — env/path resolution routed through `env.js` via `host_bridge.env()` (server/browser/run/auth_manager fallback copies deleted); install-time `sync` subcommand now enforces the same min_host gate as the load path; dead `update-pending.json` reporting + `__manifestManager` branch removed; `_fetchJSON`/`_downloadBuffer` hoisted into `http_client.js` with per-call-site defaults preserved; `check_pkg_stubs.js` build guard added. **Phase 2** — `host-manifest.json` + `check_host_manifest.js` CI guard declaring every host-frozen module; `host_bridge.js` centralizes all `__hostRequire`/`__versionManager`/`__conxaEnv`/… guard idioms. **Phase 3 (partial)** — extracted from server.js: `cli_installer.js`, `recovery_park.js` (+unit-testable `failure_response.js` with tests, `tool_defs.js`); extracted from run.js: `run_config.js`, `recovery_log.js`, `interpolate.js` (public barrel unchanged). **Phase 4 (partial)** — `check_recovery_purity.js` mechanical zero-network guard for recovery.js wired into CI; `skill_loader.js` validation test suite added; dead machine-specific `test_mcp_client.js` deleted. Every new app-layer module is registered in `build-runtime-app.yml`'s obfuscation+staging lists and both gate scripts' APP_FILES. **Still open:** full `server.js` run-orchestrator extraction (the ~578-line execute branch) + phone-home module; `browser.js` five-job split (`browser_launch`/`session_store`/`group_auth`/`interactive_auth`); mcp_register orchestrator unification behind a host adapter interface; merging the duplicate marker-span surgery in `config_edit_toml.js` vs `durable_context.js`. Note: edits to host-frozen files (`bootstrap.js`, `cli_sync.js`, `min_host_gate.js`, `http_client.js`, `host_bridge.js`, … — see `host-manifest.json`) ship only with the next `host-v*` release; the app-layer changes ship with the next `app-v*`.
 
 ### ARCH-4 — Migrate installer generation from Build Studio to Conxa Cloud (CDN-hosted, one per workspace, swappable)
 - **Category:** Architecture / Cloud
