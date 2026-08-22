@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 from conxa_compile.llm.client import call_llm
+from services.llm_proxy_client import CloudUnreachable
 
 
 class VisionCandidate(BaseModel):
@@ -90,7 +91,12 @@ def _call_provider(inp: VisionLLMInput) -> VisionLLMOutput | None:
         "prompt": f"Given this UI screenshot and candidate elements, which element best matches the intent: {inp.intent}?",
         "input": inp.model_dump(mode="json"),
     }
-    data = call_llm("vision_reasoning", payload, settings.llm_vision_timeout_ms)
+    try:
+        data = call_llm("vision_reasoning", payload, settings.llm_vision_timeout_ms)
+    except CloudUnreachable:
+        # Late recovery fallback, not the primary compile path — degrade rather
+        # than propagate an infra failure.
+        return None
     if data is None:
         return None
     try:

@@ -6,6 +6,10 @@ string (e.g. a 429 rate-limit reason). Before this test existed, LLMProxyClient.
 coerced that dict with str(...), so it never matched any of the flat entitlement
 codes and the caller only ever saw "proxy HTTP 502" — indistinguishable from any
 other cloud-side failure.
+
+A 502/503/504 is now retried twice with backoff (see _RETRY_BACKOFFS_S) before
+raising ProxyUnavailable — a real infra failure, not a silent None indistinguishable
+from an empty LLM answer. Tests patch time.sleep so they don't actually wait ~5.5s.
 """
 
 from __future__ import annotations
@@ -15,7 +19,9 @@ import json
 import urllib.error
 from email.message import Message
 
-from services.llm_proxy_client import LLMProxyClient
+import pytest
+
+from services.llm_proxy_client import LLMProxyClient, ProxyUnavailable
 
 
 def _http_error(code: int, body: dict) -> urllib.error.HTTPError:
@@ -41,14 +47,16 @@ def test_502_dict_detail_surfaces_provider_reason(monkeypatch):
         raise _http_error(502, body)
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("services.llm_proxy_client.time.sleep", lambda s: None)
 
     proxy_client = LLMProxyClient("http://cloud.local", token_provider=lambda: "tok")
     detail: list[str] = []
-    result = proxy_client.route_vision("anchor_vision", {"user_text": "x"}, 30_000, error_detail=detail)
+    with pytest.raises(ProxyUnavailable) as exc_info:
+        proxy_client.route_vision("anchor_vision", {"user_text": "x"}, 30_000, error_detail=detail)
 
-    assert result is None
     assert any("llm_all_providers_failed" in line for line in detail)
     assert any("HTTPError 429 rate_limited" in line for line in detail)
+    assert any("llm_all_providers_failed" in line for line in exc_info.value.error_detail)
 
 
 def test_502_flat_string_detail_still_appends_status(monkeypatch):
@@ -56,13 +64,34 @@ def test_502_flat_string_detail_still_appends_status(monkeypatch):
         raise _http_error(502, {"detail": "some_unrecognized_string"})
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("services.llm_proxy_client.time.sleep", lambda s: None)
 
     proxy_client = LLMProxyClient("http://cloud.local", token_provider=lambda: "tok")
     detail: list[str] = []
-    result = proxy_client.route_text("intent", {}, 30_000, error_detail=detail)
+    with pytest.raises(ProxyUnavailable):
+        proxy_client.route_text("intent", {}, 30_000, error_detail=detail)
 
-    assert result is None
-    assert detail == ["proxy HTTP 502"]
+    # One "proxy HTTP 502" appended per attempt (first attempt + 2 retries).
+    assert detail == ["proxy HTTP 502"] * 3
+
+
+def test_502_retries_twice_with_backoff_before_raising(monkeypatch):
+    calls: list[str] = []
+    slept: list[float] = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append("call")
+        raise _http_error(502, {"detail": "some_unrecognized_string"})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("services.llm_proxy_client.time.sleep", lambda s: slept.append(s))
+
+    proxy_client = LLMProxyClient("http://cloud.local", token_provider=lambda: "tok")
+    with pytest.raises(ProxyUnavailable):
+        proxy_client.route_text("intent", {}, 30_000)
+
+    assert len(calls) == 3  # first attempt + 2 retries
+    assert len(slept) == 2
 
 
 def test_401_still_retries_and_entitlement_codes_still_raise(monkeypatch):

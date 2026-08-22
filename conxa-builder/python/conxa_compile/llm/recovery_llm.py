@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 from conxa_compile.llm.client import call_llm
+from services.llm_proxy_client import CloudUnreachable
 
 
 class RecoveryCandidate(BaseModel):
@@ -116,7 +117,12 @@ def _call_provider(inp: RecoveryLLMInput) -> RecoveryLLMOutput | None:
         "task": "recovery_assist",
         "input": inp.model_dump(mode="json"),
     }
-    data = call_llm("recovery_assist", payload, settings.llm_text_timeout_ms)
+    try:
+        data = call_llm("recovery_assist", payload, settings.llm_text_timeout_ms)
+    except CloudUnreachable:
+        # Recovery is best-effort and off the primary compile path — an infra
+        # failure here should fall back to the deterministic scorer, not propagate.
+        return None
     if data is None:
         return None
     try:

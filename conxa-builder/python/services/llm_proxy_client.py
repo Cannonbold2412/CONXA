@@ -9,6 +9,7 @@ so it can be injected wherever the compiler expects a router.
 from __future__ import annotations
 
 import json
+import random
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +21,29 @@ from services.machine_id import get_machine_id_hash
 # The per-task timeout_ms (e.g. llm_text_timeout_ms=2000) was designed for direct
 # LLM endpoints; proxied calls need a much larger budget.
 _PROXY_MIN_TIMEOUT_S = 90.0
+
+# 502/503/504 mean the cloud router exhausted its own pool for this one attempt —
+# possibly transient (a cooldown clearing seconds later). Two retries with backoff
+# catch that without turning a real outage into a long hang: this is a client-side
+# retry ON TOP OF the router's own internal failover, not instead of it.
+_RETRYABLE_HTTP_CODES = {502, 503, 504}
+_RETRY_BACKOFFS_S = (1.0, 4.0)
+
+
+def _parse_retry_after_secs(headers: Any) -> float | None:
+    """Parse a numeric Retry-After header into seconds, or None if absent/invalid.
+    Mirrors app.llm.router's version — duplicated rather than imported since the
+    Studio process can't depend on the cloud backend package."""
+    raw = headers.get("Retry-After") if headers is not None else None
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0 or value > 3600:
+        return None
+    return value
 
 
 class QuotaExceeded(RuntimeError):
@@ -36,6 +60,25 @@ class EntitlementBlocked(RuntimeError):
 
 class CloudUnreachable(RuntimeError):
     """The proxy could not be reached (network error / no internet)."""
+
+
+class ProxyUnavailable(CloudUnreachable):
+    """The proxy answered but every provider failed (502 llm_all_providers_failed),
+    even after this client's own retries. A CloudUnreachable subclass so every
+    existing `except CloudUnreachable` call site (build.py, pipeline/run.py,
+    handlers/compile.py) already handles it correctly — this is a genuine
+    infrastructure failure, not a call site returning an empty answer.
+
+    Deliberately distinct from a plain ``None`` return: before this, a 502 and a
+    real "the model answered nothing" were indistinguishable, so callers like
+    intent_llm.py couldn't tell "retry me" from "give up gracefully" apart, and
+    the compile's semantic cache silently filled with rule_fallback entries with
+    no visible signal that the LLM had stopped answering at all.
+    """
+
+    def __init__(self, message: str, error_detail: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.error_detail = error_detail or []
 
 
 class LLMProxyClient:
@@ -87,6 +130,7 @@ class LLMProxyClient:
         *,
         error_detail: list[str] | None,
         _retried: bool = False,
+        _retry_count: int = 0,
     ) -> dict[str, Any] | None:
         url = f"{self._cloud_api}/api/v1/llm/proxy/{kind}"
         body = json.dumps(
@@ -126,8 +170,6 @@ class LLMProxyClient:
                     kind, task, payload, timeout_ms,
                     error_detail=error_detail, _retried=True,
                 )
-            if exc.code == 429:
-                raise QuotaExceeded("Monthly LLM quota reached") from exc
             detail: Any = ""
             try:
                 error_body = json.loads(exc.read().decode("utf-8"))
@@ -135,6 +177,26 @@ class LLMProxyClient:
             except Exception:
                 detail = ""
             detail_str = detail if isinstance(detail, str) else ""
+
+            if exc.code == 429 and detail_str == "workspace_concurrency_limit":
+                # A different tenant/compile is using this workspace's concurrency
+                # slots right now — not a quota problem. Retry with backoff like a
+                # 502, honouring Retry-After (llm_proxy_routes.py sends 3s), instead
+                # of surfacing a misleading "quota reached" to the user.
+                if _retry_count < len(_RETRY_BACKOFFS_S):
+                    retry_after = _parse_retry_after_secs(exc.headers)
+                    base = retry_after if retry_after is not None else _RETRY_BACKOFFS_S[_retry_count]
+                    time.sleep(base + random.uniform(0, 0.5))
+                    return self._post(
+                        kind, task, payload, timeout_ms,
+                        error_detail=error_detail, _retried=_retried, _retry_count=_retry_count + 1,
+                    )
+                raise ProxyUnavailable(
+                    "Cloud LLM proxy workspace concurrency limit exceeded after retries",
+                    error_detail=[f"proxy HTTP 429: {detail_str}"],
+                ) from exc
+            if exc.code == 429:
+                raise QuotaExceeded("Monthly LLM quota reached") from exc
             if detail_str in {
                 "compile_credit_limit_exceeded",
                 "human_edit_pool_exceeded",
@@ -144,18 +206,40 @@ class LLMProxyClient:
                 "invalid_usage_class",
             }:
                 raise EntitlementBlocked(detail_str) from exc
-            if error_detail is not None:
-                # 502 llm_all_providers_failed carries {"message": ..., "error_detail": [...]}
-                # (llm_proxy_routes.py) — surface the provider's real failure reason instead
-                # of just the HTTP status, so a 429 doesn't look identical to every other 502.
-                if isinstance(detail, dict):
-                    message = str(detail.get("message") or "")
-                    error_detail.append(f"proxy HTTP {exc.code}: {message}" if message else f"proxy HTTP {exc.code}")
-                    nested = detail.get("error_detail")
-                    if isinstance(nested, list):
-                        error_detail.extend(str(item) for item in nested)
-                else:
-                    error_detail.append(f"proxy HTTP {exc.code}")
+            collected = error_detail if error_detail is not None else []
+            # 502 llm_all_providers_failed carries {"message": ..., "error_detail": [...]}
+            # (llm_proxy_routes.py) — surface the provider's real failure reason instead
+            # of just the HTTP status, so a 429 doesn't look identical to every other 502.
+            if isinstance(detail, dict):
+                message = str(detail.get("message") or "")
+                collected.append(f"proxy HTTP {exc.code}: {message}" if message else f"proxy HTTP {exc.code}")
+                nested = detail.get("error_detail")
+                if isinstance(nested, list):
+                    collected.extend(str(item) for item in nested)
+            else:
+                collected.append(f"proxy HTTP {exc.code}")
+
+            if exc.code in _RETRYABLE_HTTP_CODES and _retry_count < len(_RETRY_BACKOFFS_S):
+                # A 502/503/504 here means the cloud's own router exhausted its
+                # pool for this one attempt — possibly a moment-in-time thing, a
+                # cooldown that clears seconds later. Retry with backoff instead
+                # of the old bare `return None`, which every caller (intent_llm's
+                # `continue`, etc.) used to re-fire immediately with no pause,
+                # tripling load right when the pool was already drained.
+                retry_after = _parse_retry_after_secs(exc.headers)
+                base = retry_after if retry_after is not None else _RETRY_BACKOFFS_S[_retry_count]
+                wait_s = base + random.uniform(0, 0.5)
+                time.sleep(wait_s)
+                return self._post(
+                    kind, task, payload, timeout_ms,
+                    error_detail=error_detail, _retried=_retried, _retry_count=_retry_count + 1,
+                )
+
+            if exc.code in _RETRYABLE_HTTP_CODES:
+                raise ProxyUnavailable(
+                    f"Cloud LLM proxy unavailable after {_retry_count} retries (HTTP {exc.code})",
+                    error_detail=collected,
+                ) from exc
             return None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             # urllib wraps connect/header timeouts in URLError; Windows raises the

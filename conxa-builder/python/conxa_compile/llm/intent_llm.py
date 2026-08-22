@@ -10,6 +10,7 @@ from pathlib import Path
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 from conxa_compile.llm.client import call_llm
+from services.llm_proxy_client import ProxyUnavailable
 from conxa_compile.policy.bundle import get_policy_bundle
 from conxa_compile.policy.intent_ontology import generic_intents
 
@@ -106,10 +107,19 @@ def generate_intent_with_llm(step: dict[str, object]) -> str:
             "task": "intent_generation",
             "input": {"prompt": base_prompt + feedback},
         }
-        data = call_llm("intent_generation", req_body, max(500, settings.llm_text_timeout_ms))
+        try:
+            data = call_llm("intent_generation", req_body, max(500, settings.llm_text_timeout_ms))
+        except ProxyUnavailable:
+            # The proxy client already retried this with backoff (llm_proxy_client._post)
+            # and the cloud router already failed over across its whole pool
+            # (router._route) before raising — this is a real outage, not a blip worth
+            # re-firing immediately for. Leave the intent blank and flagged rather than
+            # retrying a request that just proved it can't succeed right now; the next
+            # compile gets a fresh shot (nothing is cached on failure).
+            return ""
         if data is None:
-            # Provider pool already exhausted its own internal retries (router.route_text) —
-            # this is a real (if hopefully transient) outage. Try again with the same prompt.
+            # A genuinely empty/unresolvable answer (not an infra failure — those now
+            # raise ProxyUnavailable above) — worth one corrective retry.
             continue
         raw_intent = str(data.get("intent") or data.get("output") or data.get("text") or "").strip()
         intent = _sanitize_intent(raw_intent)

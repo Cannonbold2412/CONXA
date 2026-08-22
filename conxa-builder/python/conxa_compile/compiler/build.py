@@ -1081,6 +1081,37 @@ def _build_validation(ev: dict[str, Any], state_diff: dict[str, Any], policy: di
         success_conditions=dynamic.get("success_conditions") or {},
     )
 
+def _prefetch_vision_anchors(
+    cleaned_events: list[dict[str, Any]],
+    *,
+    session_root: Path,
+    policy: dict[str, Any],
+) -> None:
+    """Best-effort batch prefetch of every step's vision anchor request before
+    the main per-step loop runs (Stage 4, mega-workflow 502 fix — see
+    prefetch_vision_anchors_batch's docstring). Mirrors _build_step's own
+    skip conditions (scroll / MARKER_ACTIONS never call vision) and intent
+    resolution (generate_intent_with_llm -> normalize_compiler_intent) exactly,
+    so the cache key this computes matches what _build_step computes later —
+    intent_llm's own cache makes the second call here effectively free.
+    Never raises: prefetch failing just means _build_step's per-step vision
+    call does the normal single-image work it always has."""
+    try:
+        from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_batch
+
+        items: list[tuple[int, dict[str, Any], str]] = []
+        for i, ev in enumerate(cleaned_events):
+            action_payload = optimize_scroll(ev)
+            if action_payload == "scroll" or action_payload in MARKER_ACTIONS:
+                continue
+            llm_raw = generate_intent_with_llm(ev)
+            intent = normalize_compiler_intent(ev, llm_raw, policy)
+            items.append((i, ev, intent))
+        prefetch_vision_anchors_batch(items, session_root=session_root, policy=policy)
+    except Exception:  # noqa: BLE001 — prefetch is pure optimization, never fatal
+        pass
+
+
 def _build_step(
     ev: dict[str, Any],
     bundle: PolicyBundle,
@@ -1483,6 +1514,7 @@ def compile_skill_package(
         "Compiler inputs prepared.",
         {"phase": "compiler_prepare_done", "cleaned_event_count": len(cleaned_events)},
     )
+    _prefetch_vision_anchors(cleaned_events, session_root=session_root, policy=pol)
     steps = [_build_step(e, bundle, session_root=session_root, step_index=i) for i, e in enumerate(cleaned_events)]
     steps = _insert_user_tab_navigate_steps(steps, cleaned_events)
     _log_vision_anchor_fallback_summary(steps)
@@ -1584,22 +1616,20 @@ def _build_intent_graph(
             {"phase": "workflow_intent_start", "step_count": len(steps_summary), "page_url_count": len(page_urls)},
         )
         # This is the LAST LLM call of the compile — by now the vision-anchor and
-        # per-step-intent bursts have often put every provider key into cooldown,
-        # so the pool can legitimately be exhausted here. error_detail tells a
-        # real failure apart from a genuinely empty graph; one bounded retry
-        # gives the cooldowns a second chance to clear.
+        # per-step-intent bursts have often put every provider key into cooldown
+        # elsewhere in the pool. No manual retry needed here any more: the proxy
+        # client (llm_proxy_client.py) already retries a 502 twice with backoff,
+        # and per-modality cooldowns (router.py) mean this text call isn't sharing
+        # a bench with the vision calls that came before it. error_detail still
+        # tells a real failure apart from a genuinely empty graph for logging.
         error_detail: list[str] = []
         graph = build_workflow_intent_graph(steps_summary, page_urls, error_detail=error_detail)
         if not graph.goal and not graph.steps and error_detail:
             _compile_log(
                 "compile_phase",
-                f"Workflow intent graph generation failed ({'; '.join(error_detail[:3])}) — retrying once after a short wait.",
+                f"Workflow intent graph generation failed ({'; '.join(error_detail[:3])}).",
                 {"phase": "workflow_intent_retry", "level": "warn"},
             )
-            time.sleep(15)
-            retry_detail: list[str] = []
-            graph = build_workflow_intent_graph(steps_summary, page_urls, error_detail=retry_detail)
-            error_detail = retry_detail or error_detail
         _compile_log(
             "compile_phase",
             "Workflow intent graph finished.",

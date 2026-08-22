@@ -21,6 +21,7 @@ from conxa_core.db import db_get, db_set
 # call happens elsewhere.
 from conxa_compile.llm.client import call_llm, supports_multimodal_chat  # noqa: F401
 from conxa_compile.policy.bundle import get_policy_bundle
+from services.llm_proxy_client import ProxyUnavailable
 
 
 class VisionAnchorGenerationError(Exception):
@@ -175,15 +176,31 @@ def resolve_screenshot_path(session_root: Path, rel: str) -> Path:
     return candidate
 
 
-def generate_anchors_for_step_or_raise(
+class _PreparedVisionRequest:
+    """A cache-miss vision-anchor request, ready to send — either as one
+    anchor_vision call or grouped into a batched anchor_vision_batch call."""
+
+    __slots__ = ("cache_key", "user_text", "image_b64")
+
+    def __init__(self, cache_key: str, user_text: str, image_b64: str) -> None:
+        self.cache_key = cache_key
+        self.user_text = user_text
+        self.image_b64 = image_b64
+
+
+def _prepare_vision_request(
     ev: dict[str, Any],
     *,
     session_root: Path,
     final_intent: str,
     policy: dict[str, Any],
     step_index: int,
-) -> list[dict[str, Any]]:
-    """Return vision-only anchors or raise VisionAnchorGenerationError."""
+) -> list[dict[str, Any]] | _PreparedVisionRequest:
+    """Shared prep for both the single-step and batched paths: resolve the
+    screenshot, apply the highlight, compute the cache key, and check the
+    cache. Returns cached anchors directly on a hit, or a _PreparedVisionRequest
+    to actually send on a miss. Raises VisionAnchorGenerationError for anything
+    that can't be prepared at all (missing/unreadable screenshot, disabled)."""
     if os.environ.get("CONXA_DISABLE_VISION_ANCHORS", "").strip().lower() in ("1", "true", "yes"):
         raise VisionAnchorGenerationError("llm_anchor_vision_disabled", step_index=step_index)
     if not bool(_vision_cfg(policy).get("enabled", True)):
@@ -254,18 +271,122 @@ def generate_anchors_for_step_or_raise(
         "Avoid DOM jargon (no div/container/element-only). Return JSON only."
     )
 
+    return _PreparedVisionRequest(cache_key=cache_key, user_text=user_text, image_b64=image_b64)
+
+
+def prefetch_vision_anchors_batch(
+    items: list[tuple[int, dict[str, Any], str]],
+    *,
+    session_root: Path,
+    policy: dict[str, Any],
+) -> None:
+    """Best-effort batch prefetch for a compile's whole set of upcoming vision-
+    anchor requests — several images per anchor_vision_batch call instead of one
+    request per step, so a large workflow doesn't fire 40+ serial vision calls
+    (fewer round trips, fewer chances to land on a drained provider pool).
+
+    ``items`` is (step_index, event, final_intent) for every step that will need
+    a vision anchor. Cache hits and preparation failures are skipped here —
+    generate_anchors_for_step_or_raise's own per-step call remains the source of
+    truth and handles both cases (and any group this function couldn't batch)
+    exactly as it always has. This function never raises: any failure here just
+    means less of the per-step work got prefetched, not that the compile breaks.
+    """
+    prepared: list[_PreparedVisionRequest] = []
+    for step_index, ev, final_intent in items:
+        try:
+            result = _prepare_vision_request(
+                ev, session_root=session_root, final_intent=final_intent, policy=policy, step_index=step_index
+            )
+        except VisionAnchorGenerationError:
+            continue
+        if isinstance(result, _PreparedVisionRequest):
+            prepared.append(result)
+
+    if not prepared:
+        return
+
+    batch_size = max(1, int(settings.llm_anchor_vision_batch_size))
+    cache = _read_cache()
+    cache_dirty = False
+    for i in range(0, len(prepared), batch_size):
+        group = prepared[i : i + batch_size]
+        payload = {
+            "items": [
+                {"image_base64": p.image_b64, "image_mime": "image/jpeg", "user_text": p.user_text}
+                for p in group
+            ]
+        }
+        try:
+            data = call_llm("anchor_vision_batch", payload, settings.llm_vision_timeout_ms)
+        except Exception:  # noqa: BLE001 — best-effort prefetch (incl. ProxyUnavailable), never fatal
+            continue
+        if not isinstance(data, dict):
+            continue
+        results = data.get("results")
+        if not isinstance(results, list):
+            continue
+        # Ordering isn't contractually guaranteed by the model — a misaligned
+        # response just means those entries stay uncached and fall through to
+        # the normal single-image call later, not a correctness problem.
+        for prepared_item, item_result in zip(group, results):
+            if not isinstance(item_result, dict):
+                continue
+            primary = str(item_result.get("primary_phrase") or item_result.get("primary") or "").strip()
+            sec_raw = item_result.get("secondary")
+            if not isinstance(sec_raw, list):
+                sec_raw = []
+            finalized = finalize_vision_anchors(primary, sec_raw, policy)
+            if not finalized or str(finalized[0].get("relation") or "") != "target" or not str(
+                finalized[0].get("element") or ""
+            ).strip():
+                continue
+            cache[prepared_item.cache_key] = {"anchors": finalized}
+            cache_dirty = True
+    if cache_dirty:
+        _write_cache(cache)
+
+
+def generate_anchors_for_step_or_raise(
+    ev: dict[str, Any],
+    *,
+    session_root: Path,
+    final_intent: str,
+    policy: dict[str, Any],
+    step_index: int,
+) -> list[dict[str, Any]]:
+    """Return vision-only anchors or raise VisionAnchorGenerationError."""
+    prepared = _prepare_vision_request(
+        ev, session_root=session_root, final_intent=final_intent, policy=policy, step_index=step_index
+    )
+    if isinstance(prepared, list):
+        return prepared
+    cache_key = prepared.cache_key
+
     payload = {
-        "user_text": user_text,
-        "image_base64": image_b64,
+        "user_text": prepared.user_text,
+        "image_base64": prepared.image_b64,
         "image_mime": "image/jpeg",
     }
     err_lines: list[str] = []
-    data = call_llm(
-        "anchor_vision",
-        payload,
-        settings.llm_vision_timeout_ms,
-        error_detail=err_lines,
-    )
+    try:
+        data = call_llm(
+            "anchor_vision",
+            payload,
+            settings.llm_vision_timeout_ms,
+            error_detail=err_lines,
+        )
+    except ProxyUnavailable as exc:
+        # The proxy client already retried this with backoff and the cloud router
+        # already failed over across its whole pool before raising — surface it the
+        # same way an exhausted-but-not-raising call used to (below), so the existing
+        # VisionAnchorGenerationError / vision_anchor_fallback_on_exhaustion handling
+        # in build.py doesn't need to know this can now also arrive as an exception.
+        raise VisionAnchorGenerationError(
+            "vision_llm_request_failed",
+            step_index=step_index,
+            hint="; ".join(exc.error_detail) if exc.error_detail else str(exc),
+        ) from exc
     if not isinstance(data, dict):
         joined = "; ".join(err_lines) if err_lines else ""
         if joined:
@@ -287,6 +408,7 @@ def generate_anchors_for_step_or_raise(
     ).strip():
         raise VisionAnchorGenerationError("vision_llm_invalid_primary_phrase", step_index=step_index)
 
+    cache = _read_cache()
     cache[cache_key] = {"anchors": finalized}
     _write_cache(cache)
     return finalized

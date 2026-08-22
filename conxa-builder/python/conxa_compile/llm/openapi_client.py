@@ -10,6 +10,18 @@ from typing import Any
 
 from conxa_core.config import settings
 from conxa_compile.llm.client import call_llm
+from services.llm_proxy_client import CloudUnreachable
+
+
+def _call_llm_or_none(task: str, payload: dict[str, Any], timeout_ms: int, *, error_detail: list[str] | None) -> dict[str, Any] | None:
+    """call_llm, but an infra failure (ProxyUnavailable/CloudUnreachable — the
+    proxy client and cloud router already retried/failed-over before raising)
+    degrades to None like every other failure mode these functions document,
+    instead of propagating past callers that don't expect an exception here."""
+    try:
+        return call_llm(task, payload, timeout_ms, error_detail=error_detail)
+    except CloudUnreachable:
+        return None
 
 
 class SelectorCandidate:
@@ -76,7 +88,7 @@ def generate_selector_candidates(
         "model": model,
         "input": input_dict,
     }
-    data = call_llm(
+    data = _call_llm_or_none(
         "selector_generation",
         payload,
         settings.llm_selector_timeout_ms,
@@ -125,7 +137,7 @@ def resolve_element_recovery(
             "action_type": action_type,
         },
     }
-    data = call_llm(
+    data = _call_llm_or_none(
         "recovery_resolve",
         payload,
         settings.llm_selector_timeout_ms,
@@ -159,7 +171,7 @@ def infer_workflow_intent(
             "page_urls": page_urls,
         },
     }
-    data = call_llm(
+    data = _call_llm_or_none(
         "workflow_intent",
         payload,
         settings.llm_selector_timeout_ms,
