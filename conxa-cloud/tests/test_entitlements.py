@@ -100,6 +100,70 @@ def test_compile_reserve_commit_release_idempotency(monkeypatch, tmp_path):
     assert entitlements["meters"]["compile_credits"]["remaining"] == 24
 
 
+def test_compile_refund_gives_back_a_committed_credit(monkeypatch, tmp_path):
+    """A compile that aborts on an infra failure (cloud proxy unavailable, vision
+    anchor exhaustion) after the credit was already committed should get it back —
+    otherwise a transient outage burns a paid credit for nothing."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
+    _set_plan("free")
+
+    client.post(
+        "/api/v1/usage/compile/reserve",
+        json={"reservation_id": "cmp_refund_one", "workflow_id": "wf_1", "session_id": "sess_1"},
+    )
+    commit = client.post("/api/v1/usage/compile/commit", json={"reservation_id": "cmp_refund_one"})
+    assert commit.status_code == 200, commit.text
+
+    refund = client.post("/api/v1/usage/compile/refund", json={"reservation_id": "cmp_refund_one"})
+    assert refund.status_code == 200, refund.text
+    assert refund.json()["status"] == "refunded"
+
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    assert entitlements["meters"]["compile_credits"]["used"] == 0
+    assert entitlements["meters"]["compile_credits"]["remaining"] == 25
+
+
+def test_compile_refund_is_idempotent(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
+    _set_plan("free")
+
+    client.post(
+        "/api/v1/usage/compile/reserve",
+        json={"reservation_id": "cmp_refund_twice", "workflow_id": "wf_1", "session_id": "sess_1"},
+    )
+    client.post("/api/v1/usage/compile/commit", json={"reservation_id": "cmp_refund_twice"})
+
+    first = client.post("/api/v1/usage/compile/refund", json={"reservation_id": "cmp_refund_twice"})
+    second = client.post("/api/v1/usage/compile/refund", json={"reservation_id": "cmp_refund_twice"})
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "refunded"
+
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    # A double refund must not credit the workspace twice.
+    assert entitlements["meters"]["compile_credits"]["used"] == 0
+
+
+def test_compile_refund_rejects_a_reservation_that_was_never_committed(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
+    _set_plan("free")
+
+    client.post(
+        "/api/v1/usage/compile/reserve",
+        json={"reservation_id": "cmp_refund_uncommitted", "workflow_id": "wf_1", "session_id": "sess_1"},
+    )
+
+    refund = client.post("/api/v1/usage/compile/refund", json={"reservation_id": "cmp_refund_uncommitted"})
+    assert refund.status_code == 409, refund.text
+
+
 def test_compile_reserve_blocks_last_credit_concurrently(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")

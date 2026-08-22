@@ -28,6 +28,7 @@ class CompileMixin:
         from conxa_core.storage.workflow_store import get_workflow, save_workflow
         from conxa_core.storage.session_events import read_session_events, session_events_path
         from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+        from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
         registry = _recorder_registry
 
         session_id = _safe_id(payload.get("session_id"), "session_id")
@@ -135,6 +136,12 @@ class CompileMixin:
                 raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
             if isinstance(exc, QuotaExceeded):
                 raise _CommandError("quota_exceeded", str(exc)) from exc
+            # CloudUnreachable (incl. ProxyUnavailable) is the only infra-class
+            # failure here — refund the credit already committed above, since
+            # nothing the user did caused this. Never refund for EntitlementBlocked/
+            # QuotaExceeded — those are real per-workspace limits, not infra.
+            if reservation_id and reservation_committed:
+                self._refund_compile_credit(reservation_id)
             raise _CommandError("cloud_unreachable", str(exc)) from exc
         except Exception as exc:
             _log(str(exc), level="error")
@@ -169,7 +176,20 @@ class CompileMixin:
                 raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
             if isinstance(exc, QuotaExceeded):
                 raise _CommandError("quota_exceeded", str(exc)) from exc
+            if reservation_id and reservation_committed:
+                self._refund_compile_credit(reservation_id)
             raise _CommandError("cloud_unreachable", str(exc)) from exc
+        except VisionAnchorGenerationError as exc:
+            _log(str(exc), level="error")
+            sink({"phase": "compile_error", "message": str(exc), "failed_step": "selectors"})
+            # Only the infra-class reason (the proxy call itself failed, after the
+            # client's own retries and the router's own pool failover) is worth a
+            # refund. vision_llm_empty_response / vision_llm_invalid_primary_phrase
+            # are content-quality outcomes — the LLM answered, just not usefully —
+            # not something a refund is meant to cover.
+            if exc.reason == "vision_llm_request_failed" and reservation_id and reservation_committed:
+                self._refund_compile_credit(reservation_id)
+            raise
         except Exception as exc:
             _log(str(exc), level="error")
             sink({"phase": "compile_error", "message": str(exc), "failed_step": "selectors"})

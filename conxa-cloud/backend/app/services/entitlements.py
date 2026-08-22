@@ -862,6 +862,44 @@ def commit_compile_credit(principal: Principal, reservation_id: str) -> dict[str
     return {"reservation_id": reservation_id, "status": "committed", "remaining_compile_credits": remaining}
 
 
+def refund_compile_credit(principal: Principal, reservation_id: str) -> dict[str, Any]:
+    """Committed -> refunded: give back a compile credit already committed and spent
+    when the compile aborted on an infrastructure failure (cloud LLM proxy
+    unavailable, vision anchor exhaustion) rather than anything the user did.
+    The credit is committed before any LLM call (handlers/compile.py) so an
+    infra failure otherwise burns it for nothing — deliberately narrow: call
+    this only for infra-class aborts (CloudUnreachable/ProxyUnavailable/
+    VisionAnchorGenerationError), never for a content/user error, or a partial
+    refund policy becomes a free-compile lever.
+
+    Uses the same lock key as commit_compile_credit — both mutate this period's
+    usage["compile_credits_used"], so they need to serialize against each other."""
+    billing = billing_for(principal)
+    period, _reset_at = usage_window_for_billing(billing)
+    workspace_id = principal.workspace_id
+    with _locked_store(f"compile-commit:{workspace_id}:{period}") as store:
+        row = store.get(RESERVATION_NS, reservation_id)
+        if not isinstance(row, dict) or row.get("workspace_id") != workspace_id:
+            raise EntitlementError("compile_reservation_not_found", 404)
+        status = str(row.get("status") or "")
+        if status == "refunded":
+            return {"reservation_id": reservation_id, "status": "refunded"}
+        if status != "committed":
+            raise EntitlementError("compile_reservation_not_committed", 409)
+        amount = max(1, int(row.get("amount") or 0))
+        usage = _get_usage(store, workspace_id, period)
+        usage["compile_credits_used"] = max(0, int(usage.get("compile_credits_used") or 0) - amount)
+        _set_usage(store, usage)
+        row["status"] = "refunded"
+        _set_reservation(store, row)
+        funded_by_wallet = str(row.get("funded_by") or "") == "wallet"
+    if funded_by_wallet:
+        # Outside the usage-store lock, mirroring commit_compile_credit's own
+        # _spend_wallet call — the wallet is its own atomic unit.
+        grant_credit_wallet(workspace_id, compile_credits=amount)
+    return {"reservation_id": reservation_id, "status": "refunded"}
+
+
 def release_compile_credit(principal: Principal, reservation_id: str) -> dict[str, Any]:
     billing = billing_for(principal)
     period, _reset_at = usage_window_for_billing(billing)

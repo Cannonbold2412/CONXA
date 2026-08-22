@@ -300,6 +300,20 @@ class Backend(
         except Exception:
             pass
 
+    def _refund_compile_credit(self, reservation_id: str) -> None:
+        """Refund a *committed* reservation — used only when a compile aborts
+        on an infrastructure failure after the credit was already spent (see
+        handlers/compile.py). Best-effort like _release_compile_credit: a
+        failed refund call shouldn't turn one broken thing into two."""
+        try:
+            self._cloud_json(
+                "/api/v1/usage/compile/refund",
+                method="POST",
+                body={"reservation_id": reservation_id},
+            )
+        except Exception:
+            pass
+
     def _read_pack_json(self, company_slug: str) -> tuple[Path, dict[str, Any]]:
         """Locate + parse the already-built pack.json for a company slug.
         Read-only — callers that need to mutate it write it back themselves."""

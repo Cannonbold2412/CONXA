@@ -17,6 +17,7 @@ from app.services.entitlements import (
     current_entitlements,
     get_installer_domain,
     list_machines,
+    refund_compile_credit,
     release_compile_credit,
     reserve_compile_credit,
     revoke_machine,
@@ -88,6 +89,19 @@ def post_compile_commit(body: ReservationBody, request: Request) -> dict[str, An
 def post_compile_release(body: ReservationBody, request: Request) -> dict[str, Any]:
     try:
         return release_compile_credit(current_principal(request), body.reservation_id)
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
+
+
+@router.post("/usage/compile/refund")
+def post_compile_refund(body: ReservationBody, request: Request) -> dict[str, Any]:
+    """Refund a *committed* reservation whose compile then aborted on an
+    infrastructure failure (cloud LLM proxy unavailable, vision anchor
+    exhaustion) — see refund_compile_credit's docstring for why this is
+    deliberately narrower than release (which only handles reserved ->
+    released, before any credit was ever spent)."""
+    try:
+        return refund_compile_credit(current_principal(request), body.reservation_id)
     except Exception as exc:  # noqa: BLE001
         raise entitlement_http_error(exc) from exc
 
