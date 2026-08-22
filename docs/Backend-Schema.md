@@ -977,6 +977,13 @@ stripped, basic hostname shape), stored, and returned. 400 `invalid_domain` on a
 
 **KV namespace:** `workspace_installer_domain` — one row per workspace, `{workspace_id, domain}`.
 
+**Added 2026-08-22 — captured at signup, not just settings.** This same route is now also called from
+a new onboarding step (`conxa-cloud/frontend/app/onboarding/company-domain/page.tsx`), shown right
+after Clerk's `<CreateOrganization>` succeeds and before landing on `/dashboard`, so every workspace
+has a domain on file from day one instead of only workspaces that happened to visit installer settings
+later. No backend change — same route, same validation, same unverified-format-only guarantee (still
+tracked as `TODO.md` PROD-6).
+
 The installer's `.exe` icon is a separate, build-time-only concern (embedded in the binary by Build
 Studio before upload, so the cloud has no upload-time hook for it): Build Studio checks
 `GET /entitlements/current`'s `plan` before calling the local builder and drops any supplied
@@ -1081,7 +1088,7 @@ Stable entitlement error details (returned as HTTP `402` for quota-exhausted, `4
 config/availability):
 - `compile_credit_limit_exceeded` — 402, compile-credit reservation at limit (checked at `/usage/compile/reserve`)
 - `human_edit_pool_exceeded` — 402, monthly Human-Edit token pool exhausted (checked at the LLM proxy)
-- `seat_limit_exceeded` — 402, workspace seat limit reached
+- `seat_limit_exceeded` — 402, workspace seat limit reached (checked in `app/api/deps.py::current_principal` via `entitlements.ensure_seats_available`, added 2026-08-22 — see below)
 - `machine_limit_exceeded` — 402, plan's machine limit reached for a new (never-seen) device
 - `trial_expired` — 402, Free's 30-day trial window has passed; blocks LLM proxy, compile reserve, skill-pack publish, installer upload
 - `distribution_not_permitted` — installer upload (402): requested `distribution=external` but the plan carries `distribution="internal"`. Skill-pack delta-sync (403, §5.9): the requesting machine isn't the Free-tier workspace's own registered device.
@@ -1091,13 +1098,32 @@ config/availability):
 - `invalid_usage_class` — 400
 
 **Enforcement is on by default**
-(`entitlements_enforce_compile|_human_edit|_distribution|_machines = True` in `config.py`; the old
-`entitlements_enforce_installers` flag was renamed to `entitlements_enforce_distribution` and a new
-`entitlements_enforce_machines` flag added). Workspaces on the `development` plan, or any plan whose
-limit resolves to `None` (e.g. an `enterprise` override), are never blocked on the numeric meters.
-Enforcement points: skill-pack publish and installer upload (`publish_routes.py`, both legacy and
-versioned routes), the compile-credit reserve/commit protocol, the Human-Edit pool and machine
-registration at `llm_proxy_routes`, and `ops_tier` gates on the tracking/audit routes.
+(`entitlements_enforce_compile|_human_edit|_distribution|_machines|_seats = True` in `config.py`; the
+old `entitlements_enforce_installers` flag was renamed to `entitlements_enforce_distribution` and
+`entitlements_enforce_machines`/`entitlements_enforce_seats` flags added). Workspaces on the
+`development` plan, or any plan whose limit resolves to `None` (e.g. an `enterprise` override), are
+never blocked on the numeric meters. Enforcement points: skill-pack publish and installer upload
+(`publish_routes.py`, both legacy and versioned routes), the compile-credit reserve/commit protocol,
+the Human-Edit pool and machine registration at `llm_proxy_routes`, `ops_tier` gates on the
+tracking/audit routes, and seat count at `app/api/deps.py::current_principal` (see below).
+
+**Added 2026-08-22 — seat limit enforcement.** Previously, `membership_count_for` only *read* a
+workspace's member count for display (Team page, `entitlements/current`'s `seats` meter); nothing
+compared it to the plan's limit, so a Free workspace could carry unlimited members via Clerk's own
+`<OrganizationProfile>` invite UI, entirely outside Conxa's backend. There is still no Conxa-owned
+invite API or Clerk membership webhook to intercept an invite before it happens, so enforcement runs
+at the earliest point Conxa's backend actually sees the new member: their first authenticated request.
+`current_principal` (`app/api/deps.py`) now checks `saas.is_known_member(user_id, workspace_id)` before
+calling `ensure_principal` (which would otherwise silently create that membership row); for a
+not-yet-known pair it calls `entitlements.ensure_seats_available(principal)` first, which compares the
+workspace's live Clerk member count (`_clerk_org_member_count`, already existed but was previously
+unused for enforcement) against the plan's `seats` limit and raises `seat_limit_exceeded` (402) if the
+workspace is already at or over its cap. The comparison is `count > limit`, not `>=`, because Clerk's
+member count already includes the arriving member by the time they can authenticate. Existing members
+are never re-checked or locked out by a later downgrade — same soft-lock shape as `workflow_lock`
+above. Uses `billing_for_workspace` (read-only) rather than `billing_for`, since the latter itself
+calls `ensure_principal` as a side effect. On any Clerk API failure (or local/dev auth, where there's
+no Clerk org to query), the check fails open rather than lock out a workspace it can't measure.
 
 **Slug ownership** (`services/entitlements.py`, `app/api/product_ownership.py`): unchanged as a
 security boundary — a slug is claimed the first time a workspace publishes a skill pack or uploads an

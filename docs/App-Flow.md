@@ -63,6 +63,7 @@ flowchart TD
 - The update check (step U) is fail-open: if GitHub Releases is unreachable, the app proceeds normally. Updates are mandatory — the app cannot advance past the Update Required screen without installing.
 - On subsequent (non-first-time) launches the same gate applies: deps check is skipped (already installed), update check runs, then login or Workflow list.
 - The Record page was removed (2026-08): the Workflow List (`/workflows`) is now the primary landing page. Its group cards drill into the Group Page (`/groups/:id`), which contains every recording/auth/compile/review/test control for that group's workflows inline — see §4. Root `/` redirects to `/workflows`; the old `/workflows/:id` per-workflow route (removed 2026-08-13) now redirects to the workflow's owning group.
+- **Added 2026-08-22 — company domain step.** In the Cloud dashboard's own onboarding (`app/onboarding/`, "Clerk sign-up flow" step B above), Clerk's `<CreateOrganization>` now redirects to a new `/onboarding/company-domain` page before `/dashboard`, asking for the company's domain (used to name built installers, see `docs/Backend-Schema.md` §5.1c). Same free-text field, format-only validated as before — real ownership verification is still open, tracked as `TODO.md` PROD-6.
 
 ---
 

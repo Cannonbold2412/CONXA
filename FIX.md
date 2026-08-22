@@ -6,6 +6,23 @@
 
 ---
 
+## Team seat limits are now actually enforced, not just displayed — 2026-08-22
+Every pricing plan promises a certain number of team seats (Free gets 1, Starter 3, and so on), and the dashboard has always shown a "seats used" counter — but nothing ever stopped a team from going over that number. A workspace could invite as many people as it wanted through the normal "add teammate" screen, no matter what plan it was on, and the counter was just decoration. Now, the moment someone beyond the plan's seat limit tries to actually use the product for the first time, they get a clear "seat limit reached" message instead of getting in for free. People already using the account before the limit was hit are never kicked out or interrupted — this only stops brand-new over-the-limit teammates, and only from the moment this shipped forward.
+
+## New workspaces are now asked for their company domain right at signup — 2026-08-22
+Company domain (like "acme.com") is used to name the installer files a workspace builds for its own customers. Previously this was buried in a settings screen that most people never visited, so most workspaces never had one set and got a generic fallback name instead. Now it's asked for as one of the very first steps right after creating a workspace, so every company has this set from day one. This is just about *when* it's asked for — there's still no check that a company actually owns the domain they type in, that's tracked separately as future work.
+
+---
+
+## Added optional FreeLLMAPI support to the AI provider pool — 2026-08-22
+Researched [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi), an open-source, self-hosted proxy that stacks the free tiers of ~28 AI providers (Google, Groq, Cerebras, NVIDIA, Mistral, OpenRouter and more — roughly 4 billion free tokens a month combined) behind one standard API endpoint. Our cloud already had the same "rotate across free providers" idea built in, so instead of replacing anything, FreeLLMAPI can now simply be switched on as one more provider in that pool: turn on `FREELLMAPI_ENABLED`, point it at wherever the proxy is running, and paste its single unified key. One key then unlocks all the free tiers configured inside it, with our existing rate-limit failover still in charge. It's off by default; setup steps are documented in `conxa-cloud/backend/ROUTER_SETUP.md` and `.env.example`. Important caveat captured alongside it: those upstream free tiers are meant for experimenting, not production customer traffic, so keep at least one direct paid-capable provider enabled as fallback.
+
+## Compile no longer quietly downgrades to weaker element-finding when the AI is rate-limited — 2026-08-22
+When compiling a workflow, the system asks an AI to "look" at a screenshot and describe where to click, so the app can still find that spot later even if the page changes. On the free AI keys we use, that request sometimes got rate-limited, and until now the compiler waited only 8 seconds before giving up and quietly switching to a weaker, text-only way of describing the spot — you'd only notice from a small warning buried in the compile log. Now it waits much longer (matching how long a rate limit actually lasts) so the real AI description usually succeeds anyway. If every AI key is still exhausted after that longer wait, compile now stops and tells you clearly by default, instead of silently shipping a weaker result. This is also a switch we can flip from the server settings without a code change: if we'd rather compiles keep going on the weaker fallback than block, we just turn one setting on. Like a print job that used to quietly print draft-quality when the good printer was busy — now it waits for the good printer by default, and only prints draft-quality if we've explicitly said that's OK.
+
+## Admins can now actually grant paid plans manually — 2026-08-22
+There was a hidden endpoint that lets us give any workspace a paid plan (Pro, Starter, etc.) without them paying — useful for demos, trials, and support fixes. The problem: in production it was impossible to use. The server's security gate demanded a normal user login token on every request, so the special admin key we use got rejected before it ever reached the endpoint. Now the security gate recognises the admin key and lets those requests through (each admin endpoint still checks the key itself). Added tests covering both cases. Once this is deployed, granting someone Pro for 30 days is just one command from our side.
+
 ## The credit add-on is now a ladder of four sizes instead of one — 2026-08-22
 The Billing page's compile-credit add-on used to be a single pack (25 credits at ₹4,999/month). It's now four sizes so workspaces can buy closer to what they need: +20 compiles with 200k Human Edit tokens for ₹3,999/month, +50 with 500k for ₹9,999, +100 with 1M for ₹19,999, and +250 with 2.5M for ₹49,999. Every add-on now also tops up the Human Edit pool alongside the compile credits (the old 25-pack didn't). Each size is bought through the same checkout as before and can be cancelled independently; active packs show as "Active ×N" badges next to their row.
  - 2026-08-22
@@ -78,3 +95,19 @@ Every workspace opened with an empty folder called "Default" that nobody asked f
 ## Simplified how a company's automations are organized behind the scenes — 2026-08-21
 Every paying account used to have an extra, invisible layer in how its automations were filed away — as if each customer's filing cabinet had a second, redundant label taped over the real one. That extra label added complexity without giving anyone a feature they actually used, so it's been removed: an account's automations are now filed directly under the account itself, nothing else. This is a behind-the-scenes cleanup — the folders, downloads, and released versions you see in Build Studio and on the web dashboard look and behave the same, just with one less moving part underneath that could someday drift out of sync.
  — 2026-08-21
+
+## Folder-shaped groups on the Cloud Skill Packages page
+
+**What changed:** The Skill Packages page in the Conxa Cloud dashboard used to show groups as plain rectangles. It now shows them as folder-shaped cards, matching the Workflows page in Build Studio. Each "folder" has the little tab notch on top with the workflow count, the group name and icon, a preview list of the workflows inside (with a green dot for published ones), and a line at the bottom saying how many are published.
+
+**Why:** Groups should look and feel the same everywhere, so people who use Build Studio instantly recognize the same layout in the cloud dashboard.
+
+**Files touched:** conxa-cloud/frontend/src/SkillPackagesPage.tsx (new folder card UI), conxa-cloud/frontend/src/index.css (the CSS that draws the folder shape).
+
+## Wrote a plain-English guide to how self-healing works (the 4 recovery tiers) - 2026-08-22
+
+**What changed:** Added a new explainer document, `docs/recovery-tiers-explained.md`, that walks through what happens when an automation step can't find the thing it's supposed to click or fill in. In simple terms, with examples and a little technical detail: Tier 1 reads the error message and does the obvious fix (close a popup, scroll the button into view, wait for it to stop animating) - free and instant. Tier 2 tries finding the element other ways using backup identity info saved when the workflow was recorded - also free. Tiers 3 and 4 ask Claude for help: first by describing the goal plus a list of everything on the page, then by showing screenshots - these cost the customer's own Claude usage and add 10-15 seconds. It also explains the safety rules: login pages skip the ladder entirely, a "fixed" step must still pass its outcome check, and nothing is ever auto-published back into a released workflow without a human approving it.
+
+**Why:** The full technical reference was dense and easy to misread. Anyone new to the codebase (or just curious how self-healing works) now has one friendly document to start from.
+
+**Files touched:** docs/recovery-tiers-explained.md (new), FIX.md.

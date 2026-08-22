@@ -1892,7 +1892,14 @@ Analytics retention:
 Seat usage:
 - Clerk organization membership is the intended source of truth when an organization is present and `CLERK_SECRET_KEY` is configured for the cloud backend.
 - Local/dev falls back to SaaS membership state.
-- Hard seat enforcement requires a Conxa-owned invite API or Clerk webhook cleanup.
+- **Enforced 2026-08-22** (`app/api/deps.py::current_principal`, `entitlements.ensure_seats_available`): a
+  (user, workspace) pair not yet in local membership state is checked against the plan's `seats` limit —
+  using the live Clerk count, `count > limit` — before `ensure_principal` would otherwise create the
+  membership row; over-cap raises `seat_limit_exceeded` (402) on every request that new member makes.
+  The invite itself still succeeds in Clerk (there is still no Conxa-owned invite API or Clerk webhook
+  to intercept it before it happens — that remains the only way to stop the invite outright), but the
+  seat is unusable, not merely uncounted. Existing members are unaffected by a later downgrade
+  (soft-lock, matching the machine/workflow gates). See `docs/Security.md` SG-18.
 
 Trial expiry (Free only):
 - `trial_started_at` is stamped once, on first sight of a workspace (`saas.ensure_principal`), with a

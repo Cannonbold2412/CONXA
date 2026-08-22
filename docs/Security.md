@@ -40,7 +40,7 @@ This document is the detailed reference for known security gaps across all three
 | [SG-15](#sg-15-machine-fingerprint-handling) | Machine-fingerprint handling — hash-only by design, still a stable per-device identifier | Cloud API | Low | `app/api/machine_binding.py`, `app/services/entitlements.py` |
 | [SG-16](#sg-16-analytics-retention-as-data-minimisation) | Analytics retention is a billing control, not (yet) enforced deletion | Cloud API | Low | `app/services/tracking.py` |
 | [SG-17](#sg-17-starter-external-distribution-is-detectable-not-blocked) | Starter external distribution is detectable, not blocked | Distribution | Low (by design) | `app/api/publish_routes.py` |
-| [SG-18](#sg-18-seat-limit-not-enforced) | Seat limit not enforced — team invites bypass the backend entirely | Cloud API | Low | `app/services/entitlements.py` |
+| [SG-18](#sg-18-seat-limit-not-enforced) | Seat limit not enforced — team invites bypass the backend entirely | Cloud API | Low ✅ Fixed | `app/services/entitlements.py`, `app/api/deps.py` |
 
 ---
 
@@ -57,7 +57,7 @@ Consequence: any authenticated workspace `"member"` can publish skill packs, upl
 
 ### Current Mitigation
 
-Clerk's org membership system is the outer gate. A member first needs to be invited to the org. Seat enforcement gaps (see TRD §13.4) mean seat limits are advisory only.
+Clerk's org membership system is the outer gate. A member first needs to be invited to the org. Seat *limits* are enforced as of 2026-08-22 (SG-18, below) at first-request time, though the invite itself still always succeeds in Clerk — there is no invite-time interception without a Clerk webhook.
 
 ### Recommended Fix
 
@@ -497,8 +497,8 @@ an oversight later.
 
 ## SG-18 — Seat Limit Not Enforced
 
-**Severity:** Low  
-**Component:** Billing — `app/services/entitlements.py`, team invites
+**Severity:** Low — ✅ Fixed 2026-08-22 (different mechanism than originally recommended — see below)  
+**Component:** Billing — `app/services/entitlements.py`, `app/api/deps.py`, team invites
 
 ### Description
 
@@ -518,6 +518,23 @@ Add a Clerk webhook (`organizationMembership.created`) that checks the new membe
 workspace's plan limit and revokes the membership via Clerk's API if over — this is the only
 interception point available, since invites never pass through our own API. Not yet built; tracked as
 `TODO.md` CLOUD-9 (Complexity M).
+
+### Fix Shipped (2026-08-22)
+
+No Clerk webhook was built — the invite itself still succeeds in Clerk, unchanged, since intercepting
+it would require exactly the webhook infrastructure above. Instead, enforcement moved to the point
+Conxa's backend actually observes a new member: their first authenticated request. `current_principal`
+(`app/api/deps.py`) now checks `saas.is_known_member(user_id, workspace_id)` before calling
+`ensure_principal` (which would otherwise silently create the membership row); for a not-yet-known
+pair it calls the new `entitlements.ensure_seats_available(principal)`, which compares the workspace's
+live Clerk member count (`_clerk_org_member_count`) against the plan's `seats` limit and raises
+`seat_limit_exceeded` (402) if the workspace is already at or over cap. Practical effect: an
+over-the-cap member can still be invited in Clerk, but every request they make to Conxa fails until a
+seat opens up or the plan is upgraded — the seat is unusable, not merely uncounted. Existing members
+are never re-checked or removed by a later downgrade (soft-lock, matching the machine/workflow gates).
+This closes the practical exposure (unlimited free team usage) without new webhook infrastructure; the
+webhook remains the only way to stop the invite from succeeding in Clerk at all, so re-open `TODO.md`
+CLOUD-9 if that stronger guarantee is ever required.
 
 ---
 
