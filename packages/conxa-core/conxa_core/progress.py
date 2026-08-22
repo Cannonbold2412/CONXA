@@ -42,6 +42,18 @@ def current_job_id() -> str | None:
     return _current_job_id.get()
 
 
+def has_active_job_sink() -> bool:
+    """True when append_current_job_event would actually deliver an event.
+
+    Lets a caller skip building an expensive ``data`` dict (e.g. redacting and
+    JSON-dumping a whole LLM payload) when there's no scope/sink to receive it —
+    the check append_current_job_event does internally, but too late: Python
+    evaluates keyword arguments before the call, so a discarded event still pays
+    for whatever work built its ``data``.
+    """
+    return bool(_current_job_id.get()) and _event_sink is not None
+
+
 def append_current_job_event(event: str, message: str, data: dict[str, Any] | None = None) -> None:
     job_id = _current_job_id.get()
     if not job_id or _event_sink is None:

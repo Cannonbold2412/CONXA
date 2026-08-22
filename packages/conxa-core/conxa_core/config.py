@@ -116,8 +116,12 @@ class Settings(BaseSettings):
     screenshot_jpeg_quality: int = 78
     # LLM shared settings (no per-feature toggles; LLM is mandatory and routed via the multi-provider pool)
     llm_max_calls_per_step: int = 1
-    llm_parallel_fanout_anchor_vision: bool = True
     llm_debug: bool = False
+    # Vision anchor requests batched into one anchor_vision_batch call (Stage 4,
+    # mega-workflow 502 fix): fewer round trips, fewer chances to land on a
+    # drained provider pool. 4 images @ up to ~150KB base64'd each stays well
+    # under llm_vision_proxy_max_bytes (8MB) with room to spare.
+    llm_anchor_vision_batch_size: int = 4
     # When a vision anchor call exhausts every provider (after the router's cooldown wait),
     # this decides what compile does: False (default) = hard-stop the compile with
     # VisionAnchorGenerationError so a persistent provider outage is fixed, not hidden.
@@ -127,7 +131,11 @@ class Settings(BaseSettings):
 
     # Timeouts (no legacy single-endpoint config — endpoints come from per-provider settings below)
     llm_vision_timeout_ms: int = 120000
-    llm_text_timeout_ms: int = 2000
+    # Studio -> cloud proxy -> provider is a double hop through a free-tier Render
+    # instance; 2s (the old default, calibrated for a direct call) benched every
+    # pool key on a single slow response and 502'd the whole compile. See
+    # docs/TRD.md §13.2 and TODO.md CLOUD-11.
+    llm_text_timeout_ms: int = 20000
 
     # Pack structuring + skill.md tuning (calls Text endpoint above)
     llm_pack_enabled: bool = True
@@ -171,6 +179,10 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     cors_preview_origin_regex: str = r"https://.*\.vercel\.app"
     max_json_body_bytes: int = 1_000_000
+    # A single batched vision anchor request (Stage 4 batching, up to 4 images per
+    # call) can carry several base64 JPEGs at once — 1MB is too tight (one alone
+    # can approach 200KB base64'd); this stays far under the build-artifact ceiling.
+    llm_vision_proxy_max_bytes: int = 8 * 1024 * 1024
     build_artifact_upload_max_bytes: int = 250 * 1024 * 1024
 
     # Clerk authentication. Local development leaves this disabled; production
@@ -189,6 +201,12 @@ class Settings(BaseSettings):
     # requests carrying the X-Conxa-Client header below.
     llm_proxy_monthly_token_quota: int = 5_000_000
     llm_proxy_client_header: str = "build-studio"
+    # Concurrent in-flight /llm/proxy/* calls a single workspace may hold at once.
+    # Without this, one workspace's compile burst can drain the shared provider
+    # pool (cooldowns, quarantines) into 502s for every other tenant sharing it.
+    # Over the cap gets a 429 with Retry-After instead — the Studio proxy client
+    # already backs off on that.
+    llm_proxy_max_concurrent_per_workspace: int = 4
     # Plan-aware quota enforcement. Enabled by default so paid plans are honored
     # in production; workspaces on the `development` plan (unlimited limits) and
     # any plan whose limit resolves to None are never blocked, so local dev is
@@ -388,12 +406,16 @@ class Settings(BaseSettings):
     # Router behavior
     llm_router_cooldown_secs: int = 60
     llm_router_max_retries: int = 3
-    llm_router_request_timeout_ms: int = 30000
-    llm_router_prefer_fast_for_text: bool = True
     # How long route_text/route_vision will block waiting for a cooled-down provider
     # to clear before giving up. Must be >= llm_router_cooldown_secs or every provider
     # hitting a flat (no Retry-After) 429 cooldown together will never be waited out.
-    llm_router_wait_ceiling_secs: float = 65.0
+    # Kept well under llm_router_total_budget_secs so it can't alone exhaust the budget.
+    llm_router_wait_ceiling_secs: float = 20.0
+    # Whole-request wall-clock ceiling across every attempt + wait in one route_text/
+    # route_vision call. Deliberately under Render's free-tier proxy timeout (~100s) so
+    # a degraded pool returns a real 502 with error_detail instead of Render's edge
+    # dropping the connection first. See docs/TRD.md §13.2.
+    llm_router_total_budget_secs: float = 75.0
     # Comma-separated provider names (e.g. "google_ai_studio,nvidia_nim") routed
     # to Starter/Pro compiles; providers not listed here serve the Free pool.
     llm_premium_providers: str = Field(default="", validation_alias=_provider_env("LLM_PREMIUM_PROVIDERS"))
@@ -571,8 +593,8 @@ class Settings(BaseSettings):
         try:
             timeout = int(value)
         except (TypeError, ValueError):
-            timeout = 2000
-        return max(2000, timeout)
+            timeout = 20000
+        return max(10000, timeout)
 
     @field_validator("llm_vision_timeout_ms", mode="before")
     @classmethod

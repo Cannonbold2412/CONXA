@@ -34,7 +34,7 @@ def _debug_log(message: str) -> None:
 
 def _is_vision_task(task: str) -> bool:
     """True for multimodal vision tasks."""
-    return task in {"anchor_vision", "vision_reasoning", "region_selector"}
+    return task in {"anchor_vision", "anchor_vision_batch", "vision_reasoning", "region_selector"}
 
 
 def _safe_error_snippet(text: str, limit: int = 280) -> str:
@@ -228,6 +228,46 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
                 ],
             },
         ]
+    if task == "anchor_vision_batch":
+        # Compile-time batching (Stage 4, mega-workflow 502 fix): several steps'
+        # vision-anchor requests in one call instead of one request per step —
+        # fewer round trips, fewer chances to land on a drained provider pool.
+        # items: [{"image_base64", "image_mime", "user_text"}, ...], up to a
+        # handful (see settings.llm_anchor_vision_batch_size) — the caller
+        # (anchor_vision_llm.py) is responsible for keeping groups small enough
+        # to stay well under the vision proxy's body-size ceiling.
+        items = payload.get("items")
+        items = items if isinstance(items, list) else []
+        content: list[dict[str, Any]] = []
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            image_b64 = str(item.get("image_base64") or "")
+            mime = str(item.get("image_mime") or "image/jpeg")
+            user_text = str(item.get("user_text") or "")
+            content.append({"type": "text", "text": f"--- Image {idx} ---\n{user_text}"})
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{image_b64}"},
+            })
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You will see several UI screenshots in this message, each preceded by a "
+                    "'--- Image N ---' label and its own instructions. Return strict JSON with "
+                    "one key: results (array, same length and order as the images). Each entry: "
+                    "primary_phrase (short string describing that image's highlighted control), "
+                    "secondary (array of objects with keys element and relation only). "
+                    "relation must be one of: inside, above, below, near. "
+                    "For above/below, relation is the highlighted target's position relative to "
+                    "the anchor. If an image is unreadable or has no clear target, still emit an "
+                    "entry for it with primary_phrase set to an empty string. No markdown, no "
+                    "extra keys, no commentary outside the JSON object."
+                ),
+            },
+            {"role": "user", "content": content},
+        ]
     if task == "region_selector":
         # Re-target wizard: user drew a fresh bbox with no stored per-element geometry to
         # resolve it against. The image (highlighted region) + DOM snippet together let the
@@ -289,6 +329,11 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
     if task == "anchor_vision":
         # Short JSON anchors; VLMs often expect an explicit ceiling (see NVIDIA Gemma chat examples).
         body["max_tokens"] = 1024
+    if task == "anchor_vision_batch":
+        # One anchor_vision-sized entry per image in the batch.
+        items = payload.get("items")
+        n = len(items) if isinstance(items, list) else 1
+        body["max_tokens"] = 1024 * max(1, n)
     if task == "region_selector":
         # A handful of selector candidates with rationale — a bit more room than anchor_vision.
         body["max_tokens"] = 1536
