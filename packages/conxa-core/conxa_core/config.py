@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     llm_max_calls_per_step: int = 1
     llm_parallel_fanout_anchor_vision: bool = True
     llm_debug: bool = False
+    # When a vision anchor call exhausts every provider (after the router's cooldown wait),
+    # this decides what compile does: False (default) = hard-stop the compile with
+    # VisionAnchorGenerationError so a persistent provider outage is fixed, not hidden.
+    # True = degrade to deterministic keyword anchors for that step and keep compiling —
+    # useful if you'd rather finish a compile on flaky free-tier keys than block on them.
+    vision_anchor_fallback_on_exhaustion: bool = False
 
     # Timeouts (no legacy single-endpoint config — endpoints come from per-provider settings below)
     llm_vision_timeout_ms: int = 120000

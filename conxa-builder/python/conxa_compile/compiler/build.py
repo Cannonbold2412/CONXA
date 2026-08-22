@@ -74,12 +74,20 @@ _RECOVERABLE_VISION_ANCHOR_REASONS = frozenset({
     "llm_anchor_vision_disabled",
     "llm_endpoint_unset",
     "llm_endpoint_not_multimodal_capable",
-    "vision_llm_request_failed",
-    "vision_llm_empty_response",
     "vision_llm_invalid_primary_phrase",
     # Frame extraction deferred to session shutdown; in-memory events won't have
     # full_screenshot set if extraction hasn't completed yet (e.g. stop() timeout).
     "full_screenshot_path_missing",
+})
+# vision_llm_request_failed / vision_llm_empty_response mean every provider is genuinely
+# unavailable — the router already retries across the whole pool and waits out a 429
+# cooldown (bounded by llm_router_wait_ceiling_secs) before giving up. Whether that then
+# hard-stops the compile or degrades to keyword anchors is an operator choice: see
+# settings.vision_anchor_fallback_on_exhaustion (Render env var
+# SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION).
+_EXHAUSTION_VISION_ANCHOR_REASONS = frozenset({
+    "vision_llm_request_failed",
+    "vision_llm_empty_response",
 })
 
 _RECOVERABLE_VISION_ANCHOR_REASON_PREFIXES = ("screenshot_file_missing:",)
@@ -314,9 +322,13 @@ def _merge_compile_warnings(
 
 def _vision_anchor_failure_is_recoverable(exc: VisionAnchorGenerationError) -> bool:
     reason = str(exc.reason or "")
-    return reason in _RECOVERABLE_VISION_ANCHOR_REASONS or any(
+    if reason in _RECOVERABLE_VISION_ANCHOR_REASONS or any(
         reason.startswith(p) for p in _RECOVERABLE_VISION_ANCHOR_REASON_PREFIXES
-    )
+    ):
+        return True
+    if reason in _EXHAUSTION_VISION_ANCHOR_REASONS:
+        return bool(settings.vision_anchor_fallback_on_exhaustion)
+    return False
 
 
 def _fallback_anchors_from_event(ev_with_intent: dict[str, Any], policy: dict[str, Any]) -> list[dict[str, Any]]:

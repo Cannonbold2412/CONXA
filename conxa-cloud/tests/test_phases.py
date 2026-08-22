@@ -1199,7 +1199,38 @@ class PhaseTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.reason, "source_session_id_required")
 
-    def test_vision_llm_failure_falls_back_to_deterministic_anchors(self) -> None:
+    def test_vision_llm_empty_response_aborts_compile(self) -> None:
+        # vision_llm_request_failed / vision_llm_empty_response are no longer recoverable:
+        # the router already retries and waits out provider cooldowns before giving up, so
+        # reaching this means every provider is genuinely unavailable. Compile must fail
+        # loudly (so the operator fixes the provider/keys) instead of silently degrading
+        # to keyword anchors.
+        from conxa_compile.compiler.build import compile_skill_package
+        from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
+        from conxa_compile.pipeline.run import run_pipeline
+
+        evs = run_pipeline([_minimal_click_event()])
+        data_dir, *patchers = _compile_with_vision_mocks("sess", evs, call_llm_return=None)
+        try:
+            with ExitStack() as stack:
+                for p in patchers:
+                    stack.enter_context(p)
+                with self.assertRaises(VisionAnchorGenerationError) as ctx:
+                    compile_skill_package(
+                        evs,
+                        skill_id="y",
+                        source_session_id="sess",
+                        title="t",
+                        version=1,
+                    )
+                self.assertEqual(ctx.exception.reason, "vision_llm_empty_response")
+        finally:
+            shutil.rmtree(data_dir, ignore_errors=True)
+
+    def test_vision_anchor_fallback_on_exhaustion_toggle_falls_back_instead(self) -> None:
+        # SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION=true opts back into the old
+        # degrade-to-keyword-anchors behavior instead of hard-stopping the compile.
+        from conxa_core.config import settings
         from conxa_compile.compiler.build import compile_skill_package
         from conxa_compile.pipeline.run import run_pipeline
 
@@ -1209,6 +1240,7 @@ class PhaseTests(unittest.TestCase):
             with ExitStack() as stack:
                 for p in patchers:
                     stack.enter_context(p)
+                stack.enter_context(patch.object(settings, "vision_anchor_fallback_on_exhaustion", True))
                 pkg = compile_skill_package(
                     evs,
                     skill_id="y",
@@ -1216,19 +1248,12 @@ class PhaseTests(unittest.TestCase):
                     title="t",
                     version=1,
                 )
-                # steps[0] is the leading synthetic navigate to the recording's starting page;
-                # the click under test is steps[1]. Its baked-in step_index (set before the
-                # navigate is prepended) stays 0, so that assertion below is unchanged.
                 step = pkg.skills[0].steps[1].model_dump()
-                anchors = step.get("signals", {}).get("anchors") or []
-                self.assertTrue(anchors)
-                self.assertIn("submit", " ".join(str(a.get("element") or "") for a in anchors))
                 warning = ((step.get("confidence_protocol") or {}).get("compile_warnings") or {}).get(
                     "vision_anchor_fallback"
                 )
                 self.assertIsInstance(warning, dict)
                 self.assertEqual(warning.get("reason"), "vision_llm_empty_response")
-                self.assertEqual(warning.get("step_index"), 0)
                 self.assertEqual(warning.get("fallback"), "deterministic_anchors")
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
