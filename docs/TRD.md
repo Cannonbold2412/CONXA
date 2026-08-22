@@ -1830,25 +1830,50 @@ compile quality to actually differ from Free; see `ROUTER_SETUP.md`.
 
 ### 13.2 Router Behavior
 
-- Round-robin with cooldown: entries that return 429 are cooled. `LLMRouter` honours the
-  provider's own `Retry-After` header (numeric seconds, capped at 3600) when present;
-  otherwise it falls back to the flat `llm_router_cooldown_secs` (60s default). A provider
-  asking for a 2s backoff no longer costs the pool a full 60s.
+**Rewritten 2026-08-23** after a mega-workflow compile produced a storm of `/llm/proxy/text`
+502s ending in one fatal `/vision` 502 (root cause: `llm_text_timeout_ms` defaulted to 2000ms —
+calibrated for a direct call, not the Studio→cloud→provider double hop — so 3 timeouts inside
+one request drained the whole 3-key pool; every failure class shared one flat 60s cooldown; and
+`PoolEntry` had a single `cooled_until` shared by both modalities, so a text-timeout storm also
+benched the vision-capable keys). See `TODO.md` CLOUD-11 (resolved) for the full investigation.
+
+- **Per-modality cooldown**: `PoolEntry.cooled_until_text` / `cooled_until_vision` are tracked
+  separately. A burst of `intent_generation` timeouts no longer benches the same key's
+  `vision_model` — the two failure surfaces are independent.
+- **Failure classification** (`_call_provider`), not one flat cooldown for everything:
+  - `429` — `Retry-After` if present, else 30s.
+  - timeout / connection error — exponential backoff per entry (`PoolEntry.consecutive_transient_failures`):
+    5s → 15s → 45s, capped at 60s. Resets to 0 on that entry's next success.
+  - provider `5xx` / malformed JSON — flat 10s.
+  - **deterministic 4xx** (`400`/`413`/`422` — context-length, unsupported `response_format`,
+    malformed body) — **no cooldown, no cross-provider retry**. `_route` catches the internal
+    `_DeterministicRejection` and fails the request immediately: every provider would reject
+    the identical payload, so cooling a healthy key and burning the other two entries on a
+    request that can't succeed anywhere is pure waste.
+  - `401`/`403` — **quarantined** 300s (`PoolEntry.quarantined_until`), not removed from the
+    pool. Removal had no re-admission path: a transient auth glitch (WAF trip, regional
+    throttle) permanently shrank the pool toward empty until the process restarted.
+- **Whole-request wall-clock budget** (`llm_router_total_budget_secs`, default 75s): `_route`
+  computes one deadline up front and clamps every attempt's timeout to what's left, stopping
+  once it's exhausted. Deliberately under Render's free-tier proxy timeout (~100s) — worst case
+  before this was `max_retries × timeout_ms + wait_ceiling_secs`, up to 425s, which Render's edge
+  would cut off before the app ever answered.
 - Bounded wait for a cooled pool: if every entry matching the request (respecting the
   `for_vision`/`pool` filters) is cooled — not merely absent — `route_text`/`route_vision`
-  sleeps once, capped at `LLMRouter.wait_ceiling_secs` (8s), for the soonest entry to clear,
-  then retries selection. This is what stops a single transient 429 from silently degrading
-  every step compiled in the next minute (vision anchors fall back to keyword anchors per
-  step — see `compiler/build.py::_RECOVERABLE_VISION_ANCHOR_REASONS` — and that fallback used
-  to be effectively guaranteed for the whole cooldown window). If the wait would exceed the
-  ceiling, or no entry matches the request at all (a config gap, e.g. no provider has a
+  sleeps once, capped at `LLMRouter.wait_ceiling_secs` (20s default, down from 8s), for the
+  soonest entry to clear (also respecting `pool`, fixed from an earlier version that ignored
+  it), then retries selection. If the wait would exceed the ceiling or the remaining total
+  budget, or no entry matches the request at all (a config gap, e.g. no provider has a
   `vision_model`), it fails fast as before.
-- Failover: on error, moves to next entry.
-- Max retries: `llm_router_max_retries` (3 default).
-- Fast text preference: when `llm_router_prefer_fast_for_text=true`, text calls prefer low-latency providers.
+- Failover: on error, moves to next entry. Pool selection and the LRU cursor are guarded by
+  `LLMRouter._lru_lock` — under FastAPI's ~40-thread pool, an unguarded read-increment-read on
+  the shared cursor let concurrent requests pick the same "next" entry and hammer it,
+  self-inflicting the 429 storms the cooldown machinery then had to absorb.
+- Max retries: `llm_router_max_retries`, raised at construction to `max(config value, len(pool))`
+  so a larger pool actually gets a fair sweep within one call instead of giving up early.
 - `LLMRouter.call_entry_directly` bypasses pool selection and cross-provider failover for a
   caller-supplied `PoolEntry` — used only for BYOK (§13.5), where there's exactly one deployment to
-  call and the shared pool's rotate/cool-down/drop-on-401 machinery (built for many interchangeable
+  call and the shared pool's rotate/cool-down/quarantine machinery (built for many interchangeable
   keys) doesn't apply.
 - `error_detail` (an optional `list[str]` every call site can pass) collects a human-readable
   line per failed attempt — e.g. `HTTPError 429 rate_limited (cooled 2s): <provider body>`.
@@ -1858,6 +1883,33 @@ compile quality to actually differ from Free; see `ROUTER_SETUP.md`.
   shape into its own `error_detail` list instead of collapsing it to a bare `"proxy HTTP 502"`
   — so a `VisionAnchorGenerationError`'s `hint` (and the resulting `vision_anchor_fallback`
   compile warning) names the actual provider failure, not just the HTTP status.
+- **Per-workspace admission control** (`llm_proxy_routes.py`): a module-level counter,
+  `llm_proxy_max_concurrent_per_workspace` (default 4), caps concurrent in-flight `/llm/proxy/*`
+  calls per workspace. One tenant's compile burst can no longer drain the shared pool (every
+  entry cooled/quarantined) into 502s for every other tenant sharing it — over the cap gets a
+  `429 {"detail": "workspace_concurrency_limit"}` with `Retry-After`, which the Studio proxy
+  client retries with backoff rather than treating as a real quota error.
+- Studio proxy client retry (`services/llm_proxy_client.py`): a `502`/`503`/`504` (or the
+  `workspace_concurrency_limit` 429 above) retries twice with backoff (1s, 4s + jitter,
+  honouring `Retry-After`) before raising `ProxyUnavailable` (a `CloudUnreachable` subclass) —
+  distinct from a plain `None` return, which now means only a genuinely empty LLM answer. Every
+  call site either lets this propagate (aborting the compile, matching existing `CloudUnreachable`
+  handling) or catches it and degrades gracefully, depending on whether that call is on the
+  primary compile path — see `conxa_compile/llm/intent_llm.py`, `anchor_vision_llm.py`.
+- Vision anchor batching (`prefetch_vision_anchors_batch` in `anchor_vision_llm.py`, wired from
+  `compiler/build.py::_prefetch_vision_anchors` before the per-step loop): groups up to
+  `llm_anchor_vision_batch_size` (4) steps' screenshots into one `anchor_vision_batch` call
+  instead of one request per step, populating the anchor cache so the later per-step call in
+  `_build_step` becomes a cache hit. Best-effort and never fatal — anything not prefetched (a
+  cache hit already, a batch call failure, a response the model didn't return in order) falls
+  through to the unchanged single-image call. The vision proxy route's body limit was raised from
+  1MB to `llm_vision_proxy_max_bytes` (8MB) to fit a batch of base64 JPEGs.
+- Compile-credit refund (`POST /api/v1/usage/compile/refund`, `entitlements.refund_compile_credit`):
+  a compile aborts with the credit already committed (`handlers/compile.py` commits before any
+  LLM call). An infra-class abort — `CloudUnreachable`/`ProxyUnavailable`, or a
+  `VisionAnchorGenerationError` whose `reason` is specifically `vision_llm_request_failed` — now
+  refunds that credit; a content/quality failure (a bad answer, an invalid primary phrase) does
+  not, since refunding those would make repeated bad input free.
 
 ### 13.3 Build Studio → Cloud Proxy
 

@@ -43,10 +43,10 @@ Counts below are computed straight from the section headers in this file (unique
 |---|---|---|---|
 | P0 — Critical / Time-Sensitive | 8 | 18 | 10 |
 | P1 — Blocking / Foundational | 5 | 6 | 1 |
-| P2 — High Value, Do Soon | 27 | 30 | 3 |
+| P2 — High Value, Do Soon | 26 | 31 | 5 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
 | P4 — Low Urgency, Opportunistic | 29 | 36 | 7 |
-| **Total** | **92** | **113** | **21** |
+| **Total** | **91** | **114** | **23** |
 
 ---
 
@@ -467,7 +467,7 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** L — approve/reject is the small half and reuses EXEC-13's machinery almost wholesale; judgement input needs the typed input contract and schema validation; hand-over is the genuinely new part and carries the real risk (yielding and reclaiming a live page mid-run).
 - **Success criteria:** a workflow authored with each of the three review shapes compiles, publishes, and replays on a customer machine; at each review point the run pauses and the person is prompted in the browser the runtime is driving, with the page in the state the run left it; a judgement value supplied by the person is bound as a named input and demonstrably changes a later step's behaviour; a rejected approval aborts cleanly with an audit record; a hand-over returns control to the run with the page re-validated before the next step acts; a review that is never answered times out per its configured `on_failure` policy and leaks no browser; the workflow remains testable in the Build Studio sandbox; and telemetry distinguishes a planned review from a recovery-triggered handoff.
 
-## P2 — High Value, Do Soon (27 remaining / 30 total)
+## P2 — High Value, Do Soon (25 remaining / 30 total)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -552,6 +552,18 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Suggested order:** sequence before EXEC-2; it's foundational infrastructure, not a user-facing feature, so it can proceed in parallel with other execution/recovery items that don't depend on it (EXEC-1, EXEC-3).
 - **Complexity:** XL — touches the compiler's core event→package pipeline, requires a new artifact format, versioning strategy, and model-pinning across the LLM router.
 - **Success criteria:** compiling the same recording twice (same model/prompt version) produces byte-identical `.cir` output; a `cir_root_hash` mismatch is detectable and drives a defined resolution path (recompile vs. flag).
+
+### BUILD-20 — Workflows page: parallel workflow checks instead of cancel-on-new-check
+- **Category:** Builder / Build Studio
+- **Description:** On the Build Studio Workflows page, starting a check (test run) on one workflow and then starting a check on another cancels the first one — checks currently run sequentially through a single slot, so the newest click always kills the in-flight check. Make checks parallel: clicking check on a second workflow should start it alongside the first, not replace it.
+- **Why required:** a vendor verifying several workflows after recording has to babysit the page — wait for each check to finish before daring to click the next one, or silently lose the running check. This is exactly the sequential-execution pain point already solved at the runtime level by RT-3's per-run registry (`runtime/app/run_registry.js`, `CONXA_MAX_CONCURRENT_RUNS` default 5) and host-level serialization via `host_lock.js`; the Studio's test path should behave the same way.
+- **Business value:** vendors verify whole batches of workflows after recording/publishing; serial checking multiplies that wall-clock time and surprises users when their running check vanishes.
+- **Technical value:** likely a Studio-side single-active-test slot (renderer state and/or backend handler) needs to become a per-run keyed map mirroring RT-3's shape; note two runs touching the SAME external app still serialize via `host_lock.js` semantics, which is correct and should be surfaced as "queued behind" rather than "cancelled".
+- **Dependencies:** none blocking — runtime-side parallel execution already ships (RT-3).
+- **Suggested order:** soon — direct user-reported friction on the primary authoring surface.
+- **Complexity:** M — depends on how much of the serialization lives in the renderer vs. the Python backend's test/sandbox runner (`conxa_runtime.py` stages a sandbox; its staging may itself assume a single active test).
+- **Success criteria:** with two workflows checked back-to-back, both checks run to completion concurrently (or the second visibly queues with status, never cancelling the first); results for each check stay correctly attributed to their own workflow.
+- **Found via:** direct user report (2026-08-23).
 
 ### CLOUD-1 — RBAC / SSO / tenant isolation (enterprise plumbing)
 - **Category:** Cloud
@@ -716,12 +728,31 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** M — Clerk webhook endpoint, signature verification, revoke-on-over-limit call; no compiler/runtime involvement.
 - **Update (2026-08-22, resolved — different mechanism than proposed above):** shipped without a Clerk webhook. The invite itself still succeeds in Clerk (that part genuinely can't be intercepted without the webhook infrastructure described above), but the over-cap member can never actually use the product: `app/api/deps.py::current_principal` now checks `saas.is_known_member` before persisting a new (user, workspace) membership row, and for a not-yet-known pair calls the new `entitlements.ensure_seats_available`, which compares the workspace's live Clerk member count against the plan's seat limit and raises `seat_limit_exceeded` (402) if already at/over cap — every request that new member makes fails until a seat opens up or the plan is upgraded. Existing members are unaffected by a later downgrade (soft-lock, same shape as the machine/workflow gates). This closes the practical gap (unlimited free team access) with no new infrastructure; the webhook remains the only way to prevent the invite from succeeding in Clerk at all in the first place, so re-open this item if that stronger guarantee is ever needed.
 
-### CLOUD-11 — Confirm the real vision-provider rate-limit shape (RPM vs TPM vs TPD) and size the pool accordingly
+### ~~CLOUD-11 — Confirm the real vision-provider rate-limit shape (RPM vs TPM vs TPD) and size the pool accordingly~~ — **Resolved 2026-08-23**
 - **Category:** Cloud / LLM Router
 - **Description:** 2026-08-15 fixed three router bugs that were amplifying every vision-model 429 into "every compile step for the next minute silently falls back to keyword anchors": `LLMRouter` cooled a key for a flat 60s regardless of the provider's own `Retry-After`, gave up instantly instead of waiting a few seconds for a cooled key to clear, and (separately) every `if error_detail:` truthiness check in `app/llm/router.py` silently dropped the *first* append into a fresh list — meaning the provider's actual failure reason essentially never reached the compile report's `vision_anchor_fallback` warning, only a bare `"proxy HTTP 502"`. All four are fixed (`Retry-After` support, bounded wait-for-cooled-key, `error_detail is not None` checks, `services/llm_proxy_client.py` unpacking the 502's dict `detail` shape) and `compile_skill_package` now emits one aggregate `vision_anchor_fallback_summary` event instead of only per-step warnings — see `docs/TRD.md` §13.2 and §7.2.
 - **Why required:** the fixes make the real failure reason visible for the first time; what's still unknown is whether the vision pool is actually rate-limited on requests-per-minute (which the wait/backoff now handles) or tokens-per-minute/day (which no amount of backoff fixes — needs more keys, a bigger pool, or a smaller image). Now that `error_detail`/the summary event surface the provider's real string, the next vision-heavy compile against production traffic will show which one it is.
 - **Dependencies:** none blocking — this is "watch the now-visible signal and act on it," not new engineering. If it turns out to be TPM/TPD: add more `*_API_KEYS` for Groq/Google AI Studio/NVIDIA NIM (each key is a separate pool entry per `enabled_llm_providers()`), or lower `_VISION_MAX_DIMENSION` in `anchor_vision_llm.py` below the 1024px this fix set it to.
 - **Complexity:** S — config/keys change once the shape is confirmed; no further code change expected unless the answer is surprising.
+- **Update (2026-08-23, resolved — answer was neither):** a mega-workflow compile (41 events) produced a burst of `/text` 502s ending in one fatal `/vision` 502, with `data/cache/semantic_llm_cache.json` showing ~80% `rule_fallback` — the LLM had silently stopped answering almost entirely. The signal this item asked for pointed at the wrong layer: it was never a provider rate-limit shape question. Root cause was `llm_text_timeout_ms` defaulting to 2000ms — calibrated for a direct provider call, not the Studio→cloud→provider double hop — so ordinary 70B-model latency tripped the timeout on every attempt; 3 timeouts inside one request drained the whole 3-key pool (all failure classes shared one flat 60s cooldown); and `PoolEntry` had a single `cooled_until` shared by both modalities, so the text-timeout storm also benched the vision-capable keys, which is why the run's *one* vision call died last. Full fix in `docs/TRD.md` §13.2 (rewritten): `llm_text_timeout_ms` raised to 20000ms (10000ms floor), per-modality cooldowns, failure-class-specific cooldowns (429/timeout-backoff/5xx/deterministic-4xx-no-cooldown/401-403-quarantine-not-remove), a whole-request wall-clock budget (`llm_router_total_budget_secs`, 75s, under Render's proxy timeout), a pool-selection lock, the Studio proxy client retrying 502/503/504 with backoff before raising a distinguishable `ProxyUnavailable`, vision anchors batched 4-at-a-time (`prefetch_vision_anchors_batch`), a per-workspace concurrency cap so one tenant can't drain the pool for others, and a compile-credit refund path (`POST /usage/compile/refund`) for infra-class aborts. 8 new/updated test files, 903 tests passing.
+
+---
+
+### ~~CLOUD-19 — `start.sh` sets no `--timeout-keep-alive`; a known Render edge-502 source, distinct from CLOUD-11's application 502s~~ — **Resolved 2026-08-23**
+- **Resolution:** `start.sh` now runs uvicorn with `--timeout-keep-alive 75`, comfortably above Render's proxy connection-reuse window, so uvicorn no longer closes idle keep-alive connections out from under Render's proxy mid-reuse. The `render.yaml` free-plan cold-start look mentioned below was not part of this change (no `render.yaml` action taken); idle spin-down 502s remain possible on the free plan for a different reason.
+- **Category:** Cloud / Deployment
+- **Description:** `conxa-cloud/backend/start.sh` runs `uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"` with no `--timeout-keep-alive` flag, so uvicorn defaults to closing idle keep-alive connections after 5s. Render's own proxy pools and reuses upstream connections on a longer idle horizon; when uvicorn closes a connection Render's proxy is about to reuse, the proxy forwards a request into a half-closed socket and returns a 502 to the client with no app-side log entry at all (unlike CLOUD-11's fix, which only addressed 502s the app itself returned).
+- **Why required:** found during the CLOUD-11 investigation (2026-08-23) — noted as a real, separate failure mode but out of scope for that fix since the mega-workflow's actual 502s were all application-side (uvicorn's access log showed them). This one is silent at the app layer, which makes it harder to attribute when it happens.
+- **Dependencies:** none. Also worth pairing with a look at `render.yaml`'s `plan: free` (0.1 CPU, 512MB, spins down after 15 min idle) — a cold-start burst after idle produces the same client-visible symptom (502 with no app log) for a different reason.
+- **Complexity:** S — add `--timeout-keep-alive 75` (comfortably above Render's proxy reuse window) to `start.sh`'s uvicorn invocation.
+
+### ~~CLOUD-20 — LLM metering bills the raw base64 image as "tokens"~~ — **Resolved 2026-08-23**
+- **Resolution:** `llm_metering.estimate_request_tokens` now strips base64 blobs (`image_base64`/`base64` keys and `data:...;base64,` URL strings — same detection pattern as `router.py`'s `_redact_value`) before the ~4-chars/token estimate, and instead counts each stripped image at a fixed 1,000-token estimate (rough per-image input cost for a 1024px image across mainstream providers). A 200KB blob that previously billed as ~50k tokens now bills as ~1k + the surrounding text. The caller's payload is not mutated. Covered by `tests/test_llm_proxy_and_publish.py::test_estimate_request_tokens_excludes_base64_blobs` and `::test_estimate_request_tokens_plain_text_unchanged`.
+- **Category:** Cloud / LLM Metering
+- **Description:** `llm_metering.estimate_request_tokens` (`app/services/llm_metering.py`) calls `json.dumps(payload)` on the *entire* request payload, including `image_base64` for vision calls, then estimates tokens at ~4 chars/token. A single 1024px JPEG anchor image base64-encodes to roughly 80-200KB, which this counts as ~20,000-50,000 "tokens" — nowhere close to what a vision model's real per-image token cost is, and it compounds: a 41-step compile's worth of vision calls alone can approach the 5M monthly quota (`llm_proxy_monthly_token_quota`) on padding.
+- **Why required:** found during the CLOUD-11 investigation (2026-08-23) — real, but a metering/billing-accuracy bug, not a cause of the 502s that investigation was about, so left out of that fix's scope.
+- **Dependencies:** none blocking. Fix is to exclude/replace `image_base64` (and any other base64 blob) before estimating — `router.py`'s own `_redact_value` already has a pattern for spotting these keys (`_redacted_blob`) that could be reused to strip them before the token estimate instead of just before logging.
+- **Complexity:** S.
 
 ---
 

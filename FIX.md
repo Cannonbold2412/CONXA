@@ -4,6 +4,11 @@
 
 ---
 
+## A large recording would fail to compile with a wall of "server error" messages — 2026-08-23
+Compiling a workflow that touched several websites in one recording used to fail partway through, with the compile log showing a burst of server errors and then one final failure that killed the whole thing — even though the person had already paid a compile credit for it and gotten nothing back. The cause: the assistant gives itself only two seconds to hear back from the AI helper it asks for small in-compile decisions, and two seconds simply isn't enough time when the request has to travel through the cloud service in the middle. When that short wait ran out, the assistant treated it exactly like the AI helper being broken and benched it for a full minute — and since there were only three AI helpers to rotate through, three slow-but-fine answers in a row was enough to leave nobody available, which is what produced the wall of errors. It also made the mistake of treating "this one request took too long" the same as "this AI helper is genuinely broken," and the same time-out was shared between ordinary text questions and picture-reading questions, so a pile-up on one accidentally silenced the other too. Fixed by giving requests a realistic amount of time to answer, telling different kinds of trouble apart (a slow response gets a short pause and another try; a request that could never succeed with any helper, like a picture that's too big, fails right away instead of being retried three times for nothing; a real login problem gets sidelined for a few minutes instead of forever), keeping text and picture questions from interfering with each other, and putting a hard ceiling on how long the assistant will keep trying so it never gets cut off mid-answer by the server itself. If the recording is large enough to need several picture-reading questions, they're now bundled together instead of asked one at a time, so there are fewer chances to hit a bad moment. And if a compile does fail because of one of these outside hiccups after the credit was already spent, that credit is now automatically given back instead of being lost. Verified with 907 passing automated checks, including new ones for every failure type described above.
+
+---
+
 ## A workflow that uses two websites now shows both name tags — 2026-08-23
 A workflow called "Deploy a Service on Render then Visit frontend on Vercel" obviously touches two platforms — but its card in the group page only showed one small tag: "Render". The reason: the tag matching only looked at where the workflow *starts*, never at where the recording actually goes, and it only compared against each app's login address rather than also its "login succeeded" address. So the Vercel half of the trip was invisible. Now, the moment you click "Save Workflow Now" after recording, the program notes every website the recording actually visited; the group page then shows a tag for every connected app those visits touch — so this card correctly shows both "Render" and "Vercel", even before compiling. Importantly, these tags are computed by exactly the same matcher that decides which app logins a workflow needs when it runs, so what the card shows can never disagree with what actually gets enforced. And because the runtime already locks concurrent runs by every platform they touch (not just the starting one), two workflows sharing either Render or Vercel still politely take turns, while workflows on completely different sites run side by side. Verified with new automated checks at every layer: tag extraction from recordings, the group page's tag list, the compiled pack requiring both apps, and a live end-to-end test proving a Vercel-only run waits behind a multi-platform run even though their starting addresses differ.
 
@@ -341,3 +346,19 @@ All 335 unit tests pass; all three CI guards pass. The shared editor module is c
 **Why:** One less slow browser-based check per release; the invariant it tested is still machine-enforced by the purity guard earlier in the same pipeline.
 
 **Files touched:** .github/workflows/build-runtime-app.yml, FIX.md.
+
+## 2026-08-23 - Added a to-do: workflow checks on the Workflows page should run in parallel
+
+**What changed:** No code changes. Added a new backlog item (BUILD-20) to TODO.md describing a problem on the Build Studio Workflows page: when you start a check (test run) on one workflow and then click check on another, the first check gets cancelled. The user wants checks to run in parallel instead of one-at-a-time. Also updated the progress-count table at the top of TODO.md.
+
+**Why:** Capturing the reported problem so it gets fixed rather than forgotten. The fix itself is still open work.
+
+**Files touched:** TODO.md, FIX.md.
+
+## 2026-08-23 - Fixed two cloud issues from the backlog (CLOUD-19 and CLOUD-20)
+
+**What changed:** Two small cloud fixes. (1) CLOUD-19: the backend start script now tells the web server to keep idle connections open for 75 seconds instead of the default 5. This stops a known problem where Render's proxy tries to reuse a connection the server just closed, which showed up as random "502 Bad Gateway" errors for users with nothing in the server logs. (2) CLOUD-20: usage metering used to count a picture's raw file data as if it were text, so one image was billed as roughly 20,000-50,000 tokens when it really costs about 1,000. Now images are billed at a fair fixed ~1,000 tokens each, so monthly quotas reflect real usage instead of filling up on padding.
+
+**Why:** Both were found during the earlier 502 investigation and left out of that fix's scope. The first makes the service less flaky; the second stops customers' AI budgets from being eaten by an accounting mistake.
+
+**Files touched:** conxa-cloud/backend/start.sh, conxa-cloud/backend/app/services/llm_metering.py, conxa-cloud/tests/test_llm_proxy_and_publish.py, TODO.md, FIX.md.

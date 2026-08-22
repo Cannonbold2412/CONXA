@@ -1097,6 +1097,30 @@ Request:
 ```json
 {"reservation_id": "cmp_org_123_wf_123_sess_123"}
 ```
+`reserved` → `released` only — a no-credit-ever-spent cancel. Does nothing to a `committed`
+reservation (returns its current status unchanged); use refund for that case.
+
+**POST /api/v1/usage/compile/refund** (added 2026-08-23, part of the mega-workflow 502 fix —
+see `TRD.md` §13.2)
+
+Request:
+```json
+{"reservation_id": "cmp_org_123_wf_123_sess_123"}
+```
+Response:
+```json
+{"reservation_id": "cmp_org_123_wf_123_sess_123", "status": "refunded"}
+```
+`committed` → `refunded`: gives back a credit already committed and spent when the compile then
+aborted on an infrastructure failure (cloud LLM proxy unavailable, or a vision anchor call that
+failed on `vision_llm_request_failed` specifically) rather than anything the user did — the
+credit is committed *before* any LLM call (`handlers/compile.py`), so an infra failure otherwise
+burns it for nothing. Idempotent (a second refund of the same reservation is a no-op, returns
+`refunded`); `409 compile_reservation_not_committed` if called on a reservation that was never
+committed (use release for that). Deliberately narrow: Build Studio calls this only for
+`CloudUnreachable`/`ProxyUnavailable` and that one `VisionAnchorGenerationError` reason — never
+for a content/quality failure (a bad answer, an invalid primary phrase), or repeated bad input
+becomes free.
 
 Stable entitlement error details (returned as HTTP `402` for quota-exhausted, `403`/`503` for
 config/availability):
