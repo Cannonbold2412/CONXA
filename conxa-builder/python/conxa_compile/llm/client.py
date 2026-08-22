@@ -57,7 +57,7 @@ def call_llm(
     """
     from conxa_core.llm import get_router
     router = get_router()
-    is_vision = task in {"anchor_vision", "vision_reasoning", "region_selector"}
+    is_vision = task in {"anchor_vision", "anchor_vision_batch", "vision_reasoning", "region_selector"}
     if is_vision:
         return router.route_vision(task, payload, timeout_ms, error_detail=error_detail)
     return router.route_text(task, payload, timeout_ms, error_detail=error_detail)
