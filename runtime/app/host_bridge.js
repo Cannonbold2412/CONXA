@@ -47,9 +47,17 @@ function env() {
 }
 
 // Version stamped into the host exe's package.json at build time.
+// NOTE: the disk require is lazy and guarded — when running under the host
+// exe, __runtimeVersion always exists and the app layer is loaded from a
+// versioned directory whose parent has no package.json.
 function runtimeVersion(devFallback) {
-  const fallback = devFallback || require("../package.json").version;
-  return (typeof global !== "undefined" && global.__runtimeVersion) || fallback;
+  if (typeof global !== "undefined" && global.__runtimeVersion) return global.__runtimeVersion;
+  if (devFallback) return devFallback;
+  try {
+    return require("../package.json").version;
+  } catch {
+    return "";
+  }
 }
 
 // Ed25519 public key baked into the host exe at build time, used to verify the

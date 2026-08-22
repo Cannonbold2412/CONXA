@@ -4,6 +4,11 @@
 
 ---
 
+## Fixed the crash that broke the automated test gate against host-v2.0.0 — 2026-08-22
+The CI execution gate (which replays a real skill against the freshly built runtime) started failing with "Cannot find module '../package.json'" when loading the app layer. The cause: one small helper file (`host_bridge.js`) that reads the runtime's version number was checking for the version the host program provides, but *before* checking, it unconditionally tried to read it from a file on disk. In development that file exists one folder up — but on a customer machine (and in the gate), the app layer is loaded from its own versioned folder where that file simply isn't there, so the whole engine crashed at startup. Fix: the version lookup now checks the host-provided value first and only falls back to reading the disk file in standalone development mode, with a safe guard so a missing file can never crash startup again. Verified all three paths behave correctly (standalone dev, dev-version override, simulated host-exe run) and the invariant tests still pass.
+
+---
+
 ## Double-checked the recent runtime rebuild for mistakes — 2026-08-22
 Ran a full review over every change made since the last logged checkpoint — 112 files, the whole runtime engine reorganisation. It found one real problem and confirmed it had already been caught and fixed: the cloud build recipe was missing several engine files, which would have shipped a broken update to customers. Nothing new was broken. The only edit made was tidying two settings that had been accidentally squashed onto one line in a safety-check script, which made it hard to read but changed nothing about how it behaves. All build safety checks still pass.
 
