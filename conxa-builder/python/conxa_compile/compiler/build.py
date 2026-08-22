@@ -1594,7 +1594,23 @@ def _build_intent_graph(
             "Building workflow intent graph.",
             {"phase": "workflow_intent_start", "step_count": len(steps_summary), "page_url_count": len(page_urls)},
         )
-        graph = build_workflow_intent_graph(steps_summary, page_urls)
+        # This is the LAST LLM call of the compile — by now the vision-anchor and
+        # per-step-intent bursts have often put every provider key into cooldown,
+        # so the pool can legitimately be exhausted here. error_detail tells a
+        # real failure apart from a genuinely empty graph; one bounded retry
+        # gives the cooldowns a second chance to clear.
+        error_detail: list[str] = []
+        graph = build_workflow_intent_graph(steps_summary, page_urls, error_detail=error_detail)
+        if not graph.goal and not graph.steps and error_detail:
+            _compile_log(
+                "compile_phase",
+                f"Workflow intent graph generation failed ({'; '.join(error_detail[:3])}) — retrying once after a short wait.",
+                {"phase": "workflow_intent_retry", "level": "warn"},
+            )
+            time.sleep(15)
+            retry_detail: list[str] = []
+            graph = build_workflow_intent_graph(steps_summary, page_urls, error_detail=retry_detail)
+            error_detail = retry_detail or error_detail
         _compile_log(
             "compile_phase",
             "Workflow intent graph finished.",
@@ -1605,10 +1621,11 @@ def _build_intent_graph(
             },
         )
         return graph
-    except Exception:  # noqa: BLE001 — LLM failure is non-fatal at compile time
+    except Exception as exc:  # noqa: BLE001 — LLM failure is non-fatal at compile time
         _compile_log(
             "compile_phase",
-            "Workflow intent graph generation failed; continuing with an empty graph.",
-            {"phase": "workflow_intent_failed"},
+            f"Workflow intent graph generation failed ({exc}); the Workflow plan will be empty. "
+            "Recompiling this workflow later usually fills it in.",
+            {"phase": "workflow_intent_failed", "level": "warn"},
         )
         return WorkflowIntentGraph()
