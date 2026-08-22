@@ -25,9 +25,25 @@ global.__conxaEnv = envInfo;
 // __versionManager lets every disk-loaded layer (app, skill sync) share the exact same
 // junction-handling code the host uses, instead of shipping/duplicating their own copy.
 // __manifestPublicKey lets manifest_manager.js (loaded from disk) verify the signed
-// manifest without shipping the key itself in the app-layer zip — it's baked into the
-// host exe at build time (same stamping step as host_version/version).
-global.__hostRequire      = (id) => require(id);
+// manifest without shipping the key itself in the app-layer zip — it's baked into
+// the host exe at build time (same stamping step as host_version/version).
+//
+// The MCP SDK specifier rewrite: the SDK only exposes subpaths via its "exports"
+// map, whose "./*" wildcard @yao-pkg/pkg cannot statically resolve, and its
+// "type": "module" package.json stops pkg from bundling its .js files at all
+// (host/vendor-sdk.js copies the CJS build to vendor/mcp-sdk-cjs/ at build time;
+// package.json's pkg.scripts lists the entry points from there). Rewriting bare
+// specifiers to those vendored real files — relative to THIS module, which lives
+// in the snapshot — makes them work inside the exe. Dev mode never takes this
+// branch: __hostRequire is only defined under the packaged exe, and plain Node
+// resolves "@modelcontextprotocol/sdk/<sub>" through the exports map on its own.
+function _sdkSpecifier(id) {
+  const PREFIX = "@modelcontextprotocol/sdk";
+  if (id !== PREFIX && !id.startsWith(`${PREFIX}/`)) return id;
+  const sub = id === PREFIX ? "index.js" : id.slice(PREFIX.length + 1).replace(/^\.\//, "");
+  return path.join(__dirname, "..", "vendor", "mcp-sdk-cjs", sub);
+}
+global.__hostRequire      = (id) => require(_sdkSpecifier(id));
 global.__hostPkg          = !!process.pkg;
 global.__runtimeVersion   = require("../package.json").version;
 global.__versionManager   = versionManager;

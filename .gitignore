@@ -52,6 +52,8 @@ runtime/cache/
 runtime/sessions/
 runtime/installers/
 runtime/kv/
+# Generated at build time from the MCP SDK by runtime/host/vendor-sdk.js
+runtime/vendor/
 
 # JavaScript dependencies and build output
 node_modules/

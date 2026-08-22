@@ -7,8 +7,8 @@
   "main": "app/server.js",
   "scripts": {
     "start": "node app/server.js",
-    "build:win": "npx @yao-pkg/pkg host/bootstrap.js --targets node24-win-x64 --output dist/conxa-runtime.exe --public --no-bytecode --public-packages \"*\"",
-    "build:mac": "npx @yao-pkg/pkg host/bootstrap.js --targets node24-mac-x64 --output dist/conxa-runtime-mac --public --no-bytecode --public-packages \"*\"",
+    "build:win": "node host/vendor-sdk.js && npx @yao-pkg/pkg@6.22.0 host/bootstrap.js --config package.json --targets node24-win-x64 --output dist/conxa-runtime.exe --public --no-bytecode --public-packages \"*\"",
+    "build:mac": "node host/vendor-sdk.js && npx @yao-pkg/pkg@6.22.0 host/bootstrap.js --config package.json --targets node24-mac-x64 --output dist/conxa-runtime-mac --public --no-bytecode --public-packages \"*\"",
     "build:all": "npm run build:win && npm run build:mac",
     "test": "node --test \"test/unit/*.js\""
   },
