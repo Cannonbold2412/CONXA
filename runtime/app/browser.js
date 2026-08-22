@@ -566,24 +566,30 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   const protectedUrl = _resolveProtectedUrl(workspace_id, pack);
   const targetUrl    = pack.target_url || protectedUrl;
 
-  // Try encrypted session (uses per-machine session key from keytar)
+  // Try encrypted session (uses per-machine session key from keytar). Only the session
+  // lookup itself is guarded — a keytar/decrypt failure legitimately means "no usable
+  // session, fall back to raw/interactive auth" (auth_manager.js's own loadDecryptedSession
+  // already returns null internally for a corrupt file). _validateSession/_buildExecContext
+  // run unguarded, matching _validateGroupApp's pattern below: a real failure there (e.g. a
+  // broken/misconfigured browser install) must propagate with its own message, not be
+  // swallowed and replaced by the misleading "No target_url configured" thrown further down
+  // — retrying via the raw-session path would only hit the identical browser failure again.
   if (authManager) {
+    let token, stored;
     try {
-      const token = await authManager.getSessionKey(workspace_id, logFn);
-      if (token) {
-        const stored = authManager.loadDecryptedSession(workspace_id, token, SESSIONS_DIR);
-        if (stored) {
-          lastKnownState = stored;
-          if (await _validateSession(stored, protectedUrl)) {
-            _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
-            const { browser, context } = await _buildExecContext(stored, headless);
-            return { browser, context, protectedUrl, sessionSource: "encrypted" };
-          }
-          // Session expired — skip raw session (encrypted takes precedence), go to interactive auth
-          _hadEncryptedSession = true;
-        }
-      }
+      token = await authManager.getSessionKey(workspace_id, logFn);
+      if (token) stored = authManager.loadDecryptedSession(workspace_id, token, SESSIONS_DIR);
     } catch (_) {}
+    if (stored) {
+      lastKnownState = stored;
+      if (await _validateSession(stored, protectedUrl)) {
+        _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
+        const { browser, context } = await _buildExecContext(stored, headless);
+        return { browser, context, protectedUrl, sessionSource: "encrypted" };
+      }
+      // Session expired — skip raw session (encrypted takes precedence), go to interactive auth
+      _hadEncryptedSession = true;
+    }
   }
 
   // Try raw session (installer-included initial session, not yet encrypted)
