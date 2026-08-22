@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 from conxa_core.config import settings
 from conxa_core.db import _get_engine, db_get, db_list, db_set  # type: ignore[attr-defined]
-from app.services.saas import Principal, billing_for, billing_for_workspace, membership_count_for
+from app.services.saas import Principal, billing_for, billing_for_workspace, membership_count_for, upsert_billing
 
 USAGE_NS = "entitlement_usage"
 RESERVATION_NS = "compile_reservations"
@@ -105,12 +105,13 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Compile add-on packs (2026-08-22): purchasable checkout items, not plans.
-# Each pack stacks +compile_credits AND +human_edit_tokens on top of the
-# workspace's plan for as long as its Cashfree subscription is active —
-# priced proportionally off the 20-compile anchor (₹3,999 / 200k tokens,
-# rounded down to ₹…,999 charm points). Stored on billing as
-# ``{"addons": {tier: active_pack_count}}``; see cashfree_routes._bump_addon_packs.
+# Compile add-on packs (2026-08-22): ONE-TIME purchases, not subscriptions.
+# A pack is bought once via a Cashfree Payment Link and its credits land in the
+# workspace's credit wallet — a never-expiring balance consumed only after the
+# plan's monthly allowance runs out (see _wallet / reserve_compile_credit /
+# record_llm_usage). Priced proportionally off the 20-compile anchor
+# (₹3,999 / 200k tokens, rounded down to ₹…,999 charm points). The wallet lives
+# on billing as ``{"credit_wallet": {"compile_credits": n, "human_edit_tokens": n}}``.
 ADDON_TIERS: dict[str, dict[str, Any]] = {
     "credits_addon_20": {
         "name": "+20 compiles",
@@ -322,22 +323,62 @@ def _limits_from_billing(billing: dict[str, Any]) -> dict[str, Any]:
         raw_value = overrides.get("trial_days")
         limits["trial_days"] = None if raw_value in (None, "") else max(0, int(raw_value))
 
-    # Compile add-on packs stack on top of the plan's base compile_credits and
-    # human_edit_tokens — stored directly on billing, not inside
-    # entitlement_overrides, since Cashfree activates/cancels them independently
-    # of the base subscription (see cashfree_routes._bump_addon_packs).
-    addons = billing.get("addons") or {}
-    for addon_tier, packs in addons.items():
-        info = ADDON_TIERS.get(str(addon_tier))
-        count = int(packs or 0)
-        if not info or not count:
-            continue
-        if limits["compile_credits"] is not None:
-            limits["compile_credits"] = int(limits["compile_credits"]) + info["compile_credits"] * count
-        if limits["human_edit_tokens"] is not None:
-            limits["human_edit_tokens"] = int(limits["human_edit_tokens"]) + info["human_edit_tokens"] * count
-
     return limits
+
+
+def _wallet(billing: dict[str, Any]) -> dict[str, int]:
+    """Read the never-expiring credit wallet off a billing record. Purchased via
+    one-time add-on packs; drawn down only after the plan's monthly allowance
+    is exhausted, and never reset by billing-period rollover."""
+    raw = billing.get("credit_wallet") or {}
+    if not isinstance(raw, dict):
+        return {"compile_credits": 0, "human_edit_tokens": 0}
+    try:
+        compile_credits = max(0, int(raw.get("compile_credits") or 0))
+    except (TypeError, ValueError):
+        compile_credits = 0
+    try:
+        human_edit_tokens = max(0, int(raw.get("human_edit_tokens") or 0))
+    except (TypeError, ValueError):
+        human_edit_tokens = 0
+    return {"compile_credits": compile_credits, "human_edit_tokens": human_edit_tokens}
+
+
+def grant_credit_wallet(
+    workspace_id: str,
+    *,
+    compile_credits: int = 0,
+    human_edit_tokens: int = 0,
+) -> dict[str, int]:
+    """Add purchased add-on credits to the workspace wallet (payment confirmed).
+    Idempotency is the caller's job — see cashfree_routes' granted-orders guard."""
+    current = upsert_billing(workspace_id, {})
+    wallet = _wallet(current)
+    wallet["compile_credits"] += max(0, int(compile_credits))
+    wallet["human_edit_tokens"] += max(0, int(human_edit_tokens))
+    upsert_billing(workspace_id, {"credit_wallet": wallet})
+    return wallet
+
+
+def _spend_wallet(
+    workspace_id: str,
+    *,
+    compile_credits: int = 0,
+    human_edit_tokens: int = 0,
+) -> bool:
+    """Atomically draw from the wallet if it can cover the amount. Returns False
+    (and spends nothing) when the balance is insufficient. Floored at 0 on
+    write so a concurrent-reservation race can't produce a negative balance."""
+    current = upsert_billing(workspace_id, {})
+    wallet = _wallet(current)
+    need_compile = max(0, int(compile_credits))
+    need_tokens = max(0, int(human_edit_tokens))
+    if wallet["compile_credits"] < need_compile or wallet["human_edit_tokens"] < need_tokens:
+        return False
+    wallet["compile_credits"] = max(0, wallet["compile_credits"] - need_compile)
+    wallet["human_edit_tokens"] = max(0, wallet["human_edit_tokens"] - need_tokens)
+    upsert_billing(workspace_id, {"credit_wallet": wallet})
+    return True
 
 
 def usage_key(workspace_id: str, period: str) -> str:
@@ -679,10 +720,9 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
         "reset_at": reset_at,
         "trial_ends_at": trial_ends_at(billing),
         "trial_expired": trial_expired(billing),
-        "addons": {
-            tier: int((billing.get("addons") or {}).get(tier) or 0)
-            for tier in ADDON_TIERS
-        },
+        # One-time add-on purchases land here — a never-expiring balance drawn
+        # down only once the plan's monthly allowance is exhausted.
+        "wallet": _wallet(billing),
         "meters": {
             "seats": _meter(
                 _clerk_org_member_count(principal) or membership_count_for(workspace_id),
@@ -746,12 +786,19 @@ def reserve_compile_credit(
             }
         reserved_amount = _active_reserved_amount(store, workspace_id, period)
         limit = limits["compile_credits"]
+        funded_by_wallet = False
         if (
             settings.entitlements_enforce_compile
             and limit is not None
             and int(usage.get("compile_credits_used") or 0) + reserved_amount + 1 > int(limit)
         ):
-            raise EntitlementError("compile_credit_limit_exceeded", 402)
+            # Monthly allowance exhausted — fall back to the never-expiring
+            # wallet bought via one-time add-on packs. The actual deduction
+            # happens at commit time (see commit_compile_credit); here we only
+            # check affordability so released/expired reservations need no refund.
+            funded_by_wallet = _wallet(billing)["compile_credits"] >= 1
+            if not funded_by_wallet:
+                raise EntitlementError("compile_credit_limit_exceeded", 402)
         row = _reservation_defaults(
             reservation_id=reservation_id,
             workspace_id=workspace_id,
@@ -759,6 +806,8 @@ def reserve_compile_credit(
             workflow_id=workflow_id,
             session_id=session_id,
         )
+        if funded_by_wallet:
+            row["funded_by"] = "wallet"
         _set_reservation(store, row)
         remaining = _remaining_compile(limit, usage, reserved_amount + 1)
     return {
@@ -800,6 +849,11 @@ def commit_compile_credit(principal: Principal, reservation_id: str) -> dict[str
         _set_usage(store, usage)
         row["status"] = "committed"
         _set_reservation(store, row)
+        if str(row.get("funded_by") or "") == "wallet":
+            # Draw the wallet outside the usage-store lock — the reservation was
+            # already affordability-checked at reserve time; floored at 0 inside
+            # _spend_wallet so a concurrent race can't go negative.
+            _spend_wallet(workspace_id, compile_credits=max(1, int(row.get("amount") or 0)))
         remaining = _remaining_compile(
             limits["compile_credits"],
             usage,
@@ -953,8 +1007,12 @@ def record_llm_usage(
                 usage.get("human_edit_output_tokens") or 0
             )
             limit = limits["human_edit_tokens"]
+            incoming = max(0, int(input_tokens)) + max(0, int(output_tokens))
             if settings.entitlements_enforce_human_edit and limit is not None and used >= int(limit):
-                raise EntitlementError("human_edit_pool_exceeded", 402)
+                # Monthly pool exhausted — draw from the never-expiring wallet
+                # (one-time add-on purchases) when it can cover this request.
+                if not _spend_wallet(workspace_id, human_edit_tokens=incoming):
+                    raise EntitlementError("human_edit_pool_exceeded", 402)
             usage["human_edit_input_tokens"] = int(usage.get("human_edit_input_tokens") or 0) + max(
                 0, int(input_tokens)
             )
@@ -986,7 +1044,10 @@ def ensure_human_edit_available(principal: Principal, *, estimated_tokens: int =
         usage = _get_usage(store, workspace_id, period)
     used = int(usage.get("human_edit_input_tokens") or 0) + int(usage.get("human_edit_output_tokens") or 0)
     if settings.entitlements_enforce_human_edit and used >= int(limit):
-        raise EntitlementError("human_edit_pool_exceeded", 402)
+        # Wallet fallback mirrors record_llm_usage — a positive never-expiring
+        # balance keeps the Human Edit pool open past the monthly allowance.
+        if _wallet(billing)["human_edit_tokens"] <= 0:
+            raise EntitlementError("human_edit_pool_exceeded", 402)
 
 
 def ensure_distribution_allowed(principal: Principal, *, external: bool) -> None:

@@ -1011,7 +1011,7 @@ Response:
   "reset_at": "2026-06-29T00:00:00Z",
   "trial_ends_at": null,
   "trial_expired": false,
-  "addons": {"credits_addon_20": 0, "credits_addon_50": 1, "credits_addon_100": 0, "credits_addon_250": 0},
+  "wallet": {"compile_credits": 20, "human_edit_tokens": 200000},
   "meters": {
     "seats": {"used": 2, "limit": 3, "remaining": 1, "unlimited": false},
     "machines": {"used": 1, "limit": 3, "remaining": 2, "unlimited": false},
@@ -1041,7 +1041,7 @@ Response:
 
 For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_end_unix>` and `reset_at` is the next monthly payment timestamp. Workspaces without a subscription timestamp use the UTC calendar-month fallback (`YYYY-MM`). `trial_ends_at`/`trial_expired` are non-null only for the `free` plan.
 
-**Added 2026-08-22 — `addons`.** Per-tier counts of active compile-credit add-on packs from the billing record (`{tier: count}` for every tier in `entitlements.ADDON_TIERS`, zeros included), surfaced so the Billing page can show add-on state without inferring it from the bumped meter limits. Supersedes the earlier single-scalar `addon_compile_packs` field from the same day.
+**Rewritten 2026-08-22 - `wallet`.** Compile add-on packs became **one-time purchases** (they were briefly monthly subscriptions earlier the same day; before that a single-scalar `addon_compile_packs`). A confirmed payment credits `wallet` - `{"compile_credits": n, "human_edit_tokens": n}` on the billing record - a never-expiring balance drawn down only after the plan's monthly allowance runs out, never reset by billing-period rollover. The plan meters themselves no longer include pack grants.
 
 **GET /api/v1/entitlements/machines** (owner/admin) — registered build devices, `[{machine_hash, last_ip, first_seen, last_seen, revoked?}]`, newest `last_seen` first. Includes revoked devices for history.
 
@@ -1158,36 +1158,44 @@ sales-assisted, never self-serve checkout). Calls Cashfree's
 
 The workspace↔subscription↔tier mapping is stored server-side in the `cashfree_sub_workspace` KV namespace (keyed by `subReferenceId`) for later webhook lookup, since Cashfree webhooks only carry the subscription reference id, not the originating workspace. The frontend redirects the user to `auth_link` to complete payment.
 
-**Compile credit add-ons** (rewritten 2026-08-22 — four self-serve SKUs, each a monthly Cashfree
-subscription stacking on Starter or Pro; catalog in `entitlements.ADDON_TIERS`):
+**Compile credit add-ons** (rewritten 2026-08-22 - four self-serve SKUs, each a ONE-TIME purchase
+via a Cashfree Payment Link; catalog in `entitlements.ADDON_TIERS`):
 
-| tier | price | grants per month |
+| tier | price | grants (once, never expire) |
 |---|---|---|
-| `credits_addon_20` | ₹3,999/mo | +20 compile credits + 200k Human Edit tokens |
-| `credits_addon_50` | ₹9,999/mo | +50 compile credits + 500k Human Edit tokens |
-| `credits_addon_100` | ₹19,999/mo | +100 compile credits + 1M Human Edit tokens |
-| `credits_addon_250` | ₹49,999/mo | +250 compile credits + 2.5M Human Edit tokens |
+| `credits_addon_20` | ₹3,999 | +20 compile credits + 200k Human Edit tokens |
+| `credits_addon_50` | ₹9,999 | +50 compile credits + 500k Human Edit tokens |
+| `credits_addon_100` | ₹19,999 | +100 compile credits + 1M Human Edit tokens |
+| `credits_addon_250` | ₹49,999 | +250 compile credits + 2.5M Human Edit tokens |
 
 (The original single `credits_addon_25` pack at ₹4,999/mo was retired in favour of this ladder.)
-Activation and cancellation branch separately from the base-plan path in both `/verify` and the
-webhook handler — `_bump_addon_packs` increments/decrements the per-tier counts in
-`billing["addons"]` without ever touching `plan`/`status`/`current_period_end`, which belong to the
-base subscription. Cancelling an add-on removes only that pack's credits/tokens; cancelling the base
-subscription resets `plan` to `free` as before and leaves add-on packs' billing untouched (their own
-subscriptions cancel independently). `entitlements._limits_from_billing` adds each active pack's
-`compile_credits`/`human_edit_tokens` grant on top of the plan limits whenever the base limit isn't
-already `None` (unlimited). Per-tier mandate ids are kept in `billing["addon_subscriptions"]`
-(written by both `/verify` and the webhook activation branch) so the Billing page can cancel a
-specific pack. The catalog is also served read-only at **GET /api/v1/subscriptions/addons**.
 
-**POST /api/v1/subscriptions/addon/cancel** (owner/admin, added 2026-08-22)
+**POST /api/v1/subscriptions/addon/order** (owner/admin)
 
-Request: `{"tier": "credits_addon_20"}`. Cancels that compile-credit add-on pack's mandate
-server-side via Cashfree's `POST /api/v2/subscriptions/{subscription_id}/cancel`, using the id
-recorded under `addon_subscriptions[tier]`. Returns `{"cancelled": true, "tier": "...",
-"subscription_id": "..."}`; errors with `unknown_addon_tier` (400) or `no_active_addon` (400)
-when nothing is active. The endpoint never touches the `addons` map itself — the decrement
-happens in the webhook cancellation branch, so a webhook replay can't double-decrement.
+Request: `{"tier": "credits_addon_20"}`. Creates a Cashfree Payment Link (`POST /pg/links`) for
+the pack amount and remembers the workspace/tier against the `link_id` in the
+`cashfree_order_workspace` KV namespace. Returns `{"granted": false, "link_id": "...",
+"payment_link": "https://...", "tier": "..."}` — the frontend redirects to `payment_link`. In
+local dev (no Cashfree credentials and auth off) the wallet is credited immediately and `granted`
+is `true` with an empty link. Errors with `unknown_addon_tier` (400).
+
+**Grant path (webhook + verify, exactly once).** Payment is confirmed two ways: the PG webhook
+**POST /api/v1/subscriptions/webhooks/cashfree-orders** (`PAYMENT_SUCCESS_WEBHOOK`; signature is
+HMAC-SHA256 over `x-webhook-timestamp + raw body`, base64, in `x-webhook-signature`), or the
+frontend calling **POST /api/v1/subscriptions/addon/verify** with the pending `link_id` after the
+redirect back (belt to the webhook's braces — webhooks can't reach a locally-running backend).
+Both funnel into `_grant_addon_order_once`, which credits `billing["credit_wallet"]`
+(`{"compile_credits", "human_edit_tokens"}`) via `entitlements.grant_credit_wallet` exactly once,
+guarded by the `cashfree_orders_granted` KV namespace so replays and double deliveries are
+harmless. The wallet never expires and is drawn down only after the plan's monthly allowance is
+exhausted (`reserve_compile_credit`/`commit_compile_credit` for compiles;
+`record_llm_usage`/`ensure_human_edit_available` for Human Edit tokens). No Cashfree *plan IDs*
+are involved for add-ons. The catalog is also served read-only at
+**GET /api/v1/subscriptions/addons**.
+
+**Removed 2026-08-22:** `POST /api/v1/subscriptions/addon/cancel` and the subscription-based
+activation/cancellation branches in `/verify` and `/webhooks/cashfree` — one-time purchases have
+no mandate to cancel and no credits to claw back.
 
 **POST /api/v1/subscriptions/verify**
 

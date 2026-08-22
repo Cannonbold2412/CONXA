@@ -1,6 +1,6 @@
 # Conxa Cost & Revenue Model
 
-**Last Updated:** August 9, 2026
+**Last Updated:** August 22, 2026
 **Status:** Living document — iterate as assumptions change
 
 ---
@@ -149,25 +149,25 @@ Token costs at Groq (text) + Google AI Studio (vision) — **actually billed to 
 
 | Plan | Monthly Human Edit pool |
 |------|----------------------------|
-| Free | 1M text + vision tokens |
-| Starter | 10M text + vision tokens |
-| Pro | 50M text + vision tokens |
+| Free | 500K text + vision tokens |
+| Starter | 2.5M text + vision tokens |
+| Pro | 10M text + vision tokens |
 | Enterprise | Contracted text + vision reserve |
 
 These are compilation/recompilation costs, not execution costs, because customer-side workflow execution still runs locally. The pool is tracked as a visible monthly customer meter but should not become surprise per-token billing.
 
 **Example — Company on Starter (paid plan), 1 plugin, 50 workflows:**
-- Initial build: 50 × $0.54 = **$27 one-time** (50 compile credits spent)
-- Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.11 = **$3.30/month** (30 more compile credits spent — recompiles meter the same as first compiles)
-- Selector/anchor repair on existing workflows: draws from the included **10M text + vision token Human Edit reserve**
+- Initial build: 50 × $0.21 = **$10.50 one-time** (50 compile credits spent)
+- Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.042 = **$1.26/month** (30 more compile credits spent — recompiles meter the same as first compiles)
+- Selector/anchor repair on existing workflows: draws from the included **2.5M text + vision token Human Edit reserve**
 
 | Component | Free | Starter | Pro | Enterprise |
 |-----------|-------|---------|-----|------------|
-| LLM per compilation (first build) | ~$0.03 | ~$0.54 | ~$0.54 | ~$1.93 |
-| LLM per recompilation (cached 3-step change) | ~$0.003 | ~$0.11 | ~$0.11 | ~$0.39 |
+| LLM per compilation (first build) | ~$0.03 | ~$0.21 | ~$0.21 | ~$0.81 |
+| LLM per recompilation (cached 3-step change) | ~$0.006 | ~$0.042 | ~$0.042 | ~$0.162 |
 | Build infrastructure | $0.10 | $0.10 | $0.10 | $0.10 |
-| Human Edit LLM reserve | 1M text + vision tokens | 10M text + vision tokens | 50M text + vision tokens | Contracted |
-| **Blended per compilation** | **~$0.008** | **~$0.195** | **~$0.195** | **~$0.695** |
+| Human Edit LLM reserve | 500K text + vision tokens | 2.5M text + vision tokens | 10M text + vision tokens | Contracted |
+| **Blended per compilation** | **~$0.008** | **~$0.075** | **~$0.075** | **~$0.292** |
 
 ---
 
@@ -380,14 +380,14 @@ This is why margins improve after the first build month. The cap protects Conxa 
 **Customer-facing meters:**
 - **Seats** - people who can use the dashboard / Build Studio for the workspace.
 - **Machines** - distinct devices a workspace can build from. Replaces the old installer-slot meter (removed 2026-08-08 — a workspace may now publish under unlimited product slugs on every tier); this is the control that keeps a single-machine free trial from quietly becoming a free Pro seat.
-- **Compile credits** - monthly UTC fresh-compile credits. A fresh workflow compile consumes 1 credit. Starter and Pro can buy +25 credits/mo add-on packs (₹4,999 each) that stack on the base allowance.
+- **Compile credits** - monthly UTC fresh-compile credits. A fresh workflow compile consumes 1 credit. Starter and Pro can top up with one-time add-on packs (each also adds Human Edit tokens) that never expire and are consumed only after the monthly allowance runs out: +20 credits at ₹3,999, +50 at ₹9,999, +100 at ₹19,999, and +250 at ₹49,999.
 - **Human Edit pool** - monthly UTC token pool for editor-triggered LLM work only: selector repair (1-click fix), semantic repair, visual re-anchor, and screenshot/bbox anchor regeneration (the "draw a new region" retarget wizard). Recompiling a whole workflow is billed like a first compile — see Compile credits above — not from this pool.
 
 Local plugin creation, workflow recording, plugin package builds before testing, deterministic Human Edit patches, reorder/delete/input edits, validation edits, and sign-off remain unlimited.
 
 **Capability gates (not numeric meters):**
-- **Distribution** - internal-only (Free, Starter) vs. external distribution to customers (Pro, Enterprise). Free is additionally capped at 1 install.
-- **Installer branding** - Conxa-branded through Pro; white-label is Enterprise only.
+- **Distribution** - internal-only (Free, Starter) vs. external distribution to customers (Pro, Enterprise). Free additionally runs on a single build machine.
+- **Installer branding** - custom installer icon from Starter upward; full white-label (Conxa branding removed) is Enterprise only.
 - **Ops tier** - none (Free) / basic, runs list only (Starter) / full, + drift detection, healing, audit export (Pro, Enterprise).
 - **BYOK** - Enterprise only, Azure OpenAI. Compile credits still apply on BYOK — credits meter reach, not Conxa's token cost.
 
@@ -405,7 +405,8 @@ Local plugin creation, workflow recording, plugin package builds before testing,
 | **Machines** | 1 | 3 | 10 | Custom override |
 | **Compile credits / month** | 25 | 200 | 500 | Unlimited |
 | **Human Edit pool / month** | 500K tokens | 2.5M tokens | 10M tokens | Custom override |
-| **Distribution** | Internal, 1 install | Internal | External, Conxa-branded | External, white-label |
+| **Distribution** | Internal, 1 machine | Internal, unbranded | External, Conxa-branded | External, white-label |
+| **Installer icon** | No | Yes | Yes | Yes |
 | **Ops tier** | None | Basic | Full | Full + SSO |
 | **Analytics retention** | None | 90 days | 1 year | Custom |
 | **Build speed** | Standard queue | Priority | Highest priority | SLA-backed |
@@ -538,6 +539,118 @@ Human Edit pool, active installs, telemetry retention, support SLA, BYOK, and SS
 
 ---
 
+## Future Horizons — Revenue Projections & Cost Posture
+
+Everything above models Horizon 1, which is what a customer can buy today (`docs/PRD.md` §14.1).
+This section projects how the cost and revenue picture extends across Horizon 2 (Scale) and
+Horizon 3 (Understand and Optimise). **These are direction, not commitments** — nothing here is a
+current requirement, a roadmap date, or ratified pricing (`docs/PRD.md` §14.5 keeps the specific
+metrics deliberately unsettled).
+
+### The one rule that survives every horizon
+
+**"Pay for reach, not for runs" holds at every stage**, because at no horizon does Conxa execute or
+store customer work (`docs/PRD.md` §14.5, decided 2026-08-21). No marginal cost ever appears that
+would force per-run or per-item metering. What changes is only what *reach* means:
+
+| Horizon | What "reach" measures | Pricing status | Conxa marginal cost shape |
+|---|---|---|---|
+| **1 — Learn and Execute** *(current)* | How far a skill travels: seats, machines, compile credits, distribution rights | Shipped — the tiers above | Compile-time LLM only; execution free forever |
+| **2 — Scale** *(future)* | How much work can be in flight: concurrency capacity, plus a new cheaper seat class for people who resolve human reviews without building anything | Direction — not ratified pricing | Still ~zero: workers run on customer infrastructure |
+| **3 — Understand and Optimise** *(long-term)* | How much of the organisation is instrumented | Direction — not ratified pricing | ~zero: intelligence layer runs on customer infrastructure too |
+
+Three properties are preserved by construction at every stage: the axis is structural rather than
+consumption-based, a customer can plan around it, and nobody is ever charged more for a good month.
+
+### Horizon 2 — Scale (future): where the money and costs go
+
+Horizon 2 shifts from *a workflow a person runs* to *a queue of work the organisation gets through*
+— work items, a human-review queue, and concurrent execution workers (`docs/PRD.md` §14.2).
+
+**Cost posture (projection):**
+- **Execution COGS stays at zero.** The decision is settled: the workers and the queue run on
+  infrastructure the customer owns. Conxa never hosts execution, so the margin structure in this doc
+  does not degrade as run volume grows — it is the same reason per-run pricing never becomes necessary.
+- **What Conxa actually pays:** platform engineering (queue-aware runtime, review routing),
+  update-sync bandwidth, and support surface. No new per-customer variable cost line.
+- **The honest trade-off, stated:** customer-owned workers are a heavier ask than a hosted
+  alternative and will lose some deals to competitors willing to run everything. That trade was made
+  knowingly — the data boundary it protects is what clears regulated-industry security reviews.
+
+**Revenue projection (direction):**
+- Two additive meters extend the ladder: **concurrency capacity** (how many work items can be in
+  flight) and a **review-resolver seat class** — cheaper than a builder seat, for people who only
+  approve/judge/hand-off inside human review points without ever recording or compiling.
+- These are **additive layers on the one ladder, not parallel products** — nobody buys Scale without
+  Build. Expansion revenue from this layer is not a side effect; it is a substantial part of why
+  Horizon 2 needs to exist (see the renewal-risk note below).
+- **Gating prediction:** none of this can be sold until unattended session lifetime is solved
+  (`docs/PRD.md` §14.5, still open) — a worker nobody signs in cannot survive login-gated systems.
+  Do not price or pre-announce Horizon 2 meters before that lands.
+
+### Horizon 3 — Understand and Optimise (long-term): near-zero capex by construction
+
+Horizon 3 builds an operational-intelligence layer over the accumulated execution record
+(`docs/PRD.md` §14.3) — deployed **on the customer's own infrastructure**: Conxa ships the framework,
+orchestrates retraining, and the customer's hardware executes and stores.
+
+**Cost posture (projection):**
+- **Conxa's hosting bill stays flat.** The third application of the locality doctrine means no data
+  warehouse build-out, no per-customer storage growth, no GPU spend by Conxa — stage one of the
+  intelligence layer explicitly needs no GPU, and stage two's retraining is orchestrated by Conxa but
+  executed on the customer's estate.
+- **The cost that does grow is upstream, and already paid:** Horizon 3's only input is the structured
+  telemetry Horizon 1 captures today. Extending telemetry capture now (per `docs/PRD.md` §14.4) is
+  cheap; reconstructing it later is impossible. This is an argument for keeping the §14.4 foundation
+  items funded in the current roadmap rather than a new cost line later.
+- **Two loops, kept separate on purpose:** the interface-drift telemetry loop stays pooled in the
+  cloud (it is more valuable aggregated), while per-company operational intelligence stays local. No
+  new cross-tenant data costs appear.
+
+**Revenue projection (direction):**
+- Reach becomes *how much of the organisation is instrumented* — an expansion motion aimed at
+  executives, priced structurally (per the same three preserved properties), not per query.
+- **One open commercial question blocks any concrete pricing:** when a Rung 3 vendor or consultancy
+  distributes skills to thirty customers, whose operations does the intelligence describe — the
+  distributor's, each end customer's, or neither by default? (`docs/PRD.md` §14.5.) Until that is
+  decided, Horizon 3 revenue should not be modelled into these unit economics at all.
+
+### What each horizon earns the next (the funding loop)
+
+From `docs/PRD.md` §14.0 — why investing through the Horizon 1 margins above compounds:
+
+| Asset Horizon 1 earns | Feeds | Accrual speed |
+|---|---|---|
+| **Market** | Customers who automated one process become accounts needing throughput; Rung 3 multiplies reach (one services relationship → many enterprises) | Per deal, immediately |
+| **Money** | Funds the Horizon 2/3 build instead of raising against a vision | Per deal, immediately |
+| **Data** | The structured operating record — Horizon 3's only possible input, unrecoverable after the fact | Needs volume; slow at first |
+| **Recognition** | Permission for more senior conversations; each horizon must be boring before the next is trusted | Needs volume *and* time — the long pole |
+
+### Where this model is exposed (pricing risks to watch as horizons land)
+
+From `docs/PRD.md` §11:
+
+- **A workspace that compiles constantly and distributes little** inverts the model — all cost, no
+  reach. Compile credits exist for exactly this; their calibration is the number to watch as usage
+  grows (tracked in "Subscription Capacity" below).
+- **Value created at build time but felt at run time.** A customer who records ten skills in month
+  one and nothing afterwards keeps receiving the benefit while spend flattens — a renewal-conversation
+  risk. Today's partial answer is the operations dashboard; the structural answer is Horizons 2 and 3,
+  which is another reason expansion revenue there matters.
+
+### Planning guidance
+
+- Model all current revenue and COGS on the Horizon 1 tables above. Do **not** fold Horizon 2/3
+  figures into forecasts until their metrics are ratified and the open questions (§14.5) close.
+- Treat Horizon 2/3 engineering as investment against the four assets above, funded from Horizon 1
+  margins — the milestones table above shows those margins turning positive from MVP scale (~10
+  companies).
+- When Horizon 2 pricing work starts, start from the preserved properties (structural axis,
+  plannable, success never punished) and reject any meter that violates them — concurrency capacity
+  and review-resolver seats both pass; per-run pricing never will.
+
+---
+
 ## What Companies Actually Get
 
 It's worth being explicit about the value proposition so pricing feels justified.
@@ -559,7 +672,7 @@ It's worth being explicit about the value proposition so pricing feels justified
 - Keep the plugin signed, trackable, updateable, and supported after the build-heavy first month
 - Receive Conxa runtime/healing improvements without rebuilding the product from scratch
 
-**At ₹0, 30-day trial (Free):** A company gets 1 seat, 1 machine, 25 monthly compile credits, and 500K monthly Human Edit tokens — full self-healing, internal use only, one install — enough to prove that Conxa works on their product before paying.
+**At ₹0, 30-day trial (Free):** A company gets 1 seat, 1 build machine, 25 monthly compile credits, and 500K monthly Human Edit tokens — full self-healing, internal distribution only — enough to prove that Conxa works on their product before paying.
 
 **At ₹19,999/month (Starter):** A company gets 3 seats, 3 machines, 200 monthly compile credits, 2.5M monthly Human Edit tokens, priority builds, and 90-day analytics retention. Distribution stays internal-only. This is the first paid, one-team tier.
 
@@ -572,7 +685,7 @@ It's worth being explicit about the value proposition so pricing feels justified
 ### Biggest Impact
 
 **1. Caching is your biggest natural lever (already built)**  
-Intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). A Starter/Pro recompile where 3 steps changed costs ~$0.11, not ~$0.54. Companies iterating daily are still cheap, but internal fair-use alerts should watch customers that repeatedly hit build-heavy usage patterns.
+Intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). A Starter/Pro recompile where 3 steps changed costs ~$0.042, not ~$0.21. Companies iterating daily are still cheap, but internal fair-use alerts should watch customers that repeatedly hit build-heavy usage patterns.
 
 **2. Usage naturally drops after launch**
 Most companies spend the first month building and polishing the plugin, then move to 1–2 updates per month. This makes ongoing LLM cost much lower than the full-cap build-month model while subscription revenue continues for dashboard, signing, telemetry retention, support, update delivery, and Conxa healing/runtime updates.
@@ -665,7 +778,7 @@ score), so the figures in this doc can be checked against measured fleet data ra
 ## Next Steps
 
 ### Week 1–2: Pricing & Billing
-- [x] Confirm final public tier limits: Free = 1 seat / 1 installer slot / 50 compile credits / 1M Human Edit tokens; Starter = 3 / 3 / 300 / 10M; Pro = 10 / 10 / 1,000 / 50M; Enterprise = explicit overrides.
+- [x] Confirm final public tier limits: Free = 1 seat / 1 installer slot / 50 compile credits / 1M Human Edit tokens; Starter = 3 / 3 / 300 / 10M; Pro = 10 / 10 / 1,000 / 50M; Enterprise = explicit overrides. *(Superseded by the 2026-08-08 repricing — see the Pricing Tiers table above for current limits.)*
 - [x] Create Razorpay subscription plan names with `basic` mapped to `starter`.
 - [x] Add entitlement fields to subscription state through plan defaults plus `entitlement_overrides`.
 - [x] Build tier enforcement in `conxa-cloud/backend/app/services/entitlements.py`:
@@ -690,7 +803,7 @@ score), so the figures in this doc can be checked against measured fleet data ra
 - [ ] Onboard 5–10 pilot companies on the Free trial
 - [ ] Measure workflows per plugin, product slugs per workspace, installer rebuild frequency, fresh compiles, Human Edit use, and active installs.
 - [ ] Measure internal P50/P95 compilations per active workflow so compile-credit envelopes can be tuned.
-- [ ] Validate whether Starter's 300 compile credits and 10M Human Edit tokens feel like the natural product-team tier.
+- [ ] Validate whether Starter's 200 compile credits and 2.5M Human Edit tokens feel like the natural product-team tier.
 - [ ] Collect feedback: do customers understand the four meters without asking for a workflow-count meter?
 
 ### Ongoing
@@ -714,6 +827,7 @@ score), so the figures in this doc can be checked against measured fleet data ra
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-08-22 | Kiran | v20: Re-synced the doc with `docs/PRD.md` §11 and the enforced tier table (`PLAN_LIMITS`/`ADDON_TIERS` in `conxa-cloud/backend/app/services/entitlements.py`). Fixed Human Edit pool figures that still carried pre-repricing numbers (1M/10M/50M → 500K/2.5M/10M for Free/Starter/Pro) and the stale per-compilation LLM costs that contradicted the doc's own per-step math ($0.54/$0.11/$1.93/$0.39 → $0.21/$0.042/$0.81/$0.162, blended $0.195/$0.695 → $0.075/$0.292). Replaced the fictional "+25 credits/mo add-on at ₹4,999" with the real add-on catalog: +20 @ ₹3,999, +50 @ ₹9,999, +100 @ ₹19,999, +250 @ ₹49,999, each stacking Human Edit tokens too. Aligned Free's distribution wording with PRD §11 — installs are unlimited on every tier; what Free is capped at is one build machine ("capped at 1 install" was stale). Added the installer-icon capability row (Starter and up, per PRD 2026-08-09). Marked the old Week-1–2 limits confirmation as superseded; updated the Month-2 validation item to current Starter numbers. Added "Future Horizons — Revenue Projections & Cost Posture" from PRD §11/§14: how "pay for reach, not for runs" extends across Horizon 2 (concurrency capacity + review-resolver seats on customer-owned workers) and Horizon 3 (instrumentation-based reach on customer infrastructure), what each horizon earns the next, the §14.5 open questions that gate pricing work, and explicit planning guidance not to fold unratified horizon figures into forecasts. |
 | 2026-08-09 | Kiran | v19: Re-verified all LLM provider pricing against current provider docs (previously checked June 3, 2026) — GPT-5.4-mini, GPT-5.4, Together AI Gemma 4 31B, and Claude Sonnet 4.6 are all **unchanged**. Added real Claude Opus 4.8/5 pricing ($5/$25 per MTok, down from the retired Opus 4.1's $15/$75) in place of the old unpriced "quality upgrade path" note. Flagged new Claude Sonnet 5 introductory pricing ($2/$10 through Aug 31, 2026, converging to Sonnet 4.6's $3/$15 on Sept 1) — not worth a router migration for the discount alone. Replaced the free-tier plan's vague "$0.075/1M" shadow price with the actual current Gemini Flash-Lite rate ($0.10/1M) and recomputed the notional free-plan cost figures accordingly (real Conxa cost remains $0). Documented concrete, sourced free-tier rate limits for Groq (30 req/min, 6,000 TPM, 14,400 req/day), Google AI Studio (5–15 req/min, 1,000 req/day — noting Google pulled Pro-family Gemini models from the free tier on April 1, 2026, leaving only Flash/Flash-Lite eligible), and NVIDIA NIM (~40 req/min, 1,000 free credits). Fixed the stale "Last Updated" header, which still read July 2 despite the doc's own revision history extending to Aug 8. No changes to Conxa's own subscription pricing, tier structure, or unit economics — this pass only re-verified upstream LLM provider costs. |
 | 2026-08-08 | Kiran | v18: Repriced around the capability ladder following the Centelon pilot demo (docs/PRD.md §11). Switched headline pricing from USD to INR (Starter ₹19,999/mo, Pro ₹49,999/mo, Enterprise from ₹99,999/mo). Removed the installer-slot meter entirely — no limit on how many product slugs a workspace publishes under; added a machines meter (1/3/10) as the trial-abuse and seat-integrity control instead. Free became a 30-day trial, capped at 1 install, rather than a permanent tier. Lowered compile credits (25/200/500) and Human Edit pool (500K/2.5M/10M) from the prior numbers. Added capability gates that aren't numeric meters: distribution (internal-only on Free/Starter, external on Pro/Enterprise), installer branding (Conxa on Pro, white-label on Enterprise), ops tier (none/basic/full), and BYOK (Azure OpenAI, Enterprise only). Added a compile-credit add-on (+25/mo for ₹4,999, Starter/Pro). Unit-economics scenarios and cost-per-tier tables recomputed at the new numbers; margins are marked indicative pending a full re-derivation from current per-token provider pricing. |
 | 2026-08-07 | Kiran | v17: No economics changes. Corrected the "Telemetry Quality" metric list, which still referred to a five-tier cascade (there are four), and added the free-repair-share metric with its per-outcome counting rule. Noted that these metrics are now computed by the operations dashboard rather than estimated. |

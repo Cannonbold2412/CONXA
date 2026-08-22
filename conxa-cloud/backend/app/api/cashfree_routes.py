@@ -1,4 +1,5 @@
-"""Cashfree Subscription Management endpoints — plans, subscriptions, webhooks, and verification."""
+"""Cashfree billing endpoints — plans, subscriptions, one-time add-on orders,
+payment links, and webhooks."""
 
 from __future__ import annotations
 
@@ -18,7 +19,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 from app.api.deps import current_principal
-from app.services.entitlements import ADDON_TIERS, PLAN_LIMITS
+from app.services.entitlements import (
+    ADDON_TIERS,
+    PLAN_LIMITS,
+    grant_credit_wallet,
+)
 from app.services.rbac import require_admin
 from app.services.saas import Principal, upsert_billing
 
@@ -125,21 +130,6 @@ TIER_INFO = {
         "features": _plan_features("enterprise"),
     },
 }
-# Compile add-on packs stack on Starter or Pro (catalog + limits math live in
-# entitlements.ADDON_TIERS; ₹3,999 for +20 compiles + 200k Human Edit tokens,
-# larger packs priced proportionally).
-for _addon_tier, _addon in ADDON_TIERS.items():
-    TIER_INFO[_addon_tier] = {
-        "name": f"+{_addon['compile_credits']} compiles",
-        "amount": _addon["amount"],
-        "currency": _addon["currency"],
-        "period": "monthly",
-        "features": [
-            f"+{_addon['compile_credits']} compile credits/month",
-            f"+{_addon['human_edit_tokens']:,} Human Edit tokens/month",
-            "Stacks with Starter or Pro",
-        ],
-    }
 
 
 def _normalize_tier(tier: str) -> str:
@@ -173,34 +163,8 @@ def _configured_plan_id(tier: str) -> str:
         return settings.cashfree_starter_plan_id.strip()
     if tier == "pro":
         return settings.cashfree_pro_plan_id.strip()
-    addon_fields = {
-        "credits_addon_20": settings.cashfree_addon_20_plan_id,
-        "credits_addon_50": settings.cashfree_addon_50_plan_id,
-        "credits_addon_100": settings.cashfree_addon_100_plan_id,
-        "credits_addon_250": settings.cashfree_addon_250_plan_id,
-    }
-    return str(addon_fields.get(tier, "") or "").strip()
-
-
-def _bump_addon_packs(workspace_id: str, tier: str, delta: int) -> None:
-    """+1 on add-on activation, -1 (floored at 0) on cancellation, per pack
-    tier. Reads current state via upsert_billing's own read-then-merge rather
-    than adding a second billing-read path — an empty patch returns the record
-    unchanged."""
-    current = upsert_billing(workspace_id, {})
-    addons = dict(current.get("addons") or {})
-    addons[tier] = max(0, int(addons.get(tier) or 0) + delta)
-    upsert_billing(workspace_id, {"addons": addons})
-
-
-def _record_addon_subscription(workspace_id: str, tier: str, subscription_id: str) -> None:
-    """Remember which Cashfree mandate backs a given add-on tier so the Billing
-    page can cancel it later. One entry per tier — re-buying an already-active
-    tier replaces the remembered id with the newer mandate."""
-    current = upsert_billing(workspace_id, {})
-    subs = dict(current.get("addon_subscriptions") or {})
-    subs[tier] = subscription_id
-    upsert_billing(workspace_id, {"addon_subscriptions": subs})
+    # Add-on packs are one-time Payment Link purchases — no plan IDs involved.
+    return ""
 
 
 def _plan_store_path() -> Path:
@@ -241,10 +205,6 @@ def _tier_for_plan_id(plan_id: str) -> str | None:
     configured = {
         "starter": settings.cashfree_starter_plan_id.strip(),
         "pro": settings.cashfree_pro_plan_id.strip(),
-        "credits_addon_20": settings.cashfree_addon_20_plan_id.strip(),
-        "credits_addon_50": settings.cashfree_addon_50_plan_id.strip(),
-        "credits_addon_100": settings.cashfree_addon_100_plan_id.strip(),
-        "credits_addon_250": settings.cashfree_addon_250_plan_id.strip(),
     }
     for tier, configured_plan_id in configured.items():
         if configured_plan_id and plan_id == configured_plan_id:
@@ -355,9 +315,8 @@ async def create_subscription(
     """Create a Cashfree subscription for a tier. Returns subscription_id and auth_link."""
     require_admin(principal)
     tier = _normalize_tier(body.get("tier", ""))
-    allowed = ["starter", "pro", *ADDON_TIERS]
-    if tier not in allowed:
-        raise HTTPException(status_code=400, detail="tier must be 'starter', 'pro', or an add-on tier")
+    if tier not in ("starter", "pro"):
+        raise HTTPException(status_code=400, detail="tier must be 'starter' or 'pro'")
     try:
         plan_id = _ensure_plan(tier)
         info = TIER_INFO[tier]
@@ -441,18 +400,12 @@ async def verify_subscription(
         tier = _tier_for_plan_id(plan_id)
         if not tier or tier == "free":
             raise HTTPException(status_code=400, detail="unknown_plan")
-        if tier in ADDON_TIERS:
-            # Stacks on top of whatever plan is already active — never touches
-            # plan/status/current_period_end, which belong to the base subscription.
-            _bump_addon_packs(principal.workspace_id, tier, 1)
-            _record_addon_subscription(principal.workspace_id, tier, subscription_id)
-        else:
-            upsert_billing(principal.workspace_id, {
-                "plan": tier,
-                "status": "active",
-                "subscription_id": subscription_id,
-                "current_period_end": _parse_next_charge(subscription),
-            })
+        upsert_billing(principal.workspace_id, {
+            "plan": tier,
+            "status": "active",
+            "subscription_id": subscription_id,
+            "current_period_end": _parse_next_charge(subscription),
+        })
         logger.info(
             "cashfree_subscription_verified workspace_id=%s tier=%s status=%s",
             principal.workspace_id,
@@ -468,59 +421,164 @@ async def verify_subscription(
 
 @router.get("/addons")
 def list_addons() -> dict[str, Any]:
-    """Public add-on catalog for the Billing page. Add-ons are checkout items,
-    deliberately excluded from /plans — this is their dedicated read side."""
+    """Public add-on catalog for the Billing page. Add-ons are one-time
+    purchases, deliberately excluded from /plans — this is their dedicated read side."""
     return {
         "addons": [
-            {"tier": tier, **TIER_INFO[tier], **ADDON_TIERS[tier]}
-            for tier in sorted(ADDON_TIERS, key=lambda t: ADDON_TIERS[t]["compile_credits"])
+            {
+                "tier": tier,
+                "name": info["name"],
+                "amount": info["amount"],
+                "currency": info["currency"],
+                "period": "one-time",
+                "features": [
+                    f"+{info['compile_credits']} compile credits (never expire)",
+                    f"+{info['human_edit_tokens']:,} Human Edit tokens (never expire)",
+                    "Used after your monthly allowance runs out",
+                ],
+            }
+            for tier, info in sorted(
+                ADDON_TIERS.items(), key=lambda kv: kv[1]["compile_credits"]
+            )
         ]
     }
 
 
-@router.post("/addon/cancel")
-def cancel_addon_subscription(
+_ORDER_WORKSPACE_NS = "cashfree_order_workspace"
+_ORDERS_GRANTED_NS = "cashfree_orders_granted"
+
+
+def _grant_addon_order_once(order_id: str) -> dict[str, Any] | None:
+    """Credit the wallet for a paid one-time add-on order exactly once. The
+    granted-orders guard makes webhook replays and verify-after-webhook double
+    deliveries harmless; returns the grant info or None when already granted."""
+    order_id = str(order_id or "").strip()
+    if not order_id:
+        return None
+    if db_get(_ORDERS_GRANTED_NS, order_id):
+        return None
+    mapping = db_get(_ORDER_WORKSPACE_NS, order_id) or {}
+    tier = _normalize_tier(str(mapping.get("tier") or ""))
+    workspace_id = str(mapping.get("workspace_id") or "")
+    info = ADDON_TIERS.get(tier)
+    if not workspace_id or not info:
+        logger.warning("cashfree_addon_order_unmapped order_id=%s", order_id)
+        return None
+    db_set(_ORDERS_GRANTED_NS, order_id, {"workspace_id": workspace_id, "tier": tier})
+    wallet = grant_credit_wallet(
+        workspace_id,
+        compile_credits=info["compile_credits"],
+        human_edit_tokens=info["human_edit_tokens"],
+    )
+    logger.info(
+        "cashfree_addon_order_granted workspace_id=%s tier=%s order_id=%s",
+        workspace_id,
+        tier,
+        order_id,
+    )
+    return {"workspace_id": workspace_id, "tier": tier, "wallet": wallet}
+
+
+@router.post("/addon/order")
+async def create_addon_order(
     body: dict[str, str],
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    """Cancel one compile add-on pack's mandate at Cashfree. Body: {tier} —
-    e.g. credits_addon_20. The pack count is decremented by the webhook handler
-    when Cashfree confirms cancellation; this endpoint never touches the
-    addons map itself, so a webhook replay can't double-decrement."""
+    """One-time purchase of a compile add-on pack via a Cashfree Payment Link.
+    Returns {payment_link} for the frontend to redirect to. In local dev with
+    no Cashfree credentials and auth off, grants immediately so the flow is
+    testable end to end without hitting Cashfree."""
     require_admin(principal)
     tier = _normalize_tier(body.get("tier", ""))
     if tier not in ADDON_TIERS:
         raise HTTPException(status_code=400, detail="unknown_addon_tier")
-    billing = upsert_billing(principal.workspace_id, {})
-    subscription_id = str((billing.get("addon_subscriptions") or {}).get(tier) or "")
-    packs = int((billing.get("addons") or {}).get(tier) or 0)
-    if not packs or not subscription_id:
-        raise HTTPException(status_code=400, detail="no_active_addon")
+    info = ADDON_TIERS[tier]
+
+    if not settings.cashfree_app_id or not settings.cashfree_secret_key:
+        if settings.auth_required:
+            raise HTTPException(status_code=500, detail="Cashfree credentials not configured")
+        wallet = grant_credit_wallet(
+            principal.workspace_id,
+            compile_credits=info["compile_credits"],
+            human_edit_tokens=info["human_edit_tokens"],
+        )
+        return {
+            "granted": True,
+            "link_id": "",
+            "payment_link": "",
+            "tier": tier,
+            "wallet": wallet,
+        }
+
+    customer_email = body.get("customer_email") or "user@conxa.in"
+    customer_phone = body.get("customer_phone") or "9999999999"
+    link_id = f"conxa_{principal.workspace_id}_{tier}_{int(time.time())}"
     try:
-        resp = _cf_request("POST", f"/api/v2/subscriptions/{subscription_id}/cancel")
+        resp = _cf_request("POST", "/pg/links", json={
+            "link_id": link_id,
+            "link_amount": info["amount"],
+            "link_currency": info["currency"],
+            "link_purpose": f"Conxa {info['name']}",
+            "customer_details": {
+                "customer_email": customer_email,
+                "customer_phone": customer_phone,
+                "customer_name": principal.workspace_id,
+            },
+            "link_meta": {"return_url": f"{settings.app_url}/billing"},
+            "link_notify": {"send_email": False, "send_sms": False},
+        })
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"cashfree_addon_cancel_failed: {_exception_detail(exc)}",
+            detail=f"cashfree_addon_order_failed: {_exception_detail(exc)}",
         ) from exc
     if resp.status_code not in (200, 201):
         raise HTTPException(
             status_code=502,
-            detail=f"cashfree_addon_cancel_failed: {resp.text}",
+            detail=f"cashfree_addon_order_failed: {resp.text}",
         )
-    # Forget the mandate immediately so a second cancel can't hit it again;
-    # the webhook owns the pack decrement.
-    current = upsert_billing(principal.workspace_id, {})
-    subs = dict(current.get("addon_subscriptions") or {})
-    subs.pop(tier, None)
-    upsert_billing(principal.workspace_id, {"addon_subscriptions": subs})
-    logger.info(
-        "cashfree_addon_cancel_requested workspace_id=%s tier=%s subscription_id=%s",
-        principal.workspace_id,
-        tier,
-        subscription_id,
-    )
-    return {"cancelled": True, "tier": tier, "subscription_id": subscription_id}
+    data = resp.json() if resp.content else {}
+    payment_link = str(data.get("link_url") or "")
+    if not payment_link:
+        raise HTTPException(status_code=502, detail=f"cashfree_no_payment_link: {resp.text}")
+    # Webhooks carry our link_id back in data.link.link_id — remember which
+    # workspace/tier it belongs to for lookup at grant time.
+    db_set(_ORDER_WORKSPACE_NS, link_id, {
+        "workspace_id": principal.workspace_id,
+        "tier": tier,
+    })
+    return {"granted": False, "link_id": link_id, "payment_link": payment_link, "tier": tier}
+
+
+@router.post("/addon/verify")
+async def verify_addon_order(
+    body: dict[str, str],
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Verify a one-time add-on Payment Link's status after the redirect back
+    from Cashfree, granting the wallet credits on PAID — belt to the webhook's
+    braces, since webhooks can't reach a locally-running backend."""
+    link_id = str(body.get("link_id") or "").strip()
+    if not link_id:
+        raise HTTPException(status_code=400, detail="missing_fields")
+    mapping = db_get(_ORDER_WORKSPACE_NS, link_id) or {}
+    if str(mapping.get("workspace_id") or "") != principal.workspace_id:
+        raise HTTPException(status_code=403, detail="addon_order_forbidden")
+    try:
+        resp = _cf_request("GET", f"/pg/links/{link_id}")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"cashfree_addon_verify_failed: {_exception_detail(exc)}",
+        ) from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"cashfree_addon_verify_failed: {resp.text}")
+    data = resp.json() if resp.content else {}
+    status = str(data.get("link_status") or "").upper()
+    granted = None
+    if status == "PAID":
+        granted = _grant_addon_order_once(link_id)
+    return {"status": status, "granted": bool(granted), "tier": mapping.get("tier", "")}
 
 
 def _cf_webhook_signature(payload: dict[str, Any], secret: str) -> str:
@@ -564,10 +622,7 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
         ):
             try:
                 tier = _tier_for_plan_id(plan_id) or _normalize_tier(mapping.get("tier", ""))
-                if tier in ADDON_TIERS:
-                    _bump_addon_packs(workspace_id, tier, 1)
-                    _record_addon_subscription(workspace_id, tier, sub_reference_id)
-                elif tier and tier != "free":
+                if tier and tier != "free":
                     upsert_billing(
                         workspace_id,
                         {
@@ -588,21 +643,14 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
     ):
         if workspace_id:
             try:
-                cancelled_tier = _tier_for_plan_id(plan_id) or _normalize_tier(mapping.get("tier", ""))
-                if cancelled_tier in ADDON_TIERS:
-                    # An add-on pack expiring only removes that pack's credits and
-                    # Human Edit tokens — the base plan and its own subscription
-                    # are untouched.
-                    _bump_addon_packs(workspace_id, cancelled_tier, -1)
-                else:
-                    upsert_billing(
-                        workspace_id,
-                        {
-                            "plan": "free",
-                            "status": "inactive",
-                            "current_period_end": None,
-                        },
-                    )
+                upsert_billing(
+                    workspace_id,
+                    {
+                        "plan": "free",
+                        "status": "inactive",
+                        "current_period_end": None,
+                    },
+                )
             except Exception:
                 logger.exception(
                     "cashfree_webhook_cancel_failed event=%s workspace_id=%s",
@@ -615,6 +663,54 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
             event_type,
             subscription_id,
             status,
+        )
+
+    return {"received": True}
+
+
+def _cf_order_webhook_signature(timestamp: str, raw_body: bytes, secret: str) -> str:
+    """Cashfree PG webhook signature: HMAC-SHA256 over ``timestamp + raw body``,
+    base64-encoded (different scheme from the subscriptions v1 webhooks above)."""
+    digest = hmac.new(secret.encode(), timestamp.encode() + raw_body, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode()
+
+
+@router.post("/webhooks/cashfree-orders")
+async def handle_cashfree_order_webhook(request: Request) -> dict[str, bool]:
+    """Cashfree PG webhooks for one-time add-on Payment Link orders. A
+    PAYMENT_SUCCESS_WEBHOOK credits the workspace wallet exactly once
+    (_grant_addon_order_once guards against replayed deliveries)."""
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid_json") from None
+
+    if settings.cashfree_webhook_secret:
+        timestamp = request.headers.get("x-webhook-timestamp", "")
+        received_sig = request.headers.get("x-webhook-signature", "")
+        expected = _cf_order_webhook_signature(
+            timestamp, raw_body, settings.cashfree_webhook_secret
+        )
+        if not received_sig or not hmac.compare_digest(expected, received_sig):
+            raise HTTPException(status_code=400, detail="invalid_signature")
+
+    event_type = str(payload.get("type") or "")
+    data = payload.get("data") or {}
+    link = data.get("link") or {}
+    payment = data.get("payment") or {}
+    order_id = str(link.get("link_id") or payment.get("order_id") or "")
+
+    if event_type == "PAYMENT_SUCCESS_WEBHOOK" and order_id:
+        try:
+            _grant_addon_order_once(order_id)
+        except Exception:
+            logger.exception("cashfree_order_webhook_grant_failed order_id=%s", order_id)
+    else:
+        logger.info(
+            "cashfree_order_webhook_ignored type=%s order_id=%s",
+            event_type,
+            order_id,
         )
 
     return {"received": True}

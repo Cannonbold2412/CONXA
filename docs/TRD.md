@@ -238,7 +238,9 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
 | `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, workflow create/delete) — `ops_tier` "basic"+; export is a documented follow-up, not yet a separate endpoint | Clerk JWT |
 | `POST /api/v1/subscriptions/create` | Create Cashfree subscription (`subscription_id`, `auth_link`, `plan_id`) | Clerk JWT |
-| `POST /api/v1/subscriptions/addon/cancel` | Cancel the compile-credit add-on mandate at Cashfree; webhook decrements packs | Clerk JWT, owner/admin |
+| `POST /api/v1/subscriptions/addon/order` | One-time purchase of a compile add-on pack via a Cashfree Payment Link (`payment_link`, `link_id`); dev fallback grants instantly when auth is off | Clerk JWT, owner/admin |
+| `POST /api/v1/subscriptions/addon/verify` | Verify a paid add-on Payment Link after redirect and credit the wallet (idempotent) | Clerk JWT |
+| `POST /api/v1/subscriptions/webhooks/cashfree-orders` | Cashfree PG webhook for one-time add-on orders; credits the wallet exactly once | Webhook secret HMAC over `timestamp + raw body`, base64 (`x-webhook-signature`) |
 | `POST /api/v1/subscriptions/webhooks/cashfree` | Cashfree webhook | Webhook secret HMAC over sorted `cf_`-prefixed fields |
 | `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
 | `GET /api/v1/workflows` | Workflow list + skill pack status | Clerk JWT |
@@ -290,7 +292,7 @@ Both identity paths (trusted proxy and Clerk JWT) pass `personal_workspace=not o
 
 ### 3.5 Billing
 
-Cashfree is the wired payment gateway (`app/api/cashfree_routes.py`, mounted at `/api/v1/subscriptions`; switched from Razorpay 2026-06-30). `POST /create` calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns an `auth_link` for the frontend to redirect to; the workspace↔subscription↔tier mapping is stored server-side (`cashfree_sub_workspace` KV) since Cashfree webhooks only carry the subscription reference id. `POST /verify` fetches the subscription from Cashfree and resolves the tier from its `planId`. `POST /webhooks/cashfree` verifies the signature by sorting all `cf_`-prefixed payload fields and comparing against the shared webhook secret. Activation/charge webhooks persist `current_period_end` so paid usage windows reset on the monthly payment date. See `docs/Backend-Schema.md` §5.4 for the full request/response contracts. Stripe was previously present as orphaned unwired config fields and has since been fully removed (see §17).
+Cashfree is the wired payment gateway (`app/api/cashfree_routes.py`, mounted at `/api/v1/subscriptions`; switched from Razorpay 2026-06-30). `POST /create` calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns an `auth_link` for the frontend to redirect to; the workspace↔subscription↔tier mapping is stored server-side (`cashfree_sub_workspace` KV) since Cashfree webhooks only carry the subscription reference id. `POST /verify` fetches the subscription from Cashfree and resolves the tier from its `planId`. `POST /webhooks/cashfree` verifies the signature by sorting all `cf_`-prefixed payload fields and comparing against the shared webhook secret. Activation/charge webhooks persist `current_period_end` so paid usage windows reset on the monthly payment date. **Compile add-on packs are one-time purchases, not subscriptions (rewritten 2026-08-22):** `POST /addon/order` creates a Cashfree Payment Link (`POST /pg/links`) and the frontend redirects to it; payment is confirmed either by the PG webhook (`POST /webhooks/cashfree-orders`, signature over `timestamp + raw body`) or by `POST /addon/verify` after the redirect back — both credit a never-expiring wallet on the billing record exactly once (`cashfree_orders_granted` KV guard). The wallet is drawn down only after the plan's monthly allowance runs out; no Cashfree *plan IDs* are needed for add-ons. See `docs/Backend-Schema.md` §5.4 for the full request/response contracts. Stripe was previously present as orphaned unwired config fields and has since been fully removed (see §17).
 
 ---
 
@@ -1910,10 +1912,15 @@ Trial expiry (Free only):
   ingest: execution is local and the cloud isn't in that path, so an already-installed machine keeps
   working after the trial that built it expires.
 
-Credit add-on:
-- `addon_compile_packs` (int, on the billing record) adds `25 * n` to `compile_credits` in
-  `_limits_from_billing` — stacks on Starter or Pro, purchased/cancelled via a `credits_addon_25`
-  Cashfree plan (`cashfree_routes._bump_addon_packs`), independent of the base subscription.
+Credit add-on (rewritten 2026-08-22 — one-time purchase, wallet-based):
+- Add-on packs are bought once via a Cashfree Payment Link (`POST /subscriptions/addon/order`);
+  the confirmed payment credits `credit_wallet` (`{"compile_credits", "human_edit_tokens"}`) on the
+  billing record — a balance that never expires and is never reset by billing-period rollover.
+- The monthly plan allowance is consumed first; only when it is exhausted does enforcement draw from
+  the wallet (`reserve_compile_credit` marks wallet-funded reservations, `commit_compile_credit`
+  spends them; `record_llm_usage`/`ensure_human_edit_available` do the same for Human Edit tokens).
+- Catalog lives in `entitlements.ADDON_TIERS` (+20/+50/+100/+250 packs); served read-only at
+  `GET /api/v1/subscriptions/addons`. No Cashfree *plan IDs* are involved for add-ons.
 
 Stable entitlement error codes:
 - `compile_credit_limit_exceeded`
@@ -2201,9 +2208,9 @@ deliberately absent from the required list above:
 - `SKILL_BYOK_ENCRYPTION_KEY` — 32 raw bytes, base64-encoded, for Enterprise BYOK key-at-rest
   encryption (§13.5). Unset means BYOK storage refuses every write/read (`byok_not_configured`, 500)
   rather than silently storing plaintext.
-- `CASHFREE_ADDON_PLAN_ID` — the compile-credit add-on's Cashfree plan ID. Unset behaves like the
-  starter/pro plan IDs do when unset in non-prod: the plan is auto-created on first use in dev,
-  and 500s in prod (`auth_required=true`) via the same `_ensure_plan` path.
+- ~~`CASHFREE_ADDON_PLAN_ID`~~ - removed 2026-08-22: add-on packs are one-time Payment Link
+  purchases and need no plan IDs (only `CASHFREE_APP_ID` / `CASHFREE_SECRET_KEY` /
+  `CASHFREE_WEBHOOK_SECRET`).
 
 ### 16.2 Cloud Frontend (Vercel)
 

@@ -452,26 +452,50 @@ def test_ops_tier_gates_dashboard_and_drift_by_plan(monkeypatch, tmp_path):
     assert pro_drift.status_code == 200, pro_drift.text
 
 
-def test_addon_packs_stack_credits_and_human_edit_tokens(monkeypatch, tmp_path):
+def test_addon_wallet_grant_and_overflow_consumption(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_compile", True)
     _set_plan("starter")  # 200 compile credits/mo base
 
-    upsert_billing("wrk_local", {"addons": {"credits_addon_20": 2, "credits_addon_50": 1}})
-    entitlements = client.get("/api/v1/entitlements/current")
+    from app.services.entitlements import grant_credit_wallet
 
+    # One-time purchase lands in the wallet and never touches the plan meter.
+    wallet = grant_credit_wallet(
+        "wrk_local", compile_credits=20, human_edit_tokens=200_000
+    )
+    assert wallet["compile_credits"] == 20
+    entitlements = client.get("/api/v1/entitlements/current")
     assert entitlements.status_code == 200, entitlements.text
     body = entitlements.json()
-    # 200 base + (2 * 20) + 50
-    assert body["meters"]["compile_credits"]["limit"] == 290
-    # starter base + (2 * 200k) + 500k
-    assert body["meters"]["human_edit_tokens"]["limit"] > 0
-    assert body["addons"] == {
-        "credits_addon_20": 2,
-        "credits_addon_50": 1,
-        "credits_addon_100": 0,
-        "credits_addon_250": 0,
-    }
+    # Plan limit stays at the base 200 — packs no longer stack onto it.
+    assert body["meters"]["compile_credits"]["limit"] == 200
+    assert body["wallet"]["compile_credits"] == 20
+    assert body["wallet"]["human_edit_tokens"] == 200_000
+
+    # Exhaust the monthly allowance; the next reserve draws from the wallet.
+    upsert_billing("wrk_local", {})
+    for i in range(200):
+        rid = f"cmp_base_{i}"
+        client.post("/api/v1/usage/compile/reserve", json={"reservation_id": rid})
+        client.post("/api/v1/usage/compile/commit", json={"reservation_id": rid})
+    over = client.post("/api/v1/usage/compile/reserve", json={"reservation_id": "cmp_over"})
+    assert over.status_code == 200, over.text
+    commit = client.post("/api/v1/usage/compile/commit", json={"reservation_id": "cmp_over"})
+    assert commit.status_code == 200, commit.text
+    after = client.get("/api/v1/entitlements/current").json()
+    assert after["wallet"]["compile_credits"] == 19
+
+    # Drain the remaining wallet credits; once dry, compiles are blocked again.
+    for i in range(19):
+        rid = f"cmp_wallet_{i}"
+        client.post("/api/v1/usage/compile/reserve", json={"reservation_id": rid})
+        client.post("/api/v1/usage/compile/commit", json={"reservation_id": rid})
+    drained = client.get("/api/v1/entitlements/current").json()
+    assert drained["wallet"]["compile_credits"] == 0
+    blocked = client.post("/api/v1/usage/compile/reserve", json={"reservation_id": "cmp_over2"})
+    assert blocked.status_code == 402
+    assert blocked.json()["detail"] == "compile_credit_limit_exceeded"
 
 
 def test_development_plan_is_unlimited(monkeypatch, tmp_path):

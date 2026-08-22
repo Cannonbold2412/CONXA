@@ -22,7 +22,7 @@ export type VerifySubscriptionResponse = {
   success: boolean
 }
 
-export type CheckoutTier = 'starter' | 'pro' | 'credits_addon_20' | 'credits_addon_50' | 'credits_addon_100' | 'credits_addon_250'
+export type CheckoutTier = 'starter' | 'pro'
 
 export type AddonOffer = {
   tier: string
@@ -31,8 +31,19 @@ export type AddonOffer = {
   currency: string
   period?: string | null
   features: string[]
-  compile_credits: number
-  human_edit_tokens: number
+}
+
+export type AddonOrderResponse = {
+  granted: boolean
+  link_id: string
+  payment_link: string
+  tier: string
+}
+
+export type AddonVerifyResponse = {
+  status: string
+  granted: boolean
+  tier?: string
 }
 
 export function listPlans(): Promise<{ plans: Plan[] }> {
@@ -63,4 +74,20 @@ export function verifyCashfreeSubscription(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subscription_id }),
   }).then((r) => json<VerifySubscriptionResponse>(r))
+}
+
+export function buyAddon(tier: string): Promise<AddonOrderResponse> {
+  return apiFetch('/subscriptions/addon/order', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tier }),
+  }).then((r) => json<AddonOrderResponse>(r))
+}
+
+export function verifyAddon(link_id: string): Promise<AddonVerifyResponse> {
+  return apiFetch('/subscriptions/addon/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ link_id }),
+  }).then((r) => json<AddonVerifyResponse>(r))
 }

@@ -72,7 +72,7 @@ export type EntitlementsResponse = {
   reset_at: string
   trial_ends_at?: string | null
   trial_expired?: boolean
-  addons?: Record<string, number>
+  wallet?: { compile_credits: number; human_edit_tokens: number }
   meters: Record<EntitlementMeterKey, EntitlementMeter>
 }
 
@@ -233,12 +233,4 @@ export function setLlmKey(body: SetByokKeyBody): Promise<ByokKeyStatus> {
 
 export function deleteLlmKey(): Promise<{ deleted: boolean }> {
   return apiFetch('/workspace/llm-key', { method: 'DELETE' }).then((r) => json<{ deleted: boolean }>(r))
-}
-
-export function cancelCompileCreditAddon(tier: string): Promise<{ cancelled: boolean; tier: string; subscription_id: string }> {
-  return apiFetch('/subscriptions/addon/cancel', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tier }),
-  }).then((r) => json<{ cancelled: boolean; tier: string; subscription_id: string }>(r))
 }

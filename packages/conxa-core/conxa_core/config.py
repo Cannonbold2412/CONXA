@@ -404,10 +404,8 @@ class Settings(BaseSettings):
     cashfree_webhook_secret: str = Field(default="", validation_alias="CASHFREE_WEBHOOK_SECRET")
     cashfree_starter_plan_id: str = Field(default="", validation_alias="CASHFREE_STARTER_PLAN_ID")
     cashfree_pro_plan_id: str = Field(default="", validation_alias="CASHFREE_PRO_PLAN_ID")
-    cashfree_addon_20_plan_id: str = Field(default="", validation_alias="CASHFREE_ADDON_20_PLAN_ID")
-    cashfree_addon_50_plan_id: str = Field(default="", validation_alias="CASHFREE_ADDON_50_PLAN_ID")
-    cashfree_addon_100_plan_id: str = Field(default="", validation_alias="CASHFREE_ADDON_100_PLAN_ID")
-    cashfree_addon_250_plan_id: str = Field(default="", validation_alias="CASHFREE_ADDON_250_PLAN_ID")
+    # Note: compile add-on packs are one-time purchases via Cashfree Payment
+    # Links — they need no plan IDs, only the app id / secret key above.
     cashfree_env: str = Field(default="TEST", validation_alias="CASHFREE_ENV")  # TEST | PROD
 
     @field_validator("environment", mode="before")

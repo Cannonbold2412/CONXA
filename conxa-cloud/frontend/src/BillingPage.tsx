@@ -12,7 +12,7 @@ import {
 } from '@/billing/billingData'
 
 import { useEffect, useMemo, useState, type ComponentType } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
@@ -28,15 +28,16 @@ import {
   Wand2,
 } from 'lucide-react'
 import {
+  buyAddon,
   createCashfreeSubscription,
   listAddons,
   listPlans,
+  verifyAddon,
   verifyCashfreeSubscription,
   type CheckoutTier,
   type Plan,
 } from '@/api/cashfreeApi'
 import {
-  cancelCompileCreditAddon,
   fetchEntitlements,
   fetchSubscription,
   type EntitlementMeter,
@@ -150,6 +151,22 @@ export function BillingPage() {
       })
   }, [queryClient])
 
+  // After Cashfree redirects back from a one-time add-on payment, verify and credit the wallet.
+  useEffect(() => {
+    const pendingLinkId = sessionStorage.getItem('cashfree_pending_addon')
+    if (!pendingLinkId) return
+    sessionStorage.removeItem('cashfree_pending_addon')
+
+    void verifyAddon(pendingLinkId)
+      .then(async (res) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.entitlements })
+        if (res.status === 'PAID') toast.success('Add-on credits added to your wallet')
+      })
+      .catch(() => {
+        // Not paid yet (or webhook already handled it) — entitlements refetch covers the rest.
+      })
+  }, [queryClient])
+
   const plans = useMemo(() => {
     const remotePlans = plansQuery.data?.plans ?? []
     const hasEnterprise = remotePlans.some((plan) => normalizePlan(plan.tier) === 'enterprise')
@@ -179,7 +196,7 @@ export function BillingPage() {
   async function subscribe(tier: string) {
     const normalizedTier = normalizePlan(tier)
 
-    const checkoutTiers: readonly CheckoutTier[] = ['starter', 'pro', 'credits_addon_20', 'credits_addon_50', 'credits_addon_100', 'credits_addon_250']
+    const checkoutTiers: readonly CheckoutTier[] = ['starter', 'pro']
     if (!checkoutTiers.includes(normalizedTier as CheckoutTier)) {
       toast.info('This plan does not require checkout.')
       return
@@ -199,6 +216,29 @@ export function BillingPage() {
     } catch (error) {
       setProcessingTier(null)
       toast.error(error instanceof Error ? error.message : 'Subscription could not be started')
+    }
+  }
+
+  async function buyAddonPack(tier: string) {
+    setProcessingTier(tier)
+    try {
+      const order = await buyAddon(tier)
+      if (order.granted) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.entitlements })
+        toast.success('Add-on credits added to your wallet')
+        return
+      }
+      if (!order.payment_link) {
+        toast.error('Cashfree payment link not received. Please try again.')
+        return
+      }
+      // Store link_id in sessionStorage so the wallet is credited after Cashfree redirects back.
+      sessionStorage.setItem('cashfree_pending_addon', order.link_id)
+      window.location.href = order.payment_link
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Add-on purchase could not be started')
+    } finally {
+      setProcessingTier(null)
     }
   }
 
@@ -263,10 +303,10 @@ export function BillingPage() {
         </section>
 
         <CompileCreditAddonPanel
-          activeAddons={entitlements?.addons ?? {}}
+          wallet={entitlements?.wallet ?? { compile_credits: 0, human_edit_tokens: 0 }}
           loading={entitlementsQuery.isLoading}
           processingTier={processingTier}
-          onBuy={(tier) => void subscribe(tier)}
+          onBuy={(tier) => void buyAddonPack(tier)}
         />
 
         <section className="space-y-3">
@@ -403,32 +443,24 @@ function formatTokens(tokens: number) {
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(tokens)
 }
 
+type CreditWallet = {
+  compile_credits: number
+  human_edit_tokens: number
+}
+
 function CompileCreditAddonPanel({
-  activeAddons,
+  wallet,
   loading,
   processingTier,
   onBuy,
 }: {
-  activeAddons: Record<string, number>
+  wallet: CreditWallet
   loading?: boolean
   processingTier: string | null
   onBuy: (tier: string) => void
 }) {
-  const queryClient = useQueryClient()
-  const [cancellingTier, setCancellingTier] = useState<string | null>(null)
   const addonsQuery = useQuery({ queryKey: queryKeys.billingAddons, queryFn: listAddons })
   const addons = useMemo(() => addonsQuery.data?.addons ?? [], [addonsQuery.data])
-
-  const cancelM = useMutation({
-    mutationFn: cancelCompileCreditAddon,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.entitlements })
-      toast.success('Add-on cancellation requested. Its credits are removed when Cashfree confirms the mandate is cancelled.')
-    },
-    onError: (err: unknown) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to cancel the add-on')
-    },
-  })
 
   return (
     <Card className="gap-0 border-white/8 bg-white/[0.025] py-0 shadow-none">
@@ -437,7 +469,13 @@ function CompileCreditAddonPanel({
           <div>
             <CardTitle className="text-base text-white">Compile Credit Add-Ons</CardTitle>
             <p className="mt-0.5 text-xs text-zinc-500">
-              Extra monthly compile credits with Human Edit tokens on top — stacks on Starter or Pro.
+              One-time top-ups that never expire — used automatically after your monthly allowance runs out.
+              {wallet.compile_credits > 0 || wallet.human_edit_tokens > 0 ? (
+                <span className="ml-1 text-emerald-300/90">
+                  Wallet balance: {wallet.compile_credits.toLocaleString()} compiles ·{' '}
+                  {formatTokens(wallet.human_edit_tokens)} Human Edit tokens.
+                </span>
+              ) : null}
             </p>
           </div>
           <div className="rounded-md border border-white/8 bg-black/20 p-1.5 text-zinc-400">
@@ -457,42 +495,39 @@ function CompileCreditAddonPanel({
         ) : (
           <div className="grid gap-3 pt-4 md:grid-cols-2 xl:grid-cols-4">
             {addons.map((addon) => {
-              const active = activeAddons[addon.tier] ?? 0
               const buying = processingTier === addon.tier
-              const busy = Boolean(processingTier) || cancelM.isPending
+              const busy = Boolean(processingTier)
               return (
                 <div
                   key={addon.tier}
                   className={`flex min-h-[13rem] flex-col rounded-lg border p-4 ${
-                    active > 0 ? 'border-emerald-500/30 bg-white/[0.03]' : 'border-white/8 bg-white/[0.02]'
+                    wallet.compile_credits > 0
+                      ? 'border-emerald-500/30 bg-white/[0.03]'
+                      : 'border-white/8 bg-white/[0.02]'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-semibold text-white">{addon.name}</p>
-                    {active > 0 ? (
-                      <Badge
-                        variant="outline"
-                        className="h-6 shrink-0 rounded-full border-emerald-500/30 bg-white/[0.03] px-2 text-[11px] text-emerald-300"
-                      >
-                        Active ×{active}
-                      </Badge>
-                    ) : null}
+                    <Badge
+                      variant="outline"
+                      className="h-6 shrink-0 rounded-full border-white/10 bg-white/[0.03] px-2 text-[11px] text-zinc-400"
+                    >
+                      One-time
+                    </Badge>
                   </div>
                   <div className="mt-1.5 flex items-baseline gap-1.5">
                     <span className="text-lg font-semibold tabular-nums text-white">
                       ₹{addon.amount.toLocaleString()}
                     </span>
-                    <span className="text-xs text-zinc-600">/ month</span>
+                    <span className="text-xs text-zinc-600">pay once</span>
                   </div>
                   <div className="mt-3 flex flex-1 flex-col gap-1.5">
-                    <div className="flex items-center gap-2 text-xs leading-5 text-zinc-300">
-                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-                      +{addon.compile_credits} compile credits / mo
-                    </div>
-                    <div className="flex items-center gap-2 text-xs leading-5 text-zinc-300">
-                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-                      +{formatTokens(addon.human_edit_tokens)} Human Edit tokens / mo
-                    </div>
+                    {(addon.features ?? []).map((feature) => (
+                      <div key={feature} className="flex items-center gap-2 text-xs leading-5 text-zinc-300">
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+                        {feature}
+                      </div>
+                    ))}
                   </div>
                   <div className="mt-auto flex gap-2 pt-3">
                     <Button
@@ -503,28 +538,8 @@ function CompileCreditAddonPanel({
                       onClick={() => onBuy(addon.tier)}
                     >
                       {buying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                      {buying ? 'Redirecting…' : 'Buy'}
+                      {buying ? 'Redirecting…' : 'Buy once'}
                     </Button>
-                    {active > 0 ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-8 text-zinc-400 hover:text-red-300"
-                        disabled={busy}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Cancel the ${addon.name} subscription at Cashfree? Future charges stop and its credits are removed once confirmed.`,
-                            )
-                          ) {
-                            setCancellingTier(addon.tier)
-                            cancelM.mutate(addon.tier, { onSettled: () => setCancellingTier(null) })
-                          }
-                        }}
-                      >
-                        {cancellingTier === addon.tier ? 'Cancelling…' : 'Cancel'}
-                      </Button>
-                    ) : null}
                   </div>
                 </div>
               )
