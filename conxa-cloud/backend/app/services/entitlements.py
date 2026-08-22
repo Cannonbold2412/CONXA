@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 from conxa_core.config import settings
 from conxa_core.db import _get_engine, db_get, db_list, db_set  # type: ignore[attr-defined]
-from app.services.saas import Principal, billing_for, membership_count_for
+from app.services.saas import Principal, billing_for, billing_for_workspace, membership_count_for
 
 USAGE_NS = "entitlement_usage"
 RESERVATION_NS = "compile_reservations"
@@ -602,6 +602,28 @@ def ensure_trial_active(principal: Principal) -> None:
     billing = billing_for(principal)
     if trial_expired(billing):
         raise EntitlementError("trial_expired", 402)
+
+
+def ensure_seats_available(principal: Principal) -> None:
+    """Blocks a brand-new member's first request once the workspace is
+    already at its seat cap (docs/PRD.md §11). Existing members are
+    unaffected even if a later downgrade puts the workspace over its new
+    limit — same soft-lock shape as ensure_workflow_publishable. Uses
+    billing_for_workspace (read-only) rather than billing_for, which would
+    itself create the very membership row this check needs to run before.
+    Clerk's live member count already includes the arriving member by the
+    time they can authenticate, so the gate is `count > limit`, not `>=`."""
+    billing = billing_for_workspace(principal.workspace_id)
+    limit = _limits_from_billing(billing)["seats"]
+    if limit is None or not settings.entitlements_enforce_seats:
+        return
+    count = _clerk_org_member_count(principal)
+    if count is None:
+        # Clerk lookup unavailable (local dev, transient API failure) — fail
+        # open rather than lock everyone out of a workspace we can't measure.
+        return
+    if count > int(limit):
+        raise EntitlementError("seat_limit_exceeded", 402)
 
 
 def _meter(used: int, limit: int | None, *, reserved: int = 0) -> dict[str, Any]:

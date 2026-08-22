@@ -370,6 +370,47 @@ def test_machine_limit_blocks_new_device_but_allows_known_one(monkeypatch, tmp_p
     assert again["used"] == 1
 
 
+def test_seat_limit_blocks_new_member_but_allows_known_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_seats", True)
+    import app.services.entitlements as entitlements_mod
+    from app.services.entitlements import EntitlementError, ensure_seats_available
+    from app.services.saas import is_known_member
+
+    upsert_billing("org_seat_test", {"plan": "free"})  # free's seat limit is 1
+
+    founder = Principal(
+        user_id="u_founder", workspace_id="org_seat_test", workspace_slug="seat-test",
+        workspace_name="Seat Test", role="owner", email=None, name=None, auth_provider="clerk",
+    )
+    newcomer = Principal(
+        user_id="u_newcomer", workspace_id="org_seat_test", workspace_slug="seat-test",
+        workspace_name="Seat Test", role="member", email=None, name=None, auth_provider="clerk",
+    )
+
+    # Founder is the workspace's only member so far — Clerk reports 1.
+    monkeypatch.setattr(entitlements_mod, "_clerk_org_member_count", lambda principal: 1)
+    ensure_seats_available(founder)  # does not raise
+
+    # A second member has already been invited in Clerk (count now 2) but has
+    # no local membership row yet — over the free plan's 1-seat cap.
+    assert is_known_member("u_newcomer", "org_seat_test") is False
+    monkeypatch.setattr(entitlements_mod, "_clerk_org_member_count", lambda principal: 2)
+    with pytest.raises(EntitlementError) as exc_info:
+        ensure_seats_available(newcomer)
+    assert exc_info.value.code == "seat_limit_exceeded"
+
+    # Enterprise's seat count defaults to 0 (a floor forcing an explicit
+    # per-contract override, see PLAN_LIMITS) — only an explicit "unlimited"
+    # override actually lifts the cap.
+    upsert_billing(
+        "org_seat_test",
+        {"plan": "enterprise", "entitlement_overrides": {"seats": "unlimited"}},
+    )
+    monkeypatch.setattr(entitlements_mod, "_clerk_org_member_count", lambda principal: 500)
+    ensure_seats_available(newcomer)  # does not raise
+
 
 def test_trial_expired_blocks_compile_but_not_sync(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)

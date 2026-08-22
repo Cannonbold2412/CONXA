@@ -471,6 +471,19 @@ def membership_count_for(workspace_id: str) -> int:
     return max(1, count)
 
 
+def is_known_member(user_id: str, workspace_id: str) -> bool:
+    """True once a (user, workspace) pair already has a membership row — lets
+    a caller distinguish an established member from one about to be created
+    for the first time (see entitlements.ensure_seats_available)."""
+    with _lock:
+        state = _read_state()
+        return any(
+            row.get("user_id") == user_id and row.get("workspace_id") == workspace_id
+            for row in state.get("memberships", [])
+            if isinstance(row, dict)
+        )
+
+
 def upsert_billing(workspace_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     with _lock:
         state = _read_state()

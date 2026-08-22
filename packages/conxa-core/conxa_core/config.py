@@ -191,6 +191,7 @@ class Settings(BaseSettings):
     entitlements_enforce_human_edit: bool = True
     entitlements_enforce_distribution: bool = True
     entitlements_enforce_machines: bool = True
+    entitlements_enforce_seats: bool = True
     entitlements_reservation_ttl_secs: int = 30 * 60
 
     # Production backing services. The local MVP still has file-backed fallbacks.

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request
 
-from app.services.entitlements import EntitlementError
-from app.services.saas import Principal, ensure_principal, principal_from_request
+from app.services.entitlements import EntitlementError, ensure_seats_available
+from app.services.saas import Principal, ensure_principal, is_known_member, principal_from_request
 
 
 def current_principal(request: Request) -> Principal:
@@ -17,8 +17,14 @@ def current_principal(request: Request) -> Principal:
 
     Usable both as a FastAPI dependency (``Depends(current_principal)``) and as
     a plain helper (``current_principal(request)``).
+
+    A (user, workspace) pair not yet seen would be turned into a new
+    membership row by ``ensure_principal`` below — check the seat cap first
+    so an over-the-limit new member never gets persisted as a member at all.
     """
     principal = principal_from_request(request)
+    if not is_known_member(principal.user_id, principal.workspace_id):
+        ensure_seats_available(principal)
     ensure_principal(principal)
     return principal
 
