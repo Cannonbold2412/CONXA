@@ -83,8 +83,14 @@ _RECOVERABLE_VISION_ANCHOR_REASONS = frozenset({
 # unavailable — the router already retries across the whole pool and waits out a 429
 # cooldown (bounded by llm_router_wait_ceiling_secs) before giving up. Whether that then
 # hard-stops the compile or degrades to keyword anchors is an operator choice: see
-# settings.vision_anchor_fallback_on_exhaustion (Render env var
-# SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION).
+# settings.vision_anchor_fallback_on_exhaustion. This is a per-workspace cloud
+# entitlement (capabilities.vision_fallback_on_exhaustion, fetched via
+# GET /api/v1/entitlements/current and applied for the scope of one compile in
+# handlers/compile.py::cmd_compile, right alongside _install_proxy_router) — NOT
+# a cloud/Render env var; setting SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION on
+# the Render backend has zero effect, since this compiler only ever runs inside
+# Build Studio's local process. The local env var still works as a fallback for
+# dev / when the entitlement fetch itself fails.
 _EXHAUSTION_VISION_ANCHOR_REASONS = frozenset({
     "vision_llm_request_failed",
     "vision_llm_empty_response",
@@ -1081,6 +1087,9 @@ def _build_validation(ev: dict[str, Any], state_diff: dict[str, Any], policy: di
         success_conditions=dynamic.get("success_conditions") or {},
     )
 
+_PREFETCH_VISION_ANCHORS_DEADLINE_SECS = 60.0
+
+
 def _prefetch_vision_anchors(
     cleaned_events: list[dict[str, Any]],
     *,
@@ -1092,19 +1101,63 @@ def _prefetch_vision_anchors(
     prefetch_vision_anchors_batch's docstring). Mirrors _build_step's own
     skip conditions (scroll / MARKER_ACTIONS never call vision) and intent
     resolution (generate_intent_with_llm -> normalize_compiler_intent) exactly,
-    so the cache key this computes matches what _build_step computes later —
-    intent_llm's own cache makes the second call here effectively free.
-    Never raises: prefetch failing just means _build_step's per-step vision
-    call does the normal single-image work it always has."""
-    try:
-        from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_batch
+    so the cache key this computes matches what _build_step computes later.
 
-        items: list[tuple[int, dict[str, Any], str]] = []
-        for i, ev in enumerate(cleaned_events):
-            action_payload = optimize_scroll(ev)
-            if action_payload == "scroll" or action_payload in MARKER_ACTIONS:
-                continue
-            llm_raw = generate_intent_with_llm(ev)
+    intent_llm's own cache only makes the resolution call here free while the
+    proxy is HEALTHY — a failed call caches nothing (see intent_llm.py's own
+    "nothing is cached on failure" comment), so under a degraded pool every one
+    of these calls runs for real. A 41-event workflow at ~12s/call (the observed
+    fast-fail path when the router's pool is cooled) is an 8-minute silent stall
+    before "Compiling step 1" even logs — found and fixed 2026-08-23. So this
+    circuit-breaks on the first infra failure instead of grinding through every
+    remaining event: one slow/failed call is a strong signal the pool is
+    currently degraded, and _build_step's own unchanged per-step path handles
+    every step correctly (just without the batching speedup) regardless.
+
+    Never raises: prefetch bailing out (circuit breaker or deadline) or failing
+    outright just means _build_step's per-step vision call does the normal
+    single-image work it always has."""
+    from services.llm_proxy_client import CloudUnreachable
+    from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_batch
+
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for i, ev in enumerate(cleaned_events):
+        action_payload = optimize_scroll(ev)
+        if action_payload == "scroll" or action_payload in MARKER_ACTIONS:
+            continue
+        candidates.append((i, ev))
+    if not candidates:
+        return
+
+    _compile_log(
+        "compile_phase",
+        f"Prefetching vision anchors for {len(candidates)} step(s)…",
+        {"phase": "vision_anchor_prefetch_start", "step_count": len(candidates)},
+    )
+
+    deadline = time.monotonic() + _PREFETCH_VISION_ANCHORS_DEADLINE_SECS
+    items: list[tuple[int, dict[str, Any], str]] = []
+    try:
+        for i, ev in candidates:
+            if time.monotonic() >= deadline:
+                _compile_log(
+                    "compile_phase",
+                    "Vision anchor prefetch deadline reached — continuing without it.",
+                    {"phase": "vision_anchor_prefetch_deadline", "level": "warn"},
+                )
+                return
+            try:
+                llm_raw = generate_intent_with_llm(ev)
+            except CloudUnreachable:
+                # First infra failure — the pool is degraded right now. Bail out
+                # of prefetching entirely rather than grinding through the rest
+                # of the events one slow/failing call at a time.
+                _compile_log(
+                    "compile_phase",
+                    "Vision anchor prefetch hit a cloud/proxy failure — continuing without it.",
+                    {"phase": "vision_anchor_prefetch_unavailable", "level": "warn"},
+                )
+                return
             intent = normalize_compiler_intent(ev, llm_raw, policy)
             items.append((i, ev, intent))
         prefetch_vision_anchors_batch(items, session_root=session_root, policy=policy)

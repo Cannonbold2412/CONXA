@@ -48,6 +48,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
         "analytics_retention_days": 0,
         "compile_pool": "free",
         "byok": False,
+        "vision_fallback_on_exhaustion": False,
     },
     "starter": {
         "seats": 3,
@@ -61,6 +62,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
         "analytics_retention_days": 90,
         "compile_pool": "premium",
         "byok": False,
+        "vision_fallback_on_exhaustion": False,
     },
     "pro": {
         "seats": 10,
@@ -74,6 +76,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
         "analytics_retention_days": 365,
         "compile_pool": "premium",
         "byok": False,
+        "vision_fallback_on_exhaustion": False,
     },
     # Enterprise workspaces must carry explicit overrides in billing metadata
     # for the numeric limits; the capability flags below are Enterprise's floor.
@@ -89,6 +92,11 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
         "analytics_retention_days": None,
         "compile_pool": "premium",
         "byok": True,
+        # Unlike the other capabilities here, this isn't plan-gated — it's an
+        # ops reliability lever, not a paid feature. Conxa can enable it for
+        # any workspace on any plan (including Free) via entitlement_overrides;
+        # the plan default is False everywhere.
+        "vision_fallback_on_exhaustion": False,
     },
     "development": {
         "seats": None,
@@ -102,6 +110,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
         "analytics_retention_days": None,
         "compile_pool": "premium",
         "byok": True,
+        "vision_fallback_on_exhaustion": False,
     },
 }
 
@@ -319,6 +328,8 @@ def _limits_from_billing(billing: dict[str, Any]) -> dict[str, Any]:
         limits["white_label"] = bool(overrides["white_label"])
     if "byok" in overrides:
         limits["byok"] = bool(overrides["byok"])
+    if "vision_fallback_on_exhaustion" in overrides:
+        limits["vision_fallback_on_exhaustion"] = bool(overrides["vision_fallback_on_exhaustion"])
     if "trial_days" in overrides:
         raw_value = overrides.get("trial_days")
         limits["trial_days"] = None if raw_value in (None, "") else max(0, int(raw_value))
@@ -746,6 +757,19 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
             "ops_tier": limits["ops_tier"],
             "compile_pool": limits["compile_pool"],
             "byok": limits["byok"],
+            # Whether a compile that exhausts the whole vision-anchor provider
+            # pool degrades to keyword anchors instead of hard-stopping. Build
+            # Studio fetches this once per compile (handlers/compile.py) and
+            # applies it locally — the compiler itself is local-only, this is
+            # just the cloud-controlled policy value for it. A local env var
+            # (SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION) remains as a fallback
+            # for dev / when this fetch itself fails.
+            #
+            # Deliberately NOT plan-gated (defaults False on every plan above,
+            # including Enterprise) — this is an ops reliability lever, not a
+            # paid feature. Conxa can flip it for any workspace on any plan,
+            # Free included, via entitlement_overrides at any time.
+            "vision_fallback_on_exhaustion": limits["vision_fallback_on_exhaustion"],
         },
         # Persistent workflow slot ledger — separate from the monthly
         # compile_credits meter above, which resets every period. This is what

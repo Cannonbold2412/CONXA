@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     # VisionAnchorGenerationError so a persistent provider outage is fixed, not hidden.
     # True = degrade to deterministic keyword anchors for that step and keep compiling —
     # useful if you'd rather finish a compile on flaky free-tier keys than block on them.
+    #
+    # In production this value is normally overwritten per-compile from the workspace's
+    # cloud entitlement (capabilities.vision_fallback_on_exhaustion via
+    # GET /api/v1/entitlements/current — see backend.py's
+    # _apply_vision_fallback_entitlement, called from handlers/compile.py::cmd_compile).
+    # This local default/env var only matters as the fallback when that fetch fails, and
+    # for dev workflows with no cloud reachable. It is a Build-Studio-local setting either
+    # way — this compiler runs entirely inside Build Studio's process, so setting
+    # SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION on the cloud/Render backend does nothing.
     vision_anchor_fallback_on_exhaustion: bool = False
 
     # Timeouts (no legacy single-endpoint config — endpoints come from per-provider settings below)

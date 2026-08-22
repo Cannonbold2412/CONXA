@@ -1477,6 +1477,43 @@ class PhaseTests(unittest.TestCase):
                     [(0, ev, "enter_email")], session_root=root, policy=get_policy_bundle().data,
                 )
 
+    def test_build_prefetch_circuit_breaks_on_first_infra_failure(self) -> None:
+        """compiler.build._prefetch_vision_anchors used to resolve every event's
+        intent serially before batching (Stage 4), on the false assumption that
+        intent_llm's cache makes a second call free — false exactly when the
+        proxy is degraded, since a failed call caches nothing. 41 events at
+        ~12s/call (the observed fast-fail path) produced an 8-minute silent
+        stall before "Compiling step 1" even logged. Fixed 2026-08-23: the first
+        ProxyUnavailable/CloudUnreachable bails out of prefetching entirely for
+        this compile — no further intent calls, no batch call — instead of
+        grinding through every remaining event."""
+        import conxa_compile.compiler.build as compiler_build
+        from services.llm_proxy_client import ProxyUnavailable
+
+        calls: list[int] = []
+
+        def fake_generate_intent(ev):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ProxyUnavailable("proxy down")
+            raise AssertionError("must not resolve intent for a second event after the first infra failure")
+
+        events = [_minimal_click_event(), _minimal_click_event(), _minimal_click_event()]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(compiler_build, "generate_intent_with_llm", fake_generate_intent),
+                patch(
+                    "conxa_compile.llm.anchor_vision_llm.prefetch_vision_anchors_batch",
+                    side_effect=AssertionError("must not batch after bailing out on the first infra failure"),
+                ),
+            ):
+                # Must not raise, and must return promptly (no per-event blocking loop).
+                compiler_build._prefetch_vision_anchors(events, session_root=root, policy={})
+
+        self.assertEqual(len(calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

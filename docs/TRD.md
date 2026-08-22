@@ -200,7 +200,7 @@ All under `/api/v1/` except health endpoints:
 | `GET /readyz` | Readiness (DB ping) | Public |
 | `POST /api/v1/llm/proxy/{text,vision}` | Metered LLM proxy | Clerk JWT + X-Conxa-Client header |
 | `GET /api/v1/llm/proxy/usage` | Token quota status | Clerk JWT |
-| `GET /api/v1/entitlements/current` | Workspace plan, four numeric meters, and the capability ladder (distribution/white_label/ops_tier/compile_pool/byok), trial status | Clerk JWT |
+| `GET /api/v1/entitlements/current` | Workspace plan, four numeric meters, and the capability ladder (distribution/white_label/ops_tier/compile_pool/byok/vision_fallback_on_exhaustion), trial status | Clerk JWT |
 | `GET /api/v1/entitlements/machines` | Registered build devices for the Settings device list | Clerk JWT, owner/admin |
 | `POST /api/v1/entitlements/machines/revoke` | Revoke a device, freeing its slot | Clerk JWT, owner/admin |
 | `POST /api/v1/usage/compile/reserve` | Reserve 1 fresh compile credit; also registers `X-Conxa-Machine` and checks trial expiry | Clerk JWT |
@@ -1904,6 +1904,17 @@ benched the vision-capable keys). See `TODO.md` CLOUD-11 (resolved) for the full
   cache hit already, a batch call failure, a response the model didn't return in order) falls
   through to the unchanged single-image call. The vision proxy route's body limit was raised from
   1MB to `llm_vision_proxy_max_bytes` (8MB) to fit a batch of base64 JPEGs.
+  **Circuit breaker (2026-08-23):** `_prefetch_vision_anchors` first resolves every candidate
+  step's intent (`generate_intent_with_llm`) to build each vision prompt — and `intent_llm`'s own
+  cache only makes that resolution free while the proxy is *healthy*; a failed call caches nothing.
+  Under a degraded pool this used to serially retry every event's intent resolution before the
+  per-step loop even started — a 41-event compile against a cooled pool produced an 8-minute
+  silent stall (no `_compile_log` line) before "Compiling step 1" appeared. It now bails out of
+  prefetching entirely (falling straight through to `_build_step`'s unchanged per-step path) on
+  the **first** `CloudUnreachable`/`ProxyUnavailable`, and is separately capped by an explicit
+  60s wall-clock deadline (`_PREFETCH_VISION_ANCHORS_DEADLINE_SECS`) as a second line of defense.
+  A `_compile_log("vision_anchor_prefetch_start", ...)` line now marks the start of prefetching so
+  even a healthy-pool run (which can legitimately take tens of seconds) isn't silent.
 - Compile-credit refund (`POST /api/v1/usage/compile/refund`, `entitlements.refund_compile_credit`):
   a compile aborts with the credit already committed (`handlers/compile.py` commits before any
   LLM call). An infra-class abort — `CloudUnreachable`/`ProxyUnavailable`, or a
@@ -1936,7 +1947,7 @@ The cloud exposes four customer-visible numeric meters, all defined in `PLAN_LIM
 - `compile_credits`
 - `human_edit_tokens`
 
-...and five capability keys that shape what a plan can *do*, not just how much:
+...and six capability keys that shape what a plan can *do*, not just how much:
 - `distribution` — `"internal"` (Free only) or `"external"` (Starter, Pro, Enterprise). Starter's
   distribution volume isn't machine-capped — it's naturally bounded by its 200 compile-credit ceiling,
   since every meaningful update requires a fresh compile before it can be republished. Free is the only
@@ -1945,6 +1956,20 @@ The cloud exposes four customer-visible numeric meters, all defined in `PLAN_LIM
 - `ops_tier` — `"none"` (Free), `"basic"` (Starter), `"full"` (Pro, Enterprise)
 - `compile_pool` — `"free"` or `"premium"`; which router pool compiles route to (§13.1a)
 - `byok` — bool; Enterprise only (§13.5)
+- `vision_fallback_on_exhaustion` — bool; `False` on every plan by default. Unlike the capabilities
+  above, this is deliberately **not** plan-gated — it's an ops reliability lever, not a paid feature,
+  so Conxa can enable it for any workspace on any plan (Free included) purely via
+  `entitlement_overrides` (added 2026-08-23). Whether `compile_skill_package` degrades a step to
+  keyword anchors instead of hard-stopping the whole compile when the vision-anchor provider pool
+  is exhausted. Fetched once per
+  compile via this same `GET /api/v1/entitlements/current` call and applied locally to
+  `settings.vision_anchor_fallback_on_exhaustion` (`backend.py::_apply_vision_fallback_entitlement`,
+  called from `handlers/compile.py::cmd_compile` right alongside `_install_proxy_router`) — the compiler
+  itself is local-only per this doc's Key Invariants, this is only the cloud-controlled policy *value*
+  for it. Previously a Build-Studio-local-only env var (`SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION`)
+  with no cloud-side control at all and a comment that wrongly called it a Render env var — setting it
+  on the cloud backend did nothing, since this compiler never runs there. The env var still works as a
+  fallback when the entitlement fetch itself fails, or for local dev with no cloud reachable.
 
 Plan defaults:
 - `free`: 1 seat, 1 machine, 25 compile credits/mo, 500K Human Edit tokens/mo, 30-day `trial_days`,

@@ -1037,7 +1037,8 @@ Response:
     "white_label": false,
     "ops_tier": "basic",
     "compile_pool": "premium",
-    "byok": false
+    "byok": false,
+    "vision_fallback_on_exhaustion": false
   },
   "workflow_lock": {
     "limit": 200,
@@ -1050,6 +1051,17 @@ Response:
 }
 ```
 (Free is the only plan carrying `"distribution": "internal"`, enforced by `ensure_distribution_allowed` at installer-upload time — see §5.1b below.)
+
+**Added 2026-08-23 — `vision_fallback_on_exhaustion`.** `False` on every plan by default (unlike
+`white_label`/`byok`, deliberately not plan-gated — this is an ops reliability lever Conxa can turn on
+for any workspace, Free included, not a paid feature); per-workspace overridable via
+`entitlement_overrides`, same mechanism as those two.
+Controls whether Build Studio's local compiler degrades a step to keyword anchors instead of
+hard-stopping the whole compile when the vision-anchor LLM provider pool is exhausted. Build Studio
+fetches this once per compile (`handlers/compile.py::cmd_compile` calls this same endpoint via
+`backend.py::_apply_vision_fallback_entitlement`) and applies it locally — replacing what used to be
+a Build-Studio-local-only environment variable (`SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION`) with no
+cloud-side control at all. See `docs/TRD.md` §13.2.
 
 **Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(workspace_id, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
 

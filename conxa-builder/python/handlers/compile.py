@@ -126,6 +126,7 @@ class CompileMixin:
                 raise
 
         self._install_proxy_router(sink=sink, usage_class=usage_class)
+        self._apply_vision_fallback_entitlement()
         _log(f"Running normalization pipeline on {len(raw)} events…")
         try:
             normalized = run_pipeline(raw)
@@ -189,7 +190,15 @@ class CompileMixin:
             # not something a refund is meant to cover.
             if exc.reason == "vision_llm_request_failed" and reservation_id and reservation_committed:
                 self._refund_compile_credit(reservation_id)
-            raise
+            # Wrap into _CommandError (matching the cloud_unreachable pattern just
+            # above) instead of a bare raise: VisionAnchorGenerationError isn't a
+            # _CommandError, so backend.py's dispatcher used to fall through to its
+            # generic "internal_error" arm — which the renderer shows as "Something
+            # went wrong inside the app. Please try again." — even though the
+            # specific, correct message (errorMessages.ts, code
+            # vision_anchors_failed) already existed and exc.api_detail() already
+            # knew to ask for it.
+            raise _CommandError(exc.api_detail()["code"], str(exc)) from exc
         except Exception as exc:
             _log(str(exc), level="error")
             sink({"phase": "compile_error", "message": str(exc), "failed_step": "selectors"})

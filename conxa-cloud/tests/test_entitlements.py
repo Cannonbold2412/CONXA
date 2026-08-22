@@ -38,6 +38,40 @@ def test_basic_plan_maps_to_starter(monkeypatch, tmp_path):
     assert body["capabilities"]["distribution"] == "external"
     assert body["capabilities"]["white_label"] is False
     assert body["capabilities"]["ops_tier"] == "basic"
+    assert body["capabilities"]["vision_fallback_on_exhaustion"] is False
+
+
+def test_vision_fallback_on_exhaustion_defaults_false_and_is_per_workspace_overridable(monkeypatch, tmp_path):
+    """Build Studio's compiler used to only be able to read this off a local
+    Windows environment variable — no cloud-side control at all, and setting it
+    on the cloud backend's own env did nothing. It's now a workspace entitlement,
+    same override mechanism as white_label/byok."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    _set_plan("free")
+
+    default = client.get("/api/v1/entitlements/current").json()
+    assert default["capabilities"]["vision_fallback_on_exhaustion"] is False
+
+    _set_plan("free", vision_fallback_on_exhaustion=True)
+    overridden = client.get("/api/v1/entitlements/current").json()
+    assert overridden["capabilities"]["vision_fallback_on_exhaustion"] is True
+
+
+def test_vision_fallback_on_exhaustion_is_not_plan_gated(monkeypatch, tmp_path):
+    """Deliberately not a paid-tier capability like white_label/byok — it's an
+    ops reliability lever Conxa can flip for any workspace, Free included.
+    Every plan defaults to False; only entitlement_overrides moves it."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    for plan in ("free", "starter", "pro", "enterprise"):
+        _set_plan(plan)
+        body = client.get("/api/v1/entitlements/current").json()
+        assert body["capabilities"]["vision_fallback_on_exhaustion"] is False, plan
+
+    _set_plan("free", vision_fallback_on_exhaustion=True)
+    body = client.get("/api/v1/entitlements/current").json()
+    assert body["capabilities"]["vision_fallback_on_exhaustion"] is True
 
 
 def test_paid_usage_window_follows_razorpay_payment_date(monkeypatch, tmp_path):

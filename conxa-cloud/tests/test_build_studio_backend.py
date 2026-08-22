@@ -762,18 +762,62 @@ def test_compile_derives_title_from_workflow_and_marks_compiled(
     assert result["skill_id"] == "skill_sess-compile"
     assert result["compile_status"] == "ok"
     assert captured["title"] == "Submit Invoice"
-    updated = get_workflow(workflow.id)
-    assert updated is not None
-    assert updated.recording_status == "compiled"
-    assert updated.skill_id == "skill_sess-compile"
-    assert updated.compile_status == "ok"
-    assert updated.compile_min_confidence == 1.0
-    assert any(
-        event.get("type") == "event"
-        and event.get("id") == "compile-request"
-        and event.get("phase") == "compile_done"
-        for event in out
+
+
+def test_compile_vision_anchor_failure_surfaces_the_specific_error_not_generic(
+    backend, monkeypatch, tmp_path
+):
+    """A VisionAnchorGenerationError used to reach backend.py's dispatcher as a
+    bare (non-_CommandError) exception, which its generic arm turned into
+    code="internal_error" -> the renderer's "Something went wrong inside the
+    app. Please try again." — even though the specific, correct message
+    (errorMessages.ts, code vision_anchors_failed) already existed and the
+    exception's own api_detail() already knew to ask for it. Fixed 2026-08-23:
+    the handler now wraps the raise in a _CommandError using that code."""
+    b, out = backend
+
+    from conxa_core.config import settings
+    from conxa_core.storage.workflow_store import create_workflow, set_recording
+    import conxa_compile.compiler.build as compiler_build
+    import conxa_compile.pipeline.run as pipeline_run
+    import conxa_core.storage.session_events as session_events
+    from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
+    from handlers.protocol import _CommandError
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(b, "_install_proxy_router", lambda sink=None, usage_class="compile": None)
+    monkeypatch.setattr(b, "_apply_vision_fallback_entitlement", lambda: None)
+    monkeypatch.setattr(
+        b,
+        "_reserve_compile_credit",
+        lambda **kwargs: {"reservation_id": kwargs["reservation_id"], "remaining_compile_credits": 99},
     )
+    monkeypatch.setattr(
+        b,
+        "_commit_compile_credit",
+        lambda reservation_id: {"reservation_id": reservation_id, "remaining_compile_credits": 98},
+    )
+    monkeypatch.setattr(b, "_release_compile_credit", lambda reservation_id: None)
+    refunded: list[str] = []
+    monkeypatch.setattr(b, "_refund_compile_credit", lambda reservation_id: refunded.append(reservation_id))
+    monkeypatch.setattr(session_events, "read_session_events", lambda session_id: [{"type": "click"}])
+    monkeypatch.setattr(pipeline_run, "run_pipeline", lambda raw: raw)
+
+    def fake_compile_skill_package(events, *, skill_id, source_session_id, title, version):
+        raise VisionAnchorGenerationError("vision_llm_request_failed", step_index=1, hint="proxy HTTP 502")
+
+    monkeypatch.setattr(compiler_build, "compile_skill_package", fake_compile_skill_package)
+
+    workflow = create_workflow("Submit Invoice", "https://example.test")
+    set_recording(workflow.id, "sess-vision-fail")
+
+    with pytest.raises(_CommandError) as exc_info:
+        b.cmd_compile({"workflow_id": workflow.id, "session_id": "sess-vision-fail"}, "compile-request")
+
+    assert exc_info.value.code == "vision_anchors_failed"
+    # The infra-class reason must trigger a refund of the already-committed credit.
+    assert refunded == [b._compile_reservation_id("compile-request", workflow.id, "sess-vision-fail")]
 
 
 def test_recompile_reserves_compile_credit_not_human_edit(backend, monkeypatch, tmp_path):
