@@ -152,23 +152,14 @@ jobs:
           }
 
       - name: Stage obfuscated JS to dist-app
+        # obfuscated/ holds exactly what app-layer-files.json produced — no
+        # second hand-maintained list to drift out of sync.
         working-directory: runtime
         run: |
           Remove-Item -Recurse -Force dist-app -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist-app
-          $files = @(
-            "server", "sync", "run", "browser",
-            "skill_loader", "auth_manager", "tracker", "install_identity", "installed_versions",
-            "recovery", "resolve_adapter", "resolver", "tabs", "drift", "version_manager",
-            "manifest_manager", "http_client", "page_scripts",
-            "durable_context", "config_edit", "mcp_hosts", "marker_span", "sync_errors", "env", "host_bridge",
-            "cli_installer", "recovery_park", "failure_response", "tool_defs",
-            "run_config", "recovery_log", "interpolate"
-          )
-          foreach ($base in $files) {
-            Copy-Item obfuscated/$base.js dist-app/$base.js
-            Write-Output "Staged: ${base}.js"
-          }
+          Copy-Item obfuscated/*.js dist-app/
+          Write-Output "Staged $((Get-ChildItem dist-app/*.js).Count) modules"
         shell: pwsh
 
       - name: Generate version.json and compute per-file SHA-256

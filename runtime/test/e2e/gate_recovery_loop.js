@@ -19,10 +19,14 @@ if (!exe || !fs.existsSync(exe)) { console.error(`host exe not found: ${exe}`); 
 const FIXTURE_DIR = path.join(__dirname, "..", "gate-skill");
 const FIXTURE_URL = pathToFileURL(path.join(FIXTURE_DIR, "fixture.html")).href;
 const RUNTIME_ROOT = path.join(__dirname, "..", "..");
+// Staged file list comes from app-layer-files.json — the same single source of
+// truth build-runtime-app.yml and build-app-local.ps1 consume.
+const appManifest = JSON.parse(
+  fs.readFileSync(path.join(RUNTIME_ROOT, "app-layer-files.json"), "utf8")
+);
 const APP_FILES = [
-  "server.js", "sync.js", "run.js", "browser.js", "skill_loader.js", "tracker.js",
-  "install_identity.js", "bootstrap.js", "recovery.js", "resolve_adapter.js",
-  "resolver.js", "auth_manager.js", "http_client.js", "page_scripts.js",
+  ...appManifest.files.map((f) => `app/${f.name}`),
+  "host/bootstrap.js",
 ];
 
 // Click step whose recorded identity matches NOTHING on the live page (wrong testid, wrong
@@ -61,7 +65,7 @@ fs.writeFileSync(path.join(conxaDir, "skill-packs", "gate", "gate-skill", "execu
 fs.writeFileSync(path.join(sessionsDir, "gate_raw_state.json"), JSON.stringify({ cookies: [], origins: [] }));
 const appDest = path.join(conxaDir, "conxa-app");
 fs.mkdirSync(appDest, { recursive: true });
-for (const f of APP_FILES) fs.copyFileSync(path.join(RUNTIME_ROOT, f), path.join(appDest, f));
+for (const f of APP_FILES) fs.copyFileSync(path.join(RUNTIME_ROOT, f), path.join(appDest, path.basename(f)));
 fs.writeFileSync(path.join(appDest, "version.json"),
   JSON.stringify({ app_version: "app-vGATE", min_host: "host-v1.0.0", files: {} }));
 

@@ -1,16 +1,18 @@
-<#
+﻿<#
 .SYNOPSIS
   Build the real (obfuscated) runtime app layer locally and drop it exactly
   where a real download would — so Test Skill uses the identical code path as
   Production. Dev only — never touches Production.
 
 .DESCRIPTION
-  Mirrors build-runtime-app.yml exactly: same file list, same javascript-obfuscator
-  flags (including auth_manager.js's no-self-defending exception), same
-  version.json shape (app_version, min_host, built_at, per-file sha256) — but on
-  your own machine, writing straight into
+  Runs the SAME pipeline as build-runtime-app.yml: file list + obfuscation
+  profiles come from runtime/app-layer-files.json (the single source of truth
+  both pipelines consume — they cannot drift), the check_app_layer_files.js
+  guard runs first, and javascript-obfuscator gets identical flags per profile.
+  version.json has the same shape (app_version, min_host, built_at, per-file
+  sha256). The only differences: it writes straight into
   <CONXA_STUDIO_HOME>\deps\conxa-app\<version>\ instead of publishing a GitHub
-  Release.
+  Release, and min_host is "0.0.0" so any host exe will load it.
 
   This is the SAME folder conxa_compile/conxa_runtime.py's _bootstrap_app_dir()
   scans in Production (after a real download) — Test Skill's ensure_test_sandbox()
@@ -24,13 +26,10 @@
   that might land there too (e.g. from clicking "Build Installer").
 
   Run this after editing server.js, run.js, resolver.js, recovery.js, or any
-  other app-layer file. For bootstrap.js itself (the packed exe's own entry
-  point) use build-runtime-local.ps1 instead — bootstrap.js is NOT staged here
-  (it runs only from inside conxa-runtime.exe; nothing on disk ever loads a
-  conxa-app/ copy of it).
-
-  Requires build-runtime-local.ps1 to have been run at least once (for the host
-  exe) — this script only touches the app layer.
+  other app-layer file listed in runtime/app-layer-files.json. For bootstrap.js
+  or anything else bundled into the exe itself, use build-runtime-local.ps1
+  instead — bootstrap.js runs only from inside conxa-runtime.exe; nothing on
+  disk ever loads a conxa-app/ copy of it.
 
 .EXAMPLE
   .\scripts\build-app-local.ps1
@@ -44,55 +43,54 @@ $RuntimeDir = Join-Path $Root "runtime"
 $StudioHome = if ($env:CONXA_STUDIO_HOME) { $env:CONXA_STUDIO_HOME } else { "$HOME\.conxa-build-studio-dev" }
 $DepsRoot = Join-Path $StudioHome "deps\conxa-app"
 
+# Same guard CI runs before building: manifest coverage + require closure.
+Write-Host "-- guard: app-layer-files.json ------------------------------------"
+Push-Location $RuntimeDir
+try { node check_app_layer_files.js; if ($LASTEXITCODE -ne 0) { throw "app-layer-files.json guard failed" } }
+finally { Pop-Location }
+
 $stamp = Get-Date -Format "yyyyMMddHHmmss"
 $appVersion = "app-v0.0.0-local.$stamp"
 $versionDest = Join-Path $DepsRoot $appVersion
 New-Item -ItemType Directory -Force -Path $versionDest | Out-Null
 
+$manifest = Get-Content (Join-Path $RuntimeDir "app-layer-files.json") -Raw | ConvertFrom-Json
+
 Write-Host "-- obfuscating app layer -------------------------------------------"
-$files = @(
-  "server.js", "sync.js", "run.js", "browser.js",
-  "skill_loader.js", "tracker.js", "install_identity.js", "installed_versions.js",
-  "recovery.js", "resolve_adapter.js", "resolver.js", "tabs.js",
-  "drift.js", "version_manager.js", "manifest_manager.js", "auth_manager.js",
-  "http_client.js", "page_scripts.js",
-  # sync.js -> durable_context.js -> config_edit.js/mcp_hosts.js (mirrors
-  # build-runtime-app.yml's file list — must stay in lockstep with it)
-  "durable_context.js", "config_edit.js", "mcp_hosts.js", "sync_errors.js"
-)
 $hashes = @{}
-foreach ($f in $files) {
-  $src = Join-Path $RuntimeDir $f
+foreach ($entry in $manifest.files) {
+  $f = $entry.name
+  $src = Join-Path $RuntimeDir "app\$f"
   $out = Join-Path $versionDest $f
-  # page_scripts.js holds functions Playwright serializes into the browser page realm —
-  # string-array/self-defending inject a module-scope ref that doesn't exist once re-parsed
-  # there (see runtime/page_scripts.js header). auth_manager.js needs no-self-defending for
-  # its native-module (process.dlopen) patterns.
-  if ($f -eq "page_scripts.js") {
-    npx --yes javascript-obfuscator $src `
-      --output $out `
-      --compact true `
-      --identifier-names-generator mangled `
-      --string-array false `
-      --dead-code-injection false `
-      --debug-protection false `
-      --self-defending false
-    $hashes[$f] = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
-    continue
+  # Flag sets mirror build-runtime-app.yml's "Obfuscate app JS files" step exactly;
+  # per-profile rationale lives in app-layer-files.json's $comment.
+  $obArgs = @($src, "--output", $out,
+    "--compact", "true",
+    "--identifier-names-generator", "mangled",
+    "--string-array-rotate", "true",
+    "--string-array-shuffle", "true",
+    "--dead-code-injection", "false",
+    "--debug-protection", "false")
+  switch ($entry.profile) {
+    "no-self-defending" {
+      $obArgs += @("--self-defending", "false",
+        "--string-array", "true",
+        "--string-array-encoding", "rc4",
+        "--string-array-threshold", "0.75")
+    }
+    "in-page" {
+      $obArgs += @("--self-defending", "false",
+        "--string-array", "false")
+    }
+    default {
+      $obArgs += @("--self-defending", "true",
+        "--string-array", "true",
+        "--string-array-encoding", "rc4",
+        "--string-array-threshold", "0.75")
+    }
   }
-  $selfDefending = if ($f -eq "auth_manager.js") { "false" } else { "true" }
-  npx --yes javascript-obfuscator $src `
-    --output $out `
-    --compact true `
-    --self-defending $selfDefending `
-    --identifier-names-generator mangled `
-    --string-array true `
-    --string-array-encoding rc4 `
-    --string-array-rotate true `
-    --string-array-shuffle true `
-    --string-array-threshold 0.75 `
-    --dead-code-injection false `
-    --debug-protection false
+  Push-Location $RuntimeDir
+  try { npx --yes javascript-obfuscator @obArgs } finally { Pop-Location }
   $hashes[$f] = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
 }
 
@@ -109,7 +107,7 @@ Get-ChildItem $DepsRoot -Directory | Where-Object { $_.Name -ne $appVersion } |
   ForEach-Object { Remove-Item $_.FullName -Recurse -Force }
 
 Write-Host "-----------------------------------------------------------------"
-Write-Host "App layer rebuilt: $versionDest"
+Write-Host "App layer rebuilt: $versionDest ($($hashes.Count) modules)"
 if (-not (Test-Path (Join-Path $StudioHome "deps\conxa-runtime"))) {
   Write-Host ""
   Write-Host "No host exe staged yet — also run .\scripts\build-runtime-local.ps1"

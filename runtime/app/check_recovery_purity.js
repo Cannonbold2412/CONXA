@@ -17,7 +17,8 @@ const fs   = require("fs");
 const path = require("path");
 
 const root = __dirname;
-const ENTRY = "recovery.js";const BANNED_CORE = ["http", "https", "net", "dns", "tls", "undici", "http2"];
+const ENTRY = "recovery.js";
+const BANNED_CORE = ["http", "https", "net", "dns", "tls", "undici", "http2"];
 const BANNED_PATTERNS = [
   /\bfetch\s*\(/,
   /XMLHttpRequest/,

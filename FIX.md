@@ -4,6 +4,16 @@
 
 ---
 
+## Double-checked the recent runtime rebuild for mistakes — 2026-08-22
+Ran a full review over every change made since the last logged checkpoint — 112 files, the whole runtime engine reorganisation. It found one real problem and confirmed it had already been caught and fixed: the cloud build recipe was missing several engine files, which would have shipped a broken update to customers. Nothing new was broken. The only edit made was tidying two settings that had been accidentally squashed onto one line in a safety-check script, which made it hard to read but changed nothing about how it behaves. All build safety checks still pass.
+
+---
+
+## Dev and production runtime builds now run the exact same recipe — 2026-08-22
+The two cloud build recipes (CI) and the two local build scripts had slowly drifted apart, and untangling them surfaced a real bug: the production app-update build was missing 9 internal files that the engine legitimately needs (they were split out of the main file during a recent refactor but never added to the build's shopping list). The next app update shipped through CI would have been dead on arrival — it would crash the moment a customer's machine loaded it. Everything now reads from one shared shopping list (`runtime/app-layer-files.json`): the CI release build, the local dev build, and even the automated test gates all stage exactly the same 40 files with exactly the same protection settings, so they physically can't disagree anymore. A new automatic checker runs before every build (both in CI and locally) and fails loudly if a file is ever added, removed, or referenced without updating that list — this exact "works on my machine, missing in production" mistake had already bitten twice before (the sync_errors crash, and now this). Bonus fixes along the way: the local host-build script now runs the same pre-build safety checks CI does (catching packaging-only breakage before you wait minutes for a build), can embed the manifest-verification key locally like CI does, and the previously completely broken local app-layer build script works again — verified end-to-end with a real 40-file build and all 335 tests passing.
+
+---
+
 ## Stopped shipping a useless copy of the launcher inside every app update — 2026-08-22
 The runtime has two layers: the "host" (a big program that rarely changes) and the "app layer" (a small ~60 KB update that ships often). The host contains its own built-in copy of `bootstrap.js` (the startup file), and nothing on a customer's machine ever uses a disk copy of it — but every app-layer release was still bundling an extra obfuscated copy of it anyway, purely out of habit from before the two-layer split existed. That dead weight is now removed: it's gone from the cloud build recipe (`build-runtime-app.yml`) and from the local build script (`build-app-local.ps1`), with comments explaining why it's intentionally absent. Nothing else changed — all 335 runtime tests still pass, and the update checks only ever look for `server.js`, so removing this file can't break anything.
 

@@ -1,13 +1,17 @@
-<#
+﻿<#
 .SYNOPSIS
   Build the real runtime host exe locally and drop it exactly where a real
   download would — so Test Skill uses the identical code path as Production.
   Dev only — never touches Production.
 
 .DESCRIPTION
-  Mirrors build-runtime-host.yml exactly: stamps runtime/package.json's version
-  and host_version, runs `npm run build:win` (pkg, --no-bytecode) — but on your
-  own machine, writing straight into
+  Mirrors build-runtime-host.yml exactly: runs the same pre-build guards
+  (check_pkg_stubs.js, check_host_manifest.js — the checks that catch "works in
+  dev, breaks inside the packaged exe"), stamps runtime/package.json's version
+  and host_version (plus ed25519_public_key from CONXA_MANIFEST_PUBLIC_KEY when
+  that env var is set, matching CI's repo variable), then runs
+  `npm run build:win` (pkg, --no-bytecode) — but on your own machine, writing
+  straight into
   <CONXA_STUDIO_HOME>\deps\conxa-runtime\<version>\ instead of publishing a
   GitHub Release. package.json is restored to its original, committed content
   afterward — this never leaves a stamped version in the working tree.
@@ -46,15 +50,33 @@ $versionDest = Join-Path $DepsRoot $hostVersion
 
 $pkgPath = Join-Path $RuntimeDir "package.json"
 $originalPkg = Get-Content $pkgPath -Raw
-try {
-  $pkg = $originalPkg | ConvertFrom-Json
-  $pkg.version = "0.0.0-local.$stamp"
-  $pkg.host_version = $hostVersion
-  ($pkg | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 $pkgPath
 
-  Write-Host "-- building conxa-runtime.exe (this takes a minute) --------------"
-  Push-Location $RuntimeDir
-  try { npm run build:win } finally { Pop-Location }
+# Same pre-build guards CI runs (build-runtime-host.yml) — both are sub-second
+# and catch the classic "works in dev, breaks inside the packaged exe" gaps.
+Push-Location $RuntimeDir
+try {
+  Write-Host "-- guards: pkg stubs + host manifest -------------------------------"
+  node check_pkg_stubs.js
+  if ($LASTEXITCODE -ne 0) { throw "check_pkg_stubs.js failed" }
+  node check_host_manifest.js
+  if ($LASTEXITCODE -ne 0) { throw "check_host_manifest.js failed" }
+
+  try {
+    $pkg = $originalPkg | ConvertFrom-Json
+    $pkg.version = "0.0.0-local.$stamp"
+    $pkg.host_version = $hostVersion
+    # CI stamps this from the CONXA_MANIFEST_PUBLIC_KEY repo variable so the exe
+    # can verify the signed update manifest. Locally it only exists if you set
+    # the env var; without it the dev exe simply can't verify signed manifests
+    # (fine for Test Skill, which runs with self-update skipped).
+    if ($env:CONXA_MANIFEST_PUBLIC_KEY) { $pkg.ed25519_public_key = $env:CONXA_MANIFEST_PUBLIC_KEY }
+    ($pkg | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 $pkgPath
+
+    Write-Host "-- building conxa-runtime.exe (this takes a minute) --------------"
+    npm run build:win
+  } finally {
+    Pop-Location
+  }
 } finally {
   Set-Content -Path $pkgPath -Value $originalPkg -NoNewline
 }

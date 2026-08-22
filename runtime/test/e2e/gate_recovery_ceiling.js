@@ -25,13 +25,15 @@ if (!exe || !fs.existsSync(exe)) { console.error(`host exe not found: ${exe}`); 
 const FIXTURE_DIR = path.join(__dirname, "..", "gate-skill");
 const FIXTURE_URL = pathToFileURL(path.join(FIXTURE_DIR, "fixture.html")).href;
 const RUNTIME_ROOT = path.join(__dirname, "..", "..");
-// Source layout: app-layer modules live in app/, exe-only ones in host/.
+// Staged file list comes from app-layer-files.json — the same single source of
+// truth build-runtime-app.yml and build-app-local.ps1 consume. bootstrap/
+// min_host_gate are exe-side extras staged alongside for a realistic flat layout.
+const appManifest = JSON.parse(
+  fs.readFileSync(path.join(RUNTIME_ROOT, "app-layer-files.json"), "utf8")
+);
 const APP_FILES = [
-  "app/server.js", "app/sync.js", "app/run.js", "app/browser.js", "app/skill_loader.js", "app/tracker.js",
-  "app/install_identity.js", "host/bootstrap.js", "host/min_host_gate.js", "app/recovery.js", "app/resolve_adapter.js",
-  "app/resolver.js", "app/auth_manager.js", "app/http_client.js", "app/page_scripts.js", "app/env.js",
-  "app/host_bridge.js", "app/cli_installer.js", "app/recovery_park.js", "app/failure_response.js", "app/tool_defs.js",
-  "app/run_config.js", "app/recovery_log.js", "app/interpolate.js", "app/marker_span.js",
+  ...appManifest.files.map((f) => `app/${f.name}`),
+  "host/bootstrap.js", "host/min_host_gate.js",
 ];
 
 // A skill that navigates to the fixture (succeeds) then tries to click an element that does

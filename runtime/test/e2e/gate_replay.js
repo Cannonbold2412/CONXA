@@ -89,16 +89,16 @@ activateVersion(appRoot, GATE_VERSION, (versionDir) => {
   } else {
     // Default: current runtime source as the app layer (host gate tests host vs HEAD).
     const RUNTIME_ROOT = path.join(__dirname, "..", "..");
-    // Source layout: app-layer modules live in app/, exe-only ones in host/.
-    // Staged output stays FLAT (the deployed conxa-app/<version>/ is flat).
+    // File list comes from app-layer-files.json — the same single source of truth
+    // build-runtime-app.yml and build-app-local.ps1 consume, so the gate always
+    // stages exactly what ships. bootstrap/min_host_gate are exe-side extras the
+    // gate stages alongside for a realistic flat layout.
+    const appManifest = JSON.parse(
+      fs.readFileSync(path.join(RUNTIME_ROOT, "app-layer-files.json"), "utf8")
+    );
     const APP_FILES = [
-      "app/server.js", "app/sync.js", "app/run.js", "app/browser.js", "app/skill_loader.js", "app/tracker.js",
-"app/install_identity.js", "host/bootstrap.js", "host/min_host_gate.js", "app/recovery.js", "app/resolve_adapter.js",
-"app/resolver.js", "app/drift.js", "app/auth_manager.js", "app/version_manager.js", "app/manifest_manager.js",
-"app/http_client.js", "app/page_scripts.js", "app/installed_versions.js", "app/sync_errors.js",
-"app/tabs.js", "app/durable_context.js", "app/config_edit.js", "app/mcp_hosts.js", "app/marker_span.js", "app/env.js", "app/host_bridge.js",
-"app/cli_installer.js", "app/recovery_park.js", "app/failure_response.js", "app/tool_defs.js",
-"app/run_config.js", "app/recovery_log.js", "app/interpolate.js",
+      ...appManifest.files.map((f) => `app/${f.name}`),
+      "host/bootstrap.js", "host/min_host_gate.js",
     ];
     for (const f of APP_FILES) fs.copyFileSync(path.join(RUNTIME_ROOT, f), path.join(versionDir, path.basename(f)));
   }
