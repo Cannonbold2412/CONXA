@@ -65,12 +65,36 @@ const EXECUTION_DEADLINE_MS = Number(process.env.CONXA_EXECUTION_DEADLINE_MS) ||
 // ─── Parked recovery page (Tier 3/4 cross-call self-healing) ──────────────────
 // State + page-fingerprint helpers live in recovery_park.js; see that file's
 // header for why the failed page is parked instead of torn down.
-const { PARK_DIVERGENCE_TOLERANCE, capturePageFingerprint } = require("./recovery_park");
-const _getParkedRecovery  = require("./recovery_park").getParked;
-const _setParkedRecovery  = require("./recovery_park").setParked;
-const _discardParkImpl    = require("./recovery_park").discardPark;
+const { PARK_DIVERGENCE_TOLERANCE, capturePageFingerprint, parkKey } = require("./recovery_park");
+const _getParkedRecovery    = require("./recovery_park").getParked;
+const _setParkedRecovery    = require("./recovery_park").setParked;
+const _discardParkImpl      = require("./recovery_park").discardPark;
+const _discardAllParksImpl  = require("./recovery_park").discardAllParks;
 const PARK_TTL_MS = Number(process.env.CONXA_RECOVERY_PARK_TTL_MS) || 180000;
-function _discardPark(reason) { return _discardParkImpl(reason, log); }
+// RT-3: parks are keyed per skill (`${workspace_id}:${slug}`), not a single process-wide slot —
+// discarding one run's park must never touch a sibling run's parked recovery window.
+// Releases the park's browser lease and host lock (if it held either — see browser.js's
+// getCachedBrowser/releaseCachedBrowser and host_lock.js) after tearing the park down. Without
+// this, a discarded headless park's browser would stay leased forever (nothing left to release
+// it), and — worse — a discarded park's host lock would stay held forever, permanently blocking
+// every future run that needs the same platform.
+function _discardPark(key, reason) {
+  const park = _getParkedRecovery(key);
+  const leaseKey = park && park.leaseKey;
+  const hostRelease = park && park.hostRelease;
+  return _discardParkImpl(key, reason, log).then(() => {
+    if (leaseKey) releaseCachedBrowser(leaseKey);
+    if (hostRelease) hostRelease();
+  });
+}
+
+// ─── Multi-run registry (RT-3) ─────────────────────────────────────────────────
+// Replaces the old single `activeExecution` slot — each concurrent execute_skill/
+// execute_sequence call gets its own tracked run, admitted up to CONXA_MAX_CONCURRENT_RUNS.
+const runRegistry = require("./run_registry");
+// Per-external-host mutual exclusion (RT-3 follow-up) — two runs touching the SAME external
+// platform serialize against each other; runs on different platforms stay fully parallel.
+const hostLock = require("./host_lock");
 
 // ─── 2. Playwright browser path (MUST precede any playwright require) ─────────
 // Respect a caller-supplied PLAYWRIGHT_BROWSERS_PATH (e.g. dev mode where CONXA_DIR
@@ -176,8 +200,11 @@ let uniqueDownloadName;
 let sweepOldRuns;
 let extractZipOnce;
 let getCachedBrowser;
+let releaseCachedBrowser;
 let captureReAuth;
 let gracefulShutdown;
+let resolveGroup;
+let filterRequiredApps;
 let createTracker;
 let mapErrorToCode;
 let closeExtraTabs;
@@ -191,7 +218,8 @@ try {
   sync         = require("./sync");
   authManager  = require("./auth_manager");
   ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
-  ({ getCachedBrowser, captureReAuth, gracefulShutdown } = require("./browser"));
+  ({ getCachedBrowser, releaseCachedBrowser, captureReAuth, gracefulShutdown,
+     _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
   ({ createTracker, mapErrorToCode } = require("./tracker"));
   ({ closeExtraTabs } = require("./tabs"));
 } catch (e) {
@@ -199,8 +227,8 @@ try {
   process.exit(1);
 }
 
-// ─── 6. Execution state (single lock per process) ─────────────────────────────
-let activeExecution = null;
+// ─── 6. Execution state ────────────────────────────────────────────────────────
+// Per-run state lives in runRegistry (RT-3) — no process-wide "the current execution" slot.
 
 // Tracks whether the cold-start sync is complete so execute_skill can gate on it.
 const syncState = {
@@ -310,12 +338,19 @@ const startupSync = (async () => {
 })();
 
 // ─── 12. Graceful shutdown ────────────────────────────────────────────────────
-process.on("SIGINT",  () => gracefulShutdown());
-process.on("SIGTERM", () => gracefulShutdown());
+// RT-3: discard every parked recovery page (potentially one per skill now, not just one) before
+// closing browsers, so a watch-mode park's own browser/context is closed cleanly rather than
+// left for process exit to abandon.
+async function _shutdown() {
+  await _discardAllParksImpl(log).catch(() => {});
+  await gracefulShutdown();
+}
+process.on("SIGINT",  () => _shutdown());
+process.on("SIGTERM", () => _shutdown());
 // Windows callers (e.g. Build Studio's test harness) can't deliver SIGTERM — Popen.terminate()
 // there is an unconditional TerminateProcess with no signal handler run. They close stdin first
 // instead; react to that the same way so browser.close() still runs before the process exits.
-process.stdin.on("end", () => gracefulShutdown());
+process.stdin.on("end", () => _shutdown());
 
 // Reads a skill's declared input fields (inputs.json, falling back to legacy input.json).
 // Shared by the tool-definition builder, get_skill_inputs, and the execute_skill input gate
@@ -415,19 +450,66 @@ function _trackingStatus(pack) {
 
 
 
+// ─── Target host resolution (RT-3 follow-up: host_lock.js) ────────────────────
+function _hostOf(url) {
+  try { return new URL(url).hostname; } catch (_) { return ""; }
+}
+
+// Every hostname a run's resolved skill(s) will actually interact with, for host_lock.js to
+// serialize against a sibling run touching the same platform. Group skills (browser.js's
+// getGroupAuthContext) resolve to every REQUIRED app's host, exactly matching the same
+// pack.json `groups` lookup already used for auth pre-flight above — a skill's manifest is the
+// only source of truth this has to consult, since resolving skills never navigates a page.
+// An unresolvable/legacy manifest contributes no host (fail OPEN, not closed — there's nothing
+// concrete to lock, and refusing to run over a metadata gap would be a worse outcome than the
+// platform-level race this exists to reduce).
+function _resolveTargetHosts(resolved) {
+  const hosts = new Set();
+  for (const r of resolved) {
+    const m = r.entry.manifest;
+    if (m && m.group_id) {
+      const group = resolveGroup(r.entry.workspace_id, m.group_id);
+      if (group && Array.isArray(group.apps)) {
+        for (const app of filterRequiredApps(group.apps, m.required_apps)) {
+          const h = _hostOf(app.success_url || app.login_url);
+          if (h) hosts.add(h);
+        }
+        continue;
+      }
+    }
+    const h = _hostOf(m?.target_url || m?.entry_url || m?.login_url);
+    if (h) hosts.add(h);
+  }
+  return [...hosts];
+}
+
+// ─── Concurrency cap message (RT-3) ────────────────────────────────────────────
+// Shared by the fast pre-resolve refusal and the atomic admission check at exec-creation —
+// same wording either way, and it deliberately never suggests calling cancel_execution: a
+// caller past the cap didn't start the runs in the way, and cancelling a sibling's run to make
+// room for its own is exactly the wrong move.
+function _tooManyRunsMessage() {
+  const active = runRegistry.list();
+  const named = active.map((r) => `${r.skill} (run_id: ${r.run_id})`).join(", ");
+  return `Too many workflows are already running (${active.length}/${runRegistry.MAX_CONCURRENT_RUNS}): ` +
+    `${named}. Call get_execution_status to check progress, or wait for one to finish before starting another.`;
+}
+
 // ─── Build failure response ───────────────────────────────────────────────────
 // Payload assembly lives in failure_response.js (extracted verbatim so the
 // Tier 3/4 prompt text is unit-testable without loading this server). This
 // wrapper binds the late-assigned module state (appendRecoveryEvent,
-// stepAssertions, frameScopedInventory are set inside the SDK try block above;
-// activeExecution is mutable run state) at call time.
-async function _buildFailureResponse(page, errObj, resolvedEntry, runTracker, steps = null) {
+// stepAssertions, frameScopedInventory are set inside the SDK try block above)
+// at call time. `exec` is the calling run's own registry entry (RT-3) — never
+// a shared/global execution slot — so its sentVisualRefs set is scoped to
+// this run alone.
+async function _buildFailureResponse(page, errObj, resolvedEntry, runTracker, steps = null, exec = null) {
   return require("./failure_response").buildFailureResponse(
     page, errObj, resolvedEntry, runTracker, steps,
     {
       agentRecoveryEnabled: AGENT_RECOVERY_ENABLED,
       maxRecoveryTier: MAX_RECOVERY_TIER,
-      sentVisualRefs: activeExecution && activeExecution.sentVisualRefs,
+      sentVisualRefs: exec && exec.sentVisualRefs,
       appendRecoveryEvent,
       stepAssertions,
       frameScopedInventory,
@@ -471,10 +553,37 @@ async function _handleTool(name, args, extra) {
   }
 
   // ── cancel_execution ─────────────────────────────────────────────────────────
+  // RT-3: with multiple runs possibly active at once, a bare call (no run_id) is only ever
+  // unambiguous when exactly one run is active — cancelling "the" run is otherwise a guess that
+  // could kill a sibling chat's execution instead of the caller's own. An unknown run_id is
+  // reported rather than silently ignored, so a stale id from an earlier response doesn't look
+  // like a successful cancel.
   if (name === "cancel_execution") {
-    if (!activeExecution) return text('{"cancelled":false,"reason":"no active execution"}');
-    activeExecution.cancelRequested = true;
-    return text('{"cancelled":true}');
+    const requestedId = args.run_id ? String(args.run_id) : null;
+    const active = runRegistry.list();
+
+    if (requestedId) {
+      const ok = runRegistry.requestCancel(requestedId);
+      return text(JSON.stringify(ok
+        ? { cancelled: true, run_id: requestedId }
+        : { cancelled: false, reason: "no active run with that run_id", run_id: requestedId, active_runs: active }));
+    }
+
+    if (active.length === 0) return text('{"cancelled":false,"reason":"no active execution"}');
+    if (active.length === 1) {
+      runRegistry.requestCancel(active[0].run_id);
+      return text(JSON.stringify({ cancelled: true, run_id: active[0].run_id }));
+    }
+    return text(JSON.stringify({
+      cancelled: false,
+      reason: "multiple executions are active — pass run_id to cancel a specific one",
+      active_runs: active,
+    }));
+  }
+
+  // ── get_execution_status ─────────────────────────────────────────────────────
+  if (name === "get_execution_status") {
+    return text(JSON.stringify({ active_runs: runRegistry.list() }));
   }
 
   // ── get_runtime_status ───────────────────────────────────────────────────────
@@ -534,8 +643,10 @@ async function _handleTool(name, args, extra) {
       await startupSync;
     }
 
-    // Execution lock
-    if (activeExecution) return err(`Execution already running: ${activeExecution.slug}. Call cancel_execution first.`);
+    // Concurrency cap (RT-3): several runs may be genuinely active at once (separate chats, or
+    // one chat firing several tool calls). Refuse honestly past the cap instead of pretending
+    // only one run can ever exist — and never tell the caller to cancel a run it doesn't own.
+    if (runRegistry.count() >= runRegistry.MAX_CONCURRENT_RUNS) return err(_tooManyRunsMessage());
 
     // Resolve all skills (fail fast)
     const resolved = [];
@@ -629,8 +740,11 @@ async function _handleTool(name, args, extra) {
     if (primary.isResume && !checkRetryBudget(primary.entry.slug, primary.resumeFrom))
       return err(`Retry budget exhausted at step ${primary.resumeFrom}. Fix the root cause in execution.json before retrying from step 0.`);
 
-    // Acquire execution lock
-    activeExecution = {
+    // Acquire a run slot (RT-3: one of possibly several concurrent runs, not a single process-wide
+    // lock). runId is generated here — earlier than before — because the registry keys runs by it.
+    const _runId = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    const exec = {
+      runId:           _runId,
       slug:            primary.entry.slug,
       workspace_id:    primary.entry.workspace_id,
       step:            0,
@@ -640,7 +754,12 @@ async function _handleTool(name, args, extra) {
       deadlineAt:      Date.now() + EXECUTION_DEADLINE_MS,
       deadlineExceeded: false,
       sentVisualRefs:  new Set(), // P5: tracks which (slug:stepIndex) visual refs were sent this execution
+      waitingForHost:  null, // set while blocked in host_lock.js; see run_registry.list()
     };
+    // No `await` since the pre-resolve cap check above, so this can only fail here if that check
+    // ever stops being the sole gate — kept as the authoritative admission rather than trusting
+    // the earlier advisory check alone.
+    if (!runRegistry.begin(exec)) return err(_tooManyRunsMessage());
 
     // Wall-clock watchdog: trips the same cancel path as a client abort once the execution budget
     // is spent, so the run stops and returns *before* the client's request timeout fires (turning a
@@ -648,14 +767,13 @@ async function _handleTool(name, args, extra) {
     // boundary; all Playwright ops are individually bounded, so it is observed within seconds of
     // expiring. Distinguished from a client cancel by the deadlineExceeded flag (see catch block).
     const _execCancelled = () => {
-      if (!activeExecution) return false;
-      if (activeExecution.cancelRequested) return true;
-      if (Date.now() >= activeExecution.deadlineAt) {
-        if (!activeExecution.deadlineExceeded) {
-          activeExecution.deadlineExceeded = true;
+      if (exec.cancelRequested) return true;
+      if (Date.now() >= exec.deadlineAt) {
+        if (!exec.deadlineExceeded) {
+          exec.deadlineExceeded = true;
           log("warn", "execution_deadline_exceeded",
-            { skill: primary.entry.slug, step: activeExecution.step, deadline_ms: EXECUTION_DEADLINE_MS });
-          appendRecoveryEvent({ event: "execution_deadline_exceeded", slug: primary.entry.slug, step: activeExecution.step });
+            { run_id: _runId, skill: primary.entry.slug, step: exec.step, deadline_ms: EXECUTION_DEADLINE_MS });
+          appendRecoveryEvent({ event: "execution_deadline_exceeded", run_id: _runId, slug: primary.entry.slug, step: exec.step });
         }
         return true;
       }
@@ -666,13 +784,13 @@ async function _handleTool(name, args, extra) {
     // notifications/cancelled — which a client also does when its own request times out. Without
     // this, the runtime kept executing after the client gave up, parked a browser the client can
     // never resume, and produced a response the SDK silently drops. `runPlan`'s cancelCheck reads
-    // activeExecution.cancelRequested, so flipping it here makes both the step loop and the recovery
-    // cascade yield promptly and tear down cleanly. (cancel_execution sets the same flag.)
+    // exec.cancelRequested, so flipping it here makes both the step loop and the recovery cascade
+    // yield promptly and tear down cleanly. (cancel_execution sets the same flag on this same run.)
     const _abortSignal = extra && extra.signal;
     const _onAbort = () => {
-      if (activeExecution) activeExecution.cancelRequested = true;
-      log("info", "execution_cancelled_by_client", { skill: primary.entry.slug });
-      appendRecoveryEvent({ event: "execution_cancelled_by_client", slug: primary.entry.slug });
+      exec.cancelRequested = true;
+      log("info", "execution_cancelled_by_client", { run_id: _runId, skill: primary.entry.slug });
+      appendRecoveryEvent({ event: "execution_cancelled_by_client", run_id: _runId, slug: primary.entry.slug });
     };
     if (_abortSignal) {
       if (_abortSignal.aborted) _onAbort();
@@ -680,6 +798,7 @@ async function _handleTool(name, args, extra) {
     }
 
     log("info", "execute_start", {
+      run_id: _runId,
       tool: name,
       run_count: resolved.length,
       skill: primary.entry.slug,
@@ -687,6 +806,7 @@ async function _handleTool(name, args, extra) {
       total_steps: resolved.reduce((n, r) => n + r.steps.length, 0),
       watch,
       max_recovery_tier: MAX_RECOVERY_TIER,
+      concurrent_runs: runRegistry.count(),
       tracking: _trackingStatus(primary.entry.pack),
     });
 
@@ -698,7 +818,7 @@ async function _handleTool(name, args, extra) {
       company_id:      primary.entry.workspace_id,
       log,
     });
-    const _runId      = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    // _runId was generated earlier, at admission (runRegistry.begin), not here — see above.
     const _runTracker = _tracker.forRun(_runId, { uid: INSTALL_ID, wid: "" });
     const _wfStartAt  = Date.now();
     let   _totalRecovered = 0;
@@ -712,14 +832,15 @@ async function _handleTool(name, args, extra) {
     _runTracker.emit("wf_start", {});
 
     // Adopt a parked failed page when the agent is resuming THIS skill with an override, so the
-    // corrected selector acts on the exact DOM state the recovery request was built from.
+    // corrected selector acts on the exact DOM state the recovery request was built from. Parks
+    // are keyed per `${workspace_id}:${slug}` (RT-3) — a sibling run's park lives under its own
+    // key and is neither read nor discarded here.
     const _resumeOverride = AGENT_RECOVERY_ENABLED && resolved.length === 1 && primary.isResume
       && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
+    const _parkKey = parkKey(primary.entry.workspace_id, primary.entry.slug);
     let _park = null;
-    const _existingPark = _getParkedRecovery();
-    if (_resumeOverride && _existingPark
-        && _existingPark.slug === primary.entry.slug
-        && _existingPark.workspace_id === primary.entry.workspace_id) {
+    const _existingPark = _getParkedRecovery(_parkKey);
+    if (_resumeOverride && _existingPark) {
       try {
         _existingPark.page.url();
         // The recovery request described the page as it stood at park time. If it has since
@@ -737,24 +858,25 @@ async function _handleTool(name, args, extra) {
           _park = _existingPark;
         }
       } catch (_) { _park = null; }
-      if (_park) { clearTimeout(_park.timer); _setParkedRecovery(null); }
+      if (_park) { clearTimeout(_park.timer); _setParkedRecovery(_parkKey, null); }
     }
-    // Any park we did not adopt is stale (different skill, dead page, diverged state, or a
-    // non-resume run) — discard it so it can neither leak a browser nor interfere with this run.
-    if (_getParkedRecovery()) await _discardPark(_resumeOverride ? "replaced" : "superseded");
+    // A park still sitting under THIS skill's own key that we did not adopt (state diverged, a
+    // non-resume call, or an override that didn't match) is stale for this run — discard it so it
+    // can neither leak a browser nor interfere with what's about to run.
+    if (_getParkedRecovery(_parkKey)) await _discardPark(_parkKey, _resumeOverride ? "replaced" : "superseded");
 
     // An agent override with no live, state-matching park to resume on (TTL expired, page
     // crashed, or state diverged) must never silently continue mid-plan on a fresh page — the
     // override was chosen against a DOM state that no longer exists, so applying it to a
     // blank/different page could act on the wrong element. Refuse and ask the agent to restart.
-    // This exits before the try/finally below that normally clears activeExecution and flushes
-    // the tracker, so both must be torn down by hand here — otherwise every execute_skill call
-    // after the first refused resume would see "Execution already running" forever.
+    // This exits before the try/finally below that normally releases this run's slot and flushes
+    // the tracker, so both must be torn down by hand here — otherwise this run would sit in
+    // runRegistry forever, counting against the concurrency cap with nothing left to release it.
     if (_resumeOverride && !_park) {
       appendRecoveryEvent({ event: "recovery_resume_refused", slug: primary.entry.slug, step_index: primary.resumeFrom });
       _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: primary.resumeFrom, fc: "recovery_resume_refused" });
       if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
-      activeExecution = null;
+      runRegistry.end(_runId);
       await _tracker.flush();
       _tracker.destroy();
       return err(
@@ -766,20 +888,68 @@ async function _handleTool(name, args, extra) {
 
     let page = null;
     let _browser, _context, _protectedUrl;
+    // Cache-lease key for _context, when it came from browser.js's headless cache (null for a
+    // watch:true run, or a run that got its own uncached browser because the cache slot was
+    // already leased by a concurrent run — see getCachedBrowser). Released at every teardown
+    // path below except a park, which holds the lease until it's resumed or discarded (RT-3).
+    let _leaseKey = null;
+    // Host-lock release (RT-3 follow-up — host_lock.js). Held for the whole run, including
+    // through a park, exactly like _leaseKey above: a parked page is a live, uncommitted
+    // interaction with the target platform, and letting a sibling run mutate the same platform
+    // while this one's fix is pending would be exactly the race this exists to prevent.
+    let _hostRelease = null;
     // EXEC-14: track every tab opened during this run (populated once `_context` is known,
     // below) so closeExtraTabs (tabs.js) can close it alongside `page` on every exit path —
     // success, cancelled, session-expired, and non-parkable failure all need this, not just
     // success, so it's declared here rather than inside the try block, where the catch block
     // below couldn't see it.
     const _openedTabs = new Set();
+    // Same reason as _openedTabs above: catch{} is a SIBLING block to try{}, not a nested one,
+    // so a const/let declared inside try{} does not exist at all inside catch{} — referencing it
+    // there throws "is not defined" (not a TDZ error) on every failure path, not just some.
+    // These three are assigned inside the try block below (once _context/runtimeLog/etc. are
+    // available) but must be declared out here so every cleanup call site in catch{} — cancelled,
+    // session-expired, and the generic non-parkable-failure branch — can actually see them.
+    let _attachPageListeners = null;
+    let _trackOpenedTab = null;
+    const _detachContextListeners = () => {
+      if (!_context) return;
+      _context.off("page", _attachPageListeners);
+      _context.off("page", _trackOpenedTab);
+    };
     try {
       if (_park) {
-        ({ browser: _browser, context: _context } = _park);
+        ({ browser: _browser, context: _context, leaseKey: _leaseKey, hostRelease: _hostRelease } = _park);
         page = _park.page;
+        // The park's own listener closures (bound to the PREVIOUS call's runtimeLog/downloadQueue/
+        // _openedTabs) are still attached to this same long-lived context — remove them before
+        // this call attaches its own, or both calls' listeners would fire side by side.
+        if (_park.attachPageListeners) _context.off("page", _park.attachPageListeners);
+        if (_park.trackOpenedTab) _context.off("page", _park.trackOpenedTab);
         log("info", "recovery_park_resumed", { skill: primary.entry.slug, step_index: primary.resumeFrom });
         appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
         _runTracker.emit("park_resumed", { si: primary.resumeFrom });
       } else {
+        // Serialize against any sibling run touching the same external platform(s) before doing
+        // any browser work at all (RT-3 follow-up) — a run on a different platform never waits.
+        const _targetHosts = _resolveTargetHosts(resolved);
+        exec.waitingForHost = _targetHosts;
+        const _lock = await hostLock.acquireHosts(_targetHosts, { runId: _runId, slug: primary.entry.slug }, {
+          isDone: _execCancelled, // same cancel/deadline check runPlan uses — see host_lock.js
+        });
+        exec.waitingForHost = null;
+        if (!_lock.release) {
+          // _execCancelled() already flipped exec.deadlineExceeded (and logged/emitted it) if
+          // that's why we gave up, or exec.cancelRequested was already true — either way this is
+          // now indistinguishable, to the catch block below, from a cancellation/deadline hit
+          // inside runPlan itself. hostLockWait carries the extra context for the message there.
+          throw Object.assign(new Error("Execution cancelled while waiting for a platform lock."), {
+            cancelled: true,
+            hostLockWait: { host: _lock.host, blockerRunId: _lock.blocker && _lock.blocker.runId, blockerSkill: _lock.blocker && _lock.blocker.skill },
+          });
+        }
+        _hostRelease = _lock.release;
+
         const _authResult = await getCachedBrowser(primary.entry.workspace_id, authManager, {
           headless: !watch,
           logFn: log,
@@ -793,7 +963,7 @@ async function _handleTool(name, args, extra) {
           throw Object.assign(new Error(_authResult.message),
             { session_expired: true, login_url: _authResult.loginUrl });
         }
-        ({ browser: _browser, context: _context, protectedUrl: _protectedUrl } = _authResult);
+        ({ browser: _browser, context: _context, protectedUrl: _protectedUrl, leaseKey: _leaseKey } = _authResult);
         page = await _context.newPage();
         // Packs compiled after the leading-navigate change (compiler/build.py
         // _insert_start_navigate_step) open with their own `navigate` step to the page they
@@ -822,7 +992,8 @@ async function _handleTool(name, args, extra) {
       const _takenNames = new Set();
 
       // Attach page diagnostic listeners — called on initial page and again after re-auth context rebuild.
-      const _attachPageListeners = (pg) => {
+      // (declared above, outside the try block, so catch{}'s cleanup calls can see it — see comment there.)
+      _attachPageListeners = (pg) => {
         pg.on("console", msg => {
           if (["error", "warning"].includes(msg.type()) && runtimeLog.consoleErrors.length < 50)
             runtimeLog.consoleErrors.push({ type: msg.type(), text: msg.text() });
@@ -865,8 +1036,19 @@ async function _handleTool(name, args, extra) {
       // closeExtraTabs(_openedTabs, ...) call below can see it). Never fires for `page` itself
       // (created via _context.newPage() before this listener attaches) or for a page from a
       // resumed park (opened in a prior call's closure) — only genuinely new tabs opened by
-      // *this* run's steps land here.
-      _context.on("page", (pg) => { _openedTabs.add(pg); });
+      // *this* run's steps land here. Named (not inline) so it — and _attachPageListeners — can
+      // be removed with _context.off() at teardown; a cached/leased context outlives this one
+      // call, and an un-removed listener would keep firing for whichever run leases it next.
+      _trackOpenedTab = (pg) => { _openedTabs.add(pg); };
+      _context.on("page", _trackOpenedTab);
+
+      // Every non-parking exit path (success, cancelled, session-expired, non-parkable failure)
+      // must remove this call's own listeners before returning — a cached/leased context can
+      // outlive this call, and both listener functions close over this call's own
+      // runtimeLog/_downloadQueue/_openedTabs, which must stop firing once this call is done. The
+      // parking path deliberately skips this — it hands the closures to the park object instead
+      // (see below), so the NEXT call's resume can remove them at the right time.
+      // (_detachContextListeners itself is declared above, outside the try block — see comment there.)
 
       for (let si = 0; si < resolved.length; si++) {
         const { entry, steps, inputs, resumeFrom } = resolved[si];
@@ -879,7 +1061,7 @@ async function _handleTool(name, args, extra) {
 
         try {
           const result = await runPlan(page, steps, inputs, startAt, entry.slug, {
-            onStep:        (i) => { if (activeExecution) activeExecution.step = i; },
+            onStep:        (i) => { exec.step = i; },
             cancelCheck:   _execCancelled,
             tracker:       _runTracker,
             downloadQueue: _downloadQueue,
@@ -952,10 +1134,13 @@ async function _handleTool(name, args, extra) {
       await Promise.allSettled(_downloadSaves);
       await page.close().catch(() => {});
       await closeExtraTabs(_openedTabs);
+      _detachContextListeners();
       if (watch) {
         await _context.close().catch(() => {});
         await _browser.close().catch(() => {});
       }
+      releaseCachedBrowser(_leaseKey); // no-op when _leaseKey is null (watch mode, or uncached)
+      _hostRelease?.();
 
       for (const r of resolved) {
         clearRetryBudget(r.entry.slug);
@@ -969,18 +1154,18 @@ async function _handleTool(name, args, extra) {
       });
       // Flush happens once, in `finally`, for every exit path — see there.
 
-      log("info", "execute_success", { skill: primary.entry.slug, url });
+      log("info", "execute_success", { run_id: _runId, skill: primary.entry.slug, url });
 
       const downloadNote = _downloads.length
         ? `\nDownloaded files:\n${_downloads.map(p => `  ${p}`).join("\n")}`
         : "";
-      const content = [{ type: "text", text: `Done. URL: ${url}${downloadNote}` }];
+      const content = [{ type: "text", text: `Done. URL: ${url}${downloadNote}\n(run_id: ${_runId})` }];
       if (shot) content.push({ type: "image", data: shot.toString("base64"), mimeType: "image/png" });
       return { content };
 
     } catch (runErr) {
-      log("error", "execute_failed", { skill: primary.entry.slug, error: runErr.message });
-      appendRecoveryEvent({ event: "terminal_failure", slug: primary.entry.slug, error: runErr.message });
+      log("error", "execute_failed", { run_id: _runId, skill: primary.entry.slug, error: runErr.message });
+      appendRecoveryEvent({ event: "terminal_failure", run_id: _runId, slug: primary.entry.slug, error: runErr.message });
       _runTracker.emit("wf_fail", {
         dur: Date.now() - _wfStartAt,
         fsi: runErr.failedAt ?? null,
@@ -1000,28 +1185,39 @@ async function _handleTool(name, args, extra) {
       //   2. Client cancel (cancel_execution, or the client timed out first and sent
       //      notifications/cancelled) — the caller is gone, the SDK drops any response; just clean up.
       if (runErr.cancelled) {
-        const wasDeadline = activeExecution && activeExecution.deadlineExceeded;
-        const stalledStep = activeExecution ? activeExecution.step : null;
+        const wasDeadline = exec.deadlineExceeded;
+        const stalledStep = exec.step;
         if (page) await page.close().catch(() => {});
         await closeExtraTabs(_openedTabs);
+        _detachContextListeners();
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
         }
+        releaseCachedBrowser(_leaseKey);
+        _hostRelease?.();
+        // RT-3 follow-up: this run may have given up waiting for a platform host_lock.js was
+        // still holding for a sibling run, rather than exceeding the deadline mid-step — say so
+        // when that's what happened, so the agent knows to just retry later instead of assuming
+        // its own inputs/selectors are at fault.
+        const hostWaitNote = runErr.hostLockWait && runErr.hostLockWait.host
+          ? ` Still waiting for ${runErr.hostLockWait.host}, in use by another run` +
+            `${runErr.hostLockWait.blockerSkill ? ` (${runErr.hostLockWait.blockerSkill})` : ""}.`
+          : "";
         if (wasDeadline) {
           const secs = Math.round(EXECUTION_DEADLINE_MS / 1000);
           const stepLabel = stalledStep !== null ? ` at step ${stalledStep + 1}` : "";
-          const resumeHint = AGENT_RECOVERY_ENABLED && stalledStep !== null
+          const resumeHint = AGENT_RECOVERY_ENABLED && stalledStep !== null && !runErr.hostLockWait
             ? ` If a element moved, inspect the page and call execute_skill again with resume_from: ${stalledStep} and step_overrides.`
             : "";
           return err(
-            `Execution stopped after exceeding the ${secs}s time budget${stepLabel}. ` +
-            `The page never reached the expected state in time — most often the inputs don't match ` +
-            `what the site returned (e.g. a repository/search term with no results), so the next ` +
-            `element never appeared. Verify the inputs and retry.${resumeHint}`
+            `Execution stopped after exceeding the ${secs}s time budget${stepLabel}.${hostWaitNote} ` +
+            `${runErr.hostLockWait ? "" : "The page never reached the expected state in time — most often the inputs don't match " +
+              "what the site returned (e.g. a repository/search term with no results), so the next " +
+              "element never appeared. Verify the inputs and retry."}${resumeHint} (run_id: ${_runId})`
           );
         }
-        return err("Execution cancelled.");
+        return err(`Execution cancelled.${hostWaitNote} (run_id: ${_runId})`);
       }
 
       // Session expiry is a distinct condition, not a selector/DOM failure — no screenshot,
@@ -1031,10 +1227,13 @@ async function _handleTool(name, args, extra) {
       if (runErr.session_expired) {
         if (page) await page.close().catch(() => {});
         await closeExtraTabs(_openedTabs);
+        _detachContextListeners();
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
         }
+        releaseCachedBrowser(_leaseKey);
+        _hostRelease?.();
         const failedAt = typeof runErr.failedAt === "number" ? runErr.failedAt : null;
         // A mid-run failure (authWindowOpened: false — see captureReAuth) never opened a
         // window; runErr.message already tells the caller to call execute_skill again to get
@@ -1048,7 +1247,7 @@ async function _handleTool(name, args, extra) {
           : (AGENT_RECOVERY_ENABLED && failedAt !== null
               ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
               : ` Once signed in, call execute_skill again to run this skill.`);
-        return err(`${runErr.message}${resumeHint}`);
+        return err(`${runErr.message}${resumeHint} (run_id: ${_runId})`);
       }
 
       // Multi-tab: use the tab the failing step actually ran on, not always the initial tab —
@@ -1056,8 +1255,11 @@ async function _handleTool(name, args, extra) {
       const _failedPage = runErr.failedPage || page;
 
       const failResp = _failedPage
-        ? await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null)
+        ? await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null, exec)
         : err(runErr.message);
+      if (failResp && Array.isArray(failResp.content)) {
+        failResp.content.push({ type: "text", text: `(run_id: ${_runId})` });
+      }
 
       // Park the live failed page for an agent-mediated (Tier 3/4) resume instead of tearing it
       // down — so the corrected selector lands on the same DOM the recovery request describes.
@@ -1066,31 +1268,42 @@ async function _handleTool(name, args, extra) {
       const parkable = _failedPage && AGENT_RECOVERY_ENABLED && resolved.length === 1
         && typeof runErr.failedAt === "number" && !runErr.session_expired && !runErr.cancelled;
       if (parkable) {
-        const timer = setTimeout(() => { _discardPark("ttl"); }, PARK_TTL_MS);
+        const timer = setTimeout(() => { _discardPark(_parkKey, "ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
-        _setParkedRecovery({ slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
+        // The lease (if any — see _leaseKey above), the host lock (see _hostRelease above), and
+        // this call's own page-listener closures are handed to the park, not released/detached
+        // here: the park keeps the browser leased and the target platform locked (RT-3 — a
+        // headless park must survive its full TTL, not the idle-cache's 90s; and a sibling run
+        // must stay blocked from touching the same platform while this fix is pending) until
+        // whichever call resumes or discards this park releases them.
+        _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
           page: _failedPage, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
-          pageFingerprint: await capturePageFingerprint(_failedPage) });
+          pageFingerprint: await capturePageFingerprint(_failedPage),
+          leaseKey: _leaseKey, hostRelease: _hostRelease,
+          attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
         // Only the parked page survives — any other tab this run opened (the failure wasn't
         // necessarily on the newest tab) is closed now rather than left to leak.
         await closeExtraTabs(_openedTabs, _failedPage);
         appendRecoveryEvent({ event: "recovery_park_created", slug: primary.entry.slug, step_index: runErr.failedAt, ttl_ms: PARK_TTL_MS });
-        log("info", "recovery_park_created", { skill: primary.entry.slug, step_index: runErr.failedAt });
+        log("info", "recovery_park_created", { run_id: _runId, skill: primary.entry.slug, step_index: runErr.failedAt });
         _runTracker.emit("park_created", { si: runErr.failedAt });
       } else {
         if (page) await page.close().catch(() => {});
         if (_failedPage && _failedPage !== page) await _failedPage.close().catch(() => {});
         await closeExtraTabs(_openedTabs);
+        _detachContextListeners();
         if (watch) {
           await _context?.close().catch(() => {});
           await _browser?.close().catch(() => {});
         }
+        releaseCachedBrowser(_leaseKey);
+        _hostRelease?.();
       }
       return failResp;
 
     } finally {
       if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
-      activeExecution = null;
+      runRegistry.end(_runId);
       // Single flush point for every exit path (success, deadline, cancel, and the
       // Tier 3/4 recovery-request/park-created path) — guarantees every event emitted
       // above (wf_ok, wf_fail, tier_escalated, park_created, park_resumed, override_applied)
