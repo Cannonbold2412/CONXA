@@ -206,7 +206,10 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     )
   }
 
-  if (step.flags.is_scroll) {
+  // Navigate steps have no element to re-target — their editable surface is the URL/intent
+  // form plus validations, which StepConfigForm already owns (http/https gate on save). Like
+  // scroll and branch steps, they skip the 3-phase wizard entirely.
+  if (step.action_type.trim().toLowerCase().replace(/-/g, '_') === 'navigate' || step.flags.is_scroll) {
     return (
       <div className={PANEL_CLASS}>
         <ScrollArea className="min-h-0 flex-1">
