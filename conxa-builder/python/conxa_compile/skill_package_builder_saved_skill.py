@@ -227,7 +227,10 @@ def _sanitize_runtime_tab(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     tab_id = str(raw.get("id") or "").strip()
-    if not tab_id or tab_id == "tab_0":
+    # tab_0 keeps an explicit block too: a return-to-the-initial-tab tab_switch marker must
+    # name its destination at replay time (runtime/tabs.js), not look like a recorder mis-stamp.
+    # Absent id (pre-multi-tab packs) still sanitizes to {} = "the initial page" downstream.
+    if not tab_id:
         return {}
     return {
         "id": tab_id,

@@ -70,22 +70,27 @@ function stepInheritsPage(step) {
  * a miss — same rule as rootCandidates()/isFrameNotFound() in run.js for frame_chain: a
  * same-looking element on the wrong tab is worse than a clean, diagnosable failure. Throws an
  * Error with `.tabNotFound = true` when the step's tab cannot be resolved.
+ *
+ * opts.prevPage (the page the previous step ran on) gates settlement: any step that MOVES
+ * execution to a different page — including returning to the initial page via an explicit or
+ * implicit tab_0, the case that used to replay with no load wait and no bringToFront — gets
+ * the full _settle treatment. Same-page steps skip it; run.js's waitForPageLoad already covers
+ * their post-navigation load wait.
  */
 async function resolveStepPage(registry, step, opts = {}) {
-  if (!stepNamesTab(step)) return registry.pages.get("tab_0");
+  if (!stepNamesTab(step)) {
+    const initial = registry.pages.get("tab_0");
+    return _settleIfSwitched(initial, step.tab, opts);
+  }
 
   const tabId = step.tab.id;
-  // A user-opened tab (Ctrl+T) is created blank by this registry (below) and stays blank until
-  // the compiler's own synthesized `navigate` step runs against it — nothing external is ever
-  // going to navigate it on its own, so _settle must not wait for that to happen. A site-opened
-  // tab (a real popup/target=_blank) is the opposite: the site's own click handler is expected
-  // to navigate it a beat after creation, which is exactly the wait _settle performs.
-  const awaitNavigation = step.tab.opened_by !== "user";
 
   const existing = registry.pages.get(tabId);
   if (existing) {
     try {
-      if (!existing.isClosed()) return await _settle(existing, { ...opts, awaitNavigation });
+      if (!existing.isClosed()) {
+        return _settleIfSwitched(existing, step.tab, opts);
+      }
     } catch (_) { /* fall through to re-resolve */ }
   }
 
@@ -133,7 +138,25 @@ async function resolveStepPage(registry, step, opts = {}) {
   }
 
   registry.pages.set(tabId, page);
-  return await _settle(page, { ...opts, awaitNavigation });
+  return _settleIfSwitched(page, step.tab, opts);
+}
+
+// Settle only when this step actually moves execution to a different page than the previous
+// step ran on (opts.prevPage). A brand-new tab is always a switch (prevPage can't be it); a
+// return to an already-open tab — most importantly back to tab_0, whose shortcut used to skip
+// settlement entirely — now gets the load wait and, under watch mode, the bringToFront that
+// makes the switch visible instead of firing clicks at a background tab.
+// awaitNavigation mirrors _settle's contract: a user-opened (Ctrl+T) tab is deliberately blank
+// until the compiler's synthesized `navigate` step runs against it, so it must never wait for
+// an external navigation; a site-opened popup is expected to navigate itself a beat after
+// creation, which is exactly the wait performed.
+function _settleIfSwitched(page, tab, opts) {
+  const prev = opts.prevPage;
+  if (page && prev === page) return Promise.resolve(page);
+  return _settle(page, {
+    ...opts,
+    awaitNavigation: !tab || tab.opened_by !== "user",
+  });
 }
 
 async function _settle(page, opts) {

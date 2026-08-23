@@ -569,7 +569,10 @@ optional_hint: dict | None   # {"kind": "try_dismiss", "container_signal": "<sel
 
 `RecordedEvent.tab` (`packages/conxa-core/conxa_core/models/events.py::TabContext`) records which
 browser tab produced an event; `SkillStep.tab` (§3.3) is the compiled twin, carried through
-verbatim from the event that produced the step, empty for `tab_0` (see `docs/TRD.md` §6.3 for how
+verbatim from the event that produced the step. Since 2026-08-23 every tab — including `tab_0` —
+compiles to an explicit block, so a return-to-the-initial-tab `tab_switch` marker names its
+destination at replay time; only events with no tab stamp (pre-multi-tab recordings) compile to an
+empty `tab` field (see `docs/TRD.md` §6.3 for how
 the recorder assigns it, §7.1 for compile-time `tab_open`/`tab_switch` marker insertion, §9.1a for
 runtime resolution).
 

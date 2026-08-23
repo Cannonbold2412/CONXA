@@ -196,7 +196,11 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, canc
       page = prevPage;
     } else {
       try {
-        page = await resolveStepPage(tabs, step, { watch, loadTimeoutMs: PAGE_LOAD_TIMEOUT_MS });
+        // prevPage gates tabs.js's settle-on-page-switch: a step that moves execution to a
+        // different page (including back to the initial page) gets a load wait and, under
+        // watch mode, a bringToFront — without it the return leg of A→B→A replays invisibly
+        // against a background tab.
+        page = await resolveStepPage(tabs, step, { watch, loadTimeoutMs: PAGE_LOAD_TIMEOUT_MS, prevPage });
       } catch (tabErr) {
         t.emit("step_fail", { si: i, fc: "tab_not_found" });
         throw stepFailure(step, i, tabErr, null);

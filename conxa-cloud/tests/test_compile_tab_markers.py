@@ -54,9 +54,27 @@ def test_single_tab_recording_gets_no_markers_at_all() -> None:
     assert all(e["action"]["action"] == "click" for e in out)
 
 
-def test_build_tab_context_empty_for_tab_0_and_missing_tab() -> None:
-    assert _build_tab_context({"tab": {"id": "tab_0"}}) == {}
+def test_build_tab_context_explicit_for_tab_0_empty_when_absent() -> None:
+    """tab_0 gets an explicit block too: a return-to-the-initial-tab tab_switch marker must
+    name its destination, or the runtime's mis-stamp guard (stepInheritsPage) treats it as
+    'stay on the current page' and the switch back to tab_0 replays as a no-op."""
+    ctx = _build_tab_context({"tab": {"id": "tab_0"}})
+    assert ctx["id"] == "tab_0"
+    assert ctx["opened_by"] == "initial"
     assert _build_tab_context({}) == {}
+    assert _build_tab_context({"tab": {}}) == {}
+
+
+def test_return_to_initial_tab_marker_names_its_destination() -> None:
+    """End-to-end shape of the A→B→A bug: the tab_switch event inserted when recording returns
+    to tab_0 carries the raw recorded tab dict through _build_step's MARKER path — which reads
+    _build_tab_context — so the compiled step must end up with an explicit tab_0 block."""
+    events = [_ev("tab_0"), _ev("tab_1"), _ev("tab_1"), _ev("tab_0")]
+    out = _insert_tab_markers(events)
+    switch = [e for e in out if e["action"]["action"] == "tab_switch"]
+    assert len(switch) == 1
+    ctx = _build_tab_context(switch[0])
+    assert ctx["id"] == "tab_0"
 
 
 def test_build_tab_context_carries_real_tab_forward() -> None:

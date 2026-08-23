@@ -1043,9 +1043,13 @@ functions' assumptions about real recorded event shape. Whenever consecutive eve
 differs, a `tab_open` (first visit to that tab) or `tab_switch` (returning to one already seen —
 including back to `tab_0`) marker event is inserted immediately before the first event on the new
 tab. Every step also carries its own `tab` context (`SkillStep.tab`, mirroring `SkillStep.frame`) —
-`build.py:_build_tab_context`. Both markers and step-level `tab` are empty/`tab_0` for a
-single-tab recording, so nothing about a workflow that never leaves its first tab changes: no
-markers are inserted, and every step's `tab` field is the same empty dict it always was. `tab_open`
+`build.py:_build_tab_context`. Since 2026-08-23 every tab gets an **explicit** block, including
+`tab_0` (previously `tab_0` steps carried an empty dict, which made a return-to-the-initial-tab
+`tab_switch` marker destination-less and let the runtime's mis-stamp guard swallow it — see §9.1a);
+only events with no tab stamp at all (recordings made before multi-tab support) still compile to an
+empty `tab` field. A single-tab recording therefore carries explicit-but-uniform `tab_0` blocks on
+every step instead of empty dicts; no markers are inserted for it, and replay resolves every step
+to the same initial page exactly as before. `tab_open`
 and `tab_switch` compile through the pre-existing `MARKER_ACTIONS` path (`no_recovery_block`,
 same as `frame_enter`/`frame_exit`) — see §10.4.
 
@@ -1364,9 +1368,20 @@ much does.
 `popup` src-page fix addresses the recorder side; this is the runtime-side guard for packs compiled
 before that fix, and any other case the recorder mis-stamp handles miss). `run.js`'s step loop
 checks this before calling `resolveStepPage` and, when true, keeps executing on the page the run
-was already on rather than resolving through the normal (tab_0) path — a genuine step recorded on
-tab_0 is unaffected, since it always carries an explicit path back to tab_0 via the *next* real
-step's own `tab` field, not via the marker.
+was already on. Since 2026-08-23 this guard never fires on a *newly compiled* pack: `_build_tab_context`
+emits an explicit block for every tab including `tab_0`, so a return-to-the-initial-tab `tab_switch`
+marker names its destination and resolves like any other tab. The guard exists purely as a
+legacy-pack/mis-stamp fallback — before that compiler change, a return-to-`tab_0` marker carried an
+empty block, was swallowed by this guard, and its destination was only recovered implicitly by the
+next real step's tab_0 default.
+
+**Every cross-page step settles — including returns to an already-open tab** (`tabs.js::resolveStepPage`,
+`opts.prevPage`). Resolution settles a step whenever it moves execution to a different page than the
+previous step ran on: load-state wait always, `bringToFront()` under watch mode. Previously only
+newly-created/found pages settled; the implicit jump back to `tab_0` returned the cached page raw, so
+the A→B→A return leg replayed with no wait and no visibility change while clicks fired at a background
+tab. Same-page steps skip the settle — `run.js`'s `waitForPageLoad` already covers their
+post-navigation load wait.
 
 `server.js` attaches its per-page diagnostics (console errors, failed requests, downloads) to every
 tab opened during a run (`_context.on("page", _attachPageListeners)`), not just the initial one —

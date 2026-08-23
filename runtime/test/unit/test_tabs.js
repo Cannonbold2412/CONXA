@@ -262,6 +262,47 @@ test("a site-opened tab still waits for its popup to leave about:blank", async (
 // EXEC-14: a second tab a multi-tab run opens must not outlive the run in the headless/cached-
 // context path (watch: false) — nothing else closes it there. See server.js's _openedTabs +
 // closeExtraTabs(_openedTabs, ...) call on every exit path.
+// Regression (2026-08-23, mega-workflow A→B→A): returning to the initial page used to skip
+// settlement entirely — resolveStepPage's tab_0 shortcut returned the page raw, so the return
+// leg of a multi-tab run replayed with no load wait and no bringToFront, firing clicks at a
+// hidden background tab while the visible one stayed front.
+test("a step that switches back to the initial page settles and brings it to front", async () => {
+  const ctx = fakeContext();
+  const initial = fakePage("tab_0", { url: "https://a.test/" });
+  initial.context = () => ctx;
+  const registry = createTabRegistry(initial);
+  let frontCalls = 0;
+  initial.bringToFront = async () => { frontCalls++; };
+
+  const popup = fakePage("popup-1", { url: "https://b.test/" });
+  ctx.fireNewPage(popup);
+  const b1 = await resolveStepPage(registry, { tab: { id: "tab_1", opened_by: "site" } }, { prevPage: initial });
+  assert.strictEqual(b1.id, "popup-1");
+
+  const back = await resolveStepPage(registry, {}, { prevPage: b1, watch: true, loadTimeoutMs: 4000 });
+  assert.strictEqual(back.id, "tab_0");
+  assert.strictEqual(frontCalls, 1, "returning to tab_0 must bringToFront under watch");
+  assert.strictEqual(initial._lastLoadStateTimeout, 4000, "returning to tab_0 must run the load-state wait");
+});
+
+test("consecutive steps on the same page do not re-settle", async () => {
+  const ctx = fakeContext();
+  const registry = registryWith(ctx);
+  const popup = fakePage("popup-1", { url: "https://b.test/" });
+  ctx.fireNewPage(popup);
+  const first = await resolveStepPage(registry, { tab: { id: "tab_1", opened_by: "site" } }, { watch: true });
+
+  let frontCalls = 0;
+  first.bringToFront = async () => { frontCalls++; };
+  const second = await resolveStepPage(
+    registry,
+    { tab: { id: "tab_1", opened_by: "site" } },
+    { prevPage: first, watch: true }
+  );
+  assert.strictEqual(second, first);
+  assert.strictEqual(frontCalls, 0, "no page switch — no bringToFront");
+});
+
 test("closeExtraTabs: closes every tracked page not in the keep set", async () => {
   const a = fakePage("a");
   const b = fakePage("b");

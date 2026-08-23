@@ -166,14 +166,18 @@ def _build_frame_context(ev: dict[str, Any]) -> dict[str, Any]:
 
 def _build_tab_context(ev: dict[str, Any]) -> dict[str, Any]:
     """Which browser tab this event was recorded on (RecordedEvent.tab). The runtime resolves
-    each step's page from this at replay time — see runtime/tabs.js::resolveStepPage. Empty/
-    absent (recordings made before multi-tab support) means "tab_0", the same page every step
-    already ran on before this existed, so old skills replay unchanged."""
+    each step's page from this at replay time — see runtime/tabs.js::resolveStepPage.
+
+    Every tab gets an explicit block, including tab_0. The earlier convention ("empty block
+    means tab_0") made a return-to-the-initial-tab `tab_switch` marker destination-less, so the
+    runtime's mis-stamp guard (tabs.js::stepInheritsPage) swallowed it and the switch back to
+    tab_0 replayed as a no-op — see FIX.md 2026-08-23. Absent/blank tab (recordings made before
+    multi-tab support) still means "tab_0" at runtime, so old skills replay unchanged."""
     tab = ev.get("tab")
     if not isinstance(tab, dict):
         return {}
     tab_id = str(tab.get("id") or "").strip()
-    if not tab_id or tab_id == "tab_0":
+    if not tab_id:
         return {}
     return {
         "id": tab_id,
