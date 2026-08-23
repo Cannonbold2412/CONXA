@@ -49,6 +49,28 @@ def _refresh_group_app_sessions(workflow_id: str) -> None:
         set_group_app_auth(group.id, app.id, str(state_path))
 
 
+def _backup_previous_recording(workflow_id: str, session_id: str) -> str | None:
+    """Copy a workflow's previous recording session to data/backups/recordings/
+    before a re-record replaces it. Copy (not move): compiled skill packages and
+    editor state may still reference blobs under the original session path, so
+    the original stays in place — the backup is the safety net for "I recorded
+    over the wrong thing". Returns the backup path, or None if there was nothing
+    to back up (or the destination already exists)."""
+    import shutil
+
+    from conxa_core.config import settings as _settings
+
+    src = Path(_settings.data_dir) / "sessions" / session_id
+    if not src.is_dir():
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = Path(_settings.data_dir) / "backups" / "recordings" / workflow_id / f"{stamp}-{session_id}"
+    if dest.exists():
+        return None
+    shutil.copytree(src, dest)
+    return str(dest)
+
+
 class SessionMixin:
     def cmd_ping(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         return {"ok": True, "pid": os.getpid()}
@@ -225,6 +247,16 @@ class SessionMixin:
                 # reintroduces the flicker that motivated temporarily disabling this line.
                 storage_state_autosave = storage_state_path
 
+                # Re-record support: if this workflow already has a recording,
+                # back its session up to disk before the new one replaces it as
+                # the workflow's active session (set_recording below).
+                backup_path: str | None = None
+                if workflow.session_id:
+                    try:
+                        backup_path = _backup_previous_recording(workflow_id, workflow.session_id)
+                    except OSError:
+                        backup_path = None  # never block a re-record on backup failure
+
                 start_url = str((workflow.protected_url or workflow.target_url or "about:blank")).strip()
                 url_variables = payload.get("url_variables")
                 if isinstance(url_variables, dict) and url_variables:
@@ -280,6 +312,8 @@ class SessionMixin:
                 warnings.append(auth_scope_warning)
             if warnings:
                 result["warnings"] = warnings
+            if backup_path:
+                result["previous_recording_backup"] = backup_path
             if workflow_id:
                 from conxa_core.storage.workflow_store import set_recording
 

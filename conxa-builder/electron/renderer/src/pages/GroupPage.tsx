@@ -192,6 +192,7 @@ function WorkflowRow({
   const navigate = useNavigate()
   const compileBusy = useCompileBusy()
   const [recordOpen, setRecordOpen] = useState(false)
+  const [rerecordConfirmOpen, setRerecordConfirmOpen] = useState(false)
   const [recompileConfirmOpen, setRecompileConfirmOpen] = useState(false)
   const [testOpen, setTestOpen] = useState(false)
 
@@ -263,7 +264,7 @@ function WorkflowRow({
             groupReady={groupReady}
             packBuilt={packBuilt}
             stale={stale}
-            onRecord={() => setRecordOpen(true)}
+            onRecord={() => (hasRecording ? setRerecordConfirmOpen(true) : setRecordOpen(true))}
             onCompile={handleCompileClick}
             onReview={() => navigate(`/edit/${encodeURIComponent(wf.skill_id!)}?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
             onToggleTest={() => setTestOpen((v) => !v)}
@@ -277,6 +278,30 @@ function WorkflowRow({
           <WorkflowTestRow wf={wf} skillPackBuild={skillPackBuild} onComplete={onChanged} />
         </div>
       )}
+
+      <AlertDialog open={rerecordConfirmOpen} onOpenChange={setRerecordConfirmOpen}>
+        <AlertDialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-white">Re-record &ldquo;{wf.name}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription className="text-zinc-400">
+              Your previous recording is backed up to disk, then the new recording replaces it everywhere (compile,
+              recompile and tests all use the latest take).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-white/10 bg-white/5 text-zinc-200">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-amber-600 text-white hover:bg-amber-700"
+              onClick={() => {
+                setRerecordConfirmOpen(false)
+                setRecordOpen(true)
+              }}
+            >
+              Re-record
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <RecordWorkflowDialog
         open={recordOpen}

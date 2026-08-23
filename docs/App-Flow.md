@@ -154,8 +154,8 @@ Being pre-authenticated to every group app during recording does **not** mean ev
 
 ```mermaid
 flowchart TD
-    A["Group page, workflow row, group auth ready"] --> B["Record rail node is enabled (only if no recording yet)"]
-    B --> C[User clicks the Record node]
+    A["Group page, workflow row, group auth ready"] --> B["Record rail node is enabled (also for re-record when a recording already exists)"]
+    B --> C[User clicks the Record node — a recording already exists triggers a re-record confirm first]
     C --> D[Backend: cmd_start_recording with workflow_id + auth_mode=false]
     D --> E[Load auth session from auth/auth.json]
     E --> F[Playwright launches with storageState]
@@ -170,6 +170,8 @@ flowchart TD
     M --> N[Workflow updated with status=recorded]
     N --> O[Recording dialog closes, the row's rail advances to an enabled Compile node]
 ```
+
+**Re-recording a workflow** is allowed at any time: clicking the already-recorded row's Record node opens a confirm ("your previous recording will be backed up"), and `cmd_start_recording` copies the previous session's folder (`data/sessions/<old-session-id>/` — events, screenshots, snapshots) to `data/backups/recordings/<workflow-id>/<timestamp>-<old-session-id>/` before the new recording replaces it. The copy is additive — the original session directory stays in place, because compiled skill packages and editor state may still reference blobs under it. The new session becomes the workflow's single active recording (`workflow.session_id`), so compile, recompile, and tests all use the latest take automatically. A failed backup never blocks a re-record.
 
 **Event types captured by bridge.js:**
 `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.

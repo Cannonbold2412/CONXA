@@ -231,8 +231,10 @@ export function WorkflowStageRail({
     {
       label: 'Record',
       icon: Play,
-      enabled: !hasRecording && groupReady,
-      disabledTitle: hasRecording ? undefined : !groupReady ? "Authenticate every app in this workflow's group before recording" : undefined,
+      // Re-recordable: once a recording exists this becomes "re-record" — the
+      // previous take is backed up to disk before the new one replaces it.
+      enabled: groupReady,
+      disabledTitle: !groupReady ? "Authenticate every app in this workflow's group before recording" : undefined,
       onClick: onRecord,
     },
     {
