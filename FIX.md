@@ -4,6 +4,11 @@
 
 ---
 
+## Switching back to the first tab now actually switches — 2026-08-23
+When you record a workflow that goes: do things on tab A → open tab B → come back to tab A → keep working, the recording showed a "Recorded tab switch" step in the editor, but when the workflow replayed, nothing visibly happened at that step — the browser stayed on tab B while the clicks meant for tab A fired blindly at it in the background. The root cause was a naming convention: steps recorded on the *first* tab deliberately carried no label saying "this is tab A," because "no label" already meant "first tab." That worked fine for ordinary steps, but it also stripped the destination off the "switch back to tab A" instruction itself — so at replay time that instruction looked exactly like a broken/blank one, and the runtime's safety rule for broken instructions ("if a switch says no destination, just stay where you are") swallowed it. Execution only got back to tab A by accident, through a default on the very next step — and with no waiting and no bringing tab A to the front, which is also why the step right after the switch could miss its button. The fix removes the special case: every step and every switch instruction now explicitly names its tab, including the first one (old recordings without labels still work exactly as before), and whenever replay moves to a different tab than the previous step — including returning to the first one — it now waits for the page and brings it to the front, so the switch is real and visible instead of silent. Verified with new automated checks at both the compiler and replay layers, plus the full existing suites (914 + 357 checks) passing.
+
+---
+
 ## A compile would silently freeze for eight minutes, an on/off switch pointed at the wrong place, and a real error hid behind a generic one — 2026-08-23
 Right after yesterday's fix for compiles failing on busy days, a real compile against a still-recovering server exposed three more problems. First: the new "ask several pictures about at once" step (meant to save time) had a hidden flaw — if the AI helper couldn't be reached, it would keep quietly retrying every single recorded step's info one at a time, in total silence, for as long as eight minutes before the screen showed any progress at all. It now gives up after the very first sign of trouble and switches back to the older, working step-by-step approach, and it now says out loud when it's working on this step so it never looks frozen again. Second: there's a setting that controls whether a compile finishes anyway (using a rougher fallback) instead of stopping outright when the picture-reading AI can't be reached — someone tried to turn it on by changing a setting on the cloud server, which had no effect, because that setting actually only lives on the person's own computer inside Build Studio; a wrongly-worded internal note even said it belonged on the server, which is exactly what led to the wrong guess. It's now controlled from the cloud for real, tied to the company's plan, and read automatically at the start of every compile — no more hunting for the right computer to change a setting on. Third: when that same picture-reading step failed for a real reason, the app showed a vague, unhelpful "something went wrong, try again" message instead of the specific one that already existed and was simply never being used. It now shows the real, specific explanation. Verified with 913 passing automated checks, including new ones for all three problems.
 
@@ -367,3 +372,19 @@ All 335 unit tests pass; all three CI guards pass. The shared editor module is c
 **Why:** Both were found during the earlier 502 investigation and left out of that fix's scope. The first makes the service less flaky; the second stops customers' AI budgets from being eaten by an accounting mistake.
 
 **Files touched:** conxa-cloud/backend/start.sh, conxa-cloud/backend/app/services/llm_metering.py, conxa-cloud/tests/test_llm_proxy_and_publish.py, TODO.md, FIX.md.
+
+## 2026-08-23 - Fixed: "Go to URL" steps in Human Edit no longer show the Pick Element screen
+
+**What changed:** When you add a Navigate (go to a website) step in Human Edit and click on it, it used to open the 3-step wizard that starts with "Pick element" - but there is no element to pick on a go-to step, so you were stuck. Now go-to steps open a simple editor instead, just like scroll steps: you can edit the step name and the URL, and the URL must start with http:// or https:// before it saves. The Validation panel is right there too, so you can add checks for the step.
+
+**Why:** A navigation step has nothing to click on, so asking to pick an element made no sense and blocked editing the URL.
+
+**Files touched:** conxa-builder/electron/renderer/src/components/retarget/InlineRetargetFlow.tsx, FIX.md.
+
+## 2026-08-23 - New: you can now record over a workflow's old recording, and the old one is kept safe
+
+**What changed:** Before, once a workflow was recorded, its "Record" button was locked forever - the only way to try again was to delete the workflow and start over. Now the Record button stays clickable. If a recording already exists, clicking it first asks "Re-record?" with an explanation. If you go ahead, the previous recording (its saved steps, screenshots, and page snapshots) is copied into a backup folder on disk (`data/backups/recordings/...`, stamped with date and time) before the new recording takes its place. The new recording then becomes the workflow's recording everywhere automatically - compiling, recompiling, and testing all use the newest take. The old copy stays on disk in case you need to go back, and even if backing up fails, the re-record still goes ahead rather than blocking you.
+
+**Why:** Recording mistakes were punishing: there was no undo and no second chance, so one bad take meant rebuilding the whole workflow from scratch.
+
+**Files touched:** conxa-builder/python/handlers/session.py, conxa-builder/electron/renderer/src/components/StagePath.tsx, conxa-builder/electron/renderer/src/pages/GroupPage.tsx, docs/App-Flow.md, FIX.md.
