@@ -31,6 +31,7 @@ function fakePage(id, { url = "" } = {}) {
     },
     waitForURL(predicate, opts = {}) {
       page.waitForURLCalls++;
+      page._lastWaitForURLTimeout = opts.timeout;
       return new Promise((resolve, reject) => {
         if (predicate(currentUrl)) return resolve();
         // Fake timeout capped well below any real value under test so a page that never
@@ -257,6 +258,43 @@ test("a site-opened tab still waits for its popup to leave about:blank", async (
   ctx.fireNewPage(popup);
   await resolveStepPage(registry, { tab: { id: "tab_1", opened_by: "site" } }, { loadTimeoutMs: 5000 });
   assert.strictEqual(popup.waitForURLCalls, 1);
+});
+
+// Regression: the actual reported bug. A skill's own step 0 navigate step lands on a fresh
+// tab_0 that is still on about:blank (server.js deliberately skips its own pre-navigation when
+// step 0 is a navigate). tab_0 carries no `tab` block at all, so this used to fall into the same
+// "wait for an external navigation" branch as a site-opened popup — burning the full settle
+// timeout waiting for a navigation that the navigate step itself was about to perform one line
+// later. This is the ~70s stall reported against "Testing Download then Upload with context
+// keeping"'s step_0_navigate_start -> step_1_click_start gap.
+test("a navigate step on a fresh tab_0 never waits for an external navigation", async () => {
+  const ctx = fakeContext();
+  const registry = registryWith(ctx); // tab_0 starts at url: "" (fakePage default)
+  const page = await resolveStepPage(registry, { type: "navigate" }, { loadTimeoutMs: 60000 });
+  assert.strictEqual(page.waitForURLCalls, 0, "waitForURL must never be called for tab_0");
+});
+
+// Sibling case: any non-navigate step 0 on a blank tab_0 (protectedUrl was empty, e.g. the
+// group-no-required-apps path) must not wait either — nothing is ever going to navigate tab_0
+// except the runtime's own next step, regardless of that step's type.
+test("a non-navigate step on a fresh tab_0 never waits for an external navigation", async () => {
+  const ctx = fakeContext();
+  const registry = registryWith(ctx);
+  const page = await resolveStepPage(registry, { type: "click" }, { loadTimeoutMs: 60000 });
+  assert.strictEqual(page.waitForURLCalls, 0, "waitForURL must never be called for tab_0");
+});
+
+// The one wait that stays genuine (a real site-opened popup) must still be bounded — a popup
+// that hasn't navigated off about:blank within NAV_SETTLE_CAP_MS isn't going to, so it must not
+// be allowed to burn the full loadTimeoutMs budget.
+test("a site-opened popup's navigation wait is capped below the full settle timeout", async () => {
+  const ctx = fakeContext();
+  const registry = registryWith(ctx);
+  const popup = fakePage("popup-1", { url: "about:blank" });
+  ctx.fireNewPage(popup);
+  await resolveStepPage(registry, { tab: { id: "tab_1", opened_by: "site" } }, { loadTimeoutMs: 60000 });
+  assert.strictEqual(popup.waitForURLCalls, 1);
+  assert.ok(popup._lastWaitForURLTimeout <= 10000, `expected capped timeout, got ${popup._lastWaitForURLTimeout}`);
 });
 
 // EXEC-14: a second tab a multi-tab run opens must not outlive the run in the headless/cached-

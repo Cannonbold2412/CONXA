@@ -11,8 +11,9 @@
 // only page every skill compiled before multi-tab support ever had, so those skills replay
 // through the exact same code path as before this module existed.
 
+const { SETTLE_TIMEOUT_MS: DEFAULT_SETTLE_TIMEOUT_MS, NAV_SETTLE_CAP_MS } = require("./run_config");
+
 const DEFAULT_TAB_OPEN_TIMEOUT_MS = 30000;
-const DEFAULT_SETTLE_TIMEOUT_MS = 60000;
 
 function tabOpenTimeoutMs() {
   const value = Number(process.env.CONXA_TAB_OPEN_TIMEOUT_MS);
@@ -80,7 +81,7 @@ function stepInheritsPage(step) {
 async function resolveStepPage(registry, step, opts = {}) {
   if (!stepNamesTab(step)) {
     const initial = registry.pages.get("tab_0");
-    return _settleIfSwitched(initial, step.tab, opts);
+    return _settleIfSwitched(initial, step, opts);
   }
 
   const tabId = step.tab.id;
@@ -89,7 +90,7 @@ async function resolveStepPage(registry, step, opts = {}) {
   if (existing) {
     try {
       if (!existing.isClosed()) {
-        return _settleIfSwitched(existing, step.tab, opts);
+        return _settleIfSwitched(existing, step, opts);
       }
     } catch (_) { /* fall through to re-resolve */ }
   }
@@ -138,7 +139,7 @@ async function resolveStepPage(registry, step, opts = {}) {
   }
 
   registry.pages.set(tabId, page);
-  return _settleIfSwitched(page, step.tab, opts);
+  return _settleIfSwitched(page, step, opts);
 }
 
 // Settle only when this step actually moves execution to a different page than the previous
@@ -146,16 +147,19 @@ async function resolveStepPage(registry, step, opts = {}) {
 // return to an already-open tab — most importantly back to tab_0, whose shortcut used to skip
 // settlement entirely — now gets the load wait and, under watch mode, the bringToFront that
 // makes the switch visible instead of firing clicks at a background tab.
-// awaitNavigation mirrors _settle's contract: a user-opened (Ctrl+T) tab is deliberately blank
-// until the compiler's synthesized `navigate` step runs against it, so it must never wait for
-// an external navigation; a site-opened popup is expected to navigate itself a beat after
-// creation, which is exactly the wait performed.
-function _settleIfSwitched(page, tab, opts) {
+// awaitNavigation: only a site-opened tab is ever navigated by something other than the
+// runtime itself. tab_0 and a user-opened (Ctrl+T) tab are both navigated by the runtime's own
+// very next step (the compiler always synthesizes/records a `navigate` for them) — waiting for
+// an external navigation there burns the full settle timeout on a navigation that is never
+// coming (this used to be the 60s+ hang before a workflow's own first `navigate` step, since a
+// fresh tab_0 sits on about:blank with no `tab` block at all). A site-opened popup is expected
+// to navigate itself a beat after creation, which is exactly the wait performed.
+function _settleIfSwitched(page, step, opts) {
   const prev = opts.prevPage;
   if (page && prev === page) return Promise.resolve(page);
   return _settle(page, {
     ...opts,
-    awaitNavigation: !tab || tab.opened_by !== "user",
+    awaitNavigation: stepNamesTab(step) && step.tab.opened_by !== "user",
   });
 }
 
@@ -165,14 +169,18 @@ async function _settle(page, opts) {
   // beat later — waitForLoadState("domcontentloaded") resolves instantly against that blank
   // page today, so the caller's first step on it can fire before anything has actually loaded.
   // Best-effort: a tab that genuinely stays blank still proceeds rather than hard-failing here.
-  // Gated on opts.awaitNavigation (default true): a user-opened (Ctrl+T) tab is deliberately
-  // blank until the compiler's own synthesized `navigate` step runs against it — nothing else
-  // is ever going to navigate it — so waiting here would just burn the full timeout for no
-  // reason, once for the tab_open step and again for the navigate step that follows it.
-  if (opts.awaitNavigation !== false) {
+  // Gated on opts.awaitNavigation (default false as of the _settleIfSwitched rewrite above) —
+  // only a site-opened tab reaches here, and even a real popup navigates within a couple
+  // seconds of opening, so this is capped to NAV_SETTLE_CAP_MS rather than the full settle
+  // budget: a popup that hasn't navigated by then isn't going to.
+  if (opts.awaitNavigation) {
     try {
       if (!page.url() || page.url() === "about:blank") {
-        await page.waitForURL((u) => !!u && String(u) !== "about:blank", { timeout }).catch(() => {});
+        const navTimeout = Math.min(timeout, NAV_SETTLE_CAP_MS);
+        if (opts.onPhase) opts.onPhase("settle_await_navigation_start");
+        const _navT0 = Date.now();
+        await page.waitForURL((u) => !!u && String(u) !== "about:blank", { timeout: navTimeout }).catch(() => {});
+        if (opts.onPhase) opts.onPhase(`settle_await_navigation_done:${Date.now() - _navT0}ms`);
       }
     } catch (_) { /* page.url() itself can throw on a torn-down page — proceed to the load wait */ }
   }

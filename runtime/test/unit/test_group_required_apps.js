@@ -85,6 +85,22 @@ async function run() {
     assert.strictEqual(result.apps[0].id, "app_render");
   });
 
+  await check("explicit empty requiredAppIds skips validating group siblings entirely (no Chromium, no gate)", async () => {
+    const group = { id: "g3", name: "Sales", apps: [RENDER, HUBSPOT] };
+    // Neither app has a session file, so if this DID validate/gate on them (the old
+    // behavior for undefined requiredAppIds), it would come back authPending: true.
+    // A skill that explicitly declares required_apps: [] must get a usable context
+    // back immediately instead, with no validation of Render/HubSpot at all.
+    const result = await getGroupAuthContext("acme-required-apps-test-3", group, null, {
+      headless: true,
+      requiredAppIds: [],
+    });
+    assert.strictEqual(result.authPending, undefined);
+    assert.strictEqual(result.sessionSource, "group-no-required-apps");
+    assert.ok(result.browser, "expected a real browser context, not an auth-pending response");
+    await result.browser.close();
+  });
+
   fs.rmSync(tmpDataDir, { recursive: true, force: true });
   console.log(`\n${pass} passed`);
   // getGroupAuthContext's missing-app path kicks off a real (background, un-awaited)

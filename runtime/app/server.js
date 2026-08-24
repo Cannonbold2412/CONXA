@@ -712,6 +712,15 @@ async function _handleTool(name, args, extra) {
     // Acquire a run slot (RT-3: one of possibly several concurrent runs, not a single process-wide
     // lock). runId is generated here — earlier than before — because the registry keys runs by it.
     const _runId = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    // Diagnostic phase markers (test_phase log entries) — pinpoint where a slow "Run Test" click
+    // actually spends its time: host-lock wait, the two sequential Chromium launches inside
+    // getCachedBrowser (headless session-validate + visible exec context), and the settle/drift
+    // gate before step 0 fires. Read by conxa_compile/runtime_tool.py, which relays each one to
+    // Build Studio's test log in real time. Cheap (a handful of log() calls); remove only if this
+    // stops being useful, not because it "looks unused" — its consumer is a text-matching regex,
+    // not a caller in this file.
+    const _t0 = Date.now();
+    const _phase = (phase) => log("info", "test_phase", { run_id: _runId, phase, ms: Date.now() - _t0 });
     const exec = {
       runId:           _runId,
       slug:            primary.entry.slug,
@@ -918,6 +927,7 @@ async function _handleTool(name, args, extra) {
           });
         }
         _hostRelease = _lock.release;
+        _phase("host_lock_acquired");
 
         const _authResult = await getCachedBrowser(primary.entry.workspace_id, authManager, {
           headless: !watch,
@@ -925,6 +935,7 @@ async function _handleTool(name, args, extra) {
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
           requiredAppIds: _requiredAppIdsUnion,
         });
+        _phase("browser_context_ready");
         if (_authResult.authPending) {
           // No valid session — a login window was just opened for the user. Nothing ran yet,
           // so there's no failedAt/page to report; the outer catch below turns this into an
@@ -1030,7 +1041,8 @@ async function _handleTool(name, args, extra) {
 
         try {
           const result = await runPlan(page, steps, inputs, startAt, entry.slug, {
-            onStep:        (i) => { exec.step = i; },
+            onStep:        (i) => { exec.step = i; _phase(`step_${i}_${steps[i]?.type || "?"}_start`); },
+            onPhase:       _phase,
             cancelCheck:   _execCancelled,
             tracker:       _runTracker,
             downloadQueue: _downloadQueue,
@@ -1038,6 +1050,9 @@ async function _handleTool(name, args, extra) {
             watch,
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
+          // Times the LAST step, which onStep's start-only markers can never do on their own —
+          // and localizes where post-loop teardown (below) begins.
+          _phase(`steps_complete:${steps.length}`);
         } catch (runErr) {
           // Auth-failure handling: detect a login redirect and fail immediately, naming the
           // app whose session died. Authentication is pre-flight only — no re-auth window
@@ -1107,6 +1122,7 @@ async function _handleTool(name, args, extra) {
       if (watch) {
         await _context.close().catch(() => {});
         await _browser.close().catch(() => {});
+        _phase("browser_closed");
       }
       releaseCachedBrowser(_leaseKey); // no-op when _leaseKey is null (watch mode, or uncached)
       _hostRelease?.();
@@ -1133,6 +1149,7 @@ async function _handleTool(name, args, extra) {
       return { content };
 
     } catch (runErr) {
+      _phase(`steps_failed:${mapErrorToCode(runErr)}`);
       log("error", "execute_failed", { run_id: _runId, skill: primary.entry.slug, error: runErr.message });
       appendRecoveryEvent({ event: "terminal_failure", run_id: _runId, slug: primary.entry.slug, error: runErr.message });
       _runTracker.emit("wf_fail", {
@@ -1278,6 +1295,7 @@ async function _handleTool(name, args, extra) {
       // above (wf_ok, wf_fail, tier_escalated, park_created, park_resumed, override_applied)
       // is actually sent before the tracker's timer is torn down.
       await _tracker.flush();
+      _phase("tracking_flushed");
       _tracker.destroy();
     }
   }

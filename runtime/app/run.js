@@ -135,7 +135,7 @@ function stepFailure(step, stepIndex, cause, preShot) {
   return err;
 }
 
-async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, cancelCheck, tracker, downloadQueue, structuralFingerprint, watch } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, structuralFingerprint, watch } = {}) {
   const t = tracker || { emit: () => {} };
   // Every invocation starts with a fresh budget. The success path also clears it, but a
   // *failed* run used to leave its attempt counts behind in this long-lived process, so the
@@ -200,7 +200,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, canc
         // different page (including back to the initial page) gets a load wait and, under
         // watch mode, a bringToFront — without it the return leg of A→B→A replays invisibly
         // against a background tab.
-        page = await resolveStepPage(tabs, step, { watch, loadTimeoutMs: PAGE_LOAD_TIMEOUT_MS, prevPage });
+        page = await resolveStepPage(tabs, step, { watch, loadTimeoutMs: PAGE_LOAD_TIMEOUT_MS, prevPage, onPhase });
       } catch (tabErr) {
         t.emit("step_fail", { si: i, fc: "tab_not_found" });
         throw stepFailure(step, i, tabErr, null);

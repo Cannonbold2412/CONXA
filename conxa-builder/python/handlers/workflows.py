@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -441,7 +442,19 @@ class WorkflowsMixin:
             )
 
         sink = _event_sink(rid)
-        sink({"kind": "workflow_test", "message": f"Preparing test for {workflow.name!r}…"})
+        # Diagnostic timing: each _mark() call reports elapsed time since this test started, so a
+        # slow "Run Test" click can be broken down into real numbers (sandbox stage vs. skill-pack
+        # sync vs. the runtime's own Chromium-launch phases) instead of one opaque wait. [runtime]
+        # marks relay test_phase log entries server.js emits — see runtime_tool.py's phase_sink.
+        _t0 = time.monotonic()
+
+        def _mark(message: str) -> None:
+            sink({"kind": "workflow_test", "message": f"{message} (t+{time.monotonic() - _t0:.1f}s)"})
+
+        def _phase_sink(entry: dict[str, Any]) -> None:
+            _mark(f"[runtime] {entry.get('phase', '?')} (+{entry.get('ms', 0) / 1000:.1f}s in-runtime)")
+
+        _mark(f"Preparing test for {workflow.name!r}…")
 
         is_frozen = getattr(sys, "frozen", False)
 
@@ -473,7 +486,7 @@ class WorkflowsMixin:
             # and conxa-app are only re-staged when a new version appears in deps/
             # (a download in Production; scripts/build-runtime-local.ps1 /
             # build-app-local.ps1 writing there directly in Dev).
-            sink({"kind": "workflow_test", "message": "Preparing test sandbox…"})
+            _mark("Preparing test sandbox…")
             app_dir = _bootstrap_app_dir()
             conxa_dir, test_data_dir = ensure_test_sandbox(runtime_dir, app_dir)
 
@@ -486,7 +499,7 @@ class WorkflowsMixin:
                 )
                 raise _CommandError("runtime_app_not_built", message)
 
-            sink({"kind": "workflow_test", "message": "Staging skill pack for the runtime…"})
+            _mark("Staging skill pack for the runtime…")
             sync_skill_pack(company, source_dir, conxa_dir, data_dir=test_data_dir)
             _stage_runtime_auth(workflow, company, test_data_dir)
 
@@ -498,10 +511,10 @@ class WorkflowsMixin:
             ensure_chromium_installed(
                 browsers_dir,
                 runtime_dir,
-                log_sink=lambda msg: sink({"kind": "workflow_test", "message": msg}),
+                log_sink=lambda msg: _mark(msg),
             )
 
-            sink({"kind": "workflow_test", "message": f"Running {workflow.name!r}…"})
+            _mark(f"Running {workflow.name!r}…")
             result = call_runtime_tool(
                 runtime_dir,
                 "execute_skill",
@@ -513,7 +526,9 @@ class WorkflowsMixin:
                 },
                 conxa_dir=conxa_dir,
                 env={"CONXA_DATA_DIR": str(test_data_dir)},
+                phase_sink=_phase_sink,
             )
+            _mark("Runtime call finished")
         except (RuntimeToolError, RuntimeError) as exc:
             message = str(exc)
             set_workflow_test_error(workflow_id, message)

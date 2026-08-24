@@ -231,6 +231,8 @@ ipcMain.handle("dialog:pick-file", async (event, opts) => {
   // RecordWorkflowDialog.tsx.
   const win = windowFromEvent(event);
   if (win) {
+    // show() alone leaves a minimized window minimized on Windows — restore first.
+    if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
   }
@@ -250,7 +252,9 @@ ipcMain.handle("dialog:pick-file", async (event, opts) => {
     ...(Array.isArray(filters) && filters.length ? { filters } : {}),
     ...(resolvedDefaultPath ? { defaultPath: resolvedDefaultPath } : {}),
   };
-  const { canceled, filePaths } = await dialog.showOpenDialog(dialogOpts);
+  // Attach the dialog to the Studio window (modal) so it opens centered on top of it
+  // instead of floating behind other windows.
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, dialogOpts);
   return canceled ? null : filePaths;
 });
 

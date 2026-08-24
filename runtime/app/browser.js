@@ -166,9 +166,26 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     return { browser, context, protectedUrl: "", sessionSource: "group-no-apps" };
   }
 
+  // A manifest that EXPLICITLY declares zero required apps (opts.requiredAppIds is an
+  // array, just empty — not undefined, which means a legacy pre-field manifest and must
+  // still fall through to gate+seed everything below) means this skill is not expected to
+  // touch any sibling app in the group, ever. Validating every sibling anyway (below) exists
+  // purely to pre-seed sessions for a workflow that unexpectedly wanders into one mid-run —
+  // that's not a real risk for a skill that declares it won't, so skip paying for N real,
+  // up-to-30s-timeout network checks (one per group app, every single execution) that this
+  // run has no chance of needing. If such a skill does wander somewhere unexpected despite
+  // its own manifest, it hits a normal auth failure there instead of arriving pre-authenticated.
+  if (Array.isArray(opts.requiredAppIds) && opts.requiredAppIds.length === 0) {
+    const { browser, context } = await _buildExecContext(undefined, headless);
+    return { browser, context, protectedUrl: "", sessionSource: "group-no-required-apps" };
+  }
+
   // Validate every app in the group, not just the required ones — seeding needs
   // all of them; gating only needs the required subset of these same results.
+  const _groupAuthT0 = Date.now();
+  if (logFn) logFn("info", "test_phase", { phase: `group_auth_validate_start:${group.apps.map((a) => a.name).join(",")}`, ms: 0 });
   const results = await Promise.all(group.apps.map((app) => _validateGroupApp(workspace_id, app, authManager, logFn)));
+  if (logFn) logFn("info", "test_phase", { phase: `group_auth_validate_done:${results.filter((r) => r.valid).length}/${results.length}_valid`, ms: Date.now() - _groupAuthT0 });
   const missingRequired = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
 
   if (missingRequired.length > 0) {
