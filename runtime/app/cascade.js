@@ -17,6 +17,8 @@ const {
 } = require("./locators");
 const { executeStep } = require("./handlers");
 const { verifyStep, hasRequiredAssertion } = require("./assertions");
+const { dismissKnownOverlay } = require("./dismiss_patterns");
+const learnedDismissals = require("./learned_dismissals");
 
 const INTERACTIVE_STEP_TYPES = new Set([
   "click", "dblclick", "right_click",
@@ -190,7 +192,23 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
         await scrollRoots[0].locator(primarySelector).first().scrollIntoViewIfNeeded({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
       }
     } else if (remedy === "dismiss-overlay") {
+      // Historical remedy first, unchanged: Escape closes OS-style dialogs.
       await page.keyboard.press("Escape").catch(() => {});
+      // EXEC-5 known-pattern ladder: a never-recorded popup is usually built from one of a
+      // few ubiquitous consent toolkits — try their accept/close affordances (plus anything
+      // previously learned on THIS host) before giving up on Tier 1. Zero-token by
+      // construction; reactive only (we got here because something actually intercepted).
+      try {
+        const learned = learnedDismissals.selectorsFor(page.url());
+        const hit = await dismissKnownOverlay(page, { learned });
+        if (hit) {
+          // Record every clicked candidate: the winning tail matters, and refreshing each
+          // keeps the replay order stable for the next interception on this host.
+          for (const selector of hit.selectors) learnedDismissals.record(page.url(), selector);
+          appendRecoveryEvent({ event: "tier1_dismiss_pattern", slug,
+            step_index: stepIndex, pattern: hit.selectors.join(" | "), source: hit.source });
+        }
+      } catch (_) {}
     } else if (remedy === "wait-stable" || remedy === "wait-enabled") {
       await page.waitForTimeout(300);
     } else if (remedy === "wait-navigation") {
