@@ -7,6 +7,33 @@ data will disappear on you mid-run.
 Record each with Build Studio, compile, replay via `conxa_compile/conxa_runtime.py`'s sandbox
 staging or a real runtime install, and log results against the checklist at the bottom.
 
+## Results so far
+
+**2026-08-25 — the core EXEC-10 shape (Workflows 1 + 3 + 4 combined) passed in one real run.**
+A single recorded workflow ("mega-workflow") spans **42 steps, 6 tabs** (initial + 4 user-opened +
+1 site-opened popup) and **6 hosts**, compiled clean (`compile_status: ok`), and replayed
+successfully end to end via Build Studio's Run Test (2026-08-25 05:33 local). Per segment:
+
+| Segment | Site(s) | Proves |
+|---|---|---|
+| Download files from bin A → ZIP download observed | `filebin.net` | Workflow 7 Shape-B *download* side |
+| New tab → upload of that file | `demoqa.com/upload-download` | Workflow 1's core handoff — compiled to `{{downloaded_file_2}}` (W-2 binding, no `file_path` input supplied at all) |
+| Real `tab_switch` back to tab A (+ browser Back), second download | `filebin.net` | Tab-context landing on return to the initial tab (W-1 / EXEC-5 #43) |
+| Third-domain tab → upload #2 | `the-internet.herokuapp.com/upload` | Workflow 4's second leg — bound to `{{downloaded_file_3}}` |
+| ~10-step authenticated deploy chain | `dashboard.render.com` | Workflow 2 length stress (cross-domain variant) |
+| User-opened tab → site-opened popup → sign-in there | `vercel.com` → `search-engine-5nfe.vercel.app` | Workflow 3 + break test B-1's popup case |
+
+**Precursor (2026-08-23):** two published skills proved the halves separately first — a 9-step
+filebin-only download→tab-switch→upload skill (Workflow 1's mechanic, same-domain), and a 22-step
+Render→Vercel cross-domain multi-tab skill with both a user-opened tab and a site-opened popup
+(Workflows 2+3 aspects). Session log: `docs/archive/sessions/session-ses_fd4e.md`.
+
+**Still open:** the standalone single-domain 30+ step chain (Workflow 2 as written on
+`automationexercise.com`); Workflow 5 dynamic elements; Workflow 6's cross-run consistency re-run
+(same skill, second file set); Workflow 7 Shape B confirmed only on its download side; the 20-file
+identity check (`file #7 uploaded = file #7 downloaded`); and promoting this scenario into
+`runtime/test/gate-skill/` as a `gate_replay.js` fixture (see "After testing" below).
+
 ## Platforms used
 
 | # | Workflow | Website(s) | Login needed? |
@@ -327,6 +354,11 @@ to a different tracked item (EXEC-5 #31/#32/#43) — in that case, cross-referen
 Once one of Workflows 1–4 replays clean end-to-end, promote it into `runtime/test/gate-skill/`
 as a `gate_replay.js` fixture so this scenario is CI-enforced going forward, per EXEC-10's
 success criteria.
+
+**That condition is now met (2026-08-25):** the mega-workflow above replayed clean end to end and
+is the natural candidate to distill into a gate fixture — the remaining work is shrinking it to
+what CI can run unattended (no Render/Vercel auth), i.e. the filebin → demoqa/the-internet
+download→upload segments plus one tab round-trip.
 
 Workflow 6's finding was different in kind — it was about runtime storage hygiene (unbounded
 accumulation of per-run download folders), not replay correctness — and is now resolved as W-7
