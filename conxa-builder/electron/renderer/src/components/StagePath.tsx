@@ -117,6 +117,7 @@ function RailNode({
   done,
   busy,
   current,
+  pending,
 }: {
   node: RailNodeSpec
   done: boolean
@@ -124,6 +125,9 @@ function RailNode({
   /** The one node worth acting on right now — the only place clay is spent
    * on this row (DESIGN.md §2, The One Accent Rule). */
   current: boolean
+  /** Stage requirements met, but not finished — e.g. test passed yet the skill
+   * hasn't been published to Conxa Cloud yet. Amber, never green. */
+  pending?: boolean
 }) {
   const Icon = node.icon
   // `aria-disabled` rather than `disabled`: a disabled button takes no pointer
@@ -148,6 +152,8 @@ function RailNode({
             ? 'border-status-ok-ring bg-status-ok-subtle text-status-ok'
             : busy
             ? 'border-sky-500/30 bg-sky-500/[0.12] text-sky-400'
+            : pending
+            ? 'border-amber-500/40 bg-amber-500/[0.12] text-amber-300'
             : current
             ? 'border-brand bg-brand-subtle text-brand'
             : node.enabled
@@ -164,6 +170,8 @@ function RailNode({
             ? 'text-status-ok'
             : busy
             ? 'text-sky-400'
+            : pending
+            ? 'text-amber-300'
             : current
             ? 'text-brand'
             : node.enabled
@@ -201,6 +209,7 @@ export function WorkflowStageRail({
   groupReady,
   packBuilt,
   stale,
+  published = false,
   onRecord,
   onCompile,
   onReview,
@@ -213,6 +222,10 @@ export function WorkflowStageRail({
   groupReady: boolean
   packBuilt: boolean
   stale: boolean
+  /** Whether this workflow's skill has a published release on Conxa Cloud.
+   * Only then does the last node turn green — a passed test merely makes it
+   * amber ("ready to package", not yet shipped). */
+  published?: boolean
   onRecord: () => void
   onCompile: () => void
   onReview: () => void
@@ -224,7 +237,10 @@ export function WorkflowStageRail({
   // here, where the rail renders for never-recorded workflows too. Use the
   // real recording flag for that node instead.
   const done = nodesDone(stage)
-  const packageDone = stage === 'ready'
+  // Green only once the skill is actually published; a passed test leaves the
+  // node amber-pending until the release exists on Conxa Cloud.
+  const packageDone = stage === 'ready' && published
+  const packagePending = stage === 'ready' && !published
   const busyIndex = stage === 'queued' || stage === 'compiling' ? 1 : null
 
   const nodes: RailNodeSpec[] = [
@@ -277,13 +293,23 @@ export function WorkflowStageRail({
 
   // The leftmost node that's actionable and not yet finished — the single step
   // the operator should take next, and the only one that gets the clay accent.
-  const currentIndex = nodes.findIndex((node, i) => node.enabled && !doneFlags[i] && i !== busyIndex)
+  // A tested-but-unpublished package node keeps its amber pending state instead
+  // of taking the accent over.
+  const currentIndex = packagePending
+    ? -1
+    : nodes.findIndex((node, i) => node.enabled && !doneFlags[i] && i !== busyIndex)
 
   return (
     <div className="flex w-full items-center" role="group" aria-label="Workflow stages">
       {nodes.map((node, i) => (
         <div key={node.label} className={cn('flex items-center', i < nodes.length - 1 && 'min-w-0 flex-1')}>
-          <RailNode node={node} done={doneFlags[i]} busy={i === busyIndex} current={i === currentIndex} />
+          <RailNode
+            node={node}
+            done={doneFlags[i]}
+            busy={i === busyIndex}
+            current={i === currentIndex}
+            pending={i === nodes.length - 1 && packagePending}
+          />
           {i < nodes.length - 1 && (
             <span
               aria-hidden

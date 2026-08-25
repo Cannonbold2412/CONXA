@@ -9,7 +9,7 @@ import {
   renameGroup,
   type GroupApp,
 } from '@/api/groupsApi'
-import { createWorkflow, fetchSkillPack, type SkillPackBuild, type Workflow } from '@/api/workflowsApi'
+import { createWorkflow, fetchSkillPack, fetchSkillPackVersions, type SkillPackBuild, type Workflow } from '@/api/workflowsApi'
 import { GroupAuthWizard } from '@/components/GroupAuthWizard'
 import { RecordWorkflowDialog } from '@/components/RecordWorkflowDialog'
 import { DeleteWorkflowButton } from '@/components/DeleteWorkflowButton'
@@ -201,6 +201,25 @@ function WorkflowRow({
   const packBuilt = !!skillPackBuild
   const stale = wf.edited_at != null && skillPackBuild != null && wf.edited_at > skillPackBuild.last_built_at
   const usedApps = appsUsedBy(wf, apps)
+  const stage = wf.stage ?? 'ready_to_compile'
+
+  // The last rail node only turns green once this workflow's skill actually has
+  // a published release on Conxa Cloud — a passed test merely makes it amber.
+  // Scoped to wf.slug (1 Workflow = 1 Skill); only fetched once a test passed,
+  // which is the earliest point the node could leave amber anyway.
+  const versionsQ = useQuery({
+    queryKey: ['skill-pack-versions', wf.slug],
+    queryFn: () => fetchSkillPackVersions(wf.slug),
+    enabled: stage === 'ready',
+    staleTime: 10_000,
+  })
+  // Upload writes status "ready" (publish_routes.py); a Cloud admin's Release
+  // later flips it to "published". Green means "uploaded to Conxa Cloud", so
+  // either status counts — checking only "published" left the node amber
+  // forever after a normal publish.
+  const published = (versionsQ.data?.versions ?? []).some(
+    (v) => v.status === 'ready' || v.status === 'published',
+  )
 
   function handleCompileClick() {
     if (!hasRecording) return
@@ -258,12 +277,13 @@ function WorkflowRow({
 
         <div className="mt-3.5">
           <WorkflowStageRail
-            stage={wf.stage ?? 'ready_to_compile'}
+            stage={stage}
             hasRecording={hasRecording}
             hasSkill={hasSkill}
             groupReady={groupReady}
             packBuilt={packBuilt}
             stale={stale}
+            published={published}
             onRecord={() => (hasRecording ? setRerecordConfirmOpen(true) : setRecordOpen(true))}
             onCompile={handleCompileClick}
             onReview={() => navigate(`/edit/${encodeURIComponent(wf.skill_id!)}?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
