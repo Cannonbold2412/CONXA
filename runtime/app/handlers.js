@@ -20,6 +20,7 @@ const {
 } = require("./resolution");
 const {
   PRIMARY,
+  markMayHaveActed,
   withLocator,
   withLocatorPair,
   runLocatorStep,
@@ -232,7 +233,16 @@ const HANDLERS = {
 
   keyboard_shortcut: async (page, step, inputs) => {
     const keyStr = parseKeyboardShortcut(interpolate(step.value || "", inputs));
-    if (keyStr) await page.keyboard.press(keyStr, { delay: 50 });
+    // Dispatches straight at the page, bypassing withLocator's seam — so it carries its own
+    // EXEC-24 mark. A keystroke that may have landed (Ctrl+S, Enter on a form) must not be
+    // blindly re-sent by the recovery cascade.
+    if (keyStr) {
+      try {
+        await page.keyboard.press(keyStr, { delay: 50 });
+      } catch (err) {
+        throw markMayHaveActed(err);
+      }
+    }
   },
 
   check: async (page, step, inputs) => {

@@ -14,4 +14,20 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-module.exports = { unique, asObject, asArray };
+// EXEC-24 — step types whose action cannot be safely dispatched twice. A second click submits
+// twice, a second upload uploads twice, a second checkbox toggle undoes the first. Everything
+// NOT listed here (fill, type, select, focus, hover, scroll, date_pick, …) is idempotent in
+// practice: re-running it lands the page in the same state, so recovery re-dispatches it freely.
+// Lives here, in the dependency-free leaf, because both locators.js and cascade.js need it and
+// cascade.js already depends on locators.js.
+const NON_IDEMPOTENT_STEP_TYPES = new Set([
+  "click", "dblclick", "right_click",
+  "keyboard_shortcut", "upload", "drag_drop",
+  "set_checkbox", "set_radio",
+]);
+
+function isNonIdempotent(step) {
+  return NON_IDEMPOTENT_STEP_TYPES.has(asObject(step).type);
+}
+
+module.exports = { unique, asObject, asArray, NON_IDEMPOTENT_STEP_TYPES, isNonIdempotent };

@@ -4,7 +4,7 @@
 const pageScripts = require("./page_scripts");
 const { interpolate } = require("./interpolate");
 const { PAGE_LOAD_TIMEOUT_MS } = require("./run_config");
-const { asObject, asArray } = require("./step_utils");
+const { asObject, asArray, isNonIdempotent } = require("./step_utils");
 const { rootCandidates } = require("./resolution");
 
 // Phase 8: post-action VERIFY — check compiled post-condition assertions independently of the
@@ -38,6 +38,19 @@ async function capturePreStepSignature(page) {
   } catch (_) {
     return null;
   }
+}
+
+// EXEC-24 — "has the page moved since we last looked?" using the signature above. This is the
+// zero-token stand-in for what browser-use/CUA get by re-perceiving before every action: when a
+// step carries no post-condition, a moved page is the only local evidence that a prior recovery
+// attempt may already have taken effect. Same tolerance as the state_changed assertion, so a
+// live clock or a lazily-loaded image doesn't read as "the action worked".
+// Missing either side → false: absent evidence must never be reported as movement.
+function signatureChanged(before, after) {
+  if (!before || !after) return false;
+  if (before.url !== after.url) return true;
+  if (before.interactiveCount !== after.interactiveCount) return true;
+  return Math.abs(before.textLen - after.textLen) > STATE_CHANGED_TEXT_LEN_TOLERANCE;
 }
 
 // Web-first polling for assertions that don't already poll internally (selector_present rides
@@ -196,14 +209,21 @@ function hasRequiredAssertion(step) {
   return stepAssertions(step).some(a => a && a.required !== false);
 }
 
+// Whether a pre-action page signature must be captured for this step. Two reasons now:
+// a state_changed assertion needs it as its baseline, and (EXEC-24) any non-idempotent step
+// needs it as the evidence the recovery guard consults before re-dispatching. The `required`
+// filter was dropped from the assertion arm deliberately — compiled assertions currently ship
+// advisory-only, so requiring `required` here would leave every state_changed check baseline-less.
 function needsStateChangedBaseline(step) {
-  return stepAssertions(step).some(a => a && String(a.type || "").toLowerCase() === "state_changed" && a.required !== false);
+  if (isNonIdempotent(step)) return true;
+  return stepAssertions(step).some(a => a && String(a.type || "").toLowerCase() === "state_changed");
 }
 
 module.exports = {
   stepAssertions,
   normText,
   capturePreStepSignature,
+  signatureChanged,
   VERIFY_POLL_INTERVAL_MS,
   pollPositive,
   pollNegative,

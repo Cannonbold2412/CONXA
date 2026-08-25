@@ -7,7 +7,7 @@
 const { classifyException, remedyFor } = require("./recovery");
 const { appendRecoveryEvent } = require("./recovery_log");
 const { SECONDARY_ACTION_TIMEOUT_MS, CAPTURE_PRESTEP } = require("./run_config");
-const { asObject, asArray } = require("./step_utils");
+const { asObject, asArray, isNonIdempotent } = require("./step_utils");
 const { rootCandidates } = require("./resolution");
 const {
   stepWithSelector,
@@ -16,7 +16,7 @@ const {
   locatorEvaluateAll,
 } = require("./locators");
 const { executeStep } = require("./handlers");
-const { verifyStep, hasRequiredAssertion } = require("./assertions");
+const { verifyStep, hasRequiredAssertion, capturePreStepSignature, signatureChanged } = require("./assertions");
 const { dismissKnownOverlay } = require("./dismiss_patterns");
 const learnedDismissals = require("./learned_dismissals");
 
@@ -30,23 +30,92 @@ const INTERACTIVE_STEP_TYPES = new Set([
 const DIALOG_CONTAINERS = ['[role="dialog"]', '[role="alertdialog"]', '[aria-modal="true"]', ".modal"];
 const TEXT_MATCH_TAG_RE = /^(button|a|input|select|textarea)/i;
 
+// ── EXEC-24: the action guard ────────────────────────────────────────────────────────────────
+//
+// The cascade below is a sequence of RESOLUTION STRATEGIES, but it is also — and this is what
+// went unaccounted for — a sequence of ACTIONS. Each stage dispatches a real input event, and
+// nothing between two stages ever asked whether the previous one already changed the page. So a
+// Submit whose confirmation renders slower than its own poll got clicked again by the next stage.
+//
+// The fix is the deterministic equivalent of what browser-use and computer-use buy with a model
+// call per attempt (re-perceive, then decide): before RE-dispatching a non-idempotent action, ask
+// for local evidence that the previous attempt already landed. Two sources, in order of strength:
+//
+//   1. the step's own post-condition — if every assertion holds, the step already succeeded;
+//   2. the pre-step page signature — if the page moved, something happened and we must not
+//      guess what, so the ladder stops and the agent tier gets the page as it actually is.
+//
+// Zero-token by construction: both are DOM arithmetic already computed elsewhere in the runtime.
+function createActionGuard(step, { acted = false, signature = null } = {}) {
+  return {
+    // Only step types where a second dispatch duplicates an effect are guarded at all; a
+    // fill/select/hover recovers exactly as aggressively as it always has.
+    guarded: isNonIdempotent(step),
+    // Whether an action for THIS step may already have been dispatched (the primary attempt
+    // threw from inside the action callback, or succeeded and only its verify failed).
+    acted,
+    // Page signature captured before the step's first action — the "before" of the delta.
+    signature,
+    // Set once the guard stops the ladder; surfaced on the failure so the agent is told the
+    // page may already reflect a recovery attempt.
+    blocked: null,
+  };
+}
+
+// Decide whether a re-dispatch is allowed. Returns "recovered" when the step turns out to have
+// already succeeded, "blocked" when acting again would risk doubling an effect, "go" otherwise.
+async function guardDecision(page, step, inputs, baseline, guard) {
+  if (!guard || !guard.guarded || !guard.acted) return "go";
+
+  const verdict = await verifyStep(page, step, inputs, baseline);
+  if (verdict.results.length) {
+    // Post-conditions exist and ALL hold → the action landed; the earlier failure was a slow
+    // render, not a broken step. Deliberately checks `results`, not `verdict.pass`: assertions
+    // currently ship advisory-only, so `pass` stays true even when an advisory one fails.
+    if (verdict.results.every(r => r.ok)) return "recovered";
+    // A post-condition that does NOT hold is the author's own statement that the outcome did
+    // not land — retry, exactly as before. This is the case test_recovery_verify.js pins.
+    return "go";
+  }
+
+  // No post-condition to settle it. A page that moved after a possible dispatch is the only
+  // evidence available, and it is ambiguous by nature — so treat it as "may already have acted"
+  // and stop rather than clicking again to find out.
+  const now = await capturePreStepSignature(page);
+  if (signatureChanged(guard.signature, now)) {
+    guard.blocked = "action-may-have-taken-effect";
+    return "blocked";
+  }
+  return "go";
+}
+
 // The single choke point where recovery re-runs a step's action. Closing the "recovered but
 // unverified" gap lives here: when the step carries a required (enforced) post-condition, a
 // successful action re-run is not enough — the post-condition must re-hold before recovery is
 // allowed to report success. Steps with no required assertion are unaffected (no new false
 // failures on non-consequential steps).
-async function recoverWithSelector(page, step, inputs, selector, onSuccess, baseline = null) {
+async function recoverWithSelector(page, step, inputs, selector, onSuccess, baseline = null, guard = null) {
   if (!selector) return false;
+
+  // EXEC-24: check BEFORE acting, not only after. Everything below this line may dispatch.
+  const decision = await guardDecision(page, step, inputs, baseline, guard);
+  if (decision === "blocked") return false;
+  if (decision === "recovered") {
+    if (onSuccess) onSuccess();
+    return true;
+  }
 
   try {
     await executeStep(page, stepWithSelector(step, selector), inputs);
+    if (guard) guard.acted = true;
     if (hasRequiredAssertion(step)) {
       const verdict = await verifyStep(page, step, inputs, baseline);
       if (!verdict.pass) return false;
     }
     if (onSuccess) onSuccess();
     return true;
-  } catch (_) {
+  } catch (err) {
+    if (guard && err && err.mayHaveActed) guard.acted = true;
     return false;
   }
 }
@@ -67,7 +136,7 @@ function a11yRecoveryName(fingerprint) {
   return String(fp.aria_label || fp.name || fp.inner_text || fp.placeholder || fp.label_text || "").trim();
 }
 
-async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline = null) {
+async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline = null, guard = null) {
   const bundle = asObject(step.identity_bundle);
   const fingerprint = asObject(bundle.fingerprint);
   const role = String(fingerprint.role || "").trim();
@@ -88,8 +157,18 @@ async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, bas
   const a11yStep = { ...step, identity_bundle: { ...bundle, signals } };
   delete a11yStep._explicit_selector;  // force the PRIMARY (matcher) path, not string mode
 
+  // This stage calls executeStep directly rather than through recoverWithSelector, so it needs
+  // the same pre-dispatch guard — it is a dispatch like any other (EXEC-24).
+  const decision = await guardDecision(page, step, inputs, baseline, guard);
+  if (decision === "blocked") return false;
+  if (decision === "recovered") {
+    appendRecoveryEvent({ event: "tier2_a11y", slug, step_index: stepIndex, recovery_method: "already-held" });
+    return true;
+  }
+
   try {
     await executeStep(page, a11yStep, inputs);
+    if (guard) guard.acted = true;
     if (hasRequiredAssertion(step)) {
       const verdict = await verifyStep(page, step, inputs, baseline);
       if (!verdict.pass) return false;
@@ -97,25 +176,29 @@ async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, bas
     appendRecoveryEvent({ event: "tier2_a11y", slug, step_index: stepIndex, recovery_method: method });
     tracker.emit("tier_ok", { si: stepIndex, tier: "tier2_a11y", sel: method });
     return true;
-  } catch (_) {
+  } catch (err) {
+    if (guard && err && err.mayHaveActed) guard.acted = true;
     return false;
   }
 }
 
-async function recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, skipSelector, tracker, baseline = null) {
+async function recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, skipSelector, tracker, baseline = null, guard = null) {
   for (const selector of fallbackSelectors(step)) {
     if (skipSelector && selector === skipSelector) continue;
     const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
       appendRecoveryEvent({ event: "layer_recovered", layer: 2, slug, step_index: stepIndex, recovery_selector: selector });
       tracker.emit("rec_ok", { si: stepIndex, sc: "selector" });
-    }, baseline);
+    }, baseline, guard);
     if (recovered) return true;
+    // Each fallback is a DIFFERENT element; once the guard has stopped, walking the rest of the
+    // list would be exactly the compounding-wrong-target case this whole change exists to stop.
+    if (guard && guard.blocked) return false;
   }
 
   return false;
 }
 
-async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null) {
+async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null, guard = null) {
   if (step.type !== "click" || !primarySelector) return false;
 
   for (const container of DIALOG_CONTAINERS) {
@@ -123,14 +206,15 @@ async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, prima
     const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
       appendRecoveryEvent({ event: "layer_recovered", layer: 3, slug, step_index: stepIndex, mode: "dialog" });
       tracker.emit("rec_ok", { si: stepIndex, sc: "selector" });
-    }, baseline);
+    }, baseline, guard);
     if (recovered) return true;
+    if (guard && guard.blocked) return false;
   }
 
   return false;
 }
 
-async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null) {
+async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null, guard = null) {
   const intent = [step.value, step.label, step.aria_label, step._intent]
     .filter(value => typeof value === "string" && value.trim())
     .map(value => value.trim())[0];
@@ -160,7 +244,7 @@ async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primary
     return await recoverWithSelector(page, step, inputs, selector, () => {
       appendRecoveryEvent({ event: "layer_recovered", layer: 3, slug, step_index: stepIndex, mode: "fuzzy" });
       tracker.emit("rec_ok", { si: stepIndex, sc: "text_variant" });
-    }, baseline);
+    }, baseline, guard);
   } catch (_) {
     return false;
   }
@@ -168,7 +252,7 @@ async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primary
 
 // Layer 1 deterministic ladder: apply a single targeted remedy keyed off the exception class,
 // then retry the primary selector once. Zero-token. Returns true if the retry succeeded.
-async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline = null) {
+async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline = null, guard = null) {
   const klass = classifyException(primaryErr);
   const remedy = remedyFor(klass);
   if (remedy === "descend-layer2") {
@@ -223,33 +307,57 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
   }
   const ok = await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "layer1_ladder", slug, step_index: stepIndex, remedy });
-  }, baseline);
+  }, baseline, guard);
   return ok ? remedy : false;
 }
 
-async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null, baseline = null) {
+async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null, baseline = null, guard = null) {
   // Each Tier 1/2 stage is individually time-bounded, but the cascade as a whole can run for tens
   // of seconds. If the MCP client cancels mid-recovery (e.g. its request timed out), bail at the
   // next stage boundary instead of grinding through every remaining stage on a doomed run.
   const bail = () => { if (cancelCheck && cancelCheck()) throw Object.assign(new Error("Execution cancelled"), { cancelled: true }); };
 
+  // EXEC-24 — a guard is always present so no stage has to null-check it. Callers that know
+  // whether the primary attempt already dispatched (run.js) pass a seeded one.
+  const g = guard || createActionGuard(step);
+  // Once a stage refuses to re-dispatch, no later stage may act either: they differ only in HOW
+  // they find an element, and the reason to stop is about the page, not the strategy.
+  const stopped = () => !!g.blocked;
+
   // Layer 1 — deterministic exception ladder (targeted single remedy).
   // (Alternate-signal recovery is inherent: resolveStep already walks all bundle signals in
   // durability order, so there is no separate legacy compiled-selector tier.)
-  const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline);
+  const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline, g);
   if (l1) {
     tracker.emit("tier_ok", { si: stepIndex, tier: "layer1", sel: l1 });
     return { tier: "L1", method: l1 };
   }
+  if (stopped()) return false;
+
+  // EXEC-24 / the failure model's "no guess on irreversible actions" rule, implemented at last.
+  // A destructive step (pay / delete / submit — flagged at compile time) gets Layer 1 and nothing
+  // more: the L1 ladder's remedies are waits, scrolls and overlay dismissals plus ONE verified
+  // retry of the recorded target. Everything below is "find something close" — a different
+  // element chosen by accessible name, a positional nth= match, a fallback text variant — which
+  // is the single worst thing to do to a Delete button. Fail closed and let a human or the agent
+  // decide, rather than deleting the wrong row confidently.
+  if (step.destructive === true) {
+    g.blocked = g.blocked || "destructive-no-guess";
+    appendRecoveryEvent({ event: "destructive_recovery_halted", slug, step_index: stepIndex });
+    tracker.emit("rec_halt", { si: stepIndex, why: "destructive" });
+    return false;
+  }
 
   bail();
-  if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline)) return { tier: "L2", method: "a11y" };
+  if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline, g)) return { tier: "L2", method: "a11y" };
+  if (stopped()) return false;
 
   bail();
   await page.waitForTimeout(250);
   if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "transient_recovered", slug, step_index: stepIndex });
-  }, baseline)) return { tier: "L2", method: "transient" };
+  }, baseline, g)) return { tier: "L2", method: "transient" };
+  if (stopped()) return false;
 
   // Layer 2 — re-hover-then-retry (menu reveals), then the existing fallback mechanisms.
   if (asArray(asObject(step.handler_hints).hover_chain).length) {
@@ -257,15 +365,18 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
     await walkHoverChain(page, step, inputs);
     if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
       appendRecoveryEvent({ event: "layer2_rehover", slug, step_index: stepIndex });
-    }, baseline)) return { tier: "L2", method: "rehover" };
+    }, baseline, g)) return { tier: "L2", method: "rehover" };
+    if (stopped()) return false;
   }
 
   bail();
-  if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline)) return { tier: "L2", method: "fallback" };
+  if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g)) return { tier: "L2", method: "fallback" };
+  if (stopped()) return false;
   bail();
-  if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline)) return { tier: "L2", method: "dialog" };
+  if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g)) return { tier: "L2", method: "dialog" };
+  if (stopped()) return false;
   bail();
-  return (await recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline)) ? { tier: "L2", method: "fuzzy" } : false;
+  return (await recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g)) ? { tier: "L2", method: "fuzzy" } : false;
 }
 
 async function maybeCapturePreStep(page, step) {
@@ -274,6 +385,8 @@ async function maybeCapturePreStep(page, step) {
 }
 
 module.exports = {
+  createActionGuard,
+  guardDecision,
   recoverWithSelector,
   a11yRecoveryName,
   recoverWithA11y,

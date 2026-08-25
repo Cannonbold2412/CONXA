@@ -54,6 +54,7 @@ const {
   a11yRecoveryName,
   layer1Ladder,
   recoverStep,
+  createActionGuard,
   maybeCapturePreStep,
 } = require("./cascade");
 const {
@@ -129,6 +130,12 @@ function stepFailure(step, stepIndex, cause, preShot) {
       err.overrideReason = cause.overrideReason;
       err.overrideCandidates = cause.overrideCandidates;
     }
+    // EXEC-24: the recovery cascade refused to act again because an earlier attempt may
+    // already have taken effect. The agent tier needs to know that before it reasons about a
+    // page whose state it cannot otherwise account for; a destructive step fails closed on it.
+    if (cause.actionMayHaveTakenEffect) err.actionMayHaveTakenEffect = true;
+    if (cause.recoveryHaltReason) err.recoveryHaltReason = cause.recoveryHaltReason;
+    if (cause.destructiveHalt) err.destructiveHalt = true;
     if (cause.frameNotFound) err.frameNotFound = true;
     if (cause.tabNotFound) err.tabNotFound = true;
     if (cause.failedPage) err.failedPage = cause.failedPage;
@@ -289,8 +296,23 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
       throw stepFailure(step, i, primaryErr, preShot);
     }
 
-    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline);
+    // EXEC-24 — seed the guard with what we already know about the primary attempt. Two ways
+    // the step's action may already have run: it threw from inside the action callback
+    // (`mayHaveActed`, set at the withLocator seam), or it completed and only its post-condition
+    // failed (`verifyFail`) — that one definitely acted. `stateBaseline` is the page as it was
+    // before this step touched anything, which is what the guard compares against.
+    const guard = createActionGuard(step, {
+      acted: !!(primaryErr && (primaryErr.mayHaveActed || primaryErr.verifyFail)),
+      signature: stateBaseline,
+    });
+
+    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline, guard);
     if (!recovered) {
+      if (guard.blocked) {
+        primaryErr.recoveryHaltReason = guard.blocked;
+        if (guard.blocked === "destructive-no-guess") primaryErr.destructiveHalt = true;
+        else primaryErr.actionMayHaveTakenEffect = true;
+      }
       t.emit("step_fail", { si: i, fc: mapErrorToCode(primaryErr) });
       throw stepFailure(step, i, primaryErr, preShot);
     }

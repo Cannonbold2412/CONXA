@@ -9,7 +9,7 @@ const {
   SECONDARY_ACTION_TIMEOUT_MS,
   RECOVERY_LOCATOR_TIMEOUT_MS,
 } = require("./run_config");
-const { asObject, asArray, unique } = require("./step_utils");
+const { asObject, asArray, unique, isNonIdempotent } = require("./step_utils");
 const {
   PRIMARY,
   resolveStep,
@@ -18,6 +18,27 @@ const {
   locatorCandidates,
   rootCandidates,
 } = require("./resolution");
+
+// EXEC-24 — the dispatch seam. Everything withLocator does before it calls `fn` is
+// resolve → gate → wait and cannot touch the page; `fn` IS the action. An error that comes
+// out of `fn` therefore means the page MAY have been acted on, and the recovery cascade must
+// not blindly re-dispatch on top of it (cascade.js). Deliberately conservative: a Playwright
+// actionability timeout raised *inside* click() never actually clicked, so this over-reports —
+// which is the safe direction. It says "may have acted", never "did act".
+function markMayHaveActed(err) {
+  if (err && typeof err === "object") {
+    try { err.mayHaveActed = true; } catch (_) { /* frozen error — nothing to do */ }
+  }
+  return err;
+}
+
+async function actAndMark(fn, ...args) {
+  try {
+    return await fn(...args);
+  } catch (err) {
+    throw markMayHaveActed(err);
+  }
+}
 
 async function withLocator(page, step, inputs, selector, timeout, fn) {
   // PRIMARY identity-bundle path: late-bind resolve → gate → act, RE-TRIED within the action
@@ -32,9 +53,14 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
       try {
         const locator = await resolveStep(page, step, inputs);   // one attempt; loop owns the wait
         await gateLocator(locator.first(), step);
-        return await fn(locator);
+        return await actAndMark(fn, locator);
       } catch (err) {
         lastErr = err;
+        // NOTE (EXEC-24): this loop deliberately keeps retrying even when `err.mayHaveActed`
+        // is set. It is the Playwright-shaped wait — same step, same signals, re-resolved until
+        // actionable within one action budget — not the cascade's "try a different strategy"
+        // ladder, and the mark over-reports (an actionability timeout inside click() never
+        // clicked). Bailing here would remove the auto-wait this loop exists to provide.
         // Ambiguity / recompile-required / bad input cannot be fixed by waiting — surface
         // immediately rather than re-resolving until the action deadline.
         if (err && (err.ambiguous || err.recompileRequired || err.badInput)) throw err;
@@ -75,9 +101,14 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
     try {
       if (timeout && selector !== PRIMARY) await locator.first().waitFor({ state: "visible", timeout });
       await gateLocator(locator.first(), step);
-      return await fn(locator);
+      return await actAndMark(fn, locator);
     } catch (err) {
       lastErr = err;
+      // Unlike the PRIMARY loop above, these candidates are DIFFERENT elements. Once one of
+      // them may have acted, trying the next would act a second time on a page the first one
+      // already changed — exactly the EXEC-24 failure. Only for step types where a second
+      // dispatch actually duplicates an effect; a fill/select still walks the whole list.
+      if (err && err.mayHaveActed && isNonIdempotent(step)) throw err;
     }
   }
 
@@ -98,9 +129,12 @@ async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, tim
         await srcLoc.first().waitFor({ state: "visible", timeout });
         await dstLoc.first().waitFor({ state: "visible", timeout });
       }
-      return await fn(srcLoc, dstLoc);
+      return await actAndMark(fn, srcLoc, dstLoc);
     } catch (err) {
       lastErr = err;
+      // Same reasoning as withLocator's candidate loop: each root is a different document, so
+      // retrying after a possible drag would drag twice (drag_drop is non-idempotent by nature).
+      if (err && err.mayHaveActed) throw err;
     }
   }
 
@@ -251,6 +285,7 @@ function parseKeyboardShortcut(value) {
 
 module.exports = {
   PRIMARY,
+  markMayHaveActed,
   withLocator,
   withLocatorPair,
   locatorEvaluateAll,
