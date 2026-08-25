@@ -813,3 +813,31 @@ Bootstrap surfaces download URLs for IT whitelisting, which is good. However, th
 11. ~~**Publish without installer rebuild.**~~ **Resolved 2026-07.** Publish Skill Package (§2.11) publishes the updated skill pack directly via `cmd_publish_skill_pack`; Build Installer is now a fully separate, optional, secondary action gated on a release already existing. The runtime's delta sync handles delivery with zero installer rebuild.
 
 12. **Execution dashboard widget in Build Studio.** Embed a mini execution dashboard in the Build Studio showing the last 10 runs across every workflow in the workspace, fetched from the Cloud API.
+
+---
+
+## 10. Runner Tray (PROD-5, 2026-08-26)
+
+A native Windows system-tray icon for the standalone scheduler daemon
+(`runtime/app/tray_windows.ps1` — PowerShell `NotifyIcon`, no Electron, no npm dependency).
+It is deliberately **view-only**: every click writes a command file the daemon consumes, so
+there is exactly one writer of scheduler state.
+
+**Right-click menu** (rebuilt each time it opens):
+
+| Item | Behavior |
+|---|---|
+| Status line (disabled) | "Conxa Runner: running" / "PAUSED" |
+| Run now: `<schedule name> (<next run>)` | One per enabled schedule, max 8; fires an ad-hoc run that never disturbs slot bookkeeping |
+| Pause / Resume scheduling | Global pause — in-flight runs finish, nothing new starts |
+| Open logs folder | `explorer` on `<CONXA_DATA_DIR>/scheduler/logs` |
+| Open schedules folder | `explorer` on the schedules directory |
+| Quit Conxa Runner | Graceful shutdown via command file |
+
+Double-click opens the logs folder. The tray exits itself when the daemon lock disappears or
+goes stale, so it can never outlive its owner. Icon: a blue disc with a white "C", drawn in
+code — no .ico asset to ship.
+
+Known gaps (tracked in TODO.md): no per-schedule enable/disable from the menu yet; the status
+line does not show the next fire time (state.json carries it; menu text kept short); macOS has
+no tray.

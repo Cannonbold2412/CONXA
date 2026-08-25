@@ -74,6 +74,44 @@ Large or time-series data lives in flat files, not the KV store:
 | Installer metadata | `data/installers/{co}/meta.json` | JSON |
 | Blob store (planned) | External (BLOB_READ_WRITE_TOKEN) | Binary |
 
+### 1.4 Runtime-Local Scheduler Store (PROD-5, local-only)
+
+Schedules for the standalone runner (`docs/TRD.md` §4.6) live **only on the customer machine**
+under `<CONXA_DATA_DIR>/scheduler/schedules/<sch_id>.json` — one file per schedule, atomic
+tmp+rename writes. They are never synced to or read from the cloud; the Horizon-2 doctrine
+(`docs/PRD.md` §14.5) keeps schedules and work items off Conxa infrastructure.
+
+```json
+{
+  "id": "sch_cc826311bf02",
+  "version": 1,
+  "name": "Weekday reports",
+  "slug": "weekly-sales-report",
+  "workspace_id": "acme",
+  "cron": "0 6 * * 1-5",
+  "enabled": true,
+  "catchup_grace_minutes": 60,
+  "inputs_enc": { "iv": "…", "tag": "…", "data": "…" },
+  "created_at": "2026-08-26T06:00:00.000Z",
+  "updated_at": "2026-08-26T06:00:00.000Z",
+  "last_slot_fired": "2026-08-26T06:00:00.000Z",
+  "next_run_at": "2026-08-27T06:00:00.000Z",
+  "last_run": { "at": "…", "slot": "…", "status": "completed|failed|busy|skipped|error",
+                "run_id": "r_…", "message": "first 300 chars of engine response" }
+}
+```
+
+- `inputs_enc` is AES-256-GCM under a dedicated machine keychain entry
+  (`conxa-session` service / `scheduler-v1` account) — same scheme as browser sessions.
+  Plaintext input values never touch disk and never leave `list()`; the chat-facing
+  `list_schedules` tool returns metadata with a `has_inputs` flag instead.
+- `last_run.status` values: `completed` / `failed` (engine ran, skill failed) /
+  `busy` (engine at concurrency cap — slot stays pending) / `skipped` (past catch-up grace) /
+  `error` (scheduler↔engine plumbing failure).
+- Related runtime-local files: `scheduler/state.json` (status snapshot for tray/CLI),
+  `daemon.lock`, `commands/*.cmd`, daily logs, and `locks/<host>.lock` (cross-process platform
+  mutex) — see TRD §4.6.
+
 ---
 
 ## 2. Core Data Models
@@ -744,6 +782,13 @@ class WorkflowIntentGraph(BaseModel):
 | `drift_detected` | Pre-execution structural drift warning (advisory; emitted at run start, never blocks) | `total` (landmarks), `missing`, `drift_ratio`, `missing_intents` (≤5), `url` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
 | `wf_fail` | Workflow failed | `dur`, `fsi` (failed step index), `fc` (failure code) |
+
+**Scheduled-run identification (PROD-5):** runs fired by the standalone scheduler daemon pass
+`_trigger: "scheduled"` to `execute_skill`; the value lands in the engine's LOCAL
+`runtime.log` `execute_start` line (field `trigger: "scheduled"`) and on the in-memory exec
+registry entry. The cloud telemetry batch schema above is unchanged — no new event code, no new
+cloud field — so older clouds are unaffected and scheduled vs chat-driven attribution is
+readable wherever runtime logs are readable.
 
 **`repair_event` is ephemeral per-run telemetry** — it never mutates the signed local pack.
 It aggregates into the admin drift-review queue at `GET /api/v1/tracking/{company}/drift`

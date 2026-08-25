@@ -36,6 +36,7 @@ const CORE_TOOL_DEFS = [
           description: "AI review checkpoints: map of \"<step index>\" → your structured answer object to that step's question (see the review request's Question and, if present, its required output schema). Used together with resume_from to continue past an ai_review pause. Example: { \"5\": { \"visible\": true, \"why\": \"the Payment Successful banner is showing\" } }.",
         },
         watch:       { type: "boolean", description: "true = open a visible browser so the user can watch; false = run headlessly in the background." },
+        _trigger:    { type: "string",  description: "Internal: set to \"scheduled\" only by the PROD-5 scheduler daemon. Do not set manually." },
       },
       required: ["skill"],
     },
@@ -64,6 +65,36 @@ const CORE_TOOL_DEFS = [
         watch: { type: "boolean", description: "true = visible browser; false = headless." },
       },
       required: ["skills"],
+    },
+  },
+  {
+    name: "create_schedule",
+    description: "Conxa automation: schedule a skill to run automatically on this machine (cron syntax, local time) — no chat app needs to be open for scheduled runs to fire. Call get_skill_inputs first so you can collect the input values from the user. Schedules are stored locally on the customer's machine only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug:   { type: "string",  description: "Skill slug from list_skills" },
+        workspace_id: { type: "string", description: "Workspace ID (required if the skill slug is not unique)" },
+        cron:   { type: "string",  description: '5-field cron expression in LOCAL time, e.g. "0 6 * * *" = every day at 06:00. Presets @hourly/@daily/@weekly also accepted.' },
+        name:   { type: "string",  description: "Human-friendly name (optional)" },
+        inputs: { type: "object",  description: "Input values captured from the user (stored encrypted on this machine; call get_skill_inputs first)." },
+        grace_minutes: { type: "integer", description: "How long after a missed scheduled time a catch-up run is still allowed (default 60). Older missed slots are skipped, never burst-fired." },
+      },
+      required: ["slug", "cron"],
+    },
+  },
+  {
+    name: "list_schedules",
+    description: "Conxa automation: list all scheduled skills on this machine with their next run time and last result. Input VALUES are never returned (they are stored encrypted locally).",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "delete_schedule",
+    description: "Conxa automation: permanently remove one scheduled skill (by id from list_schedules).",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "Schedule id from list_schedules" } },
+      required: ["id"],
     },
   },
   {

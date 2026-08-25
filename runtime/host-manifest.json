@@ -15,6 +15,7 @@
   "modules": [
     "host/_pkg_stubs.js",
     "host/bootstrap.js",
+    "host/cli_schedule.js",
     "host/cli_sync.js",
     "host/config_edit_toml.js",
     "host/config_edit_yaml.js",

@@ -505,6 +505,22 @@ function _buildReviewRequest(page, step, stepIndex, resolvedEntry, opts) {
   return buildReviewRequest(page, step, stepIndex, resolvedEntry, opts);
 }
 
+// ─── Scheduler store (PROD-5) ─────────────────────────────────────────────────
+// Lazy — only the schedule tools touch it. Inputs are encrypted at rest under a
+// dedicated machine keychain entry; list_schedules surfaces metadata ONLY (never
+// decrypted input values) so chat transcripts can't echo them back.
+let _schedulerStoreInst = null;
+function _schedulerStore() {
+  if (!_schedulerStoreInst) {
+    _schedulerStoreInst = require("./scheduler_store").createStore({
+      dataDir: CONXA_DATA_DIR,
+      getSessionKeyFn: () => authManager.getSessionKey("scheduler-v1", log),
+      log,
+    });
+  }
+  return _schedulerStoreInst;
+}
+
 // ─── Tool handler ─────────────────────────────────────────────────────────────
 async function _handleTool(name, args, extra) {
   const text = (t) => ({ content: [{ type: "text", text: t }] });
@@ -615,9 +631,70 @@ async function _handleTool(name, args, extra) {
     }, null, 2));
   }
 
+  // ── create_schedule (PROD-5) ─────────────────────────────────────────────────
+  // Validates slug + cron up front, stores inputs encrypted locally, and returns the
+  // platforms this schedule will serialize against — so an agent can tell the user
+  // that two schedules touching the same app will queue behind each other.
+  if (name === "create_schedule") {
+    const entry = _resolveSkill(String(args.slug || ""), args.workspace_id ? String(args.workspace_id) : null);
+    if (!entry) return err(`Skill not found: ${args.slug}. Call list_skills first.`);
+    let rec;
+    try {
+      rec = await _schedulerStore().create({
+        slug: entry.slug,
+        workspace_id: entry.workspace_id,
+        cron: String(args.cron || ""),
+        name: args.name ? String(args.name) : undefined,
+        inputs: (args.inputs && typeof args.inputs === "object") ? args.inputs : {},
+        catchup_grace_minutes: args.grace_minutes !== undefined ? Number(args.grace_minutes) : undefined,
+      });
+    } catch (e) {
+      return err(`Could not create schedule: ${e.message}`);
+    }
+    const next = require("./cron_lite").nextAfter(rec.cron, new Date());
+    await _schedulerStore().update(rec.id, { next_run_at: next ? next.toISOString() : null });
+    let targetHosts = [];
+    try {
+      targetHosts = resolveTargetHosts([{ entry }], { resolveGroup, filterRequiredApps });
+    } catch (_) {}
+    return text(JSON.stringify({
+      created: true,
+      id: rec.id,
+      name: rec.name,
+      skill: rec.slug,
+      workspace_id: rec.workspace_id,
+      cron: rec.cron,
+      enabled: rec.enabled,
+      next_run_at: next ? next.toISOString() : null,
+      note: "Runs headlessly on this machine even when no chat app is open. Two schedules touching the same platform never run at the same time.",
+      target_hosts: targetHosts,
+    }, null, 2));
+  }
+
+  // ── list_schedules (PROD-5) — metadata only; input VALUES never leave the machine's store ──
+  if (name === "list_schedules") {
+    return text(JSON.stringify({
+      schedules: _schedulerStore().listMeta(),
+      hint: "Pass one of these ids to delete_schedule. Use execute_skill to run a skill right now.",
+    }, null, 2));
+  }
+
+  // ── delete_schedule (PROD-5) ─────────────────────────────────────────────────
+  if (name === "delete_schedule") {
+    try {
+      const ok = _schedulerStore().remove(String(args.id || ""));
+      return text(JSON.stringify({ deleted: ok, id: String(args.id || "") }));
+    } catch (e) {
+      return err(`Could not delete schedule: ${e.message}`);
+    }
+  }
+
   // ── execute_skill / execute_sequence ─────────────────────────────────────────
   if (name === "execute_skill" || name === "execute_sequence") {
     const watch = args.watch !== false;
+    // PROD-5: distinguish scheduled runs from chat-driven ones in logs/telemetry.
+    // Only the scheduler daemon sends _trigger; anything else is chat-driven.
+    const trigger = args._trigger === "scheduled" ? "scheduled" : "chat";
     const runs = name === "execute_sequence"
       ? (Array.isArray(args.skills) ? args.skills : [])
       : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides, review_results: args.review_results }];
@@ -772,6 +849,7 @@ async function _handleTool(name, args, extra) {
       deadlineExceeded: false,
       sentVisualRefs:  new Set(), // P5: tracks which (slug:stepIndex) visual refs were sent this execution
       waitingForHost:  null, // set while blocked in host_lock.js; see run_registry.list()
+      trigger, // "scheduled" (PROD-5 daemon) | "chat" — surfaced in execute_start below
     };
     // No `await` since the pre-resolve cap check above, so this can only fail here if that check
     // ever stops being the sole gate — kept as the authoritative admission rather than trusting
@@ -822,6 +900,7 @@ async function _handleTool(name, args, extra) {
       workspace_id: primary.entry.workspace_id,
       total_steps: resolved.reduce((n, r) => n + r.steps.length, 0),
       watch,
+      trigger: exec.trigger,
       max_recovery_tier: MAX_RECOVERY_TIER,
       concurrent_runs: runRegistry.count(),
       tracking: _trackingStatus(primary.entry.pack),
@@ -1041,10 +1120,15 @@ async function _handleTool(name, args, extra) {
       } else {
         // Serialize against any sibling run touching the same external platform(s) before doing
         // any browser work at all (RT-3 follow-up) — a run on a different platform never waits.
+        // locksDir (PROD-5) extends the same serialization ACROSS engine processes: a scheduled
+        // run in the scheduler daemon's engine and this chat-driven run can never double-hit the
+        // same platform. Filesystem trouble degrades to in-process-only (fail open — see
+        // file_lock.js); unit tests omit locksDir and stay hermetic by design.
         const _targetHosts = resolveTargetHosts(resolved, { resolveGroup, filterRequiredApps });
         exec.waitingForHost = _targetHosts;
         const _lock = await hostLock.acquireHosts(_targetHosts, { runId: _runId, slug: primary.entry.slug }, {
           isDone: _execCancelled, // same cancel/deadline check runPlan uses — see host_lock.js
+          locksDir: path.join(CONXA_DATA_DIR, "locks"),
         });
         exec.waitingForHost = null;
         if (!_lock.release) {

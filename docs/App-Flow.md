@@ -19,6 +19,7 @@
 11. [Runtime Registration & First Sync](#11-runtime-registration--first-sync)
 12. [MCP Skill Execution](#12-mcp-skill-execution)
 13. [Execution with Recovery](#13-execution-with-recovery)
+13a. [Scheduled Execution (Standalone Runner)](#12a-scheduled-execution-standalone-runner-prod-5)
 14. [Skill Pack Update (Company Side)](#14-skill-pack-update-company-side)
 15. [Skill Sync (Runtime Side)](#15-skill-sync-runtime-side)
 16. [Runtime Self-Update](#16-runtime-self-update)
@@ -645,6 +646,56 @@ consequential step — every remedy that re-runs the action re-checks the post-c
 verify-fail also skips straight past the Tier 1 single-remedy retry (re-running the same action
 against the same, already-checked DOM can't fix it) into Tier 2's resolution-changing mechanisms.
 See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify wiring.
+
+---
+
+## 12a. Scheduled Execution (Standalone Runner, PROD-5)
+
+Skills can fire on a schedule with **no chat application open**. Schedules live only on the
+customer machine (Horizon-2 doctrine — the cloud holds neither schedules nor work items); the
+scheduler daemon drives the same runtime engine a chat host would. Full architecture:
+`docs/TRD.md` §4.6.
+
+**Creating a schedule (two doors, one store):**
+
+```mermaid
+flowchart TD
+    A[User: run this every weekday at 6am] --> B{Where?}
+    B -->|Chat app open| C[Agent calls create_schedule]
+    C --> D[server.js validates skill + cron,<br/>encrypts inputs, writes local record]
+    B -->|No chat needed| E[schedule add --skill S --cron 0 6 * * 1-5]
+    E --> D
+    D --> F[next_run_at computed - done]
+```
+
+**Firing (the part that works while you sleep):**
+
+```mermaid
+flowchart TD
+    A[Autostart .lnk at sign-in] --> B[conxa-runtime.exe schedule daemon<br/>tray icon appears]
+    B --> C[Tick every 30s]
+    C --> D{Due slot?}
+    D -->|none| C
+    D -->|due within grace| E[Spawn engine if idle<br/>execute_skill watch:false _trigger:scheduled]
+    D -->|past grace| F[Record ONE skip,<br/>fast-forward to next firable slot]
+    D -->|engine full| G[Defer - retry next tick]
+    E --> H[Engine: auth pre-flight, platform lock,<br/>run steps, recovery cascade - all unchanged]
+    H --> I[Record last_run + advance slot bookkeeping]
+    G --> D
+    F --> D
+```
+
+Guarantees worth knowing as a user:
+
+- Two schedules touching the **same target app never run at the same time** — even when one was
+  started from a chat and the other by the scheduler (cross-process file locks). Different apps
+  run fully in parallel, up to five at once.
+- Missed slots after the runner was off are caught up **only within `catchup_grace_minutes`**
+  (default 60) — an always-on runner waking after a week skips instead of burst-firing.
+- The tray icon can pause/resume everything, run a schedule now, or quit; every click becomes a
+  command file the daemon consumes — the tray is view-only by construction.
+- `runner setup` registers autostart and prints the power settings a runner machine wants
+  (never sleep on AC); `runner doctor` health-checks the whole chain.
 
 ---
 

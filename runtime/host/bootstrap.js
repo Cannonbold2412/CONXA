@@ -74,6 +74,16 @@ if (process.argv[2] === "sync") {
   return;
 }
 
+// `schedule …` / `runner …` are the PROD-5 standalone-launcher subcommands (scheduler
+// daemon, schedule CRUD, runner-machine setup). Unlike register-mcp/unregister-mcp
+// they NEED the app layer (all real logic is disk-resident so fixes ship via normal
+// app updates), so they dispatch through the same min_host-gated resolution cli_sync
+// uses, then exit there.
+if (process.argv[2] === "schedule" || process.argv[2] === "runner") {
+  require("./cli_schedule").run(process.argv.slice(2));
+  return;
+}
+
 // App-layer pre-load self-update. Unlike the conxa_runtime leg (still checked from
 // server.js's startupSync, post-load — a running binary can't replace itself, and that
 // leg's own download budget is generous because it isn't launch-blocking), this one runs

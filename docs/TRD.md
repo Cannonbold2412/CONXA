@@ -342,6 +342,9 @@ Defined in `server.js` `_toolDefinitions()`:
 | `get_execution_status` | List every currently-running execution (there may be more than one — see §4.5) |
 | `cancel_execution` | Cancel a running execution; pass `run_id` when more than one is active |
 | `get_runtime_status` | Runtime diagnostics (non-mutating) |
+| `create_schedule` | Schedule a skill to run on this machine on a cron schedule (PROD-5, §4.6). Inputs stored encrypted locally. |
+| `list_schedules` | List local schedules with next run + last result (metadata only — input values never returned) |
+| `delete_schedule` | Permanently remove one local schedule |
 
 There is no `refresh_skills` tool — skill pack sync runs automatically on startup
 (`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails; nothing
@@ -517,6 +520,14 @@ before it ever started.
   fails with the existing actionable deadline message (naming the host and the blocking run) —
   it never hangs silently. `get_execution_status` (`run_registry.js`) surfaces a blocked run's
   `waiting_for_host` field so an agent can see *why* a run's step count isn't advancing.
+  **Cross-process extension (PROD-5, 2026-08-26):** the map above is process-local, which two
+  engine processes (chat-host-spawned + scheduler daemon-spawned) could silently bypass. When
+  server.js passes `locksDir` (= `<CONXA_DATA_DIR>/locks`), an in-process win must ALSO win the
+  heartbeat-stamped file-lock race for the same hosts (`file_lock.js`) before the acquire
+  resolves — same sorted order, same `isDone` contract, both layers released together. A lock
+  frees when its file disappears, its PID dies, or its heartbeat goes stale (>15s), so a crashed
+  engine releases its platforms within seconds of dying. Filesystem trouble degrades to
+  in-process-only locking (fail open); unit tests omit `locksDir` and stay hermetic.
 - **Everything else is already per-run.** `run.js`'s step loop, the tab registry (`tabs.js`), the
   telemetry tracker, the `runs/{runId}/` download workspace, and the deadline/cancel flags all
   live in the closure of one `execute_skill` call — no module-level shared state to isolate.
@@ -528,6 +539,90 @@ before it ever started.
 - **Known limitation.** In `watch: true` mode each parallel run is its own visible Chromium
   window, and `tabs.js`'s `bringToFront()` means concurrent visible runs compete for OS foreground
   focus — correct execution, a noisy desktop.
+
+---
+
+### 4.6 Standalone Runner & Scheduler (PROD-5)
+
+Skills can now run on a schedule with **no chat application open** — every chat app (Claude,
+ChatGPT, Cursor) becomes an optional front door rather than a dependency. Shipped 2026-08-26.
+The design was constrained by the Horizon-2 doctrine (`docs/PRD.md` §14.5, decided 2026-08-21):
+**execution workers and schedules live on customer-owned infrastructure; the cloud holds
+neither.** There is no cloud scheduler, no queue, no schedule sync.
+
+**Architecture — daemon as MCP client.** `scheduler_daemon.js` is a thin MCP *client*: it spawns
+the SAME host exe a chat host would spawn (`process.execPath` when packaged; `node app/server.js`
+in dev) and drives it over stdio JSON-RPC via the vendored MCP SDK's client classes, exactly as
+Claude Desktop does. Consequences:
+
+- Zero refactor of `server.js` — a bug in scheduling can degrade scheduling but never breaks
+  chat-driven execution.
+- Every engine guarantee applies unchanged to scheduled runs: auth pre-flight, startup sync,
+  telemetry tracking, the concurrency cap (`CONXA_MAX_CONCURRENT_RUNS`, §4.5), per-host platform
+  serialization (§4.5, now cross-process), recovery parks, deadlines.
+- The transport is constructed with an explicit `env: process.env` because the SDK otherwise
+  filters inherited environment variables to a safe subset — without it the engine would boot the
+  wrong dev/prod lane.
+- Scheduled runs always pass `watch: false` (headless; visible windows compete for OS focus) and
+  `_trigger: "scheduled"`, which surfaces in the engine's `execute_start` log line and on the
+  exec registry entry so scheduled runs are distinguishable from chat-driven ones.
+
+**Components** (all app-layer unless noted — subcommand fixes ship via normal app-vX.Y.Z updates):
+
+| Module | Role |
+|---|---|
+| `app/cron_lite.js` | Hand-rolled 5-field cron parser + `nextAfter()` (Vixie dom/dow OR rule, presets, DST-safe by wall-clock recomputation). No dependency added on purpose. |
+| `app/scheduler_store.js` | One JSON file per schedule under `<CONXA_DATA_DIR>/scheduler/schedules/`. Inputs encrypted at rest with AES-256-GCM under a dedicated machine key (`conxa-session/scheduler-v1` keychain account). Atomic tmp+rename writes. `listMeta()` never decrypts — chat-facing surfaces must not echo input values into transcripts. |
+| `app/scheduler_daemon.js` | 30s tick loop; pure `computeActions()` decision function; engine child lifecycle (lazy spawn, 10-min idle kill, bounded restart); single-instance guard (`daemon.lock` PID+heartbeat); `state.json` for tray/CLI; command-file inbox; daily logs under `scheduler/logs/`. |
+| `app/file_lock.js` | Cross-process layer of the platform mutex — see §4.5. |
+| `app/tray_windows.ps1` | Native Windows tray icon (PowerShell `NotifyIcon`, zero npm deps, nothing extra shipped). View-only: every action writes a command file; the daemon remains the single writer of truth. Exits when the daemon lock disappears. |
+| `app/scheduler_cli.js` | All `schedule …` / `runner …` subcommand logic. |
+| `host/cli_schedule.js` | Host-exe shim (frozen): resolves the app layer through the same min_host gate as install-time sync, then dispatches argv. Registered in `host-manifest.json`. |
+
+**Missed-run policy ("catch-up within grace").** Each schedule stores `next_run_at`. When a tick
+finds a pending slot: overdue ≤ `catchup_grace_minutes` → fire (this covers both normal due and
+post-boot/wake catch-up); older → ONE skip record fast-forwarded past every slot that is itself
+beyond grace, stopping at the first slot young enough to still fire. Capacity pressure DEFERS a
+run (retried next tick) rather than skipping it — staleness skips, busyness waits. A `busy`
+result from the engine's cap refusal leaves the slot pending; only completed/failed/error
+advance the slot bookkeeping. An ad-hoc `run_now` records `last_run` but never touches slot
+state.
+
+**Entry points.**
+
+- Chat: new core tools `create_schedule` / `list_schedules` / `delete_schedule` (§4.2).
+  `create_schedule` validates slug+cron up front and returns the resolved target hosts so an
+  agent can tell the user which schedules will serialize against each other.
+- CLI: `schedule add|list|show|remove|enable|disable|run-now|pause|resume|daemon` and
+  `runner start|stop|status|autostart on\|off|setup|doctor`. Autostart writes a per-user Startup
+  folder `.lnk` targeting `<exe> schedule daemon` (no admin rights); `doctor` checks Chromium,
+  skill packs, keychain reachability, cron validity, locks-dir writability, and (read-only) the
+  Windows AC standby timeout.
+
+**Local filesystem layout** (all under `<CONXA_DATA_DIR>`, never synced):
+
+```
+scheduler/
+  schedules/<sch_id>.json   encrypted-input schedule records (schema: docs/Backend-Schema.md §1.4)
+  state.json                last-known status snapshot (tray + CLI read; daemon sole writer)
+  daemon.lock               singleton guard {pid, heartbeat_at}
+  commands/*.cmd            inbox consumed by ticks: {"type":"pause"|"resume"|"quit"|"run_now", ...}
+  logs/scheduler-YYYY-MM-DD.log
+locks/<host>.lock           cross-process platform mutex files (§4.5)
+```
+
+**Release sequencing.** The `schedule`/`runner` dispatch is a HOST-exe change: it needs a
+host-vX.Y.Z release (and `host-manifest.json` closure update), after which everything else ships
+as ordinary app-layer updates. Old host + new app degrades gracefully (tools absent, no launcher
+entry points); new host + old app leaves the subcommands dormant behind the min_host gate's clear
+error.
+
+**Known limitations.** The same-app rule is enforced per machine — two runner VMs pointed at the
+same target platform by the customer will still overlap (documented in `docs/Runner-Machine.md`;
+fleet-level partitioning is the customer's scheduling responsibility). Session lifetime remains
+the unattended ceiling (PROD-4 / PRD §14.5 question 5 still open) — a dead login fails fast at
+pre-flight with an actionable message rather than breaking silently mid-run. Mac has no tray yet
+(daemon/CLI work everywhere the runtime does).
 
 ---
 
@@ -1123,6 +1218,18 @@ earlier download) leaves the step completely untouched, same fallback guarantee 
 case — this is what keeps the binding from ever handing an upload control a folder that also
 contains a file it was never meant to see. `downloaded_files_dir` is excluded from the
 auto-declared-input scan the same way `downloaded_file`/`downloaded_file_N` are.
+
+**A bulk upload deletes its consumed files from the shared download folder** (EXEC-19, resolved
+2026-08-25). The compile-time FIFO guarantee above only says a downloaded file is *bound* to at
+most one upload step — it doesn't stop that file from still sitting on disk in the run's shared
+`{CONXA_DATA_DIR}/runs/{runId}/` folder afterward. For a workflow chaining more than two
+download/upload hops in one run (A downloads → B bulk-uploads → C downloads more → D
+bulk-uploads), D's own `downloaded_files_dir` scan could otherwise pick up A's stale files
+alongside C's. `handlers.js`'s `upload` handler now deletes every file in `filePaths` right after
+`setInputFiles` succeeds, but only when the resolved value was an exact match for
+`inputs.downloaded_files_dir` — a hand-authored `{{file_path}}` that happens to point at a real
+directory is never touched. Deletion is best-effort (a failed unlink doesn't fail an
+already-successful upload step).
 
 **Downloads live in an isolated, self-cleaning per-run workspace, not the OS Downloads folder**
 (EXEC-10/W-7, resolved 2026-08-17). `server.js` saves every download under
