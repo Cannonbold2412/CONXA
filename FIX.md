@@ -2,6 +2,21 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The upload file picker now pops up in front of the recording window, not behind it — 2026-08-25
+When recording a workflow and clicking an upload button, Conxa's own file picker window opened up, but it appeared hidden behind the browser window you were recording in — like a paper sliding under a stack instead of on top. You'd have to know to alt-tab to find it. Now the file picker briefly jumps to the very front of all your windows while it's open, so it's immediately visible, then steps back to normal once you've picked a file (or cancelled) so it doesn't stay stuck on top of everything else afterward.
+
+---
+
+## A hands-on test drill for the self-healing tiers (Tier 2 and Tier 3) — 2026-08-25
+The testing guide got a new exercise ("Workflow 9") that shows you how to deliberately break a recorded workflow's target element in controlled ways and watch each level of the automatic recovery ladder do its job. You record a click on a practice page served from your own computer, then replay against mutated copies of that same page: one copy where the button was renamed (the free Tier 2 self-heal should still find it using backup identity info), one where every trace of the original button was rotated plus two decoy buttons added (the paid Tier 3 step where Claude picks the right element from a ranked shortlist), and one where the button is simply gone (the run must fail honestly, not click something wrong). Each replay has a pass/fail table, exact log lines to look for, and which code module to blame if it devolves. This turns the recovery design from "trust us, it works" into something anyone can verify by hand in about twenty minutes.
+
+---
+
+## Self-healing recovery now works in two smarter steps instead of one big expensive one — 2026-08-25
+When a recorded workflow step can't find its element on a changed website, the runtime used to send Claude one big combined rescue package: everything about the step plus every interactive element on the page, all in a raw data dump, plus screenshots — every single time, even for easy cases. Now it works like the best browser AI agents do, in two separate rounds. Round one (semantic): the runtime sends a short numbered list of the page's buttons and links, **sorted so the most likely match appears first** (it compares each live element against what was recorded about the original target), and simply asks Claude to reply with the number of the right one — instead of asking it to invent a selector from scratch, which is where AI agents most often guess wrong. The runtime still double-checks that pick against its own uniqueness rules before clicking anything. If round one doesn't fix it, round two (vision) goes out as a completely separate request with the screenshots, asking Claude to look at the page the way a human would. Two safety nets came with this: if the page hasn't changed at all between two consecutive rescue attempts, the runtime stops trying instead of burning the customer's Claude tokens on a frozen page; and if Claude names an item number that no longer exists (because a newer list went out), that stale answer is safely ignored and a fresh list is sent next time. Net effect for customers: steps that heal easily now cost roughly half the tokens they used to, stubborn steps cost about the same as before, and hopeless cases stop costing anything extra.
+
+---
+
 ## The big multi-tab, cross-domain test workflow now passes end to end — 2026-08-25
 The long "mega-workflow" test (42 steps across 6 browser tabs and 6 different websites — filebin, demoqa, the-internet, Render, Vercel, and a deployed app) has been recorded, compiled, and replayed successfully. It downloads files on one tab, uploads them on other tabs on different websites (the file handoff happened automatically, exactly as designed), switches back to the first tab, deploys a service on Render, and signs in through a website-opened popup. The testing documents (`docs/testing/exec-10-long-chain-workflows.md` and `TODO.md`) were updated to record this result. Still to do: shrink it into an automated CI fixture that runs without logins, plus a few side tests (single-site 30+ step chain, dynamic elements, running the same skill twice with different files).
 
@@ -489,12 +504,43 @@ Last round we added a slim sticky bar of section shortcuts under the top menu to
 - Removed docs/testing/exec-11-hard-mode-real-world.md entirely. The single runbook, docs/testing/exec-11-mega-workflow.md, is now fully self-contained: it explains what each part of the workflow tests (selector durability, dynamic data, concurrency, iframe handling, boundary refusals), includes the ready-to-paste self-mutating test page source inline, and has its own failure-routing rules at the end (wrong-row removal goes straight to PROD-3, evidence gaps to PROD-18, everything else to TEST-12).
 - Updated TODO.md TEST-12 to point only at the mega-workflow doc and restate its pass criteria.
 
+## 2026-08-25 - New test workflow for conditional pop-up handling (EXEC-1)
+- Added "Workflow 8" to docs/testing/exec-10-long-chain-workflows.md: one recorded skill that tests all three branch step types - try_dismiss, if_present, and wait_for_one_of.
+- It uses only the-internet.herokuapp.com (free, no login): a pop-up ad that appears sometimes tests the "close it if it's there, ignore it if not" steps, and the login page's success/failure messages test the "wait for whichever message shows up" step.
+- The doc walks through four stages: recording (with a warning not to record Logout), building the branches in Human Edit (where branch steps are actually created - the recorder only suggests them), building the skill pack (with a required-runtime setting that must be set by hand for now), and three replays: pop-up appears, pop-up doesn't appear, wrong password.
+- Also included: an optional bonus leg with truly random outcomes, four adversarial variants (unmatchable candidates, broken nested body, required-timeout, old runtime silently skipping), what each outcome proves, and where to log failures (reopen TODO.md EXEC-1).
+
 ---
 
 ## Explained how the Workflow Plan in Human Edit is created - 2026-08-25
 No code change. Traced the flow: during compile, one final LLM call (workflow_intent task) receives a compact summary of every recorded step (action, target text, page URL, per-step intent hint) plus the list of visited page URLs, and returns JSON with goal, per-step intents with verification anchors, decision points, and expected end state. That result is cached locally so recompiles reuse it, saved on the workflow as intent_graph, and shown read-only in Human Edit's Workflow Plan panel.
 
+## 2026-08-25 - Added AV-5 test: pop-up shows up at replay even though it was never recorded
+- Extended Workflow 8's adversarial variants in docs/testing/exec-10-long-chain-workflows.md with AV-5, the reverse of the other cases: the recording never saw a pop-up (so no branch step exists anywhere), but one appears anyway when the skill replays.
+- The doc explains how to stage it (record only the login on a profile where the pop-up already showed, then replay on a cleared profile so the pop-up appears mid-run) and what to watch: today there is no automatic "look for surprise pop-ups" check - the runtime only reacts after a click actually fails, tries exactly one Escape keypress at zero cost, and if that does not close it, it burns paid AI recovery or fails.
+- It also documents the designed fix: add a try_dismiss step by hand in Human Edit and republish, after which the run passes whether the pop-up shows up or not. The idea of the runtime automatically trying known dismissal patterns is already tracked in TODO.md under EXEC-5.
+- Failure routing added: wrong-tier escalation goes to EXEC-1; the one-Escape-only limitation itself is documented as EXEC-5's known gap, not a bug.
+
 ---
 
 ## The Workflow Plan and each step's intent now come from one AI call - 2026-08-25
 Previously two separate AI passes decided intents during a compile: one call per step produced the short machine label shown on each step in Human Edit, and a single end-of-compile call wrote its own different step descriptions for the Workflow plan panel - so the two views could disagree. Now the single workflow-plan call runs FIRST and produces both forms for every step (the machine token and the readable sentence). That means: the plan and the steps always tell the same story, compiles make about N fewer AI calls (one call instead of one-per-step plus one), and if that one call fails the old per-step behavior kicks in exactly as before, so nothing gets worse on a bad day. Old cached plans are ignored safely (they lack tokens), and all 927 existing tests still pass.
+
+## 2026-08-25 - The runtime now knows famous pop-up buttons (and remembers what works on each site)
+- Two new runtime files: app/dismiss_patterns.js (a short, fixed list of accept/close buttons used by the well-known cookie/consent toolkits like OneTrust, Cookiebot, TrustArc, Iubenda) and app/learned_dismissals.js (a small per-site memory of which dismiss button actually worked, stored under the runtime data folder, expiring after 30 days, capped in size).
+- When a click is blocked by a surprise pop-up, recovery now does: press Escape (as before), then try the famous accept/close buttons, then any button learned for this exact website - all before ever considering paid AI recovery. It stays reactive only (fires after a real blocked click, never scans pages on its own), never clicks decline/reject buttons (that is the customer's legal choice), and close-style selectors only match inside dialog/modal containers so ordinary page X icons can never be clicked by mistake.
+- Every successful auto-dismissal is written to the recovery audit log (tier1_dismiss_pattern) and saved to the per-site memory, so the next run on that site skips straight to the button that worked. This changes no skill files - learned data is runtime state only.
+- 13 new unit tests in runtime/test/unit/test_dismiss_patterns.js cover the safety rules (no decline selectors, close selectors must be dialog-scoped), the ladder order, the learned store's caps/TTL/host isolation, and the full interception-to-recovery flow. Full suite: 399 tests passing; recovery purity check still clean.
+- Docs updated: TODO.md EXEC-5 got an update bullet (what shipped, what remains: hooking AI-recovery wins into the learned store and one-click try_dismiss suggestions in Human Edit); docs/TRD.md section 10.2b describes the new remedy; the Workflow 8 AV-5 test steps now match the new behavior.
+
+## 2026-08-25 - Manual walkthrough written (and it caught two real bugs) for the pop-up cheat sheet
+- Added "AV-5a" to docs/testing/exec-10-long-chain-workflows.md: a step-by-step hands-on test for the known-popup-button feature, using a single self-contained local HTML page with four banner variants (real OneTrust button id, a decoy that clicks but dismisses nothing, a bespoke modal nothing recognizes, and a native dialog for the Escape path).
+- The fixture logs every click both on-screen and to the web server's log, so you can see exactly which buttons were clicked and in what order even after a headless run. The doc explains how to record, replay five scenarios, and read the evidence.
+- Writing and running this test caught two real implementation bugs before any customer could: (1) the ladder stopped at the first button that clicked successfully - if an earlier-list candidate clicks but dismisses nothing, it never reached the real winner and even "learned" the useless one; fixed so it now tries every present candidate in order, which also handles multi-layer consent dialogs; (2) a selector present in both the learned list and the static list got clicked twice per pass; fixed with de-duplication.
+- Also raised the per-candidate click budget from 400ms to 1200ms after measuring that a cold page's first click can legitimately take longer than 400ms.
+- Everything re-verified against real Chromium: the full manual scenario suite passes (banner dismissed, learning skips the dead-end button on run 2, Escape path works, bespoke modal correctly gets no free pass), all 401 unit tests pass, recovery purity check clean.
+
+---
+
+## Human Edit now shows each step in plain English (matching the Workflow plan) - 2026-08-25
+The step editor used to show and edit a short machine code like click_sign_in_button, while the Workflow plan panel showed a friendly sentence for the same step. Now the step editor shows that same friendly sentence as the thing you read and edit (falling back to the machine code only for older skills compiled before sentences existed). Saving stores the sentence under its own field, so the machine code - which the automation logic depends on - is never touched by typo-prone hand edits; it still appears as a small grey hint when it differs from the sentence. Tracked as TODO BUILD-21, added and resolved in the same day.

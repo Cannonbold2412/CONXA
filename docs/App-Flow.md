@@ -602,31 +602,42 @@ flowchart TD
     E -->|Resolved| D
     E -->|Fail| F{Recovery ceiling ≥ 3?}
     F -->|No — Build Studio| N[Deterministic failure: report, no agent handoff]
-    F -->|Yes — Claude/MCP| G[Park live page + fingerprint; return Tier 3/4 recovery request]
-    G --> H[Tier 3 semantic: intent + expected post-condition + executed-steps trace + live post-cascade DOM inventory → Claude]
-    G --> I[Tier 4 vision: screenshots → Claude]
-    H --> J[Claude resumes: execute_skill resume_from + step_overrides]
-    I --> J
+    F -->|Yes — Claude/MCP| G0{Which agent round is this for the step?}
+    G0 -->|First| G3[Tier 3 semantic — SEPARATE call: intent + expected post-condition + trace + ranked indexed digest of live elements → Claude nominates candidate_index]
+    G0 -->|Later| G4[Tier 4 vision — SEPARATE call: screenshots + refreshed digest → Claude identifies visually]
+    G3 --> J[Claude resumes: execute_skill resume_from + step_overrides candidate_index/selector]
+    G4 --> J
     J --> P{Park still live and fingerprint matches?}
     P -->|No| Q[Refuse resume: ask agent to restart the skill]
-    P -->|Yes| K[Adopt parked page; validate override selector against fingerprint]
+    P -->|Yes| K[Adopt parked page; resolve nominated index → derived selector; validate against fingerprint]
     K --> R{Unique match above margin?}
-    R -->|No| G
+    R -->|No| S{Page fingerprint unchanged across 2 consecutive rounds?}
+    S -->|Yes| T[Stagnation stop: fail deterministically, no further paid rounds]
+    S -->|No| G0
     R -->|Yes| D
     D --> L[verifyStep: check the step's post-condition assertions]
     L -->|All required pass| M[tracker.emit tier_ok + continue]
-    L -->|Required fails| F
+    L -->|Required fails| G0
 ```
 
-**Validated closing edge:** the agent's `step_overrides` selector is never applied blind. It is
-resolved against the live page and scored against the step's recorded fingerprint the same way
-`resolver.js` scores a compiled signal — a unique match is accepted, a multi-match must clear the
-uniqueness margin, and a no-match/ambiguous selector is rejected back into a fresh recovery
-request (`R -->|No| G` above) rather than silently acting on the first match. Separately, the
-parked page itself is only trusted if a cheap page-state fingerprint (url + interactive-element
-count + a body-text hash) still matches what was captured at park time — a page that has drifted
-while the agent was reasoning is discarded, and the resume is refused outright rather than
-silently continuing mid-plan on a fresh, different page. See `docs/TRD.md` §10.1.
+**Two separate agent calls, escalating.** Tier 3 (semantic, browser-use-style ranked indexed digest)
+and Tier 4 (vision, screenshots) are no longer one combined payload — the first agent round for a
+failed step is always Tier 3 (text-only, zero vision tokens), and only if that round does not fix
+the step does the runtime return a separate Tier 4 payload with screenshots. The runtime never
+calls Claude Desktop; each tier is a distinct *response* shape that the client answers with its own
+`execute_skill` resume call.
+
+**Validated closing edge:** the agent's `step_overrides` pick (a `candidate_index` nomination from
+the ranked digest, or an explicit selector) is never applied blind. A nominated index is resolved to
+a derived selector captured when the digest was built; it is then scored against the step's recorded
+fingerprint the same way `resolver.js` scores a compiled signal — a unique match is accepted, a
+multi-match must clear the uniqueness margin, and a no-match/ambiguous pick is rejected back into a
+fresh recovery request rather than silently acting on the first match. Separately, the parked page
+itself is only trusted if a cheap page-state fingerprint (url + interactive-element count + a
+body-text hash) still matches what was captured at park time — a page that has drifted while the
+agent was reasoning is discarded, and the resume is refused outright rather than silently continuing
+mid-plan on a fresh, different page. And if the page stops changing entirely across consecutive
+recovery rounds, the stagnation hard cap refuses to spend further tokens. See `docs/TRD.md` §10.1.
 
 **Re-verified recovery:** a "resolved" in Tier 1/2 above isn't the end of the story for a
 consequential step — every remedy that re-runs the action re-checks the post-condition

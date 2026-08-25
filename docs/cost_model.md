@@ -242,30 +242,33 @@ When a company ships a plugin update, customers pull the new version. The `/skil
 
 Recovery cost during execution is paid by the **customer's own Claude Desktop subscription or API key**, never by Conxa (see "What Conxa Actually Does" above). It's documented here anyway because it drives the cost/latency the *customer* experiences per step, and because compile-time decisions (selector quality, `recovery.json` fallback richness) directly change how often a run reaches the expensive tiers.
 
-The runtime resolves each step through up to four tiers (`docs/TRD.md` §10.1, the authoritative tier table): **Tier 1** (in-process exception ladder), **Tier 2** (in-process a11y/fallback re-derivation using `recovery.json`'s `selector_context`), and **Tier 3/4** (agent-mediated — the runtime bundles a semantic block and a vision block into one structured request back to the MCP client, which is Claude itself). Tiers 1–2 are zero-token by design; Tiers 3/4 are not a separate escalation from each other — they arrive as one combined recovery payload, so they're priced and timed together below.
+The runtime resolves each step through up to four tiers (`docs/TRD.md` §10.1, the authoritative tier table): **Tier 1** (in-process exception ladder), **Tier 2** (in-process a11y/fallback re-derivation using `recovery.json`'s `selector_context`), and **Tier 3/4** (agent-mediated — since 2026-08 these fire as **separate round-trips**: the first agent round for a failed step is Tier 3, a text-only ranked indexed candidate digest; only if that round fails does a separate Tier 4 vision request with screenshots go back to the MCP client). Tiers 1–2 are zero-token by design; Tiers 3 and 4 are now priced per round below.
 
 | Outcome | LLM tokens | Who pays | Added wall time vs. a normal step | Basis |
 |---|---|---|---|---|
 | **No recovery needed** (primary selector hits) | 0 | — | none — baseline step time (~6–8s, mostly page interaction/wait) | Observed baseline from `transient_recovered`/normal steps in a live run |
 | **Tier 1** (exception ladder) | 0 | — | ~none — absorbed into the same step timeout | `recovery.js` L1, in-process |
 | **Tier 2** (a11y/fallback re-derivation) | 0 | — | ~none — comparable to baseline (~6.4s observed) | `recovery.js` L2, reads `recovery.json`'s `selector_context`, in-process |
-| **Tier 3/4** (agent-mediated — semantic + vision, one combined request) | ~2,500–3,500 tokens/occurrence (screenshot ≈1,300–1,400 tokens by Claude's image formula, DOM/interactive-element inventory ≈800–2,000 tokens, Claude's `step_overrides` fix response ≈150–300 tokens; tool schemas are a one-time per-conversation cost, mostly cache-read after the first call) | **Customer's own Claude subscription/API — never Conxa** | **+10–15s** per occurrence (observed: T1/T2 exhaustion ~10–17s before escalating, then ~5–8s of agent reasoning latency to produce the fix) | Real measured run: two deliberately-broken steps in an 8-step workflow, recovered via Tier 3/4, `~20–22s` total step time vs. ~7s baseline |
+| **Tier 3** (agent-mediated semantic round — first agent round for the step) | ~900–2,300 tokens/round (ranked indexed digest ≈700–2,000 tokens — usually smaller than the old unranked JSON dump since it's rank-capped — + Claude's nomination response ≈150–300) | **Customer's own Claude subscription/API — never Conxa** | +5–8s per round (T1/T2 exhaustion ~10–17s before escalating, then agent reasoning latency) | Text-only: no screenshot is captured or sent in this round |
+| **Tier 4** (agent-mediated vision round — fires only if the Tier 3 round didn't fix the step) | ~1,500–2,400 tokens/round (screenshot ≈1,300–1,400 by Claude's image formula + refreshed digest ≈100–600 + fix response ≈150–300) | **Customer's own Claude subscription/API — never Conxa** | additional +5–8s round-trip | Separate call after a failed T3 round |
+
+A step that heals on the first (semantic) round therefore costs roughly half of the old combined payload; the old ~3,000-token combined figure is now the worst case spanning TWO rounds (T3 then T4). A stagnation hard cap stops escalation entirely when the page fingerprint is unchanged across consecutive recovery rounds, so a frozen page can no longer burn repeated paid rounds.
 
 **Caveats on the token figures:** these are estimates, not exact counts. Measuring the *real* number requires either an Anthropic API key (to run `messages.count_tokens` against the reconstructed recovery payload) or Console usage access — neither was available when this was measured, and the recovery screenshot/DOM payload isn't persisted to disk, so it can't be re-measured after the fact. The wall-clock timings, by contrast, are exact — pulled directly from `~/.conxa/logs/recovery.log` timestamps (`terminal_failure` → `agent_recovery_requested` → `agent_override_applied` → `recovery_park_resumed`).
 
 #### Tier 3 vs. Tier 4 Cost Breakdown
 
-The runtime bundles Tier 3 (semantic) and Tier 4 (vision) into one combined recovery request today — there's no code path that fires one without the other. The table below splits out what each *signal* contributes to that combined payload, so the ~2,500–3,500 combined figure above isn't a black box:
+Since 2026-08, Tier 3 (semantic) and Tier 4 (vision) fire as **separate round-trips**, not one combined request: the first agent round for a failed step is always Tier 3 (no screenshots), and only a failed T3 round produces a separate T4 vision payload. The historical figures below are kept for reference — the "combined" row was the old single-payload behavior:
 
 | Signal alone | What's in it | ~Tokens/occurrence |
 |---|---|---|
-| **Tier 3 only** (semantic) | DOM/interactive-element inventory (~800–2,000) + Claude's `step_overrides` fix response (~150–300) | **~1,400–1,850** (typical ~1,625) |
-| **Tier 4 only** (vision) | Screenshot, Claude's image-token formula (~1,300–1,400) + fix response (~150–300) | **~1,450–1,700** (typical ~1,575) |
-| **Tier 3 + 4 combined** (what actually happens today) | DOM inventory + screenshot + **one** shared fix response (not two — the combined request gets one fix, not one per signal) | **~2,500–3,500** (typical ~3,000) |
+| **Tier 3 only** (semantic — now the normal first round) | Ranked indexed candidate digest (~700–2,000; rank-capped so it's usually smaller than the old raw JSON inventory at ~800–2,000) + Claude's nomination fix response (~150–300) | **~900–2,300** (typical ~1,500) |
+| **Tier 4 only** (vision — now a separate second round) | Screenshot, Claude's image-token formula (~1,300–1,400) + refreshed digest + fix response (~150–300) | **~1,450–1,700+** |
+| **Tier 3 + 4 combined** (pre-2026-08 single payload; today = worst case across both rounds of a stubborn step) | DOM inventory + screenshot + **one** shared fix response | **~2,500–3,500** (typical ~3,000) |
 
 #### Worked Examples — Full Workflow Run
 
-Using the ~3,000-token typical combined Tier 3/4 cost and the actual 8-step workflow this cascade was tested against. **Baseline** (~1,200 tokens) is the one-time cost of a clean `execute_skill` round trip: the MCP tool schemas (mostly a cache-read after the first call in a conversation), the tool call itself, and a short "Done." result — no recovery payload at all. Each recovery occurrence is additive on top of that:
+Using the actual 8-step workflow this cascade was tested against. **Baseline** (~1,200 tokens) is the one-time cost of a clean `execute_skill` round trip: the MCP tool schemas (mostly a cache-read after the first call in a conversation), the tool call itself, and a short "Done." result — no recovery payload at all. Each recovery occurrence is additive on top of that; since the tier split, a step that heals on its first (semantic) round adds ~1,500 instead of ~3,000, and only stubborn steps pay for both rounds:
 
 | Scenario | Tier 3/4 occurrences | Token math | **Total tokens** |
 |---|---|---|---|
