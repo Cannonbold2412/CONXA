@@ -235,6 +235,10 @@ ipcMain.handle("dialog:pick-file", async (event, opts) => {
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
+    // The recording browser is a separate top-level window from another process —
+    // focus() alone doesn't force us above it in z-order on Windows. Pin on top for
+    // just the dialog's lifetime so the picker isn't stuck behind the recorder.
+    win.setAlwaysOnTop(true);
   }
   let resolvedDefaultPath = defaultPath;
   if (resolvedDefaultPath) {
@@ -252,10 +256,14 @@ ipcMain.handle("dialog:pick-file", async (event, opts) => {
     ...(Array.isArray(filters) && filters.length ? { filters } : {}),
     ...(resolvedDefaultPath ? { defaultPath: resolvedDefaultPath } : {}),
   };
-  // Attach the dialog to the Studio window (modal) so it opens centered on top of it
-  // instead of floating behind other windows.
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, dialogOpts);
-  return canceled ? null : filePaths;
+  try {
+    // Attach the dialog to the Studio window (modal) so it opens centered on top of it
+    // instead of floating behind other windows.
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, dialogOpts);
+    return canceled ? null : filePaths;
+  } finally {
+    win?.setAlwaysOnTop(false);
+  }
 });
 
 function windowFromEvent(event) {
