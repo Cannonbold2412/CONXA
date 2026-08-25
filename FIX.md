@@ -2,6 +2,26 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The big multi-tab, cross-domain test workflow now passes end to end — 2026-08-25
+The long "mega-workflow" test (42 steps across 6 browser tabs and 6 different websites — filebin, demoqa, the-internet, Render, Vercel, and a deployed app) has been recorded, compiled, and replayed successfully. It downloads files on one tab, uploads them on other tabs on different websites (the file handoff happened automatically, exactly as designed), switches back to the first tab, deploys a service on Render, and signs in through a website-opened popup. The testing documents (`docs/testing/exec-10-long-chain-workflows.md` and `TODO.md`) were updated to record this result. Still to do: shrink it into an automated CI fixture that runs without logins, plus a few side tests (single-site 30+ step chain, dynamic elements, running the same skill twice with different files).
+
+---
+
+## The "Ready to Package" light now actually turns green after publishing — 2026-08-25
+A code review caught a follow-up bug in yesterday's change that made the last step on a workflow's row stay orange forever. The light was set to turn green only when the skill's status read "published" — but when you publish from Build Studio, the cloud saves it with the status "ready", and only a separate admin release action ever changes that to "published". So doing exactly what the screen told you to do (publishing) never turned the light green. Now either status counts: if your skill has been uploaded to the Conxa Cloud at all, the "Ready to Package" node turns green as intended.
+
+---
+
+## Recording now captures the browser's Back and Forward buttons — 2026-08-25
+When you recorded a workflow that used the browser's Back button — for example: work on tab A, open tab B, come back to tab A, press Back, then click something on the page you landed on — that Back press simply vanished from the recording. The recorder only "sees" things that happen inside the web page itself (clicks, typing, scrolls), and pressing the browser's own Back button doesn't produce any of those signals. So when the workflow replayed, it skipped the Back entirely and usually ended up in the wrong place, because nothing told the browser to go back. Now the recorder watches each tab's browsing history directly (the same list the Back button uses) and, whenever a step lands somewhere because you went Back or Forward, records that as its own visible step in the editor ("Browser back" / "Browser forward"). At replay time the runtime presses the same history buttons on the exact tab where you pressed them — it never fakes the move by re-typing a web address, so redirects, one-page apps, and login state all behave exactly like they did while you were recording. A couple of safety rules keep this honest: ordinary link clicks and page reloads are never mistaken for a Back/Forward (a missed press just behaves like before; a wrongly-guessed press would break replays), and two Back presses in a row stay as two steps instead of being squashed into one. Covered by new automated checks across recording, compiling, saved-skill export, and replay dispatch, plus the CI test workflow which now literally clicks a link, goes Back, and verifies it landed where it should.
+
+---
+
+## The login double-check before a test run now takes seconds instead of about a minute — 2026-08-25
+Even after the earlier fix that skips checking sign-ins for websites a workflow never uses, a workflow that genuinely needs two or more website logins (like the Render + Vercel one) still paid a long wait at the start of every test: the log showed "group_auth_validation" taking over 60 seconds before the first step could run. Three things were stacking up. First, the system was opening a brand-new hidden browser just to check each website's login — and those browsers fighting over the computer's resources made them effectively take turns, doubling the wait. Now all the checks share one hidden browser instead of launching one each, which alone cuts most of the cost. Second, only the websites the workflow is actually gated on get checked against the live site now; the other saved logins in the group are simply loaded and handed to the browser as-is, since they were never blocking anything anyway. Third, once a login check passes, the result is remembered for 6 hours — so running the same workflow again within that window skips the whole online check entirely and starts almost immediately. If you log in again manually, the memory is thrown away automatically so it never trusts an outdated answer. Net effect: a repeat test run saves roughly a minute of waiting, and even a first run after a long gap is several times faster. Verified with new automated checks for the remember-and-expire behavior plus all existing runtime checks passing.
+
+---
+
 ## A test run could sit frozen for over a minute right after the first step started — 2026-08-24
 Testing a workflow that started with "go to this website" could get stuck for 60-70 seconds with the browser window just sitting blank, before anything visibly happened. The cause: right before that first step ran, the program paused to wait for the page to load on its own — but nothing was going to load it on its own, because the very next instruction was the one that would actually send the browser to that website. It was like waiting at a red light that was never going to turn green, when you were the one about to drive through the intersection yourself. Now the program only waits for a page to load itself in the one case where that's actually true — a new browser tab a website opened on its own, which really does take a moment to fill in. It also now says so in the test log whenever it genuinely has to wait for something, instead of going quiet, so a real wait never looks like a freeze again.
 
@@ -412,3 +432,59 @@ All 335 unit tests pass; all three CI guards pass. The shared editor module is c
 **Why:** Recording mistakes were punishing: there was no undo and no second chance, so one bad take meant rebuilding the whole workflow from scratch.
 
 **Files touched:** conxa-builder/python/handlers/session.py, conxa-builder/electron/renderer/src/components/StagePath.tsx, conxa-builder/electron/renderer/src/pages/GroupPage.tsx, docs/App-Flow.md, FIX.md.
+
+## 2026-08-25 - Changed: "Ready to Package" now stays amber until the skill is actually published
+
+**What changed:** On the group page, a workflow's last lifecycle step ("Ready to Package") used to turn green as soon as its test passed. Now it turns amber/orange after the test passes and only turns green once that skill has actually been published (a release uploaded to Conxa Cloud). The amber node is still clickable and takes you to the Publish page.
+
+**Why:** Green meant "done", but the job isn't done until the skill is shipped - amber says "tested and ready, go publish it".
+
+**Files touched:** conxa-builder/electron/renderer/src/components/StagePath.tsx, conxa-builder/electron/renderer/src/pages/GroupPage.tsx, FIX.md.
+
+## 2026-08-25 - Homepage hero headline update
+Changed the homepage hero headline from 'Do the process once. Your AI does it from then on.' to 'Teach AI Once. Let It Execute The Workflow Forever.' in Hero.tsx.
+
+## 2026-08-25 — Pricing section no longer depends on the backend
+- Problem: The homepage/pricing cards showed "Pricing is temporarily unavailable" whenever the backend plans endpoint failed.
+- Fix: The pricing table on the marketing pages now uses its own built-in copy of the four tiers (Free, Starter, Pro, Enterprise) with the same prices and features the backend defines. No network call needed, so pricing always shows.
+- Note: If plan prices or features ever change in the backend, the static table in PricingTable.tsx must be updated to match.
+
+## 2026-08-25 - Homepage comparison table rewritten in plain business language
+- Problem: The "how we compare" table on the homepage was too technical. It listed engineering features (no code, deterministic runs, etc.) instead of answering the questions a company actually asks when deciding to buy.
+- Fix: Replaced the technical checklist with seven plain-language questions: How fast do we see value? Who on our team can maintain it? What happens when a screen changes? Can we trust the output? What does it really cost us? Does it work with our legacy tools? Can we productise it for our customers?
+- Also merged "browser scripts" into "in-house engineering" so there are fewer columns and it reads easier, especially on phones.
+- The honest "beats us at" notes under each competitor were kept, because admitting where alternatives win makes the rest of the table believable.
+- File touched: conxa-cloud/frontend/src/components/marketing/sections/Comparison.tsx
+
+## 2026-08-25 - Comparison table axes swapped
+- Changed: The homepage comparison table now reads the other way around. The questions (How fast do we see value? etc.) run down the left side as rows, and the five approaches (Conxa, Traditional RPA, Integration platforms, In-house engineering, Generic AI browser agents) sit across the top as columns.
+- Why: Easier to compare one competitor against Conxa in a single column scan instead of jumping across a row.
+- File touched: conxa-cloud/frontend/src/components/marketing/sections/Comparison.tsx
+
+## 2026-08-25 - New harder test plan for Conxa (EXEC-11)
+- Added docs/testing/exec-11-hard-mode-real-world.md, a "hard mode" test plan that goes beyond the older exec-10 workflows.
+- It covers 12 tougher scenarios: pages that rewrite themselves while a skill runs, elements that only appear after scrolling/waiting, logins expiring mid-run, replaying with different data than recorded, removing the right item after the list changes twice, chaining two skills' data, two skills running at once on the same and different sites, an overnight endurance run with a failure injected mid-way, deep iframe hopping, and honest-failure checks for canvas apps and CAPTCHAs.
+- Each workflow lists exact steps, free sites or a ready-to-use local HTML fixture, what pass and fail look like, and where to report findings (TODO.md).
+
+## The marketing homepage got a readability and tidy-up pass - 2026-08-25
+A design audit of the conxa.in homepage found ten usability issues, and this change fixes them all. In plain terms: the page used lots of slightly-different font sizes (including some too small to read comfortably), too many slightly-different shades of text grey and accent colour, and too many slightly-different corner roundings on boxes — each on its own is invisible, but together they make the page feel less polished. All of those now come from one small shared set: text sits at a consistent ladder of sizes with nothing smaller than 12px (this also fixes the two flagged spots: the screenshot caption in the "Four steps" section and the "checks passed" line in the reliability walkthrough), text colours collapse to the site's core palette, and box corners use just three roundings plus circles. Two layout issues were fixed as well: the step labels beside the big screenshots in "Four steps" now get breathing room so they visually match the size of the picture next to them, and the "what this is worth in your numbers" summary at the end of the Examples section now sits in its own solid card with extra space above it, instead of blending into the card grid. Each example card was simplified — the buyer line and the system-chain line merged into one quiet line, with a thin divider before the main story, so cards scan faster. The biggest fix: because the homepage is very long, pricing and FAQs used to be buried; there is now a slim sticky section bar (Demo / How it works / Examples / Reliability / Security / Pricing / FAQ) that stays visible under the top menu as you scroll, and clicking any section name jumps you straight there without the heading hiding under the menus. The top menu's "Pricing" link now takes you to the pricing section on the homepage rather than a separate page.
+
+---
+
+## 2026-08-25 - EXEC-11 collapsed into one mega-workflow runbook
+- Added docs/testing/exec-11-mega-workflow.md: all 12 hard-mode tests combined into a single ~60-step recording (6 sites, 4 tabs) plus a numbered, do-this-by-hand replay gauntlet.
+- Phase 0 = manual setup (local self-mutating test page, demo accounts, evidence tailing). Phase 1 = the exact recording order across the mutator page, scroll-load, iframes, cart removal, search and database lookup. Phase 3 = 8 replays that turn the one skill into every original test: clean pass, different data, throttled timeouts, mid-run logout sabotage, two simultaneous runs on same/different platforms with cancel, canvas + CAPTCHA refusal checks, and an overnight 20-run loop with a failure injected at run 7.
+
+## The homepage now has one navigation bar instead of two - 2026-08-25
+Last round we added a slim sticky bar of section shortcuts under the top menu to make buried pricing and FAQs easier to reach - but that left two stacked navigation bars doing overlapping jobs, with four links appearing in both. They are now merged into a single fixed top bar: the section shortcuts (How it works, Examples, Security, Pricing, FAQ) live directly in the main menu alongside Docs, Sign in, and Get started, and the separate sticky strip is gone entirely. As you scroll the homepage, the menu quietly highlights which section you are currently reading, so it still doubles as a you-are-here guide. Clicking any section name jumps you to it, with headings landing neatly below the single bar instead of leaving a leftover gap sized for two bars.
+
+---
+
+## 2026-08-25 - Added governance-enforcement item (PROD-18) and hard-mode testing item (TEST-12) to TODO.md
+- PROD-18 (P2, Product Strategy): the governance *enforcement* layer. Conxa already records an audit trail of every run and build; this item covers the three things audit visibility alone does not give enterprise buyers: (1) tamper-resistant run evidence - per-run receipts and server-side checks so a run's traces cannot quietly vanish with local logs; (2) pre-action policy gates - compile-time rules like "pause for approval before this step" or "never run payroll skills outside work hours", enforced by the runtime before clicking, not just recorded afterwards; (3) a compliance-posture document mapping all of it to what SOC2 / finance / HR procurement asks. Deliberately reuses EXEC-21's approval-pause mechanism and PROD-3's danger labels instead of duplicating them.
+- TEST-12 (P0, Testing & Cleanup): execute the two new hard-mode test docs end to end (the 12-workflow suite plus its single mega-recording collapse), file every failure per their mapping table.
+- Recreated docs/testing/exec-11-hard-mode-real-world.md after it went missing from disk, now pointing findings at TEST-12/PROD-18 instead of the retired EXEC-11 backlog ID; fixed the same stale reference in exec-11-mega-workflow.md. Dashboard counts updated (93 remaining of 116).
+
+## 2026-08-25 - Hard-mode testing consolidated into one self-contained document
+- Removed docs/testing/exec-11-hard-mode-real-world.md entirely. The single runbook, docs/testing/exec-11-mega-workflow.md, is now fully self-contained: it explains what each part of the workflow tests (selector durability, dynamic data, concurrency, iframe handling, boundary refusals), includes the ready-to-paste self-mutating test page source inline, and has its own failure-routing rules at the end (wrong-row removal goes straight to PROD-3, evidence gaps to PROD-18, everything else to TEST-12).
+- Updated TODO.md TEST-12 to point only at the mega-workflow doc and restate its pass criteria.
