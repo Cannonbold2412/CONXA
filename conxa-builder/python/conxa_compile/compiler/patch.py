@@ -222,6 +222,11 @@ def _apply_top_level_step_fields(
         context["page_url"] = url
         signals["context"] = context
         step["signals"] = signals
+    if "semantic_description" in patch and isinstance(patch["semantic_description"], str):
+        # Human-readable per-step description (the workflow-intent graph's prose,
+        # edited from Human Edit). Deliberately NOT funneled into intent/final_intent —
+        # the machine token drives deterministic logic and is validated separately.
+        step["semantic_description"] = str(patch["semantic_description"]).strip()
     if "check_kind" in patch and isinstance(patch["check_kind"], str):
         step["check_kind"] = str(patch["check_kind"]).strip() or "url"
     if "check_pattern" in patch and isinstance(patch["check_pattern"], str):

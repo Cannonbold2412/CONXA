@@ -54,6 +54,11 @@ def _merge_step_shell(step: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
             sem["llm_intent"] = resolved
         signals["semantic"] = sem
         out["signals"] = signals
+    if "semantic_description" in patch and isinstance(patch["semantic_description"], str):
+        # Human-readable per-step description (the workflow-intent graph's prose).
+        # Deliberately NOT funneled into intent/final_intent — the machine token
+        # drives deterministic logic and stays validated separately.
+        out["semantic_description"] = str(patch["semantic_description"]).strip()
     if "value" in patch:
         out["value"] = patch["value"]
         # Keep input_binding in sync with the edited value instead of leaving it stale: a
@@ -207,6 +212,11 @@ def validate_editor_patch(
         if not sanitize_intent_token(raw, ""):
             raise ValueError("invalid_intent_slug")
 
+    if "semantic_description" in patch:
+        raw = str(patch.get("semantic_description") or "").strip()
+        if not raw:
+            raise ValueError("semantic_description_empty")
+
     act = action_name(merged).lower()
     spec = action_spec(act)
     if not is_supported_action(act):
@@ -217,7 +227,7 @@ def validate_editor_patch(
             raise ValueError("recording_marker_steps_are_read_only")
         return
     if act == "navigate":
-        invalid_keys = sorted(set(patch) - {"intent", "action", "url", "validation", "recovery", "frame"})
+        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "url", "validation", "recovery", "frame"})
         if invalid_keys:
             raise ValueError("navigate_step_allows_only_url_intent_validation_recovery")
         action_patch = patch.get("action")
@@ -229,7 +239,7 @@ def validate_editor_patch(
             raise ValueError("navigate_url_must_be_http_url")
         return
     if act == "scroll":
-        invalid_keys = sorted(set(patch) - {"intent", "action", "frame"})
+        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "frame"})
         if invalid_keys:
             raise ValueError("scroll_step_allows_only_intent_and_action")
         action_patch = patch.get("action")
@@ -247,7 +257,7 @@ def validate_editor_patch(
                 raise ValueError("scroll_amount_out_of_range")
         return
     if act in {"wait", "screenshot"}:
-        invalid_keys = sorted(set(patch) - {"intent", "action", "validation", "recovery", "value", "frame"})
+        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "validation", "recovery", "value", "frame"})
         if invalid_keys:
             raise ValueError(f"{act}_step_allows_only_action_intent_validation_recovery")
     if act in {"check", "assert"}:
@@ -255,6 +265,7 @@ def validate_editor_patch(
             set(patch)
             - {
                 "intent",
+                "semantic_description",
                 "action",
                 "check_kind",
                 "check_pattern",
@@ -270,7 +281,8 @@ def validate_editor_patch(
             raise ValueError("check_step_allows_only_check_fields")
     if act in {"if_present", "try_dismiss", "wait_for_one_of"}:
         invalid_keys = sorted(
-            set(patch) - {"intent", "action", "target", "frame", "branch", "validation", "recovery"}
+            set(patch)
+            - {"intent", "semantic_description", "action", "target", "frame", "branch", "validation", "recovery"}
         )
         if invalid_keys:
             raise ValueError("branch_step_allows_only_target_branch_intent_validation_recovery_frame")

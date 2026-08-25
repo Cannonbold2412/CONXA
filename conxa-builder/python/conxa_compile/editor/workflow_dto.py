@@ -551,7 +551,10 @@ def step_to_dto(
         action_type=str(action_name(step)),
         action_payload=dict(step.get("action") or {}) if isinstance(step.get("action"), dict) else {"action": action_name(step)},
         action_spec=action_spec_dict(action_name(step)),
-        semantic_description=describe_step(step, step_index),
+        # Prefer the stored human-readable description (workflow-intent graph prose,
+        # editable in Human Edit) over describe_step's recomputed generic label;
+        # fall back for steps compiled before the graph carried prose.
+        semantic_description=str(step.get("semantic_description") or "").strip() or describe_step(step, step_index),
         intent=intent_top,
         final_intent=final_intent,
         url=_step_url(step),

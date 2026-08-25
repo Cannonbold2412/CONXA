@@ -227,3 +227,39 @@ class TestBranchBodyStepValidation:
         full recovery/validation editability."""
         step = self._nested_click_step()
         validate_editor_patch(step, {"recovery": {"max_attempts": 3}}, {}, in_branch_body=False)
+
+
+def test_semantic_description_patch_is_accepted_for_every_action_shape():
+    """BUILD-21: the Human Edit step form edits the workflow-intent graph's prose via a
+    `semantic_description` patch key. It must pass the per-action allowlists (navigate,
+    scroll, wait/screenshot, check/assert, branch) and persist via the real save path
+    (compiler/patch._apply_top_level_step_fields) without touching the machine token."""
+    from conxa_compile.compiler.patch import _apply_top_level_step_fields
+
+    cases = [
+        ({"action": {"action": "navigate", "url": "https://x.test/a"}, "intent": "go_to_dashboard", "url": "https://x.test/a"}, {"semantic_description": "Open the dashboard page."}),
+        ({"action": {"action": "scroll"}, "intent": "scroll_viewport"}, {"semantic_description": "Scroll down to load more results.", "action": {"action": "scroll", "delta": 300}}),
+        ({"action": {"action": "wait"}, "intent": "wait_short", "value": 1000}, {"semantic_description": "Wait for the page to settle."}),
+        ({"action": {"action": "check"}, "intent": "check_state"}, {"semantic_description": "Confirm the banner is gone."}),
+        ({"action": {"action": "click"}, "intent": "click_accept", "target": {"primary_selector": "text=Accept", "fallback_selectors": []}, "signals": {}}, {"semantic_description": "Accept the cookie consent banner."}),
+        ({"action": {"action": "try_dismiss"}, "intent": "try_dismiss_interstitial", "target": {"primary_selector": "#ad", "fallback_selectors": []}, "signals": {}, "recovery": {}}, {"semantic_description": "Close the ad if it appears."}),
+    ]
+    for step, patch in cases:
+        # Gate: prose must pass every per-action allowlist.
+        validate_editor_patch(step, dict(patch), {})
+        # Persistence: the real save path stores it and leaves the token untouched.
+        merged = dict(step)
+        _apply_top_level_step_fields(merged, dict(patch), sanitize_intent=False)
+        assert merged["semantic_description"] == patch["semantic_description"]
+        assert merged["intent"] == step["intent"]
+
+
+def test_semantic_description_patch_rejects_empty():
+    step = {
+        "action": {"action": "click"},
+        "intent": "click_accept",
+        "target": {"primary_selector": "text=Accept", "fallback_selectors": []},
+        "signals": {},
+    }
+    with pytest.raises(ValueError, match="semantic_description_empty"):
+        validate_editor_patch(step, {"semantic_description": "   "}, {})

@@ -88,7 +88,10 @@ function defaultsFromStep(step: StepEditorDTO): FormValues {
   const actionPayload = step.action_payload || {}
   const anc = anchorRowsFromObjects(step.anchors_signals || [])
   return {
-    intent: step.intent || step.final_intent,
+    // Show the workflow-intent graph's readable sentence when present (same source as the
+    // Workflow plan panel); fall back to the machine token for steps compiled before
+    // prose existed. Edits go back as `semantic_description` patches, never as `intent`.
+    intent: step.semantic_description?.trim() || step.intent || step.final_intent || '',
     url: step.url || '',
     scroll_mode: step.scroll_mode === 'scroll_to_locate' ? 'scroll_to_locate' : 'scroll_only',
     scroll_amount: step.scroll_amount === null || step.scroll_amount === undefined ? '' : String(step.scroll_amount),
@@ -246,7 +249,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
           throw err
         }
         const patch: Record<string, unknown> = {
-          intent: values.intent,
+          semantic_description: values.intent,
           url,
           action: {
             action: 'navigate',
@@ -285,7 +288,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
         }
         const ms = Number.parseInt(rawMs, 10)
         const patch: Record<string, unknown> = {
-          intent: values.intent,
+          semantic_description: values.intent,
           value: String(ms),
           action: {
             action: 'wait',
@@ -311,7 +314,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       }
       if (actionKind === 'screenshot') {
         const patch: Record<string, unknown> = {
-          intent: values.intent,
+          semantic_description: values.intent,
           action: {
             action: 'screenshot',
           },
@@ -334,7 +337,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       }
       if (isCheckStep) {
         const patch: Record<string, unknown> = {
-          intent: values.intent,
+          semantic_description: values.intent,
           action: {
             action: actionKind,
           },
@@ -366,7 +369,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       }
       if (step.flags.is_scroll) {
         const patch: Record<string, unknown> = {
-          intent: values.intent,
+          semantic_description: values.intent,
           action: {
             action: 'scroll',
           },
@@ -413,7 +416,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       const fallbackSelectors = selectors.slice(1)
       const anchors = parseAnchorRows(values.anchors)
       const patch: Record<string, unknown> = {
-        intent: values.intent,
+        semantic_description: values.intent,
         action: {
           action: actionKind,
         },
@@ -539,6 +542,11 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
               disabled={!canEdit('intent')}
               {...methods.register('intent')}
             />
+            {step.intent && step.intent.trim() !== methods.getValues('intent').trim() ? (
+              <p className="text-muted-foreground font-mono text-xs">
+                Machine intent: {step.intent}
+              </p>
+            ) : null}
           </div>
           {isCheckStep ? (
             <>

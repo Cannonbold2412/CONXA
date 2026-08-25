@@ -109,6 +109,7 @@ export const errorMessages: Record<string, string> = {
 
   // Step editor — patch validation (patch_gate.py)
   intent_empty: "Describe what this step does before saving.",
+  semantic_description_empty: "Describe what this step does before saving.",
   invalid_intent_slug: "That description has characters that can't be used. Use plain words.",
   intent_required_for_non_scroll_step: "Describe what this step does before saving.",
   unsupported_action_kind: "This action type isn't editable here.",
