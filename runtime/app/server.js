@@ -490,6 +490,21 @@ async function _buildFailureResponse(page, errObj, resolvedEntry, runTracker, st
   );
 }
 
+// EXEC-13: ai_review pause/resume — a sibling to the Tier 3/4 recovery machinery above, not
+// part of it (see review_pause.js's header). Kept as its own module/requires rather than folded
+// into failure_response.js because a review is a planned pause, not a failure, and must never
+// touch recovery_stage.js's escalation state or retry_budget.js's retry-budget map.
+const {
+  checkReviewRetry,
+  clearReviewRetry,
+  validateReviewAnswer,
+  buildReviewRequest,
+} = require("./review_pause");
+
+function _buildReviewRequest(page, step, stepIndex, resolvedEntry, opts) {
+  return buildReviewRequest(page, step, stepIndex, resolvedEntry, opts);
+}
+
 // ─── Tool handler ─────────────────────────────────────────────────────────────
 async function _handleTool(name, args, extra) {
   const text = (t) => ({ content: [{ type: "text", text: t }] });
@@ -605,7 +620,7 @@ async function _handleTool(name, args, extra) {
     const watch = args.watch !== false;
     const runs = name === "execute_sequence"
       ? (Array.isArray(args.skills) ? args.skills : [])
-      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides }];
+      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides, review_results: args.review_results }];
 
     if (runs.length === 0) return err("No skills provided.");
 
@@ -709,6 +724,10 @@ async function _handleTool(name, args, extra) {
         inputs:     (run.inputs && typeof run.inputs === "object") ? run.inputs : {},
         resumeFrom: isResume ? run.resume_from : 0,
         isResume,
+        // EXEC-13: ai_review answers keyed by step index, parallel to step_overrides above but
+        // never run through applyStepOverrides — an ai_review step carries no selector for
+        // applyStepOverrides to inject, only a structured answer bound into `inputs`.
+        reviewResults: (run.review_results && typeof run.review_results === "object") ? run.review_results : {},
       });
     }
 
@@ -882,6 +901,98 @@ async function _handleTool(name, args, extra) {
         `since the recovery request was issued. Call execute_skill again for "${primary.entry.slug}" without ` +
         `resume_from to restart the skill from the beginning.`
       );
+    }
+
+    // EXEC-13: resuming an ai_review pause is the review sibling of the override-adoption block
+    // above — same park (same `_parkKey`, same live page), but the resumed step carries a
+    // structured answer instead of a corrected selector. Unlike an override, divergence and an
+    // invalid answer do NOT refuse outright: a review answer is a judgment about page STATE, so
+    // if the state changed (or the answer didn't parse) the right move is a bounded re-ask
+    // against the current page, not a hard refusal — see review_pause.js's header.
+    const _resumeReviewStep = AGENT_RECOVERY_ENABLED && resolved.length === 1 && primary.isResume
+      && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom].type === "ai_review";
+    if (_resumeReviewStep) {
+      const stepDef = primary.steps[primary.resumeFrom];
+      const reviewPark = _getParkedRecovery(_parkKey);
+      const answerKey = String(primary.resumeFrom);
+      const hasAnswer = Object.prototype.hasOwnProperty.call(primary.reviewResults, answerKey);
+
+      if (!reviewPark) {
+        // TTL expired (or the process restarted) — nothing left to reason against. Tear this run
+        // down by hand, exactly like the override refusal above: we exit before the try/finally
+        // that normally releases the run slot and flushes the tracker.
+        appendRecoveryEvent({ event: "review_resume_refused", slug: primary.entry.slug, step_index: primary.resumeFrom });
+        _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: primary.resumeFrom, fc: "review_resume_refused" });
+        if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
+        runRegistry.end(_runId);
+        await _tracker.flush();
+        _tracker.destroy();
+        return err(
+          `The review window for step ${primary.resumeFrom + 1} has expired. Call execute_skill again for ` +
+          `"${primary.entry.slug}" without resume_from to restart the skill from the beginning.`
+        );
+      }
+
+      const currentFp = await capturePageFingerprint(reviewPark.page).catch(() => null);
+      const parkedFp  = reviewPark.pageFingerprint;
+      const diverged = !currentFp || !parkedFp
+        || currentFp.url !== parkedFp.url
+        || Math.abs(currentFp.interactiveCount - parkedFp.interactiveCount) > PARK_DIVERGENCE_TOLERANCE;
+      const validation = hasAnswer
+        ? validateReviewAnswer(primary.reviewResults[answerKey], stepDef.output_schema)
+        : { valid: false, errors: ["no answer supplied for this step index"] };
+
+      if (diverged || !validation.valid) {
+        const withinBudget = checkReviewRetry(primary.entry.slug, primary.resumeFrom);
+        if (!withinBudget) {
+          // Bounded re-ask attempts exhausted — apply the step's on_failure policy instead of
+          // looping forever.
+          clearReviewRetry(primary.entry.slug, primary.resumeFrom);
+          const onFailure = stepDef.on_failure || "abort";
+          if (onFailure === "abort") {
+            await _discardPark(_parkKey, "review_retry_exhausted");
+            if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
+            runRegistry.end(_runId);
+            await _tracker.flush();
+            _tracker.destroy();
+            return err(
+              `AI review at step ${primary.resumeFrom + 1} did not produce a usable answer after ` +
+              `${REVIEW_RETRY_MAX} attempt(s): ${validation.errors.join("; ") || "page state kept changing"}. ` +
+              `Call execute_skill again without resume_from to restart the skill from the beginning.`
+            );
+          }
+          // use_default / continue: adopt the SAME parked page so execution resumes exactly
+          // where it paused — restarting on a fresh page here would break every later step's
+          // assumption about where in the app the workflow already got to.
+          clearTimeout(reviewPark.timer);
+          _setParkedRecovery(_parkKey, null);
+          _park = reviewPark;
+          primary.inputs[`__ai_review_answer_${primary.resumeFrom}`] =
+            onFailure === "use_default" ? stepDef.default_value : null;
+          appendRecoveryEvent({ event: "review_on_failure_applied", slug: primary.entry.slug,
+            step_index: primary.resumeFrom, policy: onFailure });
+        } else {
+          // Re-ask: keep the park alive (its TTL timer keeps running) and return a fresh review
+          // request against the CURRENT page state instead of resuming execution this call.
+          const reviewResp = await _buildReviewRequest(reviewPark.page, stepDef, primary.resumeFrom, primary.entry, {
+            validationErrors: validation.valid ? null : validation.errors,
+            pageDrifted: diverged,
+          });
+          if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
+          runRegistry.end(_runId);
+          await _tracker.flush();
+          _tracker.destroy();
+          return reviewResp;
+        }
+      } else {
+        // Valid answer, page unchanged — adopt the park and bind the answer so run.js's
+        // ai_review interception (right before executeStep) consumes it and moves straight past.
+        clearTimeout(reviewPark.timer);
+        _setParkedRecovery(_parkKey, null);
+        _park = reviewPark;
+        clearReviewRetry(primary.entry.slug, primary.resumeFrom);
+        primary.inputs[`__ai_review_answer_${primary.resumeFrom}`] = primary.reviewResults[answerKey];
+      }
     }
 
     let page = null;
@@ -1255,6 +1366,31 @@ async function _handleTool(name, args, extra) {
               ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
               : ` Once signed in, call execute_skill again to run this skill.`);
         return err(`${runErr.message}${resumeHint} (run_id: ${_runId})`);
+      }
+
+      // EXEC-13: ai_review reached this step for the first time (not a resume) — this is a
+      // PLANNED pause, not a failure. Park the live page exactly like the Tier 3/4 `parkable`
+      // branch below (same _setParkedRecovery shape, same PARK_TTL_MS), but return a review
+      // request instead of a failure response, and never touch recoveryStage's escalation state
+      // or retry_budget.js's budget — see review_pause.js's header for why those stay separate.
+      if (runErr.reviewPause) {
+        const _reviewPage = runErr.page || page;
+        const timer = setTimeout(() => { _discardPark(_parkKey, "ttl"); }, PARK_TTL_MS);
+        if (timer.unref) timer.unref();
+        _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
+          page: _reviewPage, context: _context, browser: _browser, watch, reviewStepIndex: runErr.stepIndex, timer,
+          pageFingerprint: await capturePageFingerprint(_reviewPage),
+          leaseKey: _leaseKey, hostRelease: _hostRelease,
+          attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
+        await closeExtraTabs(_openedTabs, _reviewPage);
+        appendRecoveryEvent({ event: "review_park_created", slug: primary.entry.slug, step_index: runErr.stepIndex, ttl_ms: PARK_TTL_MS });
+        log("info", "review_park_created", { run_id: _runId, skill: primary.entry.slug, step_index: runErr.stepIndex });
+        _runTracker.emit("park_created", { si: runErr.stepIndex });
+        const reviewResp = await _buildReviewRequest(_reviewPage, runErr.step, runErr.stepIndex, primary.entry, {});
+        if (reviewResp && Array.isArray(reviewResp.content)) {
+          reviewResp.content.push({ type: "text", text: `(run_id: ${_runId})` });
+        }
+        return reviewResp;
       }
 
       // Multi-tab: use the tab the failing step actually ran on, not always the initial tab —

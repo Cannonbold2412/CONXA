@@ -31,6 +31,10 @@ const CORE_TOOL_DEFS = [
           type: "object",
           description: "Tier 3/4 self-healing: map of \"<step index>\" → { \"candidate_index\": <n>, \"confidence\": <0-1>, \"why\": \"<one line>\" } (preferred — pick the index of the element you identified from the runtime's ranked Tier 3/4 element list) or { \"selector\": \"<Playwright selector>\" }. The runtime re-verifies every pick against a uniqueness gate before acting. Selector preference, when explicit: [data-testid=\"…\"], then #id, then internal:role=<role>[name=\"…\"], then text=\"…\". Example: { \"7\": { \"candidate_index\": 0, \"confidence\": 0.9, \"why\": \"old button renamed; ranked entry matches intent\" } }.",
         },
+        review_results: {
+          type: "object",
+          description: "AI review checkpoints: map of \"<step index>\" → your structured answer object to that step's question (see the review request's Question and, if present, its required output schema). Used together with resume_from to continue past an ai_review pause. Example: { \"5\": { \"visible\": true, \"why\": \"the Payment Successful banner is showing\" } }.",
+        },
         watch:       { type: "boolean", description: "true = open a visible browser so the user can watch; false = run headlessly in the background." },
       },
       required: ["skill"],
@@ -52,6 +56,7 @@ const CORE_TOOL_DEFS = [
               inputs:  { type: "object" },
               resume_from:    { type: "integer", description: "0-based step index to resume from after a failure." },
               step_overrides: { type: "object", description: "Tier 3/4 self-healing overrides keyed by step index — prefer candidate_index nominations from the ranked element list (see execute_skill)." },
+              review_results: { type: "object", description: "AI review checkpoint answers keyed by step index (see execute_skill)." },
             },
             required: ["skill"],
           },

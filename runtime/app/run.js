@@ -210,6 +210,28 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
 
     if (hasExecutedStep && page === prevPage) await waitForPageLoad(page, prevStepType);
 
+    // EXEC-13: ai_review is a planned pause (author-placed reasoning checkpoint), not a page
+    // action and not a Tier 1-4 recovery candidate — it carries no selector/identity_bundle, so
+    // it must never reach executeStep/HANDLERS or recoverStep. server.js validates a resumed
+    // review answer against the step's output_schema and binds it under `__ai_review_answer_<i>`
+    // in `inputs` *before* calling runPlan (see the `_resumeReviewStep` block); this interception
+    // just consumes it and moves on. A fresh arrival (no bound answer yet) throws a distinct,
+    // non-recovery signal that server.js's catch block special-cases (like `cancelled`/
+    // `session_expired`) to park the page and return a review request instead of a failure.
+    if (step.type === "ai_review") {
+      const answerKey = `__ai_review_answer_${i}`;
+      if (Object.prototype.hasOwnProperty.call(inputs, answerKey)) {
+        const outputName = step.output_name || `ai_review_output_${i}`;
+        inputs[outputName] = inputs[answerKey];
+        delete inputs[answerKey];
+        hasExecutedStep = true;
+        prevStepType = step.type;
+        prevPage = page;
+        continue;
+      }
+      throw Object.assign(new Error("ai_review_pause"), { reviewPause: true, stepIndex: i, step, page });
+    }
+
     const preShot = await maybeCapturePreStep(page, step);
     const primarySelector = baseSelector(step, inputs);
     // Pre-action baseline for the state_changed assertion (only captured when the step actually
