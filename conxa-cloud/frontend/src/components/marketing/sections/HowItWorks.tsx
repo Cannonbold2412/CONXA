@@ -66,10 +66,10 @@ function StepText({ step, active }: { step: (typeof STEPS)[number]; active: bool
   return (
     <div>
       <span className={active ? 'text-sm font-medium text-[#22d3ee]' : 'text-sm font-medium text-[#6b7280]'}>{step.n}</span>
-      <h3 className={`mt-3 text-2xl font-semibold tracking-tight ${active ? 'text-[#f4f5f7]' : 'text-[#6b7280]'}`}>
+      <h3 className={`mt-5 text-2xl font-semibold tracking-tight ${active ? 'text-[#f4f5f7]' : 'text-[#6b7280]'}`}>
         {step.title}
       </h3>
-      <p className={`mt-4 text-base leading-relaxed ${active ? 'text-[#9ba3af]' : 'text-[#6b7280]/70'}`}>{step.body}</p>
+      <p className={`mt-6 text-base leading-relaxed ${active ? 'text-[#9ba3af]' : 'text-[#6b7280]/70'}`}>{step.body}</p>
     </div>
   )
 }
@@ -115,8 +115,10 @@ function ScrubbedSteps() {
       <div className="sticky top-0 flex h-screen items-center">
         {/* Text stays narrow so the screenshot gets the width it needs to stay readable */}
         <div className="grid w-full items-center gap-10 lg:grid-cols-[minmax(0,340px)_1fr]">
-          {/* Step copy — active one lit, the rest recede */}
-          <div className="relative h-64">
+          {/* Step copy — active one lit, the rest recede.
+              Column height tracks the 16/9 shot beside it so the label
+              stack breathes at the same visual scale. */}
+          <div className="relative h-64 lg:h-[28rem]">
             {STEPS.map((step, i) => (
               <motion.div
                 key={step.n}
@@ -168,7 +170,7 @@ export function HowItWorks() {
   const scrub = wide && !reducedMotion
 
   return (
-    <section id="how-it-works" className="relative bg-[#06080b] px-6 py-28">
+    <section id="how-it-works" className="relative scroll-mt-20 bg-[#06080b] px-6 py-28">
       <div className="mx-auto max-w-6xl">
         <SectionHeader
           headline="Four steps. No code."

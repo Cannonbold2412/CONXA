@@ -9,18 +9,46 @@ const links = [
   { label: 'How it works', href: '/#how-it-works' },
   { label: 'Examples', href: '/#examples' },
   { label: 'Security', href: '/#security' },
-  { label: 'Pricing', href: '/pricing' },
+  { label: 'Pricing', href: '/#pricing' },
+  { label: 'FAQ', href: '/#faq' },
   { label: 'Docs', href: '/docs' },
 ]
 
+/** Homepage section ids behind the anchor links — the scroll-spy tracks these.
+ *  Docs is a separate route, so its link never highlights. */
+const SECTION_IDS = links.flatMap((l) => (l.href.startsWith('/#') ? [l.href.slice(2)] : []))
+
 export function MarketingNav() {
   const [scrolled, setScrolled] = useState(false)
+  const [active, setActive] = useState<string | null>(null)
   const [mobileOpen, setMobileOpen] = useState(false)
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40)
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Scroll-spy: the link whose section currently crosses the reading band is
+  // lit, so the single fixed bar doubles as a you-are-here indicator on the
+  // long homepage. Near the hero nothing is highlighted.
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((e) => e.isIntersecting)
+        if (visible.length > 0) {
+          setActive(visible[visible.length - 1].target.id)
+        } else if (window.scrollY < window.innerHeight / 2) {
+          setActive(null)
+        }
+      },
+      { rootMargin: '-40% 0px -55% 0px' },
+    )
+    for (const id of SECTION_IDS) {
+      const el = document.getElementById(id)
+      if (el) observer.observe(el)
+    }
+    return () => observer.disconnect()
   }, [])
 
   return (
@@ -48,15 +76,19 @@ export function MarketingNav() {
 
         {/* Desktop links */}
         <nav className="hidden items-center gap-8 md:flex">
-          {links.map((l) => (
-            <Link
-              key={l.label}
-              href={l.href}
-              className="text-sm text-[#9ba3af] transition-colors hover:text-white"
-            >
-              {l.label}
-            </Link>
-          ))}
+          {links.map((l) => {
+            const id = l.href.startsWith('/#') ? l.href.slice(2) : null
+            return (
+              <Link
+                key={l.label}
+                href={l.href}
+                aria-current={id && id === active ? 'location' : undefined}
+                className={`text-sm transition-colors ${id === active ? 'text-white' : 'text-[#9ba3af] hover:text-white'}`}
+              >
+                {l.label}
+              </Link>
+            )
+          })}
         </nav>
 
         {/* CTA */}
@@ -92,16 +124,20 @@ export function MarketingNav() {
             className="overflow-hidden border-t border-white/6 bg-[#06080b]/95 backdrop-blur-xl"
           >
             <div className="flex flex-col gap-1 px-6 py-4">
-              {links.map((l) => (
-                <Link
-                  key={l.label}
-                  href={l.href}
-                  className="py-2 text-sm text-[#9ba3af] hover:text-white"
-                  onClick={() => setMobileOpen(false)}
-                >
-                  {l.label}
-                </Link>
-              ))}
+              {links.map((l) => {
+                const id = l.href.startsWith('/#') ? l.href.slice(2) : null
+                return (
+                  <Link
+                    key={l.label}
+                    href={l.href}
+                    aria-current={id && id === active ? 'location' : undefined}
+                    className={`py-2 text-sm transition-colors hover:text-white ${id === active ? 'text-white' : 'text-[#9ba3af]'}`}
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    {l.label}
+                  </Link>
+                )
+              })}
               <div className="mt-4 flex flex-col gap-2">
                 <Link href="/sign-in" className="py-2 text-sm text-[#9ba3af] hover:text-white">
                   Sign in

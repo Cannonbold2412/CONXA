@@ -49,7 +49,7 @@ const SCENARIOS = [
 
 export function Examples() {
   return (
-    <section id="examples" className="relative bg-[#0b0f14] px-6 py-28">
+    <section id="examples" className="relative scroll-mt-20 bg-[#0b0f14] px-6 py-28">
       <div className="mx-auto max-w-6xl">
         <SectionHeader
           headline="Business processes, not single-app tasks."
@@ -74,9 +74,8 @@ export function Examples() {
             <Reveal key={s.domain} delay={(i % 3) * 0.08}>
               <div className="flex h-full flex-col rounded-2xl border border-white/6 bg-[#0f1620] p-7">
                 <h3 className="text-base font-semibold text-white">{s.domain}</h3>
-                <p className="mt-1 text-xs text-[#6b7280]">{s.buyer}</p>
-                <p className="mt-3 text-xs text-[#9ba3af]">{s.tool}</p>
-                <div className="mt-6 flex flex-col gap-5">
+                <p className="mt-1 text-xs text-[#6b7280]">{s.buyer} · {s.tool}</p>
+                <div className="mt-6 flex flex-col gap-5 border-t border-white/6 pt-5">
                   <div>
                     <p className="text-xs font-medium text-[#22d3ee]">Show it once</p>
                     <p className="mt-1.5 text-sm leading-relaxed text-[#9ba3af]">{s.once}</p>
@@ -91,9 +90,9 @@ export function Examples() {
           ))}
         </div>
 
-        <Reveal delay={0.1} className="mt-6">
-          <div className="rounded-2xl border border-dashed border-white/10 p-8 sm:p-10">
-            <h3 className="text-lg font-semibold text-[#f4f5f7]">What one of these is worth, in your numbers</h3>
+        <Reveal delay={0.1} className="mt-16">
+          <div className="rounded-2xl border border-white/10 bg-[#06080b] p-8 sm:p-10">
+            <h3 className="text-xl font-semibold text-[#f4f5f7]">What one of these is worth, in your numbers</h3>
             <p className="mt-3 max-w-3xl text-sm leading-relaxed text-[#9ba3af]">
               Payback here is arithmetic, not a promise. Your dashboard multiplies the minutes a run actually takes —
               measured from real executions — by how often you run it and what the person doing it costs today. Measured

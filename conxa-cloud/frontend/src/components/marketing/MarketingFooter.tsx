@@ -19,7 +19,7 @@ export function MarketingFooter() {
               />
             </div>
             <div className="flex flex-col">
-              <span className="text-[11px] uppercase tracking-[0.28em] text-[#6b7280]">Conxa</span>
+              <span className="text-xs uppercase tracking-[0.28em] text-[#6b7280]">Conxa</span>
               <span className="text-sm text-[#9ba3af]">Show AI how to use your software once</span>
             </div>
           </div>
@@ -27,7 +27,7 @@ export function MarketingFooter() {
           {/* Links */}
           <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
             <div className="flex flex-col gap-3">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-[#6b7280]">Product</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-[#6b7280]">Product</p>
               <Link href="/#how-it-works" className="text-sm text-[#9ba3af] hover:text-white">How it works</Link>
               <Link href="/#examples" className="text-sm text-[#9ba3af] hover:text-white">Examples</Link>
               <Link href="/#security" className="text-sm text-[#9ba3af] hover:text-white">Security</Link>
@@ -36,12 +36,12 @@ export function MarketingFooter() {
               <Link href="/sign-up" className="text-sm text-[#9ba3af] hover:text-white">Get started</Link>
             </div>
             <div className="flex flex-col gap-3">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-[#6b7280]">Company</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-[#6b7280]">Company</p>
               <Link href="/docs/support" className="text-sm text-[#9ba3af] hover:text-white">Contact</Link>
               <Link href="/sign-in" className="text-sm text-[#9ba3af] hover:text-white">Sign in</Link>
             </div>
             <div className="flex flex-col gap-3">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-[#6b7280]">Legal</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-[#6b7280]">Legal</p>
               <Link href="/docs/security" className="text-sm text-[#9ba3af] hover:text-white">Security</Link>
               <Link href="/docs/privacy" className="text-sm text-[#9ba3af] hover:text-white">Privacy</Link>
               <Link href="/docs/terms" className="text-sm text-[#9ba3af] hover:text-white">Terms</Link>

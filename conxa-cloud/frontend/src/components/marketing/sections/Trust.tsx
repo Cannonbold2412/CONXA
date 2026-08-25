@@ -54,7 +54,7 @@ const FACTS = [
 
 export function Trust() {
   return (
-    <section id="security" className="relative bg-[#06080b] px-6 py-28">
+    <section id="security" className="relative scroll-mt-20 bg-[#06080b] px-6 py-28">
       <div className="mx-auto max-w-6xl">
         <SectionHeader
           headline="The answer your security team asks for first."
@@ -80,7 +80,7 @@ export function Trust() {
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           {FLOWS.map((f, i) => (
             <Reveal key={f.label} delay={0.2 + i * 0.08}>
-              <div className="rounded-xl border border-white/6 px-5 py-4">
+              <div className="rounded-lg border border-white/6 px-5 py-4">
                 <p className="text-sm font-medium text-[#f4f5f7]">{f.label}</p>
                 <p className="mt-1 text-xs leading-relaxed text-[#9ba3af]">{f.detail}</p>
               </div>

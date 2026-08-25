@@ -58,7 +58,7 @@ const QA = [
 
 export function Faq() {
   return (
-    <section id="faq" className="relative bg-[#0b0f14] px-6 py-28">
+    <section id="faq" className="relative scroll-mt-20 bg-[#0b0f14] px-6 py-28">
       <div className="mx-auto max-w-3xl">
         <SectionHeader headline="Before you ask." sub="The questions every enterprise team asks ahead of a demo." />
 
@@ -67,7 +67,7 @@ export function Faq() {
             <Reveal key={item.q} delay={Math.min(i * 0.04, 0.2)} direction="none">
               <details
                 open={i === 0}
-                className="group rounded-xl border border-white/6 bg-[#0f1620] transition-colors open:border-white/12"
+                className="group rounded-2xl border border-white/6 bg-[#0f1620] transition-colors open:border-white/12"
               >
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-4 text-sm font-medium text-[#f4f5f7] [&::-webkit-details-marker]:hidden">
                   {item.q}

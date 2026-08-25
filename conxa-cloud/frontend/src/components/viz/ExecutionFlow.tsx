@@ -13,10 +13,10 @@ export type FlowStep = {
 }
 
 const STATUS_STYLE: Record<FlowStep['status'], { dot: string; ring: string; text: string; word: string }> = {
-  ok:          { dot: 'bg-emerald-400', ring: 'border-emerald-500/30', text: 'text-zinc-300', word: 'Succeeded' },
-  recovered:   { dot: 'bg-cyan-400',    ring: 'border-cyan-500/35',    text: 'text-zinc-200', word: 'Self-healed' },
+  ok:          { dot: 'bg-emerald-400', ring: 'border-emerald-500/30', text: 'text-[#9ba3af]', word: 'Succeeded' },
+  recovered:   { dot: 'bg-cyan-400',    ring: 'border-cyan-500/35',    text: 'text-[#f4f5f7]', word: 'Self-healed' },
   failed:      { dot: 'bg-red-400',     ring: 'border-red-500/40',     text: 'text-red-200',  word: 'Failed' },
-  not_reached: { dot: 'bg-zinc-700',    ring: 'border-white/8',        text: 'text-zinc-600', word: 'Not reached' },
+  not_reached: { dot: 'bg-zinc-700',    ring: 'border-white/8',        text: 'text-[#6b7280]', word: 'Not reached' },
 }
 
 /**
@@ -29,7 +29,7 @@ const STATUS_STYLE: Record<FlowStep['status'], { dot: string; ring: string; text
 export function ExecutionFlow({ steps }: { steps: FlowStep[] }) {
   if (!steps.length) {
     return (
-      <p className="py-8 text-center text-[11px] text-zinc-600">
+      <p className="py-8 text-center text-xs text-[#6b7280]">
         This run reported no step-level events.
       </p>
     )
@@ -57,11 +57,11 @@ export function ExecutionFlow({ steps }: { steps: FlowStep[] }) {
             <div className="min-w-0 flex-1 pb-1">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className={cn('text-sm font-medium', style.text)}>{step.label}</span>
-                <span className="text-[11px] text-zinc-600">{style.word}</span>
+                <span className="text-xs text-[#6b7280]">{style.word}</span>
                 {step.tiers.map((tier) => (
                   <span
                     key={tier}
-                    className="inline-flex items-center gap-1 rounded-full border border-white/10 px-1.5 py-0.5 text-[11px] text-zinc-400"
+                    className="inline-flex items-center gap-1 rounded-full border border-white/10 px-1.5 py-0.5 text-xs text-[#9ba3af]"
                     title={
                       TIER_ORDER.indexOf(tier as (typeof TIER_ORDER)[number]) < 2
                         ? `${tier} — resolved locally, no model tokens`
@@ -74,7 +74,7 @@ export function ExecutionFlow({ steps }: { steps: FlowStep[] }) {
                 ))}
               </div>
               {step.assertionsPassed + step.assertionsFailed > 0 ? (
-                <p className="mt-0.5 text-[11px] text-zinc-600">
+                <p className="mt-0.5 text-xs text-[#6b7280]">
                   {step.assertionsPassed} of {step.assertionsPassed + step.assertionsFailed} checks passed
                 </p>
               ) : null}

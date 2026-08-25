@@ -124,7 +124,7 @@ export function BrowserSim() {
   }, [])
 
   return (
-    <div className="relative flex h-full w-full flex-col overflow-hidden rounded-xl border border-white/8 bg-[#0b0f14] shadow-2xl">
+    <div className="relative flex h-full w-full flex-col overflow-hidden rounded-2xl border border-white/8 bg-[#0b0f14] shadow-2xl">
       {/* Browser chrome */}
       <div className="flex h-10 shrink-0 items-center gap-3 border-b border-white/6 bg-[#0f1620] px-4">
         <div className="flex gap-1.5">
@@ -133,7 +133,7 @@ export function BrowserSim() {
           <div className="h-2.5 w-2.5 rounded-full bg-green-500/60" />
         </div>
         {/* Address bar */}
-        <div className="flex flex-1 items-center gap-2 rounded-md bg-[#06080b] px-3 py-1 text-xs text-[#6b7280]">
+        <div className="flex flex-1 items-center gap-2 rounded-lg bg-[#06080b] px-3 py-1 text-xs text-[#6b7280]">
           <svg className="h-3 w-3 text-green-400" fill="none" viewBox="0 0 16 16">
             <path d="M8 1a5 5 0 0 1 5 5v1h1a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h1V6a5 5 0 0 1 5-5z" fill="currentColor" fillOpacity={0.5} />
           </svg>
@@ -178,11 +178,11 @@ export function BrowserSim() {
               initial={{ y: 40, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 40, opacity: 0 }}
-              className={`absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm shadow-xl ${
-                state.toast.tone === 'success'
-                  ? 'border-emerald-500/30 bg-emerald-900/40 text-emerald-300'
-                  : 'border-cyan-500/30 bg-cyan-900/40 text-cyan-300'
-              }`}
+                className={`absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm shadow-xl ${
+                  state.toast.tone === 'success'
+                    ? 'border-emerald-500/30 bg-emerald-900/40 text-emerald-400'
+                    : 'border-cyan-500/30 bg-cyan-900/40 text-cyan-400'
+                }`}
             >
               {state.toast.tone === 'success' ? '✓' : 'ℹ'} {state.toast.message}
             </motion.div>
@@ -204,9 +204,9 @@ function Field({ label, value, state }: { label: string; value?: string; target:
   const text = active ? state.typingText : (value ?? '')
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-[10px] text-[#6b7280] uppercase tracking-wider">{label}</label>
+      <label className="text-xs text-[#6b7280] uppercase tracking-wider">{label}</label>
       <div
-        className={`rounded-md border px-3 py-1.5 text-xs text-white transition-colors ${
+        className={`rounded-lg border px-3 py-1.5 text-xs text-white transition-colors ${
           active ? 'border-cyan-400/50 bg-[#06080b]' : 'border-white/8 bg-[#0b0f14]'
         }`}
       >
@@ -224,11 +224,11 @@ function HRPortalPage({ state }: { state: SimState }) {
       <div className="flex h-full">
         {/* Sidebar */}
         <div className="w-32 shrink-0 border-r border-white/6 bg-[#0d1117] px-3 py-4">
-          <div className="mb-4 text-[10px] font-semibold uppercase tracking-widest text-[#6b7280]">HR System</div>
+          <div className="mb-4 text-xs font-semibold uppercase tracking-widest text-[#6b7280]">HR System</div>
           {['Dashboard', 'Employees', 'Payroll', 'Reports', 'Settings'].map((item) => (
             <div
               key={item}
-              className={`mb-1 rounded px-2 py-1.5 text-xs ${item === 'Employees' ? 'bg-cyan-500/10 text-cyan-400' : 'text-[#6b7280]'}`}
+              className={`mb-1 rounded-lg px-2 py-1.5 text-xs ${item === 'Employees' ? 'bg-cyan-500/10 text-cyan-400' : 'text-[#6b7280]'}`}
             >
               {item}
             </div>
@@ -238,7 +238,7 @@ function HRPortalPage({ state }: { state: SimState }) {
         <div className="flex-1 overflow-auto p-4">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold text-white">Add Employee</p>
-            <div className="rounded-md bg-cyan-500/10 px-3 py-1 text-xs text-cyan-400 border border-cyan-500/20">+ Add Employee</div>
+            <div className="rounded-lg bg-cyan-500/10 px-3 py-1 text-xs text-cyan-400 border border-cyan-500/20">+ Add Employee</div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="First name" target="First name" state={state} />
@@ -267,11 +267,11 @@ function AccessControlPage({ state }: { state: SimState }) {
   return (
     <div className="flex h-full">
       <div className="w-32 shrink-0 border-r border-white/6 bg-[#0d1117] px-3 py-4">
-        <div className="mb-4 text-[10px] font-semibold uppercase tracking-widest text-[#6b7280]">Access</div>
+        <div className="mb-4 text-xs font-semibold uppercase tracking-widest text-[#6b7280]">Access</div>
         {['Overview', 'Role Assignment', 'Audit Log', 'Settings'].map((item) => (
           <div
             key={item}
-            className={`mb-1 rounded px-2 py-1.5 text-xs ${item === 'Role Assignment' ? 'bg-cyan-500/10 text-cyan-400' : 'text-[#6b7280]'}`}
+              className={`mb-1 rounded-lg px-2 py-1.5 text-xs ${item === 'Role Assignment' ? 'bg-cyan-500/10 text-cyan-400' : 'text-[#6b7280]'}`}
           >
             {item}
           </div>
@@ -321,7 +321,7 @@ function OnboardingDocsPage({ state }: { state: SimState }) {
   return (
     <div className="flex h-full flex-col p-4 gap-4">
       <p className="text-sm font-semibold text-white">Onboarding Documents — Priya Shah</p>
-      <div className="rounded-xl border-2 border-dashed border-white/10 bg-[#0d1117] p-6 text-center">
+      <div className="rounded-lg border-2 border-dashed border-white/10 bg-[#0d1117] p-6 text-center">
         <div className="mb-2 text-2xl">📂</div>
         <p className="text-xs text-[#6b7280]">Drop files or click to upload</p>
       </div>
@@ -342,7 +342,7 @@ function OnboardingDocsPage({ state }: { state: SimState }) {
         </div>
       )}
       <div className="mt-auto flex justify-end">
-        <div className="rounded-md bg-cyan-500/10 px-4 py-2 text-xs text-cyan-400 border border-cyan-500/20">
+        <div className="rounded-lg bg-cyan-500/10 px-4 py-2 text-xs text-cyan-400 border border-cyan-500/20">
           Send Welcome Email
         </div>
       </div>

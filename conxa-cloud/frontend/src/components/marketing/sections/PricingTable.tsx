@@ -1,12 +1,85 @@
 'use client'
 
 import Link from 'next/link'
-import { useQuery } from '@tanstack/react-query'
-import { listPlans, type Plan } from '@/api/cashfreeApi'
+import type { Plan } from '@/api/cashfreeApi'
 import { formatPeriod, formatPrice, normalizePlan } from '@/billing/billingData'
 import { SectionHeader } from '../primitives/SectionHeader'
 import { Reveal } from '../primitives/Reveal'
 import { GlowButton } from '../primitives/GlowButton'
+
+/**
+ * Static mirror of the backend's TIER_INFO (cashfree_routes.py) — prices and
+ * feature lists live here so the marketing pages render without a backend
+ * round-trip. If plan limits or prices change on the backend, update this
+ * table to match.
+ */
+const STATIC_PLANS: Plan[] = [
+  {
+    tier: 'free',
+    name: 'Free',
+    amount: 0,
+    currency: 'INR',
+    period: null,
+    features: [
+      '1 seat',
+      '1 machine',
+      '25 compile credits/month',
+      '500K Human Edit tokens/month',
+      'Internal distribution only',
+      'No ops dashboard',
+      'No analytics retention',
+    ],
+  },
+  {
+    tier: 'starter',
+    name: 'Starter',
+    amount: 19999,
+    currency: 'INR',
+    period: 'monthly',
+    features: [
+      '3 seats',
+      '3 machines',
+      '200 compile credits/month',
+      '2M Human Edit tokens/month',
+      'External distribution, Conxa-branded',
+      'Basic dashboard',
+      '90-day analytics retention',
+    ],
+  },
+  {
+    tier: 'pro',
+    name: 'Pro',
+    amount: 49999,
+    currency: 'INR',
+    period: 'monthly',
+    features: [
+      '10 seats',
+      '10 machines',
+      '500 compile credits/month',
+      '10M Human Edit tokens/month',
+      'External distribution, Conxa-branded',
+      'Full dashboard, drift detection, audit export',
+      '365-day analytics retention',
+    ],
+  },
+  {
+    tier: 'enterprise',
+    name: 'Enterprise',
+    amount: 99999,
+    currency: 'INR',
+    period: 'monthly',
+    features: [
+      'Seats agreed per contract',
+      'Machines agreed per contract',
+      'Unlimited compile credits/month',
+      'Contracted Human Edit token reserve',
+      'External distribution, white-label',
+      'Full dashboard, drift detection, audit export',
+      'Custom analytics retention',
+      'Bring your own key (Azure OpenAI)',
+    ],
+  },
+]
 
 /**
  * The rung each tier buys, in outcome terms. This is the one growth story the whole site
@@ -43,7 +116,7 @@ function TierCard({ plan, highlighted }: { plan: Plan; highlighted: boolean }) {
             style={{ background: 'linear-gradient(90deg, #22d3ee, #5eead4)' }}
             aria-hidden
           />
-          <span className="mb-4 inline-flex w-fit items-center rounded-full border border-[rgba(34,211,238,0.3)] bg-[rgba(34,211,238,0.08)] px-2.5 py-1 text-xs font-medium uppercase tracking-widest text-cyan-300">
+          <span className="mb-4 inline-flex w-fit items-center rounded-full border border-[rgba(34,211,238,0.3)] bg-[rgba(34,211,238,0.08)] px-2.5 py-1 text-xs font-medium uppercase tracking-widest text-[#22d3ee]">
             Distribution channel
           </span>
         </>
@@ -93,49 +166,27 @@ function TierCard({ plan, highlighted }: { plan: Plan; highlighted: boolean }) {
 }
 
 /**
- * `compact` is the homepage host: same live tier data, but the four explainer columns stay
- * on /pricing so the homepage doesn't carry the whole billing FAQ. Never fork this component
- * — prices and feature lists are server-generated from the plan limits, and a second copy
- * would drift from the backend the day either changes.
+ * `compact` is the homepage host: the four explainer columns stay
+ * on /pricing so the homepage doesn't carry the whole billing FAQ. Never fork
+ * this component — plans render from STATIC_PLANS above, and a second copy of
+ * that table would drift the day prices change.
  */
 export function PricingTable({ compact = false }: { compact?: boolean } = {}) {
-  const q = useQuery({ queryKey: ['public-plans'], queryFn: listPlans, staleTime: 60_000, retry: 1 })
-
   return (
-    <section id="pricing" className="relative bg-[#0b0f14] px-6 py-28">
+    <section id="pricing" className="relative scroll-mt-20 bg-[#0b0f14] px-6 py-28">
       <div className="mx-auto max-w-6xl">
         <SectionHeader
           headline="Pay for reach, not for runs."
           sub="Unlimited installs and unlimited executions on every tier — including the free one — because execution happens on your machines and costs us nothing. What you pay for is how far your skills are allowed to travel."
         />
 
-        {q.isLoading && (
-          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-96 animate-pulse rounded-2xl border border-white/6 bg-[#0f1620]" />
+        <Reveal className="mt-14">
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {STATIC_PLANS.map((plan) => (
+              <TierCard key={plan.tier} plan={plan} highlighted={normalizePlan(plan.tier) === 'pro'} />
             ))}
           </div>
-        )}
-
-        {q.isError && (
-          <p className="mt-14 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
-            Pricing is temporarily unavailable. Please refresh, or reach us at{' '}
-            <a href="/docs/support" className="underline">
-              support
-            </a>
-            .
-          </p>
-        )}
-
-        {q.data && (
-          <Reveal className="mt-14">
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-              {q.data.plans.map((plan) => (
-                <TierCard key={plan.tier} plan={plan} highlighted={normalizePlan(plan.tier) === 'pro'} />
-              ))}
-            </div>
-          </Reveal>
-        )}
+        </Reveal>
 
         {compact ? (
           <div className="mt-12 flex justify-center border-t border-white/6 pt-10">

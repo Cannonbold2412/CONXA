@@ -11,7 +11,7 @@ export function DemoStory() {
   const [playing, setPlaying] = useState(false)
 
   return (
-    <section id="demo" className="relative bg-[#06080b] px-6 py-28">
+    <section id="demo" className="relative scroll-mt-20 bg-[#06080b] px-6 py-28">
       <div className="mx-auto max-w-5xl">
         <SectionHeader
           headline="From a sentence to a finished task."

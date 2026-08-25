@@ -96,7 +96,7 @@ export function ChatPanel() {
   }, [])
 
   return (
-    <div className="flex h-full flex-col rounded-xl border border-white/8 bg-[#0b0f14] shadow-2xl overflow-hidden">
+    <div className="flex h-full flex-col rounded-2xl border border-white/8 bg-[#0b0f14] shadow-2xl overflow-hidden">
       {/* Header */}
       <div className="flex h-10 shrink-0 items-center gap-3 border-b border-white/6 bg-[#0f1620] px-4">
         <div className="flex h-5 w-5 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-teal-300">
@@ -107,7 +107,7 @@ export function ChatPanel() {
         <span className="text-xs font-medium text-white">Claude — CONXA Runtime</span>
         <div className="ml-auto flex items-center gap-1.5">
           <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-          <span className="text-[10px] text-[#6b7280]">executing</span>
+          <span className="text-xs text-[#6b7280]">executing</span>
         </div>
       </div>
 
@@ -135,7 +135,7 @@ export function ChatPanel() {
                       <circle cx="5" cy="5" r="3" fill="#06080b" />
                     </svg>
                   </div>
-                  <div className="max-w-[85%] rounded-2xl rounded-tl-sm bg-[#0f1620] px-4 py-2.5 text-sm text-[#e5e7eb]">
+                  <div className="max-w-[85%] rounded-2xl rounded-tl-sm bg-[#0f1620] px-4 py-2.5 text-sm text-[#f4f5f7]">
                     <AssistantText text={step.text} index={i} />
                   </div>
                 </div>
@@ -183,7 +183,7 @@ export function ChatPanel() {
       <div className="shrink-0 border-t border-white/6 p-3">
         <div className="flex items-center gap-2 rounded-lg border border-white/8 bg-[#0f1620] px-3 py-2">
           <span className="flex-1 text-xs text-[#6b7280]">Ask CONXA to operate…</span>
-          <div className="flex h-5 w-5 items-center justify-center rounded bg-cyan-500/20">
+          <div className="flex h-5 w-5 items-center justify-center rounded-lg bg-cyan-500/20">
             <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
               <path d="M1 4h6M4 1l3 3-3 3" stroke="#22d3ee" strokeWidth="1.2" strokeLinecap="round" />
             </svg>

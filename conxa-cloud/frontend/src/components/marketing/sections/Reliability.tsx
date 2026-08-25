@@ -102,7 +102,7 @@ function CostCurve() {
 
 export function Reliability() {
   return (
-    <section id="reliability" className="relative bg-[#0b0f14] px-6 py-28">
+    <section id="reliability" className="relative scroll-mt-20 bg-[#0b0f14] px-6 py-28">
       <div className="mx-auto max-w-6xl">
         <SectionHeader
           headline="Automation you don't have to babysit."

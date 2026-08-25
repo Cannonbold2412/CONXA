@@ -23,8 +23,8 @@ export function TierLadder({ counts, showFootnote = true }: { counts: TierCount[
         const free = ZERO_TOKEN_TIERS.has(tier)
         return (
           <div key={tier} className="grid grid-cols-[4.5rem_1fr_3.5rem] items-center gap-3">
-            <span className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400">
-              <span className="size-2 rounded-[2px]" style={{ background: tierColor(tier) }} aria-hidden />
+            <span className="flex items-center gap-1.5 text-xs font-medium text-[#9ba3af]">
+              <span className="size-2 rounded-full" style={{ background: tierColor(tier) }} aria-hidden />
               {tier}
             </span>
             <span className="h-2 overflow-hidden rounded-full bg-white/[0.045]">
@@ -33,9 +33,9 @@ export function TierLadder({ counts, showFootnote = true }: { counts: TierCount[
                 style={{ width: `${(value / max) * 100}%`, background: tierColor(tier) }}
               />
             </span>
-            <span className="text-right text-[11px] tabular-nums text-zinc-300">
+            <span className="text-right text-xs tabular-nums text-[#9ba3af]">
               {value}
-              <span className="ml-1 text-zinc-600">
+              <span className="ml-1 text-[#6b7280]">
                 {total ? `${Math.round((value / total) * 100)}%` : ''}
               </span>
             </span>
@@ -44,7 +44,7 @@ export function TierLadder({ counts, showFootnote = true }: { counts: TierCount[
         )
       })}
       {showFootnote && (
-        <p className="pt-1 text-[11px] leading-relaxed text-zinc-600">
+        <p className="pt-1 text-xs leading-relaxed text-[#6b7280]">
           Tier 1–2 resolve locally and cost nothing. Tier 3–4 call a model.
         </p>
       )}

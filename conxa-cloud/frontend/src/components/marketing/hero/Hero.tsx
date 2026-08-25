@@ -29,7 +29,7 @@ export function Hero() {
         className="relative z-10 mb-5 max-w-4xl text-center font-semibold tracking-tight text-balance text-[#f4f5f7]"
         style={{ fontSize: 'clamp(2.5rem, 6.5vw, 5.5rem)', lineHeight: 1.08 }}
       >
-        Do the process once. Your AI does it from then on.
+        Teach AI Once. Let It Execute The Workflow Forever.
       </motion.h1>
 
       {/* Subheadline */}
@@ -89,7 +89,7 @@ export function Hero() {
         transition={{ delay: 1.8, duration: 0.8 }}
         className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2"
       >
-        <span className="text-[10px] uppercase tracking-widest text-[#6b7280]">scroll</span>
+        <span className="text-xs uppercase tracking-widest text-[#6b7280]">scroll</span>
         <motion.div
           animate={{ y: [0, 6, 0] }}
           transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}

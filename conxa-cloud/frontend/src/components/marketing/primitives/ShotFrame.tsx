@@ -16,7 +16,7 @@ export function ShotFrame({ src, alt, label, className }: ShotFrameProps) {
         <span className="h-2 w-2 rounded-full bg-white/10" />
         <span className="h-2 w-2 rounded-full bg-white/10" />
         <span className="h-2 w-2 rounded-full bg-white/10" />
-        <span className="ml-3 text-[11px] text-[#6b7280]">{label}</span>
+        <span className="ml-3 text-xs text-[#6b7280]">{label}</span>
       </div>
       <div className={`relative w-full ${src ? 'aspect-[16/9]' : 'aspect-[16/5]'}`}>
         {src ? (
