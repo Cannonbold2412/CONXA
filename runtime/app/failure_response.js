@@ -1,15 +1,22 @@
 "use strict";
 /**
- * failure_response.js — assembly of the MCP failure response payload, extracted
- * verbatim from server.js so the LLM prompt-engineering text (the Tier 3/4
- * recovery request) is unit-testable without loading the whole server.
+ * failure_response.js — assembly of the MCP failure response payloads, extracted
+ * from server.js so the LLM prompt-engineering text (the Tier 3/4 recovery
+ * requests) is unit-testable without loading the whole server.
  *
- * Two shapes, decided by the recovery-tier ceiling (CONXA_MAX_RECOVERY_TIER):
- *   • ceiling ≥ 3 (Claude/MCP): a structured Tier 3 (semantic) + Tier 4 (vision) recovery
- *     request with an explicit `step_overrides` protocol so the agent can apply a fix and
- *     resume — the closing edge of the four-tier cascade.
- *   • ceiling 2 (Build Studio): a concise, deterministic failure. No agent handoff, no
- *     screenshots — the compiled pack is judged on its T1/T2 merits alone.
+ * Three shapes, decided by the recovery-tier ceiling (CONXA_MAX_RECOVERY_TIER)
+ * and the per-step escalation stage (recovery_stage.js):
+ *   • ceiling 2 (Build Studio): a concise, deterministic failure. No agent
+ *     handoff, no screenshots — the compiled pack is judged on its T1/T2 merits.
+ *   • ceiling ≥ 3, first agent round for the step — TIER 3 (semantic): a
+ *     browser-use-style ranked, indexed candidate digest of the live page; the
+ *     client nominates a candidate_index (reflection contract) or a selector.
+ *     No screenshots — text-first is the cost lever.
+ *   • ceiling ≥ 4, subsequent round for the same step — TIER 4 (vision): a
+ *     SEPARATE round-trip that adds screenshots (CUA-style visual grounding).
+ *
+ * Tiers 3 and 4 are conceptually distinct signals shipped as separate MCP
+ * calls (2026-08 redesign; they used to be one combined payload).
  *
  * Everything that used to be a server.js module-level binding arrives via `deps`,
  * evaluated at call time (server.js binds some of them late inside its SDK try block).
@@ -17,6 +24,9 @@
 const fs   = require("fs");
 const path = require("path");
 const pageScripts = require("./page_scripts");
+const { capturePageFingerprint, parkKey } = require("./recovery_park");
+const recoveryStage = require("./recovery_stage");
+const { buildIndexedDigest } = require("./candidate_digest");
 
 // Compact, recovery-relevant description of the step the cascade could not resolve.
 // Drives Tier 3 (semantic) matching: the agent matches THIS intent against the live DOM.
@@ -61,6 +71,27 @@ function stepRecoveryContext(err) {
   return ctx;
 }
 
+// Recorded-target identity signals for RANKING the live inventory against
+// (candidate_digest.buildIndexedDigest). Wider than stepRecoveryContext's
+// display shape: also carries the fingerprint tag and raw inner_text so tag
+// affinity and text affinity can score independently of display truncation.
+function digestTargetContext(err) {
+  const step = err && err.failedStep ? err.failedStep : null;
+  if (!step) return null;
+  const fp = (step.identity_bundle && step.identity_bundle.fingerprint) || {};
+  const anchors = Array.isArray(step.anchors)
+    ? step.anchors.map(a => (a && typeof a.text === "string" ? a.text.trim() : "")).filter(Boolean)
+    : [];
+  return {
+    tag:         fp.tag || undefined,
+    role:        fp.role || undefined,
+    text:        fp.inner_text || undefined,
+    name:        fp.aria_label || fp.name || undefined,
+    data_testid: fp.data_testid || undefined,
+    anchors,
+  };
+}
+
 // The compiled expected-post-condition for the failed step — lets the agent tell "element not
 // found" apart from "action ran but produced the wrong outcome", and know what success looks
 // like once its recovery attempt resumes. `stepAssertions` and `evaluateAssertion` iterate the
@@ -101,11 +132,96 @@ function executedStepsBreadcrumb(steps, failedAt) {
   return lines.length ? `Executed steps (leading context):\n${lines.join("\n")}` : null;
 }
 
+// Gather the ground-truth interactive-element inventory AFTER the cascade: T1/T2 remedies
+// (dismiss-overlay, scroll, re-hover, ...) change the page, so the state the agent reasons
+// about must be captured fresh. Merges a frame-scoped inventory when the step targets an
+// iframe — document.querySelectorAll cannot see into frames, and a "ground truth" that
+// silently omits the entire frame would be worse than none.
+async function gatherInventory(page, err, deps) {
+  let inventory = null;
+  try {
+    inventory = await page.evaluate(pageScripts.domInventory);
+  } catch (_) {}
+
+  const failedStep = err && err.failedStep;
+  if (failedStep) {
+    try {
+      const frameEntries = await deps.frameScopedInventory(page, failedStep, {});
+      if (Array.isArray(frameEntries) && frameEntries.length) {
+        inventory = [
+          ...(Array.isArray(inventory) ? inventory : []),
+          ...frameEntries.map(e => ({ ...e, in_frame: true })),
+        ];
+      }
+    } catch (_) {}
+  }
+  return Array.isArray(inventory) ? inventory : null;
+}
+
+// Secondary, and only when it actually differs from the current one: the inventory at the
+// exact moment of failure, before the T1/T2 cascade ran. A dropdown or dialog listed here may
+// have since closed — it must never be mistaken for the state to act on now.
+function earlySnapshotDiffers(err, currentInventory) {
+  const earlyInventory = Array.isArray(err.earlyDomSnapshot) ? err.earlyDomSnapshot : null;
+  return !!earlyInventory
+    && JSON.stringify(earlyInventory) !== JSON.stringify(currentInventory);
+}
+
+// When the previous resume's override failed our uniqueness gate (run.js validateOverrideSelector),
+// tell the agent exactly why and what it actually matched, instead of just re-describing the
+// original failure as if nothing had been tried.
+function overrideNoteText(err) {
+  if (!err.overrideValidationFailed) return "";
+  if (err.overrideReason === "frame-not-found") {
+    return `\n\nYour previous recovery pick could not even be tried: the frame/iframe this ` +
+      `element is supposed to live inside could not be located on the current page (it may not ` +
+      `have opened, or its identity changed). Picking a different element will not help — first ` +
+      `confirm whether the panel/dialog that should contain it is actually open.`;
+  }
+  const matched = Array.isArray(err.overrideCandidates) && err.overrideCandidates.length
+    ? ` Candidates it matched: ${JSON.stringify(err.overrideCandidates)}.`
+    : "";
+  return `\n\nYour previous recovery pick (${err.overrideReason === "no-match"
+      ? "an explicit selector"
+      : "candidate_index or selector"}) ${err.overrideReason === "no-match"
+      ? "matched no element on the current page"
+      : "matched multiple elements with no clear winner"}.` +
+    matched +
+    ` Pick a different index from the ranked list below.`;
+}
+
+// Distinct from a plain element-not-found: the step's target lives inside a frame/iframe, and
+// that frame itself could not be located this time (not just the element inside it) — e.g. the
+// panel never opened, or the iframe's identifying attribute changed on reattach. Proposing a
+// new element selector cannot fix this; the agent needs to know the failure is one level up.
+function frameNotFoundNoteText(err) {
+  if (!err.frameNotFound) return "";
+  return `\n\nNote: this step's target lives inside a frame/iframe, and that containing frame could ` +
+    `not be located on the current page at all (not just the element inside it) — it may not ` +
+    `have opened yet, may have closed, or its identifying attributes may have changed. The ` +
+    `ranked element list below will not show anything from inside that frame. Check the ` +
+    `screenshot for whether the expected panel/dialog is visible; if it never opened, the fix ` +
+    `is likely earlier in the sequence (the step that should have opened it), not a new ` +
+    `element for this step.`;
+}
+
+// Shared reasoning context for both tiers: intent, post-condition, trace, geometry.
+function buildContextSections(err, steps, failedAt, viewport, scrollY, stepAssertions) {
+  const out = [];
+  const intent = stepRecoveryContext(err);
+  if (intent) out.push(`Failed step intent: ${JSON.stringify(intent)}`);
+  const expected = expectedStateBlock(err, stepAssertions);
+  if (expected) out.push(expected);
+  const breadcrumb = executedStepsBreadcrumb(steps, failedAt);
+  if (breadcrumb) out.push(breadcrumb);
+  if (viewport) out.push(`viewport: ${JSON.stringify(viewport)}, scrollY: ${scrollY}`);
+  return out.join("\n\n");
+}
+
 async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps, deps) {
   const {
     agentRecoveryEnabled,
     maxRecoveryTier,
-    sentVisualRefs,
     appendRecoveryEvent,
     stepAssertions,
     frameScopedInventory,
@@ -130,12 +246,103 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
       `Recovery ceiling Tier ${maxRecoveryTier} (deterministic cascade only — no agent recovery).${detail}` }] };
   }
 
+  const stageKey = parkKey(resolvedEntry.workspace_id || "", resolvedEntry.slug || "");
+  // Which tier THIS round uses: first agent round for the step → 3 (semantic),
+  // any later round → 4 (vision), clamped by the ceiling.
+  const tier = recoveryStage.nextRecoveryTier({ key: stageKey, failedStep: err.failedStep, err, maxRecoveryTier });
+
+  // Stagnation hard cap (browser-use's soft PageFingerprint nudge, flipped to a hard stop):
+  // identical page state across consecutive recovery rounds means nothing is changing — the
+  // first identical round is still allowed (that is exactly the designed T3 → T4 escalation,
+  // which adds vision even on an unchanged page); beyond STAGNATION_LIMIT identical rounds,
+  // refuse further paid rounds and fail deterministically.
+  const fp = await capturePageFingerprint(page);
+  const { round, stagnant } = recoveryStage.recordRound(stageKey, failedAt, tier, fp);
+
+  appendRecoveryEvent({ event: "agent_recovery_requested", tier, round,
+    slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
+  if (runTracker) runTracker.emit("tier_escalated", { si: failedAt, l: tier });
+
+  if (stagnant) {
+    appendRecoveryEvent({ event: "recovery_stagnant_stop", slug: resolvedEntry && resolvedEntry.slug,
+      step_index: failedAt, tier, round });
+    if (runTracker) runTracker.emit("override_rejected", { si: failedAt, reason: "stagnant-page" });
+    return { content: [{ type: "text", text:
+      `Execution still failing at step ${stepNo}: ${err.message}\nPage URL: ${url}\n` +
+      `Recovery stopped: the page has not changed across repeated Tier ${tier} recovery attempts, ` +
+      `so further automated recovery would burn tokens without new information. Inspect the page ` +
+      `yourself (or ask the user), fix the root cause, then call execute_skill again with ` +
+      `resume_from: ${failedAt ?? 0} and an explicit step_overrides selector if you have one.` }] };
+  }
+
+  if (err.overrideValidationFailed) {
+    appendRecoveryEvent({ event: "agent_override_rejected", slug: resolvedEntry && resolvedEntry.slug,
+      step_index: failedAt, reason: err.overrideReason });
+    if (runTracker) runTracker.emit("override_rejected", { si: failedAt, reason: err.overrideReason });
+  }
+
+  const resumeKey = failedAt !== null ? String(failedAt) : "0";
+
+  // Ground truth: live, post-cascade inventory — always fresh (see gatherInventory).
+  const currentInventory = await gatherInventory(page, err, { frameScopedInventory });
+
+  // Rank-and-cap against the recorded target (never positional truncation), then publish the
+  // nomination map so the next execute_skill call can resolve candidate_index → derived
+  // selector through the validateOverrideSelector uniqueness gate.
+  const digest = buildIndexedDigest(currentInventory || [], digestTargetContext(err));
+  recoveryStage.setCandidateMap(stageKey, digest.map);
+
+  const viewport = (() => { try { return page.viewportSize(); } catch (_) { return null; } })();
+  let scrollY = null;
+  try { scrollY = await page.evaluate(pageScripts.getScrollY); } catch (_) {}
+
+  const contextSections = buildContextSections(err, steps, failedAt, viewport, scrollY, stepAssertions);
+  const notes = `${frameNotFoundNoteText(err)}${overrideNoteText(err)}`;
+
+  const earlyDiffers = earlySnapshotDiffers(err, currentInventory);
+
+  // ── Tier 3 — semantic round: text-only, browser-use-style indexed digest ──
+  if (tier <= 3) {
+    const header =
+      `Execution failed at step ${stepNo} (Tier 1–2 cascade exhausted): ${err.message}\n` +
+      `Page URL: ${url}\n\n` +
+      `Self-healing recovery — Tier 3 (semantic grounding). Below is a ranked, indexed list of ` +
+      `every interactive element on the live page right now, ordered by how well each matches ` +
+      `this step's recorded target. Identify the element the failed step was meant to act on, ` +
+      `then resume by calling execute_skill again with:\n` +
+      `  resume_from: ${failedAt ?? 0}\n` +
+      `  step_overrides: { "${resumeKey}": { "candidate_index": <index>, "confidence": <0-1>, "why": "<one line>" } }\n` +
+      `Rules:\n` +
+      `- Nominate ONLY an index from the ranked list (or a selector you can read straight off ` +
+      `one of its entries, e.g. its testid). The runtime re-verifies your pick against a ` +
+      `uniqueness gate before acting — it never blindly trusts it.\n` +
+      `- The list is ranked most-likely-first; entries were chosen by relevance, not position.\n` +
+      `- Do not guess — if no listed element matches the intent, tell the user the page has ` +
+      `changed and ask how to proceed.${notes}`;
+
+    const t3 = [contextSections];
+    if (digest.shown) {
+      t3.push(`Interactive elements NOW — ranked against the recorded target ` +
+        `(${digest.shown} of ${digest.total} shown; nominate via candidate_index):\n${digest.text}`);
+    } else {
+      t3.push(`No actionable interactive elements were enumerable on the current page — ` +
+        `tell the user the page has changed.`);
+    }
+    if (earlyDiffers) {
+      t3.push(`Elements at the moment of failure, before Tier 1–2 remedies ran (may include ` +
+        `since-closed transient UI — do not treat as current):\n${JSON.stringify(err.earlyDomSnapshot)}`);
+    }
+
+    return { content: [{ type: "text", text: header }, { type: "text", text: t3.join("\n\n") }] };
+  }
+
+  // ── Tier 4 — vision round: separate call, CUA-style visual grounding ──
   // P7: capture as JPEG (lossless PNG is 3-8× larger; Claude token cost is dimension-based either way)
   const failShot = await page.screenshot({ type: "jpeg", quality: 80 }).catch(() => null);
 
   // P5: skip visual reference if already sent for this (slug, step) in this execution
   const visualRefKey = resolvedEntry && failedAt !== null ? `${resolvedEntry.slug}:${failedAt}` : null;
-  const alreadySentRef = sentVisualRefs && visualRefKey ? sentVisualRefs.has(visualRefKey) : false;
+  const alreadySentRef = deps.sentVisualRefs && visualRefKey ? deps.sentVisualRefs.has(visualRefKey) : false;
 
   let visualRefData = null, visualRefMime = null;
   if (resolvedEntry && failedAt !== null && !alreadySentRef) {
@@ -146,142 +353,54 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
       if (fs.existsSync(candidate)) {
         visualRefData = fs.readFileSync(candidate).toString("base64");
         visualRefMime = ext === ".png" ? "image/png" : "image/jpeg";
-        if (sentVisualRefs && visualRefKey) sentVisualRefs.add(visualRefKey);
+        if (deps.sentVisualRefs && visualRefKey) deps.sentVisualRefs.add(visualRefKey);
         break;
       }
     }
   }
 
-  let viewport = null;
-  try { viewport = page.viewportSize(); } catch (_) {}
-  let scrollY = null;
-  try { scrollY = await page.evaluate(pageScripts.getScrollY); } catch (_) {}
-
-  // Ground truth: the live, post-cascade inventory — the state the agent's corrected selector
-  // will actually act on. T1/T2 remedies (dismiss-overlay, scroll, re-hover, ...) may already
-  // have changed the page since the moment of failure, so this is always captured fresh rather
-  // than only as a fallback. Cap at 50 elements — dominant text payload; nearby elements suffice.
-  let currentInventory = null;
-  try {
-    currentInventory = await page.evaluate(pageScripts.domInventory);
-  } catch (_) {}
-
-  // If the failed step's target lives inside an iframe, document.querySelectorAll above cannot
-  // see into it at all — merge in a frame-scoped inventory so the agent isn't shown a "ground
-  // truth" that silently omits the entire frame. `inputs` isn't threaded this deep (frame_chain
-  // selectors are structural iframe selectors, not input-templated, so this is a safe gap) —
-  // pass {} rather than plumb it through every layer for this diagnostic-only gather.
-  const failedStep = err && err.failedStep;
-  if (failedStep) {
-    try {
-      const frameEntries = await frameScopedInventory(page, failedStep, {});
-      if (Array.isArray(frameEntries) && frameEntries.length) {
-        currentInventory = [
-          ...(Array.isArray(currentInventory) ? currentInventory : []),
-          ...frameEntries.map(e => ({ ...e, in_frame: true })),
-        ];
-      }
-    } catch (_) {}
-  }
-
-  // Secondary, and only when it actually differs from the current one: the inventory at the
-  // exact moment of failure, before the T1/T2 cascade ran. A dropdown or dialog listed here may
-  // have since closed — it must never be mistaken for the state to act on now.
-  const earlyInventory = Array.isArray(err.earlyDomSnapshot) ? err.earlyDomSnapshot : null;
-  const earlyDiffers = earlyInventory
-    && JSON.stringify(earlyInventory) !== JSON.stringify(currentInventory);
-
-  appendRecoveryEvent({ event: "agent_recovery_requested", tier: maxRecoveryTier,
-    slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
-  if (runTracker) runTracker.emit("tier_escalated", { si: failedAt, l: maxRecoveryTier });
-
-  if (err.overrideValidationFailed) {
-    appendRecoveryEvent({ event: "agent_override_rejected", slug: resolvedEntry && resolvedEntry.slug,
-      step_index: failedAt, reason: err.overrideReason });
-    if (runTracker) runTracker.emit("override_rejected", { si: failedAt, reason: err.overrideReason });
-  }
-
-  const intent = stepRecoveryContext(err);
-  const resumeKey = failedAt !== null ? String(failedAt) : "0";
-
-  // When the previous resume's override selector failed our uniqueness gate (run.js
-  // validateOverrideSelector), tell the agent exactly why and what it actually matched, instead
-  // of just re-describing the original failure as if nothing had been tried.
-  const overrideNote = err.overrideValidationFailed
-    ? err.overrideReason === "frame-not-found"
-      ? `\n\nYour previous recovery selector could not even be tried: the frame/iframe this ` +
-        `element is supposed to live inside could not be located on the current page (it may not ` +
-        `have opened, or its identity changed). Picking a different element selector will not ` +
-        `help — first confirm whether the panel/dialog that should contain it is actually open.`
-      : `\n\nYour previous recovery selector ${err.overrideReason === "no-match"
-          ? "matched no element on the current page"
-          : "matched multiple elements with no clear winner"}.` +
-        (Array.isArray(err.overrideCandidates) && err.overrideCandidates.length
-          ? ` Candidates it matched: ${JSON.stringify(err.overrideCandidates)}.`
-          : "") +
-        ` Pick a more specific selector using the current-state inventory below.`
-    : "";
-
-  // Distinct from a plain element-not-found: the step's target lives inside a frame/iframe, and
-  // that frame itself could not be located this time (not just the element inside it) — e.g. the
-  // panel never opened, or the iframe's identifying attribute changed on reattach. Proposing a
-  // new element selector cannot fix this; the agent needs to know the failure is one level up.
-  const frameNotFoundNote = err.frameNotFound
-    ? `\n\nNote: this step's target lives inside a frame/iframe, and that containing frame could ` +
-      `not be located on the current page at all (not just the element inside it) — it may not ` +
-      `have opened yet, may have closed, or its identifying attributes may have changed. The ` +
-      `"Interactive elements NOW" list below is top-level only and will not show anything from ` +
-      `inside that frame. Check the screenshot for whether the expected panel/dialog is visible; ` +
-      `if it never opened, the fix is likely earlier in the sequence (the step that should have ` +
-      `opened it), not a new selector for this step.`
-    : "";
-
-  // Header + the exact closing-edge protocol so the agent can apply its finding and resume.
   const header =
     `Execution failed at step ${stepNo} (Tier 1–2 cascade exhausted): ${err.message}\n` +
     `Page URL: ${url}\n\n` +
-    `Self-healing recovery (Tier 3 semantic + Tier 4 vision). Identify the element the failed ` +
-    `step was meant to act on, then resume by calling execute_skill again with:\n` +
+    `Self-healing recovery — Tier 4 (visual identification). Semantic grounding alone did not ` +
+    `settle this step, so look at the screenshots below the way a human would. The "Current ` +
+    `page" image is ground truth; the recording-time reference image only shows how the target ` +
+    `used to look and may be outdated. Then resume by calling execute_skill again with:\n` +
     `  resume_from: ${failedAt ?? 0}\n` +
-    `  step_overrides: { "${resumeKey}": { "selector": "<your selector>" } }\n` +
-    `Selector preference: [data-testid="…"] > #id > internal:role=<role>[name="…"] > text="…". ` +
-    `The "Interactive elements NOW" list and the "Current page at failure" screenshot below are ` +
-    `ground truth — trust them over the recording-time reference image, which only shows how the ` +
-    `target used to look and may be outdated. The screenshot is viewport-only; the target may be ` +
-    `off-screen (see scrollY), so check the DOM inventory for existence even if it isn't visible ` +
-    `in the image. Do not guess — if no element matches the intent, tell the user the page has ` +
-    `changed and ask how to proceed.${frameNotFoundNote}${overrideNote}`;
+    `  step_overrides: { "${resumeKey}": { "candidate_index": <index>, "confidence": <0-1>, "why": "<one line>" } }\n` +
+    `Rules:\n` +
+    `- Nominate an index from the refreshed ranked element list below, or a selector you can ` +
+    `read straight off the image (visible testid/id/label). The runtime re-verifies your pick ` +
+    `against a uniqueness gate before acting — it never blindly trusts it.\n` +
+    `- The screenshot is viewport-only; the target may be off-screen (see scrollY) — the ` +
+    `element list proves existence even when the image does not; the images settle appearance ` +
+    `and disambiguation.\n` +
+    `- Do not guess — if nothing matches, tell the user the page has changed and ask how to ` +
+    `proceed.${notes}`;
 
-  // Tier 3 — semantic: the recorded intent, expected post-condition, execution trace, and the
-  // live (ground-truth) inventory of interactive elements.
-  const t3 = ["── Tier 3 (semantic) ──"];
-  if (intent) t3.push(`Failed step intent: ${JSON.stringify(intent)}`);
-  const expected = expectedStateBlock(err, stepAssertions);
-  if (expected) t3.push(expected);
-  const breadcrumb = executedStepsBreadcrumb(steps, failedAt);
-  if (breadcrumb) t3.push(breadcrumb);
-  if (viewport) t3.push(`viewport: ${JSON.stringify(viewport)}, scrollY: ${scrollY}`);
-  if (currentInventory && currentInventory.length) {
-    t3.push(`Interactive elements NOW — ground truth (${currentInventory.length}):\n${JSON.stringify(currentInventory)}`);
-  } else {
-    t3.push("No interactive elements were enumerable now — rely on the Tier 4 screenshot.");
+  const t4 = [contextSections];
+  if (digest.shown) {
+    t4.push(`Interactive elements NOW — refreshed after the failed round, ranked against the ` +
+      `recorded target (${digest.shown} of ${digest.total}; nominate via candidate_index):\n${digest.text}`);
   }
   if (earlyDiffers) {
-    t3.push(`Elements at the moment of failure, before Tier 1–2 remedies ran (may include ` +
-      `since-closed transient UI — do not treat as current):\n${JSON.stringify(earlyInventory)}`);
+    t4.push(`Elements at the moment of failure, before Tier 1–2 remedies ran (may include ` +
+      `since-closed transient UI — do not treat as current):\n${JSON.stringify(err.earlyDomSnapshot)}`);
   }
 
-  const content = [
-    { type: "text", text: header },
-    { type: "text", text: t3.join("\n") },
-    { type: "text", text: "── Tier 4 (vision) ──" },
-  ];
+  const content = [{ type: "text", text: header }, { type: "text", text: t4.join("\n\n") }];
 
   if (err.preShot)    content.push({ type: "text", text: "Pre-step screenshot (before the action):" }, { type: "image", data: err.preShot.toString("base64"), mimeType: "image/jpeg" });
   if (visualRefData)  content.push({ type: "text", text: `Reference image of the target from recording (step ${stepNo}) — recording-time appearance, may be outdated:` }, { type: "image", data: visualRefData, mimeType: visualRefMime });
-  if (failShot)       content.push({ type: "text", text: "Current page at failure — ground truth:" }, { type: "image", data: failShot.toString("base64"), mimeType: "image/jpeg" });
+  if (failShot)       content.push({ type: "text", text: "Current page — ground truth:" }, { type: "image", data: failShot.toString("base64"), mimeType: "image/jpeg" });
 
   return { content };
 }
 
-module.exports = { buildFailureResponse, stepRecoveryContext, expectedStateBlock, executedStepsBreadcrumb };
+module.exports = {
+  buildFailureResponse,
+  stepRecoveryContext,
+  digestTargetContext,
+  expectedStateBlock,
+  executedStepsBreadcrumb,
+};

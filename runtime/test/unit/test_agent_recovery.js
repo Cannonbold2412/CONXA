@@ -64,3 +64,41 @@ test("applyStepOverrides: no-op for missing/invalid overrides", () => {
   assert.strictEqual(applyStepOverrides(steps, "nope"), steps);
   assert.strictEqual(applyStepOverrides("notarray", { "0": "#x" }), "notarray");
 });
+
+// ── candidate_index nominations (Tier 3 reflection contract) ────────────────
+
+test("applyStepOverrides: resolves candidate_index through the injected map lookup", () => {
+  const steps = [{ type: "click" }];
+  const resolveCandidateIndex = (stepIdx, candIdx) =>
+    stepIdx === 0 && candIdx === 2 ? '[data-testid="ranked-2"]' : null;
+  const out = applyStepOverrides(
+    steps,
+    { "0": { candidate_index: 2, confidence: 0.9 } },
+    { resolveCandidateIndex },
+  );
+  assert.strictEqual(out[0]._explicit_selector, '[data-testid="ranked-2"]');
+  assert.strictEqual(out[0]._agent_override, true);
+});
+
+test("applyStepOverrides: unresolvable candidate_index injects nothing (fresh digest next round)", () => {
+  const steps = [{ type: "click" }, { type: "click" }];
+  const out = applyStepOverrides(
+    steps,
+    {
+      "0": { candidate_index: 99 },   // stale/unknown index
+      "1": { selector: "#fallback" }, // explicit selector still honoured alongside
+    },
+    { resolveCandidateIndex: () => null },
+  );
+  assert.strictEqual(out[0]._explicit_selector, undefined);
+  assert.strictEqual(out[1]._explicit_selector, "#fallback");
+});
+
+test("applyStepOverrides: explicit selector wins when both are given", () => {
+  const out = applyStepOverrides(
+    [{ type: "click" }],
+    { "0": { selector: "#explicit", candidate_index: 5 } },
+    { resolveCandidateIndex: () => "#from-map" },
+  );
+  assert.strictEqual(out[0]._explicit_selector, "#explicit");
+});

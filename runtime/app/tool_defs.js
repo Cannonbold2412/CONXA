@@ -29,7 +29,7 @@ const CORE_TOOL_DEFS = [
         resume_from: { type: "integer", description: "0-based step index to resume from after a failure (the value reported in the failure response)." },
         step_overrides: {
           type: "object",
-          description: "Tier 3/4 self-healing: map of \"<step index>\" → { \"selector\": \"<Playwright selector>\" }. When a step fails, the runtime returns the failed step's intent, a live DOM inventory, and a screenshot; identify the correct element and pass its selector here keyed by the same index as resume_from. Prefer [data-testid=\"…\"], then #id, then internal:role=<role>[name=\"…\"], then text=\"…\". Example: { \"7\": { \"selector\": \"[data-testid='submit-btn']\" } }.",
+          description: "Tier 3/4 self-healing: map of \"<step index>\" → { \"candidate_index\": <n>, \"confidence\": <0-1>, \"why\": \"<one line>\" } (preferred — pick the index of the element you identified from the runtime's ranked Tier 3/4 element list) or { \"selector\": \"<Playwright selector>\" }. The runtime re-verifies every pick against a uniqueness gate before acting. Selector preference, when explicit: [data-testid=\"…\"], then #id, then internal:role=<role>[name=\"…\"], then text=\"…\". Example: { \"7\": { \"candidate_index\": 0, \"confidence\": 0.9, \"why\": \"old button renamed; ranked entry matches intent\" } }.",
         },
         watch:       { type: "boolean", description: "true = open a visible browser so the user can watch; false = run headlessly in the background." },
       },
@@ -51,7 +51,7 @@ const CORE_TOOL_DEFS = [
               workspace_id: { type: "string" },
               inputs:  { type: "object" },
               resume_from:    { type: "integer", description: "0-based step index to resume from after a failure." },
-              step_overrides: { type: "object", description: "Tier 3/4 self-healing selector overrides, keyed by step index (see execute_skill)." },
+              step_overrides: { type: "object", description: "Tier 3/4 self-healing overrides keyed by step index — prefer candidate_index nominations from the ranked element list (see execute_skill)." },
             },
             required: ["skill"],
           },

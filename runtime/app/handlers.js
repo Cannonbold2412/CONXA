@@ -456,17 +456,33 @@ function enrichStepsWithRecovery(steps, recovery) {
 // When the in-process cascade (T1/T2) is exhausted the runtime hands a structured recovery
 // request to the MCP agent, which identifies the correct element and resumes with a corrected
 // selector for the failing step. `step_overrides` is a map keyed by the 0-based step index
-// (the same value passed as `resume_from`) → { selector }. We inject the chosen selector via
-// the existing `_explicit_selector` channel so it flows through the normal string-mode path in
-// withLocator — frame_chain, gating, and pacing are all preserved. This is the closing edge of
-// the four-tier cascade: without it, T3/T4 can describe the fix but never apply it.
-function applyStepOverrides(steps, overrides) {
+// (the same value passed as `resume_from`) → { candidate_index } or { selector }. We inject
+// the chosen selector via the existing `_explicit_selector` channel so it flows through the
+// normal string-mode path in withLocator — frame_chain, gating, and pacing are all preserved.
+// This is the closing edge of the four-tier cascade: without it, T3/T4 can describe the fix
+// but never apply it.
+//
+// `candidate_index` (Tier 3 reflection contract — browser-use-style nomination): the agent
+// picks an entry from the ranked digest; `opts.resolveCandidateIndex(stepIdx, candIdx)` maps
+// it to the derived selector captured when that digest was built. The mapping is looked up,
+// never trusted blindly — the derived selector still goes through validateOverrideSelector's
+// uniqueness-margin gate on resume, exactly like an explicit one.
+function applyStepOverrides(steps, overrides, opts = {}) {
   if (!Array.isArray(steps) || !overrides || typeof overrides !== "object") return steps;
   const out = steps.slice();
   for (const [rawKey, rawVal] of Object.entries(overrides)) {
     const idx = Number(rawKey);
     if (!Number.isInteger(idx) || idx < 0 || idx >= out.length) continue;
-    const selector = rawVal && typeof rawVal === "object" ? rawVal.selector : rawVal;
+    let selector = null;
+    if (typeof rawVal === "string") {
+      selector = rawVal;
+    } else if (rawVal && typeof rawVal === "object") {
+      if (typeof rawVal.selector === "string" && rawVal.selector.trim()) {
+        selector = rawVal.selector;
+      } else if (Number.isInteger(rawVal.candidate_index) && typeof opts.resolveCandidateIndex === "function") {
+        selector = opts.resolveCandidateIndex(idx, rawVal.candidate_index);
+      }
+    }
     if (typeof selector !== "string" || !selector.trim()) continue;
     out[idx] = { ...out[idx], _explicit_selector: selector.trim(), _agent_override: true };
   }

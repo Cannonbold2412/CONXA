@@ -70,6 +70,10 @@ const _getParkedRecovery    = require("./recovery_park").getParked;
 const _setParkedRecovery    = require("./recovery_park").setParked;
 const _discardParkImpl      = require("./recovery_park").discardPark;
 const _discardAllParksImpl  = require("./recovery_park").discardAllParks;
+// Per-skill escalation stage for the split Tier 3 (semantic) → Tier 4 (vision)
+// recovery rounds + the candidate_index nomination maps published by each
+// digest. See recovery_stage.js.
+const recoveryStage = require("./recovery_stage");
 const PARK_TTL_MS = Number(process.env.CONXA_RECOVERY_PARK_TTL_MS) || 180000;
 // RT-3: parks are keyed per skill (`${workspace_id}:${slug}`), not a single process-wide slot —
 // discarding one run's park must never touch a sibling run's parked recovery window.
@@ -671,7 +675,23 @@ async function _handleTool(name, args, extra) {
       // Apply agent-recovery selector overrides (Tier 3/4 closing edge). Only honoured when
       // agent recovery is enabled (ceiling ≥ 3) — in a deterministic Studio test (ceiling 2)
       // a stray override must not silently rewrite the pack under test.
-      const steps = AGENT_RECOVERY_ENABLED ? applyStepOverrides(enriched, run.step_overrides) : enriched;
+      // candidate_index nominations resolve against the ranked digest map published by the
+      // most recent Tier 3/4 failure response for this skill; an unknown/stale index is
+      // reported and skipped (the step then fails into a fresh digest next round).
+      const _stageKey = parkKey(entry.workspace_id || "", entry.slug || "");
+      const _resolveCandidateIndex = (stepIdx, candIdx) => {
+        const map = AGENT_RECOVERY_ENABLED ? recoveryStage.getCandidateMap(_stageKey) : null;
+        const hit = map && map[String(candIdx)];
+        if (!hit || typeof hit.selector !== "string") {
+          appendRecoveryEvent({ event: "agent_override_rejected", slug: entry.slug,
+            step_index: stepIdx, reason: "stale-candidate-index" });
+          return null;
+        }
+        return hit.selector;
+      };
+      const steps = AGENT_RECOVERY_ENABLED
+        ? applyStepOverrides(enriched, run.step_overrides, { resolveCandidateIndex: _resolveCandidateIndex })
+        : enriched;
       const overrideCount = AGENT_RECOVERY_ENABLED && run.step_overrides && typeof run.step_overrides === "object"
         ? Object.keys(run.step_overrides).length : 0;
       if (overrideCount) {
@@ -1129,6 +1149,7 @@ async function _handleTool(name, args, extra) {
 
       for (const r of resolved) {
         clearRetryBudget(r.entry.slug);
+        recoveryStage.clearForSlug(r.entry.slug); // reset Tier 3/4 escalation + digest maps
         appendRecoveryEvent({ event: "run_success", slug: r.entry.slug, steps_executed: r.steps.length });
       }
 
