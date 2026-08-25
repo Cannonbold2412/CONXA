@@ -1,19 +1,21 @@
 """Workflow-level intent graph inference (one LLM call per compile).
 
-Produces a high-level goal statement plus per-step semantic intent, used by
-`compiler/build.py` to annotate a compiled skill package with human-readable
-context. This is one of the few LLM-driven passes the compile pipeline still
-runs — see the "LLM does not write selector strings" invariant in CLAUDE.md;
-this module produces prose annotations, not selectors.
+Produces the high-level goal statement plus, per step, a machine-readable
+snake_case intent_token AND readable prose intent — the single source of both.
+`compiler/build.py` calls this BEFORE the per-step loop so the tokens replace
+the old per-step `intent_generation` LLM burst (one call instead of N), and the
+prose annotates the compiled skill package for human review in Human Edit.
+
+This is one of the few LLM-driven passes the compile pipeline still runs — see
+the "LLM does not write selector strings" invariant; it produces intents and
+annotations, never selectors.
 
 Successful graphs are cached locally (keyed by a hash of the steps summary +
-page URLs) for the same reason intent_llm.py caches per-step intents: the
-workflow-intent call runs LAST in the compile, after the vision-anchor and
-per-step-intent bursts have often rate-limited the free provider pool. On a
-first compile that means this call frequently fails while every key cools
-down; on a recompile the warm caches let it succeed. Caching the graph makes
-a recompile backfill a previously-missing plan instead of re-paying for a
-call that already succeeded once.
+page URLs) for the same reason intent_llm.py caches per-step intents: on a
+first compile with a drained free-provider pool this call can fail while every
+key cools down; on a recompile the warm caches let it succeed. Caching the
+graph makes a recompile backfill a previously-missing plan instead of re-paying
+for a call that already succeeded once.
 """
 
 from __future__ import annotations
@@ -64,7 +66,10 @@ def _write_cache(cache: dict[str, dict[str, Any]]) -> None:
 
 
 def _cache_key(steps_summary: list[dict[str, Any]], page_urls: list[str]) -> str:
-    raw = json.dumps({"steps": steps_summary, "page_urls": page_urls}, sort_keys=True, ensure_ascii=False)
+    # "v2" namespace: entries cached before the graph also carried per-step
+    # intent_token values must not be reused (they'd starve the compiler of
+    # tokens and silently push every step down the legacy per-step path).
+    raw = json.dumps({"v": 2, "steps": steps_summary, "page_urls": page_urls}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -79,6 +84,7 @@ def _graph_from_raw(raw: dict[str, Any]) -> WorkflowIntentGraph:
                     index=int(item.get("index") or 0),
                     intent=str(item.get("intent") or ""),
                     verification_anchor=str(item.get("verification_anchor") or ""),
+                    intent_token=str(item.get("intent_token") or ""),
                 )
             )
         except (TypeError, ValueError):

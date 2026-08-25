@@ -188,14 +188,23 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
         ]
     if task == "workflow_intent":
         # Compile-time: single call to infer high-level workflow goal + per-step intents.
+        # Each step yields BOTH forms of intent: intent_token (machine-readable
+        # snake_case, consumed by the compiler's deterministic logic — recovery
+        # policy, destructive gating, validation facets) and intent (readable
+        # prose shown to the human in review). One call is the single source of
+        # both, replacing the old per-step intent_generation burst.
         return [
             {
                 "role": "system",
                 "content": (
                     "You build a workflow intent graph from a sequence of recorded actions. "
                     "Return strict JSON with keys: goal (one sentence), steps (array of "
-                    "{index, intent, verification_anchor}), decision_points (array of "
-                    "{step_index, description}), expected_end_state (object with brief description)."
+                    "{index, intent_token, intent, verification_anchor}), decision_points (array of "
+                    "{step_index, description}), expected_end_state (object with brief description). "
+                    "For each step: intent_token must be one specific snake_case action token describing "
+                    "the user goal for that control (verb + object, lowercase, underscores only — e.g. "
+                    "click_sign_in_button, enter_email_value, navigate_to_dashboard); intent is a short "
+                    "readable sentence describing what that step does."
                 ),
             },
             {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},

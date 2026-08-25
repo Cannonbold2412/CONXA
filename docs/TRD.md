@@ -1053,7 +1053,13 @@ events.jsonl (raw RecordedEvents)
         │
         ▼  compiler/build.py:compile_skill_package()
            │
-           ├── LLM: intent_llm.py → WorkflowIntentGraph (one call per workflow)
+           ├── LLM: llm/workflow_intent.py → WorkflowIntentGraph (ONE call, FIRST —
+           │   before the per-step loop; on failure falls back to legacy
+           │   per-step generate_intent_with_llm). Emits, per step, BOTH a
+           │   snake_case intent_token (consumed by _build_step /
+           │   _prefetch_vision_anchors in place of the old intent_generation
+           │   burst) and readable prose (becomes semantic_description and the
+           │   Workflow plan shown in Human Edit). Single source of both.
            │
            ├── For each step:
            │   ├── identity_bundle.py → IdentityBundle (deterministic, zero-LLM)
@@ -1194,7 +1200,7 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 
 | LLM Client | Call | Token cost (approx) |
 |---|---|---|
-| `intent_llm.py` | Per-step intent string + per-workflow intent graph | Low–High |
+| `intent_llm.py` | Legacy per-step intent fallback (used only for steps the workflow-intent graph left tokenless) + per-workflow intent graph via `workflow_intent.py` — one call now sources every step's token AND prose (2026-08-25) | Low–High |
 | `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
 | `recovery_llm.py` | Per-step recovery block | Medium |
 

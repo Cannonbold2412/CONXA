@@ -488,3 +488,13 @@ Last round we added a slim sticky bar of section shortcuts under the top menu to
 ## 2026-08-25 - Hard-mode testing consolidated into one self-contained document
 - Removed docs/testing/exec-11-hard-mode-real-world.md entirely. The single runbook, docs/testing/exec-11-mega-workflow.md, is now fully self-contained: it explains what each part of the workflow tests (selector durability, dynamic data, concurrency, iframe handling, boundary refusals), includes the ready-to-paste self-mutating test page source inline, and has its own failure-routing rules at the end (wrong-row removal goes straight to PROD-3, evidence gaps to PROD-18, everything else to TEST-12).
 - Updated TODO.md TEST-12 to point only at the mega-workflow doc and restate its pass criteria.
+
+---
+
+## Explained how the Workflow Plan in Human Edit is created - 2026-08-25
+No code change. Traced the flow: during compile, one final LLM call (workflow_intent task) receives a compact summary of every recorded step (action, target text, page URL, per-step intent hint) plus the list of visited page URLs, and returns JSON with goal, per-step intents with verification anchors, decision points, and expected end state. That result is cached locally so recompiles reuse it, saved on the workflow as intent_graph, and shown read-only in Human Edit's Workflow Plan panel.
+
+---
+
+## The Workflow Plan and each step's intent now come from one AI call - 2026-08-25
+Previously two separate AI passes decided intents during a compile: one call per step produced the short machine label shown on each step in Human Edit, and a single end-of-compile call wrote its own different step descriptions for the Workflow plan panel - so the two views could disagree. Now the single workflow-plan call runs FIRST and produces both forms for every step (the machine token and the readable sentence). That means: the plan and the steps always tell the same story, compiles make about N fewer AI calls (one call instead of one-per-step plus one), and if that one call fails the old per-step behavior kicks in exactly as before, so nothing gets worse on a bad day. Old cached plans are ignored safely (they lack tokens), and all 927 existing tests still pass.

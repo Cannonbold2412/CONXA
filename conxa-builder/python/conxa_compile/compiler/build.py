@@ -1101,13 +1101,18 @@ def _prefetch_vision_anchors(
     *,
     session_root: Path,
     policy: dict[str, Any],
+    graph_intent_tokens: dict[int, str] | None = None,
 ) -> None:
     """Best-effort batch prefetch of every step's vision anchor request before
     the main per-step loop runs (Stage 4, mega-workflow 502 fix — see
     prefetch_vision_anchors_batch's docstring). Mirrors _build_step's own
     skip conditions (scroll / MARKER_ACTIONS never call vision) and intent
-    resolution (generate_intent_with_llm -> normalize_compiler_intent) exactly,
+    resolution (workflow-intent graph token when available, else
+    generate_intent_with_llm -> normalize_compiler_intent) exactly,
     so the cache key this computes matches what _build_step computes later.
+
+    When graph_intent_tokens carries a token for an event (the single
+    workflow-intent LLM call ran before this), no per-step intent call is made.
 
     intent_llm's own cache only makes the resolution call here free while the
     proxy is HEALTHY — a failed call caches nothing (see intent_llm.py's own
@@ -1152,18 +1157,24 @@ def _prefetch_vision_anchors(
                     {"phase": "vision_anchor_prefetch_deadline", "level": "warn"},
                 )
                 return
-            try:
-                llm_raw = generate_intent_with_llm(ev)
-            except CloudUnreachable:
-                # First infra failure — the pool is degraded right now. Bail out
-                # of prefetching entirely rather than grinding through the rest
-                # of the events one slow/failing call at a time.
-                _compile_log(
-                    "compile_phase",
-                    "Vision anchor prefetch hit a cloud/proxy failure — continuing without it.",
-                    {"phase": "vision_anchor_prefetch_unavailable", "level": "warn"},
-                )
-                return
+            pre_token = (graph_intent_tokens or {}).get(i)
+            if pre_token:
+                # The workflow-intent graph call already resolved this step's
+                # intent token — no per-step intent_generation call needed.
+                llm_raw = pre_token
+            else:
+                try:
+                    llm_raw = generate_intent_with_llm(ev)
+                except CloudUnreachable:
+                    # First infra failure — the pool is degraded right now. Bail out
+                    # of prefetching entirely rather than grinding through the rest
+                    # of the events one slow/failing call at a time.
+                    _compile_log(
+                        "compile_phase",
+                        "Vision anchor prefetch hit a cloud/proxy failure — continuing without it.",
+                        {"phase": "vision_anchor_prefetch_unavailable", "level": "warn"},
+                    )
+                    return
             intent = normalize_compiler_intent(ev, llm_raw, policy)
             items.append((i, ev, intent))
         prefetch_vision_anchors_batch(items, session_root=session_root, policy=policy)
@@ -1177,6 +1188,7 @@ def _build_step(
     *,
     session_root: Path,
     step_index: int,
+    graph_intent_token: str | None = None,
 ) -> SkillStep:
     policy = bundle.data
     action_payload = optimize_scroll(ev)
@@ -1291,7 +1303,13 @@ def _build_step(
             },
         )
         return step
-    llm_raw = generate_intent_with_llm(ev)
+    if graph_intent_token:
+        # Single-source intent: resolved by the one workflow-intent LLM call that
+        # ran before the step loop. No per-step intent_generation call here —
+        # normalize_compiler_intent still validates/normalizes the token below.
+        llm_raw = graph_intent_token
+    else:
+        llm_raw = generate_intent_with_llm(ev)
     intent = normalize_compiler_intent(ev, llm_raw, policy)
     state_before = capture_state_snapshot(ev, before=True)
     state_after = capture_state_snapshot(ev, before=False)
@@ -1613,8 +1631,64 @@ def compile_skill_package(
         "Compiler inputs prepared.",
         {"phase": "compiler_prepare_done", "cleaned_event_count": len(cleaned_events)},
     )
-    _prefetch_vision_anchors(cleaned_events, session_root=session_root, policy=pol)
-    steps = [_build_step(e, bundle, session_root=session_root, step_index=i) for i, e in enumerate(cleaned_events)]
+    # Phase 3, moved ahead of the step loop: ONE workflow-intent LLM call produces
+    # the goal/review plan AND every step's snake_case intent token. Tokens feed
+    # _build_step / _prefetch_vision_anchors directly (replacing the old per-step
+    # intent_generation burst); prose becomes each step's semantic_description.
+    # On failure the legacy per-step path below runs exactly as before — a
+    # degraded provider pool changes cost, never behavior. Selector generation
+    # stays fully deterministic; this call writes no selectors.
+    from conxa_compile.llm.workflow_intent import build_workflow_intent_graph  # noqa: PLC0415
+
+    steps_summary, page_urls = _intent_graph_inputs(cleaned_events)
+    _compile_log(
+        "compile_phase",
+        "Building workflow intent graph.",
+        {"phase": "workflow_intent_start", "step_count": len(steps_summary), "page_url_count": len(page_urls)},
+    )
+    workflow_intent_errors: list[str] = []
+    try:
+        intent_graph = build_workflow_intent_graph(steps_summary, page_urls, error_detail=workflow_intent_errors)
+    except Exception as exc:  # noqa: BLE001 — LLM failure is non-fatal at compile time
+        workflow_intent_errors.append(str(exc))
+        intent_graph = WorkflowIntentGraph()
+    if not intent_graph.goal and not intent_graph.steps and workflow_intent_errors:
+        _compile_log(
+            "compile_phase",
+            f"Workflow intent graph generation failed ({'; '.join(workflow_intent_errors[:3])}); "
+            "falling back to per-step intent resolution. Recompiling later usually fills the plan in.",
+            {"phase": "workflow_intent_failed", "level": "warn"},
+        )
+    _compile_log(
+        "compile_phase",
+        "Workflow intent graph finished.",
+        {
+            "phase": "workflow_intent_done",
+            "goal": intent_graph.goal,
+            "intent_step_count": len(intent_graph.steps),
+            "token_count": sum(1 for s in intent_graph.steps if s.intent_token),
+        },
+    )
+    graph_intent_tokens = {s.index: s.intent_token for s in intent_graph.steps if s.intent_token}
+    _prefetch_vision_anchors(
+        cleaned_events,
+        session_root=session_root,
+        policy=pol,
+        graph_intent_tokens=graph_intent_tokens or None,
+    )
+    steps = [
+        _build_step(
+            e,
+            bundle,
+            session_root=session_root,
+            step_index=i,
+            graph_intent_token=graph_intent_tokens.get(i),
+        )
+        for i, e in enumerate(cleaned_events)
+    ]
+    # Prose application must happen here, while steps[i] still maps 1:1 onto
+    # cleaned_events[i] — the synthetic-navigate inserts below shift positions.
+    _apply_intent_graph_to_steps(steps, intent_graph)
     steps = _insert_user_tab_navigate_steps(steps, cleaned_events)
     _log_vision_anchor_fallback_summary(steps)
 
@@ -1624,9 +1698,9 @@ def compile_skill_package(
     _populate_hover_chains(steps, cleaned_events, session_id=sid)
     steps = _insert_start_navigate_step(steps, cleaned_events)
 
-    # Phase 3: Build the workflow-level intent graph (one LLM call). Selector generation
-    # is fully deterministic and already complete — no LLM selector passes run here.
-    intent_graph = _build_intent_graph(steps, cleaned_events, session_id=sid)
+    # The workflow-level intent graph was already built before the step loop —
+    # it is the single source of per-step intent tokens and review prose, so no
+    # further LLM work happens here.
 
     _deduplicate_input_bindings(steps)
     apply_bindings_to_compiled_steps(steps, cleaned_events)
@@ -1675,28 +1749,10 @@ def compile_skill_package(
     )
 
 
-def _build_intent_graph(
-    steps: list[SkillStep],
-    cleaned_events: list[dict[str, Any]],
-    *,
-    session_id: str,
-) -> WorkflowIntentGraph:
-    """Build the workflow-level intent graph (one LLM call).
-
-    Selector generation is fully deterministic and runs in _build_step via
-    generate_deterministic_signals(). This function does not generate selectors.
-    """
-    try:
-        from conxa_compile.llm.workflow_intent import build_workflow_intent_graph  # noqa: PLC0415
-    except ImportError:
-        return WorkflowIntentGraph()
-
-    # Populate semantic_description from the already-computed per-step intent.
-    for step in steps:
-        if step.intent and not step.semantic_description:
-            step.semantic_description = step.intent
-
-    # Workflow-level intent graph (one LLM call).
+def _intent_graph_inputs(cleaned_events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Compact per-event summary + visited URLs fed to the single workflow-intent
+    LLM call. Deliberately tiny (action, target text, URL, heuristic intent hint)
+    — no DOM, no HTML, no screenshots."""
     steps_summary = [
         {
             "index": i,
@@ -1708,42 +1764,20 @@ def _build_intent_graph(
         for i, ev in enumerate(cleaned_events)
     ]
     page_urls = sorted({(ev.get("page") or {}).get("url") or "" for ev in cleaned_events} - {""})
-    try:
-        _compile_log(
-            "compile_phase",
-            "Building workflow intent graph.",
-            {"phase": "workflow_intent_start", "step_count": len(steps_summary), "page_url_count": len(page_urls)},
-        )
-        # This is the LAST LLM call of the compile — by now the vision-anchor and
-        # per-step-intent bursts have often put every provider key into cooldown
-        # elsewhere in the pool. No manual retry needed here any more: the proxy
-        # client (llm_proxy_client.py) already retries a 502 twice with backoff,
-        # and per-modality cooldowns (router.py) mean this text call isn't sharing
-        # a bench with the vision calls that came before it. error_detail still
-        # tells a real failure apart from a genuinely empty graph for logging.
-        error_detail: list[str] = []
-        graph = build_workflow_intent_graph(steps_summary, page_urls, error_detail=error_detail)
-        if not graph.goal and not graph.steps and error_detail:
-            _compile_log(
-                "compile_phase",
-                f"Workflow intent graph generation failed ({'; '.join(error_detail[:3])}).",
-                {"phase": "workflow_intent_retry", "level": "warn"},
-            )
-        _compile_log(
-            "compile_phase",
-            "Workflow intent graph finished.",
-            {
-                "phase": "workflow_intent_done",
-                "goal": graph.goal,
-                "intent_step_count": len(graph.steps),
-            },
-        )
-        return graph
-    except Exception as exc:  # noqa: BLE001 — LLM failure is non-fatal at compile time
-        _compile_log(
-            "compile_phase",
-            f"Workflow intent graph generation failed ({exc}); the Workflow plan will be empty. "
-            "Recompiling this workflow later usually fills it in.",
-            {"phase": "workflow_intent_failed", "level": "warn"},
-        )
-        return WorkflowIntentGraph()
+    return steps_summary, page_urls
+
+
+def _apply_intent_graph_to_steps(steps: list[SkillStep], intent_graph: WorkflowIntentGraph) -> None:
+    """Write the graph's readable per-step prose onto compiled steps.
+
+    Must run while steps[i] still maps 1:1 onto cleaned_events[i] (the graph is
+    indexed by event position) — i.e. before the synthetic-navigate inserts.
+    semantic_description carries the prose shown in Human Edit; steps without a
+    graph entry keep the legacy fallback of copying their machine token."""
+    prose_by_index = {s.index: s.intent for s in intent_graph.steps if s.intent}
+    for i, step in enumerate(steps):
+        prose = prose_by_index.get(i)
+        if prose:
+            step.semantic_description = prose
+        elif step.intent and not step.semantic_description:
+            step.semantic_description = step.intent

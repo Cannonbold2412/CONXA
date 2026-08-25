@@ -232,6 +232,12 @@ class WorkflowIntentStep(BaseModel):
     index: int                                                      # [contract]
     intent: str = ""                                                # [contract]
     verification_anchor: str = ""                                   # [contract]
+    # Snake_case action token for this step, emitted by the same single
+    # workflow-intent LLM call that produces the prose. The compiler uses it as
+    # the step's machine-readable intent (after normalize_compiler_intent),
+    # making the graph call the single source of both display prose and logic
+    # tokens. Empty on graphs produced before this field existed (cache v1).
+    intent_token: str = ""                                          # [contract]
 
 
 class WorkflowIntentGraph(BaseModel):
