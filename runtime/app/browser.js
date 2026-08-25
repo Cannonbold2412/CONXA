@@ -105,24 +105,61 @@ function _groupAppSessionPath(workspace_id, appId) {
   return path.join(SESSIONS_DIR, `${workspace_id}__${appId}_raw_state.json`);
 }
 
-async function _validateGroupApp(workspace_id, app, authManager, logFn) {
+// ─── Auth-validation TTL cache ────────────────────────────────────────────
+// A successful network validation is stamped per app key; repeat runs within
+// CONXA_AUTH_VALIDATION_TTL_MS (default 6h) skip the live check entirely. The
+// stamp records the session file's mtime — a fresh interactive login rewrites
+// that file, invalidating the cached verdict (which described the OLD state).
+const AUTH_VALIDATION_TTL_MS = Number(process.env.CONXA_AUTH_VALIDATION_TTL_MS) || 6 * 60 * 60 * 1000;
+function _authValidationCachePath() {
+  return path.join(SESSIONS_DIR, "_auth_validation_cache.json");
+}
+function _readValidationCache(key, sessionPath) {
+  try {
+    const entry = JSON.parse(fs.readFileSync(_authValidationCachePath(), "utf8"))[key];
+    if (!entry || typeof entry.validatedAt !== "number") return 0;
+    if (Date.now() - entry.validatedAt > AUTH_VALIDATION_TTL_MS) return 0;
+    const mtime = fs.statSync(sessionPath).mtimeMs;
+    if (Math.abs(mtime - entry.sessionMtimeMs) > 1) return 0;
+    return entry.validatedAt;
+  } catch (_) {
+    return 0;
+  }
+}
+function _writeValidationCache(key, sessionPath) {
+  try {
+    let cache = {};
+    try { cache = JSON.parse(fs.readFileSync(_authValidationCachePath(), "utf8")); } catch (_) {}
+    cache[key] = { validatedAt: Date.now(), sessionMtimeMs: fs.statSync(sessionPath).mtimeMs };
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+    fs.writeFileSync(_authValidationCachePath(), JSON.stringify(cache));
+  } catch (_) {}
+}
+
+// Cheap half of the old _validateGroupApp: resolve an app's stored session
+// (encrypted first, raw fallback) WITHOUT launching a browser. Returns the
+// session's file path too so callers can key mtime-sensitive caches on it.
+async function _loadGroupAppSession(workspace_id, app, authManager, logFn) {
   const key = `${workspace_id}__${app.id}`;
-  let stored = null;
   if (authManager) {
     try {
       const token = await authManager.getSessionKey(key, logFn);
-      if (token) stored = authManager.loadDecryptedSession(key, token, SESSIONS_DIR);
+      if (token) {
+        const stored = authManager.loadDecryptedSession(key, token, SESSIONS_DIR);
+        if (stored) {
+          return { stored, sessionPath: path.join(SESSIONS_DIR, `${key}_state.json`) };
+        }
+      }
     } catch (_) {}
   }
-  if (!stored) {
-    const rawPath = _groupAppSessionPath(workspace_id, app.id);
-    if (fs.existsSync(rawPath)) {
-      try { stored = JSON.parse(fs.readFileSync(rawPath, "utf8")); } catch (_) {}
-    }
+  const rawPath = _groupAppSessionPath(workspace_id, app.id);
+  if (fs.existsSync(rawPath)) {
+    try {
+      const stored = JSON.parse(fs.readFileSync(rawPath, "utf8"));
+      return { stored, sessionPath: rawPath };
+    } catch (_) {}
   }
-  if (!stored) return { app, stored: null, valid: false };
-  const valid = await _validateSession(stored, app.success_url || app.login_url);
-  return { app, stored, valid };
+  return { stored: null, sessionPath: null };
 }
 
 // Scopes a group's apps down to the ones a skill's manifest.required_apps actually
@@ -135,12 +172,17 @@ function _filterRequiredApps(groupApps, requiredAppIds) {
     : groupApps;
 }
 
-/** Group-aware auth resolution: validate every app in the group (not just the
- * required ones), gate on the REQUIRED apps only, but seed the merged context
- * from every app whose session validates. This mirrors what recording already
- * does (handlers/session.py seeds every captured app) — a workflow that
- * wanders into a sibling app mid-run arrives already signed in instead of
- * hitting a login wall, even though that app wasn't gated on up front.
+/** Group-aware auth resolution: gate on the REQUIRED apps only, but seed the
+ * merged context from every app with a stored session. This mirrors what
+ * recording already does (handlers/session.py seeds every captured app) — a
+ * workflow that wanders into a sibling app mid-run arrives already signed in
+ * instead of hitting a login wall, even though that app wasn't gated on up front.
+ *
+ * Cost model: only REQUIRED apps pay a live network validation (one shared
+ * headless browser for the whole batch). Siblings are seeded without a check —
+ * merging expired cookies is harmless since they're never gated. A required app
+ * whose session validated within CONXA_AUTH_VALIDATION_TTL_MS (default 6h, see
+ * _readValidationCache) skips its network check too.
  *
  * Any missing/expired REQUIRED app opens its own login window — ALL of them
  * at once, not one at a time, so a run with N broken apps costs the user one
@@ -180,12 +222,51 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     return { browser, context, protectedUrl: "", sessionSource: "group-no-required-apps" };
   }
 
-  // Validate every app in the group, not just the required ones — seeding needs
-  // all of them; gating only needs the required subset of these same results.
+  // Load every app's stored session first (no browser), then decide who pays a
+  // live network check.
+  //
+  // Cost model (see the TTL-cache helpers above): only REQUIRED apps pay a live
+  // network validation. Sibling sessions are seeded unconditionally without one —
+  // merging expired cookies is harmless since siblings are never gated (worst case
+  // a mid-run wander arrives unauthenticated there, identical to today's
+  // invalid-sibling outcome). Legacy manifests (requiredAppIds undefined) gate on
+  // every app, so they still validate everything. A fresh TTL stamp on a required
+  // app's exact session file skips its network check too.
   const _groupAuthT0 = Date.now();
   if (logFn) logFn("info", "test_phase", { phase: `group_auth_validate_start:${group.apps.map((a) => a.name).join(",")}`, ms: 0 });
-  const results = await Promise.all(group.apps.map((app) => _validateGroupApp(workspace_id, app, authManager, logFn)));
-  if (logFn) logFn("info", "test_phase", { phase: `group_auth_validate_done:${results.filter((r) => r.valid).length}/${results.length}_valid`, ms: Date.now() - _groupAuthT0 });
+  const loaded = await Promise.all(group.apps.map((app) => _loadGroupAppSession(workspace_id, app, authManager, logFn)));
+  const results = [];
+  const batch = [];
+  group.apps.forEach((app, i) => {
+    const { stored, sessionPath } = loaded[i];
+    if (!stored) {
+      results.push({ app, stored: null, valid: false });
+      return;
+    }
+    const key = `${workspace_id}__${app.id}`;
+    const isRequired = requiredIds.has(app.id);
+    if (!isRequired || (sessionPath && _readValidationCache(key, sessionPath))) {
+      results.push({ app, stored, valid: true, fromCache: isRequired });
+      return;
+    }
+    batch.push({ key, stored, protectedUrl: app.success_url || app.login_url, sessionPath });
+    results.push({ app, stored, valid: null, _batchIndex: batch.length - 1 });
+  });
+  const outcomes = await _validateSessionsBatch(batch);
+  for (const r of results) {
+    if (r.valid !== null) continue;
+    const entry = batch[r._batchIndex];
+    r.valid = outcomes.get(entry.key);
+    if (r.valid && entry.sessionPath) _writeValidationCache(entry.key, entry.sessionPath);
+    delete r._batchIndex;
+  }
+  const validatedCount = results.filter((r) => r.valid).length;
+  if (logFn) logFn("info", "test_phase", {
+    phase: `group_auth_validate_done:${validatedCount}/${results.length}_valid`,
+    ms: Date.now() - _groupAuthT0,
+    network_checked: batch.length,
+    ttl_cached: results.filter((r) => r.fromCache).length,
+  });
   const missingRequired = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
 
   if (missingRequired.length > 0) {
@@ -388,20 +469,51 @@ async function _isAuthenticated(page, protectedUrl) {
   return false;
 }
 
-async function _validateSession(stored, protectedUrl) {
-  if (!protectedUrl) return true;
+// Validate a batch of stored sessions against ONE shared headless browser —
+// N contexts instead of N cold chromium.launch()es, which is where most of the
+// old per-app cost went (launch contention effectively serialized parallel
+// validations). Each entry: { key, stored, protectedUrl }. Entries without a
+// stored state are invalid; entries without a URL are trivially valid. A
+// context-level failure marks just that entry invalid, not the whole batch.
+async function _validateSessionsBatch(entries) {
+  const outcomes = new Map();
+  const pending = [];
+  for (const entry of entries) {
+    if (!entry.stored) { outcomes.set(entry.key, false); continue; }
+    if (!entry.protectedUrl) { outcomes.set(entry.key, true); continue; }
+    pending.push(entry);
+  }
+  if (pending.length === 0) return outcomes;
   const browser = await chromium.launch({
     headless: true,
     args: ["--disable-blink-features=AutomationControlled"],
   });
   try {
-    const context = await browser.newContext({ ...STEALTH_CONTEXT_OPTIONS, storageState: stored, acceptDownloads: true });
-    const page = await context.newPage();
-    await page.goto(protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-    return await _isAuthenticated(page, protectedUrl);
+    await Promise.all(pending.map(async (entry) => {
+      let context;
+      try {
+        context = await browser.newContext({ ...STEALTH_CONTEXT_OPTIONS, storageState: entry.stored, acceptDownloads: true });
+        const page = await context.newPage();
+        await page.goto(entry.protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        outcomes.set(entry.key, await _isAuthenticated(page, entry.protectedUrl));
+      } catch (_) {
+        if (!outcomes.has(entry.key)) outcomes.set(entry.key, false);
+      } finally {
+        if (context) await context.close().catch(() => {});
+      }
+    }));
   } finally {
     await browser.close().catch(() => {});
   }
+  return outcomes;
+}
+
+// Single-session convenience wrapper over _validateSessionsBatch — kept for the
+// non-group paths in getAuthContext, which validate one session at a time.
+async function _validateSession(stored, protectedUrl) {
+  if (!protectedUrl) return true;
+  const outcomes = await _validateSessionsBatch([{ key: "single", stored, protectedUrl }]);
+  return outcomes.get("single");
 }
 
 async function _buildExecContext(stored, headless = false) {
@@ -716,4 +828,9 @@ module.exports = {
   _rejectReasonForProtectedUrl,
   _reachedProtectedUrl,
   _resolveGroup,
+  _loadGroupAppSession,
+  _validateSessionsBatch,
+  _readValidationCache,
+  _writeValidationCache,
+  AUTH_VALIDATION_TTL_MS,
 };
