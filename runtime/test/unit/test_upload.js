@@ -284,3 +284,43 @@ test("the compiled downloaded_files_dir placeholder resolves to every file this 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// EXEC-19: upload_binding.py's compile-time FIFO consumption already guarantees a downloaded
+// file is bound to at most one upload step, but a shared run-wide download folder means that
+// guarantee only holds on disk if the runtime deletes each file once it's actually uploaded.
+// Without that, a later bulk upload chained in the same run (A downloads -> B bulk-uploads, then
+// C downloads more -> D bulk-uploads) can still find A's stale files sitting in the folder.
+test("a bulk upload deletes its consumed files so a later chained upload never sees them again", async () => {
+  const dir = makeTempDir(["a.pdf", "b.pdf"]);
+  try {
+    const first = mockUploadPage("#file-upload");
+    const step = { type: "upload", value: "{{downloaded_files_dir}}", _explicit_selector: "#file-upload" };
+    await executeStep(first.page, step, { downloaded_files_dir: dir });
+    assert.deepStrictEqual(first.calls, [[path.join(dir, "a.pdf"), path.join(dir, "b.pdf")]]);
+    assert.deepStrictEqual(fs.readdirSync(dir), [], "a.pdf and b.pdf must be gone after upload");
+
+    // Simulate C downloading a new file into the same run's shared folder.
+    fs.writeFileSync(path.join(dir, "c.pdf"), "c");
+    const second = mockUploadPage("#file-upload");
+    await executeStep(second.page, step, { downloaded_files_dir: dir });
+    assert.deepStrictEqual(second.calls, [[path.join(dir, "c.pdf")]], "only c.pdf, never a stale a.pdf/b.pdf");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The cleanup above must never fire for a directory that didn't come from the compiler-controlled
+// downloaded_files_dir placeholder — a hand-authored {{file_path}} pointed at a real folder is the
+// user's own data and must survive the upload untouched.
+test("an upload via a plain file_path directory never deletes its files", async () => {
+  const dir = makeTempDir(["a.pdf", "b.pdf"]);
+  try {
+    const { page, calls } = mockUploadPage("#file-upload");
+    const step = { type: "upload", value: "{{file_path}}", _explicit_selector: "#file-upload" };
+    await executeStep(page, step, { file_path: dir });
+    assert.deepStrictEqual(calls, [[path.join(dir, "a.pdf"), path.join(dir, "b.pdf")]]);
+    assert.deepStrictEqual(fs.readdirSync(dir).sort(), ["a.pdf", "b.pdf"], "files must survive the upload");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -12,6 +12,7 @@ const {
 } = require("./run_config");
 const { asObject, asArray, unique } = require("./step_utils");
 const { pollPositive } = require("./assertions");
+const fs = require("fs");
 const { DOWNLOAD_ONLY_PLACEHOLDER_RE, resolveUploadPaths } = require("./uploads");
 const {
   locatorCandidates,
@@ -288,6 +289,10 @@ const HANDLERS = {
       );
     }
     const filePaths = resolveUploadPaths(resolved);
+    // Only the compiler-controlled downloaded_files_dir placeholder qualifies for cleanup — a
+    // hand-authored {{file_path}} that happens to point at a real directory must never have its
+    // files deleted out from under the user.
+    const isSharedDownloadsDir = resolved === inputs.downloaded_files_dir;
 
     await runLocatorStep(page, step, inputs, async locator => {
       // Whether this control takes one file or many is a property of the live page, not of
@@ -307,6 +312,18 @@ const HANDLERS = {
       }
       return locator.setInputFiles(filePaths, { timeout: ACTION_TIMEOUT_MS });
     });
+
+    // EXEC-19: the compiler already guarantees a downloaded file is bound to at most one upload
+    // step (FIFO consumption in upload_binding.py), but nothing removed the file from the shared
+    // per-run download folder — so a later bulk upload's own downloaded_files_dir scan could
+    // still pick up an earlier upload's already-consumed files. Delete them now that they're
+    // genuinely uploaded, matching the rule the compiler already enforces logically. Best-effort:
+    // a failed delete must not fail an upload that already succeeded.
+    if (isSharedDownloadsDir) {
+      for (const filePath of filePaths) {
+        try { fs.unlinkSync(filePath); } catch (_) { /* best-effort cleanup */ }
+      }
+    }
   },
 
   // Optional interstitial handling (cookie/consent banners, session-expired screens, optional
