@@ -38,6 +38,12 @@ ACTION_KIND_ORDER = (
     "assert",
     "wait",
     "screenshot",
+    # EXEC-13: author-placed reasoning checkpoint — pauses execution, asks Claude a stored
+    # question about the live page, binds the structured answer into `inputs` under
+    # `output_name`. No selector/identity_bundle (SELECTOR_ACTIONS excludes it); value-bearing
+    # (the "value" carried is the output binding name, not a page-interaction value — see
+    # VALUE_LABELS below) like "wait"/"screenshot" before it.
+    "ai_review",
     "upload_intent",
     "upload",
     "tab_open",
@@ -100,6 +106,7 @@ INSERTABLE_ACTIONS = frozenset(
         "assert",
         "wait",
         "screenshot",
+        "ai_review",
         "upload",
         "if_present",
         "try_dismiss",
@@ -142,6 +149,9 @@ VALUE_ACTIONS = frozenset(
         "keyboard_shortcut",
         "wait",
         "upload",
+        # EXEC-13: not a page-interaction value — this is the output binding name later steps
+        # read the reviewed answer back from (see VALUE_LABELS below).
+        "ai_review",
     }
 )
 
@@ -168,6 +178,7 @@ ACTION_LABELS = {
     "assert": "Assert",
     "wait": "Wait",
     "screenshot": "Screenshot",
+    "ai_review": "AI Review",
     "upload_intent": "Upload intent",
     "upload": "Upload",
     "tab_open": "Tab open",
@@ -196,6 +207,7 @@ CATEGORIES = {
     "assert": "validation",
     "wait": "validation",
     "screenshot": "validation",
+    "ai_review": "validation",
     "click": "pointer",
     "dblclick": "pointer",
     "right_click": "pointer",
@@ -229,6 +241,7 @@ VALUE_LABELS = {
     "keyboard_shortcut": "Shortcut JSON or key combo",
     "wait": "Milliseconds",
     "upload": "File path input",
+    "ai_review": "Output binding name",
 }
 
 

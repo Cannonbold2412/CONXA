@@ -257,6 +257,62 @@ class TestBranchStepSerialization:
     def test_unsupported_action_still_drops_to_none(self):
         assert _saved_step_to_execution_step({"action": "not_a_real_action"}) is None
 
+    # ── EXEC-13: ai_review ──────────────────────────────────────────────────
+    # Config lives in top-level ai_review_* fields (the check_kind/check_pattern shape), not
+    # nested under `action` — `action` here is the plain-string saved-skill shape, matching
+    # every other _saved_step_to_execution_step branch in this file.
+
+    def test_ai_review_step_serializes_prompt_and_defaults_on_failure_to_abort(self):
+        step = {"action": "ai_review", "ai_review_prompt": "Is the banner visible?"}
+        out = _saved_step_to_execution_step(step)
+        assert out == {"type": "ai_review", "prompt": "Is the banner visible?", "on_failure": "abort"}
+
+    def test_ai_review_step_dropped_when_prompt_is_blank(self):
+        assert _saved_step_to_execution_step({"action": "ai_review", "ai_review_prompt": "   "}) is None
+        assert _saved_step_to_execution_step({"action": "ai_review"}) is None
+
+    def test_ai_review_step_serializes_full_config(self):
+        step = {
+            "action": "ai_review",
+            "ai_review_prompt": "Is the banner visible?",
+            "ai_review_output_schema": {"type": "object", "required": ["visible"]},
+            "ai_review_reference_screenshot_ref": "visuals/Image_3.jpg",
+            "ai_review_on_failure": "use_default",
+            "ai_review_default_value": {"visible": False},
+            "value": "banner_visible",
+        }
+        out = _saved_step_to_execution_step(step)
+        assert out == {
+            "type": "ai_review",
+            "prompt": "Is the banner visible?",
+            "on_failure": "use_default",
+            "output_schema": {"type": "object", "required": ["visible"]},
+            "reference_screenshot_ref": "visuals/Image_3.jpg",
+            "default_value": {"visible": False},
+            "output_name": "banner_visible",
+        }
+
+    def test_ai_review_step_omits_default_value_unless_on_failure_is_use_default(self):
+        step = {
+            "action": "ai_review",
+            "ai_review_prompt": "Is the banner visible?",
+            "ai_review_default_value": {"visible": False},
+        }
+        out = _saved_step_to_execution_step(step)
+        assert "default_value" not in out
+        assert out["on_failure"] == "abort"
+
+    def test_ai_review_step_omits_empty_output_schema_and_reference_ref(self):
+        step = {
+            "action": "ai_review",
+            "ai_review_prompt": "Is the banner visible?",
+            "ai_review_output_schema": {},
+            "ai_review_reference_screenshot_ref": "   ",
+        }
+        out = _saved_step_to_execution_step(step)
+        assert "output_schema" not in out
+        assert "reference_screenshot_ref" not in out
+
     def test_editor_authored_if_present_step_serializes_correctly(self):
         """An if_present step scaffolded via the Human Edit editor (workflow_mutations.py::
         _new_manual_step + insert_branch_step — the 2026-07-10 branch-authoring work closing

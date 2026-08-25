@@ -69,6 +69,110 @@ def test_editing_validation_on_a_legacy_step_without_a_required_check_raises():
         validate_editor_patch(step, patch, {})
 
 
+# ── EXEC-13: ai_review step patches ──────────────────────────────────────────
+
+def _ai_review_step() -> dict:
+    return {
+        "action": {"action": "ai_review"},
+        "intent": "Check whether the save succeeded",
+        "value": "save_succeeded",
+        "ai_review_prompt": "Is the confirmation banner visible?",
+    }
+
+
+def test_ai_review_step_accepts_a_valid_prompt_patch():
+    step = _ai_review_step()
+    validate_editor_patch(step, {"ai_review_prompt": "Is X visible?"}, {})
+
+
+def test_ai_review_step_accepts_full_config_with_schema_and_use_default():
+    step = _ai_review_step()
+    patch = {
+        "ai_review_prompt": "Is X visible?",
+        "ai_review_output_schema": {"type": "object", "required": ["visible"]},
+        "ai_review_reference_screenshot_ref": "visuals/Image_3.jpg",
+        "ai_review_on_failure": "use_default",
+        "ai_review_default_value": {"visible": False},
+    }
+    validate_editor_patch(step, patch, {})
+
+
+def test_ai_review_step_rejects_empty_prompt():
+    step = _ai_review_step()
+    with pytest.raises(ValueError, match="ai_review_prompt_empty"):
+        validate_editor_patch(step, {"ai_review_prompt": "   "}, {})
+
+
+def test_ai_review_step_rejects_non_object_output_schema():
+    step = _ai_review_step()
+    with pytest.raises(ValueError, match="ai_review_output_schema_must_be_object"):
+        validate_editor_patch(step, {"ai_review_output_schema": "not an object"}, {})
+
+
+def test_ai_review_step_rejects_invalid_on_failure():
+    step = _ai_review_step()
+    with pytest.raises(ValueError, match="ai_review_on_failure_invalid"):
+        validate_editor_patch(step, {"ai_review_on_failure": "retry_forever"}, {})
+
+
+def test_ai_review_step_use_default_requires_default_value():
+    step = _ai_review_step()
+    with pytest.raises(ValueError, match="ai_review_use_default_requires_default_value"):
+        validate_editor_patch(step, {"ai_review_on_failure": "use_default"}, {})
+
+
+def test_ai_review_step_use_default_allowed_when_step_already_carries_a_default():
+    # The patch only changes on_failure; the step itself already has a default_value from an
+    # earlier edit — must not be forced to resubmit it every time.
+    step = _ai_review_step()
+    step["ai_review_default_value"] = {"visible": False}
+    validate_editor_patch(step, {"ai_review_on_failure": "use_default"}, {})
+
+
+def test_ai_review_step_rejects_recovery_patch():
+    # No selector/identity to recover — recovery is excluded from the allowlist entirely,
+    # not merely left unused (CLAUDE.md: ai_review is a checkpoint, not a recovery fallback).
+    step = _ai_review_step()
+    with pytest.raises(ValueError, match="ai_review_step_cannot_patch_recovery"):
+        validate_editor_patch(step, {"recovery": {"max_attempts": 2}}, {})
+
+
+def test_ai_review_step_rejects_unknown_keys():
+    step = _ai_review_step()
+    with pytest.raises(ValueError, match="ai_review_step_allows_only_ai_review_fields"):
+        validate_editor_patch(step, {"target": {"primary_selector": "#x"}}, {})
+
+
+# ── EXEC-13 / PROD-3: destructive step cannot directly follow ai_review ─────
+
+def _destructive_click_step() -> dict:
+    return {
+        "action": {"action": "click"},
+        "intent": "Delete the record",
+        "target": {"primary_selector": "#delete-btn", "fallback_selectors": []},
+        "signals": {"semantic": {"is_destructive": True}, "anchors": [{"text": "Delete"}]},
+        "validation": {"wait_for": {"type": "toast"}, "assertions": [{"type": "state_changed", "required": True}]},
+    }
+
+
+def test_destructive_step_cannot_directly_follow_ai_review():
+    step = _destructive_click_step()
+    with pytest.raises(ValueError, match="destructive_step_cannot_directly_follow_ai_review"):
+        validate_editor_patch(step, {"intent": "Delete the record"}, {}, previous_step=_ai_review_step())
+
+
+def test_destructive_step_after_a_non_ai_review_step_is_allowed():
+    step = _destructive_click_step()
+    previous = {"action": {"action": "click"}, "intent": "Open the record"}
+    validate_editor_patch(step, {"intent": "Delete the record"}, {}, previous_step=previous)
+
+
+def test_destructive_step_with_no_previous_step_is_allowed():
+    # First step in the workflow — nothing to check the lint against.
+    step = _destructive_click_step()
+    validate_editor_patch(step, {"intent": "Delete the record"}, {})
+
+
 def test_editing_validation_on_a_legacy_step_to_add_a_required_check_is_allowed():
     step = _fill_step(required_assertion=None)
     patch = {"validation": {"assertions": [{"type": "value_equals", "target": "#email", "expected": "x", "required": True}]}}

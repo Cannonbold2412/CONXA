@@ -538,6 +538,38 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
             out["selector"] = selector
         return _copy_saved_common(step, out)
 
+    if action == "ai_review":
+        # EXEC-13: a planned pause, not a page action — no selector to resolve. Config lives in
+        # top-level `ai_review_*` fields (the same shape check/assert's check_kind/check_pattern/
+        # etc. use, per _saved_check_like_step above) rather than nested under `action` — the
+        # saved-skill export normalizes `action` down to a plain string before this function
+        # ever runs, so scroll/drag_drop's action-dict nesting isn't available here.
+        # `reference_screenshot_ref` is author-set at edit time (there is no recorded screenshot
+        # to auto-associate — ai_review is inserted during Human Edit, not captured during
+        # recording), pointing at wherever the editor already saved it under `visuals/`.
+        # `output_name` is omitted when blank; run.js falls back to `ai_review_output_<step
+        # index>` at execution time using the same index space.
+        prompt = str(step.get("ai_review_prompt") or "").strip()
+        if not prompt:
+            return None
+        out: dict[str, Any] = {
+            "type": "ai_review",
+            "prompt": prompt,
+            "on_failure": str(step.get("ai_review_on_failure") or "abort").strip().lower(),
+        }
+        output_schema = step.get("ai_review_output_schema")
+        if isinstance(output_schema, dict) and output_schema:
+            out["output_schema"] = output_schema
+        reference_ref = str(step.get("ai_review_reference_screenshot_ref") or "").strip()
+        if reference_ref:
+            out["reference_screenshot_ref"] = reference_ref
+        if out["on_failure"] == "use_default":
+            out["default_value"] = step.get("ai_review_default_value")
+        output_name = _action_value_text(step).strip()
+        if output_name:
+            out["output_name"] = output_name
+        return _copy_saved_common(step, out)
+
     if action in {"if_present", "try_dismiss", "wait_for_one_of"}:
         return _saved_branch_step(step, action)
 

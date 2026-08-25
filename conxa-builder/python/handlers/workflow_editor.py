@@ -21,10 +21,14 @@ class WorkflowEditorMixin:
         patch: dict[str, Any],
         *,
         in_branch_body: bool = False,
+        previous_step: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Validate + deep-merge a patch into a single (possibly nested) step dict, rebuilding
         identity_bundle.signals when the target selector list changed. Shared by cmd_patch_step's
-        top-level and path-addressed (branch-body) flows so both go through the same gate."""
+        top-level and path-addressed (branch-body) flows so both go through the same gate.
+
+        `previous_step` (top-level patches only — see validate_editor_patch's docstring) is the
+        step immediately before this one, for EXEC-13's destructive-after-ai_review lint."""
         from conxa_compile.compiler.selector_filters import selector_passes_filters
         from conxa_compile.compiler.selector_grammar import (
             compute_merged_display_target,
@@ -36,7 +40,8 @@ class WorkflowEditorMixin:
         from conxa_compile.policy.bundle import get_policy_bundle
 
         try:
-            validate_editor_patch(step, patch, get_policy_bundle().data, in_branch_body=in_branch_body)
+            validate_editor_patch(step, patch, get_policy_bundle().data, in_branch_body=in_branch_body,
+                                   previous_step=previous_step)
         except ValueError as exc:
             raise _CommandError(str(exc), f"Patch rejected: {exc}") from exc
 
@@ -124,7 +129,8 @@ class WorkflowEditorMixin:
             step = parent_step
             revalidation_target = merged_nested
         else:
-            step = self._apply_step_patch(parent_step, patch, in_branch_body=False)
+            previous_step = steps[step_index - 1] if step_index > 0 else None
+            step = self._apply_step_patch(parent_step, patch, in_branch_body=False, previous_step=previous_step)
             revalidation_target = step
 
         steps[step_index] = step

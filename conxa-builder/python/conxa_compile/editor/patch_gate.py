@@ -185,6 +185,7 @@ def validate_editor_patch(
     policy: dict[str, Any],
     *,
     in_branch_body: bool = False,
+    previous_step: dict[str, Any] | None = None,
 ) -> None:
     """Raise ValueError with a human-readable message if the patch is not allowed.
 
@@ -193,6 +194,11 @@ def validate_editor_patch(
     bodies run best-effort and never enter the Tier 1-4 recovery cascade (CLAUDE.md Key
     Invariants), so a nested step's `recovery`/`validation` blocks are meaningless there and any
     attempt to patch them is rejected rather than silently accepted.
+
+    `previous_step`, when given, is the step immediately before this one in the same step list
+    (top-level only — EXEC-13's destructive-after-ai_review lint below only makes sense there;
+    branch bodies never enter recovery and don't carry ai_review either). Omitted by callers that
+    can't cheaply resolve it (e.g. a first step has none); the lint below simply doesn't fire.
     """
     if in_branch_body and ("recovery" in patch or "validation" in patch):
         raise ValueError("branch_body_step_cannot_patch_recovery_or_validation")
@@ -279,6 +285,45 @@ def validate_editor_patch(
         )
         if invalid_keys:
             raise ValueError("check_step_allows_only_check_fields")
+    if act == "ai_review":
+        # EXEC-13: an author-placed reasoning checkpoint, not a selector/identity step. Config
+        # fields are top-level, sibling to `action` — the same shape check/assert's check_kind/
+        # check_pattern/etc. use above, not the scroll/drag_drop pattern of nesting inside
+        # `action` (the saved-skill export normalizes `action` down to a plain string before
+        # _saved_step_to_execution_step ever runs, so kind-specific config can't live there).
+        # No `recovery` block is meaningful here (nothing to re-locate) — excluded from the
+        # allowlist entirely, checked ahead of the generic allowlist so this specific mistake
+        # gets its own message rather than the generic one.
+        if "recovery" in patch:
+            raise ValueError("ai_review_step_cannot_patch_recovery")
+        invalid_keys = sorted(
+            set(patch) - {
+                "intent", "semantic_description", "action", "validation", "value", "frame",
+                "ai_review_prompt", "ai_review_output_schema", "ai_review_on_failure",
+                "ai_review_default_value", "ai_review_reference_screenshot_ref",
+            }
+        )
+        if invalid_keys:
+            raise ValueError("ai_review_step_allows_only_ai_review_fields")
+        if "ai_review_prompt" in patch:
+            prompt = str(patch.get("ai_review_prompt") or "").strip()
+            if not prompt:
+                raise ValueError("ai_review_prompt_empty")
+        if "ai_review_output_schema" in patch:
+            output_schema = patch.get("ai_review_output_schema")
+            if output_schema is not None and not isinstance(output_schema, dict):
+                raise ValueError("ai_review_output_schema_must_be_object")
+        if "ai_review_reference_screenshot_ref" in patch:
+            reference_ref = patch.get("ai_review_reference_screenshot_ref")
+            if reference_ref is not None and not str(reference_ref).strip():
+                raise ValueError("ai_review_reference_screenshot_ref_empty")
+        if "ai_review_on_failure" in patch:
+            on_failure = str(patch.get("ai_review_on_failure") or "").strip().lower()
+            if on_failure not in {"abort", "use_default", "continue"}:
+                raise ValueError("ai_review_on_failure_invalid")
+            if on_failure == "use_default" and "ai_review_default_value" not in patch \
+                    and "ai_review_default_value" not in step:
+                raise ValueError("ai_review_use_default_requires_default_value")
     if act in {"if_present", "try_dismiss", "wait_for_one_of"}:
         invalid_keys = sorted(
             set(patch)
@@ -311,6 +356,13 @@ def validate_editor_patch(
         anchors = (merged.get("signals") or {}).get("anchors") or []
         if not anchors:
             raise ValueError("destructive_step_requires_signals_anchors")
+        # EXEC-13 / PROD-3 guardrail: a destructive step reading its target straight off an
+        # ai_review answer has no entity binding to prove it's acting on the right record —
+        # PROD-3 (the real entity-binding system) doesn't exist yet, so there is no safe way to
+        # allow this today. Route through a conditional (EXEC-1) instead: let the review gate
+        # WHETHER the destructive step runs, not WHAT it acts on.
+        if previous_step is not None and action_name(previous_step).lower() == "ai_review":
+            raise ValueError("destructive_step_cannot_directly_follow_ai_review")
 
     # Any consequential action must retain at least one enforced (required=True) post-condition
     # assertion after the edit — mirrors the destructive wait_for invariant above. Prevents a
