@@ -112,6 +112,19 @@ const HANDLERS = {
     await page.goto(interpolate(step.url || "", inputs), { timeout: PAGE_LOAD_TIMEOUT_MS, waitUntil: "domcontentloaded" });
   },
 
+  // Browser Back/Forward recorded by the recorder's CDP navigation-history tracking.
+  // The dispatched `page` is already the resolved target tab (resolveStepPage ran before
+  // executeStep), so history navigation replays on exactly the tab where it was performed —
+  // never rewritten to a guessed URL. step.url carries the URL the recorder observed AFTER
+  // the navigation; it's informational only (editor display / debugging), not navigated to.
+  browser_back: async (page) => {
+    await page.goBack({ timeout: PAGE_LOAD_TIMEOUT_MS, waitUntil: "domcontentloaded" });
+  },
+
+  browser_forward: async (page) => {
+    await page.goForward({ timeout: PAGE_LOAD_TIMEOUT_MS, waitUntil: "domcontentloaded" });
+  },
+
   scroll: async (page, step, inputs) => {
     if (hasTarget(step, inputs)) {
       await withLocator(page, step, inputs, PRIMARY, 0, async locator => {

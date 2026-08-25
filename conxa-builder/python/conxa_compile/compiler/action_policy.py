@@ -13,6 +13,8 @@ RECOVERY_ACTION_TYPES = frozenset({
 })
 NO_RECOVERY_ACTION_TYPES = frozenset({
     "navigate", "goto", "go_to", "open", "check", "scroll",
+    # Browser history navigation — nothing to re-locate, the browser owns the outcome.
+    "browser_back", "browser_forward",
     "wait", "assert", "screenshot",
     "tab_open", "tab_switch", "popup", "frame_enter", "frame_exit",
     "upload_intent", "download_observed", "dialog_appeared", "dialog_accept", "dialog_dismiss",

@@ -589,6 +589,29 @@ Absent on recordings made before multi-tab support existed — same read-new-fal
 `post_condition` (§3.4d) — so old recordings still validate and old compiled skills replay
 identically (every step resolves to the initial page, exactly as before this field existed).
 
+### 3.4f Browser History Navigation (`browser_back` / `browser_forward`, 2026-08-25)
+
+`ActionKind` gained two recorded-only kinds: `browser_back` and `browser_forward`
+(`packages/conxa-core/conxa_core/models/events.py`). They capture browser Back/Forward button
+presses (and Alt+←/→), which produce no in-page DOM event the bridge could see — the recorder
+detects them via per-page CDP navigation-history tracking instead (see `docs/TRD.md` §6.1a).
+
+```python
+# RecordedEvent.action.value (JSON string):
+{"from_url": "https://a.test/detail", "to_url": "https://a.test/list"}
+```
+
+- **Recorded by:** `session.py::_drain_nav_history_checks_sync` — synthetic events stamped with
+  the tab that fired the navigation.
+- **Compiles to:** a real executable `SkillStep` (not a marker): `action=browser_back/
+  browser_forward`, `intent=history_back/history_forward`, `url=<to_url>` (informational only),
+  `no_recovery_block`, `validation.wait_for={type: url_change, target: <to_url>}`.
+- **Replayed as:** `page.goBack()`/`page.goForward()` on the step's resolved tab
+  (`runtime/app/handlers.js`) — never rewritten to a URL navigation. Both types are in
+  `NAVIGATION_STEP_TYPES`, so the next step waits for page load.
+- **Editor:** labels "Browser back"/"Browser forward", category `flow`; not insertable, no
+  selector/value fields; url field is not editable.
+
 ### 3.5 RecoveryBlock
 
 ```python

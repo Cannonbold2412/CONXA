@@ -923,6 +923,40 @@ sequenceDiagram
 6. Events stream to `session_events.py` which appends to `events.jsonl`.
 7. On stop, `session.py` closes the Playwright context and renames each tab's raw `.webm` to a stable name (§6.3). It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
 
+#### 6.1a Browser Back/Forward capture (2026-08-25)
+
+The injected bridge only sees in-page DOM events — pressing the browser **Back**/**Forward**
+button produces none, so history navigations used to be invisible to recordings (replay then
+never reproduced them). `session.py` now captures them via per-page CDP navigation-history
+tracking:
+
+- Every registered page gets its own CDP session (`context.new_cdp_session(page)`) and a
+  baseline `Page.getNavigationHistory` snapshot taken at registration time (`_ensure_nav_history_session_sync`)
+  — for tab_0 that is right after the recording's own start `goto()`, so the start navigation
+  itself is never misread.
+- Each main-frame `framenavigated` queues a deferred check (`_queue_nav_history_check`);
+  the pump loop drains it (`_drain_nav_history_checks_sync`) and compares against the page's
+  previous snapshot. Classification is deliberately strict:
+  - `currentIndex` decreased → **browser_back** event;
+  - index moved forward into a slot whose URL already existed in the previous snapshot →
+    **browser_forward** (the stale-entry URL equality test is what keeps a fresh link click
+    that merely truncated forward entries from being misread as a forward);
+  - anything else (new entry, reload, replace) → no event.
+- Checks are deferred to the pump loop because CDP calls are unsafe inside Playwright event
+  callbacks (same reentrancy rule as `_binding_sink_sync`). Multiple navigations between
+  checks coalesce into one comparison; strictness principle: a missed Back degrades to the old
+  behavior, a false positive would corrupt replay. Non-auth mode only.
+- Emitted as synthetic events with `value = {"from_url", "to_url"}` and stamped with the tab
+  that actually fired the navigation (`src_page`), so multi-tab recordings keep correct context
+  (§6.3 markers insert as usual).
+
+The compiler turns these into real executable steps (not markers): `action=browser_back/
+browser_forward`, `intent=history_back/history_forward`, `no_recovery_block`, and a
+`wait_for: url_change` validation on the recorded post-navigation URL. At replay the runtime
+calls `page.goBack()`/`page.goForward()` on the step's resolved tab (handlers.js) — never a
+guessed URL navigation. The CI execution gate (`runtime/test/gate-skill/`) covers this:
+click a hash link → `browser_back` step with a `url_pattern` assertion on the returned-to URL.
+
 ### 6.2 Iframe Chain Preservation
 
 Every recorded event carries a `frame` object with:

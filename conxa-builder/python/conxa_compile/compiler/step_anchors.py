@@ -261,6 +261,11 @@ def clean_steps(steps: list[Step], policy: dict[str, Any] | None = None) -> list
             prev_action = action_name(prev or {})
             prev_key = _target_key(prev or {})
             if action == prev_action and key == prev_key and prev is not None:
+                # History navigations carry no element key (empty target) — two real
+                # consecutive Backs must never collapse into one replayed step.
+                if action in {"browser_back", "browser_forward"}:
+                    cleaned.append(step)
+                    continue
                 if action == "type":
                     prev_payload = dict(prev.get("action") or {})
                     curr_payload = dict(step.get("action") or {})

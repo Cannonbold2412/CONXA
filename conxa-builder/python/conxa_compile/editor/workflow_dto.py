@@ -95,6 +95,8 @@ def _editable_fields(step: dict[str, Any], policy: dict[str, Any]) -> dict[str, 
     spec = action_spec(act)
     is_scroll = act == "scroll"
     is_navigate = act == "navigate"
+    # browser_back/browser_forward carry an informational url (where the history nav landed)
+    # but it is never edited/navigated — the runtime calls goBack()/goForward() instead.
     is_marker = spec.marker
     dest = destructive_compiler_step(skill_step_for_destructive_check(step), policy)
     return {

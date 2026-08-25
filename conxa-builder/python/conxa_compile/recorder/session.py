@@ -269,6 +269,24 @@ class RecordingSession:
     # Pages seen via context "page" event but not yet registered by the pump loop
     # (Playwright calls on them must wait for the pump thread).
     _unregistered_pages: list[Any] = field(default_factory=list)
+    # Browser Back/Forward capture. The injected bridge only sees in-page DOM events —
+    # pressing the browser Back button produces none, so history navigations used to be
+    # invisible to recordings (replay then guessed URLs instead of reproducing what the
+    # user did). Each page gets its own CDP session; after every main-frame navigation we
+    # compare Page.getNavigationHistory against that page's previous snapshot:
+    #   currentIndex decreased                          -> browser_back
+    #   moved forward into an entry that already existed -> browser_forward (URL at the new
+    #                                                      index must equal the stale entry,
+    #                                                      so a fresh link click that merely
+    #                                                      truncated forward entries is NOT
+    #                                                      misread as a forward)
+    #   anything else                                    -> normal navigation, no event
+    # Checks are deferred to the pump loop via _nav_check_pages (CDP calls are unsafe inside
+    # Playwright event callbacks — same reentrancy rule as _binding_sink_sync). Strictness
+    # principle: a missed Back degrades to the old behavior; a false positive corrupts replay.
+    _nav_cdp_sessions: dict[int, Any] = field(default_factory=dict)
+    _nav_history_state: dict[int, dict[str, Any]] = field(default_factory=dict)
+    _nav_check_pages: list[Any] = field(default_factory=list)
 
     def _remember_current_url(self, url: str) -> None:
         value = str(url or "").strip()
@@ -309,6 +327,9 @@ class RecordingSession:
             self._playwright.stop()
             self._playwright = None
         self._page = None
+        self._nav_cdp_sessions.clear()
+        self._nav_history_state.clear()
+        self._nav_check_pages.clear()
         try:
             self._finalize_video_file_sync()
         except Exception as exc:  # noqa: BLE001
@@ -526,11 +547,103 @@ class RecordingSession:
                 "video_start_wall_ms": int(time.time() * 1000),
                 "video_path": video_path,
             }
+            self._ensure_nav_history_session_sync(page)
 
     def _tab_id_for_page(self, page: Any | None) -> str | None:
         if page is None:
             return None
         return self._tab_ids.get(id(page))
+
+    def _ensure_nav_history_session_sync(self, page: Any) -> None:
+        """Create the per-page CDP session used for Back/Forward detection and take the
+        baseline history snapshot. Pump-loop only (new_cdp_session is a real Playwright
+        call). The baseline is taken at registration time — for tab_0 that is right after
+        the recording's own start goto(), so the start navigation itself is never misread.
+        A page whose baseline could not be taken simply skips its first check (no event),
+        which covers a popup/user tab that navigated before its first pump tick."""
+        key = id(page)
+        if key in self._nav_cdp_sessions:
+            return
+        try:
+            session = self._context.new_cdp_session(page)
+        except Exception as exc:  # noqa: BLE001
+            self.binding_errors.append(f"nav_history_cdp_error: {exc!s}")
+            return
+        self._nav_cdp_sessions[key] = session
+        state = self._read_nav_history_sync(session)
+        if state is not None:
+            self._nav_history_state[key] = state
+
+    def _read_nav_history_sync(self, session: Any) -> dict[str, Any] | None:
+        try:
+            hist = session.send("Page.getNavigationHistory")
+        except Exception as exc:  # noqa: BLE001
+            self.binding_errors.append(f"nav_history_read_error: {exc!s}")
+            return None
+        try:
+            entries = [str(e.get("url") or "") for e in (hist.get("entries") or [])]
+            return {"index": int(hist.get("currentIndex") or 0), "entries": entries}
+        except Exception as exc:  # noqa: BLE001
+            self.binding_errors.append(f"nav_history_parse_error: {exc!s}")
+            return None
+
+    def _queue_nav_history_check(self, page: Any) -> None:
+        if self.auth_mode or page is None:
+            return
+        if any(p is page for p in self._nav_check_pages):
+            return
+        self._nav_check_pages.append(page)
+
+    def _drain_nav_history_checks_sync(self) -> None:
+        """Classify queued navigations against each page's last known history snapshot.
+        Pump-loop only. Multiple navigations between checks coalesce into one comparison —
+        acceptable degradation, see the strictness note on the field comment."""
+        while self._nav_check_pages:
+            page = self._nav_check_pages.pop(0)
+            key = id(page)
+            session = self._nav_cdp_sessions.get(key)
+            try:
+                closed = page.is_closed()
+            except Exception:  # noqa: BLE001
+                closed = True
+            if closed:
+                self._nav_cdp_sessions.pop(key, None)
+                self._nav_history_state.pop(key, None)
+                continue
+            if session is None:
+                continue
+            cur = self._read_nav_history_sync(session)
+            if cur is None:
+                continue
+            prev = self._nav_history_state.get(key)
+            self._nav_history_state[key] = cur
+            if prev is None:
+                # No earlier snapshot — first navigation observed on this page.
+                continue
+            prev_index = int(prev["index"])
+            cur_index = int(cur["index"])
+            kind = ""
+            if cur_index < prev_index:
+                kind = "browser_back"
+            elif (
+                cur_index > prev_index
+                and 0 <= cur_index < len(prev["entries"])
+                and cur_index < len(cur["entries"])
+                and str(prev["entries"][cur_index]) == str(cur["entries"][cur_index])
+            ):
+                # Moved forward into a slot the previous snapshot already occupied with the
+                # same URL — a real history forward. A fresh link click truncates forward
+                # entries and lands on a NEW url, so it fails this equality test.
+                kind = "browser_forward"
+            if not kind:
+                continue
+            to_url = str(cur["entries"][cur_index]) if 0 <= cur_index < len(cur["entries"]) else ""
+            from_url = str(prev["entries"][prev_index]) if 0 <= prev_index < len(prev["entries"]) else ""
+            self._enqueue_synthetic(
+                kind,
+                json.dumps({"from_url": from_url, "to_url": to_url}),
+                src_page=page,
+            )
 
     def _tab_context_for_page(self, page: Any | None) -> dict[str, Any]:
         tab_id = self._tab_id_for_page(page) or "tab_0"
@@ -1286,6 +1399,9 @@ class RecordingSession:
             return
         self._page = page
         self._remember_page_url_sync(page)
+        # Main-frame navigation happened — defer the Back/Forward history comparison to the
+        # pump loop (CDP round-trips are unsafe inside Playwright event callbacks).
+        self._queue_nav_history_check(page)
 
     def _attach_page_listeners(self, page: Any) -> None:
         # Bind `page` — the tab this listener is attached to — into each handler, so the event
@@ -1483,6 +1599,12 @@ class RecordingSession:
                         self._consume_payload_safe_sync(payload, src_page, src_frame)
                     except Empty:
                         pass
+                    # Event-driven: only pages that just navigated get checked (one CDP
+                    # round-trip each), so this adds no per-tick traffic.
+                    try:
+                        self._drain_nav_history_checks_sync()
+                    except Exception as exc:  # noqa: BLE001
+                        self.binding_errors.append(f"nav_history_drain_error: {exc!s}")
                     try:
                         request_id, paths = self._file_pick_results.get_nowait()
                         pending = self._pending_file_chooser

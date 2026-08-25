@@ -71,7 +71,8 @@ const checkRetryBudget = _checkRetryBudget;
 // gets a load wait too — the marker itself is a no-op, but the tab it names may still be
 // mid-navigation (e.g. a target=_blank popup that opens at about:blank).
 const NAVIGATION_STEP_TYPES = new Set([
-  "navigate", "click", "dblclick", "right_click", "keyboard_shortcut",
+  "navigate", "browser_back", "browser_forward", "click", "dblclick", "right_click",
+  "keyboard_shortcut",
   "if_present", "try_dismiss", "wait_for_one_of",
   "tab_open", "tab_switch", "popup",
 ]);
@@ -309,6 +310,7 @@ async function isAuthFailure(page) {
 
 module.exports = {
   NOOP_STEP_TYPES,
+  NAVIGATION_STEP_TYPES,
   appendRecoveryEvent,
   interpolate,
   resolveUploadPaths,

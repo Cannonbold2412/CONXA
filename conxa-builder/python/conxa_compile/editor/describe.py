@@ -122,6 +122,12 @@ def describe_step(step: dict[str, Any], step_index: int) -> str:
         if url:
             return f"Step {n}: Go to {url[:80]}{'…' if len(url) > 80 else ''}"
         return f"Step {n}: Navigate"
+    if act in {"browser_back", "browser_forward"}:
+        verb = "Go back" if act == "browser_back" else "Go forward"
+        url = str(step.get("url") or "").strip()
+        if url:
+            return f"Step {n}: {verb} to {url[:80]}{'…' if len(url) > 80 else ''}"
+        return f"Step {n}: {verb} (browser history)"
     if act in {"fill", "type"}:
         verb = "Fill" if act == "fill" else "Type"
         v = step.get("value")

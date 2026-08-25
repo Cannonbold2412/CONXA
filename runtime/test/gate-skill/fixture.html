@@ -16,6 +16,12 @@
          selector engine is broken (e.g. pkg bytecode corruption), the locator
          resolves 0 elements and the click step fails — failing the build. -->
     <button data-testid="gate-btn" onclick="document.getElementById('out').textContent='clicked'">Click Me</button>
+    <!-- Browser-history gate (browser_back): clicking this link pushes a same-document
+         history entry (#detail). The gate skill then runs a browser_back step with a
+         url_pattern assertion — if history navigation replay regresses (e.g. back got
+         rewritten to a guessed URL or dropped), the URL still carries #detail, the
+         assertion fails, and so does the build. -->
+    <a id="nav-detail" href="#detail" data-testid="nav-detail">View detail</a>
     <p id="out">idle</p>
   </header>
 </body>

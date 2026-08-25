@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -805,7 +806,8 @@ def _build_structural_fingerprint(steps: list[SkillStep]) -> dict[str, Any]:
     landmarks: list[dict[str, Any]] = []
     for step in steps[:5]:
         action = step.action if isinstance(step.action, str) else (step.action or {}).get("action", "")
-        if action in {"navigate", "scroll"}:
+        if action in {"navigate", "scroll", "browser_back", "browser_forward"}:
+            # History navigations are non-interactive landmarks too — never fingerprinted.
             continue
         fp = step.identity_bundle.fingerprint
         primary = step.target.get("primary_selector", "")
@@ -1245,6 +1247,46 @@ def _build_step(
                 "step_index": step_index,
                 "action": action_payload,
                 "intent": str(action_payload),
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
+        return step
+    if action_payload in {"browser_back", "browser_forward"}:
+        # Real executable navigation step (NOT a marker): replay calls page.goBack()/
+        # page.goForward() on the recorded tab, so the browser's own history machinery
+        # reproduces the navigation exactly as the user performed it — never a guessed
+        # URL. No element target, no LLM intent, no vision anchors (same reasoning as
+        # scroll: nothing to select). The recorded value carries {from_url, to_url}; to_url
+        # feeds the wait_for validation so the next step starts on the settled page.
+        raw_value = str((ev.get("action") or {}).get("value") or "")
+        to_url = ""
+        try:
+            parsed = json.loads(raw_value) if raw_value else {}
+            if isinstance(parsed, dict):
+                to_url = str(parsed.get("to_url") or "").strip()
+        except Exception:  # noqa: BLE001
+            to_url = ""
+        intent = "history_back" if action_payload == "browser_back" else "history_forward"
+        step = SkillStep(
+            action=action_payload,
+            intent=intent,
+            url=to_url,
+            frame=_build_frame_context(ev),
+            tab=_build_tab_context(ev),
+            recovery=RecoveryBlock(**no_recovery_block(intent)),
+            validation=ValidationBlock(
+                wait_for={"type": "url_change", "target": to_url, "timeout": 60000} if to_url else {},
+                success_conditions={"url": to_url} if to_url else {},
+            ),
+        )
+        _compile_log(
+            "compile_step",
+            f"Compiled step {step_index + 1}.",
+            {
+                "phase": "step_done",
+                "step_index": step_index,
+                "action": action_payload,
+                "intent": intent,
                 "duration_ms": round((time.perf_counter() - started) * 1000, 2),
             },
         )

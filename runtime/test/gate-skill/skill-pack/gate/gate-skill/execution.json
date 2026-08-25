@@ -13,6 +13,42 @@
   },
   {
     "type": "click",
+    "selector": "[data-testid=\"nav-detail\"]",
+    "identity_bundle": {
+      "signals": [
+        { "engine": "css",  "selector": "[data-testid=\"nav-detail\"]",          "durability": 0.97, "orthogonality_class": "test-id",       "unique_at_compile": true, "source": "manual" },
+        { "engine": "role", "selector": "internal:role=link[name=\"View detail\"]", "durability": 0.95, "orthogonality_class": "semantic-aria", "unique_at_compile": true, "source": "compiler" }
+      ],
+      "fingerprint": {
+        "role": "link",
+        "tag": "a",
+        "inner_text": "View detail",
+        "aria_label": "",
+        "name": "",
+        "placeholder": "",
+        "label_text": "",
+        "data_testid": "nav-detail",
+        "input_type": "",
+        "css_class_tokens": [],
+        "anchor_phrases": [],
+        "position_hint": {}
+      },
+      "stable_hash": "",
+      "frame_chain": []
+    },
+    "assertions": [
+      { "type": "url_pattern", "target": "#detail$", "timeout_ms": 5000 }
+    ]
+  },
+  {
+    "type": "browser_back",
+    "url": "",
+    "assertions": [
+      { "type": "url_pattern", "target": "fixture\\.html$", "timeout_ms": 5000 }
+    ]
+  },
+  {
+    "type": "click",
     "selector": "[data-testid=\"gate-btn\"]",
     "identity_bundle": {
       "signals": [

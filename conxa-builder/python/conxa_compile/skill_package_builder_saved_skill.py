@@ -450,6 +450,12 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
             return None
         return _copy_saved_common(step, {"type": "navigate", "url": url})
 
+    if action in {"browser_back", "browser_forward"}:
+        # History navigation replays as page.goBack()/page.goForward() on the step's tab —
+        # the recorded post-navigation url is informational only (editor display), never
+        # navigated to. Kept even when empty so the step itself is never dropped.
+        return _copy_saved_common(step, {"type": action, "url": _step_url(step)})
+
     if action in {"click", "focus", "hover", "dblclick", "right_click"}:
         selector = _step_selector(step)
         if not selector:

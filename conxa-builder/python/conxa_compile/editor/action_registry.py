@@ -15,6 +15,10 @@ from conxa_compile.compiler.action_policy import RECOVERY_ACTION_TYPES
 
 ACTION_KIND_ORDER = (
     "navigate",
+    # Browser Back/Forward buttons (incl. Alt+Left/Right) — recorded-only, not insertable.
+    # Real executable steps at replay time: page.goBack()/page.goForward() on the step's tab.
+    "browser_back",
+    "browser_forward",
     "click",
     "dblclick",
     "right_click",
@@ -143,6 +147,8 @@ VALUE_ACTIONS = frozenset(
 
 ACTION_LABELS = {
     "navigate": "Navigate",
+    "browser_back": "Browser back",
+    "browser_forward": "Browser forward",
     "click": "Click",
     "dblclick": "Double click",
     "right_click": "Right click",
@@ -183,6 +189,8 @@ ACTION_LABELS = {
 
 CATEGORIES = {
     "navigate": "flow",
+    "browser_back": "flow",
+    "browser_forward": "flow",
     "scroll": "flow",
     "check": "validation",
     "assert": "validation",

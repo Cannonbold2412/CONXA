@@ -16,6 +16,10 @@ ActionKind = Literal[
     "drag_drop", "keyboard_shortcut",
     # scroll / navigation
     "scroll", "navigate",
+    # browser history navigation (Back/Forward buttons, Alt+Left/Right) — captured via the
+    # recorder's per-page CDP navigation-history tracking; replayed as goBack/goForward,
+    # never as a guessed URL navigation
+    "browser_back", "browser_forward",
     # browser context
     "tab_open", "tab_switch", "popup", "frame_enter", "frame_exit",
     # file I/O affordances
