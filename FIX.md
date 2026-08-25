@@ -2,6 +2,21 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed a leftover-file mixup when one workflow chains several downloads and uploads — 2026-08-25
+When a workflow moves a batch of files from one app to another, it uses a shared holding folder for that run. If a workflow chains this more than twice in a row — download a batch, upload it, download another batch, upload that one too — the second upload could accidentally grab leftover files from the first batch as well, silently sending extra files nobody meant to send. It's like clearing a shared inbox tray after handing off its contents, instead of leaving old papers to get mixed in with the next delivery. Now, once a batch of files is successfully uploaded, they're deleted from the holding folder right away, so later batches in the same run only ever see their own files.
+
+---
+
+## Conxa can now run your skills on a schedule, all by itself - 2026-08-26
+Until now, a skill only ran when you (or your AI chat app) asked it to. Conxa now ships with its own built-in scheduler: you tell it "run this every weekday at 6am" (either by asking in chat or with one command), and from then on it fires on time even when every chat window is closed - a small tray icon appears so you can see what is happening, pause it, or stop it. Missed runs are handled sensibly: if the computer was off and wakes up within the grace period you chose (one hour by default), the run catches up once; older missed slots are skipped rather than firing a pile of late runs all at once. Two safety nets came with this: several skills can now run side by side (up to five), and if two skills would touch the same website, they politely take turns instead of tripping over each other - this now works even between completely separate Conxa processes, which closes a small hole where a scheduled run and a chat-driven run could both hit the same site at once. Your schedule details (including any form values) are stored only on your own computer, encrypted; nothing about schedules ever reaches our cloud.
+
+---
+
+## Wrote up a real safety gap: our automatic repair attempts can act on the page more than once — 2026-08-25
+When a workflow step fails, the runtime tries a series of increasingly creative ways to find the element again — and each one of those tries performs a real click. Nothing in between them checks whether the previous try already worked. So a Submit button whose confirmation message is just slow to appear can get clicked twice, and a later attempt matching loosely on text can click something entirely different and leave the app somewhere nobody expected. It is like a person jiggling a jammed door handle several times without looking up to see the door already opened. This is an analysis document, not a fix — it walks through exactly where this happens, how the well-known browser AI tools avoid the same trap (they look at the page again after every single attempt, which we deliberately cannot afford to do on every step), and lays out five specific changes that use pieces we have already built. It also found that the flag marking a step as dangerous (delete, pay, submit) is recorded and shipped with every workflow but never actually read when the workflow runs. The work is now tracked in the backlog.
+
+---
+
 ## The upload file picker now pops up in front of the recording window, not behind it — 2026-08-25
 When recording a workflow and clicking an upload button, Conxa's own file picker window opened up, but it appeared hidden behind the browser window you were recording in — like a paper sliding under a stack instead of on top. You'd have to know to alt-tab to find it. Now the file picker briefly jumps to the very front of all your windows while it's open, so it's immediately visible, then steps back to normal once you've picked a file (or cancelled) so it doesn't stay stuck on top of everything else afterward.
 
