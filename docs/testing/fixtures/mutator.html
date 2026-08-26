@@ -1,0 +1,39 @@
+<!doctype html>
+<html><body>
+<h1 id="title">Shapeshifter</h1>
+<form onsubmit="event.preventDefault(); show();">
+  <input id="f-name" placeholder="name" />
+  <input id="f-email" placeholder="email" />
+  <button id="btn-submit">Submit</button>
+</form>
+<div id="out" hidden>Thanks, <span id="out-name"></span>!</div>
+<script>
+  // Every 700 ms: rewrite every id/class, move the button in the DOM,
+  // and change its label — while keeping it clickable.
+  const names = ['btn-submit','cta-go','act-send','do-it'];
+  const labels = ['Submit','Go','Send','Do It'];
+  let i = 0;
+  document.getElementById('btn-submit').addEventListener('click', e => {
+    e.preventDefault();
+    show();
+  });
+  setInterval(() => {
+    i++;
+    document.querySelectorAll('[id]').forEach((el, k) => {
+      el.id = el.id.replace(/-(v\d+)?$/, '') + '-v' + i;
+      el.className = 'c' + ((i + k) % 7) + ' mut-' + (i % 3);
+    });
+    const btn = document.getElementById(names[i % 4] + '-v' + i) ||
+                document.querySelector('button');
+    labels.forEach(l => { if (btn.textContent !== l && Math.random() < .25) btn.textContent = l; });
+    document.body.appendChild(btn); // move button to end of body every tick
+  }, 700);
+  const outDiv = document.getElementById('out');
+  const outName = document.getElementById('out-name');
+  function show(){
+    outDiv.hidden = false;
+    outName.textContent =
+      document.querySelector('input[placeholder="name"]').value;
+  }
+</script>
+</body></html>

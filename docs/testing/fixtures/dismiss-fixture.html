@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Dismiss-pattern fixture</title>
+<style>
+  body{font-family:sans-serif;margin:48px}
+  #target{padding:12px 24px;font-size:16px}
+  .banner{position:fixed;inset:0;background:rgba(10,10,10,.88);color:#fff;z-index:9999;
+          display:flex;flex-direction:column;gap:16px;align-items:center;justify-content:center}
+  .banner button{padding:10px 22px;font-size:15px}
+  .banner.hidden{display:none}
+  dialog.b{color:#000}
+  #clicklog{position:fixed;top:8px;right:8px;background:#fffa;border:1px solid #888;
+            padding:8px;font-size:12px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+  <h1>Dismiss-pattern fixture</h1>
+  <p>Banner variant: <b id="variant">?</b>. Click evidence appears top-right and in the
+     HTTP server log (<code>/__log?&lt;name&gt;</code>).</p>
+  <button id="target">Do the real action</button>
+  <div id="clicklog">clicked: (this page load)</div>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const v = q.get("banner") || "none";
+    document.getElementById("variant").textContent = v;
+    const logEl = document.getElementById("clicklog");
+    function log(name){
+      logEl.textContent += "\n  " + name;
+      new Image().src = "/__log?" + encodeURIComponent(v + ":" + name);
+    }
+    function dismiss(btn){
+      log(btn.id || btn.className);
+      const b = document.getElementById("b");
+      if (b) b.classList.add("hidden");
+    }
+    const banners = {
+      // Real OneTrust accept id — matches the static known-pattern list directly.
+      onetrust: '<div class="banner" id="b"><span>We value your privacy</span>' +
+                '<button id="onetrust-accept-btn-handler" onclick="dismiss(this)">Accept all</button></div>',
+      // Decoy: an EARLIER static-list member (#truste-consent-button) that clicks but does
+      // NOT dismiss, followed by a later list member (.cmplz-accept) that does. Run 1 must
+      // click both; run 2 must click only .cmplz-accept (learned-first ordering).
+      decoy: '<div class="banner" id="b"><span>We value your privacy</span>' +
+             '<button id="truste-consent-button" onclick="log(\'decoy-truste\')">Accept</button>' +
+             '<button class="cmplz-accept" onclick="dismiss(this)">Accept all</button></div>',
+      // Bespoke: nothing in the static list matches — the ladder must find nothing.
+      bespoke: '<div class="banner" id="b"><span>We value your privacy</span>' +
+               '<button id="bespoke-x" onclick="dismiss(this)">OK sure</button></div>',
+    };
+    if (banners[v]) document.body.insertAdjacentHTML("beforeend", banners[v]);
+    if (v === "escdialog") {
+      // Native <dialog> closes on Escape — exercises the plain Escape remedy, no patterns.
+      const d = document.createElement("dialog");
+      d.className = "b";
+      d.innerHTML = "<p>Session expired?</p>";
+      document.body.appendChild(d);
+      d.showModal();
+      log("dialog-open");
+    }
+    document.getElementById("target").addEventListener("click", () => log("target"));
+  </script>
+</body>
+</html>

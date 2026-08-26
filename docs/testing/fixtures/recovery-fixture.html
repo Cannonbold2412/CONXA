@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Recovery fixture</title>
+<style>
+  body{font-family:sans-serif;margin:48px}
+  button{padding:12px 24px;font-size:16px;margin-right:12px}
+  .ghost{opacity:.85}
+  #clicklog{position:fixed;top:8px;right:8px;background:#fffa;border:1px solid #888;
+            padding:8px;font-size:12px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+  <h1>Recovery fixture</h1>
+  <p>Mode: <b id="mode">clean</b>. Click evidence appears top-right and in the HTTP server log
+     (<code>/__log?&lt;mode&gt;:&lt;name&gt;</code>).</p>
+  <div id="controls"></div>
+  <div id="clicklog">clicked: (this page load)</div>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const v = q.get("v") || "clean";
+    document.getElementById("mode").textContent = v;
+    const logEl = document.getElementById("clicklog");
+    function log(name){
+      logEl.textContent += "\n  " + name;
+      new Image().src = "/__log?" + encodeURIComponent(v + ":" + name);
+    }
+    function btn(attrs, label, name){
+      const b = document.createElement("button");
+      for (const [k, val] of Object.entries(attrs)) b.setAttribute(k, val);
+      b.textContent = label;
+      b.addEventListener("click", () => { log(name); b.textContent += " ✓"; });
+      return b;
+    }
+    const controls = document.getElementById("controls");
+    // The recorded target. Mode decides how much of its identity has "drifted".
+    const variants = {
+      // Exactly as recorded — every signal alive. Baseline: must resolve on the primary path.
+      clean: [btn({ id:"checkout-btn", "data-testid":"buy-btn", "aria-label":"Buy Now",
+                    class:"btn-primary" }, "Buy Now", "target")],
+      // Tier-2 case: text renamed AND data-testid removed AND aria-label removed — every strong
+      // IdentityBundle signal is dead — but the id survives, so a fallback selector can still
+      // find it deterministically.
+      t2:    [btn({ id:"checkout-btn", class:"btn-primary" }, "Purchase order", "target")],
+      // Tier-3 case: every stable attribute rotated, text paraphrased ("Complete Purchase"),
+      // plus two decoys competing for the ranking. Nothing deterministic can find it; only
+      // intent + anchors + the ranked list can.
+      t3:    [
+        btn({ class:"ghost" }, "Save cart for later", "decoy-save"),
+        btn({ "data-testid":"cta-x7f", "aria-label":"Complete Purchase", class:"btn-primary" },
+            "Complete Purchase", "target"),
+        btn({ class:"ghost" }, "Cancel order", "decoy-cancel"),
+      ],
+      // Honest-failure case: the target is gone entirely. Recovery should end in a clean typed
+      // failure (or a Claude decline) — never a confident wrong click.
+      gone:  [btn({ class:"ghost" }, "Nothing to see here", "other")],
+    };
+    (variants[v] || variants.clean).forEach(b => controls.appendChild(b));
+  </script>
+</body>
+</html>
