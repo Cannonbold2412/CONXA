@@ -37,17 +37,50 @@ type InputSpec = {
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
 
+// Raw causes the runtime throws (run.js/resolution.js/handlers.js/browser.js) mapped to plain
+// English. Checked as substring matches against the cause text, in order, first match wins.
+const CAUSE_PATTERNS: Array<[RegExp, string]> = [
+  [/Executable doesn't exist/i, 'The test browser isn’t installed. Restarting Build Studio should install it automatically.'],
+  [/Timeout \d+ms exceeded/i, 'The page didn’t respond in time.'],
+  [/net::ERR_NAME_NOT_RESOLVED/i, 'That website’s address couldn’t be found. Check the URL.'],
+  [/net::ERR_CONNECTION|net::ERR_INTERNET_DISCONNECTED/i, 'Couldn’t connect to the website. Check your internet connection.'],
+  [/Element not found \(resolve miss\)/i, 'The element this step needs wasn’t found on the page.'],
+  [/Ambiguous element resolution/i, 'Found more than one matching element and couldn’t tell which one to use.'],
+  [/Containing frame could not be located/i, 'The embedded section (iframe) holding this element couldn’t be found — the page may have changed.'],
+  [/Element is disabled/i, 'The element was disabled and couldn’t be clicked or typed into.'],
+  [/Tab not found/i, 'The browser tab this step needs wasn’t open.'],
+  [/Verification failed:/i, 'The step ran, but the page didn’t end up in the expected state afterward.'],
+  [/none of the candidate selectors appeared/i, 'None of the expected outcomes appeared on the page in time.'],
+  [/^Assert text:/i, 'The page didn’t contain the expected text.'],
+  [/^(URL check failed|Assert failed: URL)/i, 'The page didn’t navigate to the expected address.'],
+  [/Authentication session was not captured/i, 'Sign-in wasn’t completed or saved. Please authenticate again.'],
+  [/upload step has no file path/i, 'This step needs a file to upload, but none was provided.'],
+  [/^Execution cancelled/i, 'The test was stopped before it finished.'],
+  [/Runtime tool call timed out/i, 'The test stopped responding and had to be cancelled.'],
+]
+
+function friendlyCause(text: string): string {
+  const hit = CAUSE_PATTERNS.find(([re]) => re.test(text))
+  return hit ? hit[1] : text
+}
+
+// Runtime messages look like "Execution failed at step N: Step N (type) failed: <cause>" —
+// the "Step N (type) failed:" marker isn't at the very start of the string, so this must not
+// anchor to ^ or it silently misses and falls back to a step-less generic message.
+const STEP_FAILURE_RE = /Step (\d+) \(([a-z_]+)\) failed: ([\s\S]*)$/i
+
 function formatRuntimeError(msg: string): string {
   const stripped = msg.replace(ANSI_RE, '')
   const tailIdx = stripped.indexOf('Runtime log tail:')
   const cleaned = tailIdx !== -1 ? stripped.slice(0, tailIdx).trim() : stripped.trim()
+  if (!cleaned) return 'Test failed'
 
-  // Playwright "Executable doesn't exist at <path>" → short user-facing message
-  if (/browserType\.launch.*Executable doesn't exist/i.test(cleaned)) {
-    return 'Playwright browser not found. Restarting Build Studio should trigger an automatic install.'
+  const stepMatch = cleaned.match(STEP_FAILURE_RE)
+  if (stepMatch) {
+    const [, stepNum, stepType, cause] = stepMatch
+    return `Step ${stepNum} (${stepType}) failed: ${friendlyCause(cause.trim())}`
   }
-
-  return cleaned || 'Test failed'
+  return friendlyCause(cleaned)
 }
 
 // The runtime appends a "Runtime log tail:" block (last few stderr lines) to its error.
