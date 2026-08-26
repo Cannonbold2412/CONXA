@@ -210,6 +210,14 @@ export function WorkflowStageRail({
   packBuilt,
   stale,
   published = false,
+  /** This workflow's own compile is running (from the live compile store, not
+   * the polled `stage` field — accurate even right after navigating back to
+   * this row before a refetch would catch up). Keeps the Compile node
+   * clickable instead of disabled, so clicking it re-opens the running
+   * compile's progress page. */
+  compileBusy = false,
+  /** Ticking "~Ns left" label shown on the Compile node while compileBusy. */
+  compileEtaLabel,
   onRecord,
   onCompile,
   onReview,
@@ -226,6 +234,8 @@ export function WorkflowStageRail({
    * Only then does the last node turn green — a passed test merely makes it
    * amber ("ready to package", not yet shipped). */
   published?: boolean
+  compileBusy?: boolean
+  compileEtaLabel?: string
   onRecord: () => void
   onCompile: () => void
   onReview: () => void
@@ -241,7 +251,7 @@ export function WorkflowStageRail({
   // node amber-pending until the release exists on Conxa Cloud.
   const packageDone = stage === 'ready' && published
   const packagePending = stage === 'ready' && !published
-  const busyIndex = stage === 'queued' || stage === 'compiling' ? 1 : null
+  const busyIndex = compileBusy ? 1 : null
 
   const nodes: RailNodeSpec[] = [
     {
@@ -254,10 +264,12 @@ export function WorkflowStageRail({
       onClick: onRecord,
     },
     {
-      label: 'Compile',
+      label: compileBusy ? compileEtaLabel ?? 'Compiling…' : 'Compile',
       icon: Zap,
-      enabled: hasRecording && busyIndex === null,
-      disabledTitle: !hasRecording ? 'Record the workflow first' : busyIndex !== null ? 'Compiling…' : undefined,
+      // Stays enabled while this workflow's own compile is running so the
+      // click re-opens its progress page instead of doing nothing.
+      enabled: hasRecording,
+      disabledTitle: !hasRecording ? 'Record the workflow first' : undefined,
       onClick: onCompile,
     },
     {

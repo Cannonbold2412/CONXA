@@ -1,3 +1,4 @@
+import { useEffect, useReducer } from 'react'
 import { create } from 'zustand'
 import { cmd, type BackendEvent } from '@/lib/ipc'
 import { errorMessage } from '@/api/workflowApi'
@@ -57,6 +58,11 @@ export type CompileRun = {
   logs: LogEntry[]
   apiCalls: ApiCallEntry[]
   startedAt: number
+  /** Progress within the current coarse pipeline step, e.g. "step 42 of 105
+   * events" while generating selectors — the coarse `steps` list alone can't
+   * see inside a single long-running step, which is where most compile time
+   * goes. Reset whenever a new coarse step starts running. */
+  stepProgress: { index: number; count: number } | null
 }
 
 export type StartOutcome = 'started' | 'attached' | 'busy'
@@ -112,6 +118,7 @@ export const useCompileStore = create<CompileState>((set, get) => ({
         logs: [],
         apiCalls: [],
         startedAt: now,
+        stepProgress: null,
       },
     })
 
@@ -164,9 +171,19 @@ export const useCompileStore = create<CompileState>((set, get) => ({
     const now = Date.now()
 
     if (ev.phase === 'compile_log') {
+      const stepIndex = ev.step_index as number | undefined
+      const stepCount = ev.step_count as number | undefined
+      const stepProgress =
+        stepIndex == null
+          ? run.stepProgress
+          : {
+              index: stepIndex + 1,
+              count: stepCount ?? run.stepProgress?.count ?? stepIndex + 1,
+            }
       set({
         run: {
           ...run,
+          stepProgress,
           logs: [
             ...run.logs,
             { ts: (ev.ts as number) ?? now / 1000, message: String(ev.message ?? ''), level: String(ev.level ?? 'info') },
@@ -212,6 +229,7 @@ export const useCompileStore = create<CompileState>((set, get) => ({
       set({
         run: {
           ...run,
+          stepProgress: null,
           steps: run.steps.map((s) =>
             s.id === 'selectors' && s.state !== 'done' ? { ...s, state: 'running', startedAt: s.startedAt ?? now } : s,
           ),
@@ -227,6 +245,11 @@ export const useCompileStore = create<CompileState>((set, get) => ({
       set({
         run: {
           ...run,
+          // Any compile_step transition (this step finishing, or the next
+          // one auto-advancing to running) means the previous step_index/
+          // step_count no longer apply — e.g. selectors' 105 vision-anchor
+          // steps vs. assertions' own count.
+          stepProgress: null,
           steps: run.steps.map((s, i) => {
             if (i === idx) {
               return {
@@ -269,4 +292,52 @@ export const useCompileStore = create<CompileState>((set, get) => ({
  * started from the group page, since only one run can be tracked at a time. */
 export function useCompileBusy() {
   return useCompileStore((s) => s.run?.status === 'running')
+}
+
+/**
+ * Ticking seconds-remaining estimate for a running compile, extrapolated from
+ * this run's own pace so far (elapsed / fraction-done) rather than a fixed
+ * guess — compile time swings with LLM latency and step count. Null until
+ * there's something to extrapolate from, or once the run isn't 'running'.
+ * Re-renders every second while running so the caller's countdown ticks down
+ * on its own.
+ *
+ * The 7-item `steps` list is too coarse on its own: "selectors" covers every
+ * recorded event's intent + vision-anchor generation (dozens to hundreds of
+ * LLM calls), so it sits at "running" for most of the compile's wall-clock
+ * time. Counting only whole coarse steps done meant the ETA's numerator
+ * (elapsed time) kept growing while its denominator (doneCount) stayed flat
+ * for that whole stretch — the estimate counted UP instead of down.
+ * `run.stepProgress` (from step_index/step_count carried on compile_log
+ * events, see backend.py's `_progress_event_sink`) gives fractional credit
+ * for progress *inside* the currently-running coarse step, so the estimate
+ * keeps shrinking as those per-event calls complete.
+ */
+export function useCompileEtaSeconds(run: CompileRun | null): number | null {
+  const [, tick] = useReducer((n: number) => n + 1, 0)
+  useEffect(() => {
+    if (!run || run.status !== 'running') return
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [run?.key, run?.status])
+
+  if (!run || run.status !== 'running') return null
+  const doneCount = run.steps.filter((s) => s.state === 'done').length
+  const subFraction =
+    run.stepProgress && run.stepProgress.count > 0
+      ? Math.min(1, run.stepProgress.index / run.stepProgress.count)
+      : 0
+  const fractionDone = (doneCount + subFraction) / run.steps.length
+  if (fractionDone <= 0) return null
+  const elapsedMs = Date.now() - run.startedAt
+  const remainingMs = (elapsedMs * (1 - fractionDone)) / fractionDone
+  return Math.max(0, Math.round(remainingMs / 1000))
+}
+
+/** `useCompileEtaSeconds` formatted for a compact button label. */
+export function formatCompileEta(seconds: number | null): string {
+  if (seconds == null) return 'Compiling…'
+  if (seconds < 5) return 'Almost done…'
+  if (seconds < 60) return `~${seconds}s left`
+  return `~${Math.ceil(seconds / 60)}m left`
 }

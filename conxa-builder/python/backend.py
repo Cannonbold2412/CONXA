@@ -69,14 +69,27 @@ from conxa_core.progress import set_event_sink  # noqa: E402
 # the job_id argument, so it's safe across the per-request dispatch threads
 # spawned below.
 def _progress_event_sink(job_id: str, event: str, message: str, data: dict[str, Any] | None) -> None:
-    _write({
+    data = data or {}
+    payload: dict[str, Any] = {
         "type": "event",
         "id": job_id,
         "phase": "compile_log",
         "message": message,
-        "level": (data or {}).get("level", "info"),
+        "level": data.get("level", "info"),
         "ts": time.time(),
-    })
+    }
+    # step_index/step_count ride along (when the underlying _compile_log call
+    # carries them) so the renderer's compile ETA can track progress *within*
+    # a long-running pipeline step (e.g. vision-anchor generation across all
+    # recorded events), not just which of the 7 coarse pipeline steps is
+    # active. Without this every one of those per-event calls collapsed into
+    # a single "selectors" step, so elapsed time kept climbing against a
+    # doneCount that never moved and the ETA counted up instead of down.
+    if "step_index" in data:
+        payload["step_index"] = data["step_index"]
+    if "step_count" in data:
+        payload["step_count"] = data["step_count"]
+    _write(payload)
 
 
 set_event_sink(_progress_event_sink)

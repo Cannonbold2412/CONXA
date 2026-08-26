@@ -34,7 +34,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useCompileBusy } from '@/store/compileStore'
+import { formatCompileEta, useCompileEtaSeconds, useCompileStore } from '@/store/compileStore'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { FolderKanban, Layers, Loader2, Plus, Trash2 } from 'lucide-react'
@@ -190,7 +190,9 @@ function WorkflowRow({
   onChanged: () => void
 }) {
   const navigate = useNavigate()
-  const compileBusy = useCompileBusy()
+  const compileRun = useCompileStore((s) => s.run)
+  const ownCompiling = compileRun?.status === 'running' && compileRun.workflowId === wf.id
+  const compileEtaSeconds = useCompileEtaSeconds(ownCompiling ? compileRun : null)
   const [recordOpen, setRecordOpen] = useState(false)
   const [rerecordConfirmOpen, setRerecordConfirmOpen] = useState(false)
   const [recompileConfirmOpen, setRecompileConfirmOpen] = useState(false)
@@ -224,8 +226,12 @@ function WorkflowRow({
   function handleCompileClick() {
     if (!hasRecording) return
     // Compiles run one at a time (see compileStore) — say so here rather than
-    // letting the user land on the compile page just to be told no.
-    if (compileBusy) {
+    // letting the user land on the compile page just to be told no. But if the
+    // running compile IS this workflow's own (started, then navigated away
+    // from), let it through — CompileProgress re-attaches to it by key instead
+    // of refusing to open.
+    const key = `${wf.id}:${wf.session_id}:${hasSkill ? 'recompile' : 'compile'}`
+    if (compileRun?.status === 'running' && !ownCompiling && compileRun.key !== key) {
       toast.info('Another workflow is compiling. Try again once it finishes.')
       return
     }
@@ -284,6 +290,8 @@ function WorkflowRow({
             packBuilt={packBuilt}
             stale={stale}
             published={published}
+            compileBusy={ownCompiling}
+            compileEtaLabel={ownCompiling ? formatCompileEta(compileEtaSeconds) : undefined}
             onRecord={() => (hasRecording ? setRerecordConfirmOpen(true) : setRecordOpen(true))}
             onCompile={handleCompileClick}
             onReview={() => navigate(`/edit/${encodeURIComponent(wf.skill_id!)}?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
