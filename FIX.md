@@ -2,6 +2,33 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed the compile timer counting up instead of down — 2026-08-26
+The "time left" number shown while a workflow compiles was supposed to count down, but it was climbing instead — like a delivery tracker that keeps saying "3 hours left" no matter how long you wait. The cause: that estimate only checked off 7 big-picture stages (like "generate selectors"), and one of those stages quietly does most of the real work — reading every single recorded action, one at a time — without reporting any progress in between. So the timer saw no movement for a long stretch while the clock kept running, and the estimate grew instead of shrank. Now that stage reports its own step-by-step progress (e.g. "42 of 105 actions done"), so the time-left estimate has something to count down against the whole way through, not just at the big checkpoints.
+— 2026-08-26
+
+## A broken drag-and-drop step no longer blocks the whole package build — 2026-08-26
+If a recorded workflow contained a drag-and-drop step that couldn't be captured properly, building the finished package used to fail completely, with no way forward. Now that one step is skipped with a warning explaining that drag-and-drop isn't supported, and the rest of the workflow builds normally. It's like a printer skipping one bad page instead of jamming the whole job.
+
+## Fixed the AI plan-builder rejecting a working AI provider as unusable — 2026-08-26
+Compiling a workflow tries to have the AI sketch a plan for the whole recording first, and a check meant to confirm "is this AI provider speaking a language we understand" was too strict — it demanded an exact address match instead of allowing the small extra address details each AI provider adds on its own. Google's AI provider always failed that check, even though it works fine, so every compile silently skipped the whole-workflow plan and fell back to figuring out each step one at a time (still works, just less context-aware). The check now allows for those small address variations, so the full-workflow plan gets built like it's supposed to.
+
+---
+
+## Fixed recordings that need a mouse-hover to reveal what you click next — 2026-08-26
+Some websites hide a button or link until you hover your mouse over something else first — like an avatar picture that only shows a "View profile" link once you point at it. Recording one of these used to require the person recording to remember to flip on a hidden "hover" switch beforehand, and even then the recorder often didn't recognize plain, unmarked hover spots (like a bare picture with no special styling) as something worth watching. Both problems are fixed: the recorder now always watches for these reveal-on-hover moments automatically, no switch to remember, and it recognizes plain elements like images as valid hover triggers, not just buttons and menus with obvious markup. It still ignores harmless mouse-overs that don't actually reveal anything, so recordings don't get cluttered with noise. This was caught while testing the recovery of the `/hovers` step in the sample test workflow, where the hidden link never got recorded and so could never be clicked back during replay.
+
+---
+
+## All five testing guides merged into two easy-to-navigate documents — 2026-08-26
+No code change. The `docs/testing/` folder used to hold five separate testing guides (the long-chain workflow plan, the mega-workflow gauntlet, the plan-limit tests, the production-readiness checklist, and the stress-test guide). They are now combined into just two files: **`01-WORKFLOWS-TO-TEST.md`** lists everything still waiting to be tested, sorted from easiest to hardest, with related small tests merged into fewer but longer workflows (12 workflows total instead of dozens of scattered ones); and **`02-WORKFLOWS-PASSED.md`** is the new "hall of fame" — every time a workflow passes a real manual run it moves there from file 01, together with a short explanation of what that success proves Conxa can now do. File 02 also has a dashboard at the top showing current internet-workflow coverage (honestly estimated at about 18% today — the proven workflow shape suggests ~30% is reachable, but only one full run backs it so far), the longest verified workflow (42 steps across 6 tabs and 6 websites), and which abilities are proven versus still pending. The three local HTML test pages were moved into `docs/testing/fixtures/` so nothing was lost, and old references to the deleted files in `TODO.md` were updated to point at the new locations.
+
+---
+
+## Checked whether huge (100+ step) recordings break the workflow-plan AI call — 2026-08-26
+No code change. Someone asked if a very long recording would overflow the AI call that writes the workflow plan. Answer: the request size itself is fine for hundreds of steps — each step only sends its action, button text, page address, and a short hint, so 100 steps is roughly 5–15k tokens, far under even the smallest provider's limit (the big models allow up to a million). The real risks found were elsewhere: the reply has to describe every single step, and nothing tells providers how long that reply may be, so around 100–150 steps the reply can get cut off mid-way and the whole plan is thrown away; free-tier providers also cap tokens per minute, which a long plan blows through instantly; and the step-label text isn't trimmed like everywhere else in the codebase. Chunking the plan into batches and setting an explicit reply length would fix this — tracked as future work.
+
+---
+
 ## Fixed a leftover-file mixup when one workflow chains several downloads and uploads — 2026-08-25
 When a workflow moves a batch of files from one app to another, it uses a shared holding folder for that run. If a workflow chains this more than twice in a row — download a batch, upload it, download another batch, upload that one too — the second upload could accidentally grab leftover files from the first batch as well, silently sending extra files nobody meant to send. It's like clearing a shared inbox tray after handing off its contents, instead of leaving old papers to get mixed in with the next delivery. Now, once a batch of files is successfully uploaded, they're deleted from the holding folder right away, so later batches in the same run only ever see their own files.
 
@@ -559,3 +586,9 @@ Previously two separate AI passes decided intents during a compile: one call per
 
 ## Human Edit now shows each step in plain English (matching the Workflow plan) - 2026-08-25
 The step editor used to show and edit a short machine code like click_sign_in_button, while the Workflow plan panel showed a friendly sentence for the same step. Now the step editor shows that same friendly sentence as the thing you read and edit (falling back to the machine code only for older skills compiled before sentences existed). Saving stores the sentence under its own field, so the machine code - which the automation logic depends on - is never touched by typo-prone hand edits; it still appears as a small grey hint when it differs from the sentence. Tracked as TODO BUILD-21, added and resolved in the same day.
+
+## 2026-08-26
+- Fixed app-layer-files.json guard failure in local app build: registered 6 new PROD-5/scheduler modules (cron_lite, file_lock, review_pause, scheduler_cli, scheduler_daemon, scheduler_store) that were added to runtime/app/ but missing from the shipping manifest. Guard now passes (53 modules).
+
+## 2026-08-26 — One-workflow test runbook
+- Created docs/testing/03-ONE-WORKFLOW-RUNBOOK.md: merges WF-1…WF-10 into ONE ~100-step mega-recording + an 8-replay gauntlet, with exact click-by-click manual steps. Recovery drill and branch-authoring stay as two tiny companion skills; cloud billing gates kept as a curl appendix (they can't be a browser workflow). Added a shortcut link at the top of 01-WORKFLOWS-TO-TEST.md.
