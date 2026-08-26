@@ -13,7 +13,7 @@ import json
 import re
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from conxa_compile.compiler.action_policy import RECOVERY_ACTION_TYPES
 from conxa_compile.editor.action_registry import is_marker_action, is_supported_action, normalize_action_kind
@@ -974,6 +974,7 @@ def _build_workflow_from_saved_skill(
     bundle_root: Path,
     workflow_slug: str,
     saved_skill: dict[str, Any],
+    on_warning: Callable[[str], None] | None = None,
 ) -> None:
     meta = saved_skill.get("meta") if isinstance(saved_skill.get("meta"), dict) else {}
     title = str(meta.get("title") or workflow_slug).strip() or workflow_slug
@@ -1003,6 +1004,12 @@ def _build_workflow_from_saved_skill(
         converted = _saved_step_to_execution_step(raw)
         if converted is None:
             action = _step_action_name(raw) or "unknown"
+            if normalize_action_kind(action) == "drag_drop":
+                # Drag-and-drop can't be reliably replayed — drop the step instead of
+                # failing the whole build.
+                if on_warning:
+                    on_warning(f"Step {raw_index}: drag-and-drop isn't supported and was removed from the skill.")
+                continue
             raise ValueError(f"Saved skill step {raw_index} action {action!r} is not exportable.")
         execution_steps.append(converted)
         source_steps.append(raw)

@@ -957,12 +957,41 @@ class TestSavedSkillJsonBuild:
             "skills": [{"steps": [{"action": {"action": "drag_drop", "value": "{}"}}]}],
         }
 
-        with pytest.raises(ValueError, match="not exportable"):
+        with pytest.raises(ValueError, match="no executable steps"):
             _build_workflow_from_saved_skill(
                 bundle_root=tmp_path,
                 workflow_slug="bad_drag",
                 saved_skill=saved_skill,
             )
+
+    def test_saved_skill_export_drops_unexportable_drag_drop_with_warning(self, tmp_path):
+        saved_skill = {
+            "meta": {"id": "skill_123", "title": "Bad Drag Among Others"},
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {"action": {"action": "drag_drop", "value": "{}"}},
+                        {"action": {"action": "wait", "ms": 750}},
+                    ]
+                }
+            ],
+        }
+        warnings = []
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="bad_drag_among_others",
+            saved_skill=saved_skill,
+            on_warning=warnings.append,
+        )
+
+        execution = json.loads(
+            (tmp_path / "skills" / "bad_drag_among_others" / "execution.json").read_text(encoding="utf-8")
+        )
+        assert [step["type"] for step in execution] == ["wait"]
+        assert len(warnings) == 1
+        assert "drag" in warnings[0].lower()
 
     def test_normalizes_human_edit_input_id_to_runtime_name(self):
         inputs = _normalize_saved_skill_inputs(

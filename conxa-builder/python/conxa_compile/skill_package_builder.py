@@ -111,6 +111,7 @@ def build_skill_package(
                 bundle_root=bundle_root,
                 workflow_slug=wf.slug,
                 saved_skill=saved_skill,
+                on_warning=lambda msg: _log(msg, warning=True, workflow=wf.name),
             )
             skill_slugs.append(wf.slug)
             skill_target_urls[wf.slug] = wf.target_url
