@@ -95,6 +95,18 @@
     { "name": "mcp_hosts.js",         "profile": "default" },
     { "name": "sync_errors.js",       "profile": "default",
       "_note": "server.js requires this directly (not caught by any try/catch) — omitting it hard-crashes on load with \"Cannot find module './sync_errors'\"." },
+    { "name": "cron_lite.js",         "profile": "default",
+      "_note": "Extracted from server.js: minimal cron-expression parser/next-fire calculator for local schedules (PROD-5)." },
+    { "name": "file_lock.js",         "profile": "default",
+      "_note": "Heartbeat-stamped lock files — makes host_lock.js mutual exclusion hold across engine processes (chat-host vs scheduler-daemon)." },
+    { "name": "review_pause.js",      "profile": "default",
+      "_note": "Extracted from server.js: review-pause gate for scheduled runs (PROD-5)." },
+    { "name": "scheduler_cli.js",     "profile": "default",
+      "_note": "Schedule subcommand handlers shared by host/cli_schedule.js dispatch (PROD-5)." },
+    { "name": "scheduler_daemon.js",  "profile": "default",
+      "_note": "Standalone daemon firing scheduled skills with no chat app open (PROD-5); uses file_lock.js for cross-process exclusion." },
+    { "name": "scheduler_store.js",   "profile": "default",
+      "_note": "Encrypted local schedule store backing create/list/delete_schedule MCP tools (PROD-5)." },
     { "name": "auth_manager.js",      "profile": "no-self-defending" },
     { "name": "page_scripts.js",      "profile": "in-page" }
   ]
