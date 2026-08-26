@@ -531,13 +531,19 @@ class WorkflowsMixin:
             _mark("Runtime call finished")
         except (RuntimeToolError, RuntimeError) as exc:
             message = str(exc)
-            set_workflow_test_error(workflow_id, message)
+            set_workflow_test_error(
+                workflow_id, message,
+                inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
+            )
             raise _CommandError("workflow_test_failed", message) from exc
 
         message = _runtime_result_text(result)
         if not message.startswith("Done."):
             failure = message or "Runtime test failed without a result message."
-            set_workflow_test_error(workflow_id, failure)
+            set_workflow_test_error(
+                workflow_id, failure,
+                inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
+            )
             raise _CommandError("workflow_test_failed", failure)
 
         set_workflow_test_result(

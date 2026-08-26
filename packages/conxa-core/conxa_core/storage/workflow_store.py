@@ -290,12 +290,14 @@ def set_workflow_test_result(
     return save_workflow(workflow)
 
 
-def set_workflow_test_error(workflow_id: str, error: str) -> Workflow | None:
-    """Persist a test failure error message."""
+def set_workflow_test_error(workflow_id: str, error: str, *, inputs: dict | None = None) -> Workflow | None:
+    """Persist a test failure error message, keeping the inputs the user entered."""
     workflow = get_workflow(workflow_id)
     if workflow is None:
         return None
     workflow.last_test_status = "failed"
     workflow.last_test_at = time.time()
+    if inputs is not None:
+        workflow.last_test_inputs = dict(inputs)
     workflow.last_test_error = error[:2000]
     return save_workflow(workflow)
