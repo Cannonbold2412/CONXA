@@ -234,7 +234,6 @@ class RecordingSession:
     # auth_mode only: the last URL an off-start-page autosave fired for, so the ~1s URL
     # sweep below saves once per post-login navigation rather than repeatedly.
     _auth_saved_url: str = ""
-    capture_hover: bool = False
     current_url: str = ""
     # Phase 2: dedup state for DOM snapshots. Maps short bridge signature -> snapshot_ref.
     _snapshot_refs_by_sig: dict[str, str] = field(default_factory=dict)
@@ -1469,7 +1468,7 @@ class RecordingSession:
                 import time as _time
                 self._video_session_start = _time.monotonic()
                 self._video_session_start_wall_ms = int(_time.time() * 1000)
-                self._bridge_script = _load_bridge_script(capture_hover=self.capture_hover)
+                self._bridge_script = _load_bridge_script()
                 self._context.expose_binding("__skillReport", self._binding_sink_sync)
                 self._context.add_init_script(self._bridge_script)
                 self._context.on("page", self._on_context_page)
@@ -1737,7 +1736,6 @@ class RecordingSession:
             "binding_errors": self.binding_errors,
             "reached_wait_url": self.reached_wait_url,
             "auth_captured": self.auth_captured,
-            "capture_hover": self.capture_hover,
             "current_url": self.current_url,
         }
 
@@ -1759,7 +1757,6 @@ class SessionRegistry:
         storage_state_autosave_path: str = "",
         wait_for_url: str = "",
         auth_mode: bool = False,
-        capture_hover: bool = False,
     ) -> RecordingSession:
         sid = str(uuid.uuid4())
         sess = RecordingSession(
@@ -1769,7 +1766,6 @@ class SessionRegistry:
             storage_state_autosave_path=storage_state_autosave_path,
             wait_for_url=wait_for_url,
             auth_mode=auth_mode,
-            capture_hover=capture_hover,
         )
         self._sessions[sid] = sess
         return sess

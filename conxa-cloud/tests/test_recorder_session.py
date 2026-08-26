@@ -57,20 +57,6 @@ def test_url_matches_pattern_excludes_start_url_variants() -> None:
     )
 
 
-def test_bridge_script_injects_hover_capture_option() -> None:
-    script = recorder_session._load_bridge_script(capture_hover=True)
-
-    assert 'window.__SKILL_CAPTURE_OPTIONS__ = {"capture_hover": true};' in script
-
-
-def test_registry_sets_hover_capture_flag() -> None:
-    sess = recorder_session.registry.create(capture_hover=True)
-    try:
-        assert sess.capture_hover is True
-    finally:
-        recorder_session.registry.pop(sess.session_id)
-
-
 def test_status_exposes_current_url_and_ignores_blank_urls() -> None:
     sess = RecordingSession(session_id="current-url")
 

@@ -391,8 +391,8 @@ export function postSignOff(skillId: string): Promise<SignOffResult> {
   return cmd<SignOffResult>('sign_off_workflow', { skill_id: skillId })
 }
 
-export function postStartRecording(body: { capture_hover?: boolean } = {}): Promise<{ session_id: string }> {
-  return cmd<{ session_id: string }>('start_recording', body)
+export function postStartRecording(): Promise<{ session_id: string }> {
+  return cmd<{ session_id: string }>('start_recording', {})
 }
 
 export function getRecordingStatus(sessionId: string): Promise<{
@@ -401,7 +401,6 @@ export function getRecordingStatus(sessionId: string): Promise<{
   event_count: number
   ended_by_user: boolean
   binding_errors: string[]
-  capture_hover?: boolean
 }> {
   return cmd('get_recording_status', { session_id: sessionId })
 }

@@ -63,7 +63,7 @@ def page(browser: Browser) -> Iterator[Page]:
         page.close()
 
 
-def _install_bridge(page: Page, html: str, profile: dict | None = None, capture_hover: bool = True) -> None:
+def _install_bridge(page: Page, html: str, profile: dict | None = None) -> None:
     page.set_content(html)
     capture_profile = {"input_debounce_ms": 20, "hover_dwell_ms": 35}
     if profile:
@@ -72,10 +72,9 @@ def _install_bridge(page: Page, html: str, profile: dict | None = None, capture_
         """args => {
             window.__events = [];
             window.__SKILL_CAPTURE_PROFILE__ = args.profile;
-            window.__SKILL_CAPTURE_OPTIONS__ = { capture_hover: args.capture_hover };
             window.__skillReport = (payload) => window.__events.push(payload);
         }""",
-        {"profile": capture_profile, "capture_hover": capture_hover},
+        {"profile": capture_profile},
     )
     page.evaluate(BRIDGE_JS)
 
@@ -307,7 +306,10 @@ def test_iframe_sidebar_form_records_when_bridge_runs_as_init_script(browser: Br
         actions = page.evaluate(
             "() => window.__events.map(event => [event.action.action, event.target.id, event.action.value])"
         )
-        assert actions == [
+        # click() moves the real pointer to #create first, which now also records a
+        # legitimate "hover" — filter to the type/click pair this test actually covers.
+        type_and_click = [a for a in actions if a[0] in ("type", "click")]
+        assert type_and_click == [
             ["type", "firstName", "Ada"],
             ["click", "create", None],
         ]
@@ -378,29 +380,31 @@ def test_hover_reveals_menu_records_hover(page: Page) -> None:
     assert events[0]["target"]["id"] == "crm"
 
 
-def test_hover_capture_disabled_does_not_record_hover(page: Page) -> None:
+def test_hover_reveals_unmarked_css_only_sibling_records_hover(page: Page) -> None:
+    # Mirrors the-internet.herokuapp.com/hovers: a bare <img> with no tag/role/ARIA/class
+    # hint reveals a hidden sibling purely via CSS :hover — no JS mouseover listener at all.
     _install_bridge(
         page,
         """
-        <nav>
-          <div id="crm" role="menuitem" tabindex="0">CRM</div>
-        </nav>
-        <aside id="drawer" hidden>
-          <a href="/contacts" id="contacts">Contacts</a>
-        </aside>
-        <script>
-          document.getElementById('crm').addEventListener('mouseover', () => {
-            document.getElementById('drawer').hidden = false;
-          });
-        </script>
+        <style>
+          .figcaption { display: none; }
+          .figure:hover .figcaption { display: block; }
+        </style>
+        <div class="figure">
+          <img id="avatar" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="80" height="80" />
+          <div class="figcaption">
+            <a href="/users/1" id="view-profile">View profile</a>
+          </div>
+        </div>
         """,
-        capture_hover=False,
     )
 
-    page.hover("#crm")
+    page.hover("#avatar")
     page.wait_for_timeout(120)
 
-    assert _action_events(page, "hover") == []
+    events = _action_events(page, "hover")
+    assert len(events) == 1
+    assert events[0]["target"]["id"] == "avatar"
 
 
 def test_css_only_hover_style_change_records_nothing(page: Page) -> None:

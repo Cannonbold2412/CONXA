@@ -152,11 +152,6 @@
     typeof window !== "undefined" && window.__SKILL_CAPTURE_PROFILE__
       ? window.__SKILL_CAPTURE_PROFILE__
       : {};
-  const OPTIONS =
-    typeof window !== "undefined" && window.__SKILL_CAPTURE_OPTIONS__
-      ? window.__SKILL_CAPTURE_OPTIONS__
-      : {};
-  const captureHover = OPTIONS.capture_hover === true;
   const cssDepthMax = Number(CAP.css_path_max_depth) > 0 ? Number(CAP.css_path_max_depth) : 8;
   const xpathDepthMax = Number(CAP.xpath_max_depth) > 0 ? Number(CAP.xpath_max_depth) : 10;
   const anchorCandMax = Number(CAP.anchor_candidates_max) > 0 ? Number(CAP.anchor_candidates_max) : 40;
@@ -1662,6 +1657,24 @@
     return false;
   }
 
+  const HOVER_LEAF_EXCLUDE_TAGS = ["script", "style", "head", "meta", "link", "title", "template", "noscript", "br", "wbr"];
+
+  // A real CSS `:hover` rule (e.g. the-internet.herokuapp.com/hovers' `.figure:hover
+  // .figcaption { display: block }`) is applied by the browser as part of hit-testing,
+  // before any JS mouseover handler — even a capture-phase one — ever runs. So by the time
+  // isHoverCandidateNode() can inspect the DOM, a genuinely CSS-revealed sibling already
+  // looks visible; checking "is a sibling hidden right now" can never catch this case. A
+  // leaf node (no element children) is instead used as the signal: it's cheap, doesn't
+  // depend on timing, and matches the common shape of a real hover-reveal trigger (an
+  // avatar/icon/thumbnail) without treating every layout wrapper the mouse passes over as
+  // a candidate. The before/after DOM-signature diff in hasMeaningfulHoverChange() (against
+  // the pre-hover stable baseline) is what actually decides whether the hover mattered.
+  function isHoverFallbackLeaf(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.children && el.children.length > 0) return false;
+    return HOVER_LEAF_EXCLUDE_TAGS.indexOf(el.tagName.toLowerCase()) < 0;
+  }
+
   function isHoverCandidateNode(el) {
     if (!el || el.nodeType !== 1 || isEditableNode(el)) return false;
     const tag = el.tagName.toLowerCase();
@@ -1673,7 +1686,12 @@
     if (el.hasAttribute("aria-haspopup") || el.hasAttribute("aria-expanded") || el.hasAttribute("aria-controls")) return true;
     if (el.title || el.hasAttribute("data-tooltip") || el.hasAttribute("data-tip") || el.hasAttribute("data-popover")) return true;
     if (hasToken(el, /\b(menu|submenu|dropdown|popover|flyout|drawer|sidebar|side-nav|sidenav|nav-item|tab|toggle)\b/i)) return true;
-    return isNavigationRegion(el) && !!safeText(el, 40);
+    if (isNavigationRegion(el) && !!safeText(el, 40)) return true;
+    // No semantic hint at all (e.g. a plain <img> revealing a sibling via bare CSS :hover,
+    // like the-internet.herokuapp.com/hovers) — fall back to "is this a leaf visual node";
+    // the dwell-timer + before/after diff downstream is what actually decides whether the
+    // hover mattered, this only decides whether it's worth checking at all.
+    return isHoverFallbackLeaf(el);
   }
 
   function resolveHoverCandidate(el) {
@@ -1762,43 +1780,41 @@
     emitPendingHover("before_click");
   }
 
-  if (captureHover) {
-    setTimeout(() => {
-      if (!lastStableHoverSnapshot) lastStableHoverSnapshot = captureHoverSnapshot(null);
-    }, 0);
+  setTimeout(() => {
+    if (!lastStableHoverSnapshot) lastStableHoverSnapshot = captureHoverSnapshot(null);
+  }, 0);
 
-    onDoc(
-      "mouseover",
-      (ev) => {
-        const el = eventTargetFromPath(ev);
-        if (!el) return;
-        const candidate = resolveHoverCandidate(el);
-        if (!candidate) {
-          if (pendingHover) emitPendingHover("candidate_switch");
-          scheduleHoverBaselineRefresh(80);
-          return;
-        }
-        const related = nodeAsElement(ev.relatedTarget);
-        if (related && candidate.contains && candidate.contains(related)) {
-          return;
-        }
-        startHoverCandidate(candidate);
-      },
-      { capture: true, passive: true }
-    );
-    onDoc("mouseout", function(ev) {
-      if (!pendingHover || pendingHover.emitted) {
+  onDoc(
+    "mouseover",
+    (ev) => {
+      const el = eventTargetFromPath(ev);
+      if (!el) return;
+      const candidate = resolveHoverCandidate(el);
+      if (!candidate) {
+        if (pendingHover) emitPendingHover("candidate_switch");
         scheduleHoverBaselineRefresh(80);
         return;
       }
-      const to = nodeAsElement(ev.relatedTarget);
-      if (to && pendingHover.target && pendingHover.target.contains && pendingHover.target.contains(to)) return;
-      setTimeout(() => {
-        if (!pendingHover || pendingHover.emitted) return;
-        emitPendingHover("mouseout");
-      }, Math.min(120, hoverDwellMs));
-    }, { capture: true, passive: true });
-  }
+      const related = nodeAsElement(ev.relatedTarget);
+      if (related && candidate.contains && candidate.contains(related)) {
+        return;
+      }
+      startHoverCandidate(candidate);
+    },
+    { capture: true, passive: true }
+  );
+  onDoc("mouseout", function(ev) {
+    if (!pendingHover || pendingHover.emitted) {
+      scheduleHoverBaselineRefresh(80);
+      return;
+    }
+    const to = nodeAsElement(ev.relatedTarget);
+    if (to && pendingHover.target && pendingHover.target.contains && pendingHover.target.contains(to)) return;
+    setTimeout(() => {
+      if (!pendingHover || pendingHover.emitted) return;
+      emitPendingHover("mouseout");
+    }, Math.min(120, hoverDwellMs));
+  }, { capture: true, passive: true });
 
   // Drag / drop — capture source selector on dragstart, emit combined event on drop
   let _dragSrcSelectors = null;

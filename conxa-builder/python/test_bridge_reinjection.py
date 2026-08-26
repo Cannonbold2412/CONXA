@@ -79,7 +79,7 @@ class BridgeReinjectionTests(unittest.TestCase):
             # real recordings set these in _run_sync_recorder right after context creation.
             sess._video_session_start = time.monotonic()
             sess._video_session_start_wall_ms = int(time.time() * 1000)
-            sess._bridge_script = _load_bridge_script(capture_hover=False)
+            sess._bridge_script = _load_bridge_script()
             sess._context.expose_binding("__skillReport", _lightweight_sink)
             sess._context.add_init_script(sess._bridge_script)
             sess._context.on("page", sess._on_context_page)
@@ -144,7 +144,7 @@ class BridgeReinjectionTests(unittest.TestCase):
             # real recordings set these in _run_sync_recorder right after context creation.
             sess._video_session_start = time.monotonic()
             sess._video_session_start_wall_ms = int(time.time() * 1000)
-            sess._bridge_script = _load_bridge_script(capture_hover=False)
+            sess._bridge_script = _load_bridge_script()
             sess._context.expose_binding("__skillReport", _lightweight_sink)
             sess._context.add_init_script(sess._bridge_script)
             sess._context.on("page", sess._on_context_page)

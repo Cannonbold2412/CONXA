@@ -12,14 +12,13 @@ import { getGroupAuthStatus } from '@/api/groupsApi'
 import { GroupAuthWizard } from '@/components/GroupAuthWizard'
 import { CmdError } from '@/lib/ipc'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Loader2, MousePointer2, Play } from 'lucide-react'
+import { Loader2, Play } from 'lucide-react'
 
 /** Walks the user through recording a workflow: instructions → optional URL
- * variables/hover toggle → live browser session → save. Moved verbatim out of
+ * variables → live browser session → save. Moved verbatim out of
  * the removed per-workflow detail page so the group page's Record rail node
  * can open the same flow inline. */
 export function RecordWorkflowDialog({
@@ -35,7 +34,6 @@ export function RecordWorkflowDialog({
 }) {
   const [step, setStep] = useState<1 | 2>(1)
   const [urlVariables, setUrlVariables] = useState<Record<string, string>>({})
-  const [captureHover, setCaptureHover] = useState(false)
   const [activeSession, setActiveSession] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [siblingWarnings, setSiblingWarnings] = useState<string[]>([])
@@ -51,7 +49,7 @@ export function RecordWorkflowDialog({
   const [authBlocked, setAuthBlocked] = useState(false)
 
   const startMut = useMutation({
-    mutationFn: () => startWorkflowRecord(workflow.id, requiredVars.length > 0 ? urlVariables : undefined, captureHover),
+    mutationFn: () => startWorkflowRecord(workflow.id, requiredVars.length > 0 ? urlVariables : undefined),
     onSuccess: (data) => {
       setActiveSession(data.session_id)
       setError('')
@@ -81,7 +79,6 @@ export function RecordWorkflowDialog({
     onSuccess: () => {
       onOpenChange(false)
       setStep(1)
-      setCaptureHover(false)
       setActiveSession(null)
       setSiblingWarnings([])
       onRecorded()
@@ -190,13 +187,6 @@ export function RecordWorkflowDialog({
                 ))}
               </div>
             )}
-            <div className="flex items-start gap-3 rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2.5">
-              <Checkbox id="workflowCaptureHover" checked={captureHover} disabled={startMut.isPending} onCheckedChange={(checked) => setCaptureHover(checked === true)} className="mt-0.5" />
-              <Label htmlFor="workflowCaptureHover" className="grid min-w-0 cursor-pointer gap-1">
-                <span className="flex items-center gap-2 text-sm font-medium text-zinc-200"><MousePointer2 className="size-3.5 text-zinc-400" />Workflow contains hover-only elements</span>
-                <span className="text-xs leading-5 text-zinc-500">Turn this on when menus, tooltips, or drawers only appear after hovering.</span>
-              </Label>
-            </div>
             <p className="text-xs text-zinc-500">
               The browser will open pre-authenticated at{' '}
               <span className="font-mono text-zinc-300">
@@ -226,7 +216,7 @@ export function RecordWorkflowDialog({
               )
             ) : (
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" className="flex-1 border-white/10 bg-white/5 text-zinc-300" onClick={() => { setUrlVariables({}); setCaptureHover(false); setError('') }}>Clear</Button>
+                <Button size="sm" variant="outline" className="flex-1 border-white/10 bg-white/5 text-zinc-300" onClick={() => { setUrlVariables({}); setError('') }}>Clear</Button>
                 <Button className="flex-1" onClick={() => startMut.mutate()} disabled={startMut.isPending}>
                   {startMut.isPending ? <><Loader2 className="size-4 animate-spin" />Launching browser…</> : <><Play className="size-4" />Start Recording</>}
                 </Button>
