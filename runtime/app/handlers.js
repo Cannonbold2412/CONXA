@@ -47,8 +47,11 @@ const NOOP_STEP_TYPES = [
   // _saved_step_to_execution_step collapses it to type "upload" (real handler below) at build
   // time, same value/selector. Kept here only as defensive dead code in case that collapsing
   // rule ever regresses; don't read it as "upload_intent uploads are a no-op" — they aren't.
-  "upload_intent", "dialog_appeared", "dialog_accept",
-  "dialog_dismiss", "file_chooser_opened", "clipboard_copy", "clipboard_paste",
+  "upload_intent", "dialog_appeared",
+  "file_chooser_opened", "clipboard_copy", "clipboard_paste",
+  // dialog_accept/dialog_dismiss are NOT here — see their real handlers below. Without one,
+  // a live alert/confirm/prompt during replay falls back to Playwright's own default (silent
+  // auto-DISMISS), the opposite of what a recorded "accept" step expects.
 ];
 
 // Branch primitives (if_present, try_dismiss, wait_for_one_of): probe an element's presence
@@ -438,6 +441,41 @@ HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
       inputs[`downloaded_file_${n}_dir`] = entry.extractedDir;
     }
   }
+};
+
+// Recorded as { type: "alert"|"confirm"|"prompt", message, value } (session.py::_on_dialog) —
+// `value` is whatever the human typed into the recording-time lookalike overlay (real native
+// dialogs can't be interacted with directly once Playwright attaches, so the recorder captures
+// it that way and replays it here). server.js's `page.on("dialog", ...)` listener is what feeds
+// ctx.dialogQueue; without it this queue never fills and these steps silently no-op below.
+async function _drainDialogQueue(ctx) {
+  const queue = ctx && ctx.dialogQueue;
+  if (!queue) return null;
+  if (!queue.length) {
+    await pollPositive(() => queue.length > 0, ACTION_TIMEOUT_MS);
+  }
+  return queue.length ? queue.shift() : null;
+}
+
+HANDLERS["dialog_accept"] = async (_page, step, inputs, ctx) => {
+  const dialog = await _drainDialogQueue(ctx);
+  if (!dialog) return;
+  let text = "";
+  try {
+    const parsed = JSON.parse(step.value || "{}");
+    if (parsed && typeof parsed.value === "string") text = parsed.value;
+  } catch (_e) { /* non-JSON value: nothing to type */ }
+  try {
+    await dialog.accept(interpolate(text, inputs));
+  } catch (_e) { /* dialog already resolved/gone */ }
+};
+
+HANDLERS["dialog_dismiss"] = async (_page, _step, _inputs, ctx) => {
+  const dialog = await _drainDialogQueue(ctx);
+  if (!dialog) return;
+  try {
+    await dialog.dismiss();
+  } catch (_e) { /* dialog already resolved/gone */ }
 };
 
 async function executeStep(page, step, inputs, ctx = {}) {

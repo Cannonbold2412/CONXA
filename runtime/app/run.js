@@ -143,7 +143,7 @@ function stepFailure(step, stepIndex, cause, preShot) {
   return err;
 }
 
-async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, structuralFingerprint, watch } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, watch } = {}) {
   const t = tracker || { emit: () => {} };
   // Every invocation starts with a fresh budget. The success path also clears it, but a
   // *failed* run used to leave its attempt counts behind in this long-lived process, so the
@@ -247,7 +247,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
 
     let primaryErr = null;
     try {
-      await executeStep(page, step, inputs, { downloadQueue });
+      await executeStep(page, step, inputs, { downloadQueue, dialogQueue });
       // Phase 8: independent post-condition verification.
       const verdict = await verifyStep(page, step, inputs, stateBaseline);
       // Fleet-visible audit: one event per step that actually carries assertions, pass or fail,

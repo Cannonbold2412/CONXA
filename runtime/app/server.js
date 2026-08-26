@@ -1183,6 +1183,7 @@ async function _handleTool(name, args, extra) {
       const _downloads = [];
       const _downloadSaves = [];
       const _downloadQueue = [];
+      const _dialogQueue = [];
 
       const _takenNames = new Set();
 
@@ -1219,6 +1220,10 @@ async function _handleTool(name, args, extra) {
           })().catch(() => { resolveEntry(null); });
           _downloadSaves.push(savePromise);
         });
+        // dialog_accept/dialog_dismiss steps (handlers.js) drain this — without a listener here
+        // Playwright silently auto-DISMISSES any native alert/confirm/prompt, which is the
+        // opposite of what a recorded "accept" step expects.
+        pg.on("dialog", (dialog) => { _dialogQueue.push(dialog); });
       };
 
       _attachPageListeners(page);
@@ -1261,6 +1266,7 @@ async function _handleTool(name, args, extra) {
             cancelCheck:   _execCancelled,
             tracker:       _runTracker,
             downloadQueue: _downloadQueue,
+            dialogQueue: _dialogQueue,
             structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
             watch,
           });
