@@ -478,13 +478,27 @@ class ElementFingerprint(BaseModel):
     aria_label: str
     name: str          # form field name attribute
     placeholder: str
-    label_text: str    # Associated <label> text
+    label_text: str    # Associated <label> text — a real accessible name ONLY for
+                       # input/select/textarea (see accessible-name note below)
+    alt: str           # <img> accessible name
+    title: str         # generic accessible-name fallback
     data_testid: str   # data-testid attribute (highest stability)
     input_type: str    # for <input> elements
     css_class_tokens: list[str]   # Stable class tokens only
     anchor_phrases: list[str]     # Relational context phrases
     position_hint: dict           # {x: 0.0-1.0, y: 0.0-1.0}
 ```
+
+**Accessible-name precedence.** The name used for `internal:role=…[name=…]` signals and for
+candidate scoring at replay is `aria_label → name → alt → title → inner_text → placeholder`,
+with `label_text` appended **only** for form controls (tag or role in
+input/select/textarea/textbox/searchbox/combobox/listbox/spinbutton/checkbox/radio). For every
+other element `label_text` holds the recorder's last-resort "nearest surrounding text", which
+names a neighbour rather than the element — using it produced role selectors that matched
+nothing at replay. An element with no accessible name gets no role signal and resolves
+structurally instead. Implemented once per side and kept in lockstep:
+`identity_bundle.py::_accessible_name`, `resolver.js::scoreCandidate`,
+`cascade.js::a11yRecoveryName`. See `docs/TRD.md` §10.2a.
 
 ### 3.4a IdentityBundle (Final Selector Architecture)
 
@@ -649,6 +663,91 @@ detects them via per-page CDP navigation-history tracking instead (see `docs/TRD
   `NAVIGATION_STEP_TYPES`, so the next step waits for page load.
 - **Editor:** labels "Browser back"/"Browser forward", category `flow`; not insertable, no
   selector/value fields; url field is not editable.
+
+### 3.4g Manual address-bar navigation (`manual_navigate`, 2026-08-26)
+
+A navigation that is neither Back/Forward nor the natural result of a recorded click/submit (the
+user retyped the URL bar or picked a bookmark mid-recording) used to be silently dropped — replay
+then had no step for it at all. The recorder now tells the two apart via CDP's
+`Page.frameRequestedNavigation` (fires only for page-initiated navigations — link/submit/script,
+never address-bar/bookmark/`goto()`; see `docs/TRD.md` §6.1b) and emits a `manual_navigate`
+synthetic event, same `{from_url, to_url}` value shape as `browser_back`/`browser_forward`.
+
+- **Recorded by:** `session.py::_drain_nav_history_checks_sync`, gated on
+  `_nav_pending_renderer_initiated` (set by the CDP event, consumed per classification).
+- **`ActionKind` member.** `manual_navigate` must be listed in the `ActionKind` Literal
+  (`packages/conxa-core/conxa_core/models/events.py`). `RecordedEvent` is validated **twice** on
+  the way to a compiled step — `session.py::_finalize_payload_sync` and
+  `pipeline/run.py::run_pipeline` — and a kind missing from the Literal raises a
+  `ValidationError` that is swallowed into `binding_errors`, so the event never reaches
+  `events.jsonl` and the step is silently absent from the editor with no user-visible error.
+- **Exempt from keyless dedupe.** Like `browser_back`/`browser_forward`, a `manual_navigate`
+  carries an empty element target, so `step_anchors.py::clean_steps`' generic
+  same-action-same-key rule would match *any* two consecutive ones and collapse them. All three
+  kinds are exempted there; without it, an A→B→C address-bar sequence compiles to a single step.
+- **Compiles to:** a real `action=navigate` `SkillStep` — the same step type already used for a
+  recording's start page and user-opened tabs (`build.py::_navigate_step`). No runtime change
+  was required; `navigate` was already fully executable.
+- **Not recorded for:** any navigation that follows a page-initiated request (ordinary link
+  clicks/form submits) — those are already covered by the click/submit step itself. Verified
+  against real pages: an `<a href>` click reports reason `anchorClick` and a form POST reports
+  `formSubmissionPost`, so both are correctly excluded.
+
+### 3.4h Native JS dialogs (`dialog_accept` / `dialog_dismiss`, 2026-08-26)
+
+Registering Playwright's `page.on("dialog", ...)` listener stops Playwright's own default
+auto-dismiss, but Chromium still visually renders the native `alert`/`confirm`/`prompt` box —
+so the recorder's old synchronous `dialog.accept()` raced the human and closed it almost
+immediately, and a `prompt` was always accepted with empty text regardless. The recorder now
+holds the dialog open, asks the Studio (new events below), and records the human's real
+answer.
+
+```python
+# RecordedEvent.action.value / SkillStep.value (JSON string):
+{"type": "alert" | "confirm" | "prompt", "message": "I am a JS Prompt", "value": "Conxa prompt"}
+```
+
+- **Recorded by:** `session.py::_on_dialog` (stashes the dialog, fires
+  `on_js_dialog_request`) → Studio modal, pinned `alwaysOnTop` via the `window:raise` IPC
+  handler so it's never hidden behind the recording browser → `cmd_resolve_js_dialog` →
+  `resolve_js_dialog()` (queues the answer) → `session.py::_drain_js_dialog_sync` (pump loop;
+  calls `dialog.accept(text)`/`dialog.dismiss()` and records the marker event). Because the
+  native dialog closes while its window is in the background, Windows can leave its now-dead
+  pixels on screen until that window repaints; `_drain_js_dialog_sync` immediately calls
+  `page.bring_to_front()` to force that repaint — no minimizing, the human lands back in the
+  same browser window. A dialog left unanswered past `_JS_DIALOG_TIMEOUT_S` (120s) is
+  auto-accepted with empty text (also followed by `bring_to_front()`) so it can never wedge
+  the recording; the recorder fires `on_js_dialog_cancelled` so the Studio can close its
+  modal. **Out of scope:** `auth_mode` (the separate login-capture browser) still
+  auto-accepts immediately, unchanged — its pump loop never drains a pending dialog.
+- **New Studio stdio events** (`handlers/session.py`, JSON-RPC-over-stdio, not an HTTP route):
+  `js_dialog_request` (`session_id`, `request_id`, `dialog_type`, `message`, `default_value`)
+  and `js_dialog_cancelled` (`session_id`, `request_id`) — same no-req_id broadcast shape as
+  the existing `file_picker_request` event (§7.1 in `docs/TRD.md`).
+- **New Studio stdio command:** `resolve_js_dialog` (`session_id`, `request_id`, `accepted`,
+  `text`) → `cmd_resolve_js_dialog` in `handlers/session.py`, mirroring
+  `resolve_file_picker`/`cmd_resolve_file_picker`.
+- **Compiles to:** a marker `SkillStep` (`action=dialog_accept`/`dialog_dismiss`,
+  `no_recovery_block`) whose `value` is the JSON above — `build.py`'s `MARKER_ACTIONS` branch
+  now keeps it, the same way it already keeps `download_observed`'s value. A `prompt`'s typed
+  answer is replaced with `{{dialog_answer}}` and the step gets `input_binding="dialog_answer"`
+  so an agent replaying the skill can answer differently than the human did while recording;
+  `alert`/`confirm` and an empty prompt answer stay literal. A second prompt in the same
+  workflow dedupes to `dialog_answer_2` via the existing `_deduplicate_input_bindings`.
+- **Replayed as:** `dialog.accept(interpolate(text, inputs))` / `dialog.dismiss()`
+  (`runtime/app/handlers.js`) — the handler itself is unchanged; it already parsed exactly this
+  `{type,message,value}` shape, it just never received a real `value` before this fix. Reaching
+  it reliably needed two further fixes (2026-08-26): `_drainDialogQueue`'s wait was bumped from
+  `ACTION_TIMEOUT_MS` (2.5s) to a dedicated `DIALOG_WAIT_TIMEOUT_MS` (120s, `run_config.js`),
+  and `verifyStep` (`assertions.js`, §"VERIFY" in `docs/TRD.md`) now skips post-condition
+  verification entirely on a step that left a dialog open — otherwise a required assertion on
+  the *triggering* click step (e.g. `state_changed`) polled a page whose renderer the open
+  dialog was blocking, forever, and this step was never reached at all.
+- **Editor:** unchanged labels ("Accepted dialog"/"Dismissed dialog" →
+  `editor/describe.py` now also surfaces the recorded message and typed answer in the step
+  list).
+- **Not covered:** `beforeunload` confirmations (unhandled on both record and replay) and
+  dialogs shown inside the auth-capture browser — see `TODO.md`.
 
 ### 3.5 RecoveryBlock
 

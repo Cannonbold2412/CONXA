@@ -1011,10 +1011,11 @@ sequenceDiagram
 
 1. Playwright launches Chromium with stored auth (`storageState`).
 2. `bridge.js` is injected into every frame (including iframes) via `page.addInitScript`.
-3. Bridge captures: `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`, `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `dialog_appeared`, `dialog_accept`, `dialog_dismiss`.
+3. Bridge captures: `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`. `tab_open`/`tab_switch`/`popup`/`frame_enter`/`frame_exit` are synthesized by the compiler/session, not the DOM bridge. `dialog_appeared` is declared but has no producer anywhere. `dialog_accept`/`dialog_dismiss` come from Playwright's `page.on("dialog", ...)` in `session.py`, not the bridge — see 5b below.
 4. Each event carries: `action`, `url`, `frame` (iframe chain), `target` (element signals), `value`, `ts`.
 5. `frame_utils.py`'s `_frame_context_and_offset_sync` walks the iframe parent chain to accumulate page-level bounding box offsets; `session.py` calls it per event.
 5a. **A `filechooser` listener is attached** (`session.py::_attach_page_listeners` → `_on_file_chooser`), suppressing the native OS picker so the Studio can show its own dialog pre-pointed at the download folder instead. `FileChooser.set_files()` still dispatches the input's `change` event via CDP, so `bridge.js`'s `upload_intent` capture is unaffected. See §7.1.
+5b. **A `dialog` listener is attached** (`session.py::_attach_page_listeners` → `_on_dialog`) for native `alert`/`confirm`/`prompt` boxes. Registering the listener stops Playwright's own default auto-dismiss, but **Chromium still visually renders the native dialog** (registering the listener does not suppress it — confirmed against real behavior, correcting an earlier assumption in this doc) — so the recorder used to `accept()` it synchronously and immediately, which raced the human and usually closed it before they could see or answer it, and a `prompt` always submitted empty text regardless. It now holds the dialog open, asks the Studio (`js_dialog_request` event → `RecordWorkflowDialog.tsx` modal, pinned `alwaysOnTop` via `window:raise` so it's never hidden behind the recording browser → `cmd_resolve_js_dialog` → `resolve_js_dialog()`), and resolves it from the pump loop (`_drain_js_dialog_sync`) with the human's real choice and, for a prompt, their typed text — recorded as `dialog_accept`/`dialog_dismiss` with value `{"type","message","value"}`. Because the native dialog closes while its window is in the background (behind the pinned Studio modal), Windows can leave its now-dead pixels on screen until that window repaints; `_drain_js_dialog_sync` calls `page.bring_to_front()` immediately after `accept()`/`dismiss()` to force that repaint — no minimizing, the human lands back in the same browser window. A dialog left unanswered past `_JS_DIALOG_TIMEOUT_S` (120s) auto-accepts (also followed by `bring_to_front()`) so it can never wedge the recording. In `auth_mode` (the separate login-capture browser) this still auto-accepts immediately, unchanged — that browser's pump loop never drains a pending dialog. `beforeunload` confirmations are unhandled on both record and replay (`TODO.md`).
 6. Events stream to `session_events.py` which appends to `events.jsonl`.
 7. On stop, `session.py` closes the Playwright context and renames each tab's raw `.webm` to a stable name (§6.3). It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
 
@@ -1036,7 +1037,8 @@ tracking:
   - index moved forward into a slot whose URL already existed in the previous snapshot →
     **browser_forward** (the stale-entry URL equality test is what keeps a fresh link click
     that merely truncated forward entries from being misread as a forward);
-  - anything else (new entry, reload, replace) → no event.
+  - anything else (new entry, reload, replace) → not Back/Forward; classified further below
+    (§6.1b).
 - Checks are deferred to the pump loop because CDP calls are unsafe inside Playwright event
   callbacks (same reentrancy rule as `_binding_sink_sync`). Multiple navigations between
   checks coalesce into one comparison; strictness principle: a missed Back degrades to the old
@@ -1051,6 +1053,48 @@ browser_forward`, `intent=history_back/history_forward`, `no_recovery_block`, an
 calls `page.goBack()`/`page.goForward()` on the step's resolved tab (handlers.js) — never a
 guessed URL navigation. The CI execution gate (`runtime/test/gate-skill/`) covers this:
 click a hash link → `browser_back` step with a `url_pattern` assertion on the returned-to URL.
+
+#### 6.1b Manual address-bar navigation capture (2026-08-26)
+
+A navigation that is neither Back nor Forward (§6.1a) still needs to be told apart from an
+**ordinary link click / form submit** — those are already captured as their own recorded step
+(click/submit), and replaying that step reproduces the navigation as a natural side effect, so
+compiling a *second* step for it would be redundant. But if the user instead retypes the address
+bar, picks a bookmark, or otherwise drives the browser chrome directly mid-recording, there is no
+other recorded step that will ever reproduce it — until now that navigation was silently dropped.
+
+The distinguishing signal is CDP's `Page.frameRequestedNavigation`, which only fires when the
+**page itself** asks to navigate (link click, form submit, `location.href` script) — never for a
+browser-chrome-initiated navigation (address bar, bookmark, `page.goto()`). `session.py` enables
+`Page.enable` on the same per-page CDP session used for §6.1a and sets a pending flag
+(`_nav_pending_renderer_initiated`) whenever that event fires. When `_drain_nav_history_checks_sync`
+classifies a navigation as neither Back nor Forward, it consumes (and clears) that flag:
+
+- flag set → renderer-initiated → no event (the click/submit step already covers it).
+- flag unset → browser-initiated → emits a synthetic **`manual_navigate`** event, `value =
+  {"from_url", "to_url"}`, same shape as browser_back/forward.
+
+The compiler compiles `manual_navigate` straight into a real `action=navigate` step — the same
+step type `_insert_start_navigate_step`/`_insert_user_tab_navigate_steps` already produce for a
+recording's start page and user-opened tabs (`build.py::_navigate_step`): `page.goto(to_url)` on
+replay, no element target, no LLM intent, no vision anchors. No runtime change was needed — the
+`navigate` action was already fully executable.
+
+Two gates must stay in sync with this kind, and both fail **silently** when they aren't:
+
+1. **`ActionKind`** (`conxa_core/models/events.py`) is a strict `Literal`, and `RecordedEvent` is
+   validated twice on the way to a compiled step (`_finalize_payload_sync`, then `run_pipeline`).
+   A missing member raises a `ValidationError` that `_consume_payload_safe_sync` swallows into
+   `binding_errors` — the event never lands in `events.jsonl` and the step is simply absent from
+   the editor, with nothing surfaced to the user.
+2. **`step_anchors.py::clean_steps`** dedupes consecutive events with the same action *and* the
+   same element key. Every navigation kind has an **empty** element key, so that test matches any
+   two consecutive ones. `browser_back`, `browser_forward` and `manual_navigate` are all exempted
+   there; without the exemption an A→B→C address-bar sequence collapses into one step.
+
+Both were real bugs found on the first end-to-end run of this feature (see FIX.md 2026-08-26) —
+the anchor-click exclusion was verified against live pages (`anchorClick` / `formSubmissionPost`
+reasons both fire), so the classifier itself was correct while the step still never appeared.
 
 ### 6.2 Iframe Chain Preservation
 
@@ -1344,7 +1388,7 @@ SkillPackage:
           tab: dict                     # {id, index, opened_by, opener_tab} — empty = tab_0 (§9.1a)
           element_fingerprint: ElementFingerprint
             role, tag, inner_text, aria_label, name,
-            placeholder, label_text, data_testid,
+            placeholder, label_text, alt, title, data_testid,
             input_type, css_class_tokens, anchor_phrases,
             position_hint
           compiled_selectors: list[str] # ranked CSS/XPath selectors
@@ -1648,6 +1692,24 @@ fail fast (recompile required).
   PII-binding, and an xpath/shadow guard. `stable_hash` (`stable_hash.py`) is
   SHA-256 over tag-path + sorted static attrs + AX name, with dynamic
   (focus/hover/active/animation/`is-*`) classes stripped.
+- **Accessible-name derivation (`identity_bundle.py::_accessible_name`) — one rule, three
+  consumers.** The name in an `internal:role=…[name=…]` signal is
+  `aria_label → name → alt → title → inner_text → placeholder`, plus `label_text` **only** for
+  form controls (tag or role in input/select/textarea/textbox/searchbox/combobox/listbox/
+  spinbutton/checkbox/radio), where a `<label>` genuinely *is* the accessible name. For anything
+  else `label_text` is `bridge.js::captureAssociatedLabel`'s last-resort "nearest surrounding
+  text" walk and names a *neighbour*, not the element. An element with no name gets **no role
+  signal at all** — it falls through to structural identity, which is strictly better than a
+  fabricated name that resolves to nothing. `runtime/app/resolver.js::scoreCandidate` (`fpName`)
+  and `runtime/app/cascade.js::a11yRecoveryName` implement the identical precedence and the
+  identical form-control gate; all three must move together.
+- **Fabricated-name drop.** A `role`/`relational` signal whose name matches **zero** nodes in the
+  recorded a11y snapshot is discarded rather than shipped (`selector_filters.resolves_to_nothing`).
+  Unlike `uniqueness_gate(absent_ok=True)`, which treats 0 matches as "couldn't verify", a
+  role+name signal's name comes from the element's *own* recorded attributes, so 0 proves the name
+  is wrong. Without the snapshot the count is unverifiable and the signal is allowed through
+  unchanged. This stops a bad name from occupying the two highest-durability slots with signals
+  that can only ever miss at replay.
 - **Replay (`runtime/resolver.js` + `runtime/resolve_adapter.js`):** the **primary** resolution
   path. `resolve_adapter.js` maps each `IdentitySignal` to a Playwright locator
   (`signalToLocator`: engine → `getByTestId`/`getByRole`/`getByText`/`locator`), pre-gathers
@@ -1681,6 +1743,22 @@ fail fast (recompile required).
     Playwright's own `waitFor`, which already polls. Negative checks (`selector_absent`,
     `text_absent`) additionally require the absence to still hold after a `NEGATIVE_STABILIZE_MS`
     (500ms) recheck, so a flicker (gone → back → gone) can't false-pass a check taken mid-load.
+    `pollPositive`/`pollNegative` (`assertions.js`) race each predicate call against the
+    *remaining* time to the deadline via `withDeadline` — previously they awaited the predicate
+    unconditionally and only checked the deadline afterward, so a predicate that never resolves
+    (a `page.evaluate`/`locator.count()` against a renderer blocked by an open native dialog,
+    2026-08-26 — see the `dialog_accept`/`dialog_dismiss` note below) hung the poll, `verifyStep`,
+    and the whole run forever.
+  - **Skips entirely while a native dialog is open:** `verifyStep` is passed the run's
+    `dialogQueue` and bails out immediately (`{pass: true, channel: "dialog_pending"}`, no page
+    calls) when it's non-empty. A click that opened an `alert`/`confirm`/`prompt` blocks the
+    page's renderer until the *next* step (`dialog_accept`/`dialog_dismiss`, which carries no
+    assertions of its own) resolves it — no DOM/URL/value check on the click step can answer
+    while that's true, and this step's real post-condition ("a dialog opened") already happened.
+    Without this, a required `state_changed` (the compiler's fallback for a consequential click
+    with no other evidence, `build.py`'s `_build_assertions`) deadlocked every such click even
+    with the `pollPositive` timeout fix above, since the dialog is already queued *before*
+    `verifyStep` starts, not mid-poll.
   - **Full assertion audit:** `verifyStep` evaluates every assertion on the step — not just up to
     the first required failure — and returns `results: [{type, target, required, ok,
     elapsed_ms}]` alongside `{pass, channel, evidence}`. On the primary execution path (not
@@ -1720,6 +1798,33 @@ fail fast (recompile required).
     default 250ms), queued so two fast clicks in a row still finalize in submission order. Covered
     by `test_recorder_bridge_js.py::test_click_that_synchronously_reveals_element_is_captured_in_dom_diff`,
     which fails against the old synchronous capture and passes with the settle wait.
+  - **Hover capture is reveal-gated, and the reveal baseline must describe the settled page
+    (2026-08-26):** hover capture is always on and candidates are deliberately broad (any leaf
+    element — a bare `<img>` reveals a sibling via CSS `:hover` with no semantic hint at all), so
+    the *only* thing keeping recordings free of noise is the before/after signature diff in
+    `bridge.js::hasMeaningfulHoverChange`. A browser applies a CSS `:hover` rule during hit-testing,
+    before any capture-phase JS handler runs, so the immediate `before` snapshot is already
+    contaminated for exactly the case that matters — hence `lastStableHoverSnapshot`, a reference
+    taken before the mouse arrived. Two defects made that reference lie, and every lie became a
+    recorded `hover` step on a static heading or link:
+    (a) it was captured by a `setTimeout(…, 0)` in a script injected at `document_start`, i.e.
+    while the document was still parsing, so it described a **blank page** and everything the page
+    subsequently rendered read as "revealed"; (b) the signature collector used a **viewport-clipped**
+    visibility test, making the diff a function of scroll position — scrolling brought dozens of
+    actionables on screen and the next element the mouse rested on was recorded as revealing them.
+    Fix: capture at `DOMContentLoaded` (deterministic for server-rendered pages) **and** re-capture
+    on a debounced `childList` `MutationObserver` (for client-rendered apps still blank at
+    `DOMContentLoaded`), both guarded by `!pendingHover` so a reveal can never overwrite the
+    reference it is about to be compared against; and split visibility into `isRenderedElement`
+    (display/visibility/opacity/size — what a reveal actually toggles, scroll-independent) used by
+    the hover signature collectors, vs `isVisibleElement` (rendered **and** on screen) kept for
+    "is this element worth recording". `childList` only is deliberate — a class/style-driven reveal
+    is an *attribute* mutation, precisely the one whose baseline must stay put. Nothing captures a
+    baseline while parsing: a hover that beats `DOMContentLoaded` leaves it null, which
+    `hasMeaningfulHoverChange` already handles by skipping the stable comparison. A missing
+    reference is safe; a blank one is not. Covered by
+    `test_recorder_bridge_js.py::test_hover_over_static_heading_on_a_link_rich_page_records_nothing`
+    and `::test_hover_after_scrolling_records_nothing`, both of which fail against the old code.
   - **Ephemeral filtering at compile time:** `validation_planner.py::infer_success_conditions`
     runs `required_elements` candidates through `selector_filters.py::is_ephemeral_anchor` before
     handing them to `build.py::_build_assertions`'s primary-signal picker — a cookie-banner/toast/

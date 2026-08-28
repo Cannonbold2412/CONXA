@@ -45,8 +45,8 @@ Counts below are computed straight from the section headers in this file (unique
 | P1 — Blocking / Foundational | 5 | 8 | 3 |
 | P2 — High Value, Do Soon | 27 | 32 | 5 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
-| P4 — Low Urgency, Opportunistic | 29 | 36 | 7 |
-| **Total** | **93** | **117** | **24** |
+| P4 — Low Urgency, Opportunistic | 32 | 39 | 7 |
+| **Total** | **96** | **120** | **24** |
 
 ---
 
@@ -1006,6 +1006,35 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** M — CDP listener detection in the recorder bridge + compile-time warning when a clicked target has only positional/class identity (compile report signal).
 - **Success criteria:** recording a click on a div-button that has only a JS click listener (no role/text/testid) produces either a captured step with a usable identity bundle or an explicit compile-report warning — never silence.
 
+### EXEC-25 — `beforeunload` confirmations unhandled on record and replay
+- **Category:** Execution & Recovery
+- **Description:** Discovered while fixing the alert/confirm/prompt auto-close bug (see FIX.md, 2026-08-26). `session.py::_on_dialog` now holds `alert`/`confirm`/`prompt` open and asks the Studio, but a `beforeunload` "Leave site?" confirmation is a different Playwright surface entirely (there is no `page.on("dialog")` event for it in the recorder's current wiring — Playwright just auto-dismisses it) and was left untouched. A recording that navigates away from a page with unsaved-changes protection will silently lose that confirmation step, and replay has no handler for it either.
+- **Why required:** any site with a "you have unsaved changes" guard (most form-heavy SaaS admin pages) can silently drop a step during recording, with no error surfaced anywhere.
+- **Business value:** correctness for a category of sites (anything with an unsaved-changes guard) that's common in the SaaS admin tools Conxa targets.
+- **Dependencies:** none hard; would likely reuse the same "hold + ask the Studio" plumbing this fix introduced (`on_js_dialog_request`/`resolve_js_dialog`/`_drain_js_dialog_sync` in `session.py`) if Playwright exposes enough control over the navigation to make that safe.
+- **Complexity:** M — requires confirming what control Playwright actually gives over a `beforeunload` prompt (it may not be interceptable the same way as `dialog`) before any implementation can start.
+- **Success criteria:** recording a navigation off a page with an unsaved-changes guard either records an explicit step for the choice made, or the gap is documented as a known, intentional limitation with a clear reason why.
+
+### EXEC-26 — Native JS dialogs unhandled in the Build Studio auth-capture browser
+- **Category:** Execution & Recovery
+- **Description:** Discovered in the same fix as EXEC-25. The separate login-capture browser (`auth_mode=True` recording sessions, used to seed stored auth) still auto-accepts every native `alert`/`confirm`/`prompt` immediately (`session.py::_on_dialog`'s `auth_mode` branch), deliberately left unchanged because that browser's pump loop never drains a pending dialog (`_run_sync_recorder`'s `if not self.auth_mode:` gate) — holding a dialog there today would hang the login page forever with no way to answer it.
+- **Why required:** a login flow that shows a dialog (e.g. a "you're already signed in elsewhere" confirm) is silently auto-accepted with no chance for the human doing the auth capture to choose otherwise.
+- **Business value:** low-to-medium — affects only sites whose login flow itself triggers a native dialog, but a silent wrong answer there can leave stored auth in an unexpected state.
+- **Dependencies:** would need the auth-capture browser's pump loop to gain the same dialog-draining path as the main recording loop, plus a Studio UI surface for the auth-capture window (which today has no equivalent of `RecordWorkflowDialog.tsx`'s live event stream).
+- **Complexity:** M — mostly plumbing an existing pattern into a second, currently-simpler pump loop.
+- **Success criteria:** a login flow's native dialog is surfaced to the human doing auth capture instead of being auto-accepted, or the gap is documented as a known, intentional limitation.
+
+### EXEC-27 — `probePresent`/branch-primitive polling has the same unbounded-timeout gap `pollPositive`/`pollNegative` had
+- **Category:** Execution & Recovery
+- **Description:** Discovered while fixing replay deadlocking on a native JS dialog (FIX.md, 2026-08-26): `runtime/app/assertions.js`'s `pollPositive`/`pollNegative` used to `await checkFn()` unconditionally and only check the deadline afterward, so a `checkFn` that never resolves (e.g. a Playwright call against a renderer blocked by an open dialog) hung the whole poll forever regardless of its `timeoutMs`. That's now fixed there (`withDeadline` races each check against the remaining deadline). `runtime/app/handlers.js`'s `probePresent` — used by the `if_present`/`try_dismiss`/`wait_for_one_of` branch primitives — does its own separate polling with the same shape and the same gap, just not yet exercised by a known-reachable hang the way `verifyStep` was.
+- **Why required:** any future scenario where a branch-primitive's predicate hangs (a native dialog mid-branch-check, a hung selector query, a slow/wedged page) would deadlock the run exactly the way the dialog bug did, with no timeout protecting it.
+- **Business value:** reliability — prevents a whole class of "run hangs forever with no error" failures in conditional/branch workflows specifically.
+- **Technical value:** small, mechanical fix once done — likely the same `withDeadline` helper, exported from `assertions.js` and reused in `handlers.js`.
+- **Dependencies:** none; the `withDeadline` helper this would reuse already exists in `assertions.js`.
+- **Suggested order:** opportunistic — no known live repro yet, unlike the dialog case that forced the first fix.
+- **Complexity:** S.
+- **Success criteria:** `probePresent` gives up at its own timeout even when its predicate never resolves, verified by a unit test mirroring `pollPositive`'s "gives up at the deadline instead of hanging forever" test in `runtime/test/unit/test_verify.js`.
+
 ### EXEC-6 — `[UNVERIFIED]` Frame/shadow recovery hardening
 - **Category:** Execution & Recovery
 - **Description:** A second batch from the same top-50 list, specifically about iframe and shadow-DOM edge cases: forbid XPath for shadow targets at compile time and record the shadow host-path instead (#17); a multi-signal `FrameFingerprint` plus a frame-level recovery sub-tier for when a frame's id drifts (#18); a closed-shadow escape hatch (AX role+name → CDP pierce → vision, for closed shadow roots that hard-fail today, #24); frame/shadow-aware verification so post-condition checks read *inside* the correct frame/shadow boundary instead of false-passing or false-failing across it (#27); a wait-for-frame-attached gate for dynamically-injected iframes (#39); and a wait-for-shadow-upgrade gate for web components not yet upgraded when first queried (#40).
@@ -1092,7 +1121,7 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 
 ---
 
-## P4 — Low Urgency, Opportunistic (29 remaining / 36 total)
+## P4 — Low Urgency, Opportunistic (32 remaining / 39 total)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
