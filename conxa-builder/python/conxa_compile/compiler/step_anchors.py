@@ -261,9 +261,11 @@ def clean_steps(steps: list[Step], policy: dict[str, Any] | None = None) -> list
             prev_action = action_name(prev or {})
             prev_key = _target_key(prev or {})
             if action == prev_action and key == prev_key and prev is not None:
-                # History navigations carry no element key (empty target) — two real
-                # consecutive Backs must never collapse into one replayed step.
-                if action in {"browser_back", "browser_forward"}:
+                # Navigation actions carry no element key (empty target), so the generic
+                # same-action-same-key test above matches ANY two consecutive ones. Two real
+                # consecutive Backs — or two address-bar edits to different URLs — must never
+                # collapse into one replayed step.
+                if action in {"browser_back", "browser_forward", "manual_navigate"}:
                     cleaned.append(step)
                     continue
                 if action == "type":

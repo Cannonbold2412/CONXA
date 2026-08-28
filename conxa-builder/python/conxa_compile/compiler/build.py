@@ -1331,6 +1331,34 @@ def _build_step(
             },
         )
         return step
+    if action_payload == "manual_navigate":
+        # The user retyped the address bar (or used a bookmark) mid-recording — CDP's
+        # Page.frameRequestedNavigation told the recorder no click/submit/script on the page
+        # asked for this, so no other recorded step will ever reproduce it. Compile straight to
+        # the same `navigate` step type _insert_start_navigate_step/_insert_user_tab_navigate_steps
+        # already use for tab-open/start navigations — page.goto(to_url) on replay, no element
+        # target, no LLM intent, no vision anchors.
+        raw_value = str((ev.get("action") or {}).get("value") or "")
+        to_url = ""
+        try:
+            parsed = json.loads(raw_value) if raw_value else {}
+            if isinstance(parsed, dict):
+                to_url = str(parsed.get("to_url") or "").strip()
+        except Exception:  # noqa: BLE001
+            to_url = ""
+        step = _navigate_step(to_url, _build_tab_context(ev))
+        _compile_log(
+            "compile_step",
+            f"Compiled step {step_index + 1}.",
+            {
+                "phase": "step_done",
+                "step_index": step_index,
+                "action": "navigate",
+                "intent": step.intent,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
+        return step
     if graph_intent_token:
         # Single-source intent: resolved by the one workflow-intent LLM call that
         # ran before the step loop. No per-step intent_generation call here —

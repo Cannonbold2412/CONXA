@@ -298,13 +298,24 @@ class RecordingSession:
     #                                                      so a fresh link click that merely
     #                                                      truncated forward entries is NOT
     #                                                      misread as a forward)
-    #   anything else                                    -> normal navigation, no event
+    #   anything else, renderer-initiated                 -> normal navigation (a click/submit/
+    #                                                      script the recording already captured
+    #                                                      as its own step), no event
+    #   anything else, NOT renderer-initiated              -> manual_navigate (user typed a new
+    #                                                      URL / used a bookmark — nothing else
+    #                                                      in the recording would ever reproduce
+    #                                                      it), see _nav_pending_renderer_initiated
     # Checks are deferred to the pump loop via _nav_check_pages (CDP calls are unsafe inside
     # Playwright event callbacks — same reentrancy rule as _binding_sink_sync). Strictness
     # principle: a missed Back degrades to the old behavior; a false positive corrupts replay.
     _nav_cdp_sessions: dict[int, Any] = field(default_factory=dict)
     _nav_history_state: dict[int, dict[str, Any]] = field(default_factory=dict)
     _nav_check_pages: list[Any] = field(default_factory=list)
+    # Set True by the CDP "Page.frameRequestedNavigation" event, which CDP only fires for
+    # navigations the *page itself* initiates (link click, form submit, script) — never for
+    # ones the browser initiates (address bar edit, bookmark, our own goto()). Consumed and
+    # cleared the next time this page's navigation is classified in _drain_nav_history_checks_sync.
+    _nav_pending_renderer_initiated: dict[int, bool] = field(default_factory=dict)
 
     def _remember_current_url(self, url: str) -> None:
         value = str(url or "").strip()
@@ -591,6 +602,16 @@ class RecordingSession:
         state = self._read_nav_history_sync(session)
         if state is not None:
             self._nav_history_state[key] = state
+        try:
+            session.send("Page.enable")
+            session.on(
+                "Page.frameRequestedNavigation",
+                lambda _evt, k=key: self._nav_pending_renderer_initiated.__setitem__(k, True),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Non-fatal: worst case, every navigation on this page is treated as
+            # browser-initiated (over-reports manual_navigate instead of under-reporting).
+            self.binding_errors.append(f"nav_renderer_flag_setup_error: {exc!s}")
 
     def _read_nav_history_sync(self, session: Any) -> dict[str, Any] | None:
         try:
@@ -627,6 +648,7 @@ class RecordingSession:
             if closed:
                 self._nav_cdp_sessions.pop(key, None)
                 self._nav_history_state.pop(key, None)
+                self._nav_pending_renderer_initiated.pop(key, None)
                 continue
             if session is None:
                 continue
@@ -653,10 +675,22 @@ class RecordingSession:
                 # same URL — a real history forward. A fresh link click truncates forward
                 # entries and lands on a NEW url, so it fails this equality test.
                 kind = "browser_forward"
-            if not kind:
-                continue
             to_url = str(cur["entries"][cur_index]) if 0 <= cur_index < len(cur["entries"]) else ""
             from_url = str(prev["entries"][prev_index]) if 0 <= prev_index < len(prev["entries"]) else ""
+            if not kind:
+                # Not a Back/Forward. If the page itself never asked to navigate (no
+                # Page.frameRequestedNavigation since the last check), the browser did this on
+                # its own — the user retyped the address bar, used a bookmark, etc. Nothing else
+                # in the recording will ever reproduce that, so it needs its own explicit step.
+                renderer_initiated = self._nav_pending_renderer_initiated.pop(key, False)
+                if not renderer_initiated and to_url and to_url != from_url and not is_blank_url(to_url):
+                    self._enqueue_synthetic(
+                        "manual_navigate",
+                        json.dumps({"from_url": from_url, "to_url": to_url}),
+                        src_page=page,
+                    )
+                continue
+            self._nav_pending_renderer_initiated.pop(key, None)
             self._enqueue_synthetic(
                 kind,
                 json.dumps({"from_url": from_url, "to_url": to_url}),

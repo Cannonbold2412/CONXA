@@ -20,6 +20,10 @@ ActionKind = Literal[
     # recorder's per-page CDP navigation-history tracking; replayed as goBack/goForward,
     # never as a guessed URL navigation
     "browser_back", "browser_forward",
+    # user drove the browser chrome directly (retyped the address bar, picked a bookmark)
+    # — no in-page DOM event and no CDP frameRequestedNavigation, so nothing else in the
+    # recording would ever reproduce it. Compiles to an ordinary `navigate` step.
+    "manual_navigate",
     # browser context
     "tab_open", "tab_switch", "popup", "frame_enter", "frame_exit",
     # file I/O affordances

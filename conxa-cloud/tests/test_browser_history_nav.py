@@ -31,6 +31,14 @@ def test_action_meta_accepts_history_navigation_kinds() -> None:
     assert ActionMeta(action="browser_forward", timestamp="2026-08-25T00:00:00Z").action == "browser_forward"
 
 
+def test_action_meta_accepts_manual_navigate() -> None:
+    """ActionKind is a strict Literal and RecordedEvent is validated twice on the way to
+    events.jsonl (session.py::_finalize_payload_sync and pipeline/run.py::run_pipeline). A kind
+    missing from the Literal is silently swallowed into binding_errors and the step never
+    reaches the editor at all — which is exactly how address-bar navigations went missing."""
+    assert ActionMeta(action="manual_navigate", timestamp="2026-08-26T00:00:00Z").action == "manual_navigate"
+
+
 def test_registry_knows_history_navigation_kinds() -> None:
     assert is_supported_action("browser_back")
     assert is_supported_action("browser_forward")
@@ -121,6 +129,19 @@ def test_clean_steps_never_collapses_consecutive_history_navigations() -> None:
     assert [e["action"]["action"] for e in out] == ["browser_back", "browser_back"]
     values = [json.loads(e["action"]["value"])["to_url"] for e in out]
     assert values == ["https://a.test/b", "https://a.test/a"]
+
+
+def test_clean_steps_never_collapses_consecutive_manual_navigations() -> None:
+    """The motivating report: one tab, address bar edited A -> B, then B -> C. Both are
+    keyless (empty element target), so the generic same-action-same-key dedupe collapsed them
+    into a single navigate and the C visit vanished from the editor."""
+    nav_b = _history_event("manual_navigate", "tab_0", "https://a.test/", "https://b.test/")
+    nav_c = _history_event("manual_navigate", "tab_0", "https://b.test/", "https://c.test/")
+    out = clean_steps([dict(nav_b), dict(nav_c)])
+    assert [json.loads(e["action"]["value"])["to_url"] for e in out] == [
+        "https://b.test/",
+        "https://c.test/",
+    ]
 
 
 # ---------------------------------------------------------------- saved-skill export
@@ -215,7 +236,8 @@ def test_recorder_classifies_pre_existing_entry_as_browser_forward() -> None:
 def test_recorder_fresh_link_nav_truncating_forward_entries_is_not_forward() -> None:
     """User went back (so forward entries existed), then clicks a NEW link: Chromium truncates
     the forward entries and lands on a brand-new URL at an occupied-looking slot. The stale
-    entry's URL no longer matches -> normal navigation, NO event."""
+    entry's URL no longer matches -> normal navigation, NO browser_forward event. It IS a
+    renderer-initiated nav (a click), so it's also not a manual_navigate."""
     page = _fake_page()
     rs = RecordingSession(session_id="test-nav")
     rs._nav_cdp_sessions[id(page)] = _FakeCdpSession([
@@ -226,8 +248,38 @@ def test_recorder_fresh_link_nav_truncating_forward_entries_is_not_forward() -> 
         "entries": ["https://a.test/a", "https://a.test/b", "https://a.test/c"],
     }
     rs._nav_check_pages.append(page)
+    rs._nav_pending_renderer_initiated[id(page)] = True  # simulates the click's CDP signal
     rs._drain_nav_history_checks_sync()
     assert _queued(rs) == []
+
+
+def test_recorder_unattributed_nav_emits_manual_navigate() -> None:
+    """No CDP frameRequestedNavigation signal preceded this navigation (the user retyped the
+    address bar) -> not renderer-initiated -> manual_navigate, so replay can still reach it."""
+    page = _fake_page()
+    rs = RecordingSession(session_id="test-nav")
+    rs._nav_cdp_sessions[id(page)] = _FakeCdpSession([
+        {"currentIndex": 1, "entries": [{"url": "https://a.test/a"}, {"url": "https://b.test/"}]},
+    ])
+    rs._nav_history_state[id(page)] = {
+        "index": 0,
+        "entries": ["https://a.test/a"],
+    }
+    rs._nav_check_pages.append(page)
+    rs._drain_nav_history_checks_sync()
+    assert _queued(rs) == [("manual_navigate", "https://b.test/")]
+
+
+def test_build_step_compiles_manual_navigate_to_a_navigate_step(tmp_path: Path) -> None:
+    from conxa_compile.policy.bundle import get_policy_bundle
+
+    ev = _history_event("manual_navigate", "tab_0", "https://a.test/", "https://b.test/")
+    step = _build_step(ev, get_policy_bundle(), session_root=tmp_path, step_index=1)
+    assert step.action == "navigate"
+    assert step.url == "https://b.test/"
+    assert step.recovery.strategies == []
+    assert step.validation.wait_for["type"] == "url_change"
+    assert step.validation.wait_for["target"] == "https://b.test/"
 
 
 def test_recorder_same_index_reload_emits_nothing() -> None:
