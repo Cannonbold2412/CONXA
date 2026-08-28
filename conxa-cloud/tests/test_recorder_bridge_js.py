@@ -505,3 +505,48 @@ def test_repeated_hover_over_unchanged_target_does_not_duplicate(page: Page) -> 
 
     events = _action_events(page, "hover")
     assert len(events) == 1
+
+
+def test_hover_over_static_heading_on_a_link_rich_page_records_nothing(page: Page) -> None:
+    # The mouse rests on a static heading for longer than the dwell timer on its way to a real
+    # target. Nothing is revealed, so nothing should be recorded — the page's OWN links must
+    # never be mistaken for something the hover surfaced.
+    #
+    # The bridge is installed against an EMPTY document and the content added afterwards, which
+    # is what document_start injection looks like in production: the script loads while the page
+    # is still parsing. The reveal baseline must be taken once the document is ready, not while
+    # it is blank — against a blank baseline every link the page renders counts as "revealed",
+    # and the first hover after any page load was recorded as a step.
+    _install_bridge(page, "<div id='root'></div>")
+    page.evaluate(
+        """() => {
+            const links = Array.from({length: 40}, (_, i) =>
+                `<li><a href="/x${i}">Example ${i}</a></li>`).join("");
+            document.getElementById("root").innerHTML =
+                `<h2 id="title">Available Examples</h2><ul>${links}</ul>`;
+        }"""
+    )
+    page.wait_for_timeout(150)
+
+    page.hover("#title")
+    page.wait_for_timeout(200)
+
+    assert _action_events(page, "hover") == []
+
+
+def test_hover_after_scrolling_records_nothing(page: Page) -> None:
+    # Scrolling brings dozens of off-screen links on screen. A viewport-clipped visibility test
+    # reads that as "newly revealed", so the next element the mouse rested on was recorded as a
+    # hover step that revealed nothing. Reveal detection must be scroll-independent.
+    links = "".join(f'<li><a href="/x{i}">Example {i}</a></li>' for i in range(120))
+    _install_bridge(
+        page,
+        f"<div style='height:1200px'>spacer</div><ul>{links}</ul><h2 id='footer-title'>The End</h2>",
+    )
+
+    page.mouse.wheel(0, 3000)
+    page.wait_for_timeout(120)
+    page.hover("#footer-title")
+    page.wait_for_timeout(200)
+
+    assert _action_events(page, "hover") == []

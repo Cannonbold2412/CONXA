@@ -1394,7 +1394,10 @@
     return pattern.test(elementTokenString(el));
   }
 
-  function isVisibleElement(el) {
+  // Rendered = the page has decided to show this element (display/visibility/opacity/size),
+  // independent of where the viewport currently sits. This is what a hover reveal actually
+  // changes: `display: none → block`. Scrolling does not change it.
+  function isRenderedElement(el) {
     if (!el || el.nodeType !== 1 || !el.isConnected) return false;
     const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
     if (style) {
@@ -1404,7 +1407,14 @@
     const rects = el.getClientRects ? el.getClientRects() : [];
     if (!rects || !rects.length) return false;
     const rect = el.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) return false;
+    return rect.width >= 1 && rect.height >= 1;
+  }
+
+  // Rendered AND currently on screen. Correct for "is this element worth recording", wrong for
+  // the hover reveal diff — see collectVisibleMatches.
+  function isVisibleElement(el) {
+    if (!isRenderedElement(el)) return false;
+    const rect = el.getBoundingClientRect();
     const vw = window.innerWidth || document.documentElement.clientWidth || 0;
     const vh = window.innerHeight || document.documentElement.clientHeight || 0;
     return rect.bottom >= 0 && rect.right >= 0 && rect.top <= vh && rect.left <= vw;
@@ -1476,13 +1486,19 @@
     ].join("|");
   }
 
+  // Hover-signature collector. Deliberately uses isRenderedElement, NOT isVisibleElement: the
+  // signature is diffed before/after a hover to decide whether the hover revealed anything, and
+  // a viewport-clipped test makes that diff a function of SCROLL POSITION. Scrolling down brings
+  // dozens of actionables on screen, they read as "newly revealed", and the next element the
+  // mouse rests on gets recorded as a hover step that reveals nothing. A real reveal toggles
+  // display/visibility, which isRenderedElement sees and scrolling cannot fake.
   function collectVisibleMatches(root, selector, predicate, limit) {
     const out = [];
     const seen = new WeakSet();
     const push = (el) => {
       if (!el || el.nodeType !== 1 || seen.has(el) || out.length >= limit) return;
       seen.add(el);
-      if (isVisibleElement(el) && (!predicate || predicate(el))) out.push(el);
+      if (isRenderedElement(el) && (!predicate || predicate(el))) out.push(el);
     };
     const scan = (scanRoot) => {
       if (!scanRoot || out.length >= limit) return;
@@ -1780,9 +1796,45 @@
     emitPendingHover("before_click");
   }
 
-  setTimeout(() => {
-    if (!lastStableHoverSnapshot) lastStableHoverSnapshot = captureHoverSnapshot(null);
-  }, 0);
+  // The stable baseline is the reference hasMeaningfulHoverChange() diffs against for CSS-only
+  // reveals (where `before` is already contaminated — see isHoverFallbackLeaf's comment). It
+  // therefore has to describe the SETTLED page.
+  //
+  // This script is injected at document_start, so a setTimeout(…, 0) here runs while the
+  // document is still parsing and captures an essentially EMPTY page. Every actionable the page
+  // then renders counts as "added" against it, so the first hover after any page load — on any
+  // leaf element the mouse happens to rest on for 400 ms while travelling to the real target —
+  // looked like it had revealed the entire page and was recorded as a step. That is where the
+  // spurious `hover` steps on static headings came from.
+  //
+  // Two mechanisms, because neither covers the other's case:
+  //
+  // 1. Capture at DOMContentLoaded (or now, if the document is already parsed). Deterministic
+  //    for a server-rendered page — the reference exists before the mouse can reach anything,
+  //    with no dependence on mutation timing.
+  // 2. Re-capture whenever nodes are added or removed and the mouse is not mid-hover, for an
+  //    app that renders client-side and is still blank at DOMContentLoaded. `pendingHover` is
+  //    what makes this safe — scheduleHoverBaselineRefresh() skips the capture while a hover is
+  //    being measured, so a reveal can never overwrite the reference it is about to be compared
+  //    against. childList only, deliberately: a class/style-driven reveal is an ATTRIBUTE
+  //    change, and that is precisely the mutation whose baseline must stay put. Node insertions
+  //    (page render, lazy content, route change) are what needs to be absorbed.
+  //
+  // Nothing captures a baseline while the document is still parsing: a hover that beats
+  // DOMContentLoaded leaves it null, which hasMeaningfulHoverChange already handles by skipping
+  // the stable comparison. A missing reference is safe; a blank one is not.
+  function captureStableHoverBaseline() {
+    if (!pendingHover) lastStableHoverSnapshot = captureHoverSnapshot(null);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", captureStableHoverBaseline, { once: true, capture: true });
+  } else {
+    setTimeout(captureStableHoverBaseline, 0);
+  }
+  try {
+    new MutationObserver(() => scheduleHoverBaselineRefresh(80))
+      .observe(document.documentElement || document, { childList: true, subtree: true });
+  } catch (_e) { /* no observer — DOMContentLoaded + the mouseout refresh paths still run */ }
 
   onDoc(
     "mouseover",
