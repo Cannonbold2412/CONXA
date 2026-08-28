@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld("conxa", {
 
   pickFile: (opts) => ipcRenderer.invoke("dialog:pick-file", opts),
 
+  /** Surface (or un-pin) the Studio window above the recording browser window. */
+  raiseWindow: (raise) => ipcRenderer.invoke("window:raise", raise),
+
   saveInstaller: (srcPath) => ipcRenderer.invoke("dialog:save-installer", srcPath),
 
   windowControls: {

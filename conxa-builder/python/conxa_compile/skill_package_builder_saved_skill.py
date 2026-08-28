@@ -660,6 +660,27 @@ def _upload_input_descriptions(source_steps: list[dict[str, Any]]) -> dict[str, 
     return {}
 
 
+def _dialog_input_descriptions(source_steps: list[dict[str, Any]]) -> dict[str, str]:
+    """Describe the auto-declared ``dialog_answer`` input using the recorded prompt's message.
+
+    Without this the generic derivation yields "Enter dialog answer", which doesn't tell an
+    agent what the website actually asked. See compiler/build.py's dialog_accept marker branch,
+    which is the sole producer of a ``dialog_answer``-bound step.
+    """
+    for step in source_steps:
+        if step.get("input_binding") != "dialog_answer":
+            continue
+        try:
+            dialog_payload = json.loads(step.get("value") or "")
+        except (TypeError, ValueError):
+            dialog_payload = None
+        message = dialog_payload.get("message") if isinstance(dialog_payload, dict) else None
+        if message:
+            return {"dialog_answer": f'Text to type into the browser prompt "{message}".'}
+        return {"dialog_answer": "Text to type into the browser's prompt dialog."}
+    return {}
+
+
 def _merge_saved_inputs_with_execution_placeholders(
     declared_inputs: list[Any],
     execution_steps: list[dict[str, Any]],
@@ -1021,7 +1042,7 @@ def _build_workflow_from_saved_skill(
     inputs = _merge_saved_inputs_with_execution_placeholders(
         list(saved_skill.get("inputs") or []),
         execution_steps,
-        _upload_input_descriptions(source_steps),
+        {**_upload_input_descriptions(source_steps), **_dialog_input_descriptions(source_steps)},
     )
     skill_dir = bundle_root / "skills" / workflow_slug
     if skill_dir.exists():

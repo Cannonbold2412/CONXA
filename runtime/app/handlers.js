@@ -9,6 +9,7 @@ const {
   ACTION_TIMEOUT_MS,
   SECONDARY_ACTION_TIMEOUT_MS,
   DOWNLOAD_WAIT_TIMEOUT_MS,
+  DIALOG_WAIT_TIMEOUT_MS,
 } = require("./run_config");
 const { asObject, asArray, unique } = require("./step_utils");
 const { pollPositive } = require("./assertions");
@@ -443,16 +444,17 @@ HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   }
 };
 
-// Recorded as { type: "alert"|"confirm"|"prompt", message, value } (session.py::_on_dialog) —
-// `value` is whatever the human typed into the recording-time lookalike overlay (real native
-// dialogs can't be interacted with directly once Playwright attaches, so the recorder captures
-// it that way and replays it here). server.js's `page.on("dialog", ...)` listener is what feeds
-// ctx.dialogQueue; without it this queue never fills and these steps silently no-op below.
+// Recorded as { type: "alert"|"confirm"|"prompt", message, value } — the recorder holds the
+// native dialog open instead of auto-accepting it, asks the Studio to show it to the human in
+// a modal, and records their real choice (accept/dismiss) and, for a prompt, their typed answer
+// as `value` (see session.py::_on_dialog + _drain_js_dialog_sync). server.js's
+// `page.on("dialog", ...)` listener is what feeds ctx.dialogQueue at replay time; without it
+// this queue never fills and these steps silently no-op below.
 async function _drainDialogQueue(ctx) {
   const queue = ctx && ctx.dialogQueue;
   if (!queue) return null;
   if (!queue.length) {
-    await pollPositive(() => queue.length > 0, ACTION_TIMEOUT_MS);
+    await pollPositive(() => queue.length > 0, DIALOG_WAIT_TIMEOUT_MS);
   }
   return queue.length ? queue.shift() : null;
 }

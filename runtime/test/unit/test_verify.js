@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const { verifyStep, capturePreStepSignature } = require("../../app/run");
+const { pollPositive, pollNegative } = require("../../app/assertions");
 
 // Minimal mock page + locator for VERIFY unit testing (no browser).
 function mockPage(url, counts = {}, values = {}) {
@@ -285,4 +286,64 @@ test("no-assertions verdict carries an empty results array", async () => {
   const page = mockPage("https://app.example.com/done");
   const r = await verifyStep(page, { type: "click" }, {});
   assert.deepStrictEqual(r.results, []);
+});
+
+// ─── native JS dialog (alert/confirm/prompt) blocks verification ─────────────
+//
+// A click that opens a native dialog blocks the page's renderer thread until the *next* step
+// (dialog_accept/dialog_dismiss) resolves it. Before this fix, a required assertion on that
+// click step (e.g. state_changed) would poll page.evaluate/locator.count forever against the
+// blocked renderer, so the dialog_accept step was never reached and the dialog never closed —
+// a real deadlock (FIX.md, 2026-08-26 replay-stuck-on-alert entry).
+
+test("verifyStep skips verification entirely while a dialog is pending, even with a required assertion", async () => {
+  let touched = false;
+  const page = {
+    url: () => { touched = true; return "https://x.test"; },
+    locator: () => { touched = true; return { count: async () => 0 }; },
+    evaluate: async () => { touched = true; return { textLen: 0, interactiveCount: 0 }; },
+  };
+  const step = { type: "click", validation: { assertions: [
+    { type: "state_changed", required: true, timeout_ms: 50 },
+  ] } };
+  const dialogQueue = [{ type: "alert" }]; // a dialog already fired synchronously off the click
+  const r = await verifyStep(page, step, {}, null, dialogQueue);
+  assert.strictEqual(r.pass, true);
+  assert.strictEqual(r.channel, "dialog_pending");
+  assert.strictEqual(touched, false, "verifyStep must not touch the page while a dialog is open");
+});
+
+test("verifyStep verifies normally when the dialog queue is empty", async () => {
+  const page = mockPage("https://x.test", { ".confirm-banner": 1 });
+  const step = { type: "click", validation: { assertions: [
+    { type: "selector_present", target: ".confirm-banner", required: true },
+  ] } };
+  const r = await verifyStep(page, step, {}, null, []);
+  assert.strictEqual(r.pass, true);
+});
+
+// ─── pollPositive/pollNegative honor their own timeout against a hung check ──
+//
+// Both used to `await checkFn()` unconditionally and only check the deadline afterward, so a
+// checkFn that never resolves (e.g. a Playwright call against a renderer blocked by an open
+// dialog) hung the poll — and the whole run — forever. They must now give up at the deadline
+// even when checkFn itself never settles.
+
+test("pollPositive gives up at the deadline instead of hanging forever on a stuck check", async () => {
+  const started = Date.now();
+  const result = await pollPositive(() => new Promise(() => {}), 150);
+  assert.strictEqual(result, false);
+  assert.ok(Date.now() - started < 2000, "must not hang past the deadline");
+});
+
+test("pollNegative gives up at the deadline instead of hanging forever on a stuck check", async () => {
+  const started = Date.now();
+  const result = await pollNegative(() => new Promise(() => {}), 150);
+  assert.strictEqual(result, false);
+  assert.ok(Date.now() - started < 2000, "must not hang past the deadline");
+});
+
+test("pollPositive still resolves true promptly when the check simply succeeds", async () => {
+  const result = await pollPositive(() => Promise.resolve(true), 1000);
+  assert.strictEqual(result, true);
 });

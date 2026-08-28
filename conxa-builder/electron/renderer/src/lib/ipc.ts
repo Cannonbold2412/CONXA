@@ -44,6 +44,7 @@ declare global {
         multiple?: boolean;
       }) => Promise<string[] | null>;
       saveInstaller: (srcPath: string) => Promise<{ ok: boolean; filePath?: string }>;
+      raiseWindow: (raise: boolean) => Promise<void>;
       windowControls: {
         minimize: () => Promise<void>;
         toggleMaximize: () => Promise<boolean>;

@@ -1237,18 +1237,44 @@ def _build_step(
         # download_observed's recorded value ({"url", "suggested_filename"}) must survive to
         # execution.json — skill_package_builder_saved_skill.py::_bind_downloads_to_uploads
         # matches it against a later upload step's recorded filename to wire a same-run
-        # download->upload handoff (EXEC-10/W-2). Other markers carry no payload worth keeping.
+        # download->upload handoff (EXEC-10/W-2). dialog_accept/dialog_dismiss's recorded value
+        # ({"type","message","value"}, see session.py::_drain_js_dialog_sync) is kept the same
+        # way so runtime/app/handlers.js can replay the human's actual answer instead of always
+        # accepting with empty text. Other markers carry no payload worth keeping.
         marker_value = None
+        marker_input_binding = None
         if action_payload == "download_observed":
             raw_value = (ev.get("action") or {}).get("value")
             if raw_value:
                 marker_value = str(raw_value)
+        elif action_payload in ("dialog_accept", "dialog_dismiss"):
+            raw_value = (ev.get("action") or {}).get("value")
+            if raw_value:
+                try:
+                    dialog_payload = json.loads(raw_value)
+                except (TypeError, ValueError):
+                    dialog_payload = None
+                # A prompt's typed answer becomes a named skill input rather than a literal —
+                # the agent replaying this skill may need to answer differently than the human
+                # did while recording. alert/confirm carry no free text, and an empty prompt
+                # answer has nothing worth parameterizing.
+                if (
+                    isinstance(dialog_payload, dict)
+                    and dialog_payload.get("type") == "prompt"
+                    and dialog_payload.get("value")
+                ):
+                    marker_input_binding = "dialog_answer"
+                    dialog_payload["value"] = "{{dialog_answer}}"
+                    marker_value = json.dumps(dialog_payload)
+                else:
+                    marker_value = str(raw_value)
         step = SkillStep(
             action=action_payload,
             intent=str(action_payload),
             frame=_build_frame_context(ev),
             tab=_build_tab_context(ev),
             value=marker_value,
+            input_binding=marker_input_binding,
             recovery=RecoveryBlock(**no_recovery_block(str(action_payload))),
         )
         _compile_log(

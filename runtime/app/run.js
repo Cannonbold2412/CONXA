@@ -249,7 +249,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
     try {
       await executeStep(page, step, inputs, { downloadQueue, dialogQueue });
       // Phase 8: independent post-condition verification.
-      const verdict = await verifyStep(page, step, inputs, stateBaseline);
+      const verdict = await verifyStep(page, step, inputs, stateBaseline, dialogQueue);
       // Fleet-visible audit: one event per step that actually carries assertions, pass or fail,
       // so advisory-assertion decay shows up as a drift signal before it becomes a hard failure.
       if (verdict.results.length) {

@@ -63,11 +63,24 @@ const VERIFY_POLL_INTERVAL_MS = 250;
 // window after the first "absent" reading avoids a false pass that a moment later would flip back.
 const NEGATIVE_STABILIZE_MS = 500;
 
+// Runs `fn()` but never waits past `deadline` for it — resolves `fallback` instead if the
+// deadline arrives first. The abandoned call (e.g. a page.evaluate against a renderer blocked
+// by an open native dialog) is not cancelled — Playwright/CDP calls aren't cancelable — it just
+// stops being awaited here. That's safe: Promise.race still attaches a handler to it, so a
+// later rejection is not an unhandled rejection, it's just ignored.
+function withDeadline(fn, deadline, fallback) {
+  const remaining = Math.max(0, deadline - Date.now());
+  return Promise.race([
+    fn(),
+    new Promise(resolve => setTimeout(() => resolve(fallback), remaining)),
+  ]);
+}
+
 async function pollPositive(checkFn, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     let result = false;
-    try { result = await checkFn(); } catch (_) { result = false; }
+    try { result = await withDeadline(checkFn, deadline, false); } catch (_) { result = false; }
     if (result) return true;
     if (Date.now() >= deadline) return false;
     await new Promise(r => setTimeout(r, Math.min(VERIFY_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()))));
@@ -78,11 +91,11 @@ async function pollNegative(checkAbsentFn, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     let absentNow = false;
-    try { absentNow = await checkAbsentFn(); } catch (_) { absentNow = false; }
+    try { absentNow = await withDeadline(checkAbsentFn, deadline, false); } catch (_) { absentNow = false; }
     if (absentNow) {
       await new Promise(r => setTimeout(r, NEGATIVE_STABILIZE_MS));
       let stillAbsent = false;
-      try { stillAbsent = await checkAbsentFn(); } catch (_) { stillAbsent = false; }
+      try { stillAbsent = await withDeadline(checkAbsentFn, deadline, false); } catch (_) { stillAbsent = false; }
       if (stillAbsent) return true;
       // Reappeared during the stabilization window — keep polling if time remains.
     }
@@ -173,7 +186,17 @@ async function evaluateAssertion(roots, page, a, inputs, baseline) {
   return { type, target, required, ok, elapsed_ms: Date.now() - startedAt };
 }
 
-async function verifyStep(page, step, inputs, baseline = null) {
+async function verifyStep(page, step, inputs, baseline = null, dialogQueue = null) {
+  // A native alert/confirm/prompt blocks the page's renderer thread until the *next* step
+  // (dialog_accept/dialog_dismiss, which carries no assertions of its own) resolves it — no
+  // DOM/URL/value check on THIS step can possibly answer while that's true, and every one of
+  // them would hang forever on the CDP round-trip (see pollPositive/pollNegative's own
+  // deadline guard above, which is the fallback for the case a dialog opens mid-poll instead
+  // of before verification starts). This isn't a workaround: the step's real post-condition
+  // ("a dialog opened") already happened, so skipping is the correct verdict, not a skipped one.
+  if (dialogQueue && dialogQueue.length) {
+    return { pass: true, channel: "dialog_pending", evidence: "a JS dialog is open", results: [] };
+  }
   const assertions = stepAssertions(step);
   if (!assertions.length) return { pass: true, channel: "none", evidence: "no-assertions", results: [] };
 

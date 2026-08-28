@@ -5,6 +5,7 @@ import {
   finalizeWorkflow,
   getWorkflowRecordingStatus,
   resolveFilePicker,
+  resolveJsDialog,
   startWorkflowRecord,
   type Workflow,
 } from '@/api/workflowsApi'
@@ -37,6 +38,17 @@ export function RecordWorkflowDialog({
   const [activeSession, setActiveSession] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [siblingWarnings, setSiblingWarnings] = useState<string[]>([])
+
+  // A recorded page's native alert/confirm/prompt is held open (not auto-dismissed — see
+  // recorder/session.py's _on_dialog) until answered here, so the human sees the real box
+  // instead of it vanishing instantly.
+  const [pendingDialog, setPendingDialog] = useState<{
+    requestId: string
+    dialogType: string
+    message: string
+    defaultValue: string
+  } | null>(null)
+  const [promptText, setPromptText] = useState('')
 
   const workflowStartUrl = (workflow.protected_url || workflow.target_url).trim()
   const varPattern = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g
@@ -119,18 +131,50 @@ export function RecordWorkflowDialog({
   useEffect(() => {
     if (!activeSession) return
     return window.conxa.onEvent(async (event) => {
-      if (event.action !== 'file_picker_request' || event.session_id !== activeSession) return
-      const requestId = event.request_id as string
-      const picked = await window.conxa.pickFile({
-        defaultPath: event.default_dir as string,
-        multiple: Boolean(event.multiple),
-        filters: [{ name: 'All Files', extensions: ['*'] }],
-      })
-      await resolveFilePicker(activeSession, requestId, picked)
+      if (event.session_id !== activeSession) return
+      if (event.action === 'file_picker_request') {
+        const requestId = event.request_id as string
+        const picked = await window.conxa.pickFile({
+          defaultPath: event.default_dir as string,
+          multiple: Boolean(event.multiple),
+          filters: [{ name: 'All Files', extensions: ['*'] }],
+        })
+        await resolveFilePicker(activeSession, requestId, picked)
+        return
+      }
+      if (event.action === 'js_dialog_request') {
+        // The recorded page is blocked until this is answered — surface the Studio window
+        // above the (now frozen-looking) recording browser so the human sees the modal.
+        window.conxa.raiseWindow(true)
+        setPromptText((event.default_value as string) || '')
+        setPendingDialog({
+          requestId: event.request_id as string,
+          dialogType: event.dialog_type as string,
+          message: event.message as string,
+          defaultValue: (event.default_value as string) || '',
+        })
+        return
+      }
+      if (event.action === 'js_dialog_cancelled') {
+        // Left unanswered too long — the recorder auto-accepted it itself; just close our
+        // modal so it isn't left showing for a dialog that no longer exists.
+        setPendingDialog((current) =>
+          current && current.requestId === event.request_id ? null : current,
+        )
+        window.conxa.raiseWindow(false)
+      }
     })
   }, [activeSession])
 
+  async function answerJsDialog(accepted: boolean) {
+    if (!activeSession || !pendingDialog) return
+    await resolveJsDialog(activeSession, pendingDialog.requestId, accepted, promptText)
+    setPendingDialog(null)
+    window.conxa.raiseWindow(false)
+  }
+
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
@@ -260,5 +304,56 @@ export function RecordWorkflowDialog({
         )}
       </DialogContent>
     </Dialog>
+
+    <Dialog open={!!pendingDialog} onOpenChange={() => {}}>
+      <DialogContent
+        className="border-white/10 bg-[#0d0f12] text-zinc-100"
+        showCloseButton={false}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        onPointerDownOutside={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle className="text-white">
+            {pendingDialog?.dialogType === 'prompt'
+              ? 'The website wants input'
+              : pendingDialog?.dialogType === 'confirm'
+              ? 'The website asks'
+              : 'The website says'}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 pt-1">
+          <p className="rounded-md border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-zinc-200">
+            {pendingDialog?.message}
+          </p>
+          {pendingDialog?.dialogType === 'prompt' && (
+            <div className="space-y-1.5">
+              <Label htmlFor="js-dialog-prompt-text">Answer</Label>
+              <Input
+                id="js-dialog-prompt-text"
+                autoFocus
+                value={promptText}
+                onChange={(e) => setPromptText(e.target.value)}
+              />
+            </div>
+          )}
+          <div className="flex gap-2">
+            {pendingDialog?.dialogType !== 'alert' && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 border-white/10 bg-white/5 text-zinc-300"
+                onClick={() => answerJsDialog(false)}
+              >
+                Cancel
+              </Button>
+            )}
+            <Button size="sm" className="flex-1" onClick={() => answerJsDialog(true)}>
+              OK
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }

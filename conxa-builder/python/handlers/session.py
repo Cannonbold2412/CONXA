@@ -287,6 +287,26 @@ class SessionMixin:
                 default_dir=default_dir,
                 multiple=multiple,
             )
+            # Fires from the recorder's Playwright driver thread whenever a native
+            # alert/confirm/prompt would otherwise open — see RecordingSession._on_dialog.
+            # Same no-req_id broadcast shape as on_file_picker_request above.
+            sess.on_js_dialog_request = lambda request_id, dialog_type, message, default_value: _emit_event(
+                None,
+                action="js_dialog_request",
+                session_id=sess.session_id,
+                request_id=request_id,
+                dialog_type=dialog_type,
+                message=message,
+                default_value=default_value,
+            )
+            # Fires when a dialog left unanswered too long was auto-accepted by
+            # _drain_js_dialog_sync's timeout fallback, so the Studio can close its modal.
+            sess.on_js_dialog_cancelled = lambda request_id: _emit_event(
+                None,
+                action="js_dialog_cancelled",
+                session_id=sess.session_id,
+                request_id=request_id,
+            )
             try:
                 self._loop.run(sess.start())
             except RuntimeError as exc:
@@ -336,6 +356,19 @@ class SessionMixin:
         sess = _recorder_registry.get(session_id)
         if sess is not None and request_id:
             sess.resolve_file_pick(request_id, paths)
+        return {"ok": True}
+
+    def cmd_resolve_js_dialog(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Delivers the Studio dialog's answer back to a recording session in response to a
+        "js_dialog_request" event. A session that's already gone (recording ended while the
+        dialog was open) is a benign no-op."""
+        session_id = _safe_id(payload.get("session_id"), "session_id")
+        request_id = str(payload.get("request_id") or "").strip()
+        accepted = bool(payload.get("accepted"))
+        text = str(payload.get("text") or "")
+        sess = _recorder_registry.get(session_id)
+        if sess is not None and request_id:
+            sess.resolve_js_dialog(request_id, accepted, text)
         return {"ok": True}
 
     def cmd_cancel_recording(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:

@@ -369,6 +369,23 @@ export function resolveFilePicker(
   })
 }
 
+/** Answers a "js_dialog_request" event (see RecordWorkflowDialog) with the human's choice on a
+ * recorded native alert/confirm/prompt — `accepted=false` is only meaningful for confirm/prompt
+ * (an alert only has OK). `text` is the prompt's typed answer; ignored otherwise. */
+export function resolveJsDialog(
+  sessionId: string,
+  requestId: string,
+  accepted: boolean,
+  text: string,
+): Promise<{ ok: boolean }> {
+  return cmd<{ ok: boolean }>('resolve_js_dialog', {
+    session_id: sessionId,
+    request_id: requestId,
+    accepted,
+    text,
+  })
+}
+
 export function deleteWorkflow(workflowId: string): Promise<{ deleted: boolean }> {
   return cmd<{ deleted: boolean }>('delete_workflow', { workflow_id: workflowId })
 }

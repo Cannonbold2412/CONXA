@@ -63,6 +63,11 @@ from conxa_compile.recorder.frame_utils import (
 # by 5.
 _NO_PAGES_GRACE_TICKS = 20  # ~20s at the check's ~1s cadence
 
+# An unanswered native alert/confirm/prompt blocks the page's renderer thread for as long as
+# it's pending — a forgotten Studio modal must not be able to wedge a recording forever.
+# ponytail: fixed timeout, not configurable — raise it if a real workflow needs longer.
+_JS_DIALOG_TIMEOUT_S = 120.0
+
 
 def url_matches_pattern(url: str, pattern: str, *, exclude_prefix: str = "") -> bool:
     """True if `url` reaches the success page described by `pattern`.
@@ -253,6 +258,20 @@ class RecordingSession:
     _file_pick_results: SimpleQueue = field(default_factory=SimpleQueue)
     _zip_downloads: dict[str, dict[str, Any]] = field(default_factory=dict)
     _pending_file_pick: dict[str, Any] | None = None
+    # Set by the caller (handlers/session.py) before start(): (request_id, dialog_type, message,
+    # default_value) -> None. Invoked from the Playwright driver thread when a native JS dialog
+    # (alert/confirm/prompt) opens — see _on_dialog. None means no interception request is
+    # dispatched anywhere (auto-accept with no captured text, the old behavior).
+    on_js_dialog_request: Any = None
+    # Set by the caller before start(): (request_id) -> None. Fired when a dialog left
+    # unanswered too long is auto-accepted by _drain_js_dialog_sync's timeout fallback, so the
+    # Studio can close a modal that would otherwise sit there forever.
+    on_js_dialog_cancelled: Any = None
+    # (request_id, dialog, type, message, opened_at_monotonic, src_page) for the one outstanding
+    # dialog. A JS dialog blocks the page's renderer thread until accept()/dismiss() is called,
+    # so only one can ever be pending at a time.
+    _pending_dialog: Any = None
+    _dialog_results: SimpleQueue = field(default_factory=SimpleQueue)
     _last_snapshot_ref: str = ""
     # A11y capture: one-strike degradation if slow (> 500ms).
     _last_a11y_capture_time: float = 0.0
@@ -1356,15 +1375,117 @@ class RecordingSession:
         self._file_pick_results.put((request_id, paths))
 
     def _on_dialog(self, dialog: Any, src_page: Any | None = None) -> None:
-        try:
-            value = json.dumps({"type": dialog.type, "message": dialog.message})
+        # Deliberately NOT accepted/dismissed here (outside auth_mode). Merely registering this
+        # listener already stops Chromium from rendering the native alert/confirm/prompt box at
+        # all (Playwright intercepts Page.javascriptDialogOpening over CDP) — so auto-accepting
+        # immediately, as this used to do unconditionally, made every dialog vanish before a
+        # human could ever see or answer it, and a prompt() was always accepted with empty text.
+        # Instead: stash it and ask the Studio; the pump loop (_drain_js_dialog_sync) resolves it
+        # once the human answers.
+        if self.auth_mode:
+            # The login-capture browser has its own separate pump loop that never drains
+            # _pending_dialog (see _run_sync_recorder's `if not self.auth_mode:` gate), so
+            # holding a dialog here would hang that page forever with no way to answer it.
+            # Out of scope for this fix (see TODO.md) — preserve the old auto-accept behavior.
             try:
                 dialog.accept()
             except Exception:  # noqa: BLE001
                 pass
-            self._enqueue_synthetic("dialog_accept", value, src_page=src_page)
+            return
+        try:
+            if self._pending_dialog is not None:
+                # A second dialog can only fire once the first is resolved (the renderer is
+                # blocked until then) — but guard anyway rather than leaking the older one.
+                try:
+                    self._pending_dialog[1].accept()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.binding_errors.append("dialog_event_overlap: auto-accepted stale pending dialog")
+            request_id = str(uuid.uuid4())
+            default_value = ""
+            try:
+                default_value = dialog.default_value or ""
+            except Exception:  # noqa: BLE001
+                pass
+            self._pending_dialog = (
+                request_id, dialog, dialog.type, dialog.message, time.monotonic(), src_page,
+            )
+            if self.on_js_dialog_request is not None:
+                self.on_js_dialog_request(request_id, dialog.type, dialog.message, default_value)
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"dialog_event_error: {exc!s}")
+
+    def resolve_js_dialog(self, request_id: str, accepted: bool, text: str | None) -> None:
+        """Called from any thread with the Studio dialog's answer. Queued, not applied
+        directly: Dialog.accept()/dismiss() are sync-API calls and must run on the recorder's
+        own driver thread — see _drain_js_dialog_sync in the pump loop."""
+        self._dialog_results.put((request_id, accepted, text or ""))
+
+    def _bring_dialog_page_to_front_sync(self, src_page: Any | None) -> None:
+        """Accepting/dismissing a dialog closes it at the CDP level immediately, but the
+        window sat behind the Studio modal (which we pin on top while asking) while it closed,
+        and Windows can leave the now-dead dialog's pixels on screen until that window repaints.
+        Activating the tab forces Chromium to redraw, clearing the stale image — no minimizing,
+        the human lands back in the same browser window they were using."""
+        try:
+            page = src_page if src_page is not None else self._active_page_sync()
+            if page is not None and not page.is_closed():
+                page.bring_to_front()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _drain_js_dialog_sync(self) -> None:
+        """Runs once per pump tick while a dialog is pending. Resolves it from the Studio's
+        answer if one has arrived, otherwise auto-accepts past _JS_DIALOG_TIMEOUT_S so a
+        forgotten dialog can never wedge the recording — see the pump loop's stall guard,
+        which skips every other per-tick Playwright call (they'd hang against the blocked
+        renderer) while this is the only thing draining."""
+        pending = self._pending_dialog
+        if pending is None:
+            return
+        request_id, dialog, dtype, message, opened_at, src_page = pending
+        answer = None
+        try:
+            answer = self._dialog_results.get_nowait()
+        except Empty:
+            pass
+        if answer is not None:
+            ans_request_id, accepted, text = answer
+            if ans_request_id != request_id:
+                return  # stale answer for an already-resolved/overlapped dialog — drop it
+            self._pending_dialog = None
+            try:
+                if accepted:
+                    dialog.accept(text)
+                else:
+                    dialog.dismiss()
+            except Exception as exc:  # noqa: BLE001
+                self.binding_errors.append(f"dialog_resolve_error: {exc!s}")
+            self._bring_dialog_page_to_front_sync(src_page)
+            self._enqueue_synthetic(
+                "dialog_accept" if accepted else "dialog_dismiss",
+                json.dumps({"type": dtype, "message": message, "value": text}),
+                src_page=src_page,
+            )
+            return
+        if time.monotonic() - opened_at > _JS_DIALOG_TIMEOUT_S:
+            self._pending_dialog = None
+            try:
+                dialog.accept("")
+            except Exception as exc:  # noqa: BLE001
+                self.binding_errors.append(f"dialog_timeout_error: {exc!s}")
+            self._bring_dialog_page_to_front_sync(src_page)
+            self.binding_errors.append("dialog_timeout_autoaccept")
+            self._enqueue_synthetic(
+                "dialog_accept",
+                json.dumps({"type": dtype, "message": message, "value": ""}),
+                src_page=src_page,
+            )
+            if self.on_js_dialog_cancelled is not None:
+                try:
+                    self.on_js_dialog_cancelled(request_id)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _on_popup(self, popup: Any, src_page: Any | None = None) -> None:
         try:
@@ -1499,6 +1620,15 @@ class RecordingSession:
             self._startup_done.set()
 
             while not self._stop_requested.is_set():
+                # A held JS dialog blocks its page's renderer thread. Every other per-tick
+                # Playwright call below (page.evaluate, bridge install, url reads, ...) would
+                # hang against that blocked page and wedge this whole pump loop — which is the
+                # only thing that can ever resolve the dialog. So while one is pending, do
+                # nothing else this tick except try to resolve it.
+                if self._pending_dialog is not None:
+                    self._drain_js_dialog_sync()
+                    time.sleep(0.2)
+                    continue
                 # Assign tab ids to any page not yet registered (new tab, popup, Ctrl+T) —
                 # must happen before anything below reads self._tab_ids/_tab_meta.
                 self._register_new_pages_sync()
@@ -1679,6 +1809,23 @@ class RecordingSession:
                             })
                         self._no_pages_streak = 0
                 time.sleep(0.2)
+
+            if self._pending_dialog is not None:
+                # Recording was stopped (browser closed, Save clicked, etc.) while a dialog sat
+                # unanswered. The shutdown drain below calls page.evaluate on every open page
+                # unconditionally, which would hang forever against this page's blocked
+                # renderer — force it closed now rather than waiting out _JS_DIALOG_TIMEOUT_S.
+                _, dialog, dtype, message, _opened_at, src_page = self._pending_dialog
+                self._pending_dialog = None
+                try:
+                    dialog.accept("")
+                except Exception:  # noqa: BLE001
+                    pass
+                self._enqueue_synthetic(
+                    "dialog_accept",
+                    json.dumps({"type": dtype, "message": message, "value": ""}),
+                    src_page=src_page,
+                )
 
             if not self.auth_mode:
                 # Stop waits for a short "idle queue" condition so delayed

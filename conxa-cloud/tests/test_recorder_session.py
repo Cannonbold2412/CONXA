@@ -683,3 +683,184 @@ def test_resolve_file_pick_is_queued_not_applied_directly() -> None:
     request_id, paths = sess._file_pick_results.get_nowait()
     assert request_id == "req-1"
     assert paths == ["C:\\downloads\\file.pdf"]
+
+
+class _FakeDialog:
+    """Mimics Playwright's Dialog just enough for _on_dialog/_drain_js_dialog_sync — records
+    whether/how it was resolved instead of actually blocking anything."""
+
+    def __init__(self, dialog_type: str, message: str, default_value: str = "") -> None:
+        self.type = dialog_type
+        self.message = message
+        self.default_value = default_value
+        self.accepted_with: list[str] = []
+        self.dismissed = False
+
+    def accept(self, prompt_text: str = "") -> None:
+        self.accepted_with.append(prompt_text)
+
+    def dismiss(self) -> None:
+        self.dismissed = True
+
+
+def test_on_dialog_does_not_auto_accept_it_holds_and_asks(monkeypatch) -> None:
+    """The bug this whole fix addresses: the old code's synchronous dialog.accept() raced the
+    human and closed the dialog almost immediately after it opened, so it vanished before
+    anyone could see or answer it. _on_dialog must NOT call accept()/dismiss() itself — it
+    must stash the dialog and fire the Studio callback instead."""
+    sess = RecordingSession(session_id="dialog-holds-open")
+    requests: list[tuple[str, str, str, str]] = []
+    sess.on_js_dialog_request = lambda rid, dtype, message, default: requests.append(
+        (rid, dtype, message, default)
+    )
+    dialog = _FakeDialog("confirm", "I am a JS Confirm")
+
+    sess._on_dialog(dialog)
+
+    assert dialog.accepted_with == []
+    assert dialog.dismissed is False
+    assert sess.binding_errors == []
+    assert len(requests) == 1
+    request_id, dialog_type, message, _default = requests[0]
+    assert dialog_type == "confirm"
+    assert message == "I am a JS Confirm"
+    assert sess._pending_dialog[0] == request_id
+
+
+def test_on_dialog_in_auth_mode_still_auto_accepts() -> None:
+    """The login-capture browser's own pump loop never drains _pending_dialog (see
+    _run_sync_recorder's auth_mode gate), so holding a dialog there would hang that page
+    forever. Deliberately out of scope for this fix — preserve the old behavior in auth_mode."""
+    sess = RecordingSession(session_id="dialog-auth-mode", auth_mode=True)
+    dialog = _FakeDialog("alert", "Please sign in first")
+
+    sess._on_dialog(dialog)
+
+    assert dialog.accepted_with == [""]
+    assert sess._pending_dialog is None
+
+
+def test_resolve_js_dialog_is_queued_not_applied_directly() -> None:
+    """Dialog.accept()/dismiss() are Playwright sync-API calls and must run on the recorder's
+    own driver thread, never on whatever thread calls resolve_js_dialog."""
+    sess = RecordingSession(session_id="dialog-resolve-queued")
+    dialog = _FakeDialog("confirm", "Are you sure?")
+    sess._pending_dialog = ("req-1", dialog, "confirm", "Are you sure?", 0.0, None)
+
+    sess.resolve_js_dialog("req-1", True, "")
+
+    assert dialog.accepted_with == []
+    request_id, accepted, text = sess._dialog_results.get_nowait()
+    assert (request_id, accepted, text) == ("req-1", True, "")
+
+
+def test_drain_js_dialog_accepts_with_the_studio_answer_and_records_it() -> None:
+    sess = RecordingSession(session_id="dialog-drain-accept")
+    dialog = _FakeDialog("prompt", "I am a JS Prompt")
+    sess._pending_dialog = ("req-1", dialog, "prompt", "I am a JS Prompt", 0.0, None)
+    sess.resolve_js_dialog("req-1", True, "Conxa prompt")
+
+    sess._drain_js_dialog_sync()
+
+    assert dialog.accepted_with == ["Conxa prompt"]
+    assert sess._pending_dialog is None
+    payload, _src_page, _src_frame = sess._pending_payloads.get_nowait()
+    assert payload["action"]["action"] == "dialog_accept"
+    recorded = json.loads(payload["action"]["value"])
+    assert recorded == {"type": "prompt", "message": "I am a JS Prompt", "value": "Conxa prompt"}
+
+
+def test_drain_js_dialog_dismiss_records_dialog_dismiss() -> None:
+    sess = RecordingSession(session_id="dialog-drain-dismiss")
+    dialog = _FakeDialog("confirm", "Are you sure?")
+    sess._pending_dialog = ("req-1", dialog, "confirm", "Are you sure?", 0.0, None)
+    sess.resolve_js_dialog("req-1", False, "")
+
+    sess._drain_js_dialog_sync()
+
+    assert dialog.dismissed is True
+    assert dialog.accepted_with == []
+    payload, _src_page, _src_frame = sess._pending_payloads.get_nowait()
+    assert payload["action"]["action"] == "dialog_dismiss"
+
+
+class _FakePageForBringToFront:
+    def __init__(self, closed: bool = False) -> None:
+        self._closed = closed
+        self.bring_to_front_calls = 0
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+    def bring_to_front(self) -> None:
+        self.bring_to_front_calls += 1
+
+
+def test_drain_js_dialog_brings_the_page_to_front_after_resolving() -> None:
+    """The dialog is closed at the CDP level the instant accept()/dismiss() is called, but the
+    window sat behind the Studio modal while that happened, and Windows can leave the now-dead
+    native dialog's pixels on screen until that window repaints. Activating the tab forces a
+    repaint — without minimizing anything — so the human doesn't come back to a stale ghost box.
+    """
+    sess = RecordingSession(session_id="dialog-drain-bring-to-front")
+    dialog = _FakeDialog("alert", "I am a JS Alert")
+    page = _FakePageForBringToFront()
+    sess._pending_dialog = ("req-1", dialog, "alert", "I am a JS Alert", 0.0, page)
+    sess.resolve_js_dialog("req-1", True, "")
+
+    sess._drain_js_dialog_sync()
+
+    assert dialog.accepted_with == [""]
+    assert page.bring_to_front_calls == 1
+
+
+def test_drain_js_dialog_timeout_also_brings_the_page_to_front() -> None:
+    from conxa_compile.recorder import session as recorder_session
+
+    sess = RecordingSession(session_id="dialog-timeout-bring-to-front")
+    dialog = _FakeDialog("alert", "Forgotten alert")
+    page = _FakePageForBringToFront()
+    opened_at = time.monotonic() - (recorder_session._JS_DIALOG_TIMEOUT_S + 1)
+    sess._pending_dialog = ("req-1", dialog, "alert", "Forgotten alert", opened_at, page)
+
+    sess._drain_js_dialog_sync()
+
+    assert dialog.accepted_with == [""]
+    assert page.bring_to_front_calls == 1
+
+
+def test_drain_js_dialog_ignores_a_stale_answer_for_an_already_resolved_dialog() -> None:
+    """A second dialog can only open after the first resolves, but an in-flight Studio answer
+    for the first must never be misapplied to whatever dialog is pending now."""
+    sess = RecordingSession(session_id="dialog-drain-stale")
+    dialog = _FakeDialog("alert", "Second alert")
+    sess._pending_dialog = ("req-2", dialog, "alert", "Second alert", 0.0, None)
+    sess.resolve_js_dialog("req-1", True, "")  # answer for a dialog that's no longer pending
+
+    sess._drain_js_dialog_sync()
+
+    assert dialog.accepted_with == []
+    assert sess._pending_dialog is not None
+    assert sess._pending_dialog[0] == "req-2"
+
+
+def test_drain_js_dialog_auto_accepts_past_the_timeout(monkeypatch) -> None:
+    """A forgotten Studio modal must not be able to wedge a recording forever — see
+    _JS_DIALOG_TIMEOUT_S. The recorder must still get an explicit signal to close its UI."""
+    from conxa_compile.recorder import session as recorder_session
+
+    sess = RecordingSession(session_id="dialog-drain-timeout")
+    dialog = _FakeDialog("alert", "Forgotten alert")
+    opened_at = time.monotonic() - (recorder_session._JS_DIALOG_TIMEOUT_S + 1)
+    sess._pending_dialog = ("req-1", dialog, "alert", "Forgotten alert", opened_at, None)
+    cancelled: list[str] = []
+    sess.on_js_dialog_cancelled = cancelled.append
+
+    sess._drain_js_dialog_sync()
+
+    assert dialog.accepted_with == [""]
+    assert sess._pending_dialog is None
+    assert cancelled == ["req-1"]
+    assert "dialog_timeout_autoaccept" in sess.binding_errors
+    payload, _src_page, _src_frame = sess._pending_payloads.get_nowait()
+    assert payload["action"]["action"] == "dialog_accept"

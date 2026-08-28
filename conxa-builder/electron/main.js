@@ -270,6 +270,23 @@ function windowFromEvent(event) {
   return BrowserWindow.fromWebContents(event.sender);
 }
 
+// Surfaces the Studio window above the recording browser window (a separate top-level window
+// from another process, so plain focus() doesn't reliably win the z-order on Windows) when a
+// js_dialog_request modal opens — see RecordWorkflowDialog.tsx. `raise:false` on modal close
+// lets the recording browser come back to the front instead of pinning the Studio forever.
+ipcMain.handle("window:raise", (event, raise) => {
+  const win = windowFromEvent(event);
+  if (!win) return;
+  if (raise) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    win.setAlwaysOnTop(true);
+  } else {
+    win.setAlwaysOnTop(false);
+  }
+});
+
 ipcMain.handle("window:minimize", (event) => {
   windowFromEvent(event)?.minimize();
 });

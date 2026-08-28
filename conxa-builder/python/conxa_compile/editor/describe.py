@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -173,6 +174,23 @@ def describe_step(step: dict[str, Any], step_index: int) -> str:
         return f"Step {n}: {verb}".strip()
     if act in _STATIC_ACTION_LABELS:
         return f"Step {n}: {_STATIC_ACTION_LABELS[act]}"
+    if act in {"dialog_accept", "dialog_dismiss"}:
+        verb = "Accepted" if act == "dialog_accept" else "Dismissed"
+        dialog_payload: dict[str, Any] | None = None
+        raw_value = step.get("value")
+        if isinstance(raw_value, str):
+            try:
+                parsed = json.loads(raw_value)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                dialog_payload = parsed
+        message = str((dialog_payload or {}).get("message") or "").strip()
+        typed = str((dialog_payload or {}).get("value") or "").strip()
+        quoted_message = f' "{message[:80]}{"…" if len(message) > 80 else ""}"' if message else ""
+        if typed and act == "dialog_accept":
+            return f'Step {n}: {verb} dialog{quoted_message}, answered "{typed}"'
+        return f"Step {n}: {verb} dialog{quoted_message}"
     marker_labels = {
         "tab_open": "Recorded tab open",
         "tab_switch": "Recorded tab switch",
@@ -181,8 +199,6 @@ def describe_step(step: dict[str, Any], step_index: int) -> str:
         "frame_exit": "Recorded frame exit",
         "download_observed": "Recorded download",
         "dialog_appeared": "Recorded dialog",
-        "dialog_accept": "Accepted dialog",
-        "dialog_dismiss": "Dismissed dialog",
         "file_chooser_opened": "Recorded file chooser",
         "clipboard_copy": "Recorded clipboard copy",
         "clipboard_paste": "Recorded clipboard paste",
