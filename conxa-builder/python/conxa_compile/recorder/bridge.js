@@ -833,6 +833,11 @@
         name,
         placeholder: el.getAttribute("placeholder") || null,
         label_text: captureAssociatedLabel(el),
+        // Real accessible-name sources for non-form elements. An <img>'s name is its alt;
+        // without it the compiler had nothing but captureAssociatedLabel's last-resort
+        // "nearest surrounding text" walk, which names an avatar after the paragraph above it.
+        alt: el.getAttribute("alt") || null,
+        title: el.getAttribute("title") || null,
       },
       selectors,
       context,

@@ -121,19 +121,33 @@ async function recoverWithSelector(page, step, inputs, selector, onSuccess, base
 }
 
 // Derive an element's accessible name from its recorded fingerprint for a11y recovery.
-// Precedence must mirror the compiler's canonical derivation (identity_bundle.py:
-// aria_label || name || inner_text || placeholder || label_text) and resolver.js's fpName.
+// Precedence must mirror the compiler's canonical derivation (identity_bundle.py's
+// _accessible_name) and resolver.js's fpName.
 // placeholder covers label-less inputs (e.g. a search box) that the compiler names from
 // their placeholder text — without it here, recovery for exactly those elements sees an
-// empty name and bails before ever trying. `label_text` is the nearest <label>/sibling
-// context — for content elements (links, buttons) it is NOT the element's accessible name
-// and can point at a neighbour (e.g. the blueprint link's label_text was mis-captured as
-// "Project"), which would make `role=link[name="Project"]` recover the WRONG element. It
-// stays only as a last resort for form controls whose accessible name legitimately comes
-// from their label and whose inner_text/placeholder are both empty.
+// empty name and bails before ever trying. alt/title cover elements whose only name is an
+// attribute (a bare <img>). `label_text` is the nearest <label>/sibling context — for
+// content elements (links, buttons, images) it is NOT the element's accessible name and can
+// point at a neighbour (e.g. the blueprint link's label_text was mis-captured as "Project"),
+// which would make `role=link[name="Project"]` recover the WRONG element. It is therefore
+// gated on the form-control tags whose accessible name legitimately comes from their label —
+// the same gate identity_bundle.py applies, so compile and recovery cannot disagree.
+// Tag OR role: a fingerprint may carry either (the compiler records both, recovery callers
+// and older packs sometimes only one), and a control named by its label is a form control
+// under either name.
+const LABELLED_TAGS = new Set([
+  "input", "select", "textarea",
+  "textbox", "searchbox", "combobox", "listbox", "spinbutton", "checkbox", "radio",
+]);
+
 function a11yRecoveryName(fingerprint) {
   const fp = asObject(fingerprint);
-  return String(fp.aria_label || fp.name || fp.inner_text || fp.placeholder || fp.label_text || "").trim();
+  const isLabelled = LABELLED_TAGS.has(String(fp.tag || "").toLowerCase())
+    || LABELLED_TAGS.has(String(fp.role || "").toLowerCase());
+  const labelName = isLabelled ? fp.label_text : "";
+  return String(
+    fp.aria_label || fp.name || fp.alt || fp.title || fp.inner_text || fp.placeholder || labelName || "",
+  ).trim();
 }
 
 async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline = null, guard = null) {

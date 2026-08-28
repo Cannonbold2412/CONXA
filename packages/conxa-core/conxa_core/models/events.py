@@ -53,6 +53,11 @@ class TargetDom(BaseModel):
     name: str | None = None
     placeholder: str | None = None
     label_text: str | None = None
+    # An <img>'s accessible name comes from alt (title is the generic fallback for any
+    # element). Without these, a nameless-looking image had no real name to compile from
+    # and fell through to label_text — the nearest surrounding text, which is not a name.
+    alt: str | None = None
+    title: str | None = None
 
 
 class Selectors(BaseModel):

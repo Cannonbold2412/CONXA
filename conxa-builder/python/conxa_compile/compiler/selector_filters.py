@@ -293,6 +293,23 @@ def uniqueness_gate(
     return count == 1
 
 
+def resolves_to_nothing(
+    selector: str, dom_html: str | None, a11y_tree: dict[str, Any] | None = None
+) -> bool:
+    """True when the selector provably matches no node in the recorded page.
+
+    Distinct from `uniqueness_gate(absent_ok=True)`, which folds "matched nothing" into
+    "couldn't verify". For a role+name selector that conflation is wrong: the name is derived
+    from the element's OWN recorded attributes, so a 0 count against a real a11y snapshot means
+    the name is fabricated, not that the snapshot was incomplete. `_count_selector_matches`
+    already returns 1 for a role selector when the a11y tree is missing, so a genuine
+    "can't verify" never reaches here as a 0.
+    """
+    if not dom_html:
+        return False
+    return _count_selector_matches(selector, dom_html, a11y_tree) == 0
+
+
 def dedup_by_orthogonality(signals: list["IdentitySignal"]) -> list["IdentitySignal"]:
     """Keep the highest-durability signal per orthogonality class; drop the rest."""
     best: dict[str, "IdentitySignal"] = {}

@@ -84,15 +84,15 @@ function scoreCandidate(node, fingerprint) {
   const fpRole = norm(fp.role);
   if (fpRole) add(0.20, roleAgrees(fp.role, node.role));
 
-  // aria_label and name are the element's own accessible-name attributes. placeholder is
-  // included to mirror the compiler's canonical derivation (identity_bundle.py:
-  // aria_label || name || inner_text || placeholder || label_text) — label-less inputs
+  // aria_label, name, alt and title are the element's own accessible-name attributes.
+  // placeholder is included to mirror the compiler's canonical derivation
+  // (identity_bundle.py's _accessible_name) — label-less inputs
   // (e.g. a search box) are named from their placeholder at compile time, so this must be
   // able to reproduce that name too. label_text is the nearest <label>'s text — for nav
   // buttons this is surrounding context (e.g. "Projects Search CTRL + K K"), not the
   // element's identity. Exclude it from fpName so it doesn't shadow inner_text ("New") and
   // drop the score below threshold.
-  const fpName = norm(fp.aria_label || fp.name || fp.inner_text || fp.placeholder);
+  const fpName = norm(fp.aria_label || fp.name || fp.alt || fp.title || fp.inner_text || fp.placeholder);
   if (fpName) {
     const nodeName = norm(node.name || node.text);
     add(0.25, nodeName === fpName || (!!nodeName && (nodeName.includes(fpName) || fpName.includes(nodeName))));

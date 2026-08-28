@@ -53,7 +53,12 @@ function extractDescriptor(el) {
   const axName = (ariaLabel || nameAttr || innerText).trim();
   const hashPayload = `${tag}|${sortedAttrs}|${axName}`;
 
-  // Implicit-role best effort (covers the common interactive tags).
+  // Implicit-role best effort. This must cover every tag the compiler can record a role for,
+  // not just the interactive ones: resolver.js's roleAgrees() returns false whenever EITHER
+  // side is empty, so a tag missing here scores 0 against a fingerprint that names its role —
+  // which silently vetoes an otherwise correctly-matched candidate. A bare <img> hit exactly
+  // that: the compiled fingerprint said role "img", this said "", and the one structural
+  // signal that DID find the element was rejected below the confidence threshold.
   let role = el.getAttribute("role") || "";
   if (!role) {
     if (tag === "a" && el.hasAttribute("href")) role = "link";
@@ -62,6 +67,12 @@ function extractDescriptor(el) {
       const t = (el.getAttribute("type") || "text").toLowerCase();
       role = ({ checkbox: "checkbox", radio: "radio", button: "button", submit: "button" })[t] || "textbox";
     }
+    else if (tag === "img") role = "img";
+    else if (tag === "textarea") role = "textbox";
+    else if (tag === "select") role = el.hasAttribute("multiple") ? "listbox" : "combobox";
+    else if (/^h[1-6]$/.test(tag)) role = "heading";
+    else if (tag === "nav") role = "navigation";
+    else if (tag === "main") role = "main";
   }
 
   const neighbors = [];
@@ -78,10 +89,15 @@ function extractDescriptor(el) {
   // named from its placeholder (identity_bundle.py's aria_label||name||inner_text||placeholder).
   // `_hashPayload`/axName above deliberately excludes it — that mirrors stable_hash.py's
   // narrower ax_name (aria_label||name||inner_text) and must not drift from it.
+  // alt/title mirror identity_bundle.py's _accessible_name — an <img>'s only real name is
+  // its alt, so without them a live image candidate could never match a fingerprint named
+  // from one.
   const placeholder = el.getAttribute("placeholder") || "";
+  const altAttr = el.getAttribute("alt") || "";
+  const titleAttr = el.getAttribute("title") || "";
   return {
     role,
-    name: (ariaLabel || nameAttr || (el.textContent || "").trim() || placeholder).slice(0, 120),
+    name: (ariaLabel || nameAttr || altAttr || titleAttr || (el.textContent || "").trim() || placeholder).slice(0, 120),
     text: (el.textContent || "").trim().slice(0, 120),
     testid: el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "",
     anchorNeighbors: neighbors,

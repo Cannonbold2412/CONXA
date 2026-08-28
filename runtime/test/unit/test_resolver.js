@@ -143,3 +143,35 @@ test("css-id input resolves via role-alias agreement", () => {
   const r = resolve([SIG], fp, root, {});
   assert.strictEqual(r.node, node);
 });
+
+// the-internet.herokuapp.com/hovers regression. A bare <img> has no testid, no text and no
+// name attribute, so its only surviving signal is structural — and the ONLY fingerprint field
+// that can score it is `role`. extractDescriptor's implicit-role table used to cover a/button/
+// input only, so the live candidate reported role "" and roleAgrees() returned false for the
+// empty side. The one signal that actually FOUND the element scored 0/0.30 and was rejected
+// below threshold, and the hover step failed with "element not found".
+test("nameless img resolves on role agreement alone", () => {
+  const SIG = { engine: "xpath", selector: "xpath=/html/body/div[2]/div/div/div[2]/img", durability: 0.01, orthogonality_class: "structural" };
+  const node = { role: "img", name: "User Avatar", text: "", testid: "", anchorNeighbors: [] };
+  const root = mockRoot({ [SIG.selector]: [node] });
+  const fp = { role: "img", tag: "img", alt: "User Avatar", anchor_phrases: [] };
+  const r = resolve([SIG], fp, root, {});
+  assert.strictEqual(r.node, node);
+});
+
+test("empty node role never agrees with a named fingerprint role", () => {
+  // Guards the roleAgrees() empty-side rule directly: if a future tag is missing from
+  // extractDescriptor's table, the score collapses rather than matching by accident.
+  assert.strictEqual(scoreCandidate({ role: "", name: "", text: "" }, { role: "img" }), 0);
+});
+
+// alt is an <img>'s accessible name — the fingerprint must be able to match a live
+// descriptor named from it, or the image scores on role alone and sits one weight away
+// from the threshold.
+test("alt participates in fingerprint name matching", () => {
+  const s = scoreCandidate(
+    { role: "img", name: "User Avatar", text: "", testid: "" },
+    { role: "img", alt: "User Avatar" },
+  );
+  assert.strictEqual(s, 1);
+});

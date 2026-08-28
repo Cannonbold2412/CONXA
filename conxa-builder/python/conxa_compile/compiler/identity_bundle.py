@@ -12,6 +12,7 @@ from typing import Any
 from conxa_compile.compiler.selector_filters import (
     dedup_by_orthogonality,
     is_low_quality_anchor,
+    resolves_to_nothing,
     selector_passes_filters,
     uniqueness_gate,
 )
@@ -54,16 +55,7 @@ def generate_deterministic_signals(
 
     # 2. role + name (semantic-aria)
     role = str(semantic.get("role") or target.get("role") or "").strip()
-    # label_text stays last: it's the nearest external <label>'s text, not the element's
-    # own attribute, and can mis-capture a sibling's text (see runtime/run.js:1084-1093's
-    # a11yRecoveryName, which documents the same risk for its identical last-resort use).
-    ax_name = (
-        str(target.get("aria_label") or "")
-        or str(target.get("name") or "")
-        or str(target.get("inner_text") or "")[:80]
-        or str(target.get("placeholder") or "")
-        or str(target.get("label_text") or "")
-    ).strip()
+    ax_name = _accessible_name(target)
     if role and ax_name and role.lower() not in _EXCLUDED_ROLES:
         candidates.append(("role", to_playwright_grammar("role", role, ax_name)))
 
@@ -102,6 +94,14 @@ def generate_deterministic_signals(
     for dur, engine, sel, oc in ranked:
         if engine not in _NATIVE_ENGINES and not selector_passes_filters(sel):
             continue
+        # A role+name selector that matches nothing in the very page it was derived from is
+        # fabricated, and shipping it wastes the two highest-durability slots on signals that
+        # can only ever miss at replay. The relational signal is probed by its role base — the
+        # `>> right-of=` chain is not statically countable, and it inherits the same name.
+        if engine in ("role", "relational"):
+            probe = sel.split(">>")[0].strip() if engine == "relational" else sel
+            if resolves_to_nothing(probe, dom_html, a11y_tree):
+                continue
         # absent_ok=True: a 0-match verdict here means "couldn't confirm", not "not unique" — see
         # uniqueness_gate's docstring. Without it, snapshot gaps (e.g. a modal captured before it
         # mounted) wrongly stamped real, durable selectors as unverified.
@@ -116,6 +116,49 @@ def generate_deterministic_signals(
         ))
 
     return dedup_by_orthogonality(signals)
+
+
+# label_text is only a real accessible name for a form control (a <label for=…> names its
+# input). For anything else it is captureAssociatedLabel's last-resort "nearest surrounding
+# text" walk — which named a bare avatar <img> after the paragraph above it and produced
+# `internal:role=img[name="Hover over the image for additional information"]`, a name
+# Playwright never computes, so the whole 0.95 signal matched nothing at replay.
+# runtime/app/resolver.js's scoreCandidate already refuses to score on label_text for the
+# same reason; emitting selectors from it here was the other half of that mismatch.
+# Tag OR role — a control named by its label is a form control under either name, and
+# runtime/app/cascade.js's a11yRecoveryName applies the identical gate so compile-time
+# naming and recovery-time naming cannot disagree.
+_LABELLED_TAGS = frozenset({
+    "input", "select", "textarea",
+    "textbox", "searchbox", "combobox", "listbox", "spinbutton", "checkbox", "radio",
+})
+
+
+def _accessible_name(target: dict[str, Any]) -> str:
+    """Element's accessible name, or "" when it genuinely has none.
+
+    "" is a valid answer: no name means no role signal, and the bundle falls through to
+    structural identity. That is strictly better than inventing a name that resolves to
+    nothing.
+    """
+    candidates = [
+        target.get("aria_label"),
+        target.get("name"),
+        target.get("alt"),
+        target.get("title"),
+        str(target.get("inner_text") or "")[:80],
+        target.get("placeholder"),
+    ]
+    if (
+        str(target.get("tag") or "").lower() in _LABELLED_TAGS
+        or str(target.get("role") or "").lower() in _LABELLED_TAGS
+    ):
+        candidates.append(target.get("label_text"))
+    for value in candidates:
+        name = str(value or "").strip()
+        if name:
+            return name
+    return ""
 
 
 _TESTID_RE = re.compile(r'(data-test(?:-?id)?)=["\']?([^"\'>\s\]]+)')

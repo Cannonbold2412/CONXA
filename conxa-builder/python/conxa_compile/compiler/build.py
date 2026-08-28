@@ -509,6 +509,8 @@ def _build_element_fingerprint(ev: dict[str, Any]) -> ElementFingerprint:
         name=str(target.get("name") or ""),
         placeholder=str(target.get("placeholder") or ""),
         label_text=str(target.get("label_text") or ""),
+        alt=str(target.get("alt") or ""),
+        title=str(target.get("title") or ""),
         data_testid=data_testid,
         input_type=str(semantic.get("input_type") or ""),
         css_class_tokens=class_tokens,
