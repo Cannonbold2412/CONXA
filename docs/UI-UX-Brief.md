@@ -59,6 +59,26 @@ The production source of truth is:
 
 ---
 
+### 2.1a Legal Gate (`LegalGateScreen.tsx`) — added 2026-08-29
+
+**Purpose:** Blocking click-through acceptance of the Terms and Conditions and Privacy Policy before any route is mounted (PROD-17).
+**Where it sits in the gate chain:** deps bootstrap → mandatory update → **sign-in** → **legal gate** → routes. It sits *after* sign-in because an acceptance is only evidence if it names the person accepting.
+**Inputs:** The current version and document hashes fetched from the cloud, a summary of the key licence terms, links that open the hosted `/docs/terms` and `/docs/privacy` pages in the system browser, and a required "I agree" checkbox.
+**Outputs:** An acceptance record written on Conxa servers against the signed-in user — identity, workspace, version, document hashes, server timestamp, IP, Build Studio version, machine identifier. Nothing is stored locally.
+**User goal:** Understand what the licence permits, accept once, never be asked again.
+
+**Behaviour:**
+- Rendered inside `AppChrome` so the frameless window's title-bar controls still work while it blocks.
+- **Fail-closed:** if the cloud cannot be reached, a blocking "Can't reach Conxa" screen with a Retry button appears instead — the app never assumes acceptance.
+- Dev builds (`!window.conxa.isPackaged`) skip the gate entirely, the same escape the deps gate uses.
+- Bumping `CURRENT_LEGAL_VERSION` on the cloud re-prompts every user, because acceptance is recorded per (user, version).
+
+**UX issues:**
+- A Conxa outage blocks Build Studio at launch even though recording and compiling are entirely local. This was a deliberate trade for enforceability; the retreat, if it bites, is to admit a user whose acceptance the server previously confirmed.
+- There is no dashboard screen for the acceptance export yet — the rows are readable only through `GET /api/v1/legal/acceptances` and, in summary, on the Audit page.
+
+---
+
 ### 2.2 Login Overlay (`LoginOverlay.tsx`)
 
 **Purpose:** Prompt sign-in before showing the main app.  

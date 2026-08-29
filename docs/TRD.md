@@ -702,6 +702,40 @@ A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `conxa_core/sto
 
 **Authentication is pre-flight-only (2026-08-17) — mid-execution auth failures never open a window.** `run.js`'s `isAuthFailure` short-circuits straight to failure on a login redirect, before the normal recovery cascade even runs (a login redirect is an auth condition, not a selector/DOM problem — no retry, no wait). `captureReAuth` (`browser.js`) still resolves *which* app died — by the **failing page's own URL** (passed by `server.js`, ahead of `manifest.target_url`, since a group pack's `target_url` is the app the workflow *starts* in, the wrong app when a sibling's session is the one that actually died mid-run), falling back to `opts.fallbackUrl` (`manifest.target_url`) if the failing page's host matches no app in the group, then to `group.apps[0]` as a last resort, logging `reauth_app_resolved` with which of the three paths fired — but it only builds a clear, app-named failure message now; it no longer calls `beginInteractiveAuth`. The run fails immediately. Re-authentication happens on the user's **next** `execute_skill` call, via the same pre-flight gate described above, which re-validates this exact app and opens its login window then — not at the moment of the mid-run failure. (Earlier behavior opened a headed re-auth window automatically, right at the moment of failure, which the run had already ended by; that interrupted an already-dead run instead of waiting for a fresh attempt, the mid-run twin of the recording-side flicker bug above — both traced back to authentication being handled reactively mid-operation instead of purely pre-flight.) A dormant blocking mid-run re-login path, `auth_manager.js`'s old `refreshSession`, was removed in the same pass — it had no production callers and would have directly violated this model if anything had ever called it.
 
+### 5.2b Legal Acceptance Gate (Build Studio, added 2026-08-29)
+
+Build Studio's startup gate chain is: **deps bootstrap → mandatory update → Clerk sign-in → legal acceptance → routes** (`renderer/src/App.tsx`). The acceptance gate sits *after* sign-in on purpose — a click-through is only evidence if the accepting party is identified, so the record is written against the signed-in Clerk user, not against the machine.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Studio as Build Studio (Renderer)
+    participant Backend as Python Backend
+    participant Cloud as Conxa Cloud
+
+    Studio->>Backend: {type: "legal_status"}
+    Backend->>Cloud: GET /api/v1/legal/current  (Bearer + X-Conxa-Machine)
+    Cloud-->>Backend: {version, documents:[{id,title,url,sha256}]}
+    Backend->>Cloud: GET /api/v1/legal/acceptance
+    Cloud-->>Backend: {version, accepted, accepted_at, record_id}
+    Backend-->>Studio: {version, documents, accepted, accepted_at}
+    alt already accepted
+        Studio->>Studio: mount routes
+    else not accepted
+        Studio->>User: blocking Terms & Privacy screen ("I agree" required)
+        User->>Studio: tick + Continue
+        Studio->>Backend: {type: "legal_accept", version, document_hashes, app_version}
+        Backend->>Cloud: POST /api/v1/legal/acceptance
+        Cloud->>Cloud: verify hashes match the frozen snapshots, write once
+        Cloud-->>Backend: {accepted: true, record: {...}}
+        Studio->>Studio: mount routes
+    end
+```
+
+**Fail-closed.** If the cloud cannot be reached, the Studio shows a blocking retry screen rather than assuming acceptance — the deliberate cost is that a Conxa outage stops customers opening Build Studio at all, not just publishing. Dev builds (`!window.conxa.isPackaged`) skip the gate, the same escape the deps gate uses.
+
+Endpoint contracts, the record shape, and the rule that document snapshots are frozen per version are in `docs/Backend-Schema.md` §5.11 and §7 (`legal_acceptances`).
+
 ### 5.3 Cloud API Authentication
 
 Every protected API call from the Build Studio:
@@ -1652,6 +1686,15 @@ When step resolution fails to find the target (and it isn't an auth failure):
 - **Ceiling 3**: semantic rounds only — the vision payload never fires and never captures a screenshot.
 - **Build Studio sandbox → ceiling 2** (`conxa_runtime.py` sets `CONXA_MAX_RECOVERY_TIER=2`): no agent handoff. A step surviving T1/T2 fails deterministically so the compiled pack is judged on its own merits — there is no agent in a headless Studio run to act on a recovery request.
 
+**"Strict Mode" — a pack-declared ceiling (PROD-3).** A skill pack's `manifest.json` may carry an optional `max_recovery_tier` (1–4). The runtime's effective ceiling for a run is `min(host CONXA_MAX_RECOVERY_TIER, pack max_recovery_tier ?? host ceiling)` — a pack can only ever be *more* restrictive than the host it runs on, never looser (`server.js::_effectiveRecoveryTier`). Every agent-mediated decision (override application, park/resume, failure-response tier and messaging) uses this per-run effective value; status/registration endpoints (`get_runtime_status`, telemetry `capabilities`) still report the host baseline, since they answer "what can this host do," not "what was this one run capped at." Today `max_recovery_tier` is set per build via `CONXA_STRICT_MODE_MAX_TIER` (`skill_package_builder_output.py`) — a Studio UI toggle for setting it per workflow is not yet built.
+
+**Entity binding and the destructive-recovery halt (PROD-3).** Two related, previously-broken mechanisms, now wired end to end:
+- `identity_bundle.destructive` — set at compile time by `destructive_semantics.classify_consequence()` (click steps whose intent matches the destructive-token vocabulary, or that are a commit/submit action). Serialized onto the execution step's top-level `destructive` flag (`skill_package_builder_saved_skill.py::_copy_saved_common`) — the field `runtime/app/cascade.js::recoverStep` reads to stop the cascade after Layer 1 (EXEC-24 P5) and refuse the fallback-selector/a11y/dialog/fuzzy-text stages, rather than "finding something close" to a Delete button.
+- **Entity binding** (`EntityBinding` on `SkillStep`) — for a step whose target sits inside a repeating list/table row, the compiler (`conxa_compile/compiler/entity_binding.py`) detects a `container_selector` matching every sibling row plus an `identifier` (preferring a declared run input over the recorded literal text) that picks out this run's specific row. At runtime, `resolution.js::entityRoots` narrows resolution to the row whose text contains the interpolated identifier — requiring an *exact single match*; zero or ambiguous (>1) matches fail closed (`entityNotFound`), never falling back to the unscoped page. Both the primary resolve path and every recovery stage's locator path go through this narrowing, so recovery can never substitute a same-looking element from a different row.
+- Both halts (`destructiveHalt`, `entityNotFound`) are deliberate stops, not exhausted recovery: `server.js`'s `parkable` predicate excludes them (no agent-mediated resume is ever offered), and `failure_response.js` returns a plain terminal message instead of a Tier 3/4 candidate digest — offering a ranked "pick a different element" list here would invite exactly the wrong-row guess the halt exists to prevent.
+- **Publish gate.** An irreversible step whose compiler-detected entity binding was never confirmed by the vendor in the editor cannot be saved (`editor/patch_gate.py::irreversible_step_requires_confirmed_entity_binding`) or published (`handlers/workflows.py::_require_confirmed_entity_bindings`, since patch_gate only fires on an edit). A step with no detected repeating container has nothing to confirm and is unaffected.
+- Scope note: this is the *safety-core* slice of PROD-3 (danger classification, entity binding, fail-closed recovery, Strict Mode). Dry-run/stage-then-commit, compensation workflows, before/after screenshots, and a published per-skill safety score remain open — see `TODO.md` PROD-3.
+
 **Recovery request payload — current-state grounding.** `server.js:_buildFailureResponse` always captures the interactive-element inventory *live, after* the T1/T2 cascade has run — this is the state the agent's corrected selector will actually act on, since in-process remedies (dismiss-overlay, scroll, re-hover) can themselves change the page. The pre-cascade inventory (`run.js:captureEarlyDomSnapshot`, taken at the exact moment of failure) is included as a clearly-labeled secondary block only when it differs from the current one — e.g. a dropdown that was open at failure time but has since closed. The payload also carries: the step's expected post-condition (compiled assertions plus, when the failure was a verify-fail rather than a resolution miss, which assertion actually failed), a compact trace of already-executed steps, and explicit grounding instructions telling the agent that the current screenshot/inventory are ground truth and the recording-time reference image may be outdated.
 
 **Closing edge — `step_overrides`.** `execute_skill` accepts `step_overrides: { "<0-based step index>": { "candidate_index": <n>, "confidence": <0-1>, "why": "…" } }` (preferred — a Tier 3/4 reflection-contract nomination against the ranked digest) or `{ "selector": "<Playwright selector>" }` (keyed by the same index as `resume_from`). On resume the resolved selector is injected via the step's `_explicit_selector` channel (`run.js:applyStepOverrides`) and validated (`run.js:validateOverrideSelector`) against the step's recorded fingerprint before it is allowed to act — extending the "resolver never blindly picks candidate[0]" invariant (§10.2a) to the agent-override path. A unique match is accepted outright; a multi-match is scored the same way `resolver.js` scores compiled signals (reusing `scoreCandidate`) and only accepted when the winner clears the uniqueness margin. A no-match or ambiguous (tied) selector is rejected — the runtime does **not** fall through to `.first()` — and the resume instead returns a fresh recovery request that reports what the selector actually matched, so the agent iterates instead of silently acting on the wrong element. A `candidate_index` that no longer resolves (stale digest) is reported as `agent_override_rejected { reason: "stale-candidate-index" }` and skipped — the next failure response carries a freshly ranked digest. Overrides are honoured only when the ceiling ≥ 3, so a stray override can never silently rewrite a pack under deterministic Studio test.
@@ -2051,7 +2094,13 @@ Emitted by `runtime/tracker.js`:
 | `step_fail` | Step fails | `ts`, `si`, `code` (error code) |
 | `recovery_tier{N}` | Recovery attempted | `ts`, `si`, `tier` |
 | `wf_ok` | Workflow succeeds | `ts`, `dur`, `tot`, `rec` (recovered steps) |
-| `wf_fail` | Workflow fails | `ts`, `dur`, `fsi` (failed step index), `fc` (failure code) |
+| `wf_fail` | Workflow fails | `ts`, `dur`, `fsi` (failed step index), `fc` (failure code — includes the PROD-18 policy-refusal codes below) |
+| `policy_block` | PROD-18: a policy verdict fired (denial, or a would-have-blocked audit-only hit) | `ts`, `code` (`outside_window`\|`denied_host`\|`host_unresolved`\|`policy_tz_unsupported`\|`policy_expired`), `pv` (policy_version), `enf` (whether `enforce` was true) |
+
+This table is illustrative, not exhaustive — the full, current event-code list (including
+recovery-cascade and park/review events) lives as a table in the exploration behind
+`TODO.md` PROD-18 and is not fully re-documented here; treat `runtime/app/tracker.js`'s
+call sites as the source of truth for anything not listed.
 
 ### 12.2 Batch Payload
 
@@ -2064,11 +2113,18 @@ Emitted by `runtime/tracker.js`:
   "uid": "user_id_hash",
   "wid": "workspace_id",
   "sv": 1,
+  "seq": 0,
+  "prev": "",
+  "h": "hmac_sha256_hex",
   "evts": [{"e": "wf_start", "ts": 1717000000, "tot": 5}, ...]
 }
 ```
 
 Header: `X-Tracking-Token: <token from pack.json>`
+
+`seq`/`prev`/`h` are PROD-18's evidence chain (§12.4) — additive fields a pre-PROD-18
+runtime never sends; the server treats their absence as chain state `"none"`, not as a
+tamper signal. See `docs/Backend-Schema.md` §4.2 for the full stored-batch shape.
 
 ### 12.3 Storage & Query
 
@@ -2076,6 +2132,65 @@ Header: `X-Tracking-Token: <token from pack.json>`
 - `db_append()` appends batches to a JSON array.
 - Queried by `tracking_routes.py` — Clerk-authenticated dashboard endpoints.
 - Workspace scoping: `_batches_for_principal()` filters by `workspace_id` in batch.
+
+### 12.4 Evidence Chain & Reconciliation (PROD-18)
+
+**Problem this closes:** `wf_start` used to be enqueued into `tracker.js`'s in-memory
+ring (drop-oldest at 50 events, flushed on a 2s timer) with no guaranteed delivery before
+a run acted — a killed process could leave the server with no record the run ever started,
+and a failed POST lost its batch permanently. Server-side, a run with a `wf_start` and no
+terminal event stayed `status: "running"` forever and was silently excluded from every
+success-rate calculation, with no way to ask "how many runs never reported back?"
+
+**Fix:**
+- `server.js` fires the `wf_start` flush immediately and awaits it (bounded 2s) at the one
+  seam every surviving code path crosses before opening a browser — a killed process still
+  leaves a start record.
+- A batch that fails to POST spills to `{CONXA_DATA_DIR}/logs/telemetry-spill.jsonl`
+  (`tracker.js::_spillAppend`, drop-**newest** past a 200-line cap — the inverse of the
+  in-memory ring, since once evidence is on disk the earliest matters most) and drains at
+  the next process startup (`drainSpill`, wired into `server.js`'s `startupSync`).
+- Every batch carries `seq`/`prev`/`h` — `h` is an HMAC-SHA256 (keyed on the workspace's
+  own tracking token) over the batch's canonical JSON, chained to the previous batch's
+  hash. The server verifies `h` on the **raw** events, before `_cap_events` truncates any
+  field (`app.services.tracking._verify_chain_link`) — verifying post-truncation data can
+  never match what the client actually signed. `_run_summary` folds every batch's link
+  into one per-run verdict (`_chain_state`): `verified` / `gap` (a `seq` is missing) /
+  `broken` (a signature or link mismatch) / `none` (pre-chain runtime).
+- `GET /api/v1/tracking/{workspace_id}/reconcile` (`docs/Backend-Schema.md` §5.7c) reports
+  runs started vs. completed vs. abandoned vs. in-flight, plus chain gaps/breaks, reusing
+  the dashboard's existing `_visible_run_records` scan rather than adding a second one.
+
+Full detail, including what this does and does not prove: `docs/Audit-and-Control.md` §1.
+
+### 12.5 Governance Policy Gate (PROD-18)
+
+A workspace admin can set an Ed25519-signed policy (`docs/Backend-Schema.md` §4.2a) —
+execution-time windows per skill and a platform host deny-list — via
+`PUT /api/v1/tracking/{workspace_id}/policy`. Signed with the **same keypair** that signs
+the runtime update manifest (`app.api.manifest_signer`; see `docs/Security.md` SG-19 for
+the rotation tradeoff this reuse accepts) and verified on the runtime with the same
+`manifest_manager.js::verifyManifestSignature` — no new crypto, no new trust anchor.
+
+`runtime/app/policy_gate.js` splits pure decision logic (`evaluate()`, unit-testable
+without I/O — the same split `resolver.js`/`resolve_adapter.js` use) from fetch/cache/
+verify (`loadPolicy()`). `server.js` calls the gate in the non-park execution path, after
+resolving target hosts (`target_hosts.js`) and before acquiring the host lock or opening
+any browser — a refusal never touches the target application. Ships `enforce: false`
+(audit-only, recording what *would* have blocked via a `policy_block` telemetry event)
+by default; an admin flips `enforce: true` once satisfied with the audit trail.
+
+**The one genuinely locally-enforceable control** is a policy's own `expires_at`: since
+it's inside the signed document, a customer cannot extend it without the private key, so a
+deleted/stale cache does not silently keep a governed workspace running past its policy's
+lifetime — every skill in that workspace refuses (`fc: "policy_expired"`) until the policy
+re-verifies. Everything else about local enforcement (a deleted cache with the network
+also blocked) is honestly not locally preventable — see `docs/Audit-and-Control.md` §3 for
+the full "enforce locally, prove centrally" posture and what reconciliation is for.
+
+**Not built:** require-approval-before-step (needs EXEC-21's human answerer, unshipped —
+see `TODO.md` PROD-18); a policy-authoring UI (API + docs only); `require_receipt`
+enforcement (the field exists on the signed document, unused by the runtime today).
 
 ---
 

@@ -355,8 +355,10 @@ is tagged in code and below as one of:
 | `ShadowHost` | — | all |
 | `IdentityBundle` | `fingerprint`, `stable_hash`, `destructive` | `signals`, `frame_chain`, `shadow_path`, `compat_fingerprint`, `guid_like_attrs` |
 | `HandlerHints` | — | all |
-| `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `optional_hint` | `frame`, `tab`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
+| `EntityBinding` (PROD-3) | `identifier`, `source`, `confirmed` | `container_selector` |
+| `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `optional_hint`, `consequence` | `frame`, `tab`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
 | `SkillStep.branch` | — (mixed today; see below) | — |
+| `SkillStep.entity_binding` | — (mixed today; see `EntityBinding` row) | — |
 | `WorkflowIntentGraph` / `WorkflowIntentStep` | all | — |
 | `SkillPackage` | `meta`, `inputs`, `policies`, `llm`, `intent_graph`, `compile_report` | — |
 
@@ -917,9 +919,58 @@ After enrichment, stored in `kv_store` under `tracking/{company}` → `run_id`:
   "owner_user_id": "user_clerk456",
   "server_ts": 1717000025.3,
   "events": [...],
-  "schema_v": 1
+  "schema_v": 1,
+  "chain": {"seq": 0, "prev": "", "h": "hmac_sha256_hex", "ok": true}
 }
 ```
+
+`chain` (PROD-18) is the per-batch evidence-chain link the runtime sends alongside the
+batch (`runtime/app/tracker.js::_buildEnvelope` — top-level `seq`/`prev`/`h` on the POST
+body, not nested under `chain`; the server moves it under `chain` when storing). `h` is an
+HMAC-SHA256 over `{e: evts, p: prev, r: rid, s: seq}` (canonical JSON — same sorted-keys,
+no-whitespace form the update manifest uses), keyed on the workspace's own tracking
+token, verified server-side on the **raw, pre-truncation** events
+(`app.services.tracking._verify_chain_link`) before `_cap_events` runs. `ok` is `true`/
+`false` once verified, or `None`/absent for a batch from a runtime shipped before this
+field existed — reported as chain state `"none"`, never as `"broken"`. `_run_summary`
+folds every batch's `chain` into one per-run verdict (`app.services.tracking._chain_state`):
+`"verified"` | `"gap"` (a `seq` is missing) | `"broken"` (a signature or link mismatch) |
+`"none"` (pre-chain runtime).
+
+### 4.2a Governance Policy Record
+
+Stored in `kv_store` under `governance_policy` → `workspace_id`
+(`app.services.tracking.write_governance_policy`/`read_governance_policy`):
+
+```json
+{
+  "policy_version": 3,
+  "workspace_id": "acme",
+  "key_id": "conxa-manifest-1",
+  "issued_at": 1717000000,
+  "expires_at": 1717604800,
+  "enforce": false,
+  "require_receipt": false,
+  "windows": [
+    {"skills": ["payroll-*"], "tz": "Asia/Kolkata", "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00"}
+  ],
+  "denied_hosts": ["payroll-legacy.acme.com"],
+  "signature": "base64_ed25519_signature"
+}
+```
+
+Signed the same way the runtime update manifest is (`app.api.manifest_signer.sign_manifest`,
+canonical JSON minus `signature`), with the same keypair (`CONXA_MANIFEST_SIGNING_KEY`) —
+see `docs/Security.md` SG-19 for the single-key/no-rotation tradeoff this reuse accepts.
+`policy_version` increments on every write; `expires_at` (default 7 days from issue) is the
+one control genuinely enforceable on a machine the customer administers, since a customer
+cannot forge a longer expiry without the private key — see `docs/Audit-and-Control.md` §3.
+`windows[].skills` entries support a trailing `*` glob; an empty or absent list applies the
+window to every skill. `require_receipt` is carried but **not yet enforced by the
+runtime** — reserved for a future hardening pass. Fetched by the runtime via
+`GET /api/v1/tracking/{workspace_id}/policy` (§5.7a) and cached at
+`{CONXA_DATA_DIR}/policy/{workspace_id}.json`, re-verified against the signature on every
+read since that cache lives on a customer-controlled disk.
 
 ### 4.3 Tracking Token Record
 
@@ -1561,6 +1612,7 @@ Returns the pre-existing keys (`metrics`, `recovery_type_usage`, `recovery_usage
 | `roi` | `{assumptions, estimated{...}, measured{...}}` — see below |
 | `insights[]` | `{id, severity, title, body, metric, evidence}`, most severe first, capped at 8 |
 | `stale_runtimes` | Registrations with no report in 30+ days |
+| `reconciliation` | PROD-18 — see §5.7c below. Computed from the same `current` records this table's own scan already produced; no extra query |
 
 Only steps that entered recovery appear in `recovery_cascade`; the far larger directly-resolved
 population is reported as `resolved_directly` instead, because folding it in would compress
@@ -1590,6 +1642,59 @@ normalizes input rather than trusting it.
 > `tracking._dashboard_metrics` via its optional `records` parameter. Adding a further
 > endpoint that re-scans for one more panel would repeat the most expensive thing the
 > dashboard does — extend the composed response instead.
+
+### 5.7b Governance Policy (PROD-18)
+
+**PUT /api/v1/tracking/{workspace_id}/policy**
+**Header: Authorization: Bearer {clerk_jwt}** — admin only (`require_admin`), gated `ops_tier=full`.
+
+Request body: `{windows: [...], denied_hosts: [...], enforce, require_receipt, ttl_s}` — see
+§4.2a for the field shapes. Validates every window's `tz` against the IANA database
+(`zoneinfo`), `days` (ints 1–7), and `start`/`end` (`HH:MM` 24h) — a validation failure
+returns **422** with the offending field named, not a 500. Increments `policy_version`,
+stamps `issued_at`/`expires_at` (`ttl_s`, default 7 days), signs, and stores. Returns the
+signed document (§4.2a shape).
+
+**GET /api/v1/tracking/{workspace_id}/policy**
+**Header: X-Tracking-Token: {token}** — the same per-workspace tracking token ingest uses,
+not a Clerk session. This is deliberate: a workspace with telemetry disabled has no token
+and therefore cannot fetch policy either — you cannot govern what you cannot audit (see
+`docs/Audit-and-Control.md` §5). Returns the stored signed document, or **404** if the
+workspace has never had a policy written (a signal the runtime treats as "genuinely
+ungoverned," distinct from a fetch failure — see `runtime/app/policy_gate.js::loadPolicy`).
+No signing happens on this read path; signing happened once at `PUT` time, matching
+`GET /api/v1/manifest.json`'s pattern (§5.8).
+
+### 5.7c Reconciliation (PROD-18)
+
+**GET /api/v1/tracking/{workspace_id}/reconcile?range={24h|7d|30d|90d}**
+**Header: Authorization: Bearer {clerk_jwt}** — gated `ops_tier=full`, the same tier `/drift`
+requires; this is an audit surface, not a basic metric.
+
+```json
+{
+  "range": "30d",
+  "runs_started": 1412,
+  "runs_completed": 1388,
+  "runs_abandoned": 19,
+  "runs_in_flight": 5,
+  "abandoned_runs": [{"run_id": "...", "workflow_id": "...", "company": "...", "last_seen": 1717000000}],
+  "chain": {
+    "verified": 1201, "gap": 2, "broken": 0, "none": 209,
+    "gap_runs": [{"run_id": "...", "missing_seqs": [2]}],
+    "broken_runs": [{"run_id": "..."}]
+  }
+}
+```
+
+`runs_abandoned` = a run whose most recent activity (`app.services.tracking._record_time_ms`)
+is more than 10 minutes old and which never emitted a terminal `wf_ok`/`wf_fail` — the
+"evidence never arrived" case `_completed()` silently excludes from every success-rate
+number elsewhere in the dashboard (see `docs/Audit-and-Control.md` §1). `runs_in_flight` is
+the same "no terminal event yet" state within the 10-minute grace, i.e. genuinely still
+running. Backed by `app.services.tracking_analytics.reconciliation()`, called both here
+(its own `_visible_run_records` scan, since this is human-invoked at audit cadence, not
+polled) and inside `dashboard()` (§5.7a, reusing that endpoint's existing scan for free).
 
 ### 5.8 Unified Signed Runtime Manifest
 
@@ -1720,6 +1825,38 @@ Streaming event:
 ```json
 {"type": "event", "id": "req_abc", "phase": "compile_step", "step": "selectors", "status": "running"}
 ```
+
+---
+
+### 5.11 Legal Acceptance (Build Studio Terms & Privacy)
+
+Build Studio blocks on these routes after sign-in: it reads the current legal version, checks whether the signed-in user has accepted it, and records the acceptance. All four are Clerk-authenticated — an acceptance is only evidence if the accepting party is identified, so there is deliberately no unauthenticated variant. Backed by the `legal_acceptances` KV namespace (§7) and mirrored into the dashboard Audit page as the `legal.accepted` action.
+
+The document text itself is frozen in `conxa-cloud/backend/app/legal/{terms,privacy}-{version}.md` — a rendered copy of the published docs page — and its SHA-256 is what an acceptance record points at. **Changing the terms means adding a new dated pair of files and bumping `CURRENT_LEGAL_VERSION`, never editing a snapshot in place**: the version bump is what re-prompts every user, and the frozen file is what proves which words they were shown.
+
+**`GET /api/v1/legal/current`**
+```json
+{
+  "version": "2026-08-29",
+  "documents": [
+    {"id": "terms", "title": "Terms And Conditions", "url": "https://www.conxa.in/docs/terms", "sha256": "…"},
+    {"id": "privacy", "title": "Privacy Policy", "url": "https://www.conxa.in/docs/privacy", "sha256": "…"}
+  ]
+}
+```
+
+**`GET /api/v1/legal/acceptance`** → the caller's own status:
+```json
+{"version": "2026-08-29", "accepted": true, "accepted_at": 1756400000.0, "record_id": "legal_1756400000000"}
+```
+
+**`POST /api/v1/legal/acceptance`**
+```json
+{"version": "2026-08-29", "document_hashes": {"terms": "…", "privacy": "…"}, "app_version": "1.4.2"}
+```
+Returns `{"accepted": true, "record": {…}}`. The client IP is taken from the first `x-forwarded-for` hop (Render fronts the app with a proxy), and the machine identifier from the `X-Conxa-Machine` header Build Studio already sends. **409 `legal_version_mismatch`** if the submitted version or either document hash does not match what the server serves — a client can never record acceptance of text this server did not hand it. Idempotent: a repeat POST returns the first row unchanged.
+
+**`GET /api/v1/legal/acceptances`** — admin-only (`require_admin`), every acceptance row for the caller's workspace. This is the evidence export.
 
 ---
 
@@ -1919,6 +2056,7 @@ erDiagram
 | `skillpack_channels` | `"{slug}:{skill_slug}"` | `{slug, skill_slug, stable: {version, set_at, set_by, reason, from_version}}` | §5.1d release system — the per-skill stable-channel pointer (re-keyed 2026-08-19); distinct from §5.8's runtime/app self-update `dev`/`stable` channel. `reason` is `release` (first activation of a "ready" version) or `rollback` — never `publish` |
 | `skillpack_release_events__{slug}__{skill_slug}` | `"events"` (single key, JSON array via `db_append`) | `[{id, workspace_id, user_id, action, resource_type, resource_id, skill_slug, metadata, created_at}, ...]` | §5.1d release system — unbounded per-(slug, skill_slug) release audit trail, mirrored into `saas.add_audit_event` |
 | `tracking/{company}` | `{run_id}` | `[event_batch, ...]` | Runtime, Cloud dashboard |
+| `governance_policy` | `{workspace_id}` | Signed policy document, §4.2a | Cloud policy write/read, runtime `policy_gate.js` |
 | `runs` | `{workflow_id}` | `[run_record, ...]` | Cloud, Build Studio |
 | `selector_cache` | `{dom_hash}:{bbox}:{model}` | Selector candidates | Compiler |
 | `runtime_registrations` | `{company}:{install_id or platform}` | `{company, install_id, platform, runtime_version, workspace_id, last_seen, first_seen, revoked, skill_versions?, sync_errors?, hostname?, username?, os_release?, os_arch?, capabilities?}` | 2.1 device registration. `skill_versions` (`{skill_slug: installed_version}`) is optional and sticky (an omission never wipes a prior value), added for §5.1d's Deployment view. `sync_errors` (`{skill_slug: {code, at}}`) is optional and **not** sticky — always overwritten in full each phone-home — and is what lets Deployment show a real `failed` status. `hostname`/`username`/`os_release`/`os_arch`/`capabilities` (Machine Registry, added 2026-08-22) are optional and sticky like `skill_versions` — an older runtime that hasn't self-updated just omits them without wiping a newer value. `capabilities` is a small feature-flags object (`max_recovery_tier`, `update_channel`), not a tool list. `revoked` is admin-only (`POST /telemetry/runtimes/revoke`, §5.9a) — the runtime itself never sends it, and it never affects sync/telemetry/execution, only what the Fleet dashboard shows |
@@ -1928,6 +2066,7 @@ erDiagram
 | `manifest` | `current` (composed+signed `UnifiedManifest`), `skill_pack_index` (list of `{company}:{skill}` identifiers), `minimum_versions`, `compatibility` | 5.8 unified manifest — `skill_pack_index` exists because the filesystem-fallback KV store hashes keys, so `component_versions` entries for skills can't be discovered by scanning keys directly |
 | `workspace_devices` | `{workspace_id}:{machine_hash}` | `{workspace_id, machine_hash, last_ip, first_seen, last_seen, revoked?}` | 5.3 machine binding — `machine_hash` is SHA-256 of the Windows `MachineGuid`, never the raw ID. Added 2026-08-08 |
 | `workspace_llm_keys` | `{workspace_id}` | `{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}` | Enterprise BYOK (§TRD 13.5) — the API key is AES-256-GCM encrypted at rest under `SKILL_BYOK_ENCRYPTION_KEY`; never stored or returned in plaintext. Added 2026-08-08 |
+| `legal_acceptances` | `{user_id}:{version}` | `{id, user_id, email, name, workspace_id, workspace_slug, workspace_name, role, auth_provider, identity_source, version, document_hashes, documents[], accepted_at, accepted_at_iso, client_ip, user_agent, app_version, machine_hash}` | §5.14 Build Studio legal acceptance — **write-once**, one row per (user, terms version); a repeat acceptance returns the existing row rather than overwriting it, so the stored timestamp is always the moment the person actually agreed. Deliberately *not* stored only in `saas.audit_events`, which is a global 500-entry ring buffer — an acceptance mirrored there for the Audit page (`legal.accepted`) would be evicted long before it was needed as evidence. Added 2026-08-29 |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |
 
 ---

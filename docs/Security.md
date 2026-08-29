@@ -1,6 +1,6 @@
 # Security Gaps
 
-**Status:** Current as of 2026-08-09  
+**Status:** Current as of 2026-08-29  
 **Scope:** Conxa platform — Build Studio, Conxa Cloud, Runtime  
 **Audience:** Internal engineering, security reviewers, auditors
 
@@ -41,6 +41,7 @@ This document is the detailed reference for known security gaps across all three
 | [SG-16](#sg-16-analytics-retention-as-data-minimisation) | Analytics retention is a billing control, not (yet) enforced deletion | Cloud API | Low | `app/services/tracking.py` |
 | [SG-17](#sg-17-starter-external-distribution-is-detectable-not-blocked) | Starter external distribution is detectable, not blocked | Distribution | Low (by design) | `app/api/publish_routes.py` |
 | [SG-18](#sg-18-seat-limit-not-enforced) | Seat limit not enforced — team invites bypass the backend entirely | Cloud API | Low ✅ Fixed | `app/services/entitlements.py`, `app/api/deps.py` |
+| [SG-19](#sg-19-one-signing-key-now-covers-two-artifacts-no-rotation) | One Ed25519 signing key now covers two artifacts, no key rotation | Cloud API / Runtime | Low | `app/api/manifest_signer.py`, `runtime/app/manifest_manager.js`, `runtime/app/policy_gate.js` |
 
 ---
 
@@ -535,6 +536,38 @@ are never re-checked or removed by a later downgrade (soft-lock, matching the ma
 This closes the practical exposure (unlimited free team usage) without new webhook infrastructure; the
 webhook remains the only way to stop the invite from succeeding in Clerk at all, so re-open `TODO.md`
 CLOUD-9 if that stronger guarantee is ever required.
+
+---
+
+## SG-19 — One Signing Key Now Covers Two Artifacts, No Rotation
+
+**Severity:** Low  
+**Component:** Cloud API / Runtime — `app/api/manifest_signer.py`, `runtime/app/manifest_manager.js`, `runtime/app/policy_gate.js`
+
+### Description
+
+PROD-18's governance policy document (`GET`/`PUT /api/v1/tracking/{workspace_id}/policy`,
+`app.services.tracking.write_governance_policy`) is signed with the same Ed25519 keypair
+that already signs the runtime self-update manifest, verified with the same
+`verifyManifestSignature` on the runtime side. This was a deliberate reuse — it adds no
+new trust anchor and no new crypto code — but it does mean a single keypair, stored only
+as the `CONXA_MANIFEST_SIGNING_KEY` env var with no key ID and no rotation mechanism (this
+was already true of the manifest alone before this change; see the "no code signing" gap
+in TRD §17 for the original context), now backs two independent artifact types. Rotating
+the key requires coordinating both consumers at once, and there is no way to distinguish
+"signed with the current key" from "signed with a retired one" on either side.
+
+The signed policy document does carry a `key_id` field (`"conxa-manifest-1"` today), but
+nothing reads it — it exists purely so a future rotation is a data change instead of a
+wire-format break.
+
+### Recommended Fix
+
+Not built. When rotation is actually needed: add key-ID-aware verification on the runtime
+side (try the current key, fall back to a short-lived set of recently-retired keys keyed
+by `key_id`) and a rotation window on the cloud side (sign new artifacts with the new key,
+keep the old key valid for verification only until every deployed runtime has picked up
+the new public key via a runtime update). Tracked in `TODO.md`.
 
 ---
 
