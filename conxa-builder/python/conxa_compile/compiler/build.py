@@ -13,7 +13,12 @@ from conxa_compile.compiler.action_policy import no_recovery_block, recovery_ena
 from conxa_compile.editor.action_registry import MARKER_ACTIONS
 from conxa_compile.compiler.decision_layer import rank_merged_anchors
 from conxa_compile.compiler.action_semantics import commit_intent_hit, is_editable_field_click
-from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
+from conxa_compile.compiler.destructive_semantics import classify_consequence, destructive_compiler_step
+from conxa_compile.compiler.entity_binding import (
+    collect_input_literal_values,
+    detect_entity_binding,
+    upgrade_entity_binding_identifiers,
+)
 from conxa_compile.compiler.input_binding import derive_input_binding
 from conxa_compile.compiler.upload_binding import apply_bindings_to_compiled_steps
 from conxa_compile.compiler.recovery_policy import (
@@ -1431,6 +1436,12 @@ def _build_step(
     dom_html, a11y_tree = _load_step_snapshot(ev_with_intent, session_root.name)
     identity_bundle = _build_identity_bundle(ev_with_intent, dom_html=dom_html, a11y_tree=a11y_tree)
     target = _build_target(ev, policy, identity_bundle=identity_bundle, dom_html=dom_html)
+    # PROD-3: replaces the dead `ev.get("destructive", False)` default — RecordedEvent has no
+    # such field, so this line was the only writer of identity_bundle.destructive and it never
+    # fired. classify_consequence is the real, policy-driven classification.
+    consequence = classify_consequence(ev_with_intent, policy)
+    identity_bundle.destructive = consequence == "irreversible"
+    entity_binding = detect_entity_binding(ev_with_intent) if consequence == "irreversible" else None
     signals = _build_signals(
         ev,
         resolved_intent=intent,
@@ -1505,6 +1516,8 @@ def _build_step(
         snapshot_ref=str(snapshot.get("ref") or ""),
         snapshot_dom_hash=str(snapshot.get("dom_hash") or ""),
         optional_hint=optional_hint,
+        consequence=consequence,
+        entity_binding=entity_binding,
     )
     _compile_log(
         "compile_step",
@@ -1760,6 +1773,10 @@ def compile_skill_package(
 
     _deduplicate_input_bindings(steps)
     apply_bindings_to_compiled_steps(steps, cleaned_events)
+    # PROD-3: a literal entity-binding identifier detected per-step (build.py's per-step loop
+    # above) can now be upgraded to a run-input reference — this needs the full, deduplicated
+    # set of declared inputs across the workflow, which only exists after the two calls above.
+    upgrade_entity_binding_identifiers(steps, collect_input_literal_values(cleaned_events, pol))
 
     _compile_log(
         "compile_phase",

@@ -205,6 +205,31 @@ function frameNotFoundNoteText(err) {
     `element for this step.`;
 }
 
+// PROD-3 — the failure model's "no guess on irreversible actions" rule: a destructive step that
+// exhausted Layer 1, or any step whose bound record could not be uniquely re-located, never
+// reaches the Tier 3/4 candidate digest below. Offering a ranked "pick a different element" list
+// here would invite exactly the wrong-row guess the halt exists to prevent — this is a deliberate
+// stop, not exhausted recovery, so it reads and behaves like one (see buildFailureResponse's
+// !agentRecoveryEnabled terminal branch, which this mirrors).
+function haltReasonNoteText(err) {
+  if (err.destructiveHalt) {
+    return `\n\nRecovery stopped deliberately: this step is flagged destructive/irreversible ` +
+      `(delete, submit, pay, or similar), and the recorded target could not be re-found after ` +
+      `the deterministic remedies (scroll/wait/dismiss-overlay) and one verified retry. This ` +
+      `step will never fall through to "find something close" — acting on a different-looking ` +
+      `element here risks acting on the wrong record. Fix the root cause (page structure, ` +
+      `permissions, or the recorded selector) and re-run; do not attempt a candidate override.`;
+  }
+  if (err.entityNotFound) {
+    return `\n\nRecovery stopped deliberately: this step is bound to a specific record (a row ` +
+      `identified by recorded or run-input text), and that record could not be uniquely located ` +
+      `on the current page — it may be missing, filtered out, or the list changed. Acting on a ` +
+      `different row would mean acting on the wrong record. Verify the record still exists, ` +
+      `then re-run; do not attempt a candidate override.`;
+  }
+  return "";
+}
+
 // Shared reasoning context for both tiers: intent, post-condition, trace, geometry.
 function buildContextSections(err, steps, failedAt, viewport, scrollY, stepAssertions) {
   const out = [];
@@ -244,6 +269,22 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
     return { content: [{ type: "text", text:
       `Execution failed at step ${stepNo}: ${err.message}\nPage URL: ${url}\n` +
       `Recovery ceiling Tier ${maxRecoveryTier} (deterministic cascade only — no agent recovery).${detail}` }] };
+  }
+
+  // PROD-3 — fail closed, same shape as the ceiling-reached terminal branch above: no digest, no
+  // candidate list, no resumable park (server.js's `parkable` check excludes both flags too).
+  if (err.destructiveHalt || err.entityNotFound) {
+    // destructiveHalt is already logged at the moment cascade.js stops (destructive_recovery_halted);
+    // entityNotFound has no earlier emit site (resolution.js is pure/sync-agnostic of the log), so
+    // it's recorded here instead.
+    if (err.entityNotFound) {
+      appendRecoveryEvent({ event: "entity_binding_not_found",
+        slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
+    }
+    const intent = stepRecoveryContext(err);
+    const detail = intent ? `\nStep intent: ${JSON.stringify(intent)}` : "";
+    return { content: [{ type: "text", text:
+      `Execution failed at step ${stepNo}: ${err.message}\nPage URL: ${url}${haltReasonNoteText(err)}${detail}` }] };
   }
 
   const stageKey = parkKey(resolvedEntry.workspace_id || "", resolvedEntry.slug || "");

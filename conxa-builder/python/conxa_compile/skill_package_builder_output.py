@@ -191,6 +191,14 @@ def _write_skill_packs_format(
             # packs using branch steps refuse on older runtimes instead of silently skipping
             # their body. Until then, set CONXA_REQUIRED_RUNTIME explicitly for any pack that
             # uses branch steps.
+            #
+            # NOTE(PROD-3): the same trap applies to entity_binding/destructive — an older
+            # runtime silently ignores both unknown fields (ignoring is fine for a step that
+            # never had them, but a pack that DOES carry an entity binding on an old runtime
+            # would run without that binding's protection while claiming it, since no error
+            # surfaces). No tagged app-vX.Y.Z release contains this work yet, so — same rule as
+            # above — do NOT hardcode a bump here; set CONXA_REQUIRED_RUNTIME explicitly for any
+            # pack with a destructive/bound step until one exists.
             "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3"),
             "company":          company,
             "target_url":       skill_target_urls.get(slug, target_url),
@@ -206,6 +214,19 @@ def _write_skill_packs_format(
             "structural_fingerprint": structural_fp,
             "checksum":         checksums,
         }
+        # PROD-3 "Strict Mode": a per-skill recovery-tier ceiling, honoured by the runtime as
+        # min(host ceiling, this value) — never looser than the host (runtime/app/server.js::
+        # _effectiveRecoveryTier). No Studio UI sets this yet (tracked as a follow-up); until
+        # then it's settable per build via CONXA_STRICT_MODE_MAX_TIER, e.g. for a payroll/finance
+        # workflow a CI pipeline wants to always build at ceiling 2 regardless of the host.
+        # Omitted (not written as null) when unset, so an older/unaware runtime and the manifest
+        # schema itself both read "no pack ceiling, defer to host" the same way.
+        _strict_tier = os.environ.get("CONXA_STRICT_MODE_MAX_TIER", "").strip()
+        if _strict_tier:
+            try:
+                manifest["max_recovery_tier"] = int(_strict_tier)
+            except ValueError:
+                pass
         (dest_dir / "manifest.json").write_text(
             dumps_safe(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )

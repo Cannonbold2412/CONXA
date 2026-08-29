@@ -395,6 +395,18 @@ def _handler_hints_view(handler_hints: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _entity_binding_view(step: dict[str, Any]) -> dict[str, Any]:
+    eb = step.get("entity_binding")
+    if not isinstance(eb, dict) or not eb.get("container_selector") or not eb.get("identifier"):
+        return {}
+    return {
+        "container_selector": str(eb.get("container_selector") or ""),
+        "identifier": str(eb.get("identifier") or ""),
+        "source": str(eb.get("source") or "literal"),
+        "confirmed": bool(eb.get("confirmed") or False),
+    }
+
+
 def _safety_view(bundle: dict[str, Any], handler_hints_view: dict[str, Any], is_destructive: bool) -> dict[str, bool]:
     """Drives step-row safety badges — surfaces flags that were previously computed but never
     shown, most importantly handler_hints.allow_forced_action."""
@@ -591,6 +603,7 @@ def step_to_dto(
         fingerprint=_fingerprint_view(bundle),
         handler_hints_view=handler_hints_view,
         safety=_safety_view(bundle, handler_hints_view, flags.is_destructive),
+        entity_binding=_entity_binding_view(step),
         branch_summary=branch_summary,
         branch_steps=branch_steps,
         optional_hint=step.get("optional_hint") if isinstance(step.get("optional_hint"), dict) else None,

@@ -20,7 +20,7 @@ _SKIP_ATTRS = frozenset({
 })
 
 
-def _strip_dynamic_classes(classes: list[str]) -> list[str]:
+def strip_dynamic_classes(classes: list[str]) -> list[str]:
     stable = []
     for c in classes:
         lc = c.lower()
@@ -51,7 +51,7 @@ def compute_stable_hash(element_data: dict[str, Any]) -> str:
                 continue
             if k_lower == "class":
                 classes = str(v or "").split()
-                stable = _strip_dynamic_classes(classes)
+                stable = strip_dynamic_classes(classes)
                 if stable:
                     static_attrs["class"] = " ".join(sorted(stable))
             else:

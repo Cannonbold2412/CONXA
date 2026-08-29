@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from conxa_compile.compiler.action_semantics import action_name
+from conxa_compile.compiler.action_semantics import action_name, commit_intent_hit
 from conxa_compile.compiler.intent_access import get_effective_intent
 from conxa_compile.confidence.uncertainty import DESTRUCTIVE_TOKENS
 
 Step = dict[str, Any]
+
+# PROD-3: action kinds that never mutate page/application state — never irreversible regardless
+# of intent text. Mirrors ActionKind (conxa_core.models.events) minus every mutating kind.
+_READ_ONLY_ACTIONS = frozenset({
+    "scroll", "hover", "screenshot", "wait", "focus", "check", "assert",
+    "frame_enter", "frame_exit", "browser_back", "browser_forward",
+    "clipboard_copy", "dialog_appeared", "file_chooser_opened",
+})
 
 
 def destructive_intent_tokens(policy: dict[str, Any]) -> tuple[str, ...]:
@@ -38,3 +46,18 @@ def destructive_compiler_step(step: Step, policy: dict[str, Any]) -> bool:
     if action_name(step).lower() != "click":
         return False
     return step_has_destructive_intent(step, policy)
+
+
+def classify_consequence(step: Step, policy: dict[str, Any]) -> str:
+    """PROD-3 danger class: "read_only" | "reversible" | "irreversible".
+
+    Irreversible mirrors the click-only gate every existing destructive/commit check already
+    uses (destructive_compiler_step, is_consequential_click in build.py, patch_gate.py) — a
+    fill/select can feed a later irreversible click but is not itself the point of no return.
+    """
+    action = action_name(step).lower()
+    if action in _READ_ONLY_ACTIONS:
+        return "read_only"
+    if action == "click" and (destructive_compiler_step(step, policy) or commit_intent_hit(step, policy)):
+        return "irreversible"
+    return "reversible"

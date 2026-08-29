@@ -137,6 +137,7 @@ function stepFailure(step, stepIndex, cause, preShot) {
     if (cause.recoveryHaltReason) err.recoveryHaltReason = cause.recoveryHaltReason;
     if (cause.destructiveHalt) err.destructiveHalt = true;
     if (cause.frameNotFound) err.frameNotFound = true;
+    if (cause.entityNotFound) err.entityNotFound = true;
     if (cause.tabNotFound) err.tabNotFound = true;
     if (cause.failedPage) err.failedPage = cause.failedPage;
   }
@@ -284,6 +285,15 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
     // error message already explains. Fail straight through with that message intact.
     if (primaryErr && primaryErr.badInput) {
       t.emit("step_fail", { si: i, fc: "bad_input" });
+      throw stepFailure(step, i, primaryErr, preShot);
+    }
+
+    // PROD-3 — a bound step whose record can't be uniquely located isn't a selector problem the
+    // cascade can fix: every stage re-resolves through the same identity_bundle + entity_binding,
+    // so it would just fail the same way seven more times. Fail straight through rather than
+    // burning the cascade (or worse, letting some stage relax scoping and act on the wrong row).
+    if (primaryErr && primaryErr.entityNotFound) {
+      t.emit("step_fail", { si: i, fc: "entity_not_found" });
       throw stepFailure(step, i, primaryErr, preShot);
     }
 

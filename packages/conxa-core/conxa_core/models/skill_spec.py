@@ -157,6 +157,19 @@ class IdentityBundle(BaseModel):
     destructive: bool = False              # [contract]
 
 
+class EntityBinding(BaseModel):
+    """[mixed] PROD-3 entity binding — scopes a step's target to the ONE record it must act on,
+    so recovery can never substitute a same-looking element from a different row. Detected
+    deterministically at compile time from the recorded ancestor chain (never LLM-authored, per
+    the primary-compile-path invariant); `confirmed` only ever becomes True via an explicit
+    vendor confirmation in the editor (see patch_gate.py's
+    irreversible_step_requires_confirmed_entity_binding)."""
+    container_selector: str = ""   # [executor] matches every sibling row, e.g. "table#invoices tr"
+    identifier: str = ""           # [contract] text the right row must contain; may be "{{input_name}}"
+    source: str = "literal"        # [contract] "input" | "literal"
+    confirmed: bool = False        # [contract] vendor confirmed this binding in the editor
+
+
 class HandlerHints(BaseModel):
     """[executor] Precompiled runtime hints for a *browser* action handler (hover
     preconditions, virtualized-list scrolling) — has no meaning outside a browser executor."""
@@ -167,15 +180,22 @@ class HandlerHints(BaseModel):
 
 class SkillStep(BaseModel):
     """[mixed] — see field tags below. `action`/`intent`/`url`/`value`/`input_binding`/
-    `validation`/`recovery`/`decision_policy`/`optional_hint` are [contract]: what this step
-    means and how its success is judged, independent of executor. `frame`/`tab`/`target`/
+    `validation`/`recovery`/`decision_policy`/`optional_hint`/`consequence` are [contract]: what
+    this step means and how its success is judged, independent of executor. `frame`/`tab`/`target`/
     `identity_bundle`/`handler_hints`/`signals`/`state`/`compiled_selectors`/`snapshot_ref`/
     `snapshot_dom_hash` are [executor]: browser-DOM/Playwright implementation detail. `branch`
     is [mixed] today (holds executor probe detail) and is EXEC-1's next target for a clean
-    contract-terms definition (a condition + nested steps, no browser assumptions)."""
+    contract-terms definition (a condition + nested steps, no browser assumptions).
+    `entity_binding` is [mixed] — see EntityBinding."""
     action: str | dict[str, Any]                                              # [contract]
     intent: str = ""                                                          # [contract]
     url: str = ""                                                             # [contract]
+    # [contract] PROD-3 danger classification: "read_only" | "reversible" | "irreversible" |
+    # "" (compiled before this field existed). Derived at compile time
+    # (destructive_semantics.classify_consequence); vendor-editable in Human Edit. Drives
+    # skill_package_builder_saved_skill.py's execution-step `destructive` flag and the runtime's
+    # fail-closed recovery halt (runtime/app/cascade.js).
+    consequence: str = ""
     frame: dict[str, Any] = Field(default_factory=dict)                       # [executor] iframe chain marker
     # [executor] Which tab/page this step runs on ({id, index, opened_by, opener_tab}). Empty
     # means "tab_0" (the initial page) — the same page every step already ran on before
@@ -228,6 +248,10 @@ class SkillStep(BaseModel):
     # — only editor/workflow_mutations.py's confirm_optional_interstitial (human-initiated)
     # does that. None for ordinary steps.
     optional_hint: dict[str, Any] | None = None
+
+    # [mixed] PROD-3: entity binding — see EntityBinding. None when the compiler found no
+    # repeating ancestor container for this step's target (nothing to bind against).
+    entity_binding: EntityBinding | None = None
 
 
 class WorkflowIntentStep(BaseModel):

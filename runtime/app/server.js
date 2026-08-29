@@ -49,6 +49,22 @@ const MAX_RECOVERY_TIER = clampRecoveryTier(process.env.CONXA_MAX_RECOVERY_TIER,
 // Agent-mediated recovery (T3 semantic + T4 vision) is available only above the T2 ceiling.
 const AGENT_RECOVERY_ENABLED = MAX_RECOVERY_TIER >= 3;
 
+// PROD-3 "Strict Mode" — a skill pack may declare its own manifest.max_recovery_tier, but only
+// ever to be MORE restrictive than this host: the effective ceiling for a run is always
+// min(host ceiling, pack ceiling), never the reverse. A pack with no declared ceiling (older
+// packs, or one that doesn't opt in) runs at the host's own ceiling, unchanged. Used only where a
+// SPECIFIC run's behavior is decided (override application, park/resume, failure-response
+// messaging) — status/registration endpoints intentionally keep reporting the host baseline
+// (MAX_RECOVERY_TIER/AGENT_RECOVERY_ENABLED), since they answer "what can this host do," not
+// "what was this one run capped at."
+function _effectiveRecoveryTier(manifest) {
+  const declared = manifest && manifest.max_recovery_tier;
+  const tier = Number.isFinite(declared)
+    ? Math.min(MAX_RECOVERY_TIER, clampRecoveryTier(declared, MAX_RECOVERY_TIER))
+    : MAX_RECOVERY_TIER;
+  return { maxRecoveryTier: tier, agentRecoveryEnabled: tier >= 3 };
+}
+
 // ─── Execution wall-clock budget ──────────────────────────────────────────────
 // The MCP client (Claude Desktop) abandons a tools/call after its own request timeout (~240s
 // observed: it sends notifications/cancelled at exactly +4 min) and then shows the user
@@ -212,7 +228,9 @@ let filterRequiredApps;
 let resolveTargetHosts;
 let createTracker;
 let mapErrorToCode;
+let drainSpill;
 let closeExtraTabs;
+let policyGate;
 
 try {
   ({ Server }               = hostBridge.hostRequire("@modelcontextprotocol/sdk/server/index.js"));
@@ -226,8 +244,9 @@ try {
   ({ getCachedBrowser, releaseCachedBrowser, captureReAuth, gracefulShutdown,
      _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
   ({ resolveTargetHosts } = require("./target_hosts"));
-  ({ createTracker, mapErrorToCode } = require("./tracker"));
+  ({ createTracker, mapErrorToCode, drainSpill } = require("./tracker"));
   ({ closeExtraTabs } = require("./tabs"));
+  policyGate = require("./policy_gate");
 } catch (e) {
   log("error", "runtime_bootstrap_failed", { error: e.message, stack: e.stack });
   process.exit(1);
@@ -332,6 +351,11 @@ const startupSync = (async () => {
       // Re-encrypt any plaintext session files left by prior keytar failures (SG-11).
       authManager.reencryptPlaintextSessions(SESSIONS_DIR, authManager.getSessionKey, log)
         .catch(e => { log("warn", "plaintext_reencryption_sweep_failed", { reason: e.message }); }),
+
+      // PROD-18: retry any evidence batches a prior process couldn't deliver (network down,
+      // process killed mid-POST) before this process's own runs add fresh traffic.
+      drainSpill((lvl, msg, extra) => log(lvl, msg, extra))
+        .catch(e => { log("warn", "telemetry_spill_drain_failed", { reason: e.message }); }),
     ]);
   } finally {
     syncState.complete = true;
@@ -477,11 +501,12 @@ function _tooManyRunsMessage() {
 // a shared/global execution slot — so its sentVisualRefs set is scoped to
 // this run alone.
 async function _buildFailureResponse(page, errObj, resolvedEntry, runTracker, steps = null, exec = null) {
+  const { maxRecoveryTier, agentRecoveryEnabled } = _effectiveRecoveryTier(resolvedEntry && resolvedEntry.manifest);
   return require("./failure_response").buildFailureResponse(
     page, errObj, resolvedEntry, runTracker, steps,
     {
-      agentRecoveryEnabled: AGENT_RECOVERY_ENABLED,
-      maxRecoveryTier: MAX_RECOVERY_TIER,
+      agentRecoveryEnabled,
+      maxRecoveryTier,
       sentVisualRefs: exec && exec.sentVisualRefs,
       appendRecoveryEvent,
       stepAssertions,
@@ -770,9 +795,11 @@ async function _handleTool(name, args, extra) {
       // candidate_index nominations resolve against the ranked digest map published by the
       // most recent Tier 3/4 failure response for this skill; an unknown/stale index is
       // reported and skipped (the step then fails into a fresh digest next round).
+      // PROD-3 "Strict Mode": THIS skill's own manifest ceiling, never looser than the host's.
+      const { agentRecoveryEnabled: _entryAgentEnabled } = _effectiveRecoveryTier(entry.manifest);
       const _stageKey = parkKey(entry.workspace_id || "", entry.slug || "");
       const _resolveCandidateIndex = (stepIdx, candIdx) => {
-        const map = AGENT_RECOVERY_ENABLED ? recoveryStage.getCandidateMap(_stageKey) : null;
+        const map = _entryAgentEnabled ? recoveryStage.getCandidateMap(_stageKey) : null;
         const hit = map && map[String(candIdx)];
         if (!hit || typeof hit.selector !== "string") {
           appendRecoveryEvent({ event: "agent_override_rejected", slug: entry.slug,
@@ -781,10 +808,10 @@ async function _handleTool(name, args, extra) {
         }
         return hit.selector;
       };
-      const steps = AGENT_RECOVERY_ENABLED
+      const steps = _entryAgentEnabled
         ? applyStepOverrides(enriched, run.step_overrides, { resolveCandidateIndex: _resolveCandidateIndex })
         : enriched;
-      const overrideCount = AGENT_RECOVERY_ENABLED && run.step_overrides && typeof run.step_overrides === "object"
+      const overrideCount = _entryAgentEnabled && run.step_overrides && typeof run.step_overrides === "object"
         ? Object.keys(run.step_overrides).length : 0;
       if (overrideCount) {
         appendRecoveryEvent({ event: "agent_override_applied", slug: entry.slug, count: overrideCount });
@@ -810,6 +837,11 @@ async function _handleTool(name, args, extra) {
 
     // Retry budget check on resume
     const primary = resolved[0];
+    // PROD-3 "Strict Mode": every agent-mediated recovery decision below (override/resume/park)
+    // is gated on the PRIMARY skill's own effective ceiling — the only skill park/resume ever
+    // applies to (both are already gated on resolved.length === 1 below).
+    const { maxRecoveryTier: _effMaxTier, agentRecoveryEnabled: _effAgentEnabled } =
+      _effectiveRecoveryTier(primary.entry.manifest);
 
     // Auth pre-flight must cover every skill in the sequence, not just the first — a run with
     // 2+ skills shares one browser/context (see getCachedBrowser below, keyed off primary.entry
@@ -901,7 +933,7 @@ async function _handleTool(name, args, extra) {
       total_steps: resolved.reduce((n, r) => n + r.steps.length, 0),
       watch,
       trigger: exec.trigger,
-      max_recovery_tier: MAX_RECOVERY_TIER,
+      max_recovery_tier: _effMaxTier,
       concurrent_runs: runRegistry.count(),
       tracking: _trackingStatus(primary.entry.pack),
     });
@@ -922,16 +954,23 @@ async function _handleTool(name, args, extra) {
 
     // Signal agent-mediated recovery retry (Tier 3/4) when resuming mid-plan.
     if (primary.isResume) {
-      const hasOverride = AGENT_RECOVERY_ENABLED && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
+      const hasOverride = _effAgentEnabled && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
       _runTracker.emit("rec_start", { si: primary.resumeFrom, l: hasOverride ? 3 : 5, sc: hasOverride ? "agent_override" : "llm_intent" });
     }
     _runTracker.emit("wf_start", {});
+    // PROD-18 evidence receipt: fire the flush now so the start batch is off the wing and
+    // in flight before any browser work, but don't await it here — the four early-return
+    // refusal paths below (recovery/review resume refused) already hand-flush the tracker
+    // on their own way out, so blocking this line would double the wait on those paths.
+    // Awaited (bounded 2s, not the 5s default) right before browser work begins, at the
+    // `let page = null;` seam below, which every surviving path crosses exactly once.
+    const _receiptFlush = _tracker.flush({ timeoutMs: 2000 });
 
     // Adopt a parked failed page when the agent is resuming THIS skill with an override, so the
     // corrected selector acts on the exact DOM state the recovery request was built from. Parks
     // are keyed per `${workspace_id}:${slug}` (RT-3) — a sibling run's park lives under its own
     // key and is neither read nor discarded here.
-    const _resumeOverride = AGENT_RECOVERY_ENABLED && resolved.length === 1 && primary.isResume
+    const _resumeOverride = _effAgentEnabled && resolved.length === 1 && primary.isResume
       && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom]._agent_override;
     const _parkKey = parkKey(primary.entry.workspace_id, primary.entry.slug);
     let _park = null;
@@ -973,6 +1012,10 @@ async function _handleTool(name, args, extra) {
       _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: primary.resumeFrom, fc: "recovery_resume_refused" });
       if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
       runRegistry.end(_runId);
+      // Let the fired-but-unawaited receipt flush (wf_start) settle first — _flushNow's own
+      // in-flight guard makes a second concurrent flush() call a silent no-op, which would
+      // drop this wf_fail event rather than send it.
+      await _receiptFlush;
       await _tracker.flush();
       _tracker.destroy();
       return err(
@@ -988,7 +1031,7 @@ async function _handleTool(name, args, extra) {
     // invalid answer do NOT refuse outright: a review answer is a judgment about page STATE, so
     // if the state changed (or the answer didn't parse) the right move is a bounded re-ask
     // against the current page, not a hard refusal — see review_pause.js's header.
-    const _resumeReviewStep = AGENT_RECOVERY_ENABLED && resolved.length === 1 && primary.isResume
+    const _resumeReviewStep = _effAgentEnabled && resolved.length === 1 && primary.isResume
       && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom].type === "ai_review";
     if (_resumeReviewStep) {
       const stepDef = primary.steps[primary.resumeFrom];
@@ -1004,6 +1047,7 @@ async function _handleTool(name, args, extra) {
         _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: primary.resumeFrom, fc: "review_resume_refused" });
         if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
         runRegistry.end(_runId);
+        await _receiptFlush; // see recovery_resume_refused above — avoid a no-op double flush
         await _tracker.flush();
         _tracker.destroy();
         return err(
@@ -1032,6 +1076,7 @@ async function _handleTool(name, args, extra) {
             await _discardPark(_parkKey, "review_retry_exhausted");
             if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
             runRegistry.end(_runId);
+            await _receiptFlush; // see recovery_resume_refused above — avoid a no-op double flush
             await _tracker.flush();
             _tracker.destroy();
             return err(
@@ -1073,6 +1118,11 @@ async function _handleTool(name, args, extra) {
         primary.inputs[`__ai_review_answer_${primary.resumeFrom}`] = primary.reviewResults[answerKey];
       }
     }
+
+    // PROD-18: every surviving path (fresh run or an adopted park) crosses here exactly
+    // once, and none of the early returns above reach this line — so this is the one place
+    // to settle the start receipt before any browser work begins.
+    await _receiptFlush;
 
     let page = null;
     let _browser, _context, _protectedUrl;
@@ -1125,6 +1175,54 @@ async function _handleTool(name, args, extra) {
         // same platform. Filesystem trouble degrades to in-process-only (fail open — see
         // file_lock.js); unit tests omit locksDir and stay hermetic by design.
         const _targetHosts = resolveTargetHosts(resolved, { resolveGroup, filterRequiredApps });
+
+        // PROD-18 policy gate: refuse before any browser work — before the host lock, before
+        // a page is ever opened. Only on a fresh start; a resumed park is continuing a run
+        // that already passed this check when it first began, not a new admission. An
+        // ordinary, ungoverned workspace (status "absent" — no policy document exists for
+        // it) is completely unaffected and pays only the one KV read this already costs.
+        const _policyLoad = await policyGate.loadPolicy({
+          dataDir: CONXA_DATA_DIR, apiUrl: CONXA_API, workspaceId: primary.entry.workspace_id,
+          trackingToken: primary.entry.pack?.tracking?.tracking_token,
+          publicKeyB64: hostBridge.manifestPublicKey(),
+        });
+        let _policyRefusal = null;
+        if (_policyLoad.status === "expired") {
+          // The one bypass genuinely closed by local enforcement alone: expires_at is inside
+          // the signed document, so letting the cache go stale (network blocked, machine
+          // offline past the policy's own lifetime) does not silently keep a governed
+          // workspace running — see policy_gate.js's module doc.
+          _policyRefusal = {
+            code: "policy_expired", pv: _policyLoad.doc?.policy_version,
+            message: "Refused: this workspace's execution policy has expired and could not be " +
+              "refreshed (offline, or the cloud is unreachable). Policy-governed skills stay " +
+              "blocked until the policy can be re-verified.",
+          };
+        } else if (_policyLoad.status === "fresh" || _policyLoad.status === "cache") {
+          const _verdict = policyGate.evaluate(_policyLoad.doc, {
+            skills: resolved.map((r) => r.entry.slug), hosts: _targetHosts,
+          });
+          if (!_verdict.allow) {
+            _runTracker.emit("policy_block", { code: _verdict.code, pv: _policyLoad.doc.policy_version, enf: Boolean(_policyLoad.doc.enforce) });
+            if (_policyLoad.doc.enforce) {
+              _policyRefusal = { code: _verdict.code, pv: _policyLoad.doc.policy_version, message: _verdict.message };
+            } else {
+              // Audit-only rollout: record what WOULD have blocked, then let the run proceed.
+              log("warn", "policy_would_block", { run_id: _runId, code: _verdict.code, policy_version: _policyLoad.doc.policy_version });
+            }
+          }
+        }
+        // status "absent" — no policy document for this workspace at all. No gate.
+        if (_policyRefusal) {
+          appendRecoveryEvent({ event: "policy_blocked", run_id: _runId, slug: primary.entry.slug, code: _policyRefusal.code });
+          _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: null, fc: _policyRefusal.code });
+          if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
+          runRegistry.end(_runId);
+          await _tracker.flush();
+          _tracker.destroy();
+          return err(_policyRefusal.message);
+        }
+
         exec.waitingForHost = _targetHosts;
         const _lock = await hostLock.acquireHosts(_targetHosts, { runId: _runId, slug: primary.entry.slug }, {
           isDone: _execCancelled, // same cancel/deadline check runPlan uses — see host_lock.js
@@ -1415,7 +1513,7 @@ async function _handleTool(name, args, extra) {
         if (wasDeadline) {
           const secs = Math.round(EXECUTION_DEADLINE_MS / 1000);
           const stepLabel = stalledStep !== null ? ` at step ${stalledStep + 1}` : "";
-          const resumeHint = AGENT_RECOVERY_ENABLED && stalledStep !== null && !runErr.hostLockWait
+          const resumeHint = _effAgentEnabled && stalledStep !== null && !runErr.hostLockWait
             ? ` If a element moved, inspect the page and call execute_skill again with resume_from: ${stalledStep} and step_overrides.`
             : "";
           return err(
@@ -1449,10 +1547,10 @@ async function _handleTool(name, args, extra) {
         // been prompted to sign in yet. The pre-flight case (authWindowOpened left undefined —
         // a window WAS just opened before any step ran) keeps the original "once signed in" hint.
         const resumeHint = runErr.authWindowOpened === false
-          ? (AGENT_RECOVERY_ENABLED && failedAt !== null
+          ? (_effAgentEnabled && failedAt !== null
               ? ` Pass resume_from: ${failedAt} on that next call to continue from where this one stopped.`
               : "")
-          : (AGENT_RECOVERY_ENABLED && failedAt !== null
+          : (_effAgentEnabled && failedAt !== null
               ? ` Once signed in, call execute_skill again for "${(runErr.fromEntry || primary.entry).slug}" with resume_from: ${failedAt}.`
               : ` Once signed in, call execute_skill again to run this skill.`);
         return err(`${runErr.message}${resumeHint} (run_id: ${_runId})`);
@@ -1498,8 +1596,12 @@ async function _handleTool(name, args, extra) {
       // down — so the corrected selector lands on the same DOM the recovery request describes.
       // Only for single-run selector/verify failures with agent recovery enabled; auth/cancel
       // and Studio-ceiling failures are terminal and clean up normally.
-      const parkable = _failedPage && AGENT_RECOVERY_ENABLED && resolved.length === 1
-        && typeof runErr.failedAt === "number" && !runErr.session_expired && !runErr.cancelled;
+      // PROD-3: a destructive-halt or entity-binding-miss failure is a deliberate fail-closed
+      // stop, not exhausted recovery — never park it for an agent-mediated resume, which is what
+      // would let a step_overrides candidate pick a different (possibly wrong) element or row.
+      const parkable = _failedPage && _effAgentEnabled && resolved.length === 1
+        && typeof runErr.failedAt === "number" && !runErr.session_expired && !runErr.cancelled
+        && !runErr.destructiveHalt && !runErr.entityNotFound;
       if (parkable) {
         const timer = setTimeout(() => { _discardPark(_parkKey, "ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();

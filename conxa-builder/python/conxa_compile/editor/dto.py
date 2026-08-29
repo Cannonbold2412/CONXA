@@ -107,6 +107,13 @@ class StepEditorDTO(BaseModel):
     handler_hints_view: dict[str, Any] = Field(default_factory=dict)
     # {destructive, allow_forced_action, has_hover_chain} — drives step-row safety badges.
     safety: dict[str, bool] = Field(default_factory=dict)
+    # PROD-3: {container_selector, identifier, source, confirmed} when the compiler detected
+    # this step's target sits inside a repeating container; {} when it did not (nothing to
+    # confirm). `confirmed` is patchable (entity_binding.confirmed); the rest is display-only —
+    # regenerated at compile/retarget, never hand-edited (see the "row-container detection"
+    # note on EntityBinding). An irreversible step with a detected but unconfirmed binding
+    # cannot be saved (patch_gate) or published (see publish invariant).
+    entity_binding: dict[str, Any] = Field(default_factory=dict)
     # {kind, probe, step_count} when this step is a branch action (if_present/try_dismiss/
     # wait_for_one_of); None for ordinary steps.
     branch_summary: dict[str, Any] | None = None

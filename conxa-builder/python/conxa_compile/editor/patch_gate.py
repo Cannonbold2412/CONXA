@@ -36,6 +36,10 @@ def _merge_step_shell(step: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
         "recovery",
         "confidence_protocol",
         "decision_policy",
+        # PROD-3: without this, a patch confirming entity_binding.confirmed would validate
+        # against the unpatched (pre-confirmation) step and always fail the new
+        # irreversible_step_requires_confirmed_entity_binding invariant below.
+        "entity_binding",
     ):
         if key in patch and isinstance(patch[key], dict):
             base = out.get(key) or {}
@@ -357,12 +361,24 @@ def validate_editor_patch(
         if not anchors:
             raise ValueError("destructive_step_requires_signals_anchors")
         # EXEC-13 / PROD-3 guardrail: a destructive step reading its target straight off an
-        # ai_review answer has no entity binding to prove it's acting on the right record —
-        # PROD-3 (the real entity-binding system) doesn't exist yet, so there is no safe way to
-        # allow this today. Route through a conditional (EXEC-1) instead: let the review gate
-        # WHETHER the destructive step runs, not WHAT it acts on.
+        # ai_review answer has no entity binding to prove it's acting on the right record.
+        # PROD-3's entity binding is now real (see below), but a review answer still isn't a
+        # declared run input or a recorded literal a binding can be built from — route through a
+        # conditional (EXEC-1) instead: let the review gate WHETHER the destructive step runs,
+        # not WHAT it acts on.
         if previous_step is not None and action_name(previous_step).lower() == "ai_review":
             raise ValueError("destructive_step_cannot_directly_follow_ai_review")
+
+        # PROD-3: when the compiler detected this step's target sits inside a repeating
+        # container (a table row, a list item — see conxa_compile.compiler.entity_binding), a
+        # machine guess is never enough authorization to delete/pay/submit against it. The
+        # vendor must explicitly confirm the binding in the editor before this step can be
+        # saved. A step with no detected container has nothing to confirm — there is no wrong
+        # row to guard against, so it is unaffected.
+        eb_raw = merged.get("entity_binding")
+        eb = eb_raw if isinstance(eb_raw, dict) else {}
+        if eb.get("container_selector") and not eb.get("confirmed"):
+            raise ValueError("irreversible_step_requires_confirmed_entity_binding")
 
     # Any consequential action must retain at least one enforced (required=True) post-condition
     # assertion after the edit — mirrors the destructive wait_for invariant above. Prevents a

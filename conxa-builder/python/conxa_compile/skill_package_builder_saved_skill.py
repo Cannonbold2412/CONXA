@@ -327,6 +327,16 @@ def _copy_saved_common(step: dict[str, Any], out: dict[str, Any]) -> dict[str, A
         val = step.get(key)
         if val:
             out[key] = val
+    # PROD-3: runtime/app/cascade.js reads step.destructive (top-level) directly, and
+    # runtime/app/resolution.js reads step.entity_binding (top-level) directly — neither looks
+    # inside identity_bundle, even though identity_bundle.destructive is the compiler's own
+    # source of truth (build.py sets both from the same classify_consequence() call).
+    bundle = step.get("identity_bundle")
+    if isinstance(bundle, dict) and bundle.get("destructive"):
+        out["destructive"] = True
+    eb = step.get("entity_binding")
+    if isinstance(eb, dict) and eb.get("container_selector") and eb.get("identifier"):
+        out["entity_binding"] = eb
     return out
 
 

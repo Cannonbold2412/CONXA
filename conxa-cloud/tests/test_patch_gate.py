@@ -173,6 +173,44 @@ def test_destructive_step_with_no_previous_step_is_allowed():
     validate_editor_patch(step, {"intent": "Delete the record"}, {})
 
 
+# ─────────────────────────────────────────────────
+# PROD-3 — irreversible_step_requires_confirmed_entity_binding
+# ─────────────────────────────────────────────────
+
+def _bound_destructive_click_step(*, confirmed: bool) -> dict:
+    step = _destructive_click_step()
+    step["entity_binding"] = {
+        "container_selector": "table#invoices tr",
+        "identifier": "Invoice #12345",
+        "source": "literal",
+        "confirmed": confirmed,
+    }
+    return step
+
+
+def test_unconfirmed_entity_binding_on_destructive_step_raises():
+    step = _bound_destructive_click_step(confirmed=False)
+    with pytest.raises(ValueError, match="irreversible_step_requires_confirmed_entity_binding"):
+        validate_editor_patch(step, {"intent": "Delete the record"}, {})
+
+
+def test_confirmed_entity_binding_on_destructive_step_is_allowed():
+    step = _bound_destructive_click_step(confirmed=True)
+    validate_editor_patch(step, {"intent": "Delete the record"}, {})
+
+
+def test_destructive_step_with_no_detected_container_needs_no_binding():
+    # No repeating ancestor was ever detected — nothing to confirm, existing invariants
+    # (anchors/wait_for) are the only gate.
+    step = _destructive_click_step()
+    validate_editor_patch(step, {"intent": "Delete the record"}, {})
+
+
+def test_a_patch_can_confirm_an_existing_unconfirmed_binding():
+    step = _bound_destructive_click_step(confirmed=False)
+    validate_editor_patch(step, {"entity_binding": {"confirmed": True}}, {})
+
+
 def test_editing_validation_on_a_legacy_step_to_add_a_required_check_is_allowed():
     step = _fill_step(required_assertion=None)
     patch = {"validation": {"assertions": [{"type": "value_equals", "target": "#email", "expected": "x", "required": True}]}}

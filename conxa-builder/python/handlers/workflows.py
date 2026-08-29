@@ -140,6 +140,37 @@ class WorkflowsMixin:
                         return wf
         raise _CommandError("workflow_not_found", f"No workflow with slug {skill_slug!r}")
 
+    def _require_confirmed_entity_bindings(self, skill_id: str, skill_slug: str) -> None:
+        """PROD-3 publish gate: an irreversible step whose compiler-detected entity binding
+        (a repeating row/record container) was never confirmed by the vendor cannot be
+        released. Mirrors patch_gate.py's irreversible_step_requires_confirmed_entity_binding
+        invariant, which only runs on individual edits — this is the check that actually stops
+        an unconfirmed binding reaching a customer install."""
+        from conxa_core.storage.json_store import read_skill
+        from conxa_compile.compiler.destructive_semantics import destructive_compiler_step
+        from conxa_compile.editor.step_view import skill_step_for_destructive_check
+        from conxa_compile.policy.bundle import get_policy_bundle
+
+        skill = read_skill(skill_id)
+        if not skill:
+            return
+        steps = (skill.get("skills") or [{}])[0].get("steps") or []
+        policy = get_policy_bundle().data
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            view = skill_step_for_destructive_check(step)
+            if not destructive_compiler_step(view, policy):
+                continue
+            eb = step.get("entity_binding") if isinstance(step.get("entity_binding"), dict) else {}
+            if eb.get("container_selector") and not eb.get("confirmed"):
+                raise _CommandError(
+                    "irreversible_step_requires_confirmed_entity_binding",
+                    f"Skill {skill_slug!r} step {i + 1} is a destructive action inside a "
+                    "repeating row/list, but its entity binding was never confirmed in the "
+                    "editor. Confirm the binding before publishing.",
+                )
+
     def cmd_build_skill_package(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         """Build one workflow's compiled skill into the shared local package
         directory. Scoped to that one workflow — a sibling workflow that isn't
@@ -185,6 +216,12 @@ class WorkflowsMixin:
         skill_slug = workflow.slug
         if not workflow.skill_id:
             raise _CommandError("workflow_uncompiled", f"Workflow {skill_slug!r} is not compiled yet")
+
+        # PROD-3: patch_gate only fires on an edit — this is the check that actually blocks a
+        # release. A destructive step whose compile-time-detected entity binding is still
+        # unconfirmed must never reach a real customer's machine.
+        self._require_confirmed_entity_bindings(workflow.skill_id, skill_slug)
+
         company_slug = workspace_dir_slug(workspace_id)
         version = _validate_release_version(payload.get("version"))
         release_notes = _validate_release_notes(payload.get("release_notes"))

@@ -60,10 +60,43 @@ function isFrameNotFound(step, roots) {
   return asArray(asObject(step && step.identity_bundle).frame_chain).length > 0 && roots.length === 0;
 }
 
+// PROD-3 entity binding — narrows already frame-scoped roots to the ONE container holding this
+// run's actual record (e.g. the table row containing Invoice #12345), so a same-looking element
+// on a different row can never be resolved or recovered onto. Requires an EXACT single match:
+// zero or an unresolved identifier fails closed ([]), and more than one match is treated the same
+// way as zero — an ambiguous binding is not a binding. Never falls back to the unscoped roots.
+async function entityRoots(roots, step, inputs) {
+  const eb = asObject(step && step.entity_binding);
+  if (!eb.container_selector || !eb.identifier) return roots;
+  const wanted = interpolate(String(eb.identifier), inputs).trim();
+  if (!wanted) return [];
+  const out = [];
+  for (const root of roots) {
+    if (!root || typeof root.locator !== "function") continue;
+    let count = 0;
+    let rows = null;
+    try {
+      rows = root.locator(eb.container_selector).filter({ hasText: wanted });
+      count = await rows.count();
+    } catch (_) { count = 0; }
+    if (count === 1) out.push(rows.first());
+  }
+  return out;
+}
+
+// True only when the step carries an entity binding but narrowing it against the live page
+// found no single matching row — i.e. the bound record isn't on the page (removed, filtered out,
+// or never existed here), not just "no binding to apply".
+function isEntityNotFound(step, roots) {
+  const eb = asObject(step && step.entity_binding);
+  return !!(eb.container_selector && eb.identifier) && roots.length === 0;
+}
+
 async function locatorCandidates(page, step, inputs, selector) {
   const resolved = interpolate(selector || "", inputs);
   if (!resolved) return [];
-  const roots = await rootCandidates(page, step, inputs);
+  let roots = await rootCandidates(page, step, inputs);
+  roots = await entityRoots(roots, step, inputs);
   return roots.map(root => root.locator(resolved));
 }
 
@@ -81,11 +114,18 @@ async function resolveStep(page, step, inputs) {
       { recompileRequired: true },
     );
   }
-  const roots = await rootCandidates(page, step, inputs);
+  let roots = await rootCandidates(page, step, inputs);
   if (isFrameNotFound(step, roots)) {
     throw Object.assign(
       new Error("Containing frame could not be located (identity may have changed)"),
       { frameNotFound: true },
+    );
+  }
+  roots = await entityRoots(roots, step, inputs);
+  if (isEntityNotFound(step, roots)) {
+    throw Object.assign(
+      new Error("Bound record could not be uniquely located on the page — refusing to act on a different row"),
+      { entityNotFound: true },
     );
   }
   const map = await gatherCandidates(roots, signals, interpolate, inputs);
@@ -261,6 +301,8 @@ module.exports = {
   asArray,
   rootCandidates,
   isFrameNotFound,
+  entityRoots,
+  isEntityNotFound,
   locatorCandidates,
   resolveStep,
   gateLocator,
