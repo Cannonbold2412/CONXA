@@ -123,7 +123,7 @@ function normalizeInputSpec(raw: unknown): InputSpec | null {
     pattern: typeof rec.pattern === 'string' ? rec.pattern : null,
     options,
     sensitive: rec.sensitive === true,
-    required: rec.required !== false,
+    required: rec.optional !== true && !(defaultValue != null && defaultValue.trim() !== ''),
   }
 }
 

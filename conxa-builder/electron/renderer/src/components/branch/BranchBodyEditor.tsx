@@ -208,7 +208,11 @@ function BranchBodyStepRow({
   onDelete,
 }: RowProps) {
   const [expanded, setExpanded] = useState(isFocused)
-  const [intent, setIntent] = useState(nestedStep.intent)
+  // Same BUILD-21 fix as StepConfigForm.tsx: prefer the workflow-intent graph's readable
+  // sentence, falling back to the machine token for steps compiled before prose existed.
+  // Edits go back as a `semantic_description` patch, never `intent`.
+  const initialIntent = nestedStep.semantic_description?.trim() || nestedStep.intent || nestedStep.final_intent || ''
+  const [intent, setIntent] = useState(initialIntent)
   const [primarySelector, setPrimarySelector] = useState(String(nestedStep.target.primary_selector ?? ''))
   const [value, setValue] = useState(typeof nestedStep.value === 'string' ? nestedStep.value : '')
   const [saving, setSaving] = useState(false)
@@ -225,7 +229,7 @@ function BranchBodyStepRow({
     setSaving(true)
     try {
       const patch: Record<string, unknown> = {}
-      if (intent.trim() !== nestedStep.intent) patch.intent = intent.trim()
+      if (intent.trim() !== initialIntent) patch.semantic_description = intent.trim()
       if (primarySelector.trim() !== String(nestedStep.target.primary_selector ?? '')) {
         patch.target = { primary_selector: primarySelector.trim(), fallback_selectors: nestedStep.target.fallback_selectors ?? [] }
       }
@@ -291,6 +295,11 @@ function BranchBodyStepRow({
               onChange={(e) => setIntent(e.target.value)}
               className="h-8 text-sm"
             />
+            {nestedStep.intent && nestedStep.intent.trim() !== intent.trim() ? (
+              <p className="text-muted-foreground font-mono text-xs">
+                Machine intent: {nestedStep.intent}
+              </p>
+            ) : null}
           </div>
           <div className="grid gap-1">
             <Label htmlFor={`branch-selector-${nestedIndex}`} className="text-xs">Primary selector</Label>
