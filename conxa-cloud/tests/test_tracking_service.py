@@ -9,7 +9,17 @@ being aggregated. See test_tracking_routes.py for the route-level wiring check.
 
 from __future__ import annotations
 
-from app.services.tracking import _assertion_health_by_step, _drift_review_queue
+import hashlib
+import hmac
+import json
+
+from app.services.tracking import (
+    _assertion_health_by_step,
+    _chain_state,
+    _drift_review_queue,
+    _run_summary,
+    _verify_chain_link,
+)
 
 
 def _record(company: str, workflow_id: str, events: list[dict], *, workflow_ver: str = "1.0.0", run_id: str = "") -> dict:
@@ -146,3 +156,102 @@ def test_drift_queue_scopes_total_runs_per_workflow_version_not_globally():
     # v2.0.0's three unrelated runs must not dilute v1.0.0's own rate.
     assert entry["total_runs"] == 1
     assert entry["occurrence_rate_pct"] == 100.0
+
+
+# ── PROD-18 evidence chain ──────────────────────────────────────────────────────
+
+def _canon(obj: dict) -> bytes:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _sign(token: str, evts: list, prev: str, rid: str, seq: int) -> str:
+    linkable = {"e": evts, "p": prev, "r": rid, "s": seq}
+    return hmac.new(token.encode("utf-8"), _canon(linkable), hashlib.sha256).hexdigest()
+
+
+def test_verify_chain_link_accepts_a_correctly_signed_batch():
+    evts = [{"e": "wf_start", "ts": 1000}]
+    h = _sign("tok", evts, "", "run1", 0)
+    body = {"rid": "run1", "seq": 0, "prev": "", "h": h}
+    result = _verify_chain_link("tok", body, evts)
+    assert result["ok"] is True
+    assert result["seq"] == 0
+
+
+def test_verify_chain_link_rejects_a_tampered_hash():
+    evts = [{"e": "wf_start", "ts": 1000}]
+    body = {"rid": "run1", "seq": 0, "prev": "", "h": "0" * 64}
+    result = _verify_chain_link("tok", body, evts)
+    assert result["ok"] is False
+
+
+def test_verify_chain_link_hashes_the_raw_events_not_a_capped_copy():
+    # The whole point of verifying before _cap_events truncates: a hash computed over a
+    # truncated copy of the same events must NOT match what the client actually signed.
+    evts = [{"e": "wf_start", "ts": 1000, "note": "x" * 500}]
+    h = _sign("tok", evts, "", "run1", 0)
+    truncated = [{"e": "wf_start", "ts": 1000, "note": "x" * 256}]  # as _cap_events would leave it
+    body = {"rid": "run1", "seq": 0, "prev": "", "h": h}
+    assert _verify_chain_link("tok", body, evts)["ok"] is True
+    assert _verify_chain_link("tok", body, truncated)["ok"] is False
+
+
+def test_verify_chain_link_reports_none_for_a_pre_chain_runtime():
+    # No "seq" at all — every runtime deployed before this feature. Must be reported as
+    # unverifiable (ok: None), never as a tampered/broken batch.
+    result = _verify_chain_link("tok", {"rid": "run1"}, [{"e": "wf_start", "ts": 1}])
+    assert result["seq"] is None
+    assert result["ok"] is None
+
+
+def _chained_batch(rid: str, seq: int, prev: str, evts: list, *, token: str = "tok", ok_override=None) -> dict:
+    h = _sign(token, evts, prev, rid, seq)
+    chain = {"seq": seq, "prev": prev, "h": h, "ok": ok_override if ok_override is not None else True}
+    return {"run_id": rid, "events": evts, "chain": chain}
+
+
+def test_chain_state_none_when_no_batch_carries_a_seq():
+    batches = [{"events": [{"e": "wf_start"}], "chain": {"seq": None, "ok": None}}]
+    assert _chain_state(batches)["state"] == "none"
+
+
+def test_chain_state_verified_for_a_correctly_linked_two_batch_run():
+    b0 = _chained_batch("run1", 0, "", [{"e": "wf_start"}])
+    b1 = _chained_batch("run1", 1, b0["chain"]["h"], [{"e": "wf_ok"}])
+    result = _chain_state([b0, b1])
+    assert result["state"] == "verified"
+    assert result["missing_seqs"] == []
+
+
+def test_chain_state_gap_when_a_batch_never_arrived():
+    b0 = _chained_batch("run1", 0, "", [{"e": "wf_start"}])
+    # seq 1 never arrived; seq 2 did, chaining onto whatever seq 1 would have produced —
+    # its own prev won't match b0's h either, but "gap" (missing seq) is the headline signal.
+    b2 = _chained_batch("run1", 2, "somehash", [{"e": "wf_ok"}])
+    result = _chain_state([b0, b2])
+    assert result["state"] in ("gap", "broken")  # a missing batch is at minimum a gap
+    assert 1 in result["missing_seqs"]
+
+
+def test_chain_state_broken_when_a_batchs_own_signature_is_invalid():
+    b0 = _chained_batch("run1", 0, "", [{"e": "wf_start"}], ok_override=False)
+    assert _chain_state([b0])["state"] == "broken"
+
+
+def test_chain_state_broken_when_prev_link_does_not_match_predecessor():
+    b0 = _chained_batch("run1", 0, "", [{"e": "wf_start"}])
+    # b1's own signature is valid (correctly signed with its own claimed prev), but that
+    # claimed prev doesn't match b0's actual hash — a reordering/substitution, not just loss.
+    b1 = _chained_batch("run1", 1, "wrong-prev-hash", [{"e": "wf_ok"}])
+    assert _chain_state([b0, b1])["state"] == "broken"
+
+
+def test_run_summary_carries_the_chain_verdict():
+    evts = [{"e": "wf_start", "ts": 1000}]
+    h = _sign("tok", evts, "", "run1", 0)
+    batches = [{
+        "run_id": "run1", "workflow_id": "wf", "events": evts,
+        "chain": {"seq": 0, "prev": "", "h": h, "ok": True},
+    }]
+    summary = _run_summary("run1", batches)
+    assert summary["chain"]["state"] == "verified"

@@ -29,9 +29,11 @@ function fetchJSON(url, opts = {}) {
     onNotModified = null, // value to resolve on HTTP 304 — sync.js resolves {files:[]};
                           // manifest_manager treats non-200 as an error (leave null)
     timeoutMs = 8000,
+    headers: extraHeaders = null, // PROD-18 policy_gate.js: X-Tracking-Token isn't
+                                   // Bearer auth, so it can't reuse `token` above.
   } = opts;
   return new Promise((resolve, reject) => {
-    const headers = { "User-Agent": "conxa-runtime/1.0" };
+    const headers = { "User-Agent": "conxa-runtime/1.0", ...(extraHeaders || {}) };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const req = get(url, { headers }, (res) => {
       let data = "";

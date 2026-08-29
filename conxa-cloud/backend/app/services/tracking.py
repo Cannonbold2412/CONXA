@@ -8,12 +8,16 @@ are thin wrappers over these.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
+import re
 import secrets
 import time
 from typing import Any
 
-from conxa_core.db import db_get, db_list, db_list_kv
+from conxa_core.db import db_get, db_list, db_list_kv, db_set
 from conxa_core.config import settings
 from conxa_core.storage.workflow_store import list_workflows
 from conxa_core.storage.skill_pack_store import list_skill_packs
@@ -54,6 +58,175 @@ def _verify_token(company: str, token: str) -> dict[str, Any] | None:
         return {"workspace_id": ""}
     logger.warning("tracking_token_missing company=%s auth_required=%s", company, settings.auth_required)
     return None
+
+
+def _canonical_json(obj: dict[str, Any]) -> bytes:
+    """Deterministic serialization — matches runtime/app/canonical_json.js and
+    manifest_signer.py's `_canonical_json` byte-for-byte (sorted keys, no whitespace)."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _verify_chain_link(token: str, body: dict[str, Any], raw_evts: list) -> dict[str, Any]:
+    """Verify one batch's PROD-18 evidence-chain HMAC.
+
+    MUST be called on `raw_evts` — the events exactly as received, before `_cap_events`
+    truncates any field. Hashing the post-truncation events can never match what the
+    runtime actually signed (runtime/app/tracker.js::_buildEnvelope).
+
+    The HMAC key is the raw bearer token from this request, not the stored token record —
+    by the time this runs `_verify_token` has already confirmed they're equal (or that
+    this is the unauthenticated local-dev fallback, where there is no shared secret to
+    check against and the link is reported unverifiable via `ok: None` below).
+
+    A batch with no `seq` predates this feature (every runtime before this change) —
+    reported as `ok: None`, which callers must treat as "unchained", not as a failure.
+    """
+    seq = body.get("seq")
+    if seq is None:
+        return {"seq": None, "prev": "", "h": "", "ok": None}
+    prev = str(body.get("prev", ""))
+    h = str(body.get("h", ""))
+    linkable = {"e": raw_evts, "p": prev, "r": body.get("rid", ""), "s": seq}
+    expected = hmac.new((token or "").encode("utf-8"), _canonical_json(linkable), hashlib.sha256).hexdigest()
+    ok = bool(h) and secrets.compare_digest(expected, h)
+    return {"seq": seq, "prev": prev, "h": h, "ok": ok}
+
+
+def _chain_state(batches: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold the per-batch chain links stored on a run's batches into one verdict.
+
+    - "none"     every batch predates the evidence chain (no `seq` anywhere).
+    - "verified" every batch's own HMAC checked out, `seq` is contiguous from 0, and each
+                 batch's `prev` matches its immediate predecessor's `h`.
+    - "gap"      some `seq` is missing — a batch was never delivered (dropped POST, or
+                 a spilled batch not yet drained). This is PROD-18's headline signal: it
+                 makes "evidence never arrived" detectable instead of silently invisible.
+    - "broken"   a present batch failed its own HMAC, or two adjacent batches don't link —
+                 tampering or reordering, not just loss.
+    """
+    chains: list[dict[str, Any]] = []
+    for b in batches:
+        c = b.get("chain")
+        if isinstance(c, dict):
+            chains.append(c)
+    seqed = sorted((c for c in chains if c.get("seq") is not None), key=lambda c: c["seq"])
+    if not seqed:
+        return {"state": "none", "batches": len(batches), "missing_seqs": []}
+
+    seqs = [c["seq"] for c in seqed]
+    missing_seqs = [s for s in range(0, seqs[-1] + 1) if s not in seqs]
+
+    broken = any(c.get("ok") is False for c in seqed)
+    if not broken:
+        if seqed[0]["seq"] == 0 and seqed[0]["prev"] != "":
+            broken = True
+        for i in range(1, len(seqed)):
+            prev_c, cur_c = seqed[i - 1], seqed[i]
+            if cur_c["seq"] == prev_c["seq"] + 1 and cur_c["prev"] != prev_c["h"]:
+                broken = True
+                break
+
+    state = "broken" if broken else ("gap" if missing_seqs else "verified")
+    return {"state": state, "batches": len(chains), "missing_seqs": missing_seqs}
+
+
+_GOVERNANCE_POLICY_NS = "governance_policy"
+_POLICY_DEFAULT_TTL_S = 7 * 86_400  # 7 days — re-signed on every PUT; see docs/Audit-and-Control.md
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class PolicyValidationError(ValueError):
+    """A governance-policy PUT body failed validation — reported as 422, not 500."""
+
+
+def _validate_policy_windows(windows: Any) -> list[dict[str, Any]]:
+    """Validate PROD-18 execution-window rules. Each window: {skills, tz, days, start, end}.
+    `skills` empty or ["*"] means every skill in the workspace; windows are RESTRICTIONS —
+    a skill matching no window is unrestricted, since a default-deny would block every skill
+    the moment any policy exists at all for the workspace."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if windows is None:
+        return []
+    if not isinstance(windows, list):
+        raise PolicyValidationError("windows must be a list")
+    out: list[dict[str, Any]] = []
+    for i, w in enumerate(windows):
+        if not isinstance(w, dict):
+            raise PolicyValidationError(f"windows[{i}] must be an object")
+        tz = str(w.get("tz", ""))
+        try:
+            ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise PolicyValidationError(f"windows[{i}].tz {tz!r} is not a known IANA timezone") from exc
+        days = w.get("days", [1, 2, 3, 4, 5, 6, 7])
+        if not isinstance(days, list) or not all(isinstance(d, int) and 1 <= d <= 7 for d in days):
+            raise PolicyValidationError(f"windows[{i}].days must be a list of ints 1(Mon)-7(Sun)")
+        start, end = str(w.get("start", "")), str(w.get("end", ""))
+        if not _HHMM_RE.match(start) or not _HHMM_RE.match(end):
+            raise PolicyValidationError(f"windows[{i}].start/end must be HH:MM (24h)")
+        skills = w.get("skills") or ["*"]
+        if not isinstance(skills, list) or not all(isinstance(s, str) for s in skills):
+            raise PolicyValidationError(f"windows[{i}].skills must be a list of strings")
+        out.append({"skills": skills, "tz": tz, "days": sorted(set(days)), "start": start, "end": end})
+    return out
+
+
+def write_governance_policy(workspace_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate, sign, and store a workspace's PROD-18 governance policy.
+
+    Signed with the same Ed25519 key and canonical-JSON scheme as the runtime update
+    manifest (`app.api.manifest_signer`) — the runtime already carries and verifies against
+    that public key, so this adds no new trust anchor. `key_id` is carried but unused today;
+    it exists so a future key rotation is a data change instead of a wire-format break (see
+    docs/Security.md's SG-19 gap: this remains a single keypair with no rotation).
+
+    Windows are restrictions, not an allow-list: an unlisted skill is unaffected by them.
+    `enforce: false` (default) ships the policy as audit-only — the runtime records what it
+    WOULD have blocked without actually blocking, the recommended rollout per
+    research-analysis/04-architecture/subsystems/enterprise.md §1.
+    """
+    from app.api.manifest_signer import load_signing_key, sign_manifest
+
+    windows = _validate_policy_windows(payload.get("windows"))
+    denied_hosts_raw = payload.get("denied_hosts") or []
+    if not isinstance(denied_hosts_raw, list) or not all(isinstance(h, str) for h in denied_hosts_raw):
+        raise PolicyValidationError("denied_hosts must be a list of strings")
+    denied_hosts = sorted({h.strip().lower() for h in denied_hosts_raw if h.strip()})
+
+    existing = db_get(_GOVERNANCE_POLICY_NS, workspace_id)
+    prev_version = int(existing.get("policy_version", 0)) if isinstance(existing, dict) else 0
+    now = time.time()
+    ttl_s = int(payload.get("ttl_s") or _POLICY_DEFAULT_TTL_S)
+
+    doc: dict[str, Any] = {
+        "policy_version": prev_version + 1,
+        "workspace_id": workspace_id,
+        "key_id": "conxa-manifest-1",
+        "issued_at": int(now),
+        "expires_at": int(now) + ttl_s,
+        "enforce": bool(payload.get("enforce", False)),
+        "require_receipt": bool(payload.get("require_receipt", False)),
+        "windows": windows,
+        "denied_hosts": denied_hosts,
+        "signature": "",
+    }
+    signing_key = load_signing_key()
+    if signing_key is not None:
+        doc["signature"] = sign_manifest(doc, signing_key)
+    else:
+        logger.warning("governance_policy_unsigned workspace_id=%s — CONXA_MANIFEST_SIGNING_KEY unset", workspace_id)
+
+    db_set(_GOVERNANCE_POLICY_NS, workspace_id, doc)
+    return doc
+
+
+def read_governance_policy(workspace_id: str) -> dict[str, Any] | None:
+    """Return the stored, signed governance policy for a workspace, or None if it has
+    never had one written. No signing happens on this read path (signing happens once,
+    at PUT time) — matches updates_routes.py's manifest.json pattern."""
+    stored = db_get(_GOVERNANCE_POLICY_NS, workspace_id)
+    return stored if isinstance(stored, dict) else None
 
 
 def _owner_from_record(record: dict[str, Any]) -> str:
@@ -142,6 +315,7 @@ def _run_summary(run_id: str, batches: list[dict]) -> dict:
         "failure_code":   failure_code,
         "started_at":     started_at,
         "server_ts":      meta.get("server_ts", 0),
+        "chain":          _chain_state(batches),
     }
 
 

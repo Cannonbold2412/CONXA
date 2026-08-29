@@ -169,6 +169,65 @@ def _completed(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in records if (r.get("summary") or {}).get("status") in {"ok", "fail"}]
 
 
+# A run stuck at status "running" for longer than this with no fresh activity is abandoned
+# (its evidence never arrived), not merely slow. 10 minutes comfortably exceeds
+# CONXA_EXECUTION_DEADLINE_MS's 210s default (server.js) with room for the receipt/spill
+# retry path to still catch up.
+_ABANDONED_GRACE_MS = 10 * 60 * 1000
+
+
+def reconciliation(records: list[dict[str, Any]], *, now_ms: int | None = None) -> dict[str, Any]:
+    """PROD-18 criterion 1: distinguish "still running" from "evidence never arrived" —
+    today `_completed` silently excludes both from every rate, with no way to tell them
+    apart. Reuses the `records` list callers already computed via `_visible_run_records`
+    (the one expensive KV scan the whole dashboard shares) — never re-scans.
+
+    Also folds each run's `_run_summary`-computed `chain` verdict (see
+    `tracking._chain_state`) into fleet-wide counts, so a batch that never arrived (`gap`)
+    or one that failed its own signature check (`broken`) is visible without opening every
+    run individually.
+    """
+    now = now_ms if now_ms is not None else int(time.time() * 1000)
+    completed = 0
+    abandoned: list[dict[str, Any]] = []
+    in_flight = 0
+    chain_counts: dict[str, int] = {"verified": 0, "gap": 0, "broken": 0, "none": 0}
+    gap_runs: list[dict[str, Any]] = []
+    broken_runs: list[dict[str, Any]] = []
+
+    for record in records:
+        summary = record.get("summary") or {}
+        run_id = str(summary.get("run_id", ""))
+        if summary.get("status") in ("ok", "fail"):
+            completed += 1
+        elif now - _record_time_ms(record) > _ABANDONED_GRACE_MS:
+            abandoned.append({
+                "run_id": run_id,
+                "workflow_id": summary.get("workflow_id", ""),
+                "company": record.get("company", ""),
+                "last_seen": _record_time_ms(record),
+            })
+        else:
+            in_flight += 1
+
+        chain = summary.get("chain") or {"state": "none"}
+        state = str(chain.get("state", "none"))
+        chain_counts[state] = chain_counts.get(state, 0) + 1
+        if state == "gap":
+            gap_runs.append({"run_id": run_id, "missing_seqs": chain.get("missing_seqs", [])})
+        elif state == "broken":
+            broken_runs.append({"run_id": run_id})
+
+    return {
+        "runs_started": len(records),
+        "runs_completed": completed,
+        "runs_abandoned": len(abandoned),
+        "runs_in_flight": in_flight,
+        "abandoned_runs": abandoned[:50],
+        "chain": {**chain_counts, "gap_runs": gap_runs[:50], "broken_runs": broken_runs[:50]},
+    }
+
+
 def _success_rate(records: list[dict[str, Any]]) -> float:
     completed = _completed(records)
     if not completed:
@@ -1157,6 +1216,7 @@ def dashboard(principal: Principal, range_value: str) -> dict[str, Any]:
         "failure_codes": failure_rows[:8],
         "roi": roi(current, read_assumptions(principal.workspace_id)),
         "stale_runtimes": stale_runtimes,
+        "reconciliation": reconciliation(current, now_ms=now_ms),
         "insights": insights(
             workflows=workflows,
             assertion_rows=assertion_rows,

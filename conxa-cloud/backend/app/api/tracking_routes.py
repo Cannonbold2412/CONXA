@@ -22,6 +22,7 @@ from app.services.entitlements import ensure_ops_tier
 from app.services.rbac import require_admin
 from app.services.saas import Principal
 from app.services.tracking import (
+    PolicyValidationError,
     _batches_for_principal,
     _cap_events,
     _drift_review_queue,
@@ -29,8 +30,11 @@ from app.services.tracking import (
     _run_summary,
     _tracking_company_rows,
     _tracking_diagnostics,
+    _verify_chain_link,
     _verify_token,
     _visible_run_records,
+    read_governance_policy,
+    write_governance_policy,
 )
 from app.services import tracking_analytics
 
@@ -57,6 +61,9 @@ async def _ingest_events_impl(workspace_id: str, request: Request) -> dict[str, 
     evts = body.get("evts", [])
     if not isinstance(evts, list):
         evts = []
+    # PROD-18: verify the chain HMAC on the RAW events, before _cap_events truncates any
+    # field — a post-truncation hash can never match what the runtime actually signed.
+    chain = _verify_chain_link(token, body, evts)
     capped_evts = _cap_events(evts, workspace_id)
 
     enriched: dict[str, Any] = {
@@ -72,6 +79,7 @@ async def _ingest_events_impl(workspace_id: str, request: Request) -> dict[str, 
         "server_ts":   time.time(),
         "events":      capped_evts,
         "schema_v":    body.get("sv", 1),
+        "chain":       chain,
     }
     db_append(f"tracking/{workspace_id}", run_id, [enriched])
     return {"ok": True}
@@ -210,6 +218,70 @@ def tracking_drift_queue(
         "pre_exec": pre_exec,
         "pre_exec_total": len(pre_exec),
     }
+
+
+@router.put("/{workspace_id}/policy")
+def put_governance_policy(
+    workspace_id: str,
+    payload: dict[str, Any],
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """Write and sign this workspace's PROD-18 execution policy (time windows,
+    platform deny-list). Admin only — this is a control-plane change, audited like any
+    other (see app.services.saas's audit_events). `enforce: false` (the default) ships
+    the policy audit-only: the runtime records what it would have blocked without
+    actually blocking, the recommended rollout before flipping enforcement on."""
+    require_admin(principal)
+    try:
+        ensure_ops_tier(principal, "full")
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
+    try:
+        return write_governance_policy(workspace_id, payload)
+    except PolicyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/{workspace_id}/policy")
+def get_governance_policy(workspace_id: str, request: Request) -> dict[str, Any]:
+    """Return this workspace's signed governance policy for the runtime to fetch and
+    cache. Token-authenticated (X-Tracking-Token) the same way ingest is — the runtime
+    already carries this token for any workspace with telemetry enabled, and PROD-18
+    deliberately makes policy gating require telemetry: you cannot govern what you
+    cannot audit. No signing happens on this read path; signing happened once at PUT
+    time (app.services.tracking.write_governance_policy)."""
+    token = request.headers.get("x-tracking-token", "")
+    if _verify_token(workspace_id, token) is None:
+        raise HTTPException(status_code=401, detail="invalid_tracking_token")
+    doc = read_governance_policy(workspace_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="no_policy_for_workspace")
+    return doc
+
+
+@router.get("/{workspace_id}/reconcile")
+def tracking_reconcile(
+    workspace_id: str,
+    range: str = "30d",
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    """PROD-18 audit surface: runs started vs. evidence actually received, plus per-run
+    hash-chain integrity. This is what answers "can the executor delete its own evidence
+    and get away with it?" — a run whose local logs are deleted still shows up here with
+    an intact chain, and a run that never reported a terminal event shows up as abandoned
+    rather than silently vanishing. Gated at the same "full" ops_tier as /drift — this is
+    an audit capability, not a basic metric.
+    """
+    try:
+        ensure_ops_tier(principal, "full")
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
+    spec = tracking_analytics.range_spec(range)
+    now_ms = int(time.time() * 1000)
+    window_ms = spec["days"] * tracking_analytics._DAY_MS
+    scoped = [r for r in _visible_run_records(principal) if r.get("company") == workspace_id]
+    records = tracking_analytics.window_records(scoped, now_ms - window_ms, now_ms + 1)
+    return {"range": spec["token"], "workspace_id": workspace_id, **tracking_analytics.reconciliation(records, now_ms=now_ms)}
 
 
 @router.get("/{workspace_id}/runs")

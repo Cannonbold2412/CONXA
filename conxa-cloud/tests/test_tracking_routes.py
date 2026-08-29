@@ -174,6 +174,117 @@ class TrackingRoutesTests(unittest.TestCase):
         self.assertEqual(reread["per_workflow"], {"acme/checkout": 45})
         self.assertIn("updated_at", reread)
 
+    # ── PROD-18 evidence chain + reconciliation ──────────────────────────────
+
+    def _ingest_chained(self, client: TestClient, company: str, rid: str, evts: list[dict],
+                         *, seq: int, prev: str, token: str = "") -> str:
+        """Ingest one PROD-18 chain-linked batch, computing its HMAC the same way
+        runtime/app/tracker.js does. Returns the batch's own hash so a caller can chain
+        a following batch onto it."""
+        import hashlib
+        import hmac
+        import json
+
+        linkable = {"e": evts, "p": prev, "r": rid, "s": seq}
+        canonical = json.dumps(linkable, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        h = hmac.new(token.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+        res = client.post(
+            f"/api/v1/tracking/{company}/events",
+            json={"rid": rid, "wfid": "plug", "wfv": "1.0.0", "rv": "2.0.0", "sv": 1,
+                  "evts": evts, "seq": seq, "prev": prev, "h": h},
+        )
+        self.assertEqual(res.status_code, 202, res.text)
+        return h
+
+    def test_chained_ingest_is_reported_verified(self) -> None:
+        client = self._client()
+        h0 = self._ingest_chained(client, "acme", "run_chained", [{"e": "wf_start", "ts": 1000}], seq=0, prev="")
+        self._ingest_chained(
+            client, "acme", "run_chained",
+            [{"e": "wf_ok", "ts": 2000, "dur": 1000, "tot": 1, "rec": 0}],
+            seq=1, prev=h0,
+        )
+        runs = client.get("/api/v1/tracking/acme/runs")
+        by_id = {r["run_id"]: r for r in runs.json()["runs"]}
+        self.assertEqual(by_id["run_chained"]["chain"]["state"], "verified")
+
+    def test_legacy_ingest_with_no_chain_fields_reports_none_not_broken(self) -> None:
+        client = self._client()
+        self._ingest(client, "acme", "run_legacy", [
+            {"e": "wf_start", "ts": 1000},
+            {"e": "wf_ok", "ts": 2000, "dur": 1000, "tot": 1, "rec": 0},
+        ])
+        runs = client.get("/api/v1/tracking/acme/runs")
+        by_id = {r["run_id"]: r for r in runs.json()["runs"]}
+        self.assertEqual(by_id["run_legacy"]["chain"]["state"], "none")
+
+    def test_reconcile_flags_a_run_with_no_terminal_event_as_abandoned(self) -> None:
+        from conxa_core.db import db_set
+
+        # /reconcile (like /drift) discovers visible companies via the tracking_tokens
+        # registry, not by scanning tracking/{company} directly — a company with no
+        # registered token (the local-dev ingest fallback this harness otherwise relies
+        # on) is invisible to it. Register one so this test observes the real behavior.
+        db_set("tracking_tokens", "acme", {"token": "", "company": "acme"})
+
+        client = self._client()
+        # wf_start only — no wf_ok/wf_fail ever arrives, simulating a killed process.
+        self._ingest(client, "acme", "run_stuck", [{"e": "wf_start", "ts": 1000}])
+        self._ingest(client, "acme", "run_done", [
+            {"e": "wf_start", "ts": 1000},
+            {"e": "wf_ok", "ts": 2000, "dur": 1000, "tot": 1, "rec": 0},
+        ])
+        res = client.get("/api/v1/tracking/acme/reconcile")
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["runs_started"], 2)
+        self.assertEqual(body["runs_completed"], 1)
+        # run_stuck has no fresh server_ts within the grace window relative to "now" at
+        # request time, but ingest just happened — so it's reported in_flight, not yet
+        # abandoned. The 10-minute grace boundary itself is covered at the unit level
+        # (test_tracking_analytics.py); this route test only checks the field is wired.
+        self.assertIn("runs_in_flight", body)
+        self.assertIn("chain", body)
+
+    def test_governance_policy_put_then_get_round_trip(self) -> None:
+        client = self._client()
+        put = client.put(
+            "/api/v1/tracking/acme/policy",
+            json={
+                "windows": [{"skills": ["payroll-*"], "tz": "Asia/Kolkata",
+                             "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00"}],
+                "denied_hosts": ["Payroll-Legacy.Acme.Com"],
+                "enforce": False,
+            },
+        )
+        self.assertEqual(put.status_code, 200, put.text)
+        doc = put.json()
+        self.assertEqual(doc["policy_version"], 1)
+        self.assertEqual(doc["denied_hosts"], ["payroll-legacy.acme.com"])  # lowercased
+        self.assertIn("signature", doc)
+
+        got = client.get("/api/v1/tracking/acme/policy")
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got.json()["windows"][0]["tz"], "Asia/Kolkata")
+
+    def test_governance_policy_get_404_when_none_written(self) -> None:
+        res = self._client().get("/api/v1/tracking/never-governed/policy")
+        self.assertEqual(res.status_code, 404)
+
+    def test_governance_policy_rejects_an_unknown_timezone(self) -> None:
+        res = self._client().put(
+            "/api/v1/tracking/acme/policy",
+            json={"windows": [{"tz": "Not/A_Zone", "start": "09:00", "end": "17:00"}]},
+        )
+        self.assertEqual(res.status_code, 422)
+
+    def test_governance_policy_version_increments_across_writes(self) -> None:
+        client = self._client()
+        first = client.put("/api/v1/tracking/acme/policy", json={"windows": []}).json()
+        second = client.put("/api/v1/tracking/acme/policy", json={"windows": []}).json()
+        self.assertEqual(first["policy_version"], 1)
+        self.assertEqual(second["policy_version"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

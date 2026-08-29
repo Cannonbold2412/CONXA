@@ -17,6 +17,7 @@ from app.services.tracking_analytics import (
     kpi_strip,
     normalize_assumptions,
     range_spec,
+    reconciliation,
     recovery_cascade,
     recovery_tier_totals,
     reliability_heatmap,
@@ -590,3 +591,58 @@ def test_insights_orders_critical_before_warning_before_info():
     )
     severities = [r["severity"] for r in rows]
     assert severities == sorted(severities, key=lambda s: {"critical": 0, "warning": 1, "info": 2}[s])
+
+
+# ── PROD-18 reconciliation ───────────────────────────────────────────────────────
+
+_NOW_MS = int(_NOW * 1000)
+
+
+def _running_record(*, at: float, run_id: str = "r1", chain: dict | None = None) -> dict:
+    rec = _record(status="running", at=at, run_id=run_id)
+    if chain is not None:
+        rec["summary"]["chain"] = chain
+    return rec
+
+
+def test_reconciliation_counts_completed_abandoned_and_in_flight():
+    records = [
+        _record(status="ok", at=_NOW, run_id="done-1"),
+        _record(status="fail", at=_NOW, run_id="done-2"),
+        # started 20 minutes ago, still "running" — past the 10-minute grace: abandoned.
+        _running_record(at=_NOW - 1200, run_id="abandoned-1"),
+        # started 30 seconds ago, still "running" — well within grace: genuinely in flight.
+        _running_record(at=_NOW - 30, run_id="inflight-1"),
+    ]
+    result = reconciliation(records, now_ms=_NOW_MS)
+    assert result["runs_started"] == 4
+    assert result["runs_completed"] == 2
+    assert result["runs_abandoned"] == 1
+    assert result["runs_in_flight"] == 1
+    assert result["abandoned_runs"][0]["run_id"] == "abandoned-1"
+
+
+def test_reconciliation_chain_counts_and_offending_runs():
+    records = [
+        _record(status="ok", at=_NOW, run_id="verified-1"),
+        _running_record(at=_NOW, run_id="gap-1", chain={"state": "gap", "missing_seqs": [1]}),
+        _running_record(at=_NOW, run_id="broken-1", chain={"state": "broken"}),
+        _record(status="ok", at=_NOW, run_id="pre-chain-1"),  # no chain field at all → "none"
+    ]
+    records[0]["summary"]["chain"] = {"state": "verified"}
+    result = reconciliation(records, now_ms=_NOW_MS)
+    assert result["chain"]["verified"] == 1
+    assert result["chain"]["gap"] == 1
+    assert result["chain"]["broken"] == 1
+    assert result["chain"]["none"] == 1
+    assert result["chain"]["gap_runs"] == [{"run_id": "gap-1", "missing_seqs": [1]}]
+    assert result["chain"]["broken_runs"] == [{"run_id": "broken-1"}]
+
+
+def test_reconciliation_never_double_counts_a_completed_run_as_abandoned():
+    # A completed run whose server_ts is old (a long-finished run) must not appear in
+    # runs_abandoned just because its timestamp predates the grace window.
+    records = [_record(status="ok", at=_NOW - 100000, run_id="old-but-done")]
+    result = reconciliation(records, now_ms=_NOW_MS)
+    assert result["runs_abandoned"] == 0
+    assert result["runs_completed"] == 1

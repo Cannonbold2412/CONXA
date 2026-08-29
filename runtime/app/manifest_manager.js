@@ -10,6 +10,7 @@ const path   = require("path");
 const crypto = require("crypto");
 const httpClient = require("./http_client");
 const hostBridge = require("./host_bridge");
+const { canonicalJSON } = require("./canonical_json");
 
 const versionManager = hostBridge.versionManager();
 
@@ -17,19 +18,10 @@ function _semver() {
   return hostBridge.hostRequire("semver");
 }
 
-function _sortKeysDeep(obj) {
-  if (Array.isArray(obj)) return obj.map(_sortKeysDeep);
-  if (obj && typeof obj === "object") {
-    return Object.keys(obj).sort().reduce((acc, k) => { acc[k] = _sortKeysDeep(obj[k]); return acc; }, {});
-  }
-  return obj;
-}
-
 // Mirrors manifest_signer.py's _canonical_json exactly: sorted keys, no whitespace,
 // `signature` excluded (it cannot sign over its own value).
 function _canonicalJSON(manifest) {
-  const { signature, ...unsigned } = manifest;
-  return JSON.stringify(_sortKeysDeep(unsigned));
+  return canonicalJSON(manifest, ["signature"]);
 }
 
 // Verify manifest.signature (base64 Ed25519) against the base64 raw public key baked

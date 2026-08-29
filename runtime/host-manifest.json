@@ -28,6 +28,7 @@
     "app/host_bridge.js",
     "app/http_client.js",
     "app/install_identity.js",
+    "app/canonical_json.js",
     "app/manifest_manager.js",
     "app/marker_span.js",
     "app/mcp_hosts.js",
