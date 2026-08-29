@@ -601,6 +601,13 @@ def _normalize_saved_skill_inputs(inputs: list[Any]) -> list[dict[str, Any]]:
             "type": "string",
             "description": str(raw.get("description") or raw.get("label") or f"Enter {name.replace('_', ' ')}"),
         }
+        # "date" is an editor-level convenience type (see editor/dto.py SkillInputVariable); the
+        # packaged input row's own `type` stays the JSON-Schema "string" every MCP client expects,
+        # with `format` telling the agent what shape of string to send (ISO 8601 date, or
+        # date+time when the recorded value carried a T-separated time component).
+        if str(raw.get("type") or "") == "date":
+            default_str = str(raw.get("default") or "")
+            row["format"] = "date-time" if "T" in default_str else "date"
         if raw.get("sensitive"):
             row["sensitive"] = True
         if raw.get("optional"):

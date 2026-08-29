@@ -406,6 +406,30 @@ def _scan_placeholder_ids(value: Any, out: set[str]) -> None:
             _scan_placeholder_ids(item, out)
 
 
+def _date_pick_defaults(steps: list[Any]) -> dict[str, str]:
+    """{{input_binding}} -> recorded ISO date/datetime, for every date_pick step the custom-
+    calendar collapse pass produced (compiler/date_picker.py). Native `<input type=date>` steps
+    carry the same shape once collapsed through the same handler_hints.date_picker contract, so
+    this covers both without distinguishing them."""
+    out: dict[str, str] = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        action = step.get("action")
+        action_name = action if isinstance(action, str) else (action or {}).get("action")
+        if action_name != "date_pick":
+            continue
+        binding = str(step.get("input_binding") or "").strip()
+        if not binding:
+            continue
+        hints = step.get("handler_hints") or {}
+        date_picker = hints.get("date_picker") if isinstance(hints, dict) else None
+        recorded = (date_picker or {}).get("recorded_value") if isinstance(date_picker, dict) else None
+        if recorded:
+            out[binding] = str(recorded)
+    return out
+
+
 def reconcile_inputs_with_step_values(document: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Auto-declare any {{var}} referenced in a step but missing from the inputs list.
 
@@ -422,12 +446,15 @@ def reconcile_inputs_with_step_values(document: dict[str, Any]) -> tuple[dict[st
             _scan_placeholder_ids(step, spotted)
     if not spotted:
         return document, False
+    date_defaults = _date_pick_defaults(steps)
     inputs = list(document.get("inputs") or [])
     declared = {str(i.get("id") or "").strip().lower() for i in inputs if isinstance(i, dict)}
     added = False
     for sid in sorted(spotted):
         if sid.lower() not in declared:
-            inputs.append({"id": sid, "type": "text", "default": None, "options": []})
+            default = date_defaults.get(sid)
+            row: dict[str, Any] = {"id": sid, "type": "date" if default else "text", "default": default, "options": []}
+            inputs.append(row)
             declared.add(sid.lower())
             added = True
     if not added:

@@ -148,7 +148,11 @@ class SkillInputVariable(BaseModel):
 
     id: str = Field(pattern=rf"^{PLACEHOLDER_ID_PATTERN}$")
     label: str = ""
-    type: Literal["text", "select"] = "text"
+    # "date" is agent-facing sugar over a plain string: the runtime and the interpolation grammar
+    # both treat it as text (see skill_package_builder_saved_skill._normalize_saved_skill_inputs,
+    # which emits format:"date" alongside JSON-Schema type:"string"). It only changes what the
+    # editor's input drawer renders and what the MCP tool schema tells the agent to expect.
+    type: Literal["text", "select", "date"] = "text"
     default: str | None = None
     options: list[str] = Field(default_factory=list)
     pattern: str | None = None
