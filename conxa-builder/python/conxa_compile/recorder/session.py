@@ -311,11 +311,18 @@ class RecordingSession:
     _nav_cdp_sessions: dict[int, Any] = field(default_factory=dict)
     _nav_history_state: dict[int, dict[str, Any]] = field(default_factory=dict)
     _nav_check_pages: list[Any] = field(default_factory=list)
-    # Set True by the CDP "Page.frameRequestedNavigation" event, which CDP only fires for
-    # navigations the *page itself* initiates (link click, form submit, script) — never for
-    # ones the browser initiates (address bar edit, bookmark, our own goto()). Consumed and
-    # cleared the next time this page's navigation is classified in _drain_nav_history_checks_sync.
-    _nav_pending_renderer_initiated: dict[int, bool] = field(default_factory=dict)
+    # Set to the request's monotonic timestamp by the CDP "Page.frameRequestedNavigation"
+    # event, which CDP only fires for navigations the *page itself* initiates (link click,
+    # form submit, script) — never for ones the browser initiates (address bar edit,
+    # bookmark, our own goto()). Consumed and cleared the next time this page's navigation
+    # is classified in _drain_nav_history_checks_sync. A requested navigation that never
+    # commits (e.g. a submit button whose handler calls preventDefault) leaves this stale
+    # until some later, unrelated navigation is classified — the timestamp lets that check
+    # tell "this request just committed" apart from "this request was abandoned ages ago."
+    _nav_pending_renderer_initiated: dict[int, float] = field(default_factory=dict)
+    # A requested navigation must commit within this long to count as the cause of the
+    # next observed navigation; real link/form/script navigations commit far faster.
+    _NAV_RENDERER_INITIATED_TTL_S = 2.0
 
     def _remember_current_url(self, url: str) -> None:
         value = str(url or "").strip()
@@ -606,7 +613,9 @@ class RecordingSession:
             session.send("Page.enable")
             session.on(
                 "Page.frameRequestedNavigation",
-                lambda _evt, k=key: self._nav_pending_renderer_initiated.__setitem__(k, True),
+                lambda _evt, k=key: self._nav_pending_renderer_initiated.__setitem__(
+                    k, time.monotonic()
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             # Non-fatal: worst case, every navigation on this page is treated as
@@ -682,7 +691,11 @@ class RecordingSession:
                 # Page.frameRequestedNavigation since the last check), the browser did this on
                 # its own — the user retyped the address bar, used a bookmark, etc. Nothing else
                 # in the recording will ever reproduce that, so it needs its own explicit step.
-                renderer_initiated = self._nav_pending_renderer_initiated.pop(key, False)
+                requested_at = self._nav_pending_renderer_initiated.pop(key, None)
+                renderer_initiated = (
+                    requested_at is not None
+                    and (time.monotonic() - requested_at) <= self._NAV_RENDERER_INITIATED_TTL_S
+                )
                 if not renderer_initiated and to_url and to_url != from_url and not is_blank_url(to_url):
                     self._enqueue_synthetic(
                         "manual_navigate",

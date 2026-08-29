@@ -13,6 +13,7 @@ URL navigation.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -248,7 +249,7 @@ def test_recorder_fresh_link_nav_truncating_forward_entries_is_not_forward() -> 
         "entries": ["https://a.test/a", "https://a.test/b", "https://a.test/c"],
     }
     rs._nav_check_pages.append(page)
-    rs._nav_pending_renderer_initiated[id(page)] = True  # simulates the click's CDP signal
+    rs._nav_pending_renderer_initiated[id(page)] = time.monotonic()  # simulates the click's CDP signal
     rs._drain_nav_history_checks_sync()
     assert _queued(rs) == []
 
@@ -268,6 +269,31 @@ def test_recorder_unattributed_nav_emits_manual_navigate() -> None:
     rs._nav_check_pages.append(page)
     rs._drain_nav_history_checks_sync()
     assert _queued(rs) == [("manual_navigate", "https://b.test/")]
+
+
+def test_recorder_stale_renderer_flag_does_not_suppress_later_manual_navigate() -> None:
+    """The motivating report: a submit-style click fires Page.frameRequestedNavigation but
+    never actually navigates (e.g. its handler calls preventDefault) — several unrelated
+    events happen on the same URL — then the user genuinely retypes the address bar. The
+    long-stale flag from the abandoned request must not suppress this real manual_navigate."""
+    page = _fake_page()
+    rs = RecordingSession(session_id="test-nav")
+    rs._nav_cdp_sessions[id(page)] = _FakeCdpSession([
+        {"currentIndex": 1, "entries": [{"url": "https://a.test/a"}, {"url": "https://b.test/"}]},
+    ])
+    rs._nav_history_state[id(page)] = {
+        "index": 0,
+        "entries": ["https://a.test/a"],
+    }
+    rs._nav_check_pages.append(page)
+    # Set well beyond the TTL, simulating a request that fired long before this check.
+    rs._nav_pending_renderer_initiated[id(page)] = (
+        time.monotonic() - rs._NAV_RENDERER_INITIATED_TTL_S - 1.0
+    )
+    rs._drain_nav_history_checks_sync()
+    assert _queued(rs) == [("manual_navigate", "https://b.test/")]
+    # The stale entry must be consumed, not left behind to affect the next check.
+    assert id(page) not in rs._nav_pending_renderer_initiated
 
 
 def test_build_step_compiles_manual_navigate_to_a_navigate_step(tmp_path: Path) -> None:

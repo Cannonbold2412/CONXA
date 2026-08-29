@@ -762,6 +762,193 @@
     return `${total}|${bodyChildren}`;
   }
 
+  // --- Custom date-picker detection --------------------------------------------------------
+  // Native <input type=date|datetime-local|time|month|week> already compiles correctly via the
+  // "change" listener's date_pick path below (bridge.js's onDoc("change", ...)); this section
+  // only tags *clicks* landing inside a custom calendar grid (MUI, react-datepicker, flatpickr,
+  // Ant Design, jQuery UI, ...) so the compiler can later collapse the open→nav→day-cell click
+  // run it would otherwise record into one parameterized date_pick step. Every heuristic below
+  // fails closed to `null` — meaning "record this exactly like any other click", today's
+  // behavior — so a widget shape this doesn't recognize is never worse off than before.
+  const CALENDAR_ROOT_SELECTORS = [
+    ".flatpickr-calendar", ".react-datepicker", "[class*='MuiDateCalendar']",
+    "[class*='MuiPickersCalendar']", "[class*='MuiPickersDay']", ".ui-datepicker",
+    "[class*='datepicker']", "[class*='DatePicker']", "[data-testid*='calendar']",
+    "[class*='calendar']",
+  ];
+  const _MONTH_YEAR_RE = /[A-Za-z]{3,9}\.?\s+\d{4}|\d{4}\s+[A-Za-z]{3,9}/;
+  const _NAV_PREV_RE = /prev|previous|«|‹/i;
+  const _NAV_NEXT_RE = /next|»|›/i;
+  const _TIME_OPTION_RE = /^\d{1,2}:\d{2}(\s?[AaPp][Mm])?$/;
+
+  function _isCalendarGridNode(node) {
+    if (!node || node.nodeType !== 1 || !node.getAttribute) return false;
+    const role = node.getAttribute("role") || "";
+    if (role === "grid" || role === "application") {
+      let cellCount = 0;
+      try { cellCount = node.querySelectorAll('[role="gridcell"],td,[class*="day"]').length; } catch (_e) {}
+      if (cellCount >= 20) return true;
+    }
+    for (const sel of CALENDAR_ROOT_SELECTORS) {
+      try { if (node.matches(sel)) return true; } catch (_e) {}
+    }
+    return false;
+  }
+
+  function _findNavButton(root, dir) {
+    const re = dir === "prev" ? _NAV_PREV_RE : _NAV_NEXT_RE;
+    let candidates = [];
+    try { candidates = Array.from(root.querySelectorAll('button,[role="button"],a,[aria-label],[title]')); } catch (_e) {}
+    for (const c of candidates) {
+      const label = (c.getAttribute("aria-label") || c.getAttribute("title") || safeText(c, 30) || "").trim();
+      if (label && re.test(label)) return c;
+    }
+    return null;
+  }
+
+  /** Widget wrapper (header + nav + day grid). Widens past a bare role="grid" table that has no
+   * nav buttons of its own to the nearest ancestor that does — jQuery UI-style widgets nest the
+   * day-cell table one level below the real prev/next chrome. */
+  function findCalendarRoot(el) {
+    let cur = el;
+    for (let depth = 0; depth < 6 && cur && cur.nodeType === 1; depth++) {
+      if (_isCalendarGridNode(cur)) {
+        let root = cur;
+        if (!_findNavButton(root, "next") && !_findNavButton(root, "prev")) {
+          let widen = root.parentElement;
+          for (let w = 0; w < 3 && widen; w++) {
+            if (_findNavButton(widen, "next") || _findNavButton(widen, "prev")) { root = widen; break; }
+            widen = widen.parentElement;
+          }
+        }
+        return root;
+      }
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function _findCalendarHeader(root) {
+    const preferred = root.querySelector('[role="heading"],[class*="caption"],[class*="header"],[class*="month"],[class*="label"]');
+    if (preferred && _MONTH_YEAR_RE.test(safeText(preferred, 60))) return preferred;
+    let all = [];
+    try { all = root.querySelectorAll("*"); } catch (_e) {}
+    for (let i = 0; i < all.length && i < 200; i++) {
+      const node = all[i];
+      if (node.children && node.children.length > 0) continue; // leaf-ish nodes only
+      const txt = safeText(node, 60);
+      if (txt && _MONTH_YEAR_RE.test(txt)) return node;
+    }
+    return null;
+  }
+
+  function _parseDateFromString(s) {
+    if (!s) return null;
+    const t = Date.parse(s);
+    if (isNaN(t)) return null;
+    const d = new Date(t);
+    if (d.getFullYear() < 1900 || d.getFullYear() > 2200) return null;
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Attribute name is reported alongside the parsed date so the compiler can tell the runtime
+  // how to re-query a DIFFERENT target date later (`[data-date="<new-iso>"]`) instead of reusing
+  // this recording's literal cell selector, which is only ever valid for the day it was recorded
+  // on. aria-label/title values are full sentences ("Choose Sunday, September 15th, 2026") that
+  // can't be regenerated without knowing the site's exact phrasing/locale, so those report attr
+  // "" — the runtime falls back to locating the day by its number text instead (see
+  // runtime/app/date_picker.js), which works regardless of aria phrasing or locale.
+  const _CELL_DATE_ATTRS = ["data-date", "datetime", "data-day", "data-value"];
+
+  function _cellIsoDate(cell) {
+    if (!cell || !cell.getAttribute) return null;
+    for (const attr of _CELL_DATE_ATTRS) {
+      const iso = _parseDateFromString(cell.getAttribute(attr));
+      if (iso) return { iso, attr };
+    }
+    for (const attr of ["aria-label", "title"]) {
+      const iso = _parseDateFromString(cell.getAttribute(attr));
+      if (iso) return { iso, attr: "" };
+    }
+    return null;
+  }
+
+  function _timeOptionText(el, root) {
+    if (!root.contains(el)) return null;
+    const txt = safeText(el, 20).trim();
+    return _TIME_OPTION_RE.test(txt) ? txt : null;
+  }
+
+  function _selectorForElement(el) {
+    if (!el) return "";
+    return buildStableSelector(el) || buildCssPath(el);
+  }
+
+  /** The input/combobox this grid belongs to: an explicit aria-owns/aria-controls back-reference,
+   * else whichever editable field last held focus before the grid appeared (tracked by the
+   * focusin listener below). Returns null for inline always-visible calendars with no field. */
+  function _findAnchoredField(root) {
+    if (root.id) {
+      try {
+        const owner = document.querySelector(
+          `[aria-owns="${CSS.escape(root.id)}"],[aria-controls="${CSS.escape(root.id)}"]`
+        );
+        if (owner) return owner;
+      } catch (_e) {}
+    }
+    if (_lastFocusedEditableForDate && document.contains(_lastFocusedEditableForDate) && !root.contains(_lastFocusedEditableForDate)) {
+      return _lastFocusedEditableForDate;
+    }
+    return null;
+  }
+
+  /** Only called for actionKind === "click" (see serializeTarget below) — costs nothing on any
+   * other action type. Returns null unless `el` resolves cleanly to a day cell, a prev/next nav
+   * button, or a time option inside a detected calendar grid. */
+  function buildDateContext(el) {
+    const gridRoot = findCalendarRoot(el);
+    if (!gridRoot) return null;
+
+    const header = _findCalendarHeader(gridRoot);
+    const prevBtn = _findNavButton(gridRoot, "prev");
+    const nextBtn = _findNavButton(gridRoot, "next");
+    const headerSelector = header ? _selectorForElement(header) : "";
+    const headerText = header ? safeText(header, 60) : "";
+    const gridSelector = _selectorForElement(gridRoot);
+
+    if (prevBtn && el === prevBtn) {
+      return { role: "nav", nav: "prev", grid: gridSelector, header: headerSelector, header_text: headerText };
+    }
+    if (nextBtn && el === nextBtn) {
+      return { role: "nav", nav: "next", grid: gridSelector, header: headerSelector, header_text: headerText };
+    }
+
+    const cellDate = _cellIsoDate(el);
+    if (cellDate) {
+      const field = _findAnchoredField(gridRoot);
+      return {
+        role: "day",
+        iso_date: cellDate.iso,
+        cell_attr: cellDate.attr,
+        grid: gridSelector,
+        header: headerSelector,
+        header_text: headerText,
+        prev: prevBtn ? _selectorForElement(prevBtn) : "",
+        next: nextBtn ? _selectorForElement(nextBtn) : "",
+        cell: _selectorForElement(el),
+        field: field ? _selectorForElement(field) : "",
+        field_display_value: field ? readEditableValue(field) : "",
+      };
+    }
+
+    const timeText = _timeOptionText(el, gridRoot);
+    if (timeText) {
+      return { role: "time", time: timeText, grid: gridSelector };
+    }
+
+    return null;
+  }
+
   function serializeTarget(el, actionKind, value) {
     const tag = (el.tagName && el.tagName.toLowerCase()) || "unknown";
     const id = el.id || null;
@@ -810,6 +997,11 @@
     // this never changes compiled behavior on its own (see build.py), only surfaces a suggestion.
     let branchHint = null;
     try { branchHint = buildBranchHint(el); } catch (_e) {}
+    // Custom date-picker detection (only meaningful on click — see buildDateContext).
+    let dateContext = null;
+    if (actionKind === "click") {
+      try { dateContext = buildDateContext(el); } catch (_e) {}
+    }
     // Phase 2 signals (compile-time LLM input). Failures fall back to empty defaults.
     let ancestorsChain = [];
     let surroundingText = "";
@@ -851,6 +1043,7 @@
       page,
       optionality: branchHint ? "stochastic" : null,
       branch_hint: branchHint,
+      date_context: dateContext,
       // Evidence for post-condition classification at finalize (finalizeStateWithAfter) — never
       // serialized: state_probe (including the raw `el` ref) is deleted before report().
       state_probe: {
@@ -1129,6 +1322,10 @@
   let inputTimer = null;
   let lastInputEl = null;
   const lastEditableValueByElement = new WeakMap();
+  // Custom date-picker detection: the field that last held focus, used to identify which
+  // input/combobox a custom calendar grid belongs to when no aria-owns/aria-controls link
+  // exists (see buildDateContext below).
+  let _lastFocusedEditableForDate = null;
 
   function emitEditableChange(el, force) {
     const target = resolveEditableTarget(el);
@@ -1273,7 +1470,10 @@
     "focusin",
     (ev) => {
       trace("event", { t: "focusin" });
-      rememberEditableBaseline(eventTargetFromPath(ev));
+      const focusEl = eventTargetFromPath(ev);
+      rememberEditableBaseline(focusEl);
+      const editable = resolveEditableTarget(focusEl);
+      if (editable) _lastFocusedEditableForDate = editable;
     },
     true
   );
