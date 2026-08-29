@@ -18,7 +18,16 @@ const { DOWNLOAD_ONLY_PLACEHOLDER_RE, resolveUploadPaths } = require("./uploads"
 const {
   locatorCandidates,
   resolveStep,
+  rootCandidates,
 } = require("./resolution");
+const {
+  parseDateValue,
+  formatForDisplay,
+  monthDelta,
+  machineCellSelector,
+  dayNumberSelector,
+  MAX_NAV_CLICKS,
+} = require("./date_picker");
 const {
   PRIMARY,
   markMayHaveActed,
@@ -107,6 +116,104 @@ async function runBranchBody(page, steps, inputs, ctx) {
       // best-effort — do not propagate; branch bodies never enter Tier 1-4 recovery.
     }
   }
+}
+
+// --- date_pick adapter: the Playwright-touching half of date_picker.js's pure math -----------
+// See CLAUDE.md's date-picker plan. Typed-first (works for native <input type=date> and most
+// custom widgets outright); grid fallback only for a compiled custom-calendar step
+// (handler_hints.control_kind === "date_picker") whose typed attempt didn't stick.
+
+function _pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function _isoFor(parsed) {
+  const datePart = `${parsed.year}-${_pad2(parsed.month)}-${_pad2(parsed.day)}`;
+  return parsed.hour != null ? `${datePart}T${_pad2(parsed.hour)}:${_pad2(parsed.minute)}` : datePart;
+}
+
+// Mirrors assertions.js's own value_equals tolerance (normalized-exact, else "field contains
+// expected") so the handler's internal typed-vs-grid decision agrees with what VERIFY will check
+// right after it.
+function _dateValueMatches(actual, parsed, displayFormat) {
+  const normalized = String(actual || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === _isoFor(parsed).toLowerCase()) return true;
+  const formatted = formatForDisplay(parsed, displayFormat || "");
+  if (!formatted) return false;
+  const normFormatted = formatted.toLowerCase();
+  return normalized === normFormatted || normalized.includes(normFormatted);
+}
+
+// Drives one root's calendar grid to the target date: open (unless the grid's already up, as on
+// a range's second leg) -> nav to the target month, bounded and boundary-aware -> click the day
+// cell, preferring a machine-readable attribute rebuilt for THIS date over the recorded (and only
+// ever valid for the recording's own day) cell selector -> optional time option for a datetime.
+async function _driveDatePickerGrid(root, parsed, hints) {
+  if (hints.role !== "range_end" && hints.open) {
+    const alreadyOpen = hints.grid
+      ? await root.locator(hints.grid).first().isVisible().catch(() => false)
+      : false;
+    if (!alreadyOpen) {
+      await root.locator(hints.open).first().click({ timeout: ACTION_TIMEOUT_MS });
+    }
+  }
+  if (hints.grid) {
+    await root.locator(hints.grid).first().waitFor({ state: "visible", timeout: ACTION_TIMEOUT_MS });
+  }
+
+  if (hints.header && (hints.next || hints.prev)) {
+    for (let i = 0; i < MAX_NAV_CLICKS; i++) {
+      const headerText = await root.locator(hints.header).first()
+        .innerText({ timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => "");
+      const delta = monthDelta(headerText, parsed.year, parsed.month);
+      if (delta === null || delta === 0) break; // unparseable header, or already on target month
+      const navSelector = delta > 0 ? hints.next : hints.prev;
+      if (!navSelector) break;
+      await root.locator(navSelector).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+      // A disabled min/max boundary means this click did nothing — stop rather than loop until
+      // MAX_NAV_CLICKS on a header that will never reach the target.
+      const after = await root.locator(hints.header).first()
+        .innerText({ timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => "");
+      if (after === headerText) break;
+    }
+  }
+
+  const cellScope = hints.grid ? root.locator(hints.grid) : root;
+  const machineSelector = machineCellSelector(hints.cell_attr, _isoFor(parsed).slice(0, 10));
+  let cellClicked = false;
+  if (machineSelector) {
+    try {
+      await cellScope.locator(machineSelector).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+      cellClicked = true;
+    } catch (_) { /* fall through to the day-number strategy */ }
+  }
+  if (!cellClicked) {
+    await cellScope.locator(dayNumberSelector(parsed.day)).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+  }
+
+  if (hints.kind === "datetime" && hints.time_option) {
+    await cellScope.locator(`:text-is(${JSON.stringify(hints.time_option)})`).first()
+      .click({ timeout: SECONDARY_ACTION_TIMEOUT_MS })
+      .catch(() => {}); // best-effort — VERIFY's value_equals is what actually confirms the pick
+  }
+}
+
+async function _runDatePickerGrid(page, step, inputs, parsed, hints) {
+  const roots = await rootCandidates(page, step, inputs);
+  if (!roots.length) {
+    throw new Error("date_pick: containing frame could not be located");
+  }
+  let lastErr = null;
+  for (const root of roots) {
+    try {
+      await _driveDatePickerGrid(root, parsed, hints);
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw markMayHaveActed(lastErr || new Error("date_pick: calendar grid could not be driven"));
 }
 
 const HANDLERS = {
@@ -217,13 +324,55 @@ const HANDLERS = {
 
   date_pick: async (page, step, inputs) => {
     const value = interpolate(step.value || "", inputs);
-    await runLocatorStep(page, step, inputs, async locator => {
+    const parsed = parseDateValue(value);
+    const hints = asObject(asObject(step.handler_hints).date_picker);
+    const isCustomPicker = asObject(step.handler_hints).control_kind === "date_picker";
+
+    // Unparseable value: native <input type=month|week|time> never produces a full ISO
+    // date/datetime (bridge.js records their raw "2026-09"/"2026-W38"/"14:30" as-is), so
+    // date_picker.js correctly refuses to parse them. Original unconditional fill/click, exactly
+    // as before this feature existed — nothing below this branch ever applied to these types.
+    if (!parsed) {
+      await runLocatorStep(page, step, inputs, async locator => {
+        try {
+          await locator.fill(value, { timeout: ACTION_TIMEOUT_MS });
+        } catch (_) {
+          await locator.click({ timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => {});
+        }
+      });
+      return;
+    }
+
+    // Typed-first: covers native <input type=date|datetime-local> unconditionally (their fill
+    // format IS the ISO value, and handler_hints.date_picker.display_format is always empty for
+    // them) and most custom widgets outright, since many accept direct typed input even when the
+    // recording drove the grid to produce it.
+    const displayValue = formatForDisplay(parsed, hints.display_format || "") || _isoFor(parsed);
+    let typedOk = false;
+    // grid_only (an inline always-visible calendar, no anchored field — see date_picker.py) has
+    // nothing to type into at all: the step's own compiled target is the day cell itself, so a
+    // typed attempt would only burn the full action timeout on a guaranteed-to-fail fill().
+    if (!(isCustomPicker && hints.strategy === "grid_only")) {
       try {
-        await locator.fill(value, { timeout: ACTION_TIMEOUT_MS });
-      } catch (_) {
-        await locator.click({ timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => {});
+        await runLocatorStep(page, step, inputs, async locator => {
+          await locator.fill(displayValue, { timeout: ACTION_TIMEOUT_MS });
+          try { await locator.press("Enter", { timeout: SECONDARY_ACTION_TIMEOUT_MS }); } catch (_) { /* not every widget commits on Enter */ }
+          let actual = "";
+          try { actual = await locator.inputValue({ timeout: SECONDARY_ACTION_TIMEOUT_MS }); } catch (_) { /* not every widget is a real <input> */ }
+          typedOk = _dateValueMatches(actual, parsed, hints.display_format);
+        });
+      } catch (err) {
+        if (!isCustomPicker) throw err; // no grid fallback exists for a native input
+        typedOk = false;
       }
-    });
+    }
+
+    if (typedOk || !isCustomPicker) return;
+
+    // Grid fallback: only for a compiled custom-calendar step whose typed attempt didn't stick —
+    // drives the widget open->nav->day-cell (+time) instead of guessing. VERIFY (assertions.js)
+    // re-checks the field's value right after this, independently of what happened here.
+    await _runDatePickerGrid(page, step, inputs, parsed, hints);
   },
 
   drag_drop: async (page, step, inputs) => {

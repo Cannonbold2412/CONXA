@@ -79,6 +79,8 @@
       "_note": "run.js seam: locator strategy construction." },
     { "name": "handlers.js",          "profile": "default",
       "_note": "run.js seam: per-action-type step handlers." },
+    { "name": "date_picker.js",       "profile": "default",
+      "_note": "Pure date-picker replay math (handlers.js's date_pick adapter uses it) — parse/format/header/selector helpers, no Playwright." },
     { "name": "cascade.js",           "profile": "default",
       "_note": "run.js seam: recovery cascade orchestration." },
     { "name": "dismiss_patterns.js",  "profile": "default",
