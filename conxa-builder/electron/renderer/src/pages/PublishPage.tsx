@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   fetchSkillPack,
@@ -54,6 +54,7 @@ export function PublishPage() {
   const [publishError, setPublishError] = useState('')
   const [publishDone, setPublishDone] = useState(false)
   const [publishResult, setPublishResult] = useState<SkillPackReleaseResult | null>(null)
+  const logRef = useRef<HTMLDivElement>(null)
 
   const pack = packQ.data?.skill_pack ?? null
   const allTestsPassed = Boolean(selectedWorkflow && selectedWorkflow.last_test_status === 'passed')
@@ -123,7 +124,10 @@ export function PublishPage() {
         selectedSkillSlug,
         versionValue,
         notesValue,
-        (message) => setLogs((prev) => [...prev, message]),
+        (message) => {
+          setLogs((prev) => [...prev, message])
+          setTimeout(() => logRef.current?.scrollTo(0, logRef.current.scrollHeight), 0)
+        },
         (stage) => setPublishStage(stage as PublishStage),
       )
       setPublishResult(result)
@@ -177,7 +181,7 @@ export function PublishPage() {
         }
       />
 
-      <div className="scrollbar-none mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-6">
+      <div className="mx-auto flex min-h-0 w-full flex-1 flex-col px-4 py-6 sm:px-6">
         {!pack?.build || workflows.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 text-center">
             <div className="rounded-full border border-white/8 bg-white/[0.03] p-5">
@@ -191,40 +195,40 @@ export function PublishPage() {
             </div>
           </div>
         ) : (
-          <>
-            {/* Skill picker — every section below is scoped to this one skill */}
-            <div className="rounded-xl border border-white/8 bg-white/[0.03] px-5 py-4">
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Skill</p>
-              <div className="flex flex-wrap gap-1.5">
-                {workflows.map((w) => (
-                  <button
-                    key={w.id}
-                    type="button"
-                    onClick={() => handleSelectSkill(w.slug)}
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[220px_1fr_340px]">
+            {/* Left pane — skill list; every pane to the right is scoped to this one skill */}
+            <div className="scrollbar-none flex min-h-0 flex-col gap-1 overflow-y-auto rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Skills</p>
+              {workflows.map((w) => (
+                <button
+                  key={w.id}
+                  type="button"
+                  onClick={() => handleSelectSkill(w.slug)}
+                  className={cn(
+                    'flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs font-medium transition-colors',
+                    w.slug === selectedSkillSlug
+                      ? 'border-sky-500/40 bg-sky-500/[0.12] text-sky-300'
+                      : 'border-transparent text-zinc-400 hover:border-white/10 hover:bg-white/[0.03] hover:text-zinc-200',
+                  )}
+                >
+                  <span
                     className={cn(
-                      'rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
-                      w.slug === selectedSkillSlug
-                        ? 'border-sky-500/40 bg-sky-500/[0.12] text-sky-300'
-                        : 'border-white/10 bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200',
+                      'inline-block size-1.5 shrink-0 rounded-full',
+                      w.last_test_status === 'passed' ? 'bg-emerald-400' : 'bg-amber-400',
                     )}
-                  >
-                    {w.name}
-                    <span
-                      className={cn(
-                        'ml-1.5 inline-block size-1.5 rounded-full align-middle',
-                        w.last_test_status === 'passed' ? 'bg-emerald-400' : 'bg-amber-400',
-                      )}
-                    />
-                  </button>
-                ))}
-              </div>
-              <p className="mt-2 text-[11px] text-zinc-600">
+                  />
+                  <span className="min-w-0 flex-1 truncate">{w.name}</span>
+                </button>
+              ))}
+              <p className="mt-2 px-1 text-[11px] leading-relaxed text-zinc-600">
                 Each skill has its own version history and release — publishing one never requires or affects another.
               </p>
             </div>
 
-            {/* Section 1 — Release Candidate */}
-            <div className="mt-4 rounded-xl border border-white/8 bg-white/[0.03] px-5 py-4">
+            {/* Middle pane — details for the selected skill */}
+            <div className="scrollbar-none flex min-h-0 flex-col gap-4 overflow-y-auto">
+              {/* Section 1 — Release Candidate */}
+              <div className="rounded-xl border border-white/8 bg-white/[0.03] px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h3 className="text-base font-semibold leading-snug text-white">
@@ -242,7 +246,7 @@ export function PublishPage() {
             </div>
 
             {!allTestsPassed && (
-              <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
+              <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
                 <XCircle className="mt-0.5 size-4 shrink-0 text-amber-400" />
                 <div>
                   <p className="text-sm font-medium text-amber-300">Test required before publish</p>
@@ -256,7 +260,7 @@ export function PublishPage() {
             )}
 
             {/* Release form */}
-            <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.02] p-4">
+            <div className="rounded-lg border border-white/8 bg-white/[0.02] p-4">
               <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Release Details</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="grid gap-1.5">
@@ -314,15 +318,11 @@ export function PublishPage() {
             </div>
 
             {/* Section 2 — What Will Change */}
-            {preview && versionValid && (
-              <div className="mt-4">
-                <DiffPanel diff={preview.diff} previousVersion={preview.previous_version} />
-              </div>
-            )}
+            {preview && versionValid && <DiffPanel diff={preview.diff} previousVersion={preview.previous_version} />}
 
             {/* Publish never deploys — see docs/App-Flow.md. Deployment status,
                 rollback, and audit history all live in Conxa Cloud now. */}
-            <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-white/8 bg-white/[0.02] px-4 py-3">
+            <div className="flex items-start gap-2.5 rounded-lg border border-white/8 bg-white/[0.02] px-4 py-3">
               <CloudUpload className="mt-0.5 size-4 shrink-0 text-zinc-500" />
               <div>
                 <p className="text-sm font-medium text-zinc-300">Publishing does not deploy</p>
@@ -336,7 +336,7 @@ export function PublishPage() {
 
             {/* Publishing UX states */}
             {uiState === 'publishing' && (
-              <div className="mt-4 rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-4">
+              <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-4">
                 <p className="mb-2 text-sm font-medium text-sky-300">Publishing v{versionValue}</p>
                 <ul className="space-y-1">
                   {checklist.map(({ stage, state }) => (
@@ -352,7 +352,7 @@ export function PublishPage() {
             )}
 
             {uiState === 'failure' && (
-              <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
+              <div className="flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
                 <XCircle className="mt-0.5 size-4 shrink-0 text-red-400" />
                 <div>
                   <p className="text-sm font-medium text-red-300">Publishing failed</p>
@@ -365,7 +365,7 @@ export function PublishPage() {
             )}
 
             {uiState === 'success' && publishResult && (
-              <div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-4">
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-4">
                 <div className="mb-2 flex items-center gap-2">
                   <CheckCircle2 className="size-4 text-emerald-400" />
                   <p className="text-sm font-semibold text-emerald-300">Uploaded to Conxa Cloud</p>
@@ -377,13 +377,18 @@ export function PublishPage() {
               </div>
             )}
 
-            {/* Publish log */}
-            <div className="mb-6 mt-4 flex flex-col">
+            </div>
+
+            {/* Right pane — publish log fills the remaining height, scrolls on its own */}
+            <div className="flex min-h-0 flex-col">
               <div className="mb-1.5 flex items-center justify-between">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-600">Publish Log</p>
                 {logs.length > 0 && <span className="text-[10px] text-zinc-600">{logs.length} lines</span>}
               </div>
-              <div className="min-h-[100px] overflow-y-auto rounded-lg border border-white/8 bg-black/40 p-3 font-mono text-[11px]">
+              <div
+                ref={logRef}
+                className="scrollbar-none min-h-0 flex-1 overflow-y-auto rounded-lg border border-white/8 bg-black/40 p-3 font-mono text-[11px]"
+              >
                 {logs.length === 0 ? (
                   <p className="text-zinc-700">Publish logs will appear here when publishing starts…</p>
                 ) : (
@@ -391,7 +396,7 @@ export function PublishPage() {
                 )}
               </div>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>

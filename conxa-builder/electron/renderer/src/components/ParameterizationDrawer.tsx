@@ -123,7 +123,9 @@ function VariableRow({
         />
         <Select
           value={row.varType}
-          onValueChange={(v) => onChange({ ...row, varType: v === 'select' ? 'select' : 'text' })}
+          onValueChange={(v) =>
+            onChange({ ...row, varType: v === 'select' ? 'select' : v === 'date' ? 'date' : 'text' })
+          }
         >
           <SelectTrigger size="sm" className="h-8 w-full text-sm" aria-label="Type">
             <SelectValue />
@@ -131,10 +133,12 @@ function VariableRow({
           <SelectContent>
             <SelectItem value="text">Text</SelectItem>
             <SelectItem value="select">Choice list</SelectItem>
+            <SelectItem value="date">Date</SelectItem>
           </SelectContent>
         </Select>
         <Input
           aria-label="Default value"
+          type={row.varType === 'date' ? 'date' : 'text'}
           className="h-8 text-sm"
           placeholder={row.varType === 'select' ? 'must match an option' : 'none'}
           value={row.defaultValue}

@@ -51,7 +51,7 @@ export function labelFromId(id: string): string {
     .join(' ')
 }
 
-export type InputVariableType = 'text' | 'select'
+export type InputVariableType = 'text' | 'select' | 'date'
 
 export type VariableFormRow = {
   key: string
@@ -110,7 +110,7 @@ export function rowsFromServerInputs(inputs: Record<string, unknown>[]): Variabl
       key: `row-${i}`,
       id,
       label: String(raw.label ?? (id ? labelFromId(id) : '')),
-      varType: raw.type === 'select' ? 'select' : 'text',
+      varType: raw.type === 'select' ? 'select' : raw.type === 'date' ? 'date' : 'text',
       optionsText: Array.isArray(raw.options) ? (raw.options as unknown[]).map((o) => String(o)).join(', ') : '',
       defaultValue: raw.default == null ? '' : String(raw.default),
       sensitive: raw.sensitive === true,
