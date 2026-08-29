@@ -58,6 +58,7 @@ from handlers.workflow_editor import WorkflowEditorMixin  # noqa: E402
 from handlers.visual import VisualMixin  # noqa: E402
 from handlers.skill_packages import SkillPackagesMixin  # noqa: E402
 from handlers.runs import RunsMixin  # noqa: E402
+from handlers.legal import LegalMixin  # noqa: E402
 from conxa_core.progress import set_event_sink  # noqa: E402
 
 # Compile-time sub-step logging (conxa_compile/compiler/build.py's
@@ -121,6 +122,7 @@ class Backend(
     VisualMixin,
     SkillPackagesMixin,
     RunsMixin,
+    LegalMixin,
 ):
     """JSON-RPC dispatcher. Command handlers (cmd_*) live in the handlers/
     package, grouped by domain and mixed in here; this class owns shared
@@ -297,6 +299,8 @@ class Backend(
             "white_label_not_permitted": "White-label installer branding requires the Enterprise plan.",
             "entitlements_unavailable": "Cloud entitlements are unavailable, so quota-gated actions are blocked.",
             "invalid_usage_class": "Invalid LLM usage class.",
+            "legal_version_mismatch": "The Terms and Privacy Policy changed while you were reading them. Reopen Build Studio to see the current version.",
+            "legal_acceptance_required": "Accept the Conxa Terms and Privacy Policy to continue.",
         }
         return messages.get(code, code)
 

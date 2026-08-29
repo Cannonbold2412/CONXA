@@ -22,6 +22,7 @@ from conxa_core.storage.snapshots_gc import cleanup_old_snapshots
 from app.api.byok_routes import router as byok_router
 from app.api.entitlement_routes import router as entitlement_router
 from app.api.job_routes import router as job_router
+from app.api.legal_routes import router as legal_router
 from app.api.llm_proxy_routes import router as llm_proxy_router
 from app.api.workflow_routes import router as workflow_router
 from app.api.product_routes import router as product_router
@@ -149,6 +150,7 @@ app.include_router(tracking_router, prefix="/api/v1")
 app.include_router(tracking_versioned_router, prefix="/api/v1")
 app.include_router(public_tracking_router)  # package-token ingest endpoint for runtimes
 app.include_router(updates_router, prefix="/api/v1")
+app.include_router(legal_router, prefix="/api/v1")
 
 
 @app.get("/")

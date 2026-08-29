@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { PRIVACY_URL, TERMS_URL } from '@/pages/LegalGateScreen'
 import { Button } from '@/components/ui/button'
 import { performLogout } from '@/contexts/AuthContext'
 import { LogOut, RefreshCw } from 'lucide-react'
@@ -160,6 +161,24 @@ export function SettingsPage() {
               <p className="mt-1 text-sm text-white">Conxa Build Studio</p>
               <p className="mt-0.5 text-xs text-zinc-500">Offline AI-native workflow recorder & compiler</p>
             </div>
+            <p className="mt-3 text-xs text-zinc-500">
+              Licensed, not sold.{' '}
+              <button
+                type="button"
+                onClick={() => void window.conxa.openExternal(TERMS_URL)}
+                className="text-zinc-300 underline underline-offset-2 hover:text-white"
+              >
+                Terms and Conditions
+              </button>{' '}
+              &middot;{' '}
+              <button
+                type="button"
+                onClick={() => void window.conxa.openExternal(PRIVACY_URL)}
+                className="text-zinc-300 underline underline-offset-2 hover:text-white"
+              >
+                Privacy Policy
+              </button>
+            </p>
           </CardContent>
         </Card>
 

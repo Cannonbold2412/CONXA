@@ -163,6 +163,17 @@ function DesktopSidebar({ collapsed, setCollapsed }: { collapsed: boolean; setCo
         <SidebarNav groups={[operateNavGroup]} collapsed={collapsed} />
         <div className="mt-auto border-t border-white/8 pt-3">
           <SidebarNav groups={[manageNavGroup]} collapsed={collapsed} />
+          {!collapsed && (
+            <p className="px-3 pt-3 text-[11px] leading-relaxed text-zinc-600">
+              <Link href="/docs/terms" className="hover:text-zinc-400">
+                Terms
+              </Link>
+              {' · '}
+              <Link href="/docs/privacy" className="hover:text-zinc-400">
+                Privacy
+              </Link>
+            </p>
+          )}
         </div>
       </div>
     </aside>

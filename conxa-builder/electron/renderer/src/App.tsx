@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { cmd, type UpdateCheckResult } from '@/lib/ipc'
+import { errorMessage } from '@/api/workflowApi'
+import { Button } from '@/components/ui/button'
 import { AuthContext, performLogout, type Identity } from '@/contexts/AuthContext'
 import { AppChrome } from '@/components/layout/AppChrome'
 import { LoginOverlay } from '@/components/LoginOverlay'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { BootstrapScreen } from '@/pages/BootstrapScreen'
 import { UpdateRequiredScreen } from '@/pages/UpdateRequiredScreen'
+import { LegalGateScreen, type LegalStatus } from '@/pages/LegalGateScreen'
 import { fetchWorkflow } from '@/api/workflowsApi'
 
 // Pages
@@ -27,6 +30,88 @@ function SplashScreen() {
   return (
     <div className="flex h-dvh items-center justify-center bg-[#090b0d]">
       <div className="size-8 animate-pulse rounded-full bg-white/10" />
+    </div>
+  )
+}
+
+/**
+ * Terms & Privacy acceptance, checked with the cloud rather than this machine —
+ * an acceptance is only evidence if it names the signed-in user, so the gate sits
+ * after sign-in and the record lives on the server (PROD-17).
+ *
+ * Deliberately fail-closed: if the cloud can't be reached we block rather than
+ * assume acceptance. Dev builds skip it, same escape the deps gate uses.
+ */
+function LegalGate({ children }: { children: React.ReactNode }) {
+  const [accepted, setAccepted] = useState(false)
+
+  const q = useQuery({
+    queryKey: ['legal-status'],
+    queryFn: () => cmd<LegalStatus>('legal_status'),
+    enabled: window.conxa.isPackaged,
+    retry: false,
+    staleTime: Infinity,
+  })
+
+  if (!window.conxa.isPackaged) return <>{children}</>
+  if (q.isPending) return <SplashScreen />
+
+  if (q.isError) {
+    return (
+      <BlockingNotice
+        title="Can't reach Conxa"
+        body="Build Studio needs to confirm you have accepted the current Terms and Privacy Policy before it can start."
+        detail={errorMessage(q.error, '')}
+        actionLabel={q.isFetching ? 'Retrying…' : 'Try again'}
+        onAction={() => void q.refetch()}
+        disabled={q.isFetching}
+      />
+    )
+  }
+
+  if (accepted || q.data.accepted) return <>{children}</>
+
+  return (
+    <LegalGateScreen
+      status={q.data}
+      onAccept={async (payload) => {
+        const app_version = await window.conxa.update.getVersion().catch(() => '')
+        await cmd('legal_accept', { ...payload, app_version })
+        setAccepted(true)
+      }}
+    />
+  )
+}
+
+function BlockingNotice({
+  title,
+  body,
+  detail,
+  actionLabel,
+  onAction,
+  disabled,
+}: {
+  title: string
+  body: string
+  detail?: string
+  actionLabel: string
+  onAction: () => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="fixed inset-x-0 top-10 bottom-0 z-[9999] flex items-center justify-center bg-[#090b0d] p-6">
+      <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0d0f12] p-8 shadow-2xl">
+        <h1 className="mb-1 text-center text-xl font-semibold text-white">{title}</h1>
+        <p className="mb-6 text-center text-sm text-zinc-400">{body}</p>
+        {detail && (
+          <p className="mb-6 rounded-lg border border-white/8 bg-black/20 p-3 text-xs text-zinc-500">
+            {detail}
+          </p>
+        )}
+        <Button className="w-full" size="lg" onClick={onAction} disabled={disabled}>
+          {actionLabel}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -182,6 +267,7 @@ export function App() {
     <AuthContext.Provider value={{ identity: resolvedIdentity, setIdentity, logout }}>
       <ErrorBoundary>
         <AppChrome>
+          <LegalGate>
           <DeepLinkHandler />
           <Routes>
             <Route path="/" element={<DefaultRedirect />} />
@@ -198,6 +284,7 @@ export function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/workflows" replace />} />
           </Routes>
+          </LegalGate>
         </AppChrome>
       </ErrorBoundary>
       {depUpdateBanner.phase !== 'idle' && (

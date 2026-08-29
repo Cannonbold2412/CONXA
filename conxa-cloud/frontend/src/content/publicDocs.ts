@@ -65,8 +65,9 @@ export const SUPPORT_PHONE_DISPLAY =
 export const SUPPORT_PHONE_TEL =
   process.env.NEXT_PUBLIC_SALES_PHONE_TEL ?? SUPPORT_PHONE_DISPLAY.replace(/[^\d+]/g, '')
 
-export const PUBLIC_DOCS_LAST_MODIFIED = '2026-06-11'
+export const PUBLIC_DOCS_LAST_MODIFIED = '2026-08-29'
 const LAST_UPDATED = 'June 11, 2026'
+const TERMS_LAST_UPDATED = 'August 29, 2026'
 
 export const publicDocs = [
   {
@@ -997,6 +998,7 @@ export const publicDocs = [
     readingTime: '14 min read',
     summary: [
       'CONXA collects account, workspace, billing, product usage, package, support, and telemetry information needed to provide the service.',
+      'Build Studio is a desktop app: recordings, screenshots, and built packages stay on your machine unless you publish, upload, or send them.',
       'Target-site browser session files are local-only runtime or Build Studio state and are not intended to be uploaded in skill packages.',
       'CONXA does not sell personal information or use advertising cookies by default.',
     ],
@@ -1048,6 +1050,11 @@ export const publicDocs = [
                 'Provide observability, diagnose failures, improve reliability, and measure product health.',
               ],
               [
+                'Legal acceptance records',
+                'Your user ID, email, name, workspace, and role; the version and content hashes of the Terms and Privacy Policy you accepted; the server timestamp; your IP address at that moment; the Build Studio version; and the machine identifier described above.',
+                'Record and evidence your agreement to the CONXA terms, and establish which version of each document you accepted. Retained for as long as needed to evidence the agreement.',
+              ],
+              [
                 'Support information',
                 'Messages, screenshots, logs, attachments, contact details, and diagnostic context that you choose to send.',
                 'Respond to support requests and investigate incidents.',
@@ -1065,6 +1072,20 @@ export const publicDocs = [
             items: [
               'Target-application browser sessions can contain cookies, local storage, and authentication state. CONXA treats this as sensitive local state. It is used by the Build Studio or runtime on the local machine and is not intended to be included in published skill packages.',
               'The runtime stores browser sessions locally and encrypts them at rest where supported. You should not upload auth files, browser profiles, passwords, or raw customer credentials to CONXA support unless a secure support process is agreed first.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'build-studio-local-data',
+        title: 'What Build Studio keeps on your machine',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'Build Studio is a desktop application. Workflow recordings, page snapshots, screenshots, compiled skill packages, and built installers are written to your own machine and stay there unless you publish, upload, or send them to CONXA.',
+              'Your Build Studio sign-in tokens are stored in the operating system credential store, not in ordinary files. Your acceptance of the Terms and this policy is recorded on CONXA servers against your signed-in account, so the app does not ask again and so CONXA holds a record of the agreement — see the legal acceptance records row above.',
+              'Content leaves your machine only for actions you take: signing in, compile-time assistance that calls a model provider through CONXA, publishing a skill package, uploading an installer, sending support material, and the product and telemetry events described above.',
             ],
           },
         ],
@@ -1205,12 +1226,13 @@ export const publicDocs = [
     title: 'Terms And Conditions',
     eyebrow: 'Legal',
     description:
-      'Terms for using CONXA websites, dashboard, Build Studio, cloud APIs, package hosting, installers, and runtime services.',
-    lastUpdated: LAST_UPDATED,
-    readingTime: '13 min read',
+      'Terms for using CONXA websites, dashboard, Build Studio, cloud APIs, package hosting, installers, and runtime services, including the Build Studio software licence.',
+    lastUpdated: TERMS_LAST_UPDATED,
+    readingTime: '16 min read',
     summary: [
       'These terms apply to use of CONXA unless a signed agreement or order form says otherwise.',
-      'Customers keep ownership of their workflows and customer content, while CONXA receives the rights needed to provide the service.',
+      'Build Studio is licensed per machine, not sold: it may not be modified, reverse-engineered, resold, white-labeled, or made available to third parties.',
+      'Customers keep ownership of their workflows and customer content, and may sell the skill packages and installers they build, while CONXA receives the rights needed to provide the service.',
       'Customers are responsible for target-application authorization, lawful workflow use, endpoint security, and plan compliance.',
     ],
     sections: [
@@ -1238,6 +1260,62 @@ export const publicDocs = [
               'You are responsible for activity under your account and for keeping sign-in credentials secure.',
               'Workspace admins are responsible for inviting appropriate users and removing users who no longer need access.',
               'You must promptly notify CONXA if you suspect unauthorized account, token, installer, or workspace access.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'build-studio-license',
+        title: 'Build Studio software licence',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'Build Studio is licensed to you, not sold. Subject to your plan and to these terms, CONXA grants you a limited, non-exclusive, non-transferable, revocable licence to install and run one copy of Build Studio per licensed machine, on machines you or your organization own or control, and only for the number of installs your plan or order form permits.',
+              'The licence is granted for your internal business purpose of recording, compiling, testing, publishing, and distributing your own skill packages and installers. It ends automatically when your subscription ends, when your plan no longer covers the install, or when CONXA terminates access under these terms. On termination you must stop using Build Studio and remove it from your machines.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'build-studio-restrictions',
+        title: 'Build Studio restrictions',
+        intro:
+          'Except where a right below cannot lawfully be restricted, and except to the extent CONXA has agreed otherwise in a signed agreement, you must not:',
+        blocks: [
+          {
+            type: 'bullets',
+            items: [
+              'Copy, modify, adapt, translate, patch, or create derivative works of Build Studio or any part of it, including its installer, bundled backend, and bundled runtime components.',
+              'Reverse-engineer, decompile, disassemble, or otherwise attempt to derive the source code, algorithms, model prompts, selector-generation logic, or internal data formats of Build Studio, except to the extent that this restriction is prohibited by applicable law or that applicable law grants you a non-waivable interoperability right, and then only after you have first asked CONXA in writing for the information you need.',
+              'Circumvent, disable, or tamper with licensing checks, entitlement limits, plan limits, update checks, integrity checks, signature verification, or telemetry built into Build Studio.',
+              'Rent, lease, lend, sell, resell, sublicense, assign, white-label, rebrand, or otherwise transfer Build Studio, or make it available to any third party, whether for a fee or free of charge.',
+              'Operate Build Studio as, or as part of, a service bureau, managed service, hosted service, agency offering, or any arrangement where a third party uses Build Studio through you.',
+              'Share your Build Studio installs, sign-in credentials, or workspace access with people outside the users your plan covers, or install Build Studio on more machines than your plan permits.',
+              'Remove, obscure, or alter any copyright, trademark, licence, version, or attribution notice in Build Studio, its installer, or its output.',
+              'Publish benchmarks, security-test results, or reverse-engineering findings about Build Studio without CONXA written consent, other than a good-faith vulnerability report sent privately to CONXA.',
+            ],
+          },
+          {
+            type: 'callout',
+            title: 'Reporting instead of probing',
+            body: 'If you believe Build Studio has a security defect, report it privately to ' +
+              SUPPORT_EMAIL +
+              '. Good-faith private reporting is welcome and is not a breach of these restrictions.',
+          },
+        ],
+      },
+      {
+        id: 'ownership-and-outputs',
+        title: 'Ownership, and what you may do with what you build',
+        blocks: [
+          {
+            type: 'paragraphs',
+            items: [
+              'CONXA and its licensors own all right, title, and interest in Build Studio, the CONXA cloud services, the local runtime, the recorder, the compiler, the element-identity and self-healing recovery logic, the templates shipped inside generated packages, and all related intellectual property. These terms grant you the licence described above and no other rights, express or implied.',
+              'The skill packages, installers, and workflow content you create with Build Studio are yours. Subject to your plan capabilities and to the acceptable-use rules in these terms, you may use, bundle, distribute, and sell those packages and installers to your own end customers under your own name and commercial terms.',
+              'That freedom covers what you build, never the tool that built it. Distributing a skill package or an installer you produced is permitted; distributing, reselling, white-labeling, or otherwise providing Build Studio itself, in whole or in part, is not.',
+              'Generated packages and installers include CONXA runtime components under the licence CONXA grants to your end customers through the installer. You must not modify, repackage, or strip those components, and you must not represent them as your own software.',
             ],
           },
         ],
