@@ -1100,13 +1100,22 @@ other recorded step that will ever reproduce it — until now that navigation wa
 The distinguishing signal is CDP's `Page.frameRequestedNavigation`, which only fires when the
 **page itself** asks to navigate (link click, form submit, `location.href` script) — never for a
 browser-chrome-initiated navigation (address bar, bookmark, `page.goto()`). `session.py` enables
-`Page.enable` on the same per-page CDP session used for §6.1a and sets a pending flag
-(`_nav_pending_renderer_initiated`) whenever that event fires. When `_drain_nav_history_checks_sync`
-classifies a navigation as neither Back nor Forward, it consumes (and clears) that flag:
+`Page.enable` on the same per-page CDP session used for §6.1a and records the request's monotonic
+timestamp (`_nav_pending_renderer_initiated`) whenever that event fires. When
+`_drain_nav_history_checks_sync` classifies a navigation as neither Back nor Forward, it consumes
+(and clears) that timestamp:
 
-- flag set → renderer-initiated → no event (the click/submit step already covers it).
-- flag unset → browser-initiated → emits a synthetic **`manual_navigate`** event, `value =
-  {"from_url", "to_url"}`, same shape as browser_back/forward.
+- timestamp present *and* within `_NAV_RENDERER_INITIATED_TTL_S` (2s) of now → renderer-initiated →
+  no event (the click/submit step already covers it).
+- timestamp absent, or older than the TTL → browser-initiated → emits a synthetic
+  **`manual_navigate`** event, `value = {"from_url", "to_url"}`, same shape as browser_back/forward.
+
+The TTL exists because `Page.frameRequestedNavigation` fires on *request*, not on commit: a
+submit-style click whose handler calls `preventDefault()` (or any other cancelled/speculative
+request) sets the flag but is never followed by an actual navigation, so nothing ever clears it.
+Without the TTL that stale flag would silently misattribute the *next* navigation on the page —
+including a genuinely manual one — as renderer-initiated, dropping it exactly like the
+pre-`manual_navigate` bug this feature fixed.
 
 The compiler compiles `manual_navigate` straight into a real `action=navigate` step — the same
 step type `_insert_start_navigate_step`/`_insert_user_tab_navigate_steps` already produce for a
@@ -1296,6 +1305,60 @@ earlier download) leaves the step completely untouched, same fallback guarantee 
 case — this is what keeps the binding from ever handing an upload control a folder that also
 contains a file it was never meant to see. `downloaded_files_dir` is excluded from the
 auto-declared-input scan the same way `downloaded_file`/`downloaded_file_N` are.
+
+**A custom calendar widget's open→nav→day-cell click run collapses into one parameterized
+`date_pick` step** (2026-08-30). Native `<input type=date|datetime-local|time|month|week>` already
+compiled correctly (a `date_pick` action straight off the recorder's `change` listener); a custom
+calendar widget (MUI, react-datepicker, flatpickr, Ant Design, jQuery UI, ...) instead recorded as
+several unrelated `click` steps whose month-nav count was frozen to the recording day and whose
+day-cell text ("15") was ambiguous against the adjacent month's greyed-out overflow days — neither
+replays correctly, and no recovery tier can fix a semantics problem (the right element just isn't
+rendered yet). `recorder/bridge.js::buildDateContext` tags a click landing inside a detected
+calendar grid with `date_context` — which cell/nav/time role, the resolved ISO date, and, for a day
+cell, which DOM attribute (`data-date`, `aria-label`, ...) it was parsed from, so a *different*
+target date can be re-queried at replay instead of reusing the recording's own (often a full
+locale sentence) cell selector. `compiler/date_picker.py::collapse_date_picker_runs` — called from
+`build.py` immediately after `_populate_hover_chains`, the same point that function itself must run
+at for the same reason: steps[i] must still align 1:1 with cleaned_events[i] — finds a maximal run
+of consecutive click steps sharing a `date_context.grid` selector and replaces it with one
+`date_pick` step (two for a date range, tagged `role: range_start`/`range_end`) carrying:
+- `value`/`input_binding` — a run input via the same label→placeholder→aria_label priority ladder
+  `input_binding.py` already uses (so a "Due Date" field still binds to `{{due_date}}`), falling
+  back to a generic name (`due_date`, `start_date`/`end_date`, `due_datetime`) when no field was
+  found. The declared input's `default` is the recorded date —
+  `editor/workflow_mutations.py::reconcile_inputs_with_step_values` reads it off
+  `handler_hints.date_picker.recorded_value` and declares the input `type: "date"`
+  (`editor/dto.py`'s `SkillInputVariable.type` now includes it; the packaged manifest still emits
+  JSON-Schema `type: "string"` with `format: "date"`/`"date-time"` — see
+  `skill_package_builder_saved_skill.py::_normalize_saved_skill_inputs`).
+- `handler_hints.control_kind = "date_picker"` — `HandlerHints`' first populated `control_kind`,
+  the seam `research-analysis/04-architecture/03-replay-algorithm.md` §5 described as
+  "dispatch by handler_hints.control_kind" before anything actually set it — plus a `date_picker`
+  block: open/grid/header/prev/
+  next selectors, the day cell's attribute (for rebuilding, never reusing, the cell query),
+  `display_format` (best-effort MM/DD/YYYY-shaped guess from the field's own post-pick readback,
+  feeding the runtime's typed-first attempt), `kind` (single/range/datetime), and `strategy`
+  (`typed_first` when an anchored field was found, `grid_only` for an inline always-visible
+  calendar with none).
+- A `value_equals` assertion against the field (expecting its OWN display formatting, not the raw
+  ISO literal — most widgets never read back ISO) when a field exists, else a `selector_present`
+  assertion rebuilding a selector for the target date the same way replay will, since a raw day
+  cell has no value to read back from.
+
+At replay, `runtime/app/date_picker.js` (pure — month-delta arithmetic, header parsing, date
+formatting, selector construction; unit-tested standalone with no browser) backs
+`handlers.js`'s `date_pick` handler: try typed-first (fill the field with its own display format,
+verify the readback) for everything parseable as a full ISO date/datetime — covers native
+`type=date|datetime-local` and most custom widgets outright — and only fall back to driving the
+grid (open → bounded, boundary-aware month navigation, asserting the header actually changed each
+click so a disabled min/max limit can't spin the loop forever → day-cell click, preferring the
+target date rebuilt through the recorded machine attribute over a locale-agnostic exact-day-text
+match that excludes disabled/adjacent-month cells → optional time-option click for a datetime) for
+a compiled custom-picker step (`control_kind === "date_picker"`) whose typed attempt didn't stick.
+Native `<input type=month|week|time>` is untouched — their recorded values (`"2026-09"`,
+`"2026-W38"`, `"14:30"`) aren't full ISO dates, so `date_picker.js`'s parser correctly declines them
+and the handler falls through to its original unconditional fill/click. Zero LLM calls throughout —
+the Tier 1/2 zero-token invariant (§10.2b) holds for this handler exactly as for every other.
 
 **A bulk upload deletes its consumed files from the shared download folder** (EXEC-19, resolved
 2026-08-25). The compile-time FIFO guarantee above only says a downloaded file is *bound* to at

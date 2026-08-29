@@ -396,7 +396,13 @@ Each entry in `inputs` is validated against `SkillInputVariable` (`conxa-builder
 class SkillInputVariable(BaseModel):
     id: str                    # letter-led, alnum + underscore — must match {{id}} grammar
     label: str = ""
-    type: Literal["text", "select"] = "text"
+    type: Literal["text", "select", "date"] = "text"  # "date" (2026-08-30) is editor-level sugar
+                               # over a plain string — the packaged input row's own `type` stays
+                               # JSON-Schema "string" (every MCP client's expectation), with
+                               # `format: "date"`/`"date-time"` alongside it telling the agent what
+                               # shape to send (skill_package_builder_saved_skill.py). Auto-declared
+                               # with this type + the recorded date as `default` for any date_pick
+                               # step's binding (workflow_mutations.py; see HandlerHints §3.4b).
     default: str | None = None
     options: list[str] = []    # required (non-empty) when type == "select"
     pattern: str | None = None
@@ -543,6 +549,22 @@ class HandlerHints(BaseModel):
     hover_chain: list[IdentitySignal]    # elements to hover before acting (menu reveals)
     virtualized_container: str           # scroll container selector for virtualized rows
     allow_forced_action: bool
+    control_kind: str = ""               # "" = dispatch by action type alone (every action but
+                                          # the one below); "date_picker" is the first populated
+                                          # value (2026-08-30) — see date_picker dict, next.
+    date_picker: dict = {}               # set only when control_kind == "date_picker" (a custom
+                                          # calendar widget's click run collapsed into one
+                                          # date_pick step, compiler/date_picker.py): open/grid/
+                                          # header/prev/next/cell selectors, cell_attr (which DOM
+                                          # attribute the day was parsed from — "" means an
+                                          # aria-label/title sentence, so the runtime falls back to
+                                          # an exact-day-text match), display_format (best-effort
+                                          # "MM/DD/YYYY"-shaped guess), kind ("single"|"range"|
+                                          # "datetime"), strategy ("typed_first"|"grid_only"),
+                                          # role ("range_start"|"range_end", ranges only),
+                                          # recorded_value (the picked ISO date/datetime — seeds
+                                          # the auto-declared input's default, never used at
+                                          # replay). See docs/TRD.md §7.1's date-picker paragraph.
 ```
 
 ### 3.4c Conditional / Branch Steps (EXEC-1)
