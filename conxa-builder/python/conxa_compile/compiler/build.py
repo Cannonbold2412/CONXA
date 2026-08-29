@@ -20,6 +20,7 @@ from conxa_compile.compiler.entity_binding import (
     upgrade_entity_binding_identifiers,
 )
 from conxa_compile.compiler.input_binding import derive_input_binding
+from conxa_compile.compiler.date_picker import collapse_date_picker_runs
 from conxa_compile.compiler.upload_binding import apply_bindings_to_compiled_steps
 from conxa_compile.compiler.recovery_policy import (
     default_recovery_block,
@@ -721,7 +722,7 @@ def _build_assertions(
         effective_value = value_readback
     if (
         not assertions
-        and action in {"fill", "type", "select", "select_option"}
+        and action in {"fill", "type", "select", "select_option", "date_pick"}
         and primary_selector
         and effective_value
         and not is_key_event
@@ -1765,6 +1766,11 @@ def compile_skill_package(
     # _insert_start_navigate_step below: it indexes steps[i] against cleaned_events[i], and the
     # leading navigate that function prepends has no matching cleaned_event.
     _populate_hover_chains(steps, cleaned_events, session_id=sid)
+    # Custom date-picker collapse: must run here too, while steps[i] still maps 1:1 onto
+    # cleaned_events[i] — same alignment requirement as _populate_hover_chains above. Collapses
+    # (never regresses) an open->nav->day-cell click run into one parameterized date_pick step
+    # per bridge.js's date_context tagging; see conxa_compile/compiler/date_picker.py.
+    steps = collapse_date_picker_runs(steps, cleaned_events, pol)
     steps = _insert_start_navigate_step(steps, cleaned_events)
 
     # The workflow-level intent graph was already built before the step loop —

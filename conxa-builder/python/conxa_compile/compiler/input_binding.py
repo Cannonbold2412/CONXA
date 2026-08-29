@@ -20,6 +20,10 @@ _EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _PHONE_REGEX = re.compile(r"^\+?[\d\s\-\(\)]{7,}$")
 _DIGITS_ONLY_REGEX = re.compile(r"^\d{4,}$")
 _URL_REGEX = re.compile(r"^https?://", re.IGNORECASE)
+# ISO 8601 date/datetime — checked before phone, whose [\d\s\-\(\)]{7,} pattern otherwise also
+# matches "2026-09-14" (8+ digits with hyphens) and misclassifies every date_pick collapse's
+# ISO literal (compiler/date_picker.py) as a phone number.
+_ISO_DATE_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$")
 
 
 def _snake_case(text: str) -> str:
@@ -44,7 +48,7 @@ def _snake_case(text: str) -> str:
 def _classify_value_pattern(value: str) -> str | None:
     """Classify a string value by content pattern.
 
-    Returns 'email', 'phone', 'url', 'number', or None.
+    Returns 'email', 'phone', 'url', 'date', 'number', or None.
     """
     if not value:
         return None
@@ -53,6 +57,8 @@ def _classify_value_pattern(value: str) -> str | None:
         return "email"
     if _URL_REGEX.match(v):
         return "url"
+    if _ISO_DATE_REGEX.match(v):
+        return "date"
     if _PHONE_REGEX.match(v) and any(c.isdigit() for c in v):
         digits = re.sub(r"\D", "", v)
         if len(digits) >= 7:
