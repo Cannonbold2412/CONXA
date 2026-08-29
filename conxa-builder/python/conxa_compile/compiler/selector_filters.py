@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -181,13 +182,22 @@ _TEXT_SEL_RE = re.compile(r'^internal:text="(.*)"$', re.DOTALL)
 _ROLE_SEL_RE = re.compile(r'^internal:role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?$')
 
 
+# A compile pass calls _count_css/_count_text once per identity-signal candidate, and
+# consecutive recorded events on the same page share the same dom_html snapshot — cache
+# the parse so repeat calls against identical HTML don't re-run BeautifulSoup/lxml.
+@lru_cache(maxsize=8)
+def _parse_soup(html: str) -> Any:
+    from bs4 import BeautifulSoup  # type: ignore
+    return BeautifulSoup(html, "lxml")
+
+
 def _count_css(html: str, css_selector: str) -> int:
     try:
-        from bs4 import BeautifulSoup  # type: ignore
+        soup = _parse_soup(html)
     except ImportError:
         return 1  # can't verify without bs4 — allow through
     try:
-        return len(BeautifulSoup(html, "lxml").select(css_selector))
+        return len(soup.select(css_selector))
     except Exception:  # noqa: BLE001 — selector grammar bs4 can't parse
         return 1
 
@@ -197,10 +207,9 @@ def _count_text(html: str, text: str) -> int:
     if not target:
         return 1
     try:
-        from bs4 import BeautifulSoup  # type: ignore
+        soup = _parse_soup(html)
     except ImportError:
         return 1
-    soup = BeautifulSoup(html, "lxml")
     return sum(
         1 for el in soup.find_all(True)
         if not el.find(True) and el.get_text(strip=True).lower() == target
@@ -437,3 +446,14 @@ def is_low_quality_anchor(phrase: str) -> bool:
     if len(parts) >= 3 and len(parts[0]) == 1 and parts[0].isalnum():
         return True
     return False
+
+
+if __name__ == "__main__":
+    html = '<div><button id="go">Go</button><span>Other</span></div>'
+    _parse_soup.cache_clear()
+    assert _count_css(html, "#go") == 1
+    assert _count_text(html, "go") == 1
+    hits_before = _parse_soup.cache_info().hits
+    _count_css(html, "#go")  # same html string -> should hit the cache, not re-parse
+    assert _parse_soup.cache_info().hits == hits_before + 1
+    print("ok")
