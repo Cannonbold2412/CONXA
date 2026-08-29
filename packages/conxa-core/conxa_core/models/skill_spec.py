@@ -176,6 +176,13 @@ class HandlerHints(BaseModel):
     hover_chain: list[IdentitySignal] = Field(default_factory=list)  # elements to hover before acting
     virtualized_container: str = ""   # selector of a scroll container that virtualizes rows
     allow_forced_action: bool = False
+    # Dispatch-by-control-kind seam (03-replay-algorithm.md §5): "" means the handler dispatches
+    # purely by action type, as every action does today. "date_picker" is the first populated
+    # value — set by compiler/date_picker.py when a click run collapses into a date_pick step
+    # targeting a custom calendar grid (as opposed to a native <input type=date>, which never
+    # gets this set). runtime/app/date_picker.js reads `date_picker` below when this is set.
+    control_kind: str = ""
+    date_picker: dict[str, Any] = Field(default_factory=dict)
 
 
 class SkillStep(BaseModel):

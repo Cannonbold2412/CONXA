@@ -153,6 +153,36 @@ class StateChange(BaseModel):
     dom_diff: dict[str, Any] | None = None
 
 
+class DateContext(BaseModel):
+    """Custom calendar-widget click classification, emitted only for `action == "click"` when
+    bridge.js::buildDateContext resolves the click to a day cell, prev/next nav button, or time
+    option inside a detected calendar grid. Absent (None) for every ordinary click, including
+    every click on a native `<input type=date>` (that path stays on the existing date_pick
+    "change" listener). Feeds compiler/date_picker.py's collapse of the resulting click run into
+    one parameterized date_pick step — see CLAUDE.md's date-picker plan."""
+
+    role: Literal["day", "nav", "time"]
+    grid: str = ""  # selector for the widget wrapper (header + nav + day grid)
+    # role == "day"
+    iso_date: str | None = None
+    # Which attribute buildDateContext parsed iso_date from ("data-date", "datetime", "data-day",
+    # "data-value", or "" for aria-label/title). Lets the runtime rebuild a query for a DIFFERENT
+    # target date ([data-date="<new-iso>"]) instead of reusing this recording's cell selector,
+    # which is only ever valid for the literal day it was recorded on.
+    cell_attr: str = ""
+    header: str = ""
+    header_text: str = ""
+    prev: str = ""
+    next: str = ""
+    cell: str = ""
+    field: str = ""                       # the input/combobox this grid belongs to, if found
+    field_display_value: str | None = None  # field's post-pick display text — reveals site format
+    # role == "nav"
+    nav: Literal["prev", "next"] | None = None
+    # role == "time"
+    time: str | None = None
+
+
 class PostCondition(BaseModel):
     """Post-condition distillation (recording-next-steps.md Priority 1): a small structured
     classification of the before/after delta already captured for this event, computed by plain
@@ -244,6 +274,10 @@ class RecordedEvent(BaseModel):
     # observed states + human confirmation").
     optionality: Literal["stochastic"] | None = None
     branch_hint: dict[str, Any] | None = None
+
+    # Custom date-picker detection (see DateContext). Optional — absent on recordings made
+    # before this existed, and on every non-calendar click regardless of recording age.
+    date_context: DateContext | None = None
 
     # Phase 2: compile-time signals for LLM-based selector generation (REQUIRED).
     # Recordings without these cannot validate; must be re-recorded.
