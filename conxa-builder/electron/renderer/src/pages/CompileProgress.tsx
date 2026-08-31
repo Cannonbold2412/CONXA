@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { fetchWorkflow } from "@/api/workflowsApi";
+import { PageHeader } from "@/components/layout/PageHeader";
 import {
   PIPELINE_STEPS,
   useCompileStore,
@@ -19,6 +22,13 @@ export function CompileProgress() {
   // reporting) when the user navigates away. See compileStore.ts.
   const run = useCompileStore((s) => s.run);
   const start = useCompileStore((s) => s.start);
+  const clear = useCompileStore((s) => s.clear);
+  const workflowQ = useQuery({
+    queryKey: ["workflow", workflowId],
+    queryFn: () => fetchWorkflow(workflowId!),
+    enabled: !!workflowId,
+  });
+  const workflowName = workflowQ.data?.workflow.name;
   const [blocked, setBlocked] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const [now, setNow] = useState(Date.now());
@@ -67,6 +77,12 @@ export function CompileProgress() {
     navigate(`/workflows/${encodeURIComponent(workflowId)}`);
   }
 
+  function retryCompile() {
+    if (!workflowId || !sessionId) return;
+    clear();
+    start({ workflowId, sessionId, mode });
+  }
+
   const doneCount = steps.filter((s) => s.state === "done").length;
   const pct = Math.round((doneCount / steps.length) * 100);
 
@@ -109,67 +125,34 @@ export function CompileProgress() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 0 }}>
-      {/* Header */}
-      <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <button
-            onClick={goToWorkflow}
-            style={{
-              background: "none",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "4px 10px",
-              color: "var(--text-secondary)",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
-            ← Back
-          </button>
-          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>
-            {mode === "recompile" ? "Recompiling workflow" : "Compiling workflow"}
-          </h2>
-          <span
-            style={{
-              fontSize: 11,
-              padding: "2px 8px",
-              borderRadius: 4,
-              background:
-                overallStatus === "done"
-                  ? "color-mix(in oklch, var(--green) 15%, transparent)"
-                  : overallStatus === "error"
-                  ? "color-mix(in oklch, var(--red) 15%, transparent)"
-                  : "color-mix(in oklch, var(--accent) 15%, transparent)",
-              color:
-                overallStatus === "done"
-                  ? "var(--green)"
-                  : overallStatus === "error"
-                  ? "var(--red)"
-                  : "var(--accent)",
-              border: `1px solid ${
-                overallStatus === "done"
-                  ? "color-mix(in oklch, var(--green) 30%, transparent)"
-                  : overallStatus === "error"
-                  ? "color-mix(in oklch, var(--red) 30%, transparent)"
-                  : "color-mix(in oklch, var(--accent) 30%, transparent)"
-              }`,
-            }}
-          >
-            {overallStatus === "running"
-              ? `Step ${doneCount + 1} of ${steps.length}`
-              : overallStatus === "done"
-              ? "Complete"
-              : "Failed"}
-          </span>
-          <div style={{ flex: 1 }} />
-          {overallStatus === "done" && skillId && (
-            <button className="btn-accent" onClick={goToEditor}>
-              Review steps →
-            </button>
-          )}
-        </div>
-        <ProgressBar pct={pct} status={overallStatus} />
-      </div>
+      <PageHeader
+        title={`${mode === "recompile" ? "Recompiling" : "Compiling"} ${workflowName ?? "workflow"}`}
+        description={
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <StatusPill overallStatus={overallStatus} doneCount={doneCount} stepsLength={steps.length} />
+            {overallStatus === "done" && skillId && (
+              <button
+                type="button"
+                onClick={goToEditor}
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", font: "inherit" }}
+              >
+                Review steps →
+              </button>
+            )}
+            {overallStatus === "error" && (
+              <button
+                type="button"
+                onClick={retryCompile}
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", font: "inherit" }}
+              >
+                Retry compile
+              </button>
+            )}
+          </div>
+        }
+        extra={<ProgressBar pct={pct} status={overallStatus} />}
+        onBack={goToWorkflow}
+      />
 
       {/* Three-panel body */}
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
@@ -330,13 +313,44 @@ export function CompileProgress() {
   );
 }
 
+function StatusPill({
+  overallStatus,
+  doneCount,
+  stepsLength,
+}: {
+  overallStatus: "running" | "done" | "error";
+  doneCount: number;
+  stepsLength: number;
+}) {
+  const color =
+    overallStatus === "done" ? "var(--green)" : overallStatus === "error" ? "var(--red)" : "var(--accent)";
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        padding: "2px 8px",
+        borderRadius: 4,
+        background: `color-mix(in oklch, ${color} 15%, transparent)`,
+        color,
+        border: `1px solid color-mix(in oklch, ${color} 30%, transparent)`,
+      }}
+    >
+      {overallStatus === "running"
+        ? `Step ${doneCount + 1} of ${stepsLength}`
+        : overallStatus === "done"
+        ? "Complete"
+        : "Failed"}
+    </span>
+  );
+}
+
 function ProgressBar({ pct, status }: { pct: number; status: string }) {
   const color =
     status === "error" ? "var(--red)" : status === "done" ? "var(--green)" : "var(--accent)";
   return (
     <div
       style={{
-        height: 4,
+        height: 3,
         background: "var(--bg-surface)",
         borderRadius: 2,
         overflow: "hidden",

@@ -9,6 +9,12 @@ type PageHeaderProps = {
   leading?: ReactNode
   actions?: ReactNode
   className?: string
+  /** Extra chrome rendered full-width under AppChrome's header row itself (not
+   * in the page body) — e.g. a progress strip. Most pages never set this. */
+  extra?: ReactNode
+  /** Shows a back-chevron at the true left edge of AppChrome's header row,
+   * before the title. Most pages never set this. */
+  onBack?: () => void
 }
 
 /** Registers this page's title/description into AppChrome's sticky top bar
@@ -16,13 +22,13 @@ type PageHeaderProps = {
  * Only renders something here when `leading` or `actions` are supplied — a
  * two-part strip that stays put in the body: standing information on the left,
  * page-level buttons on the right. */
-export function PageHeader({ title, description, leading, actions, className }: PageHeaderProps) {
+export function PageHeader({ title, description, leading, actions, className, extra, onBack }: PageHeaderProps) {
   const { setHeader } = usePageHeaderContext()
 
   useEffect(() => {
-    setHeader({ title, description })
+    setHeader({ title, description, extra, onBack })
     return () => setHeader(null)
-  }, [title, description, setHeader])
+  }, [title, description, extra, onBack, setHeader])
 
   if (!actions && !leading) return null
 

@@ -255,7 +255,7 @@ export function WorkflowStageRail({
 
   const nodes: RailNodeSpec[] = [
     {
-      label: 'Record',
+      label: hasRecording ? 'Re-record' : 'Record',
       icon: Play,
       // Re-recordable: once a recording exists this becomes "re-record" — the
       // previous take is backed up to disk before the new one replaces it.
@@ -264,7 +264,7 @@ export function WorkflowStageRail({
       onClick: onRecord,
     },
     {
-      label: compileBusy ? compileEtaLabel ?? 'Compiling…' : 'Compile',
+      label: compileBusy ? compileEtaLabel ?? 'Compiling…' : done[1] ? 'Re-compile' : 'Compile',
       icon: Zap,
       // Stays enabled while this workflow's own compile is running so the
       // click re-opens its progress page instead of doing nothing.

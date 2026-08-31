@@ -10,6 +10,7 @@ import { WindowTitleBar } from '@/components/layout/WindowTitleBar'
 import { PageHeaderProvider, usePageHeaderContext } from '@/contexts/PageHeaderContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import {
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Layers,
@@ -21,6 +22,10 @@ import {
   Settings,
   UploadCloud,
 } from 'lucide-react'
+
+// Both rows a straight border line has to line up across: the sidebar's own
+// logo block (below) and this header row (further down). Keep them equal.
+const HEADER_ROW_HEIGHT = 'h-16'
 
 const SIDEBAR_KEY = 'conxa-sidebar-collapsed'
 
@@ -53,15 +58,15 @@ function HeaderPageTitle() {
   // Always occupies the flex-1 slot (even empty) so the user/logout widget
   // stays pinned to the right regardless of whether a page has registered a
   // header yet (e.g. during the initial render tick, or on chrome-only screens).
+  // Title and description share one line — this bar is a fixed height
+  // (HEADER_ROW_HEIGHT), not something a second line can grow.
   return (
-    <div className="min-w-0 flex-1">
+    <div className="flex min-w-0 flex-1 items-baseline gap-2">
       {header ? (
         <>
-          <h1 className={cn('truncate text-sm font-semibold text-white sm:text-base', header.description && 'leading-snug')}>
-            {header.title}
-          </h1>
+          <h1 className="shrink-0 truncate text-sm font-semibold text-white sm:text-base">{header.title}</h1>
           {header.description != null && header.description !== false ? (
-            <div className={cn('mt-0.5 min-w-0', typeof header.description === 'string' ? 'truncate text-xs text-zinc-500' : 'text-xs text-zinc-500')}>
+            <div className={cn('min-w-0 text-xs text-zinc-500', typeof header.description === 'string' && 'truncate')}>
               {header.description}
             </div>
           ) : null}
@@ -69,6 +74,35 @@ function HeaderPageTitle() {
       ) : null}
     </div>
   )
+}
+
+/** Back-chevron at the true left edge of the bar, before the title — only
+ * rendered when a page opts in via PageHeader's `onBack`. */
+function HeaderBackButton() {
+  const { header } = usePageHeaderContext()
+  if (!header?.onBack) return null
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      className="shrink-0 text-zinc-400 hover:bg-white/5 hover:text-white"
+      aria-label="Back"
+      onClick={header.onBack}
+    >
+      <ArrowLeft className="size-4" />
+    </Button>
+  )
+}
+
+// A page-supplied strip (e.g. a progress bar) laid over the header row's own
+// bottom edge — see PageHeader's `extra` prop. Absolutely positioned so it
+// adds no height of its own; the row stays exactly HEADER_ROW_HEIGHT tall.
+// Most pages never set this, so this renders nothing.
+function HeaderExtra() {
+  const { header } = usePageHeaderContext()
+  if (!header?.extra) return null
+  return <div className="absolute inset-x-0 bottom-0">{header.extra}</div>
 }
 
 function ProductMark() {
@@ -135,7 +169,7 @@ function DesktopSidebar({ collapsed, setCollapsed }: { collapsed: boolean; setCo
         collapsed ? 'md:w-20' : 'md:w-54',
       )}
     >
-      <div className="flex items-center gap-3 border-b border-white/8 px-4 py-4">
+      <div className={cn('flex items-center gap-3 border-b border-white/8 px-4', HEADER_ROW_HEIGHT)}>
         <NavLink to="/workflows" className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
           <ProductMark />
           {!collapsed && (
@@ -256,9 +290,11 @@ export function AppChrome({ children }: { children: ReactNode }) {
           <PageHeaderProvider>
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0b0d10]/88 backdrop-blur">
-                <div className="flex items-center gap-3 px-4 py-3 sm:px-6">
+                <div className={cn('relative flex items-center gap-3 px-4 sm:px-6', HEADER_ROW_HEIGHT)}>
+                  <HeaderBackButton />
                   <HeaderPageTitle />
                   <UserWidget />
+                  <HeaderExtra />
                 </div>
               </header>
 

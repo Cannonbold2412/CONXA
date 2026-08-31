@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 
-type PageHeaderState = { title: string; description?: ReactNode } | null
+type PageHeaderState = { title: string; description?: ReactNode; extra?: ReactNode; onBack?: () => void } | null
 
 type PageHeaderContextValue = {
   header: PageHeaderState

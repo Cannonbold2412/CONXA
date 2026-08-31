@@ -2,6 +2,18 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The compile screen got stuck showing a failed compile forever, with no way to try again — 2026-09-01
+If a workflow failed to compile and you left that screen and came back, it just showed the same failure again with no way forward — like a stuck elevator button that won't call a new elevator. Now, whenever a compile has failed, a "Retry compile" button appears right next to the status so you can start a fresh attempt without leaving the page or re-recording anything.
+— 2026-09-01
+
+## The compile screen had two separate title bars saying the same thing — 2026-08-30
+While a workflow was compiling, the screen showed a generic "Compiling workflow" heading in its own bar, sitting right below the app's main top bar that already shows who's signed in. Now there's just one top bar: a back arrow sits at its far left, then "Compiling <the workflow's actual name>", with the step counter and a thin progress line worked into that same bar — all lined up on one row, at the same height as the Conxa logo block in the top-left corner, so the dividing line runs straight across the whole screen. No more redundant second header.
+— 2026-08-30
+
+## The Workflows page buttons now say "Re-record" and "Re-compile" once a workflow already has both — 2026-08-30
+The buttons for recording and compiling a workflow always said "Record" and "Compile," even after you'd already done both once. Now, once a recording exists the button reads "Re-record," and once a compile has finished the button reads "Re-compile," so it's clear you're redoing something rather than starting fresh.
+— 2026-08-30
+
 ## The group workflows screen scrolled as one giant page instead of just the long lists inside it — 2026-08-30
 Opening a group with many workflows or many connected applications used to scroll the entire screen — header and all — as one long page, which made it hard to keep your bearings. Now only the applications list and the workflows list scroll on their own, each in its own little window, while the page title and the surrounding layout stay put.
 — 2026-08-30
