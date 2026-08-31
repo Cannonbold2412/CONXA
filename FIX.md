@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The group workflows screen scrolled as one giant page instead of just the long lists inside it — 2026-08-30
+Opening a group with many workflows or many connected applications used to scroll the entire screen — header and all — as one long page, which made it hard to keep your bearings. Now only the applications list and the workflows list scroll on their own, each in its own little window, while the page title and the surrounding layout stay put.
+— 2026-08-30
+
 ## Recording a calendar date picker now actually works when the skill runs again later — 2026-08-30
 Picking a date on a real calendar pop-up (the kind with a little grid you click through, not a simple typed field) never replayed correctly before. Recording it captured "open the calendar, click Next twice, click on the 15" as three separate clicks — but next month, the calendar opens on a different month already, so those same clicks land on the wrong day, or on a greyed-out day borrowed from the next month by mistake. There was also no way to tell the workflow "use today's date" or "use whatever date the customer asks for" — the exact date from recording day was baked in forever. Now, recording a calendar pick turns into one clean step that remembers the date as an adjustable setting (with the recorded date as its starting point), and replaying it first tries typing the date directly into the field; only if that doesn't work does it drive the calendar itself, reading the currently-shown month and clicking Next/Previous the right number of times, then picking the exact right day while skipping any greyed-out days from a neighboring month. Date ranges (like a hotel check-in/check-out) and date-with-time pickers are covered too. None of this uses any AI, so it costs nothing to run and stays fast.
 — 2026-08-30

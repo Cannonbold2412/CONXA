@@ -18,7 +18,11 @@ function ScrollArea({
     >
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        // Radix wraps children in a `display: table; min-width: 100%` div (sizes to its
+        // widest line, not the viewport) — that defeats `truncate`/`min-w-0` on anything
+        // inside and lets wide rows stretch the whole scroll area. Force it back to a
+        // normal block box so width-constrained children behave as authored.
+        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 [&>div]:!block"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>

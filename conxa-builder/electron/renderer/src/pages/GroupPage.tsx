@@ -319,7 +319,7 @@ function WorkflowRow({
           <AlertDialogFooter>
             <AlertDialogCancel className="border-white/10 bg-white/5 text-zinc-200">Cancel</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-amber-600 text-white hover:bg-amber-700"
+              variant="brand"
               onClick={() => {
                 setRerecordConfirmOpen(false)
                 setRecordOpen(true)
@@ -437,7 +437,7 @@ export function GroupPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="flex h-full flex-col overflow-hidden">
       <PageHeader
         title={group.name}
         description={[
@@ -490,16 +490,16 @@ export function GroupPage() {
         }
       />
 
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:flex-row">
+      <div className="mx-auto flex w-full max-w-7xl flex-1 min-h-0 flex-col gap-6 overflow-y-auto px-4 py-6 sm:px-6 lg:flex-row lg:overflow-hidden">
         {/* ── Applications column ── */}
-        <section className="shrink-0 self-start rounded-xl border border-white/8 bg-white/[0.02] lg:w-[26rem]">
-          <div className="flex items-center justify-between border-b border-white/8 px-4 py-3.5">
+        <section className="flex shrink-0 flex-col self-start overflow-hidden rounded-xl border border-white/8 bg-white/[0.02] lg:w-[26rem] lg:self-auto">
+          <div className="flex shrink-0 items-center justify-between border-b border-white/8 px-4 py-3.5">
             <span className="text-[0.6875rem] font-medium text-zinc-400">Applications</span>
             <AddAppDialog groupId={group.id} />
           </div>
           {group.apps.length > 0 && (
             // Answers "is this group blocked?" without counting rows.
-            <div className="flex items-center justify-between gap-2 border-b border-white/8 px-4 py-2.5 text-xs">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/8 px-4 py-2.5 text-xs">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span aria-hidden className={cn('shrink-0 text-[13px] leading-none', auth.ready ? 'text-status-ok' : 'text-status-warn')}>
                   {auth.ready ? '●' : '▲'}
@@ -521,7 +521,7 @@ export function GroupPage() {
               </button>
             </div>
           )}
-          <div className="p-3">
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
             {group.apps.length === 0 ? (
               <p className="py-4 text-center text-xs text-zinc-600">No applications yet. Add one to start authenticating this group.</p>
             ) : (
@@ -531,25 +531,25 @@ export function GroupPage() {
         </section>
 
         {/* ── Workflows column ── */}
-        <div className="min-w-0 flex-1">
-          <ScrollArea className="min-h-0 flex-1">
-            {workflows.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-white/8 py-16 text-center">
-                <div className="rounded-full border border-white/8 bg-white/[0.03] p-4">
-                  <Layers className="size-7 text-zinc-700" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-zinc-400">No workflows yet</p>
-                  <p className="mt-1 max-w-sm text-xs text-zinc-600">Create a workflow in this group to start automating.</p>
-                </div>
-                <NewWorkflowDialog groupId={group.id} />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {workflows.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-white/8 py-16 text-center">
+              <div className="rounded-full border border-white/8 bg-white/[0.03] p-4">
+                <Layers className="size-7 text-zinc-700" />
               </div>
-            ) : (
-              <div className="rounded-xl border border-white/8 bg-white/[0.02]">
-                <div className="flex items-center justify-between border-b border-white/8 px-5 py-3.5">
-                  <span className="text-[0.6875rem] font-medium text-zinc-400">Workflows</span>
-                  <span className="text-[0.6875rem] text-zinc-600">Updated {fmtDate(Math.max(...workflows.map((w) => w.updated_at)))}</span>
-                </div>
+              <div>
+                <p className="text-sm font-medium text-zinc-400">No workflows yet</p>
+                <p className="mt-1 max-w-sm text-xs text-zinc-600">Create a workflow in this group to start automating.</p>
+              </div>
+              <NewWorkflowDialog groupId={group.id} />
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/8 bg-white/[0.02]">
+              <div className="flex shrink-0 items-center justify-between border-b border-white/8 px-5 py-3.5">
+                <span className="text-[0.6875rem] font-medium text-zinc-400">Workflows</span>
+                <span className="text-[0.6875rem] text-zinc-600">Updated {fmtDate(Math.max(...workflows.map((w) => w.updated_at)))}</span>
+              </div>
+              <ScrollArea className="min-h-0 flex-1">
                 {workflows.map((wf) => (
                   <WorkflowRow
                     key={wf.id}
@@ -561,9 +561,9 @@ export function GroupPage() {
                     onChanged={refresh}
                   />
                 ))}
-              </div>
-            )}
-          </ScrollArea>
+              </ScrollArea>
+            </div>
+          )}
         </div>
       </div>
     </div>
