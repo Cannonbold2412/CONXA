@@ -25,8 +25,15 @@ def is_editable_target(step: Step) -> bool:
     # placement. Treating it as "editable" makes the click->focus rewrite below turn a recorded
     # click into a `focus` step, and runtime's focus handler clicks before it focuses -- reopening
     # a dialog nothing can drive during an unattended run.
+    #
+    # A radio/checkbox isn't a text-entry field either, for the same reason: clicking one commits
+    # a choice in one gesture (fires its own "change" -> set_radio/set_checkbox), it doesn't
+    # acquire a caret to type into. Treating it as "editable" produces the exact bug this comment
+    # sits next to -- a click on a radio option gets rewritten into a phantom `focus` step that
+    # duplicates the real set_radio step compiler/choice.py already derives from the click.
     semantic = step.get("semantic") or {}
-    if str(semantic.get("input_type") or "").lower() == "file":
+    input_type = str(semantic.get("input_type") or "").lower()
+    if input_type in {"file", "radio", "checkbox"}:
         return False
     return True
 

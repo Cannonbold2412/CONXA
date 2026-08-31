@@ -124,7 +124,10 @@ function VariableRow({
         <Select
           value={row.varType}
           onValueChange={(v) =>
-            onChange({ ...row, varType: v === 'select' ? 'select' : v === 'date' ? 'date' : 'text' })
+            onChange({
+              ...row,
+              varType: v === 'select' ? 'select' : v === 'multiselect' ? 'multiselect' : v === 'date' ? 'date' : 'text',
+            })
           }
         >
           <SelectTrigger size="sm" className="h-8 w-full text-sm" aria-label="Type">
@@ -133,6 +136,7 @@ function VariableRow({
           <SelectContent>
             <SelectItem value="text">Text</SelectItem>
             <SelectItem value="select">Choice list</SelectItem>
+            <SelectItem value="multiselect">Multiple choice</SelectItem>
             <SelectItem value="date">Date</SelectItem>
           </SelectContent>
         </Select>
@@ -140,7 +144,13 @@ function VariableRow({
           aria-label="Default value"
           type={row.varType === 'date' ? 'date' : 'text'}
           className="h-8 text-sm"
-          placeholder={row.varType === 'select' ? 'must match an option' : 'none'}
+          placeholder={
+            row.varType === 'select'
+              ? 'must match an option'
+              : row.varType === 'multiselect'
+                ? 'comma-separated options'
+                : 'none'
+          }
           value={row.defaultValue}
           onChange={(e) => onChange({ ...row, defaultValue: e.target.value })}
         />
@@ -171,7 +181,7 @@ function VariableRow({
           <Trash2 className="size-3.5" />
         </Button>
       </div>
-      {row.varType === 'select' ? (
+      {row.varType === 'select' || row.varType === 'multiselect' ? (
         <div className="flex items-center gap-2 pl-1">
           <Label className="text-muted-foreground shrink-0 text-xs">Options</Label>
           <Input

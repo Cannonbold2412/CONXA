@@ -141,9 +141,15 @@ def _accessible_name(target: dict[str, Any]) -> str:
     structural identity. That is strictly better than inventing a name that resolves to
     nothing.
     """
+    # `name` is deliberately NOT a candidate: it's the HTML form-field attribute, never an ARIA
+    # accessible-name source. For an ordinary input it's usually just the accessible name's exact
+    # duplicate by coincidence (a coincidence that stopped being harmless once selectors moved to
+    # matching on it), but for a radio/checkbox GROUP it's the shared group key every sibling
+    # carries -- `role=radio[name="gender"]` matches nothing (Playwright's role selector matches
+    # the accessible name "Male", not the group's `name`) or every option in the group, never the
+    # one that was recorded. See CLAUDE.md's multiple-choice plan.
     candidates = [
         target.get("aria_label"),
-        target.get("name"),
         target.get("alt"),
         target.get("title"),
         str(target.get("inner_text") or "")[:80],

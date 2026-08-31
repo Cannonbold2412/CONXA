@@ -17,6 +17,15 @@ from conxa_compile.policy.bundle import get_policy_bundle
 
 Step = dict[str, Any]
 
+# Every action that commits a field's value in one gesture. A recorded click/focus immediately
+# preceding one of these on the SAME target is prep noise, not a separate user intent — mirrors
+# bridge.js's own _VALUE_SET_ACTIONS list (kept in sync by hand; bridge.js additionally includes
+# "fill", which the recorder itself never emits but a hand-authored/legacy event might).
+_VALUE_SET_ACTIONS = frozenset({
+    "type", "fill", "select", "select_option", "set_checkbox", "set_radio", "date_pick",
+    "upload", "upload_intent",
+})
+
 
 def _generic_anchors(policy: dict[str, Any] | None = None) -> set[str]:
     data = policy or get_policy_bundle().data
@@ -279,8 +288,13 @@ def clean_steps(steps: list[Step], policy: dict[str, Any] | None = None) -> list
         # Merge noisy click/focus + the field's real value-setting action. An upload_intent
         # (or an already-normalized upload) on a file input supersedes the picker-invoking click
         # exactly the way `type` supersedes a text field's prep click — replay must never see
-        # that click, since clicking a file input reopens an OS dialog nothing can drive.
-        if action in {"type", "upload", "upload_intent"} and cleaned and cleaned[-1] is not None:
+        # that click, since clicking a file input reopens an OS dialog nothing can drive. Same
+        # reasoning for select/set_checkbox/set_radio/date_pick: the prep click/focus that opens a
+        # dropdown or lands on a radio option is not a distinct user intent once the committing
+        # "change" event exists — without this widening (originally `{"type", "upload",
+        # "upload_intent"}` only), a recorded radio pick compiled into two steps: a phantom
+        # `focus`/`click` PLUS the real `set_radio`.
+        if action in _VALUE_SET_ACTIONS and cleaned and cleaned[-1] is not None:
             prev = cleaned[-1]
             if prev is not None and action_name(prev) in {"click", "focus"} and _target_key(prev) == key:
                 cleaned.pop()
@@ -316,7 +330,7 @@ def clean_steps(steps: list[Step], policy: dict[str, Any] | None = None) -> list
             prev = deduped[-1]
             if (
                 is_editable_target(step)
-                and prev_action == "type"
+                and prev_action in _VALUE_SET_ACTIONS
                 and _target_key(prev) == _target_key(step)
             ):
                 continue

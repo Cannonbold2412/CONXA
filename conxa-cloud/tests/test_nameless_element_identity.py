@@ -95,6 +95,21 @@ def test_label_text_never_names_a_link():
     assert _accessible_name(target) == ""
 
 
+def test_name_attribute_never_used_as_accessible_name():
+    """The `name` HTML attribute is the radio/checkbox GROUP key, not any one option's
+    accessible name -- `role=radio[name="gender"]` matches every sibling in the group (or
+    nothing, since Playwright's role selector matches the accessible name "Male", not the
+    group's shared `name`). Falls through to label_text, the option's own real accessible
+    name for a form control."""
+    target = {"tag": "input", "role": "radio", "inner_text": "", "name": "gender", "label_text": "Male"}
+    assert _accessible_name(target) == "Male"
+
+
+def test_name_attribute_alone_yields_no_name_rather_than_the_group_key():
+    target = {"tag": "input", "role": "radio", "inner_text": "", "name": "gender"}
+    assert _accessible_name(target) == ""
+
+
 # ---------------------------------------------------------------------------
 # generate_deterministic_signals
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from conxa_compile.compiler.entity_binding import (
     upgrade_entity_binding_identifiers,
 )
 from conxa_compile.compiler.input_binding import derive_input_binding
+from conxa_compile.compiler.choice import collapse_choice_group_runs, derive_choice
 from conxa_compile.compiler.date_picker import collapse_date_picker_runs
 from conxa_compile.compiler.upload_binding import apply_bindings_to_compiled_steps
 from conxa_compile.compiler.recovery_policy import (
@@ -57,6 +58,7 @@ from conxa_core.models.skill_spec import (
     DecisionPolicy,
     ElementFingerprint,
     FrameFingerprint,
+    HandlerHints,
     IdentityBundle,
     IdentitySignal,
     RecoveryBlock,
@@ -1451,6 +1453,19 @@ def _build_step(
         asset_session_id=session_root.name,
     )
     value, input_binding = _derive_input_binding(ev, policy)
+    # Multiple-choice controls (radio/select/ARIA radiogroup/listbox -- checkbox groups are
+    # handled separately by collapse_choice_group_runs, a post-pass below since one group spans
+    # several events): override the label-derived binding above with one named after the
+    # QUESTION ("gender"), never the recorded ANSWER ("male"), and stash the full option set for
+    # the runtime to validate a caller's value against. Takes priority over
+    # _derive_input_binding's label/placeholder chain, which is what produced {{male}} before
+    # this existed -- see CLAUDE.md's multiple-choice plan.
+    choice_hints = derive_choice(ev)
+    handler_hints = HandlerHints()
+    if choice_hints is not None:
+        value = choice_hints["value"]
+        input_binding = choice_hints["input_binding"]
+        handler_hints = HandlerHints(control_kind="choice", choice=choice_hints["choice"])
     confidence_protocol = _merge_compile_warnings(
         _default_confidence_protocol(bundle),
         ev_with_intent,
@@ -1506,6 +1521,7 @@ def _build_step(
         tab=_build_tab_context(ev),
         target=target,
         identity_bundle=identity_bundle,
+        handler_hints=handler_hints,
         signals=signals,
         state={"before": state_before, "after": state_after},
         value=value,
@@ -1766,11 +1782,19 @@ def compile_skill_package(
     # _insert_start_navigate_step below: it indexes steps[i] against cleaned_events[i], and the
     # leading navigate that function prepends has no matching cleaned_event.
     _populate_hover_chains(steps, cleaned_events, session_id=sid)
-    # Custom date-picker collapse: must run here too, while steps[i] still maps 1:1 onto
-    # cleaned_events[i] — same alignment requirement as _populate_hover_chains above. Collapses
-    # (never regresses) an open->nav->day-cell click run into one parameterized date_pick step
-    # per bridge.js's date_context tagging; see conxa_compile/compiler/date_picker.py.
-    steps = collapse_date_picker_runs(steps, cleaned_events, pol)
+    # Checkbox-group collapse: must run here too, while steps[i] still maps 1:1 onto
+    # cleaned_events[i] — same alignment requirement as _populate_hover_chains above. Collapses a
+    # "pick all that apply" run of individual set_checkbox toggles into one multi-valued step;
+    # see conxa_compile/compiler/choice.py. Runs BEFORE the date-picker collapse below and hands
+    # it a synced events view rather than cleaned_events directly — collapse_date_picker_runs
+    # also assumes 1:1 alignment with whatever `steps` it's given, which this pass may have
+    # already shrunk.
+    steps, date_pass_events = collapse_choice_group_runs(steps, cleaned_events, pol)
+    # Custom date-picker collapse: same alignment requirement, against date_pass_events (see
+    # above) rather than cleaned_events. Collapses (never regresses) an open->nav->day-cell click
+    # run into one parameterized date_pick step per bridge.js's date_context tagging; see
+    # conxa_compile/compiler/date_picker.py.
+    steps = collapse_date_picker_runs(steps, date_pass_events, pol)
     steps = _insert_start_navigate_step(steps, cleaned_events)
 
     # The workflow-level intent graph was already built before the step loop —

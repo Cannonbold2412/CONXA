@@ -572,6 +572,12 @@
         if (!sib || sib.contains(el)) continue;
         if (_SKIP_INTERACTIVE.has(sib.tagName.toLowerCase())) continue;
         const txt = safeText(sib, 80);
+        // A sibling whose entire text is a month+year string ("August 2026") is never a real
+        // field label — it's a live "current value" readout (a calendar widget's own header is
+        // the common case, e.g. react-datepicker's month/year <select> dropdowns sit right next
+        // to one), and it re-renders as the user interacts, so a captured label like
+        // "august_2026" would even change mid-interaction. Skip it and keep walking.
+        if (txt && _MONTH_YEAR_EXACT_RE.test(txt.trim())) continue;
         if (txt && txt.length >= 2 && txt.length <= 60) return txt;
       }
       node = container;
@@ -777,6 +783,10 @@
     "[class*='calendar']",
   ];
   const _MONTH_YEAR_RE = /[A-Za-z]{3,9}\.?\s+\d{4}|\d{4}\s+[A-Za-z]{3,9}/;
+  // Anchored variant for captureAssociatedLabel's guard below: that check needs "this sibling's
+  // ENTIRE text is a month+year readout" (skip it), not "contains one somewhere" (a legitimate
+  // label like "Enter the August 2026 report ID" must not be discarded).
+  const _MONTH_YEAR_EXACT_RE = /^[A-Za-z]{3,9}\.?\s+\d{4}$|^\d{4}\s+[A-Za-z]{3,9}$/;
   const _NAV_PREV_RE = /prev|previous|«|‹/i;
   const _NAV_NEXT_RE = /next|»|›/i;
   const _TIME_OPTION_RE = /^\d{1,2}:\d{2}(\s?[AaPp][Mm])?$/;
@@ -902,9 +912,26 @@
     return null;
   }
 
-  /** Only called for actionKind === "click" (see serializeTarget below) — costs nothing on any
-   * other action type. Returns null unless `el` resolves cleanly to a day cell, a prev/next nav
-   * button, or a time option inside a detected calendar grid. */
+  // Some calendar widgets (react-datepicker's showMonthDropdown/showYearDropdown mode — the
+  // pattern its own docs recommend for far-back dates like a date of birth; MUI's and Ant
+  // Design's year/decade pickers use the equivalent idiom) navigate month/year via native
+  // <select> elements instead of click-through prev/next buttons. A native select's own class/
+  // aria-label almost always says so directly.
+  const _YEAR_SELECT_RE = /year/i;
+  const _MONTH_SELECT_RE = /month/i;
+
+  function _selectRoleFor(el) {
+    if (!el || !el.tagName || el.tagName.toLowerCase() !== "select") return null;
+    const haystack = [el.className || "", el.getAttribute("aria-label") || "", el.name || "", el.id || ""].join(" ");
+    if (_YEAR_SELECT_RE.test(haystack)) return "year_select";
+    if (_MONTH_SELECT_RE.test(haystack)) return "month_select";
+    return null;
+  }
+
+  /** Only called for actionKind === "click" or "select" (see serializeTarget below) — costs
+   * nothing on any other action type. Returns null unless `el` resolves cleanly to a day cell, a
+   * prev/next nav button, a year/month <select>, or a time option inside a detected calendar
+   * grid. */
   function buildDateContext(el) {
     const gridRoot = findCalendarRoot(el);
     if (!gridRoot) return null;
@@ -915,6 +942,24 @@
     const headerSelector = header ? _selectorForElement(header) : "";
     const headerText = header ? safeText(header, 60) : "";
     const gridSelector = _selectorForElement(gridRoot);
+
+    // A year/month <select>'s own committed value is the one meaningful signal here — its class/
+    // id-derived label_text ("August 2026", the picker's own live header text) is exactly the
+    // captureAssociatedLabel garbage this whole feature exists to route around, so this must be
+    // checked from the select tag/role itself, never from any nearby text.
+    const selectRole = _selectRoleFor(el);
+    if (selectRole) {
+      const opt = el.selectedOptions && el.selectedOptions[0];
+      const value = opt ? safeText(opt, 40) : String(el.value || "");
+      return {
+        role: selectRole,
+        grid: gridSelector,
+        header: headerSelector,
+        header_text: headerText,
+        select: _selectorForElement(el),
+        value,
+      };
+    }
 
     if (prevBtn && el === prevBtn) {
       return { role: "nav", nav: "prev", grid: gridSelector, header: headerSelector, header_text: headerText };
@@ -944,6 +989,124 @@
     const timeText = _timeOptionText(el, gridRoot);
     if (timeText) {
       return { role: "time", time: timeText, grid: gridSelector };
+    }
+
+    return null;
+  }
+
+  // Multiple-choice controls (radio/checkbox groups, native <select>, ARIA radiogroup/listbox
+  // widgets): a recorded MCQ only captures the one option clicked, so the compiler has nothing to
+  // build an enum input from and the runtime has nothing to match a caller's answer against — see
+  // CLAUDE.md's date-picker plan for the sibling feature this mirrors. Observed only, same
+  // try/catch discipline as buildDateContext: the recorder never probes for these, it just
+  // describes what it saw. Requires >= 2 members for radio/checkbox groups so a lone standalone
+  // checkbox ("I agree") stays an ordinary set_checkbox, never a one-option "choice".
+  const _CHOICE_GROUP_MIN = 2;
+  const _CHOICE_OPTIONS_MAX = 60;
+
+  function _choiceOptionLabel(el) {
+    return captureAssociatedLabel(el) || safeText(el, 120) || String(el.value || "");
+  }
+
+  function _fieldsetLegendLabel(el) {
+    const fs = el.closest("fieldset");
+    if (!fs) return null;
+    const legend = fs.querySelector("legend");
+    return legend ? safeText(legend, 120) : null;
+  }
+
+  function _ariaGroupLabel(root) {
+    const aria = root.getAttribute("aria-label");
+    if (aria) return aria;
+    const labelledBy = root.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const ref = document.getElementById(labelledBy);
+      if (ref) return safeText(ref, 120);
+    }
+    return null;
+  }
+
+  function _nativeGroupMembers(el, type) {
+    const name = el.getAttribute("name");
+    if (!name) return [el];
+    const form = el.form || document;
+    let members;
+    try {
+      members = Array.from(form.querySelectorAll(`input[type="${type}"][name="${cssEscapeIdent(name)}"]`));
+    } catch (_e) {
+      members = [el];
+    }
+    return members.length ? members : [el];
+  }
+
+  function buildChoiceContext(el) {
+    if (!el || el.nodeType !== 1) return null;
+    const tag = el.tagName.toLowerCase();
+    const type = inputTypeOf(el);
+    const role = nodeRole(el);
+
+    if (tag === "select") {
+      const options = Array.from(el.options || []).slice(0, _CHOICE_OPTIONS_MAX).map((opt) => ({
+        value: String(opt.value),
+        label: safeText(opt, 120) || String(opt.value),
+        selector: "",
+        checked: !!opt.selected,
+      }));
+      if (!options.length) return null;
+      return {
+        kind: "select",
+        multi: !!el.multiple,
+        group_key: el.getAttribute("name") || el.id || "",
+        group_label: captureAssociatedLabel(el) || "",
+        group_selector: "",
+        options,
+      };
+    }
+
+    if (tag === "input" && (type === "radio" || type === "checkbox")) {
+      const members = _nativeGroupMembers(el, type);
+      // A single radio with no siblings is meaningless (nothing to choose between), and a lone
+      // checkbox ("I agree") is an ordinary boolean, not a pick-among-options control -- both
+      // stay a plain set_radio/set_checkbox step. Applies to both kinds; a radio with only one
+      // member is exactly as pointless as a checkbox group of one.
+      if (members.length < _CHOICE_GROUP_MIN) return null;
+      const groupLabel = _fieldsetLegendLabel(el) || "";
+      const fs = el.closest("fieldset");
+      return {
+        kind: type,
+        multi: type === "checkbox",
+        group_key: el.getAttribute("name") || "",
+        group_label: groupLabel,
+        group_selector: fs ? _selectorForElement(fs) : "",
+        options: members.slice(0, _CHOICE_OPTIONS_MAX).map((m) => ({
+          value: String(m.value),
+          label: _choiceOptionLabel(m),
+          selector: _selectorForElement(m),
+          checked: !!m.checked,
+        })),
+      };
+    }
+
+    if (role === "radio" || role === "option") {
+      const groupSelector = el.closest('[role="radiogroup"],[role="listbox"]');
+      if (!groupSelector) return null;
+      const kind = nodeRole(groupSelector) === "listbox" ? "aria_listbox" : "aria_radio";
+      const memberRole = kind === "aria_listbox" ? "option" : "radio";
+      const members = Array.from(groupSelector.querySelectorAll(`[role="${memberRole}"]`));
+      if (members.length < _CHOICE_GROUP_MIN) return null;
+      return {
+        kind,
+        multi: false,
+        group_key: groupSelector.id || "",
+        group_label: _ariaGroupLabel(groupSelector) || "",
+        group_selector: _selectorForElement(groupSelector),
+        options: members.slice(0, _CHOICE_OPTIONS_MAX).map((m) => ({
+          value: m.getAttribute("data-value") || safeText(m, 120) || "",
+          label: safeText(m, 120) || m.getAttribute("aria-label") || "",
+          selector: _selectorForElement(m),
+          checked: m.getAttribute("aria-checked") === "true" || m.getAttribute("aria-selected") === "true",
+        })),
+      };
     }
 
     return null;
@@ -997,10 +1160,17 @@
     // this never changes compiled behavior on its own (see build.py), only surfaces a suggestion.
     let branchHint = null;
     try { branchHint = buildBranchHint(el); } catch (_e) {}
-    // Custom date-picker detection (only meaningful on click — see buildDateContext).
+    // Custom date-picker detection (only meaningful on click/select — see buildDateContext).
     let dateContext = null;
-    if (actionKind === "click") {
+    if (actionKind === "click" || actionKind === "select") {
       try { dateContext = buildDateContext(el); } catch (_e) {}
+    }
+    // Multiple-choice control detection (only meaningful on the actions that can land on one —
+    // see buildChoiceContext). A dateContext hit takes priority: a year/month <select> inside a
+    // calendar grid is date-picker navigation, not an independent MCQ input.
+    let choiceContext = null;
+    if (!dateContext && _VALUE_SET_ACTIONS.indexOf(actionKind) >= 0) {
+      try { choiceContext = buildChoiceContext(el); } catch (_e) {}
     }
     // Phase 2 signals (compile-time LLM input). Failures fall back to empty defaults.
     let ancestorsChain = [];
@@ -1044,6 +1214,7 @@
       optionality: branchHint ? "stochastic" : null,
       branch_hint: branchHint,
       date_context: dateContext,
+      choice_context: choiceContext,
       // Evidence for post-condition classification at finalize (finalizeStateWithAfter) — never
       // serialized: state_probe (including the raw `el` ref) is deleted before report().
       state_probe: {
@@ -1380,7 +1551,23 @@
       const resolved = resolveMeaningfulTarget(el);
       if (resolved) {
         flushPendingHoverBeforeClick(resolved);
-        const p = serializeTarget(resolved, "click", null);
+        // ARIA radiogroup/listbox widgets (a <div role="radio">/[role="option"]) never fire a
+        // native "change" event the way input[type=radio]/<select> do -- a click IS the whole
+        // selection gesture. Recording it as a plain "click" would lose which option was picked
+        // (see buildChoiceContext); record it as the same set_radio/select_option action a native
+        // control would emit so the rest of the pipeline (dedupe, compiler, runtime) treats it
+        // identically to any other multiple-choice selection.
+        let ariaChoiceAction = null;
+        try {
+          const ctx = buildChoiceContext(resolved);
+          if (ctx && (ctx.kind === "aria_radio" || ctx.kind === "aria_listbox")) {
+            const picked = ctx.options.find((o) => o.selector === _selectorForElement(resolved));
+            ariaChoiceAction = { action: ctx.kind === "aria_listbox" ? "select_option" : "set_radio", value: picked ? picked.value : "" };
+          }
+        } catch (_e) {}
+        const p = ariaChoiceAction
+          ? serializeTarget(resolved, ariaChoiceAction.action, ariaChoiceAction.value)
+          : serializeTarget(resolved, "click", null);
         finalizeStateAfterSettle(p, clickSettleQuietMs, clickSettleMaxMs);
         return;
       }

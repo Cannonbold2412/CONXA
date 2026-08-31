@@ -100,6 +100,18 @@ function dayNumberSelector(day) {
   return `${exclude}:text-is("${day}")`;
 }
 
+// 1 -> "January" ... 12 -> "December". For selectOption({label}) against a year/month <select>
+// (react-datepicker's showMonthDropdown mode and equivalents) — deliberately by LABEL, not by
+// the option's raw value: react-datepicker's own month values are 0-indexed, other libraries use
+// 1-indexed or the month name itself as the value, and there is no reliable way to tell which
+// without reading the site's source. Every one of those libraries still renders a human-readable
+// English month name as the option's visible text, so matching on that sidesteps the indexing
+// question entirely.
+function monthLabel(month) {
+  const name = MONTHS[month - 1];
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : null;
+}
+
 module.exports = {
   parseDateValue,
   formatForDisplay,
@@ -107,5 +119,6 @@ module.exports = {
   monthDelta,
   machineCellSelector,
   dayNumberSelector,
+  monthLabel,
   MAX_NAV_CLICKS: 24,
 };

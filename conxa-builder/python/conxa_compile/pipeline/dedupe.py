@@ -9,6 +9,13 @@ _ELEMENT_ACTIONS = frozenset({
     "set_checkbox", "set_radio", "select", "select_option",
 })
 _FOCUS_LOOKAHEAD = 3
+# A native <select> can fire click (opens the dropdown), a browser-native type-ahead "type" flush
+# (typing to jump to an option), and a second click (closing it) around its own authoritative
+# "select" event — all on the identical element. Bounded lookaround for how many such noise events
+# can surround one select before/after; wide enough for the open+close pair, narrow enough to never
+# accidentally absorb an unrelated later action.
+_SELECT_NOISE_LOOKAROUND = 2
+_SELECT_NOISE_ACTIONS = frozenset({"click", "dblclick", "type", "fill"})
 
 
 def _selector_key(ev: dict[str, Any]) -> str:
@@ -58,6 +65,51 @@ def drop_superseded_focus_events(events: list[dict[str, Any]]) -> list[dict[str,
                 break
         if not superseded:
             out.append(ev)
+    return out
+
+
+def collapse_select_interaction_noise(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse click/type noise bracketing a `select` event on the same element into just the
+    `select` — it already carries the authoritative committed value, so a preceding click (opens
+    the dropdown), a following click (closes it), and a type-ahead "type" flush (a select's own
+    native jump-to-option typing, which is not text entry) are pure noise once it exists. Without
+    this, one dropdown pick can compile into 3-4 separate steps for no reason — general to every
+    `<select>`, not specific to date pickers (react-datepicker's month/year dropdowns are exactly
+    where this was found, but it applies identically to any ordinary form select)."""
+    out: list[dict[str, Any]] = []
+    n = len(events)
+    i = 0
+    while i < n:
+        ev = events[i]
+        if (ev.get("action") or {}).get("action") != "select":
+            out.append(ev)
+            i += 1
+            continue
+        key = _selector_key(ev)
+        if key:
+            # Absorb noise already appended to `out` immediately before this select.
+            absorbed = 0
+            while (
+                absorbed < _SELECT_NOISE_LOOKAROUND
+                and out
+                and (out[-1].get("action") or {}).get("action") in _SELECT_NOISE_ACTIONS
+                and _selector_key(out[-1]) == key
+            ):
+                out.pop()
+                absorbed += 1
+        out.append(ev)
+        i += 1
+        if key:
+            # Absorb noise immediately following this select, same element, bounded lookaround.
+            absorbed = 0
+            while (
+                absorbed < _SELECT_NOISE_LOOKAROUND
+                and i < n
+                and (events[i].get("action") or {}).get("action") in _SELECT_NOISE_ACTIONS
+                and _selector_key(events[i]) == key
+            ):
+                i += 1
+                absorbed += 1
     return out
 
 

@@ -614,10 +614,25 @@ def _normalize_saved_skill_inputs(inputs: list[Any]) -> list[dict[str, Any]]:
             row["optional"] = True
         options = raw.get("options")
         if isinstance(options, list) and options:
-            row["enum"] = [str(item) for item in options if str(item)]
+            option_strs = [str(item) for item in options if str(item)]
+            if str(raw.get("type") or "") == "multiselect":
+                # A checkbox-group answer is a set of picks, not one string -- JSON-Schema array
+                # with an enum'd `items` (not a top-level `enum`) is what tells an MCP client the
+                # value must be a list of these exact strings, not a comma-joined single string.
+                row["type"] = "array"
+                row["items"] = {"type": "string", "enum": option_strs}
+            else:
+                row["enum"] = option_strs
         default = raw.get("default")
         if default is not None and str(default).strip():
-            row["default"] = default
+            if row.get("type") == "array":
+                # SkillInputVariable.default is comma-joined labels for a multiselect (see
+                # editor/dto.py) -- split it back out so the default matches the array type
+                # declared above instead of shipping a comma-joined string an agent would then
+                # have to parse itself.
+                row["default"] = [p.strip() for p in str(default).split(",") if p.strip()]
+            else:
+                row["default"] = default
         out.append(row)
     return out
 

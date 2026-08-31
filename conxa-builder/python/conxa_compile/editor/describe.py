@@ -104,9 +104,37 @@ _STATIC_ACTION_LABELS = {
 }
 
 
+def _choice_description(step: dict[str, Any], n: int) -> str | None:
+    """`Select "Gender" (Male, Female, Other)` for a compiled multiple-choice step — the group's
+    own question and its full recorded option set, never the bare
+    `role=radio[name="gender"]`-shaped selector _ACTION_VERBS would otherwise fall back to
+    (see CLAUDE.md's multiple-choice plan). None for a step compiled before this feature existed,
+    or an ordinary standalone checkbox (no group -> no handler_hints.choice)."""
+    hints = step.get("handler_hints") if isinstance(step.get("handler_hints"), dict) else {}
+    if hints.get("control_kind") != "choice":
+        return None
+    choice = hints.get("choice") if isinstance(hints.get("choice"), dict) else {}
+    options = [
+        str(o.get("label") or o.get("value") or "")
+        for o in (choice.get("options") or [])
+        if isinstance(o, dict) and (o.get("label") or o.get("value"))
+    ]
+    label = str(choice.get("group_label") or "").strip() or _humanize_slug(str(choice.get("group_key") or "")) or "choice"
+    if not options:
+        return f'Step {n}: Select "{label}"'
+    shown = ", ".join(options[:6])
+    if len(options) > 6:
+        shown += ", …"
+    return f'Step {n}: Select "{label}" ({shown})'
+
+
 def describe_step(step: dict[str, Any], step_index: int) -> str:
     n = step_index + 1
     act = action_name(step).lower()
+    if act in {"select", "select_option", "set_checkbox", "set_radio"}:
+        choice_desc = _choice_description(step, n)
+        if choice_desc is not None:
+            return choice_desc
     intent = get_effective_intent_from_skill_step(step) or str(step.get("intent") or "").strip()
     label = _visible_label(step)
     sel = str((step.get("target") or {}).get("primary_selector") or "").strip()

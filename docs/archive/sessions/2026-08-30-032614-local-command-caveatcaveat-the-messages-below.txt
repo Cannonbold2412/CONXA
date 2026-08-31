@@ -1,0 +1,223 @@
+ ▐▛███▛█   Claude Code v2.1.251
+▝▜██████▀  Sonnet 5 · Claude Pro
+  ▝▝ ▝▝    ~\Desktop\CONXA
+
+
+❯ /clear                                                                        
+
+❯ hey what i think is in future when we have proper data we ca turn this        
+  compiler into a ML model or something like LLM instead of deterministic       
+  output what do u think                                                        
+
+● Skeptical — the deterministic compiler is a stated invariant here
+  (IdentityBundle + selector_grammar.py as sole selector generators on the
+  primary path), specifically because it's what makes selectors auditable and
+  reproducible; an ML model reintroduces the non-determinism you spent effort
+  removing. Where more data actually helps is tuning the scoring/weights inside
+  the deterministic system (durability scores in selector_score.py, recovery
+  tier decisions) — that's a case for calibrating parameters from real outcome
+  data, not replacing the pipeline with a learned model. If you want, we could
+  look at what telemetry docs/cost_model.md or TRD.md already tracks that'd feed
+  that kind of calibration.
+
+✻ Churned for 8s · done 3:15 AM
+
+❯ well the thing is today also and in future also this deterministic will not   
+  be that much robust for exmaple what must be variables what must be hover     
+  what should we dedupe what should we keep stuff like that like what was the   
+  wasted moment in this recording etc etc                                       
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Right — that's a different problem than selector generation, and it's a better
+  fit for learning. dedupe.py today is pattern-matched heuristics
+  (drop_superseded_focus_events, collapse_select_interaction_noise,
+  dedupe_scroll_events — all rule-based on event shape), and "is this step
+  noise/should this be a variable/does this need a hover" are genuinely fuzzy
+  judgment calls, not identity lookups. That's exactly why the invariant only
+  locks down selector strings — the codebase already routes step-intent and the
+  workflow intent graph through an LLM for similar reasons.
+
+  So the split I'd hold: element targeting stays deterministic (auditable, must
+  survive recovery/replay identically every run — an LLM guessing a selector
+  differently each compile would break the whole self-healing story). But
+  "what's a wasted moment," "should this be parameterized," "hover vs click" are
+  classification decisions over recorded event sequences — good candidates for
+  a learned classifier or LLM pass feeding into the deterministic pipeline
+  (e.g., a step before dedupe.py/run.py that scores/labels events), not
+  replacing it.
+
+  Practical path: instrument these judgment points now (log what a human
+  corrects in the editor — collapsed steps, retargeted hover,
+  promoted-to-variable fields) as labeled training data, since you don't have it
+  yet. Want me to sketch where in pipeline/run.py that labeling hook would go?
+
+✻ Churned for 23s · done 3:17 AM
+
+❯ /rename 
+  ⎿  Session renamed to: instrument-human-feedback-labels
+
+❯ ok so you are saying we should kep both deterministic and ML/LLm              
+
+● Yes — hybrid, not either/or. Deterministic stays the backbone for anything
+  that must be reproducible and auditable (selector generation, targeting,
+  recovery matching — the stuff TRD.md's invariant protects). ML/LLM sits on top
+  for the fuzzy judgment calls (dedupe/noise-filtering, variable detection,
+  hover-vs-click, "wasted moment" pruning) where the "right" answer is genuinely
+  a classification problem, not a lookup — and only once you've collected real
+  labeled data from human corrections, since guessing without data is worse than
+  the current heuristics.
+
+✻ Crunched for 4s · done 3:19 AM
+
+❯ Add this in todo                                                              
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Adding a new item after BUILD-1, and updating the P2 counts.
+
+● Update(TODO.md)
+  ⎿  Added 12 lines
+      666  - **Complexity:** XL — touches the compiler's core event→packa
+           ge pipeline, requires a new artifact format, versioning strate
+           gy, and model-pinning across the LLM router.
+      667  - **Success criteria:** compiling the same recording twice (sa
+           me model/prompt version) produces byte-identical `.cir` output
+           ; a `cir_root_hash` mismatch is detectable and drives a define
+           d resolution path (recompile vs. flag).
+      668  
+      669 +### BUILD-18 — Learned classifier for pipeline judgment calls 
+          +(dedupe/variable-detection/hover-vs-click), fed by human-corre
+          +ction telemetry                                               
+      670 +- **Category:** Builder / Compiler                            
+      671 +- **Description:** Keep selector/target generation determinist
+          +ic (`IdentityBundle` + `selector_grammar.py` — this is the non
+          +-negotiable invariant in `CLAUDE.md` and stays). But several *
+          +other* pipeline judgment calls in `conxa_compile/pipeline/` (`
+          +dedupe.py`'s `drop_superseded_focus_events`/`collapse_select_i
+          +nteraction_noise`/`dedupe_scroll_events`, and `run.py`'s stage
+          + sequencing) are currently rule-based heuristics over recorded
+          + event shape, deciding things like: is this event noise vs. si
+          +gnal ("wasted moment"), should this field be promoted to a var
+          +iable, should this interaction be a hover vs. a click. These a
+          +re classification problems, not identity lookups, and heuristi
+          +cs will keep misfiring on cases outside the rules' assumptions
+          + no matter how many are added. Longer-term, replace/augment th
+          +ese specific decision points with a learned classifier or LLM 
+          +pass that runs *before* the deterministic compiler, not instea
+          +d of it.                                                      
+      672 +- **Why required:** the deterministic rules can't generalize t
+          +o recording patterns they weren't written for, and there's cur
+          +rently no mechanism to detect or learn from the misses — every
+          + wrong dedupe/variable/hover call is silently wrong until a hu
+          +man catches it in the editor. Training data doesn't exist yet,
+          + so this can't be built today; it needs an instrumentation ste
+          +p first.                                                      
+      673 +- **Business value:** fewer manual corrections per compiled sk
+          +ill as recording variety grows, without touching the auditable
+          + selector-generation path that self-healing and recovery depen
+          +d on.                                                         
+      674 +- **Technical value:** narrow, well-scoped ML surface (classif
+          +ication over event sequences) instead of a full "replace the c
+          +ompiler with an LLM" rewrite, which would break reproducibilit
+          +y guarantees the recovery cascade relies on.                  
+      675 +- **Dependencies:** needs a labeling hook first — log every hu
+          +man correction made in the workflow editor (collapsed/uncollap
+          +sed steps, retargeted hover, promoted-to-variable fields) as l
+          +abeled examples tied to the original recorded event sequence. 
+          +Complements EXEC-9's telemetry work (that's for signal-durabil
+          +ity priors; this is for pipeline-stage judgment priors) but is
+          + a separate data stream.                                      
+      676 +- **Suggested order:** instrumentation (the labeling hook) can
+          + start any time and should start early so data accumulates; th
+          +e classifier/LLM pass itself waits until there's enough labele
+          +d volume to beat the current heuristics.                      
+      677 +- **Complexity:** M for the labeling hook; L+ for the eventual
+          + model/prompt work once data exists.                          
+      678 +- **Success criteria:** every editor correction to a dedupe/va
+          +riable/hover decision is captured as a labeled example with it
+          +s source event sequence; before any model is trained, someone 
+          +can query "how often does the current heuristic get corrected,
+          + and on what event shapes."                                   
+      679 +- **Found via:** user discussion (2026-08-30) on whether the c
+          +ompiler should move toward ML/LLM-driven output.              
+      680 +                                                              
+      681  ### BUILD-20 — Workflows page: parallel workflow checks instea
+           d of cancel-on-new-check
+      682  - **Category:** Builder / Build Studio
+      683  - **Description:** On the Build Studio Workflows page, startin
+           g a check (test run) on one workflow and then starting a check
+            on another cancels the first one — checks currently run seque
+           ntially through a single slot, so the newest click always kill
+           s the in-flight check. Make checks parallel: clicking check on
+            a second workflow should start it alongside the first, not re
+           place it.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(TODO.md)
+  ⎿  Added 1 line, removed 1 line
+      565  - **Complexity:** L — approve/reject is the small half and reu
+           ses EXEC-13's machinery almost wholesale; judgement input need
+           s the typed input contract and schema validation; hand-over is
+            the genuinely new part and carries the real risk (yielding an
+           d reclaiming a live page mid-run).
+      566  - **Success criteria:** a workflow authored with each of the t
+           hree review shapes compiles, publishes, and replays on a custo
+           mer machine; at each review point the run pauses and the perso
+           n is prompted in the browser the runtime is driving, with the 
+           page in the state the run left it; a judgement value supplied 
+           by the person is bound as a named input and demonstrably chang
+           es a later step's behaviour; a rejected approval aborts cleanl
+           y with an audit record; a hand-over returns control to the run
+            with the page re-validated before the next step acts; a revie
+           w that is never answered times out per its configured `on_fail
+           ure` policy and leaks no browser; the workflow remains testabl
+           e in the Build Studio sandbox; and telemetry distinguishes a p
+           lanned review from a recovery-triggered handoff.
+      567  
+      568 -## P2 — High Value, Do Soon (26 remaining / 31 total)         
+      568 +## P2 — High Value, Do Soon (27 remaining / 32 total)         
+      569  
+      570  ### PROD-1 — Per-tenant reliability: first-run calibration + p
+           ersistent repair memory
+      571  - **Category:** Product Strategy & Business-Risk Mitigation
+
+  Read 1 file (ctrl+o to expand)
+
+● Added BUILD-18 to TODO.md (P2): a learned classifier for pipeline judgment
+  calls (dedupe, variable detection, hover-vs-click) fed by human-correction
+  telemetry from the editor — kept separate from the deterministic
+  selector-generation invariant, and gated on building the labeling hook first
+  since no training data exists yet. Updated the P2 count to 27/32.
+
+✻ Churned for 1m 5s · done 3:21 AM
+
+❯ well which ml model will be suited as we for input we will be giving him a    
+  large json and as output also we need large jason                             
+● Don't reach for a seq2seq "JSON-in/JSON-out" generative model — that's the
+  wrong shape for this problem and reintroduces exactly the
+  non-determinism/hallucination risk you're trying to avoid (a generated JSON
+  can drop fields, invent keys, or vary run-to-run). Reframe it: you're not
+  generating a document, you're labeling elements in a fixed input (per-event
+  tags like is_noise, promote_to_variable, interaction_type), then
+  deterministically merging those labels back into the original JSON you already
+  have.
+
+  Two-phase path:
+  - Now (no data yet): reuse the LLM router already wired into
+    conxa_compile/llm/ with schema-constrained/function-calling output (most
+    providers support forcing valid JSON against a schema) — zero new infra,
+    works few-shot while you're still collecting labels via the BUILD-18
+    instrumentation hook.
+  - Later (once labeled volume exists): swap to a lightweight sequence-tagging
+    model over engineered per-event features (event type, DOM depth, time-delta,
+    selector signal quality, etc.) — a small transformer tagger or even
+    gradient-boosted trees per event. Cheaper, faster, easier to keep
+    near-deterministic than any large generative model, and it only ever emits
+    labels, never raw JSON structure.
+
+  The "large JSON out" requirement mostly disappears once you stop treating this
+  as generation and start treating it as classification-then-merge.
+
+✻ Churned for 23s · done 3:24 AM

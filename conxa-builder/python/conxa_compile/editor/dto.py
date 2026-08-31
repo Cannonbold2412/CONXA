@@ -152,7 +152,13 @@ class SkillInputVariable(BaseModel):
     # both treat it as text (see skill_package_builder_saved_skill._normalize_saved_skill_inputs,
     # which emits format:"date" alongside JSON-Schema type:"string"). It only changes what the
     # editor's input drawer renders and what the MCP tool schema tells the agent to expect.
-    type: Literal["text", "select", "date"] = "text"
+    # "multiselect" is select's multi-valued sibling (a recorded checkbox group — "pick all that
+    # apply"): the packaged input row emits a JSON-Schema string ARRAY with an enum'd `items`
+    # instead of select's single enum'd string — see _normalize_saved_skill_inputs.
+    type: Literal["text", "select", "date", "multiselect"] = "text"
+    # A multiselect's default is comma-joined labels (matching how its `options` field and the
+    # renderer's optionsText are already comma-joined text) — no separate list-typed field, so
+    # the on-disk shape for every input type stays a flat dict of strings.
     default: str | None = None
     options: list[str] = Field(default_factory=list)
     pattern: str | None = None
@@ -178,6 +184,10 @@ class SkillInputVariable(BaseModel):
         if self.type == "select" and self.default not in (None, ""):
             if self.default not in self.options:
                 raise ValueError(f"select_default_not_in_options:{self.id}")
+        if self.type == "multiselect" and self.default not in (None, ""):
+            defaults = [d.strip() for d in str(self.default).split(",") if d.strip()]
+            if not set(defaults).issubset(set(self.options)):
+                raise ValueError(f"multiselect_default_not_a_subset_of_options:{self.id}")
         return self
 
 

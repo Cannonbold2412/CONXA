@@ -26,8 +26,10 @@ const {
   monthDelta,
   machineCellSelector,
   dayNumberSelector,
+  monthLabel,
   MAX_NAV_CLICKS,
 } = require("./date_picker");
+const { matchOption, matchOptions, optionsSummary } = require("./choice");
 const {
   PRIMARY,
   markMayHaveActed,
@@ -104,6 +106,41 @@ function resolvableBranchStep(step, inputs) {
   return selector ? stepWithSelector(step, selector) : step;
 }
 
+// Multiple-choice control kind (radio/select/aria_radio/aria_listbox/checkbox-group) — see
+// CLAUDE.md's multiple-choice plan and compiler/choice.py, which produces this shape.
+// handler_hints.choice is absent on every step compiled before this feature existed, so every
+// choice branch below is additive: an old compiled skill falls straight through to its original,
+// unchanged behavior.
+function _choiceHints(step) {
+  const hints = asObject(step.handler_hints);
+  return hints.control_kind === "choice" ? asObject(hints.choice) : null;
+}
+
+// Single-option choice (radio/select/aria_radio/aria_listbox): resolve the caller's value against
+// the recorded option set, or fail closed naming every valid option — never fall back to
+// whichever option happened to be recorded, which would silently submit a wrong answer.
+function _resolveChoiceOption(step, inputs, choice) {
+  const userValue = interpolate(step.value || "", inputs);
+  const option = matchOption(userValue, choice.options);
+  if (!option) {
+    // badInput (see run.js's primaryErr.badInput check, and locators.js's identical existing
+    // upload-handler pattern): no amount of re-resolving the element fixes a value that doesn't
+    // match any recorded option -- fail straight through instead of burning Tier 3+ LLM recovery
+    // on a mistake this message already explains.
+    throw Object.assign(
+      new Error(`Input "${step.input_binding}" = "${userValue}" is not one of: ${optionsSummary(choice.options)}`),
+      { badInput: true },
+    );
+  }
+  return { option, userValue };
+}
+
+// Minimal CSS attribute-value escape for the native-radio fallback selector below — only needs
+// to survive being placed inside a double-quoted [attr="..."] selector.
+function _cssAttrEscape(value) {
+  return String(value == null ? "" : value).replace(/[\\"]/g, "\\$&");
+}
+
 // Runs a branch body best-effort: each nested step's own failure is swallowed so the branch
 // never escalates to recovery — a failed cookie-banner dismissal should not burn a paid Tier
 // 3/4 recovery cycle. Nested steps use the same flat runtime step shape as top-level steps.
@@ -162,7 +199,27 @@ async function _driveDatePickerGrid(root, parsed, hints) {
     await root.locator(hints.grid).first().waitFor({ state: "visible", timeout: ACTION_TIMEOUT_MS });
   }
 
-  if (hints.header && (hints.next || hints.prev)) {
+  if (hints.year_select || hints.month_select) {
+    // react-datepicker's showMonthDropdown/showYearDropdown mode and equivalents (MUI's, Ant
+    // Design's year-picker views) — month/year navigation is a pair of native <select>s, not
+    // click-through prev/next buttons. selectOption by LABEL, never by value: the option's raw
+    // value isn't standardized across libraries (react-datepicker's month value is 0-indexed;
+    // others use 1-indexed or the month name itself), but every one of them renders a real
+    // English month name / year number as the visible option text.
+    if (hints.year_select) {
+      await root.locator(hints.year_select).first()
+        .selectOption({ label: String(parsed.year) }, { timeout: SECONDARY_ACTION_TIMEOUT_MS })
+        .catch(() => {}); // best-effort — VERIFY's value_equals is what actually confirms the pick
+    }
+    if (hints.month_select) {
+      const label = monthLabel(parsed.month);
+      if (label) {
+        await root.locator(hints.month_select).first()
+          .selectOption({ label }, { timeout: SECONDARY_ACTION_TIMEOUT_MS })
+          .catch(() => {});
+      }
+    }
+  } else if (hints.header && (hints.next || hints.prev)) {
     for (let i = 0; i < MAX_NAV_CLICKS; i++) {
       const headerText = await root.locator(hints.header).first()
         .innerText({ timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => "");
@@ -288,12 +345,35 @@ const HANDLERS = {
   },
 
   select: async (page, step, inputs) => {
+    const choice = _choiceHints(step);
+    if (choice) {
+      const { option, userValue } = _resolveChoiceOption(step, inputs, choice);
+      // A native <select>'s own option VALUES are library/site-specific and unguessable (see
+      // date_picker.js's monthLabel for the identical reasoning on month dropdowns); every
+      // library still renders a human-readable label, so selecting by label sidesteps that.
+      await runLocatorStep(page, step, inputs, locator => {
+        return locator.selectOption({ label: option.label }, { timeout: ACTION_TIMEOUT_MS });
+      });
+      return;
+    }
     await runLocatorStep(page, step, inputs, locator => {
       return locator.selectOption(interpolate(step.value || "", inputs), { timeout: ACTION_TIMEOUT_MS });
     });
   },
 
   select_option: async (page, step, inputs) => {
+    const choice = _choiceHints(step);
+    // An ARIA listbox item (kind "aria_listbox") is a plain element with role="option", not a
+    // native <select> -- .selectOption() only works on the latter. Click the matched option's
+    // own recorded selector instead, the same way set_radio acts on an ARIA radio's own element.
+    if (choice && choice.kind === "aria_listbox") {
+      const { option } = _resolveChoiceOption(step, inputs, choice);
+      const targetStep = stepWithSelector(step, option.selector);
+      await runLocatorStep(page, targetStep, inputs, locator => {
+        return locator.click({ timeout: ACTION_TIMEOUT_MS });
+      });
+      return;
+    }
     await HANDLERS.select(page, step, inputs);
   },
 
@@ -311,12 +391,57 @@ const HANDLERS = {
   },
 
   set_checkbox: async (page, step, inputs) => {
+    const choice = _choiceHints(step);
+    // Every compiled checkbox-GROUP choice is multi (compiler/choice.py::collapse_choice_group_runs
+    // always sets multi=true) -- a standalone checkbox ("I agree") never gets a choice_context at
+    // all (bridge.js requires >= 2 group members), so it always falls through to today's behavior
+    // below unchanged.
+    if (choice && choice.multi) {
+      // Read the raw input directly rather than through interpolate(): a checkbox group's answer
+      // is a LIST, and interpolate() only substitutes {{var}} inside a string template.
+      const rawValue = step.input_binding ? inputs[step.input_binding] : undefined;
+      const picked = matchOptions(rawValue, choice.options);
+      if (picked === null) {
+        throw Object.assign(
+          new Error(
+            `Input "${step.input_binding}" = ${JSON.stringify(rawValue)} is not a valid subset of: ${optionsSummary(choice.options)}`,
+          ),
+          { badInput: true },
+        );
+      }
+      const pickedValues = new Set(picked.map(o => o.value));
+      for (const opt of choice.options) {
+        if (!opt.selector) continue;
+        const checked = pickedValues.has(opt.value);
+        await runLocatorStep(page, stepWithSelector(step, opt.selector), inputs, locator => {
+          return locator.setChecked(checked, { timeout: ACTION_TIMEOUT_MS });
+        });
+      }
+      return;
+    }
     await runLocatorStep(page, step, inputs, locator => {
       return locator.setChecked(checkboxValue(step, inputs), { timeout: ACTION_TIMEOUT_MS });
     });
   },
 
   set_radio: async (page, step, inputs) => {
+    const choice = _choiceHints(step);
+    if (choice) {
+      const { option } = _resolveChoiceOption(step, inputs, choice);
+      // Recorded per-option selector first; a group_key + value fallback for the rare case a
+      // recorded selector no longer resolves (mirrors identity_bundle's own primary+fallback
+      // pattern, scoped to what a radio group actually needs: name+value is a stable enough
+      // native-HTML identity that doesn't depend on any one selector engine).
+      const fallback = choice.group_key
+        ? `input[type="radio"][name="${_cssAttrEscape(choice.group_key)}"][value="${_cssAttrEscape(option.value)}"]`
+        : "";
+      const selector = option.selector || fallback;
+      if (!selector) throw new Error(`No selector available for option "${option.label || option.value}"`);
+      await runLocatorStep(page, stepWithSelector(step, selector), inputs, locator => {
+        return locator.click({ timeout: ACTION_TIMEOUT_MS });
+      });
+      return;
+    }
     await runLocatorStep(page, step, inputs, locator => {
       return locator.click({ timeout: ACTION_TIMEOUT_MS });
     });

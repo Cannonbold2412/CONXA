@@ -154,14 +154,17 @@ class StateChange(BaseModel):
 
 
 class DateContext(BaseModel):
-    """Custom calendar-widget click classification, emitted only for `action == "click"` when
-    bridge.js::buildDateContext resolves the click to a day cell, prev/next nav button, or time
-    option inside a detected calendar grid. Absent (None) for every ordinary click, including
-    every click on a native `<input type=date>` (that path stays on the existing date_pick
-    "change" listener). Feeds compiler/date_picker.py's collapse of the resulting click run into
-    one parameterized date_pick step — see CLAUDE.md's date-picker plan."""
+    """Custom calendar-widget interaction classification, emitted for `action == "click"` (day
+    cell / prev-next nav button / time option) and `action == "select"` (a year/month <select>
+    inside the same grid — react-datepicker's showMonthDropdown/showYearDropdown mode and MUI's/
+    Ant Design's year-picker views use native selects instead of click-through nav) when
+    bridge.js::buildDateContext resolves it to something inside a detected calendar grid. Absent
+    (None) for every ordinary click/select, including every native `<input type=date>` (that path
+    stays on the existing date_pick "change" listener — never routes through this model at all).
+    Feeds compiler/date_picker.py's collapse of the resulting event run into one parameterized
+    date_pick step — see CLAUDE.md's date-picker plan."""
 
-    role: Literal["day", "nav", "time"]
+    role: Literal["day", "nav", "time", "year_select", "month_select"]
     grid: str = ""  # selector for the widget wrapper (header + nav + day grid)
     # role == "day"
     iso_date: str | None = None
@@ -181,6 +184,46 @@ class DateContext(BaseModel):
     nav: Literal["prev", "next"] | None = None
     # role == "time"
     time: str | None = None
+    # role == "year_select" / "month_select": selector for the <select> itself (distinct from
+    # `field` above — the widget's own anchored text field, when one exists, is a different
+    # element) and the newly-committed option's own label text (e.g. "2006", "December") — never
+    # the select's `label_text`, which is the picker's own live "current month" header readout,
+    # not a real label (see bridge.js::captureAssociatedLabel's month-year exclusion guard).
+    select: str = ""
+    value: str | None = None
+
+
+class ChoiceOption(BaseModel):
+    """One member of a recorded multiple-choice group (see ChoiceContext)."""
+
+    value: str = ""
+    label: str = ""
+    selector: str = ""    # per-option selector; "" for a native <select>'s <option> (no DOM node
+                           # worth targeting directly — the runtime acts on the <select> itself)
+    checked: bool = False
+
+
+class ChoiceContext(BaseModel):
+    """Multiple-choice control detection (radio/checkbox groups, native <select>, ARIA
+    radiogroup/listbox widgets), emitted by bridge.js::buildChoiceContext whenever the recorded
+    action lands on one of these AND no DateContext claimed it first (a year/month <select> inside
+    a calendar grid is date-picker navigation, not an independent MCQ). Absent (None) for every
+    ordinary control, including a standalone checkbox with no group ("I agree") — see
+    _CHOICE_GROUP_MIN in bridge.js.
+
+    Captures every option, not just the one clicked: without this, the compiler can only name an
+    input after the recorded ANSWER ("male") instead of the QUESTION ("gender"), and the runtime
+    has nothing to validate a caller's value against — it just replays whatever was recorded no
+    matter what value is passed. Feeds compiler/choice.py's derive_choice(), which produces the
+    handler_hints.choice payload and the {{group}}-named input binding — see CLAUDE.md's
+    multiple-choice plan (mirrors the date-picker feature's structure)."""
+
+    kind: Literal["radio", "checkbox", "select", "aria_radio", "aria_listbox"]
+    multi: bool = False          # true for checkbox groups and <select multiple>
+    group_key: str = ""          # name attr / radiogroup id — identifies the group, not an option
+    group_label: str = ""        # fieldset <legend> / aria-label(ledby) / the <select>'s own label
+    group_selector: str = ""     # container selector (<fieldset>, [role=radiogroup]); "" for <select>
+    options: list[ChoiceOption] = Field(default_factory=list)
 
 
 class PostCondition(BaseModel):
@@ -278,6 +321,10 @@ class RecordedEvent(BaseModel):
     # Custom date-picker detection (see DateContext). Optional — absent on recordings made
     # before this existed, and on every non-calendar click regardless of recording age.
     date_context: DateContext | None = None
+
+    # Multiple-choice control detection (see ChoiceContext). Optional — absent on recordings made
+    # before this existed, and on every non-MCQ action regardless of recording age.
+    choice_context: ChoiceContext | None = None
 
     # Phase 2: compile-time signals for LLM-based selector generation (REQUIRED).
     # Recordings without these cannot validate; must be re-recorded.

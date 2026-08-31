@@ -413,6 +413,11 @@ function _skillToolDefinitions() {
       // A select input's declared choices reach the agent as an enum so it can't pass an
       // out-of-range value that nothing would otherwise reject until execution (audit H-6).
       if (Array.isArray(f.enum) && f.enum.length) prop.enum = f.enum;
+      // A multiselect (checkbox-group) input declares `type: "array"` with an enum'd `items`
+      // instead of a top-level enum — see skill_package_builder_saved_skill.py's
+      // _normalize_saved_skill_inputs. Forward it the same way so the agent knows the value must
+      // be a list of these exact strings, not a single one.
+      if (f.items) prop.items = f.items;
       properties[f.name] = prop;
       // A field with a default is effectively optional to the calling agent — the execute
       // gate below fills it in from f.default when omitted, so don't advertise it as

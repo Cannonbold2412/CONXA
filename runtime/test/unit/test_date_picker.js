@@ -12,6 +12,7 @@ const {
   monthDelta,
   machineCellSelector,
   dayNumberSelector,
+  monthLabel,
 } = require("../../app/date_picker");
 
 test("parseDateValue: plain ISO date", () => {
@@ -105,6 +106,17 @@ test("machineCellSelector: builds a selector for a machine-readable attribute", 
 test("machineCellSelector: refuses to regenerate an aria-label sentence", () => {
   assert.strictEqual(machineCellSelector("", "2026-09-15"), null);
   assert.strictEqual(machineCellSelector("aria-label", "2026-09-15"), null);
+});
+
+test("monthLabel: 1-indexed month number to English label", () => {
+  assert.strictEqual(monthLabel(1), "January");
+  assert.strictEqual(monthLabel(12), "December");
+  assert.strictEqual(monthLabel(9), "September");
+});
+
+test("monthLabel: out-of-range month refuses to guess", () => {
+  assert.strictEqual(monthLabel(0), null);
+  assert.strictEqual(monthLabel(13), null);
 });
 
 test("dayNumberSelector: excludes disabled/outside-month cells, matches exact day text", () => {

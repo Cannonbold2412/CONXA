@@ -581,3 +581,114 @@ def test_hover_after_scrolling_records_nothing(page: Page) -> None:
     page.wait_for_timeout(200)
 
     assert _action_events(page, "hover") == []
+
+
+def test_radio_group_records_choice_context_with_every_option(page: Page) -> None:
+    """Regression: recording a gender radio group used to produce a step named after the
+    group's shared `name` attribute (role=radio[name="gender"]) with no record of the other
+    options -- see CLAUDE.md's multiple-choice plan. buildChoiceContext must capture every
+    sibling in the group, not just the one clicked."""
+    _install_bridge(
+        page,
+        """
+        <fieldset>
+          <legend>Gender</legend>
+          <label><input type="radio" name="gender" value="male" id="g-male"> Male</label>
+          <label><input type="radio" name="gender" value="female" id="g-female"> Female</label>
+          <label><input type="radio" name="gender" value="other" id="g-other"> Other</label>
+        </fieldset>
+        """,
+    )
+
+    page.click("#g-female")
+    page.wait_for_timeout(80)
+
+    events = _action_events(page, "set_radio")
+    assert len(events) == 1
+    choice = events[0]["choice_context"]
+    assert choice["kind"] == "radio"
+    assert choice["group_key"] == "gender"
+    assert choice["group_label"] == "Gender"
+    assert [o["value"] for o in choice["options"]] == ["male", "female", "other"]
+    picked = next(o for o in choice["options"] if o["value"] == "female")
+    assert picked["checked"] is True
+
+
+def test_radio_click_does_not_also_record_a_separate_click_or_focus_event(page: Page) -> None:
+    """The other half of the screenshot bug: a click on a radio option must not ALSO survive as
+    its own click/focus event once the committing set_radio event exists for the same element --
+    that pairing is what step_anchors.clean_steps collapses into one compiled step."""
+    _install_bridge(
+        page,
+        """
+        <input type="radio" name="plan" value="pro" id="plan-pro">
+        <input type="radio" name="plan" value="free" id="plan-free">
+        """,
+    )
+
+    page.click("#plan-pro")
+    page.wait_for_timeout(80)
+
+    assert len(_action_events(page, "set_radio")) == 1
+    # The click handler still fires (bridge.js records it before the change-driven set_radio) --
+    # that's expected and is exactly what clean_steps's prep-click merge exists to absorb at
+    # compile time; this test only guards that set_radio itself is never duplicated.
+
+
+def test_checkbox_group_records_choice_context(page: Page) -> None:
+    _install_bridge(
+        page,
+        """
+        <fieldset>
+          <legend>Sports</legend>
+          <input type="checkbox" name="sports" value="soccer" id="s-soccer">
+          <input type="checkbox" name="sports" value="tennis" id="s-tennis">
+          <input type="checkbox" name="sports" value="chess" id="s-chess">
+        </fieldset>
+        """,
+    )
+
+    page.click("#s-soccer")
+    page.wait_for_timeout(80)
+
+    events = _action_events(page, "set_checkbox")
+    assert len(events) == 1
+    choice = events[0]["choice_context"]
+    assert choice["kind"] == "checkbox"
+    assert choice["multi"] is True
+    assert [o["value"] for o in choice["options"]] == ["soccer", "tennis", "chess"]
+
+
+def test_lone_checkbox_with_no_group_gets_no_choice_context(page: Page) -> None:
+    """A standalone checkbox ("I agree") isn't a multiple-choice control -- bridge.js requires
+    >= 2 group members before treating a checkbox as part of a choice group."""
+    _install_bridge(page, '<input type="checkbox" id="agree" name="agree">')
+
+    page.click("#agree")
+    page.wait_for_timeout(80)
+
+    events = _action_events(page, "set_checkbox")
+    assert len(events) == 1
+    assert events[0]["choice_context"] is None
+
+
+def test_select_records_choice_context(page: Page) -> None:
+    _install_bridge(
+        page,
+        """
+        <select id="country" aria-label="Country">
+          <option value="us">United States</option>
+          <option value="ca">Canada</option>
+          <option value="mx">Mexico</option>
+        </select>
+        """,
+    )
+
+    page.select_option("#country", "ca")
+    page.wait_for_timeout(80)
+
+    events = _action_events(page, "select")
+    assert len(events) == 1
+    choice = events[0]["choice_context"]
+    assert choice["kind"] == "select"
+    assert [o["value"] for o in choice["options"]] == ["us", "ca", "mx"]

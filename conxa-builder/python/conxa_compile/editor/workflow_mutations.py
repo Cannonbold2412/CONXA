@@ -430,6 +430,42 @@ def _date_pick_defaults(steps: list[Any]) -> dict[str, str]:
     return out
 
 
+def _choice_specs(steps: list[Any]) -> dict[str, dict[str, Any]]:
+    """{{input_binding}} -> {type, options, default} for every choice step compiler/choice.py
+    produced (radio/select/aria_radio/aria_listbox/checkbox-group). Mirrors _date_pick_defaults's
+    shape/role: options come from the group's own recorded label set, never the answer, so the
+    auto-declared input is a real MCQ (`enum` in input.json, constrained in the MCP tool schema)
+    instead of a free-text field."""
+    out: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        hints = step.get("handler_hints") or {}
+        if not isinstance(hints, dict) or hints.get("control_kind") != "choice":
+            continue
+        choice = hints.get("choice")
+        if not isinstance(choice, dict):
+            continue
+        binding = str(step.get("input_binding") or "").strip()
+        if not binding:
+            continue
+        options = [
+            str(o.get("label") or o.get("value") or "")
+            for o in (choice.get("options") or [])
+            if isinstance(o, dict) and (o.get("label") or o.get("value"))
+        ]
+        if not options:
+            continue
+        if choice.get("multi"):
+            values_by_value = {str(o.get("value") or ""): str(o.get("label") or o.get("value") or "") for o in (choice.get("options") or []) if isinstance(o, dict)}
+            default_labels = [values_by_value.get(v, v) for v in (choice.get("recorded_values") or [])]
+            out[binding] = {"type": "multiselect", "options": options, "default": default_labels}
+        else:
+            default_label = str(choice.get("recorded_label") or "")
+            out[binding] = {"type": "select", "options": options, "default": default_label if default_label in options else ""}
+    return out
+
+
 def reconcile_inputs_with_step_values(document: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Auto-declare any {{var}} referenced in a step but missing from the inputs list.
 
@@ -447,13 +483,18 @@ def reconcile_inputs_with_step_values(document: dict[str, Any]) -> tuple[dict[st
     if not spotted:
         return document, False
     date_defaults = _date_pick_defaults(steps)
+    choice_specs = _choice_specs(steps)
     inputs = list(document.get("inputs") or [])
     declared = {str(i.get("id") or "").strip().lower() for i in inputs if isinstance(i, dict)}
     added = False
     for sid in sorted(spotted):
         if sid.lower() not in declared:
-            default = date_defaults.get(sid)
-            row: dict[str, Any] = {"id": sid, "type": "date" if default else "text", "default": default, "options": []}
+            spec = choice_specs.get(sid)
+            if spec is not None:
+                row = {"id": sid, "type": spec["type"], "default": spec["default"], "options": spec["options"]}
+            else:
+                default = date_defaults.get(sid)
+                row = {"id": sid, "type": "date" if default else "text", "default": default, "options": []}
             inputs.append(row)
             declared.add(sid.lower())
             added = True

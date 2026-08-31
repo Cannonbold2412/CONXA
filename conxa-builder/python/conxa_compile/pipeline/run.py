@@ -7,7 +7,11 @@ from typing import Any
 
 from conxa_compile.llm.semantic_llm import SemanticLLMInput, enrich_semantic
 from conxa_core.models.events import RecordedEvent
-from conxa_compile.pipeline.dedupe import dedupe_scroll_events, drop_superseded_focus_events
+from conxa_compile.pipeline.dedupe import (
+    collapse_select_interaction_noise,
+    dedupe_scroll_events,
+    drop_superseded_focus_events,
+)
 from conxa_compile.pipeline.enrich import enrich_event
 from conxa_compile.pipeline.selectors import canonicalize_selectors
 from conxa_compile.pipeline.signals import apply_signal_budget
@@ -154,7 +158,11 @@ def run_pipeline(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         validated.append(RecordedEvent.model_validate(row).model_dump(mode="json"))
     cleaned = [_clean_one(e, policy) for e in _drop_non_actionable_hover_events(validated)]
     sem_enriched = [_semantic_enrich_one(e, policy) for e in cleaned]
-    deduped = dedupe_scroll_events(drop_superseded_focus_events(sem_enriched))
+    # collapse_select_interaction_noise runs first: fewer noise events left for
+    # drop_superseded_focus_events' own lookahead to have to skip past.
+    deduped = dedupe_scroll_events(
+        drop_superseded_focus_events(collapse_select_interaction_noise(sem_enriched))
+    )
     scroll_annotated = _annotate_scroll_amounts(deduped)
     return [
         enrich_event(e, pipeline_version=PIPELINE_VERSION, ordinal=i) for i, e in enumerate(scroll_annotated)

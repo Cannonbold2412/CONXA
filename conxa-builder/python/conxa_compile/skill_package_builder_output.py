@@ -199,6 +199,13 @@ def _write_skill_packs_format(
             # surfaces). No tagged app-vX.Y.Z release contains this work yet, so — same rule as
             # above — do NOT hardcode a bump here; set CONXA_REQUIRED_RUNTIME explicitly for any
             # pack with a destructive/bound step until one exists.
+            #
+            # Same trap a third time for handler_hints.control_kind == "choice" (multiple-choice
+            # controls — CLAUDE.md's multiple-choice plan): an older app layer ignores
+            # control_kind/choice entirely and clicks whatever option was recorded regardless of
+            # the caller's input, which is silent wrong behavior, not a visible failure. Until an
+            # app-vX.Y.Z release containing runtime/app/choice.js is tagged, set
+            # CONXA_REQUIRED_RUNTIME explicitly for any pack with a compiled choice step.
             "required_runtime": required_runtime or os.environ.get("CONXA_REQUIRED_RUNTIME", ">=1.0.3"),
             "company":          company,
             "target_url":       skill_target_urls.get(slug, target_url),

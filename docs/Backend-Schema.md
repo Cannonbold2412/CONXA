@@ -396,21 +396,37 @@ Each entry in `inputs` is validated against `SkillInputVariable` (`conxa-builder
 class SkillInputVariable(BaseModel):
     id: str                    # letter-led, alnum + underscore — must match {{id}} grammar
     label: str = ""
-    type: Literal["text", "select", "date"] = "text"  # "date" (2026-08-30) is editor-level sugar
-                               # over a plain string — the packaged input row's own `type` stays
-                               # JSON-Schema "string" (every MCP client's expectation), with
-                               # `format: "date"`/`"date-time"` alongside it telling the agent what
-                               # shape to send (skill_package_builder_saved_skill.py). Auto-declared
-                               # with this type + the recorded date as `default` for any date_pick
-                               # step's binding (workflow_mutations.py; see HandlerHints §3.4b).
+    type: Literal["text", "select", "date", "multiselect"] = "text"
+                               # "date" (2026-08-30) is editor-level sugar over a plain string —
+                               # the packaged input row's own `type` stays JSON-Schema "string"
+                               # (every MCP client's expectation), with `format: "date"`/
+                               # `"date-time"` alongside it telling the agent what shape to send
+                               # (skill_package_builder_saved_skill.py). Auto-declared with this
+                               # type + the recorded date as `default` for any date_pick step's
+                               # binding (workflow_mutations.py; see HandlerHints §3.4b).
+                               # "multiselect" (2026-08-31) is select's multi-valued sibling — a
+                               # recorded checkbox group ("pick all that apply"). The packaged row
+                               # emits JSON-Schema `type: "array"` with an enum'd `items` instead
+                               # of `select`'s top-level `enum`; `default` is still one flat
+                               # comma-joined string on disk (split back into an array only at
+                               # packaging time), matching every other input type's on-disk shape.
     default: str | None = None
-    options: list[str] = []    # required (non-empty) when type == "select"
+    options: list[str] = []    # required (non-empty) when type in {"select", "multiselect"}
     pattern: str | None = None
     sensitive: bool = False    # redacts the value from saved test history; feeds the shipped
                                # bundle's inferred auth type (password/api-key/none)
     optional: bool = False     # the skill may run without this value. A value with `default`
                                # set is always effectively optional regardless of this flag.
 ```
+
+**Multiple-choice auto-declared inputs** (2026-08-31). A recorded radio/checkbox group, native
+`<select>`, or ARIA radiogroup/listbox widget auto-declares as `type: "select"` (or
+`"multiselect"` for a checkbox group) with `options` set to every recorded option's LABEL (never
+its raw HTML `value`, which is often library-internal and meaningless to an agent) and `default`
+set to whatever was picked while recording — see `workflow_mutations.py::_choice_specs` and
+`compiler/choice.py`, and `docs/TRD.md`'s multiple-choice entry for the full compile/replay design
+this closes (recording a gender radio group used to auto-declare `{{male}}`, named after the
+recorded answer, instead of `{{gender}}`, named after the question).
 
 `optional` is excluded from the packaged manifest's `inputs_required` (`skill_package_builder_output.py::_compute_inputs_required`), which is what the runtime's pre-execution gate and the MCP tool's `inputSchema.required` both read (`runtime/server.js`).
 
@@ -550,8 +566,10 @@ class HandlerHints(BaseModel):
     virtualized_container: str           # scroll container selector for virtualized rows
     allow_forced_action: bool
     control_kind: str = ""               # "" = dispatch by action type alone (every action but
-                                          # the one below); "date_picker" is the first populated
+                                          # the two below); "date_picker" was the first populated
                                           # value (2026-08-30) — see date_picker dict, next.
+                                          # "choice" (2026-08-31) is the second — see choice dict,
+                                          # below date_picker.
     date_picker: dict = {}               # set only when control_kind == "date_picker" (a custom
                                           # calendar widget's click run collapsed into one
                                           # date_pick step, compiler/date_picker.py): open/grid/
@@ -562,9 +580,25 @@ class HandlerHints(BaseModel):
                                           # "MM/DD/YYYY"-shaped guess), kind ("single"|"range"|
                                           # "datetime"), strategy ("typed_first"|"grid_only"),
                                           # role ("range_start"|"range_end", ranges only),
-                                          # recorded_value (the picked ISO date/datetime — seeds
-                                          # the auto-declared input's default, never used at
-                                          # replay). See docs/TRD.md §7.1's date-picker paragraph.
+                                          # year_select/month_select (selectors for a widget's
+                                          # native year/month <select> dropdowns — react-datepicker
+                                          # showMonthDropdown mode and equivalents, 2026-08-30 —
+                                          # driven via selectOption({label}) in place of the
+                                          # click-nav loop when present), recorded_value (the
+                                          # picked ISO date/datetime — seeds the auto-declared
+                                          # input's default, never used at replay). See
+                                          # docs/TRD.md §7.1's date-picker paragraph.
+    choice: dict = {}                    # set only when control_kind == "choice" (a multiple-
+                                          # choice control — radio/checkbox group, native <select>,
+                                          # ARIA radiogroup/listbox — compiler/choice.py, 2026-08-31):
+                                          # kind ("radio"|"checkbox"|"select"|"aria_radio"|
+                                          # "aria_listbox"), multi (bool — true only for a checkbox
+                                          # group), group_key/group_label (the GROUP's identity —
+                                          # never one option's), options (every recorded member as
+                                          # {value, label, selector}), recorded_label (single-shot
+                                          # kinds) or recorded_values (checkbox groups — the final
+                                          # checked set, absolute not relative). See docs/TRD.md's
+                                          # multiple-choice paragraph.
 ```
 
 ### 3.4c Conditional / Branch Steps (EXEC-1)

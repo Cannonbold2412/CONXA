@@ -233,6 +233,8 @@ def _collapse_one(
     events: list[dict[str, Any]],
     day_idxs: list[int],
     time_idx: int | None,
+    year_select_idx: int | None,
+    month_select_idx: int | None,
     open_step: SkillStep | None,
     open_event: dict[str, Any] | None,
     policy: dict[str, Any],
@@ -248,8 +250,14 @@ def _collapse_one(
     display_format = _infer_display_format(display_value, first_dc.get("iso_date"))
     strategy = "typed_first" if open_step is not None else "grid_only"
 
+    # A year/month <select> in the run replaces click-through nav entirely for THIS run — the
+    # runtime drives it via selectOption() (see runtime/app/date_picker.js), never the prev/next
+    # click loop, so there's nothing to reconcile between the two strategies within one step.
+    year_select_selector = str(_date_context(events[year_select_idx]).get("select") or "") if year_select_idx is not None else ""
+    month_select_selector = str(_date_context(events[month_select_idx]).get("select") or "") if month_select_idx is not None else ""
+
     def hints_for(cell_selector: str, cell_attr: str, kind: str) -> dict[str, Any]:
-        return {
+        h: dict[str, Any] = {
             "open": field_selector,
             "grid": grid_selector,
             "header": header_selector,
@@ -262,6 +270,11 @@ def _collapse_one(
             "kind": kind,
             "strategy": strategy,
         }
+        if year_select_selector:
+            h["year_select"] = year_select_selector
+        if month_select_selector:
+            h["month_select"] = month_select_selector
+        return h
 
     if len(day_idxs) >= 2:
         start_ev = events[day_idxs[0]]
@@ -313,10 +326,11 @@ def collapse_date_picker_runs(
     events: list[dict[str, Any]],
     policy: dict[str, Any],
 ) -> list[SkillStep]:
-    """Find maximal runs of consecutive click steps whose events share a `date_context.grid`
-    selector — [field click]? + [nav clicks]* + [day cell] (+ [time option]) (+ [day cell] for a
-    range) — and replace each run with one or two `date_pick` steps. Any run without at least one
-    day-cell pick (e.g. the grid was opened and navigated but never actually picked from) is left
+    """Find maximal runs of consecutive click/select steps whose events share a
+    `date_context.grid` selector — [field click]? + [nav clicks | year/month <select>]* +
+    [day cell] (+ [time option]) (+ [day cell] for a range) — and replace each run with one or
+    two `date_pick` steps. Any run without at least one day-cell pick (e.g. the grid was opened
+    and navigated — including via a year/month select — but never actually picked from) is left
     untouched; this pass can only improve a compile, never regress one."""
     n = min(len(steps), len(events))
     out: list[SkillStep] = []
@@ -325,7 +339,7 @@ def collapse_date_picker_runs(
         dc = _date_context(events[i])
         role = dc.get("role")
         grid = str(dc.get("grid") or "")
-        if role not in ("day", "nav") or not grid:
+        if role not in ("day", "nav", "year_select", "month_select") or not grid:
             out.append(steps[i])
             i += 1
             continue
@@ -334,7 +348,9 @@ def collapse_date_picker_runs(
         j = i + 1
         while j < n:
             dcj = _date_context(events[j])
-            if dcj.get("grid") != grid or dcj.get("role") not in ("day", "nav", "time"):
+            if dcj.get("grid") != grid or dcj.get("role") not in (
+                "day", "nav", "time", "year_select", "month_select",
+            ):
                 break
             run_end = j
             j += 1
@@ -342,13 +358,19 @@ def collapse_date_picker_runs(
         day_idxs = [k for k in run_range if _date_context(events[k]).get("role") == "day"]
 
         if not day_idxs:
-            # Pure nav clicks with no day ever picked (grid opened, browsed, closed unpicked) —
-            # nothing to collapse; leave the raw clicks exactly as they compiled.
+            # Nav/select activity with no day ever picked (grid opened, month/year set, browsed,
+            # closed unpicked) — nothing to collapse; leave the raw steps exactly as they
+            # compiled. Fix 1 (pipeline/dedupe.py) and the bridge.js label guard already keep
+            # these clean on their own — a select-driven month/year change no longer produces
+            # click/type noise or a garbage "august_2026"-shaped input name, it just stays as an
+            # ordinary, cleanly-bound `select` step.
             out.append(steps[i])
             i += 1
             continue
 
         time_idx = next((k for k in run_range if _date_context(events[k]).get("role") == "time"), None)
+        year_select_idx = next((k for k in run_range if _date_context(events[k]).get("role") == "year_select"), None)
+        month_select_idx = next((k for k in run_range if _date_context(events[k]).get("role") == "month_select"), None)
 
         open_step: SkillStep | None = None
         open_event: dict[str, Any] | None = None
@@ -357,7 +379,10 @@ def collapse_date_picker_runs(
             open_step = out.pop()
             open_event = events[prev_idx]
 
-        out.extend(_collapse_one(steps, events, day_idxs, time_idx, open_step, open_event, policy))
+        out.extend(_collapse_one(
+            steps, events, day_idxs, time_idx, year_select_idx, month_select_idx,
+            open_step, open_event, policy,
+        ))
         i = run_end + 1
 
     return out

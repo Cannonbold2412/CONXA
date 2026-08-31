@@ -51,7 +51,7 @@ export function labelFromId(id: string): string {
     .join(' ')
 }
 
-export type InputVariableType = 'text' | 'select' | 'date'
+export type InputVariableType = 'text' | 'select' | 'date' | 'multiselect'
 
 export type VariableFormRow = {
   key: string
@@ -110,7 +110,8 @@ export function rowsFromServerInputs(inputs: Record<string, unknown>[]): Variabl
       key: `row-${i}`,
       id,
       label: String(raw.label ?? (id ? labelFromId(id) : '')),
-      varType: raw.type === 'select' ? 'select' : raw.type === 'date' ? 'date' : 'text',
+      varType:
+        raw.type === 'select' ? 'select' : raw.type === 'multiselect' ? 'multiselect' : raw.type === 'date' ? 'date' : 'text',
       optionsText: Array.isArray(raw.options) ? (raw.options as unknown[]).map((o) => String(o)).join(', ') : '',
       defaultValue: raw.default == null ? '' : String(raw.default),
       sensitive: raw.sensitive === true,
@@ -156,6 +157,24 @@ export function rowsToServerPayload(
       if (def) {
         if (!options.includes(def)) {
           return { ok: false, error: `Default "${def}" for "${id}" must be one of its options.` }
+        }
+        rec.default = def
+      }
+    } else if (row.varType === 'multiselect') {
+      const options = row.optionsText
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      rec.options = options
+      const def = row.defaultValue.trim()
+      if (def) {
+        // Comma-joined labels, same as optionsText — matches editor/dto.py's
+        // SkillInputVariable.default shape for a multiselect (a single flat string field for
+        // every input type, never a separate list-typed one).
+        const picks = def.split(',').map((s) => s.trim()).filter(Boolean)
+        const unknown = picks.find((p) => !options.includes(p))
+        if (unknown) {
+          return { ok: false, error: `Default "${unknown}" for "${id}" must be one of its options.` }
         }
         rec.default = def
       }

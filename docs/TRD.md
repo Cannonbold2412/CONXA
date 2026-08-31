@@ -1360,6 +1360,124 @@ Native `<input type=month|week|time>` is untouched — their recorded values (`"
 and the handler falls through to its original unconditional fill/click. Zero LLM calls throughout —
 the Tier 1/2 zero-token invariant (§10.2b) holds for this handler exactly as for every other.
 
+**Select-based month/year navigation is a first-class date-picker interaction too** (2026-08-30
+follow-up, found in a real demoqa.com Practice Form recording: react-datepicker's
+`showMonthDropdown`/`showYearDropdown` mode — the pattern its own docs recommend for a far-back
+date like a date of birth; MUI's and Ant Design's year/decade pickers use the equivalent idiom —
+renders native `<select class="…year-select">`/`<select class="…month-select">` elements for
+month/year instead of click-through prev/next buttons). `buildDateContext` originally fired only
+on `actionKind === "click"`, so a `<select>`'s own `"select"` action never reached it at all,
+leaving every event's `date_context` null. It now also fires on `"select"`, and detects a
+`<select>` whose class/`aria-label`/`name`/`id` matches `/year/i` or `/month/i` inside a detected
+grid, emitting `date_context: { role: "year_select" | "month_select", grid, select, value }`
+(`select` = the `<select>`'s own selector; `value` = the newly-committed option's label text —
+checked *before* the day/nav/time branches, since a `<select>` never matches any of those anyway).
+`compiler/date_picker.py::collapse_date_picker_runs` treats these two roles as both valid run-
+starters and valid continuations alongside `day`/`nav`/`time`, so a select-driven run that *does*
+end in a day-cell click collapses into one `date_pick` step exactly like a click-driven one — its
+`handler_hints.date_picker` carries `year_select`/`month_select` selectors, and the runtime drives
+them via `selectOption({ label })` (by label, never by the option's raw value — react-datepicker's
+month value is 0-indexed, other libraries use 1-indexed or the month name itself, and matching the
+rendered English month name sidesteps every convention) in place of the click-nav loop entirely
+when present. A run with year/month selects but **no day cell** (the real recording's actual
+shape — the human set month/year and moved on without clicking a day) is deliberately left
+uncollapsed, same as a pure nav-only run always was: inventing a day nobody picked would be worse
+than an honest, still-parameterizable pair of `select` steps.
+
+Two more bugs surfaced by that same recording, both pre-existing and unrelated to date pickers
+specifically, both fixed alongside the above:
+- **`pipeline/dedupe.py` had no dedup for click/type noise bracketing a `select` event.** One
+  logical dropdown pick recorded as 4 raw events on the identical element — `click` (opens it) →
+  `select` (the one authoritative value) → `click` again (closes it) → `type` (the browser's native
+  type-ahead-to-select jump, which bridge.js's generic input-flush listener wrongly treated as text
+  entry on a non-editable `<select>`). `collapse_select_interaction_noise` (wired into
+  `pipeline/run.py`, ahead of the pre-existing `drop_superseded_focus_events`) now collapses any
+  `click`/`type`/`fill` run immediately bracketing a `select` on the same `_selector_key()` down to
+  just the `select`. General-purpose — applies to every `<select>` in every recording, not only
+  ones inside a calendar; this alone took the real recording's date-of-birth region from 8 compiled
+  steps to 2.
+- **`captureAssociatedLabel`'s last-resort "nearest sibling text" fallback (`bridge.js`) read a
+  calendar's own live "current month" display as the field's label.** Confirmed directly against
+  the recording: a year `<select>`'s `label_text` was captured as `"August 2026"`, later
+  `"August 2006"` as react-datepicker re-rendered its header live — `input_binding.py`'s label
+  priority wins first, so this became the run input's actual name every time. The fallback now
+  skips any sibling whose entire text is a month+year string (a new anchored `_MONTH_YEAR_EXACT_RE`,
+  distinct from the substring-matching `_MONTH_YEAR_RE` already used for header detection — a
+  legitimate label like "Enter the August 2026 report ID" must not be discarded) and keeps walking.
+
+Both of these are **record-time** fixes (`bridge.js`) or operate on the raw event stream at compile
+time from data `bridge.js` produced — recompiling a session recorded *before* this change still
+carries the old, garbage `label_text` and still has zero `date_context` on its select events (only
+the dedup fix retroactively helps an old recording, since it runs at compile time against whatever
+raw events already exist). Getting the full benefit — clean bindings and, if a day is also clicked,
+one collapsed `date_pick` step for a select-driven picker — requires a fresh recording.
+
+**Multiple-choice controls (radio/checkbox groups, native `<select>`, ARIA
+radiogroup/listbox widgets) record their full option set and compile to a real MCQ input**
+(resolved 2026-08-31). Recording a gender radio group used to compile to
+`role=radio[name="gender"]` — `name` is the HTML group attribute every sibling radio shares, not
+any one option's accessible name (Playwright's `role=…[name=…]` matches the accessible name, so
+this selector matched every option or none), plus a duplicate phantom `Focus` step, and the
+declared input was named after the recorded ANSWER (`{{male}}`) rather than the QUESTION
+(`{{gender}}`) — so passing a different value at execution had no effect on which radio actually
+got clicked. Three coordinated fixes, mirroring the date-picker feature's own structure (same
+recorder-context → compile-time-derivation → runtime-pure-module shape):
+- **`identity_bundle.py::_accessible_name` no longer lists `target.name` as a candidate** — it
+  never was a real accessible-name source, for any element, not just radios; a form control's real
+  accessible name still comes from `label_text` (unchanged). `ElementFingerprint.name` is untouched
+  (the resolver scores it separately).
+- **`action_semantics.py::is_editable_target` excludes `radio`/`checkbox`**, alongside the existing
+  `file` exclusion — a radio/checkbox click commits in one gesture (fires its own `change` →
+  `set_radio`/`set_checkbox`), it never acquires a caret to type into, so treating it as editable
+  made `step_anchors.py::_normalize_prep_click_to_focus` rewrite the click into a phantom `focus`
+  step. `clean_steps`'s prep-click merge (previously `{"type", "upload", "upload_intent"}` only) now
+  covers every value-setting action (`_VALUE_SET_ACTIONS`: adds `select`/`select_option`/
+  `set_checkbox`/`set_radio`/`date_pick`), so the merge — not just the rewrite-suppression — closes
+  the gap for every control kind, not only radios.
+- **`recorder/bridge.js::buildChoiceContext`** (gated the same way `buildDateContext` is, and
+  skipped when a `date_context` already claimed the event — a year/month `<select>` inside a
+  calendar grid is date-picker navigation, not an independent MCQ) tags a radio/checkbox/select/ARIA-
+  radiogroup-or-listbox event with the group's `kind`, `multi`, `group_key`, `group_label`, and every
+  member's `{value, label, selector, checked}` (`_CHOICE_GROUP_MIN = 2`: a lone standalone checkbox
+  never gets a `choice_context` at all). An ARIA custom widget (`<div role="radio">`/`[role="option"]`)
+  never fires a native `change`, so the click handler itself reclassifies such a click as
+  `set_radio`/`select_option` (never a bare `click`) when it resolves to one of these roles.
+- **`compiler/choice.py`** (new): `derive_choice(ev)` handles the single-shot kinds
+  (radio/select/aria_radio/aria_listbox) — names the input from `group_label`/`group_key` (never
+  the answer), builds `handler_hints.control_kind = "choice"` + a `choice` payload carrying every
+  option. `collapse_choice_group_runs(steps, events, policy)` handles checkbox groups, which span
+  multiple `set_checkbox` events — collapses a "pick all that apply" run into ONE step with
+  `multi: true` and `recorded_values` (absolute final state, read straight off the LAST event's own
+  live-DOM option snapshot, not reconstructed toggle-by-toggle). Runs from `build.py` immediately
+  before `collapse_date_picker_runs` (same 1:1-alignment requirement as `_populate_hover_chains`)
+  and returns a synced "representative event per output step" list so the date-picker pass, which
+  shares the same alignment assumption, still sees a length-matched view even though this pass may
+  have already shrunk `steps`.
+- **`editor/workflow_mutations.py::_choice_specs`** (beside `_date_pick_defaults`) auto-declares the
+  input as `type: "select"` (or `"multiselect"` for a checkbox group) with `options` = every
+  recorded label and `default` = the recorded pick(s) — a real JSON-Schema `enum` (or an array
+  `items.enum` for multiselect) reaches `input.json` and the MCP tool schema
+  (`skill_package_builder_saved_skill.py::_normalize_saved_skill_inputs`, `server.js`'s
+  `_skillToolDefinitions`), constraining what the calling agent can even attempt to send.
+- **`runtime/app/choice.js`** (pure, unit-tested standalone): `matchOption`/`matchOptions` resolve a
+  caller's value ("male", "M", "Male ") against the recorded option set through a three-rung ladder
+  — exact match, normalized match, unique-prefix match — stopping at the first rung with EXACTLY one
+  hit. An ambiguous rung (e.g. "M" against both "Male" and "Married") or no match at all returns
+  `null`; the handler never guesses and never falls back to the recorded answer. `handlers.js`'s
+  `set_radio`/`select`/`select_option`/`set_checkbox` gain a `control_kind === "choice"` branch that
+  acts on the MATCHED option's own selector (`select` uses `selectOption({label})` — never the raw
+  `value`, which is library-specific and unguessable, same reasoning as `date_picker.js`'s
+  `monthLabel`; an ARIA listbox option is clicked directly, since `.selectOption()` only works on a
+  native `<select>`) and throws a `{badInput: true}`-marked error naming every valid option on a
+  mismatch — `run.js`'s existing `primaryErr.badInput` check (already used by the upload handler's
+  analogous "folder given to a single-file control" case) fails the step straight through instead of
+  burning Tier 3+ LLM recovery on a value that was never going to resolve by re-finding the element.
+  A checkbox-group step reads `inputs[step.input_binding]` directly (bypassing `interpolate()`,
+  which only substitutes inside a string template) since its value is a list, then sets every
+  group member's checked state to match — absolute, not relative.
+Every branch above is additive on `handler_hints.control_kind` being absent, so a skill compiled
+before this feature is completely unaffected and needs no recompile to keep working.
+
 **A bulk upload deletes its consumed files from the shared download folder** (EXEC-19, resolved
 2026-08-25). The compile-time FIFO guarantee above only says a downloaded file is *bound* to at
 most one upload step — it doesn't stop that file from still sitting on disk in the run's shared
