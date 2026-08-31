@@ -65,7 +65,10 @@ def page(browser: Browser) -> Iterator[Page]:
 
 def _install_bridge(page: Page, html: str, profile: dict | None = None) -> None:
     page.set_content(html)
-    capture_profile = {"input_debounce_ms": 20, "hover_dwell_ms": 35}
+    # Hover capture is opt-in per recording (see bridge.js's hoverCaptureEnabled gate) —
+    # on by default here so the existing hover-heuristic tests below keep exercising the
+    # underlying capture logic; test_hover_capture_disabled_by_default covers the gate itself.
+    capture_profile = {"input_debounce_ms": 20, "hover_dwell_ms": 35, "hover_capture_enabled": True}
     if profile:
         capture_profile.update(profile)
     page.evaluate(
@@ -378,6 +381,34 @@ def test_hover_reveals_menu_records_hover(page: Page) -> None:
     events = _action_events(page, "hover")
     assert len(events) == 1
     assert events[0]["target"]["id"] == "crm"
+
+
+def test_hover_capture_disabled_by_default(page: Page) -> None:
+    # Hover capture is opt-in per recording (RecordWorkflowDialog's checkbox) — a
+    # profile with no hover_capture_enabled flag must record zero hover steps, even
+    # on a page that genuinely reveals a menu on hover.
+    _install_bridge(
+        page,
+        """
+        <nav>
+          <div id="crm" role="menuitem" tabindex="0">CRM</div>
+        </nav>
+        <aside id="drawer" hidden>
+          <a href="/contacts" id="contacts">Contacts</a>
+        </aside>
+        <script>
+          document.getElementById('crm').addEventListener('mouseover', () => {
+            document.getElementById('drawer').hidden = false;
+          });
+        </script>
+        """,
+        profile={"hover_capture_enabled": False},
+    )
+
+    page.hover("#crm")
+    page.wait_for_timeout(120)
+
+    assert _action_events(page, "hover") == []
 
 
 def test_hover_reveals_unmarked_css_only_sibling_records_hover(page: Page) -> None:

@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Recording now leaves hover-menu watching switched off unless you turn it on — 2026-09-01
+Every recording used to watch for hover-triggered menus (things that only appear when your mouse rests over something) automatically, even on sites that don't have any. That watching produces noisy, hard-to-review results, so most recordings paid the cost for a feature they never used. Now it's off by default, with a plain checkbox on the recording setup screen — "This workflow uses hover menus" — for the cases that actually need it.
+— 2026-09-01
+
 ## The compile screen got stuck showing a failed compile forever, with no way to try again — 2026-09-01
 If a workflow failed to compile and you left that screen and came back, it just showed the same failure again with no way forward — like a stuck elevator button that won't call a new elevator. Now, whenever a compile has failed, a "Retry compile" button appears right next to the status so you can start a fresh attempt without leaving the page or re-recording anything.
 — 2026-09-01

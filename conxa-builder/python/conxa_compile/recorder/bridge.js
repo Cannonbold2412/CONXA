@@ -1530,6 +1530,9 @@
   );
 
   // Smart hover: record only when hovering a candidate reveals/enables actionable UI.
+  // Opt-in per recording (see RecordWorkflowDialog's hover checkbox) — hover signals are
+  // noisy enough to need heavy human review, so most recordings should never emit them.
+  const hoverCaptureEnabled = CAP.hover_capture_enabled === true;
   const hoverDwellMs = Number(CAP.hover_dwell_ms) > 0 ? Number(CAP.hover_dwell_ms) : 400;
   const hoverActionableLimit = Number(CAP.hover_actionable_limit) > 0 ? Number(CAP.hover_actionable_limit) : 160;
   const hoverLocalLimit = Number(CAP.hover_local_limit) > 0 ? Number(CAP.hover_local_limit) : 60;
@@ -2031,47 +2034,49 @@
   function captureStableHoverBaseline() {
     if (!pendingHover) lastStableHoverSnapshot = captureHoverSnapshot(null);
   }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", captureStableHoverBaseline, { once: true, capture: true });
-  } else {
-    setTimeout(captureStableHoverBaseline, 0);
-  }
-  try {
-    new MutationObserver(() => scheduleHoverBaselineRefresh(80))
-      .observe(document.documentElement || document, { childList: true, subtree: true });
-  } catch (_e) { /* no observer — DOMContentLoaded + the mouseout refresh paths still run */ }
+  if (hoverCaptureEnabled) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", captureStableHoverBaseline, { once: true, capture: true });
+    } else {
+      setTimeout(captureStableHoverBaseline, 0);
+    }
+    try {
+      new MutationObserver(() => scheduleHoverBaselineRefresh(80))
+        .observe(document.documentElement || document, { childList: true, subtree: true });
+    } catch (_e) { /* no observer — DOMContentLoaded + the mouseout refresh paths still run */ }
 
-  onDoc(
-    "mouseover",
-    (ev) => {
-      const el = eventTargetFromPath(ev);
-      if (!el) return;
-      const candidate = resolveHoverCandidate(el);
-      if (!candidate) {
-        if (pendingHover) emitPendingHover("candidate_switch");
+    onDoc(
+      "mouseover",
+      (ev) => {
+        const el = eventTargetFromPath(ev);
+        if (!el) return;
+        const candidate = resolveHoverCandidate(el);
+        if (!candidate) {
+          if (pendingHover) emitPendingHover("candidate_switch");
+          scheduleHoverBaselineRefresh(80);
+          return;
+        }
+        const related = nodeAsElement(ev.relatedTarget);
+        if (related && candidate.contains && candidate.contains(related)) {
+          return;
+        }
+        startHoverCandidate(candidate);
+      },
+      { capture: true, passive: true }
+    );
+    onDoc("mouseout", function(ev) {
+      if (!pendingHover || pendingHover.emitted) {
         scheduleHoverBaselineRefresh(80);
         return;
       }
-      const related = nodeAsElement(ev.relatedTarget);
-      if (related && candidate.contains && candidate.contains(related)) {
-        return;
-      }
-      startHoverCandidate(candidate);
-    },
-    { capture: true, passive: true }
-  );
-  onDoc("mouseout", function(ev) {
-    if (!pendingHover || pendingHover.emitted) {
-      scheduleHoverBaselineRefresh(80);
-      return;
-    }
-    const to = nodeAsElement(ev.relatedTarget);
-    if (to && pendingHover.target && pendingHover.target.contains && pendingHover.target.contains(to)) return;
-    setTimeout(() => {
-      if (!pendingHover || pendingHover.emitted) return;
-      emitPendingHover("mouseout");
-    }, Math.min(120, hoverDwellMs));
-  }, { capture: true, passive: true });
+      const to = nodeAsElement(ev.relatedTarget);
+      if (to && pendingHover.target && pendingHover.target.contains && pendingHover.target.contains(to)) return;
+      setTimeout(() => {
+        if (!pendingHover || pendingHover.emitted) return;
+        emitPendingHover("mouseout");
+      }, Math.min(120, hoverDwellMs));
+    }, { capture: true, passive: true });
+  }
 
   // Drag / drop — capture source selector on dragstart, emit combined event on drop
   let _dragSrcSelectors = null;

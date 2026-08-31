@@ -260,12 +260,13 @@ def format_startup_error(exc: Exception) -> str:
     return message
 
 
-def _load_bridge_script() -> str:
+def _load_bridge_script(capture_hover: bool = False) -> str:
     here = Path(__file__).resolve().parent / "bridge.js"
     bridge = here.read_text(encoding="utf-8")
-    profile = json.dumps(get_policy_bundle().data.get("capture_profile") or {})
+    profile = dict(get_policy_bundle().data.get("capture_profile") or {})
+    profile["hover_capture_enabled"] = capture_hover
     return (
-        f"window.__SKILL_CAPTURE_PROFILE__ = {profile};\n"
+        f"window.__SKILL_CAPTURE_PROFILE__ = {json.dumps(profile)};\n"
         "window.__SKILL_TRACE__ = true;\n"
         + bridge
     )

@@ -274,6 +274,7 @@ class SessionMixin:
                 start_url=start_url,
                 storage_state_path=storage_state_path,
                 storage_state_autosave_path=storage_state_autosave,
+                capture_hover=bool(payload.get("capture_hover")),
             )
             # Fires from the recorder's Playwright driver thread whenever a "Choose File"
             # click would otherwise open the native OS picker — see

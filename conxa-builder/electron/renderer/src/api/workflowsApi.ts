@@ -319,6 +319,7 @@ export function getWorkflowRecordingStatus(sessionId: string): Promise<{
 export function startWorkflowRecord(
   workflowId: string,
   urlVariables?: Record<string, string>,
+  captureHover = false,
 ): Promise<{
   session_id: string
   workflow_id: string
@@ -332,6 +333,7 @@ export function startWorkflowRecord(
     workflow_id: workflowId,
     auth_mode: false,
     url_variables: urlVariables ?? {},
+    capture_hover: captureHover,
   })
 }
 

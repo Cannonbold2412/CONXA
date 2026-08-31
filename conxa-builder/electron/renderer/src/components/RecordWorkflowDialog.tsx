@@ -13,6 +13,7 @@ import { getGroupAuthStatus } from '@/api/groupsApi'
 import { GroupAuthWizard } from '@/components/GroupAuthWizard'
 import { CmdError } from '@/lib/ipc'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -35,6 +36,9 @@ export function RecordWorkflowDialog({
 }) {
   const [step, setStep] = useState<1 | 2>(1)
   const [urlVariables, setUrlVariables] = useState<Record<string, string>>({})
+  // Off by default — hover capture is noisy (fake signals needing heavy human review), so
+  // only workflows that actually rely on a hover-triggered menu should turn it on.
+  const [captureHover, setCaptureHover] = useState(false)
   const [activeSession, setActiveSession] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [siblingWarnings, setSiblingWarnings] = useState<string[]>([])
@@ -61,7 +65,8 @@ export function RecordWorkflowDialog({
   const [authBlocked, setAuthBlocked] = useState(false)
 
   const startMut = useMutation({
-    mutationFn: () => startWorkflowRecord(workflow.id, requiredVars.length > 0 ? urlVariables : undefined),
+    mutationFn: () =>
+      startWorkflowRecord(workflow.id, requiredVars.length > 0 ? urlVariables : undefined, captureHover),
     onSuccess: (data) => {
       setActiveSession(data.session_id)
       setError('')
@@ -194,7 +199,7 @@ export function RecordWorkflowDialog({
               <p className="text-xs font-semibold text-zinc-300">How it works</p>
               {[
                 'Click "Start Recording" on the next screen.',
-                'Do the steps in the browser like normal. Clicks, typing, and page changes are recorded. If a menu only shows up on hover, turn on "hover-only elements" first.',
+                'Do the steps in the browser like normal. Clicks, typing, and page changes are recorded. If a menu only shows up on hover, check "This workflow uses hover menus" on the next screen first.',
                 'When done, close the browser, then click "Save Workflow Now".',
               ].map((text, i) => (
                 <div key={i} className="flex items-start gap-3">
@@ -239,6 +244,20 @@ export function RecordWorkflowDialog({
                   : workflowStartUrl}
               </span>.
             </p>
+            <label className="flex items-start gap-2 text-xs text-zinc-400">
+              <Checkbox
+                checked={captureHover}
+                onCheckedChange={(checked) => setCaptureHover(Boolean(checked))}
+                className="mt-0.5"
+              />
+              <span>
+                This workflow uses hover menus
+                <span className="block text-zinc-500">
+                  Only turn this on if a menu or tooltip appears just from hovering — it needs
+                  more review afterward.
+                </span>
+              </span>
+            </label>
             {error ? <p className="text-sm text-red-400">{error}</p> : null}
             {authBlocked && workflow.group_id ? (
               authStatusQ.data ? (

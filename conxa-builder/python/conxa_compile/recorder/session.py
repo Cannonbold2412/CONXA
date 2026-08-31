@@ -231,6 +231,7 @@ class RecordingSession:
     wait_for_url: str = ""
     reached_wait_url: bool = False
     auth_mode: bool = False  # skip bridge/events — only capture storage state
+    capture_hover: bool = False  # opt-in per recording — hover signals are noisy, off by default
     # auth_mode only: set the moment a storage-state save actually succeeds, so the
     # caller can tell "browser closed after a session was saved" from "closed with
     # nothing captured" (see cmd_finish_group_app_auth). Distinct from reached_wait_url,
@@ -1636,7 +1637,7 @@ class RecordingSession:
                 import time as _time
                 self._video_session_start = _time.monotonic()
                 self._video_session_start_wall_ms = int(_time.time() * 1000)
-                self._bridge_script = _load_bridge_script()
+                self._bridge_script = _load_bridge_script(self.capture_hover)
                 self._context.expose_binding("__skillReport", self._binding_sink_sync)
                 self._context.add_init_script(self._bridge_script)
                 self._context.on("page", self._on_context_page)
@@ -1951,6 +1952,7 @@ class SessionRegistry:
         storage_state_autosave_path: str = "",
         wait_for_url: str = "",
         auth_mode: bool = False,
+        capture_hover: bool = False,
     ) -> RecordingSession:
         sid = str(uuid.uuid4())
         sess = RecordingSession(
@@ -1960,6 +1962,7 @@ class SessionRegistry:
             storage_state_autosave_path=storage_state_autosave_path,
             wait_for_url=wait_for_url,
             auth_mode=auth_mode,
+            capture_hover=capture_hover,
         )
         self._sessions[sid] = sess
         return sess
