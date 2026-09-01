@@ -14,6 +14,7 @@ const {
   dayNumberSelector,
   monthLabel,
 } = require("../../app/date_picker");
+const { _dateValueMatches } = require("../../app/handlers");
 
 test("parseDateValue: plain ISO date", () => {
   assert.deepStrictEqual(parseDateValue("2026-09-15"), { year: 2026, month: 9, day: 15, hour: null, minute: null });
@@ -126,4 +127,33 @@ test("dayNumberSelector: excludes disabled/outside-month cells, matches exact da
   assert.match(sel, /outside/);
   // Never matches "15" as a substring of "150" or similar via a loose text selector.
   assert.doesNotMatch(sel, /text=15[^"]/);
+});
+
+// _dateValueMatches (handlers.js) is now the enforced post-condition for a native/anchored-field
+// date_pick — there is no compile-time value_equals assertion behind it any more (date_picker.py
+// dropped it: a literal recorded date failed VERIFY for every caller-supplied date other than the
+// one recorded). A false result here now makes the handler throw instead of returning silently.
+test("_dateValueMatches: matches the raw ISO readback", () => {
+  const parsed = parseDateValue("2026-09-15");
+  assert.strictEqual(_dateValueMatches("2026-09-15", parsed, ""), true);
+});
+
+test("_dateValueMatches: matches the field's own display-formatted readback", () => {
+  const parsed = parseDateValue("2026-09-15");
+  assert.strictEqual(_dateValueMatches("09/15/2026", parsed, "MM/DD/YYYY"), true);
+});
+
+test("_dateValueMatches: tolerates the formatted value as a substring (extra field chrome)", () => {
+  const parsed = parseDateValue("2026-09-15");
+  assert.strictEqual(_dateValueMatches("Selected: 09/15/2026", parsed, "MM/DD/YYYY"), true);
+});
+
+test("_dateValueMatches: rejects an empty readback", () => {
+  const parsed = parseDateValue("2026-09-15");
+  assert.strictEqual(_dateValueMatches("", parsed, "MM/DD/YYYY"), false);
+});
+
+test("_dateValueMatches: rejects a readback for the wrong date", () => {
+  const parsed = parseDateValue("2026-09-15");
+  assert.strictEqual(_dateValueMatches("09/16/2026", parsed, "MM/DD/YYYY"), false);
 });

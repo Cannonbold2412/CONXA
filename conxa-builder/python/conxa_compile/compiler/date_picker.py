@@ -22,7 +22,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from conxa_compile.compiler.action_semantics import is_editable_target
 from conxa_compile.compiler.input_binding import derive_input_binding
 from conxa_core.models.skill_spec import Assertion, HandlerHints, SkillStep, ValidationBlock
 
@@ -36,16 +35,35 @@ def _date_context(ev: dict[str, Any]) -> dict[str, Any]:
     return dc if isinstance(dc, dict) else {}
 
 
-def _looks_like_field_open(step: SkillStep, ev: dict[str, Any] | None) -> bool:
-    """True when `step` is a plain click on the input/combobox a calendar grid belongs to —
-    the step immediately preceding a date_context run in the common case where the grid renders
-    asynchronously after the click that opens it (so the click itself never carries date_context)."""
-    if not ev:
+_FIELD_OPEN_ACTIONS = frozenset({"click", "focus"})
+
+
+def _looks_like_field_open(step: SkillStep, ev: dict[str, Any] | None, field_selector: str) -> bool:
+    """True when `step` is the click/focus that opens the field `field_selector` names — the
+    day event's own focus-tracked reference to the calendar's anchored input
+    (bridge.js::_findAnchoredField), resolved here by selector identity rather than by
+    is_editable_target's tag guard.
+
+    "focus", not just "click": `clean_steps` runs before this pass
+    (step_anchors.py::_normalize_prep_click_to_focus rewrites a plain click on an editable
+    target to `action=focus`), so a click-only check can never match the common case — this
+    was a real bug (dates compiled `grid_only` for widgets that had a real anchored field).
+
+    Selector identity, not is_editable_target(ev): the opener may be a non-form element (a
+    `<div role="combobox">`, an icon `<button>`) that is_editable_target would always reject.
+    `field_selector` comes from bridge.js's `_selectorForElement` (buildStableSelector first,
+    buildCssPath fallback); `ev`'s own `selectors.aria` is built the identical way
+    (buildAriaSelector tries buildStableSelector first) and `selectors.css` is always
+    buildCssPath — so a match on either confirms the same element regardless of which path
+    bridge.js took for it.
+    """
+    if not ev or not field_selector:
         return False
     action = step.action if isinstance(step.action, str) else ""
-    if action != "click":
+    if action not in _FIELD_OPEN_ACTIONS:
         return False
-    return is_editable_target(ev)
+    selectors = ev.get("selectors") or {}
+    return field_selector in (str(selectors.get("aria") or ""), str(selectors.get("css") or ""))
 
 
 def _normalize_time(text: str) -> str:
@@ -62,57 +80,22 @@ def _normalize_time(text: str) -> str:
     return f"{hour:02d}:{minute}"
 
 
-_CELL_DISABLED_EXCLUDE = [
-    '[aria-disabled="true"]', '[aria-hidden="true"]',
-    '[class*="disabled" i]', '[class*="outside" i]', '[class*="other-month" i]',
-    '[class*="prev-month" i]', '[class*="next-month" i]', '[class*="adjacent" i]',
-]
 _MACHINE_CELL_ATTRS = {"data-date", "datetime", "data-day", "data-value"}
 
 
-def _day_number_selector(day: int) -> str:
-    """Mirrors runtime/app/date_picker.js::dayNumberSelector exactly (kept in lockstep — this is
-    the compile-time twin, used only to build the grid_only assertion target below)."""
-    exclude = "".join(f":not({sel})" for sel in _CELL_DISABLED_EXCLUDE)
-    return f'{exclude}:text-is("{day}")'
-
-
-def _cell_assertion_target(cell_attr: str, iso_value: str) -> str:
+def _cell_assertion_target(cell_attr: str, value_token: str) -> str:
     """selector_present target for the grid_only case (no anchored field to read a value back
-    from) — rebuilds a selector for the TARGET date rather than reusing the recorded cell's own
-    selector, which (an aria-label sentence, most often) is only ever valid for the day it was
-    recorded on."""
-    date_part = iso_value.split("T", 1)[0]
-    if cell_attr in _MACHINE_CELL_ATTRS and date_part:
-        return f'[{cell_attr}="{date_part}"]'
-    try:
-        day = int(date_part.rsplit("-", 1)[-1])
-    except (ValueError, IndexError):
-        return ""
-    return _day_number_selector(day)
-
-
-def _format_value_for_display(iso_value: str, display_format: str) -> str:
-    """Mirrors runtime/app/date_picker.js::formatForDisplay. The field's own display formatting
-    (MM/DD/YYYY, ...) — not the ISO literal — is what a successful pick actually reads back as, so
-    that's what the value_equals assertion below must expect."""
-    if not display_format:
-        return iso_value
-    date_part = iso_value.split("T", 1)[0]
-    try:
-        year, month, day = date_part.split("-")
-    except ValueError:
-        return iso_value
-    out = display_format
-    if "YYYY" in out:
-        out = out.replace("YYYY", year)
-    elif "YY" in out:
-        out = out.replace("YY", year[-2:])
-    if "MM" in out:
-        out = out.replace("MM", month)
-    if "DD" in out:
-        out = out.replace("DD", day)
-    return out
+    from) — built from the run's OWN {{binding}} token, not the recorded date, so it checks
+    whatever date the caller actually picked. Only possible for a machine cell attribute
+    (its value is the ISO date the token interpolates to verbatim); a day-number text fallback
+    (`:text-is("15")`) has no equivalent — interpolating a full ISO string into a bare day
+    number can't work, and the picked value is otherwise unverifiable here, so this returns ""
+    and the run ships with no compile-time assertion. That is not a silent hole: the runtime's
+    grid drive (runtime/app/date_picker.js) already throws when it cannot land the click on
+    the target date, which is the real post-condition for this case."""
+    if cell_attr in _MACHINE_CELL_ATTRS and value_token:
+        return f'[{cell_attr}="{value_token}"]'
+    return ""
 
 
 def _infer_display_format(display_value: str | None, iso_date: str | None) -> str:
@@ -194,37 +177,32 @@ def _make_date_pick_step(
         # token, never the literal, once a binding name was found.
         date_picker={**hints, "recorded_value": iso_value},
     )
-    # Enforced post-condition — mirrors the value_equals assertion _build_assertions gives every
-    # other value-set action, and is what lets VERIFY happen on the field's value instead of on
-    # the click landing correctly. Two shapes, matching handler_hints.date_picker.open (the field
-    # selector, present whenever a field was actually found — including a range's second leg,
-    # which shares the first leg's field even though it has no separate "open" click):
-    #   - a field exists: value_equals against the field's OWN display formatting (a successful
-    #     pick reads back "09/15/2026", never the raw ISO literal, on most widgets).
-    #   - no field (an inline always-visible calendar, handler_hints.strategy == "grid_only"):
-    #     selector_present against a freshly-built selector for the TARGET date, never the
-    #     recorded cell's own selector (an aria-label sentence, most often) — that one is only
-    #     ever valid for the day it was recorded on.
-    field_selector = str(hints.get("open") or "")
-    if field_selector:
-        expected = _format_value_for_display(iso_value, str(hints.get("display_format") or ""))
-        step.validation = ValidationBlock(
-            wait_for=step.validation.wait_for,
-            success_conditions=step.validation.success_conditions,
-            assertions=[
-                Assertion(type="value_equals", target=field_selector, expected=expected, timeout_ms=5000, required=True)
-            ],
-        )
-    else:
-        cell_target = _cell_assertion_target(str(hints.get("cell_attr") or ""), iso_value)
+    # Post-condition: NOT a compile-time value_equals against the field. An anchored field's
+    # own display formatting (MM/DD/YYYY, ...) is only knowable at replay — the runtime already
+    # verifies it there (handlers.js's typed-first attempt, format-aware via _dateValueMatches,
+    # now throws on a mismatched readback instead of returning silently) — and baking the
+    # RECORDED date in as `expected` here made every run with a caller-supplied date fail
+    # VERIFY even after a correct pick. One verifier, in the one place that knows both the
+    # field's format and the caller's actual input.
+    #
+    # grid_only (no anchored field) keeps a best-effort compile-time assertion, built from the
+    # run's OWN {{binding}} token rather than the recorded date — but only when the cell carries
+    # a machine attribute whose value the token can interpolate into verbatim. Otherwise (a
+    # day-number text cell) there is no assertion; the runtime's grid drive already throws when
+    # it can't land the click on the target date, which is the real post-condition there too.
+    #
+    # Base step's own inherited validation (built by _build_assertions for whatever action this
+    # step was before the collapse) is always cleared: it describes a step that no longer exists.
+    assertions: list[Assertion] = []
+    if not hints.get("open"):
+        cell_target = _cell_assertion_target(str(hints.get("cell_attr") or ""), str(step.value or ""))
         if cell_target:
-            step.validation = ValidationBlock(
-                wait_for=step.validation.wait_for,
-                success_conditions=step.validation.success_conditions,
-                assertions=[
-                    Assertion(type="selector_present", target=cell_target, timeout_ms=5000, required=True)
-                ],
-            )
+            assertions.append(Assertion(type="selector_present", target=cell_target, timeout_ms=5000, required=True))
+    step.validation = ValidationBlock(
+        wait_for=step.validation.wait_for,
+        success_conditions=step.validation.success_conditions,
+        assertions=assertions,
+    )
     return step
 
 
@@ -248,7 +226,12 @@ def _collapse_one(
     field_selector = str(first_dc.get("field") or "")
     display_value = first_dc.get("field_display_value")
     display_format = _infer_display_format(display_value, first_dc.get("iso_date"))
-    strategy = "typed_first" if open_step is not None else "grid_only"
+    # Derived from whether an anchored field exists at all (hints["open"], below), not from
+    # whether a preceding step happened to fold into open_step: those answer different
+    # questions (M3) — the runtime reads strategy as "is there an anchored field to type
+    # into", and a range's second leg (open_step is always None — see the range branch below)
+    # still shares the first leg's real field.
+    strategy = "typed_first" if field_selector else "grid_only"
 
     # A year/month <select> in the run replaces click-through nav entirely for THIS run — the
     # runtime drives it via selectOption() (see runtime/app/date_picker.js), never the prev/next
@@ -372,10 +355,12 @@ def collapse_date_picker_runs(
         year_select_idx = next((k for k in run_range if _date_context(events[k]).get("role") == "year_select"), None)
         month_select_idx = next((k for k in run_range if _date_context(events[k]).get("role") == "month_select"), None)
 
+        field_selector = str(_date_context(events[day_idxs[0]]).get("field") or "")
+
         open_step: SkillStep | None = None
         open_event: dict[str, Any] | None = None
         prev_idx = i - 1
-        if out and 0 <= prev_idx < len(events) and _looks_like_field_open(out[-1], events[prev_idx]):
+        if out and 0 <= prev_idx < len(events) and _looks_like_field_open(out[-1], events[prev_idx], field_selector):
             open_step = out.pop()
             open_event = events[prev_idx]
 

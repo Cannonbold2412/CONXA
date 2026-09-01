@@ -170,8 +170,10 @@ function _isoFor(parsed) {
 }
 
 // Mirrors assertions.js's own value_equals tolerance (normalized-exact, else "field contains
-// expected") so the handler's internal typed-vs-grid decision agrees with what VERIFY will check
-// right after it.
+// expected"). This IS the post-condition for a native/anchored-field date_pick — there is no
+// compile-time value_equals assertion behind it (date_picker.py never emits one; a literal
+// recorded date would fail VERIFY for every caller-supplied date other than the one recorded),
+// so a false result here must fail the step, not just steer the typed-vs-grid decision.
 function _dateValueMatches(actual, parsed, displayFormat) {
   const normalized = String(actual || "").trim().toLowerCase();
   if (!normalized) return false;
@@ -209,7 +211,7 @@ async function _driveDatePickerGrid(root, parsed, hints) {
     if (hints.year_select) {
       await root.locator(hints.year_select).first()
         .selectOption({ label: String(parsed.year) }, { timeout: SECONDARY_ACTION_TIMEOUT_MS })
-        .catch(() => {}); // best-effort — VERIFY's value_equals is what actually confirms the pick
+        .catch(() => {}); // best-effort nav — the day-cell click below is what actually throws on failure
     }
     if (hints.month_select) {
       const label = monthLabel(parsed.month);
@@ -252,7 +254,7 @@ async function _driveDatePickerGrid(root, parsed, hints) {
   if (hints.kind === "datetime" && hints.time_option) {
     await cellScope.locator(`:text-is(${JSON.stringify(hints.time_option)})`).first()
       .click({ timeout: SECONDARY_ACTION_TIMEOUT_MS })
-      .catch(() => {}); // best-effort — VERIFY's value_equals is what actually confirms the pick
+      .catch(() => {}); // best-effort — the day-cell click above already landed the date itself
   }
 }
 
@@ -492,11 +494,18 @@ const HANDLERS = {
       }
     }
 
-    if (typedOk || !isCustomPicker) return;
+    if (typedOk) return;
+    if (!isCustomPicker) {
+      // Native <input type=date|datetime-local>: fill() didn't throw, but the readback doesn't
+      // match what was typed — used to return here as a silent success. There is no grid
+      // fallback for a native input, and no compile-time value_equals assertion behind this
+      // either (date_pick.py never emits one for the typed-first/native path) — this readback
+      // check IS the post-condition, so it must actually fail the step.
+      throw markMayHaveActed(new Error(`date_pick: field value after fill does not match "${displayValue}"`));
+    }
 
     // Grid fallback: only for a compiled custom-calendar step whose typed attempt didn't stick —
-    // drives the widget open->nav->day-cell (+time) instead of guessing. VERIFY (assertions.js)
-    // re-checks the field's value right after this, independently of what happened here.
+    // drives the widget open->nav->day-cell (+time) instead of guessing.
     await _runDatePickerGrid(page, step, inputs, parsed, hints);
   },
 
@@ -839,4 +848,5 @@ module.exports = {
   executeStep,
   enrichStepsWithRecovery,
   applyStepOverrides,
+  _dateValueMatches,
 };

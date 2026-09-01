@@ -163,8 +163,14 @@ def derive_input_binding(
                     return str(template), binding
             return f"{{{{{binding}}}}}", binding
 
-    # Priority 4: value pattern detection
-    pattern = _classify_value_pattern(str(raw_value or ""))
+    # Priority 4: value pattern detection — skipped for a <select>. Pattern classification is a
+    # free-text heuristic ("looks like a phone number", "looks like a number"); a select's value
+    # is one of a fixed set of options, not free text, and a chosen option that happens to look
+    # like a pattern (a year "2007" reads as _DIGITS_ONLY_REGEX's {{number}}) would bind an
+    # unrelated dropdown to whatever OTHER field the caller supplies for that generic name — a
+    # 4-digit birth-year <select> silently trying to select the mobile-number input's value.
+    is_select_target = action_type == "select" or str(target.get("tag") or "").lower() == "select"
+    pattern = None if is_select_target else _classify_value_pattern(str(raw_value or ""))
     if pattern:
         for ck, template in cred.items():
             if str(ck).lower() == pattern:

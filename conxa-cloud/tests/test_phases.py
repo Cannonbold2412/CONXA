@@ -920,6 +920,33 @@ class PhaseTests(unittest.TestCase):
         value2, binding2 = derive_input_binding(ev2, {})
         self.assertEqual((value2, binding2), ("{{file_path}}", "file_path"))
 
+    def test_derive_input_binding_skips_value_pattern_for_a_select(self) -> None:
+        """Regression: a nameless year <select>'s recorded value ("2007") matched
+        _DIGITS_ONLY_REGEX and bound to the generic {{number}} — the same name a completely
+        unrelated mobile-number field on the same form also bound to, so the select tried to
+        pick whatever the caller supplied for THAT field instead. Pattern classification is a
+        free-text heuristic; a select's value is one of a fixed set of options, not free text."""
+        from conxa_compile.compiler.input_binding import derive_input_binding
+
+        ev = {
+            "action": {"action": "select", "value": "2007"},
+            "target": {"tag": "select", "label_text": None, "placeholder": None, "aria_label": None, "name": None, "id": None},
+            "semantic": {"input_type": "text"},
+        }
+        value, binding = derive_input_binding(ev, {})
+        self.assertNotEqual(binding, "number", "must not classify a select's value as a free-text number pattern")
+        self.assertEqual((value, binding), ("2007", None), "falls through to the literal recorded value")
+
+        # Control: the same value pattern classification still fires for a plain type/fill on
+        # a non-select target — the guard is select-specific, not a blanket removal.
+        ev_type = {
+            "action": {"action": "type", "value": "2007"},
+            "target": {"tag": "input", "label_text": None, "placeholder": None, "aria_label": None},
+            "semantic": {"input_type": "text"},
+        }
+        value_type, binding_type = derive_input_binding(ev_type, {})
+        self.assertEqual((value_type, binding_type), ("{{number}}", "number"))
+
     def test_pipeline_drops_zero_bbox_hover_events(self) -> None:
         from conxa_compile.pipeline.run import _drop_non_actionable_hover_events
 

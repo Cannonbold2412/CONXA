@@ -586,8 +586,13 @@ class HandlerHints(BaseModel):
                                           # driven via selectOption({label}) in place of the
                                           # click-nav loop when present), recorded_value (the
                                           # picked ISO date/datetime — seeds the auto-declared
-                                          # input's default, never used at replay). See
-                                          # docs/TRD.md §7.1's date-picker paragraph.
+                                          # input's default, never used at replay). No compile-
+                                          # time value_equals is emitted against the field
+                                          # (2026-09-01 — the field's display formatting is only
+                                          # knowable at replay); the runtime's format-aware
+                                          # readback (handlers.js, throws on mismatch) is the
+                                          # enforced post-condition instead. See docs/TRD.md
+                                          # §7.1's date-picker paragraph.
     choice: dict = {}                    # set only when control_kind == "choice" (a multiple-
                                           # choice control — radio/checkbox group, native <select>,
                                           # ARIA radiogroup/listbox — compiler/choice.py, 2026-08-31):

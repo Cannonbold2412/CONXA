@@ -1338,12 +1338,24 @@ of consecutive click steps sharing a `date_context.grid` selector and replaces i
   next selectors, the day cell's attribute (for rebuilding, never reusing, the cell query),
   `display_format` (best-effort MM/DD/YYYY-shaped guess from the field's own post-pick readback,
   feeding the runtime's typed-first attempt), `kind` (single/range/datetime), and `strategy`
-  (`typed_first` when an anchored field was found, `grid_only` for an inline always-visible
-  calendar with none).
-- A `value_equals` assertion against the field (expecting its OWN display formatting, not the raw
-  ISO literal — most widgets never read back ISO) when a field exists, else a `selector_present`
-  assertion rebuilding a selector for the target date the same way replay will, since a raw day
-  cell has no value to read back from.
+  (`typed_first` when the day event's own `date_context.field` names an anchored field —
+  independent of whether a preceding step actually folded into the base step, below —
+  `grid_only` for an inline always-visible calendar with none). A preceding `click` **or**
+  `focus` step is folded into the date_pick step's base (donating its identity_bundle/selector)
+  when its own recorded selector matches `date_context.field` by identity — `focus`, not just
+  `click`, because `step_anchors.py::_normalize_prep_click_to_focus` (which runs before this
+  pass) already rewrote a plain click on an editable target to `focus`; a click-only check could
+  never match that common case (fixed 2026-09-01).
+- No compile-time `value_equals` against the field: the field's own display formatting is only
+  knowable at replay, so the runtime's typed-first readback (`handlers.js`, format-aware via
+  `_dateValueMatches`) is the enforced post-condition instead — it now throws on a mismatch
+  rather than returning silently (fixed 2026-09-01; a literal recorded date baked into
+  `expected` here previously failed VERIFY for every caller-supplied date other than the one
+  recorded, even after a correct pick). For `grid_only`, a `selector_present` assertion built
+  from the step's own `{{binding}}` token (not the recorded date) when the cell carries a
+  machine attribute whose value the token interpolates to verbatim; otherwise no compile-time
+  assertion at all — the runtime's grid drive already throws when it can't land the target-date
+  click, which is the real post-condition there too.
 
 At replay, `runtime/app/date_picker.js` (pure — month-delta arithmetic, header parsing, date
 formatting, selector construction; unit-tested standalone with no browser) backs
