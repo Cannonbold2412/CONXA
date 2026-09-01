@@ -461,9 +461,23 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   app.isQuitting = true;
-  if (backend && !backend.killed) backend.kill();
+  if (backend && !backend.killed) {
+    // Give the backend a chance to run its own shutdown (joins any open
+    // recording's Playwright thread) instead of force-killing it — closing
+    // stdin makes its stdin-read loop hit EOF and exit on its own.
+    event.preventDefault();
+    const forceKill = setTimeout(() => {
+      if (backend && !backend.killed) backend.kill();
+      app.quit();
+    }, 3000);
+    backend.once("exit", () => {
+      clearTimeout(forceKill);
+      app.quit();
+    });
+    backend.stdin.end();
+  }
 });
 
 app.on("window-all-closed", () => {

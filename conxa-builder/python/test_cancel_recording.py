@@ -46,6 +46,9 @@ class _FakeRegistry:
     def pop(self, session_id: str):
         return self._sessions.pop(session_id, None)
 
+    def all(self):
+        return list(self._sessions.values())
+
 
 class _FakeLoop:
     def run(self, coro):
@@ -112,6 +115,47 @@ class CancelRecordingTests(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertIsNone(backend._active_recording)
+
+
+class ShutdownOpenSessionsTests(unittest.TestCase):
+    """Covers the fix for: force-killing/Ctrl+C'ing the backend left any open
+    RecordingSession's Playwright thread torn down mid-callback (greenlet
+    'cannot switch to a different thread' spam on every dev restart).
+    backend.py's process-exit path must stop() every still-registered session
+    the same way cmd_stop_recording does, before the interpreter tears down."""
+
+    def test_stops_every_open_session(self) -> None:
+        from backend import _shutdown_open_sessions
+
+        registry = _FakeRegistry()
+        sess_a = _FakeSession("sess-a")
+        sess_b = _FakeSession("sess-b")
+        registry.add(sess_a)
+        registry.add(sess_b)
+
+        with patch("conxa_compile.recorder.session.registry", registry):
+            _shutdown_open_sessions(_FakeBackend())
+
+        self.assertTrue(sess_a.stopped)
+        self.assertTrue(sess_b.stopped)
+
+    def test_one_bad_session_does_not_block_the_rest(self) -> None:
+        from backend import _shutdown_open_sessions
+
+        class _BoomSession(_FakeSession):
+            async def stop(self) -> None:
+                raise RuntimeError("boom")
+
+        registry = _FakeRegistry()
+        boom = _BoomSession("sess-boom")
+        ok = _FakeSession("sess-ok")
+        registry.add(boom)
+        registry.add(ok)
+
+        with patch("conxa_compile.recorder.session.registry", registry):
+            _shutdown_open_sessions(_FakeBackend())  # must not raise
+
+        self.assertTrue(ok.stopped)
 
 
 if __name__ == "__main__":

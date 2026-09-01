@@ -24,6 +24,8 @@ import threading
 import time
 import traceback
 import re
+
+import greenlet
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from typing import Any, Callable
@@ -100,12 +102,24 @@ set_event_sink(_progress_event_sink)
 class _Loop:
     def __init__(self) -> None:
         self.loop = asyncio.new_event_loop()
+        self.loop.set_exception_handler(self._on_exception)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
+
+    def _on_exception(self, loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        # Playwright's sync driver can only be touched from the thread that started
+        # it. On process shutdown (Ctrl+C, force-kill) a RecordingSession's own
+        # thread can be torn down mid-callback, and its greenlet-based sync_api
+        # raises this from asyncio's callback machinery — benign shutdown noise,
+        # not a real fault. Anything else still goes to the default handler.
+        exc = context.get("exception")
+        if isinstance(exc, greenlet.error) and "different thread" in str(exc):
+            return
+        loop.default_exception_handler(context)
 
     def run(self, coro):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result()
@@ -701,5 +715,24 @@ class Backend(
             threading.Thread(target=self.dispatch, args=(msg,), daemon=True).start()
 
 
+def _shutdown_open_sessions(be) -> None:
+    """Mirror cmd_stop_recording's teardown for any session still open when the
+    process exits (Ctrl+C, or Electron closing our stdin) instead of letting the
+    interpreter rip Playwright's sync driver out from under its own thread."""
+    from conxa_compile.recorder.session import registry as _shutdown_registry
+
+    for sess in _shutdown_registry.all():
+        try:
+            be._loop.run(sess.stop())
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
-    Backend().serve()
+    be = Backend()
+    try:
+        be.serve()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _shutdown_open_sessions(be)
