@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from app.services.tracking_analytics import (
     bucket_series,
     failure_codes,
@@ -22,6 +24,7 @@ from app.services.tracking_analytics import (
     recovery_tier_totals,
     reliability_heatmap,
     roi,
+    seed_recorded_baseline,
     step_analytics,
     step_recovery_paths,
     window_records,
@@ -512,6 +515,58 @@ def test_roi_separates_measured_facts_from_estimates():
     assert result["measured"]["self_healed_runs"] == 1
     assert result["measured"]["agent_assisted_recoveries"] == 0
     assert "hours_saved" not in result["measured"]
+
+
+def test_roi_by_workflow_row_exposes_measured_automated_minutes():
+    """automated_minutes is pure telemetry (summary.duration_ms) — independent of whatever
+    the manual-time baseline assumption is."""
+    records = [
+        _record("acme", "checkout", run_id="a", duration_ms=30_000),
+        _record("acme", "checkout", run_id="b", duration_ms=90_000),
+    ]
+    result = roi(records, {"default_minutes": 10})
+    row = result["estimated"]["by_workflow"][0]
+    assert row["automated_minutes"] == 2.0  # (30_000 + 90_000) ms == 2 minutes
+
+
+def test_roi_nets_out_human_oversight_time_per_run():
+    """hours_saved must not pretend the human spends zero time per run now — each run
+    still costs them HUMAN_OVERSIGHT_SECONDS."""
+    records = [_record("acme", "checkout", run_id=str(i)) for i in range(100)]
+    result = roi(records, {"default_minutes": 10, "per_workflow": {}})
+    row = result["estimated"]["by_workflow"][0]
+    expected_minutes = 100 * 10 - (100 * 20 / 60)
+    assert row["minutes_saved"] == pytest.approx(expected_minutes, abs=0.01)
+    assert result["estimated"]["hours_saved"] == round(expected_minutes / 60, 1)
+
+
+def test_seed_recorded_baseline_seeds_once_and_never_overwrites(tmp_path, monkeypatch):
+    from conxa_core.config import settings
+    from conxa_core.db import db_get
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+    seed_recorded_baseline("acme", "checkout", 300.0)  # 5 minutes
+    stored = db_get("roi_assumptions", "acme")
+    assert stored["per_workflow"]["acme/checkout"] == 5.0
+
+    # A later publish (e.g. a re-recording) must never silently change a baseline
+    # that's already seeded — an admin may already be relying on it.
+    seed_recorded_baseline("acme", "checkout", 600.0)
+    stored = db_get("roi_assumptions", "acme")
+    assert stored["per_workflow"]["acme/checkout"] == 5.0
+
+
+def test_seed_recorded_baseline_ignores_missing_or_zero_duration(tmp_path, monkeypatch):
+    from conxa_core.config import settings
+    from conxa_core.db import db_get
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+    seed_recorded_baseline("acme", "signup", None)
+    seed_recorded_baseline("acme", "signup", 0)
+    stored = db_get("roi_assumptions", "acme")
+    assert stored is None or "acme/signup" not in (stored.get("per_workflow") or {})
 
 
 # ---------------------------------------------------------------------------

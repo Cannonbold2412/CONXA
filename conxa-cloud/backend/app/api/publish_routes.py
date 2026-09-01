@@ -67,6 +67,7 @@ from app.services.entitlements import (
 from app.services.rbac import require_admin
 from app.services.saas import add_audit_event, billing_for
 from app.services import release_channel
+from app.services.tracking_analytics import seed_recorded_baseline
 from app.api.updates_routes import _require_admin
 
 router = APIRouter(prefix="/workflows", tags=["publish"])
@@ -113,6 +114,11 @@ class PublishBody(BaseModel):
     # publish — surfaced to Cloud admins reviewing a "ready for release"
     # version alongside its diff and artifact.
     tests_passed: bool = Field(default=False)
+    # How long the human took to perform the workflow once, live, during recording
+    # (Build Studio's Workflow.recording_duration_seconds). Seeds the ROI baseline —
+    # see tracking_analytics.seed_recorded_baseline. None for a Build Studio that
+    # hasn't picked this up yet, or if the recording predates the field.
+    recording_duration_seconds: float | None = Field(default=None)
     files: list[PublishFile] = Field(default_factory=list)
 
 
@@ -390,6 +396,7 @@ def _publish_skill_pack_impl(
             group_id=body.group_id.strip(), group_name=body.group_name.strip(), workflow_name=body.workflow_name.strip(),
         )
         record_published_workflow(principal.workspace_id, skill_slug)
+        seed_recorded_baseline(principal.workspace_id, skill_slug, body.recording_duration_seconds)
 
         add_audit_event(
             principal,

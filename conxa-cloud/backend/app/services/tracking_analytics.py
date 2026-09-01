@@ -791,6 +791,11 @@ DEFAULT_ROI_ASSUMPTIONS: dict[str, Any] = {
     "per_workflow": {},
 }
 
+# ponytail: fixed assumption, not admin-editable. Replace with a real measured figure if
+# prompt-to-execute latency ever gets instrumented — out of scope for now (nothing today
+# times the gap between a chat message and execute_skill landing).
+HUMAN_OVERSIGHT_SECONDS = 20
+
 
 def normalize_assumptions(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Merge stored ROI assumptions over the defaults, coercing bad input rather than raising."""
@@ -824,14 +829,12 @@ def roi(records: list[dict[str, Any]], assumptions: dict[str, Any]) -> dict[str,
     per_workflow = settings["per_workflow"]
     default_minutes = float(settings["default_minutes"])
 
-    minutes_saved = 0.0
     by_workflow: dict[tuple[str, str], dict[str, Any]] = {}
     for record in records:
         if (record.get("summary") or {}).get("status") != "ok":
             continue
         company, workflow = _workflow_key(record)
         minutes = float(per_workflow.get(f"{company}/{workflow}", default_minutes))
-        minutes_saved += minutes
         entry = by_workflow.setdefault((company, workflow), {
             "company": company,
             "workflow": workflow,
@@ -839,9 +842,11 @@ def roi(records: list[dict[str, Any]], assumptions: dict[str, Any]) -> dict[str,
             "minutes_per_run": minutes,
             "is_estimate_default": f"{company}/{workflow}" not in per_workflow,
             "minutes_saved": 0.0,
+            "duration_ms_total": 0.0,
         })
         entry["runs"] += 1
         entry["minutes_saved"] += minutes
+        entry["duration_ms_total"] += _number((record.get("summary") or {}).get("duration_ms"))
 
     # Sourced from the cascade rather than counted here, so the Impact page and the
     # Self-healing page can never quote different numbers for the same thing. Counting tier
@@ -854,10 +859,16 @@ def roi(records: list[dict[str, Any]], assumptions: dict[str, Any]) -> dict[str,
         if (r.get("summary") or {}).get("status") == "ok" and _run_has_recovery(r)
     )
 
-    hours_saved = round(minutes_saved / 60, 1)
     rows = sorted(by_workflow.values(), key=lambda r: r["minutes_saved"], reverse=True)
     for row in rows:
+        # Net out the human's remaining hands-on time (they still have to kick each
+        # run off) — see HUMAN_OVERSIGHT_SECONDS.
+        oversight_minutes = row["runs"] * HUMAN_OVERSIGHT_SECONDS / 60
+        row["minutes_saved"] = max(0.0, row["minutes_saved"] - oversight_minutes)
         row["hours_saved"] = round(row["minutes_saved"] / 60, 1)
+        row["automated_minutes"] = round(row.pop("duration_ms_total") / 60000, 2)
+    minutes_saved = sum(row["minutes_saved"] for row in rows)
+    hours_saved = round(minutes_saved / 60, 1)
 
     return {
         "assumptions": settings,
@@ -1075,6 +1086,28 @@ def write_assumptions(workspace_id: str, payload: Any, *, user_id: str) -> dict[
     stored["updated_by"] = user_id
     db_set(ROI_NAMESPACE, workspace_id, stored)
     return stored
+
+
+def seed_recorded_baseline(workspace_id: str, skill_slug: str, recording_duration_seconds: float | None) -> None:
+    """Auto-fill a workflow's ROI baseline from its actual recording length, the first time
+    it's published. Never overwrites an existing entry — an earlier auto-seed or an admin's
+    manual edit both win, so a republish can never silently change a number someone is
+    already relying on. Writes the raw KV row (not through write_assumptions) since this is a
+    system seed, not an admin action — it must not stamp updated_by/updated_at as if a person
+    edited the assumptions.
+    """
+    if not recording_duration_seconds or recording_duration_seconds <= 0:
+        return
+    key = f"{workspace_id}/{skill_slug}"
+    stored = db_get(ROI_NAMESPACE, workspace_id)
+    stored = dict(stored) if isinstance(stored, dict) else {}
+    per_workflow = stored.get("per_workflow")
+    per_workflow = dict(per_workflow) if isinstance(per_workflow, dict) else {}
+    if key in per_workflow:
+        return
+    per_workflow[key] = round(recording_duration_seconds / 60, 2)
+    stored["per_workflow"] = per_workflow
+    db_set(ROI_NAMESPACE, workspace_id, stored)
 
 
 # ---------------------------------------------------------------------------
