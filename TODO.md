@@ -54,6 +54,36 @@ Counts below are computed straight from the section headers in this file (unique
 
 **Added 2026-08-09, direct from the founders — supersedes every previously-tracked priority in this file.** The four items below are the reason the rest of this backlog shifted down one tier (old P0 → P1, old P1 → P2, old P2 → P3, old P3 → P4); no other item content changed, only the section labels. See the "Fourth pass" note at the bottom of this file.
 
+### ~~REC-STALE-1 — Workflow-E fails partway through~~ — RESOLVED 2026-09-01
+Root-caused to six defects, all fixed and regression-tested; Workflow-E now runs all 29 steps to
+`steps_complete` from a clean sandbox, and passes with inputs other than the recorded ones
+(a different birth date, gender, names and city). See FIX.md and docs/TRD.md.
+
+1. `_finalize_payload_sync` built its event dict as an allow-list and never copied
+   `branch_hint` / `date_context` / `choice_context` / `optionality` / `post_condition` out of
+   the bridge payload, so all five were null in every recording ever made — the date-picker and
+   multiple-choice features were dead end-to-end despite being implemented and unit-tested.
+2. `_capture_a11y_async` called Playwright's thread-affine sync API from a worker thread and
+   raised `Cannot switch to a different thread` every time, so no a11y snapshot ever reached
+   disk and `resolves_to_nothing()` could not drop fabricated role+name selectors.
+3. `isInteractiveNode` omitted `gridcell`, so a calendar day click — the gesture that COMMITS a
+   date — was discarded as noise.
+4. `_parseDateFromString` fed `Date.parse` raw aria-label prose (`"…March 15th, 2007"`, which it
+   rejects) and formatted via `toISOString()`, shifting every date back a day on positive-offset
+   timezones.
+5. `findCalendarRoot` stopped at the first class-substring match walking up, so a day cell
+   (`react-datepicker__day` matches `[class*='datepicker']`) was reported as the whole calendar.
+6. Unmatchable selectors: truncated exact-match `text=` on `<select>` option content, a
+   depth-capped relative XPath emitted with an absolute `/` prefix, and `is_brittle_deep_chain`
+   discarding a deep CSS chain's durable tail. Plus `scoreCandidate` charging weight for
+   `inner_text` and `anchor_phrases` it could never earn.
+
+**Still open, found while here:** input bindings are named after the recorded ANSWER, not the
+question — that compile produced inputs named `sports` and `react_select_3_listbox`, and a
+`select_option` mismatch reports `Input "undefined"` instead of the binding name. A dependent
+dropdown's enum is also frozen from the recording (picking a different State still offers the
+recorded State's cities). None of these block a run; all deserve their own item.
+
 ### TEST-11 — Run the full manual testing suite in `docs/testing/` (re-invoke & reconfigure LLM keys first)
 - **Category:** Testing & Cleanup
 - **Description:** Execute every test plan currently living in [`docs/testing/`](docs/testing/) — consolidated since 2026-08-26 into [`01-WORKFLOWS-TO-TEST.md`](docs/testing/01-WORKFLOWS-TO-TEST.md) (pending work, sorted easy→hard; WF-1…WF-12) and [`02-WORKFLOWS-PASSED.md`](docs/testing/02-WORKFLOWS-PASSED.md) (manually-passed workflows + capability dashboard) — end to end, and fix whatever they surface. **Before any testing begins**, the LLM provider keys must be re-invoked (regenerated/refreshed) and re-configured: existing keys may be expired, rotated, or rate-limited, and a compile- or recovery-tier test failing on auth would waste the run and mask real defects. Re-run the router setup per `conxa-cloud/backend/ROUTER_SETUP.md` and verify each configured provider responds before starting the suites.

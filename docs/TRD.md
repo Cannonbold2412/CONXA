@@ -1487,6 +1487,25 @@ recorder-context → compile-time-derivation → runtime-pure-module shape):
   A checkbox-group step reads `inputs[step.input_binding]` directly (bypassing `interpolate()`,
   which only substitutes inside a string template) since its value is a list, then sets every
   group member's checked state to match — absolute, not relative.
+**A popup listbox records the control that opens it** (2026-09-01). A custom dropdown
+(react-select and friends) renders its `[role="option"]` children ONLY while its menu is open, and
+the click that opens the menu lands on a role-less, id-less container that
+`resolveMeaningfulTarget` correctly discards as noise — so no compiled step ever reopened the menu
+and `select_option` could only ever miss. `bridge.js::_choiceOpenerSelector` now captures the
+group's opener into `choice_context.opener_selector`, preferring the ARIA contract
+(`[role=combobox][aria-controls=<listbox id>]`, or `[aria-haspopup=listbox]`) and falling back to
+the nearest ancestor carrying a stable id; an owner rendered inside the popup itself is rejected,
+being no more reachable at replay than the options were. `compiler/choice.py` carries it through to
+`handler_hints.choice.opener_selector`, and `handlers.js::_ensureChoiceMenuOpen` clicks it before
+the `aria_listbox` branch resolves its option — but only when the option is not already on the
+page, so an open menu is never toggled shut. This stays Tier 1 (deterministic, zero-LLM): the
+opener is a compile-time recorded selector, never a guess. It is `""` for an always-visible group
+(a native `<select>`, a radio fieldset), and for any skill compiled before this change — in both
+cases the helper is a no-op and the caller's own locator wait still decides the outcome.
+
+A skill recorded before this exists CANNOT be healed by recompiling: the observation is absent
+from the recording, so such a workflow must be re-recorded. See TODO.md's REC-STALE-1.
+
 Every branch above is additive on `handler_hints.control_kind` being absent, so a skill compiled
 before this feature is completely unaffected and needs no recompile to keep working.
 
@@ -1599,6 +1618,97 @@ user-initiated re-compile exceptions: the 1-click-fix API's `selector_regenerati
 `region_selector_vision.py` (task `region_selector`, vision — screenshot + drawn region highlight
 + DOM snippet, since no recording stores per-element geometry a text prompt could resolve a drawn
 region against). Neither runs during normal compile.
+
+**The calendar root is the widget, not the clicked day** (2026-09-01).
+`CALENDAR_ROOT_SELECTORS` matches on class substrings (`[class*='datepicker']`), and every
+descendant of a widget repeats its library prefix — react-datepicker's day cell is
+`react-datepicker__day`, which matches that selector itself. `findCalendarRoot` returned the
+first match walking up, i.e. the CELL, so `date_context.grid` and `.cell` were the same
+date-specific selector. The runtime then scoped its day search *inside* the recorded cell (which
+has no day-number descendant, only its own text) and `header`/`prev`/`next`/`year_select`/
+`month_select` — all of which live above the cell — came back empty. It now keeps widening to the
+outermost calendar-matching ancestor before the existing nav-chrome widen step, which is what
+makes `date_pick` able to reach a date OTHER than the recorded one.
+
+**Recorded observations reached the compiler for the first time** (2026-09-01).
+`session.py::_finalize_payload_sync` assembles its `body` dict as an explicit allow-list before
+`RecordedEvent.model_validate`, and never copied `branch_hint`, `date_context`, `choice_context`,
+`optionality` or `post_condition` out of the bridge payload. All five are declared optional with a
+`None` default, so validation silently filled in None — every recording ever made had them null in
+every event. Both the date-picker collapse and the multiple-choice compile were therefore dead
+end-to-end (the compiler had nothing to collapse or derive a payload from) even though both sides
+of the boundary were implemented and unit-tested. The finalizer now copies each observation
+through when present. `ChoiceContext` also gained `opener_selector`; an undeclared field is
+dropped by Pydantic just as silently as an uncopied one.
+
+**A11y snapshot capture had never run** (2026-09-01). `_capture_a11y_async` invoked
+`page.locator("body").aria_snapshot()` inside a `threading.Thread` to bound it to 2s, but
+Playwright's sync API is greenlet-based and bound to its creating thread, so every call raised
+`Cannot switch to a different thread` and the method returned None — visible only as a single
+`a11y_capture_error` line in the session's recorder_diag.json. With no a11y tree on disk,
+`identity_bundle.py`'s `resolves_to_nothing()` could not confirm that a role+name selector
+resolves in the page it came from, so fabricated accessible names shipped as the bundle's
+highest-durability (0.95) signal: `captureAssociatedLabel`'s last-resort surrounding-text walk
+named a react-select input after the "State and City" heading above it, producing
+`internal:role=combobox[name="State and City"]`, which Playwright never matches. Now
+`_capture_a11y_snapshot`, called in-thread with `aria_snapshot(timeout=…)` — the native bound the
+thread only ever existed to provide.
+
+**A calendar day cell is an interactive target** (2026-09-01). `isInteractiveNode`'s ARIA role
+allow-list enumerates individual activatable controls but omitted `gridcell`, which is what
+react-datepicker gives a day (`<div role="gridcell" tabindex="-1">`); the `tabindex` check cannot
+cover it, since roving-tabindex widgets give every unfocused item `-1` by design. So
+`resolveMeaningfulTarget` walked past the day, found no interactive ancestor and returned null,
+and the click that COMMITS a date was never recorded — the run replayed as open/change-year/
+change-month with no day pick, the calendar visibly moving while the field kept its original
+date. `gridcell`, `treeitem`, `menuitemcheckbox`, `menuitemradio`, `searchbox`, `spinbutton` and
+`slider` were added; container roles (grid, listbox, menu, tree, radiogroup) stay out, since a
+click belongs to the item, not the widget around it.
+
+**Recorded dates were a day early outside UTC** (2026-09-01). `_parseDateFromString` returned
+`new Date(...).toISOString().slice(0, 10)`. A date string with no time parses to LOCAL midnight,
+which `toISOString()` converts to UTC — on any positive-offset zone (IST, CET, …) that lands on
+the previous day, so `2007-03-15` was recorded as `2007-03-14`. It now formats from local parts.
+The same function also fed `Date.parse` raw aria-label prose; react-datepicker writes
+`aria-label="Choose Thursday, March 15th, 2007"`, which `Date.parse` rejects for both the leading
+words and the `15th` ordinal, so every aria-labelled cell parsed to null and no `iso_date` ever
+reached `DateContext`. It now strips ordinals and extracts an embedded ISO / `Month D, YYYY` /
+`D Month YYYY` date before parsing.
+
+**An element identified only by its CSS class keeps that identity** (2026-09-01). Three separate
+stages each discarded the only durable signal a nameless, id-less, testid-less element had, and
+together they compiled `react-datepicker`'s year/month `<select>` down to a bundle whose every
+signal was structurally unmatchable — a guaranteed `{miss:true}` at replay with nothing to fall
+back on:
+
+- `bridge.js::buildTextSelector` built `text="1900 1901 … 1915 "` from the `<select>`'s
+  `innerText`, i.e. its concatenated `<option>` list. Playwright's text engine never matches a
+  `<select>` by its options, and `text="…"` is an EXACT match, so the 80-char truncation made it
+  unmatchable a second time over. It now emits `""` for option-content elements
+  (`select`/`datalist`/`optgroup`) and for any text over the cap, rather than a selector that
+  cannot resolve. `identity_bundle.py` applies the same option-content gate to the `text_based`
+  channel, which is what heals sessions recorded before the bridge fix without a re-record.
+- `bridge.js::buildXPath` stops at `xpath_max_depth`, then prefixed `/` — emitting a RELATIVE path
+  as an ABSOLUTE one, so anything deeper than the cap matched nothing. It now emits `//` unless the
+  walk actually reached the document root.
+- `selector_filters.py::is_brittle_deep_chain` rejected the recorded CSS chain wholesale (8 levels,
+  cap 6) even though its last segment, `select.react-datepicker__year-select`, is unique, semantic
+  and non-positional. `salvage_deep_css_tail()` now keeps the shortest identifying tail — free of
+  `:nth-*` pseudo-classes, naming the element by class/id/attribute, and still subject to every
+  ordinary quality gate — instead of dropping the channel to `""`. The over-deep chain itself is
+  still rejected; only the salvageable tail survives.
+
+**The resolver stopped charging weight it could never earn** (2026-09-01). Even once such an element
+was findable, `resolver.js::scoreCandidate` scored it against two fields it could not possibly
+agree on, dropping a UNIQUELY matched candidate to 0.444 against the 0.5 threshold: `inner_text`
+(the compiler records `innerText`, "1900 1901 1902"; `page_scripts.js::extractDescriptor` reads
+`textContent`, "190019011902" — never equal, never a substring) and `anchor_phrases` (whose
+`node.anchorNeighbors` came back empty, because the extractor only collects neighbour text under 60
+chars). `inner_text` is now skipped for option-content tags/roles, mirroring the existing
+`NAME_FROM_CONTENT_ROLES` gate on `fpName`, and the anchor weight is skipped entirely when the
+candidate exposes no neighbour text — absence of agreement is not contradiction, the same principle
+`contradicts()` already encodes. Both gates only remove weight that was unearnable; the uniqueness
+margin gate is untouched.
 
 On the primary compile path itself, `identity_bundle.py:generate_deterministic_signals()` reads the recorded DOM at compile time and emits Playwright-native-grammar signals ranked by durability. No LLM call is made to produce or score selector strings (SeeAct Finding 3: ~30% hallucination rate for LLM-written selectors). `llm_selector_generator_v2.to_playwright_grammar()` is still used as a pure string-formatting utility by `identity_bundle.py`.
 

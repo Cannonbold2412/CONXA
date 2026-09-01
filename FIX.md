@@ -2,6 +2,42 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Workflow-E now runs start to finish — 2026-09-01
+The test workflow on the practice sign-up form used to stop partway through. It now completes every one of its 29 steps, fills the whole form including the date of birth, submits it and closes the confirmation. It also works with values other than the ones it was recorded with — a different birth date, a different name, a different city — which is the whole point of a recorded workflow.
+— 2026-09-01
+
+## Fixed a calendar being mistaken for one of its own dates — 2026-09-01
+The recorder works out which part of the page is "the calendar" by looking for a calendar-ish name. The trouble is that every piece inside a calendar carries the calendar's name too — the individual day squares included — so it settled on the day square the user clicked and treated that one square as the entire calendar. Everything downstream was then looked for inside a single square: the month and year menus, the arrows, and the other days, none of which are in there. It also meant the workflow could only ever pick the exact date it was recorded with. The recorder now keeps widening until it has the whole calendar.
+— 2026-09-01
+
+## Fixed the recorder throwing away most of what it noticed — 2026-09-01
+The recorder watches for special controls — calendars, dropdown menus, pop-up banners — and writes down extra notes about each one. Those notes were being collected correctly and then quietly dropped a moment later, before anything was saved, because the step that assembles the final record only copied across a fixed list of items and none of the notes were on that list. Two whole features that depend on those notes had therefore never once worked in a real recording, despite both being built and tested. The notes now make it into the saved recording.
+— 2026-09-01
+
+## Fixed dates in calendars being recorded a day early — 2026-09-01
+When a workflow recorded a date picked from a calendar, the date was stored one day earlier than the one actually clicked, for anyone in India, Europe or most of Asia. The cause was a time-zone conversion applied to a date that had no time attached, which rolled it back past midnight. Picking the 15th saved the 14th. Dates are now stored exactly as they appear on the calendar.
+— 2026-09-01
+
+## Fixed clicking a day in a calendar not being recorded at all — 2026-09-01
+Choosing a date is a two-part gesture: you change the month and year, then click the day — and only that last click actually sets the date. The recorder had a list of things it considers clickable, and calendar day squares were not on it, so the day click was ignored as background noise. Played back, the workflow would open the calendar and flip to the right month and year, look completely correct, and then leave the date field showing its original date. Day squares are now recognised, and the wording on them ("Thursday, March 15th, 2007") is now understood too.
+— 2026-09-01
+
+## Fixed a background accessibility check that never once ran — 2026-09-01
+The recorder takes a second kind of snapshot of each page, the one screen readers use, and the system relies on it to sanity-check the names it plans to use for buttons and fields. That snapshot was being taken on a separate worker, which the browser tool it calls flatly refuses to allow — so it failed every single time, on every recording, silently. With no snapshot to check against, made-up names slipped through: a dropdown got named after a nearby heading, which matched nothing when the workflow ran. The snapshot is now taken the normal way and the check works.
+— 2026-09-01
+
+## Fixed workflows failing on dropdowns that have no name of their own — 2026-09-01
+A test workflow on a practice sign-up form kept stopping dead at the date-of-birth year dropdown with "element not found". The dropdown had no label, no title and no id, so the only thing that could identify it was its style name — and three separate parts of the system were each throwing that away. One was describing the dropdown by mashing every year in its list into one long line of text and then cutting it off halfway, which of course matched nothing. Another was writing down the dropdown's position in the page like a street address that started from the wrong house. And a third was discarding the full address as "too long" instead of keeping the useful last line of it. All three now keep something that actually works, and the workflow gets eleven steps further than before.
+— 2026-09-01
+
+## Stopped the system from quietly rejecting the right answer — 2026-09-01
+Even once a dropdown could be found, the software double-checks it found the right one by comparing what it sees against what was recorded. That check was marking the dropdown down for two things it could never possibly pass: the text of its options, which the two sides read in slightly different formats and so never agreed on, and its surrounding wording, which the page simply did not provide. It was like failing a job applicant for leaving blank two questions that were never on the form. The score landed just under the pass mark and a perfectly correct match was thrown out. Those two unfair checks are gone, and the match now passes cleanly.
+— 2026-09-01
+
+## Taught workflows how to reopen a dropdown before picking from it — 2026-09-01
+Some dropdowns, like the State and City pickers on a sign-up form, only create their list of choices at the moment you open them — the rest of the time those choices do not exist on the page at all. The recorder was never noting down which control opens the list, because the click that opens it lands on an unlabelled area it treats as background noise. So when the workflow replayed, it went looking for a choice that was not there yet and gave up. The recorder now writes down the control that opens the list, and the workflow opens it before picking. Anything recorded before this change still needs to be recorded again to benefit.
+— 2026-09-01
+
 ## Stopped the Build Studio developer console from flooding with error messages every time it restarted — 2026-09-01
 When a developer stopped or restarted the Build Studio app while working on it, the background program would print a wall of scary-looking error messages before closing. Nothing was actually broken by this — it happened after any in-progress recording had already finished — but it looked alarming and cluttered the logs, like a car alarm going off every time you turn the engine off. The app is now told to properly close down any recording session and its browser before it fully exits, instead of just being yanked away mid-task, and the harmless leftover warning that could still slip through is now quietly ignored instead of printed as a scary error.
 — 2026-09-01
