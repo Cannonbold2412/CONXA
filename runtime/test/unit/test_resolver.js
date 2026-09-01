@@ -205,3 +205,77 @@ test("inner_text still participates in name matching for a name-from-content rol
   );
   assert.strictEqual(s, 1);
 });
+
+// ── Popup-listbox / <select> scoring (demoqa react-datepicker regression) ───────────────
+//
+// A react-datepicker year <select> has no testid, no accessible name and no neighbour text
+// short enough for extractDescriptor to collect. Its ONLY agreeing field is `role`. Two
+// weights were nonetheless being charged against it and could never be earned:
+//   - inner_text: the compiler records innerText ("1900 1901 1902"), the live descriptor
+//     reads textContent ("190019011902") — never equal, never a substring of the other.
+//   - anchor_phrases: node.anchorNeighbors comes back EMPTY, and absence is not disagreement.
+// Result: 0.20/0.45 = 0.444 against a 0.5 threshold, so a UNIQUELY matched element was
+// rejected and the step failed as a resolve miss.
+
+const YEAR_TEXT_SPACED = "1900 1901 1902 1903 1904";
+const YEAR_TEXT_DENSE = "19001901190219031904";
+
+const SELECT_FP = {
+  role: "combobox",
+  tag: "select",
+  inner_text: YEAR_TEXT_SPACED,
+  data_testid: "",
+  aria_label: "",
+  name: "",
+  placeholder: "",
+  anchor_phrases: ["Practice Form", "Choose Date"],
+};
+
+const SELECT_NODE = {
+  role: "combobox",
+  name: YEAR_TEXT_DENSE,
+  text: YEAR_TEXT_DENSE,
+  testid: "",
+  anchorNeighbors: [],
+};
+
+test("a <select> matched only by role clears the confidence threshold", () => {
+  const s = scoreCandidate(SELECT_NODE, SELECT_FP);
+  assert.ok(s >= 0.5, `expected >= 0.5, got ${s}`);
+});
+
+test("option-content inner_text is not scored for a <select>", () => {
+  // Whether the live text agrees or not must make no difference — the field is not scored.
+  const agreeing = scoreCandidate({ ...SELECT_NODE, text: YEAR_TEXT_SPACED }, SELECT_FP);
+  const disagreeing = scoreCandidate(SELECT_NODE, SELECT_FP);
+  assert.strictEqual(agreeing, disagreeing);
+});
+
+test("inner_text is still scored for a name-from-content role", () => {
+  const fp = { role: "button", tag: "button", inner_text: "Submit", anchor_phrases: [] };
+  const agreeing = scoreCandidate({ role: "button", text: "Submit", anchorNeighbors: [] }, fp);
+  const disagreeing = scoreCandidate({ role: "button", text: "Cancel", anchorNeighbors: [] }, fp);
+  assert.ok(agreeing > disagreeing, "button inner_text must still carry weight");
+});
+
+test("absent neighbour text is not counted as anchor disagreement", () => {
+  const fp = { role: "button", tag: "button", inner_text: "Submit", anchor_phrases: ["Practice Form"] };
+  const noNeighbours = scoreCandidate({ role: "button", text: "Submit", anchorNeighbors: [] }, fp);
+  const wrongNeighbours = scoreCandidate(
+    { role: "button", text: "Submit", anchorNeighbors: ["Totally Unrelated"] }, fp);
+  assert.ok(noNeighbours > wrongNeighbours,
+    "an element with no collectable neighbours must not be penalised like one that contradicts");
+});
+
+test("agreeing neighbour text still beats contradicting neighbour text", () => {
+  const fp = { role: "button", tag: "button", inner_text: "Submit", anchor_phrases: ["Practice Form"] };
+  const right = scoreCandidate({ role: "button", text: "Submit", anchorNeighbors: ["Practice Form"] }, fp);
+  const wrong = scoreCandidate({ role: "button", text: "Submit", anchorNeighbors: ["Nope"] }, fp);
+  assert.ok(right > wrong);
+});
+
+test("a uniquely matched <select> resolves instead of missing", () => {
+  const sig = { engine: "css-structural", selector: "select.react-datepicker__year-select", durability: 0.3, orthogonality_class: "structural" };
+  const r = resolve([sig], SELECT_FP, mockRoot({ [sig.selector]: [SELECT_NODE] }));
+  assert.ok(r.node, `expected a hit, got ${JSON.stringify(r)}`);
+});

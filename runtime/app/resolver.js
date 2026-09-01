@@ -49,6 +49,15 @@ const NAME_FROM_CONTENT_ROLES = new Set([
   "option", "tab", "treeitem", "switch", "tooltip",
 ]);
 
+// Elements whose text is their concatenated <option> children. The compiler records this via
+// innerText (whitespace BETWEEN options: "1900 1901 1902"); page_scripts.js's extractDescriptor
+// reads textContent (no separator: "190019011902"). The two can never be equal or substrings of
+// one another, so scoring inner_text for these elements contributes weight that is guaranteed
+// never to be earned — which is exactly how a uniquely-matched react-datepicker year <select>
+// scored 0.444 against a 0.5 threshold and was rejected despite being the only candidate.
+// Mirrors identity_bundle.py's _OPTION_CONTENT_TAGS and bridge.js's OPTION_CONTENT_TAGS.
+const OPTION_CONTENT_TAGS = new Set(["select", "datalist", "optgroup", "combobox", "listbox"]);
+
 function roleAgrees(fpRole, nodeRole) {
   const f = norm(fpRole);
   const n = norm(nodeRole);
@@ -111,15 +120,21 @@ function scoreCandidate(node, fingerprint) {
     add(0.25, nodeName === fpName || (!!nodeName && (nodeName.includes(fpName) || fpName.includes(nodeName))));
   }
 
-  const fpText = norm(fp.inner_text);
+  const isOptionContent = OPTION_CONTENT_TAGS.has(norm(fp.tag)) || OPTION_CONTENT_TAGS.has(norm(fp.role));
+  const fpText = norm(isOptionContent ? "" : fp.inner_text);
   if (fpText) {
     const nodeText = norm(node.text);
     add(0.15, nodeText === fpText || (!!nodeText && nodeText.includes(fpText)));
   }
 
+  // Absence of neighbour text is not disagreement — the same principle contradicts() encodes.
+  // extractDescriptor only collects neighbour text under 60 chars, so an element whose parent
+  // and siblings are all long (a datepicker dropdown container, a dense table cell) reports NO
+  // neighbours at all. Charging the anchor weight against such a candidate penalises it for a
+  // limit of the extractor rather than for any observed mismatch.
   const anchors = Array.isArray(fp.anchor_phrases) ? fp.anchor_phrases.map(norm).filter(Boolean) : [];
-  if (anchors.length) {
-    const neighbors = Array.isArray(node.anchorNeighbors) ? node.anchorNeighbors.map(norm) : [];
+  const neighbors = Array.isArray(node.anchorNeighbors) ? node.anchorNeighbors.map(norm).filter(Boolean) : [];
+  if (anchors.length && neighbors.length) {
     add(0.10, anchors.some(a => neighbors.some(n => n.includes(a) || a.includes(n))));
   }
 
