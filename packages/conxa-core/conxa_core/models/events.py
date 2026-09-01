@@ -223,6 +223,12 @@ class ChoiceContext(BaseModel):
     group_key: str = ""          # name attr / radiogroup id — identifies the group, not an option
     group_label: str = ""        # fieldset <legend> / aria-label(ledby) / the <select>'s own label
     group_selector: str = ""     # container selector (<fieldset>, [role=radiogroup]); "" for <select>
+    # Control that reopens a POPUP listbox at replay ([role=combobox][aria-controls=<listbox>],
+    # else the nearest stable-id ancestor). A custom dropdown renders its options only while the
+    # menu is open, and the click that opens it lands on a role-less container the recorder
+    # discards as noise — without this the runtime has nothing to click and the option can only
+    # ever miss. "" for an always-visible group (native <select>, radio fieldset).
+    opener_selector: str = ""
     options: list[ChoiceOption] = Field(default_factory=list)
 
 
