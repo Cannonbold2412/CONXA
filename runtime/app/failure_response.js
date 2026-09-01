@@ -400,13 +400,23 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
     }
   }
 
+  // The recording-time reference image is only present when this skill's `visuals/` actually
+  // reached this machine. Describing it unconditionally (as this header used to) told the model
+  // to compare against an attachment that isn't there — an invitation to invent what it showed,
+  // in the one tier that decides where to click. Describe only what is attached.
+  const groundTruthSentence = visualRefData
+    ? `The "Current page" image is ground truth; the recording-time reference image only shows ` +
+      `how the target used to look and may be outdated.`
+    : `The "Current page" image is ground truth. No recording-time reference image is available ` +
+      `for this step — judge from the current page and the ranked element list alone, and do not ` +
+      `assume how the target used to look.`;
+
   const header =
     `Execution failed at step ${stepNo} (Tier 1–2 cascade exhausted): ${err.message}\n` +
     `Page URL: ${url}\n\n` +
     `Self-healing recovery — Tier 4 (visual identification). Semantic grounding alone did not ` +
-    `settle this step, so look at the screenshots below the way a human would. The "Current ` +
-    `page" image is ground truth; the recording-time reference image only shows how the target ` +
-    `used to look and may be outdated. Then resume by calling execute_skill again with:\n` +
+    `settle this step, so look at the screenshots below the way a human would. ` +
+    `${groundTruthSentence} Then resume by calling execute_skill again with:\n` +
     `  resume_from: ${failedAt ?? 0}\n` +
     `  step_overrides: { "${resumeKey}": { "candidate_index": <index>, "confidence": <0-1>, "why": "<one line>" } }\n` +
     `Rules:\n` +

@@ -253,3 +253,50 @@ test("different steps escalate independently (a healed step resets nothing for o
   const texts = respOtherStep.content.map(c => c.text || "").join("\n");
   assert.match(texts, /Tier 3 \(semantic grounding\)/, "a different failed step starts fresh at tier 3");
 });
+
+// ── Reference image: describe only what is actually attached ────────────────────────────────
+// `visuals/` does not reach a customer machine today (the delta sync ships five JSON files), so
+// the vision header used to describe a recording-time reference image that was never in the
+// payload. Telling the model to compare against a missing attachment invites it to invent what
+// the image showed — in the one tier that decides where to click.
+
+async function visionRound(ent, failedAt) {
+  const page = mockPage({ inventory: [{ tag: "button", text: "Submit" }] });
+  const commonDeps = { ...BASE_DEPS, agentRecoveryEnabled: true, maxRecoveryTier: 4 };
+  // First round is semantic; the second escalates to vision.
+  await buildFailureResponse(page, { message: "fail", failedAt }, ent, { emit() {} }, null, commonDeps);
+  return buildFailureResponse(page, { message: "still failing", failedAt }, ent, { emit() {} }, null, commonDeps);
+}
+
+test("vision round: no reference image on disk — header must not describe one", async () => {
+  const resp = await visionRound(entry("ref-absent"), 2);
+  const texts = resp.content.map(c => c.text || "").join("\n");
+
+  assert.match(texts, /Tier 4 \(visual identification\)/);
+  assert.ok(!/recording-time reference image only shows/.test(texts),
+    "must not describe a reference image that is not attached");
+  assert.match(texts, /No recording-time reference image is available/,
+    "says plainly that there is no reference image");
+  assert.match(texts, /do not\s+assume how the target used to look/,
+    "tells the model not to invent the missing before-picture");
+  assert.ok(!resp.content.some(c => c.type === "image" && /reference/i.test(c.text || "")),
+    "no reference image part in the payload");
+});
+
+test("vision round: reference image present — header describes it and it rides along", async () => {
+  const ent = entry("ref-present");
+  // failedAt 2 → step number 3 → visuals/Image_3.jpg
+  fs.mkdirSync(path.join(ent.skillDir, "visuals"), { recursive: true });
+  fs.writeFileSync(path.join(ent.skillDir, "visuals", "Image_3.jpg"), Buffer.from("jpegbytes"));
+
+  const resp = await visionRound(ent, 2);
+  const texts = resp.content.map(c => c.text || "").join("\n");
+
+  assert.match(texts, /recording-time reference image only shows/,
+    "describes the reference image when it is genuinely attached");
+  assert.ok(!/No recording-time reference image is available/.test(texts));
+  assert.ok(resp.content.some(c => c.type === "text" && /Reference image of the target from recording/.test(c.text || "")),
+    "reference image is labelled in the payload");
+  assert.ok(resp.content.filter(c => c.type === "image").length >= 2,
+    "reference image rides along with the live screenshots");
+});
