@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The "time saved" number on the Impact page now uses real recorded time, not a guess — 2026-09-02
+Before, the dashboard's "hours saved" figure came from an admin typing in a guess of how long a task takes by hand. Now, since the recording studio already timed the person doing the task once while recording it, that real time is used automatically the first time a workflow is published — the admin can still type in their own number later if they want to change it, and that choice is always kept. The dashboard now also shows how long the automated run actually took next to it, and quietly subtracts a small, fixed 20 seconds per run for the time a person still spends just starting it, so the number reflects real savings rather than pretending it's completely free.
+— 2026-09-02
+
 ## Workflow-E now runs start to finish — 2026-09-01
 The test workflow on the practice sign-up form used to stop partway through. It now completes every one of its 29 steps, fills the whole form including the date of birth, submits it and closes the confirmation. It also works with values other than the ones it was recorded with — a different birth date, a different name, a different city — which is the whole point of a recorded workflow.
 — 2026-09-01

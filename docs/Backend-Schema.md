@@ -140,6 +140,7 @@ class Workflow(BaseModel):
     session_id: str | None     # Recording session ID for this workflow
     recorded_at: float | None  # Unix timestamp
     recording_status: Literal["recorded", "compiled", "error"] | None
+    recording_duration_seconds: float | None  # Last event ts minus first, set at stop_recording — feeds the Cloud ROI baseline (§5.7a)
     skill_id: str | None       # "skill_{session_id}" after compilation
     edited_at: float | None    # Last edit timestamp
     last_test_at: float | None
@@ -1075,6 +1076,7 @@ Request:
   "skill_pack_version": "0.2.0",
   "release_notes": "Fixed export bug",
   "tests_passed": true,
+  "recording_duration_seconds": 312.5,
   "files": [
     {
       "path": "execution.json",
@@ -1087,7 +1089,14 @@ Request:
 → Group → Workflow navigation (§5.1d) — an older Build Studio that hasn't
 picked them up yet just falls back to the slug/group_id. `tests_passed` is
 Build Studio's own local test-gate result, surfaced to Cloud admins reviewing
-a "ready" version alongside its diff and artifact.
+a "ready" version alongside its diff and artifact. `recording_duration_seconds`
+is how long the human took to perform the workflow once, live, during
+recording (`Workflow.recording_duration_seconds`, computed at stop_recording
+from the first/last event timestamp) — `null` for an older Build Studio or a
+recording made before this field existed. On a successful publish it seeds
+that workflow's ROI baseline (`tracking_analytics.seed_recorded_baseline`,
+§5.7a) the first time only — a later republish, or an admin's own edit, is
+never overwritten.
 
 Response (200):
 ```json
@@ -1684,6 +1693,16 @@ both and would credit a step that only succeeded after escalating to a model.
 `roi.estimated` (hours saved, value) depends on the stored assumptions; `roi.measured`
 (unattended completions, self-healed runs, zero-token heals, agent-assisted heals) does not.
 They are separate objects so the UI can never present an assumption as a measurement.
+
+`roi.assumptions.per_workflow` (keyed `"{workspace_id}/{workflow_id}"`) is auto-seeded from
+`Workflow.recording_duration_seconds` the first time a skill publishes successfully
+(`publish_routes._publish_skill_pack_impl` → `tracking_analytics.seed_recorded_baseline`) —
+seed-once: an existing key, whether from an earlier auto-seed or an admin's own edit, is never
+overwritten by a later publish. Each `roi.estimated.by_workflow[]` row also nets
+`HUMAN_OVERSIGHT_SECONDS` (a fixed 20s/run — the human still has to start each run) out of
+`minutes_saved`/`hours_saved`, and carries a measured `automated_minutes` (summed
+`summary.duration_ms` for that workflow) alongside the assumption-derived baseline, so the UI
+can show recorded baseline vs. measured automated time vs. net hours saved on one row.
 
 **GET /api/v1/tracking/activity?limit=50&before={epoch_ms}** — recent runs across every
 visible company, newest first, each with `recovery_tiers[]`. Separate from the dashboard
