@@ -236,6 +236,8 @@ export function ImpactPage() {
                   <p className="mt-1 text-[11px] text-zinc-600">
                     {fmtNumber(row.runs)} runs × {row.minutes_per_run} min
                     {row.is_estimate_default ? ' (workspace default)' : ' (set for this workflow)'}
+                    {' · '}
+                    {row.automated_minutes} min automated
                   </p>
                 </li>
               ))}

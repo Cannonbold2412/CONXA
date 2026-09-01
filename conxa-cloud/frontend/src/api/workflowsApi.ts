@@ -388,6 +388,8 @@ export type TrackingRoi = {
       is_estimate_default: boolean
       minutes_saved: number
       hours_saved: number
+      /** Measured — average automated execution time for this workflow, not an assumption. */
+      automated_minutes: number
     }>
   }
   /** Pure telemetry — no assumption anywhere in these numbers. */
