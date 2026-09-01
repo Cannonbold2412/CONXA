@@ -62,6 +62,12 @@ class Workflow(BaseModel):
     session_id: str | None = None
     recorded_at: float | None = None
     recording_status: Literal["recorded", "compiled", "error"] | None = None
+    # How long the human took to perform the workflow once, live (last event
+    # timestamp minus first), computed at stop_recording time. Feeds the Cloud
+    # ROI baseline (tracking_analytics.seed_recorded_baseline) as a measured
+    # figure instead of an admin's guess. None for recordings made before this
+    # field existed, or if the diff couldn't be computed.
+    recording_duration_seconds: float | None = None
     # Every hostname the saved recording navigated to (extracted from session
     # events at stop_recording time, before any compile). Lets the group page
     # show all touched platform apps pre-compile and feed required_apps-style
