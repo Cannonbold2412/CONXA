@@ -13,6 +13,33 @@ from conxa_core.storage.workflow_store import get_workflow as _get_workflow
 from handlers.protocol import _CommandError, _emit_event, _event_sink, _safe_id
 
 
+def _recording_duration_seconds(events: list[dict[str, Any]]) -> float | None:
+    """Wall-clock length of a recording: last event's timestamp minus the first's.
+
+    Same ISO-parsing idiom as conxa_compile.recorder.session's per-tab video-offset
+    calculation (bridge.js emits e.g. "2025-02-15T14:32:10.123Z").
+    """
+    from datetime import datetime, timezone
+
+    def _timestamp_of(event: dict[str, Any]) -> str:
+        action = event.get("action")
+        return str(action.get("timestamp") or "") if isinstance(action, dict) else ""
+
+    def _parse(ts: str) -> datetime | None:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    first = _parse(_timestamp_of(events[0]))
+    last = _parse(_timestamp_of(events[-1]))
+    if first is None or last is None:
+        return None
+    duration = (last - first).total_seconds()
+    return duration if duration > 0 else None
+
+
 def _refresh_group_app_sessions(workflow_id: str) -> None:
     """After a workflow recording ends, split its merged group session back into
     per-app updates so each app's saved session picks up whatever the site did to
@@ -441,6 +468,7 @@ class SessionMixin:
             wf = get_workflow(workflow_id)
             if wf is not None:
                 wf.visited_hosts = extract_visited_hosts(events)
+                wf.recording_duration_seconds = _recording_duration_seconds(events)
                 save_workflow(wf)
             return {
                 "session_id": session_id,

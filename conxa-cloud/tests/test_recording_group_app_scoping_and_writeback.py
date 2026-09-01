@@ -44,6 +44,23 @@ class _FakeSess:
         return [{"action": "click"}]
 
 
+class _FakeSessWithTimestamps:
+    """A recording whose events carry the real bridge.js action shape (nested
+    ``action.timestamp``), unlike ``_FakeSess`` above — for tests that need a
+    real recording_duration_seconds to come out of cmd_stop_recording."""
+
+    session_id = "sess2"
+
+    def stop(self):
+        return None
+
+    def snapshot_events(self):
+        return [
+            {"action": {"action": "click", "timestamp": "2026-01-01T00:00:00.000Z"}},
+            {"action": {"action": "click", "timestamp": "2026-01-01T00:02:30.000Z"}},
+        ]
+
+
 @pytest.fixture()
 def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
@@ -272,3 +289,36 @@ def test_stop_recording_writes_back_session_before_returning(isolated_data_dir, 
 
     saved = json.loads((isolated_data_dir / f"{app_id}.json").read_text(encoding="utf-8"))
     assert saved["cookies"][0]["value"] == "new"
+
+
+def test_recording_duration_seconds_diffs_first_and_last_event_timestamp():
+    from handlers.session import _recording_duration_seconds
+
+    events = [
+        {"action": {"action": "click", "timestamp": "2026-01-01T00:00:00.000Z"}},
+        {"action": {"action": "click", "timestamp": "2026-01-01T00:00:05.500Z"}},
+        {"action": {"action": "click", "timestamp": "2026-01-01T00:01:00.000Z"}},
+    ]
+    assert _recording_duration_seconds(events) == 60.0
+
+
+def test_recording_duration_seconds_tolerates_malformed_or_missing_timestamps():
+    from handlers.session import _recording_duration_seconds
+
+    # events shaped like _FakeSess above — "action" a bare string, not a nested dict.
+    assert _recording_duration_seconds([{"action": "click"}]) is None
+    assert _recording_duration_seconds([{"action": {"timestamp": "not-a-date"}}]) is None
+    assert _recording_duration_seconds([{}]) is None
+
+
+def test_stop_recording_computes_and_saves_recording_duration(isolated_data_dir, monkeypatch):
+    from conxa_core.storage.workflow_store import get_workflow
+
+    workflow = create_workflow("Create a lead", "https://render.test/app")
+    monkeypatch.setattr(session_module._recorder_registry, "get", lambda _sid: _FakeSessWithTimestamps())
+
+    h = _Harness()
+    h.cmd_stop_recording({"session_id": "sess2", "workflow_id": workflow.id}, "rid")
+
+    saved = get_workflow(workflow.id)
+    assert saved.recording_duration_seconds == 150.0  # 2:30 between the two events

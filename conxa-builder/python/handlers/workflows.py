@@ -249,6 +249,7 @@ class WorkflowsMixin:
             group_name=group.name if group else "",
             workflow_name=workflow.name,
             tests_passed=workflow.last_test_status == "passed",
+            recording_duration_seconds=workflow.recording_duration_seconds,
             sink=sink,
         )
         if not publish_info:

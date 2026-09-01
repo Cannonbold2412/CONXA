@@ -430,6 +430,7 @@ class Backend(
         group_name: str = "",
         workflow_name: str = "",
         tests_passed: bool = False,
+        recording_duration_seconds: float | None = None,
         sink: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
         """Publish ONE skill's built files and rewrite local pack.json with cloud
@@ -483,6 +484,7 @@ class Backend(
                 "skill_pack_version": version,
                 "release_notes": release_notes,
                 "tests_passed": tests_passed,
+                "recording_duration_seconds": recording_duration_seconds,
                 "files": files,
             }
         ).encode("utf-8")
