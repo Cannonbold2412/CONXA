@@ -38,6 +38,17 @@ const ROLE_ALIASES = {
   img:      ["img"],
 };
 
+// ARIA "name from content" roles — mirrors identity_bundle.py's _NAME_FROM_CONTENT_ROLES and
+// cascade.js's NAME_FROM_CONTENT_ROLES. A combobox/listbox/textbox/searchbox/spinbutton/bare
+// <select> never gets its accessible name from its own inner text, so fpName below must not
+// treat inner_text as a name candidate for those — scoring against a fabricated name would
+// disagree with what the compiler itself refused to emit as a role signal.
+const NAME_FROM_CONTENT_ROLES = new Set([
+  "button", "link", "heading", "cell", "gridcell", "columnheader", "rowheader",
+  "checkbox", "radio", "menuitem", "menuitemcheckbox", "menuitemradio",
+  "option", "tab", "treeitem", "switch", "tooltip",
+]);
+
 function roleAgrees(fpRole, nodeRole) {
   const f = norm(fpRole);
   const n = norm(nodeRole);
@@ -92,7 +103,9 @@ function scoreCandidate(node, fingerprint) {
   // buttons this is surrounding context (e.g. "Projects Search CTRL + K K"), not the
   // element's identity. Exclude it from fpName so it doesn't shadow inner_text ("New") and
   // drop the score below threshold.
-  const fpName = norm(fp.aria_label || fp.name || fp.alt || fp.title || fp.inner_text || fp.placeholder);
+  const isNamedFromContent = NAME_FROM_CONTENT_ROLES.has(norm(fp.tag)) || NAME_FROM_CONTENT_ROLES.has(norm(fp.role));
+  const innerTextName = isNamedFromContent ? fp.inner_text : "";
+  const fpName = norm(fp.aria_label || fp.name || fp.alt || fp.title || innerTextName || fp.placeholder);
   if (fpName) {
     const nodeName = norm(node.name || node.text);
     add(0.25, nodeName === fpName || (!!nodeName && (nodeName.includes(fpName) || fpName.includes(nodeName))));

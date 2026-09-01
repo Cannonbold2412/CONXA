@@ -48,6 +48,43 @@ test("a11y recovery name prefers placeholder over label_text", () => {
   );
 });
 
+// Mirrors identity_bundle.py's _NAME_FROM_CONTENT_ROLES gate: a combobox/select never gets its
+// accessible name from its own inner text (a concatenated <option> list isn't a name any browser
+// or Playwright computes), so recovery must not fabricate one either — the compiler refuses to
+// emit a role signal for this element in the first place, and recovery agreeing is what makes
+// compile-time and recovery-time naming consistent (the invariant the function's own docstring
+// states). Regression: react-datepicker's year <select> had no name, and its concatenated
+// <option> text ("1900 1901 1902 ... 1915") was being used as one, producing a selector that
+// could never match — this is the runtime half of that same bug.
+test("a11y recovery name refuses to fabricate a name from a nameless combobox's option-list inner_text", () => {
+  assert.strictEqual(
+    a11yRecoveryName({
+      tag: "select", role: "combobox",
+      aria_label: "", name: "", alt: "", title: "", placeholder: "", label_text: "",
+      inner_text: "1900 1901 1902 1903 1904 1905 1906 1907 1908 1909 1910",
+    }),
+    "",
+  );
+});
+
+test("a11y recovery name still fabricates from inner_text for a name-from-content role (button)", () => {
+  assert.strictEqual(
+    a11yRecoveryName({ tag: "button", role: "button", aria_label: "", inner_text: "Submit" }),
+    "Submit",
+  );
+});
+
+// `name` is the HTML form-field attribute, never an ARIA accessible-name source
+// (identity_bundle.py's _accessible_name never includes it) — a radio/checkbox GROUP's `name`
+// is the shared group key every sibling carries, so using it here would recover on whichever
+// group member happens to match first, not the one actually recorded.
+test("a11y recovery name does not fall back to the HTML `name` attribute", () => {
+  assert.strictEqual(
+    a11yRecoveryName({ role: "radio", aria_label: "", name: "gender", inner_text: "", label_text: "" }),
+    "",
+  );
+});
+
 test("classifies stale/detached error", () => {
   assert.strictEqual(classifyException(new Error("Element is not attached to the DOM")), CLASS.STALE);
 });

@@ -1918,22 +1918,41 @@ fail fast (recompile required).
   (focus/hover/active/animation/`is-*`) classes stripped.
 - **Accessible-name derivation (`identity_bundle.py::_accessible_name`) — one rule, three
   consumers.** The name in an `internal:role=…[name=…]` signal is
-  `aria_label → name → alt → title → inner_text → placeholder`, plus `label_text` **only** for
+  `aria_label → alt → title → inner_text → placeholder`, plus `label_text` **only** for
   form controls (tag or role in input/select/textarea/textbox/searchbox/combobox/listbox/
-  spinbutton/checkbox/radio), where a `<label>` genuinely *is* the accessible name. For anything
-  else `label_text` is `bridge.js::captureAssociatedLabel`'s last-resort "nearest surrounding
-  text" walk and names a *neighbour*, not the element. An element with no name gets **no role
-  signal at all** — it falls through to structural identity, which is strictly better than a
-  fabricated name that resolves to nothing. `runtime/app/resolver.js::scoreCandidate` (`fpName`)
-  and `runtime/app/cascade.js::a11yRecoveryName` implement the identical precedence and the
-  identical form-control gate; all three must move together.
+  spinbutton/checkbox/radio), where a `<label>` genuinely *is* the accessible name. `inner_text`
+  is itself gated to ARIA "name from content" roles (`button`/`link`/`heading`/`cell`/
+  `gridcell`/`columnheader`/`rowheader`/`checkbox`/`radio`/`menuitem`/`menuitemcheckbox`/
+  `menuitemradio`/`option`/`tab`/`treeitem`/`switch`/`tooltip` — `identity_bundle.py`'s
+  `_NAME_FROM_CONTENT_ROLES`) and capped at 80 chars (dropped, not truncated, past that — a
+  truncated name inside an exact `[name="…"]` match is a guaranteed miss); a `combobox`/
+  `listbox`/`textbox`/`searchbox`/`spinbutton`/bare `<select>` never computes its name from its
+  own contents, so `inner_text` is never a candidate for those (2026-09-01 — react-datepicker's
+  nameless year `<select>` was being named from its own concatenated `<option>` list). `name` is
+  never a candidate — the HTML form-field attribute, not an ARIA accessible-name source; for a
+  radio/checkbox GROUP it's the shared group key every sibling carries, not any one option's
+  name. For anything else `label_text` is `bridge.js::captureAssociatedLabel`'s last-resort
+  "nearest surrounding text" walk and names a *neighbour*, not the element. An element with no
+  name gets **no role signal at all** — it falls through to structural identity, which is
+  strictly better than a fabricated name that resolves to nothing. `runtime/app/resolver.js::
+  scoreCandidate` (`fpName`) and `runtime/app/cascade.js::a11yRecoveryName` implement the
+  identical precedence, the identical form-control gate, and the identical name-from-content
+  gate; all three must move together.
 - **Fabricated-name drop.** A `role`/`relational` signal whose name matches **zero** nodes in the
   recorded a11y snapshot is discarded rather than shipped (`selector_filters.resolves_to_nothing`).
   Unlike `uniqueness_gate(absent_ok=True)`, which treats 0 matches as "couldn't verify", a
   role+name signal's name comes from the element's *own* recorded attributes, so 0 proves the name
   is wrong. Without the snapshot the count is unverifiable and the signal is allowed through
   unchanged. This stops a bad name from occupying the two highest-durability slots with signals
-  that can only ever miss at replay.
+  that can only ever miss at replay. **The evidence this guard verifies against was silently dead
+  from Playwright 1.5x onward** (fixed 2026-09-01): `session.py::_capture_a11y_async` called
+  `page.accessibility.snapshot()`, an API Playwright removed; the resulting `AttributeError` was
+  swallowed by a bare `except Exception`, so no session ever wrote an `.a11y.json` blob and every
+  role+name signal — fabricated or not — passed this gate unverified. Capture now uses
+  `Locator.aria_snapshot()` (a YAML string, stored as `{"aria_snapshot": "<yaml>"}`;
+  `_count_role` reads either that shape or the legacy tree-dict from older sessions), and a
+  capture failure is recorded once per session in `binding_errors` rather than swallowed — a dead
+  evidence layer must never again be invisible.
 - **Replay (`runtime/resolver.js` + `runtime/resolve_adapter.js`):** the **primary** resolution
   path. `resolve_adapter.js` maps each `IdentitySignal` to a Playwright locator
   (`signalToLocator`: engine → `getByTestId`/`getByRole`/`getByText`/`locator`), pre-gathers

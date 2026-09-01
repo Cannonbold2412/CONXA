@@ -216,15 +216,35 @@ def _count_text(html: str, text: str) -> int:
     )
 
 
+_ARIA_SNAPSHOT_LINE_RE = re.compile(r'^\s*-\s+([a-zA-Z][a-zA-Z0-9]*)(?:\s+"((?:[^"\\]|\\.)*)")?')
+
+
 def _count_role(a11y_tree: dict[str, Any], role: str, name: str | None) -> int:
     """Count nodes in the Playwright accessibility snapshot matching role (+ name).
 
     ARIA role isn't derivable from raw HTML alone, so this walks the recorded
-    a11y tree (the browser's own computed roles) rather than the HTML.
+    a11y evidence (the browser's own computed roles) rather than the HTML.
+
+    Two shapes: `{"aria_snapshot": "<yaml>"}` (current — `Locator.aria_snapshot()`,
+    one `- role "name":` line per node) and a legacy `{"role": ..., "children": [...]}`
+    tree dict (sessions recorded before Playwright dropped `Page.accessibility`).
     """
     wanted_role = role.strip().lower()
     wanted_name = (name or "").strip().lower()
     count = 0
+
+    yaml_text = a11y_tree.get("aria_snapshot") if isinstance(a11y_tree, dict) else None
+    if isinstance(yaml_text, str):
+        for line in yaml_text.splitlines():
+            m = _ARIA_SNAPSHOT_LINE_RE.match(line)
+            if not m:
+                continue
+            if m.group(1).strip().lower() != wanted_role:
+                continue
+            node_name = (m.group(2) or "").strip().lower()
+            if not wanted_name or node_name == wanted_name:
+                count += 1
+        return count
 
     def walk(node: Any) -> None:
         nonlocal count

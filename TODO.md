@@ -45,8 +45,8 @@ Counts below are computed straight from the section headers in this file (unique
 | P1 — Blocking / Foundational | 5 | 8 | 3 |
 | P2 — High Value, Do Soon | 27 | 32 | 5 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
-| P4 — Low Urgency, Opportunistic | 32 | 39 | 7 |
-| **Total** | **96** | **120** | **24** |
+| P4 — Low Urgency, Opportunistic | 31 | 39 | 8 |
+| **Total** | **95** | **120** | **25** |
 
 ---
 
@@ -1192,10 +1192,11 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Suggested order:** opportunistic.
 - **Complexity:** S.
 - **Success criteria:** `_write_diagnostics_sync` runs once per recording session, not once per event; `_capture_a11y_async` and its call site are removed (or, if a11y capture is still wanted, reimplemented against whatever the current Playwright version's actual accessibility API is called).
+- **Partially resolved 2026-09-01:** item (2) — `_capture_a11y_async` is fixed, not removed, per the "reimplemented" branch above; see `~~BUILD-10~~` for the implementation. Still one thread per event (unchanged scope — the thread+2s-timeout structure is what isolates a slow/hung call, not incidental), but it now does real work instead of instantly raising and being swallowed. Item (1), the per-event diagnostics dump, is untouched — still open.
 
 ---
 
-## P4 — Low Urgency, Opportunistic (32 remaining / 39 total)
+## P4 — Low Urgency, Opportunistic (31 remaining / 39 total)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1496,16 +1497,13 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** S (bump the pin) to M (add the staleness-check guard).
 - **Success criteria:** either the pinned dev app-layer version is kept current, or a build-time check catches a staged app layer missing files the current runtime source requires, before it reaches an installer.
 
-### BUILD-10 — Accessibility snapshot capture has been silently dead since a Playwright upgrade
+### ~~BUILD-10 — Accessibility snapshot capture has been silently dead since a Playwright upgrade~~ — **Resolved 2026-09-01**
 - **Category:** Builder
 - **Description:** Discovered 2026-08-01 while diagnosing the Human Edit re-target wizard destroying good selectors (see `FIX.md`). `conxa_compile/recorder/session.py::_capture_a11y_async` calls `page.accessibility.snapshot()`, an API Playwright removed several majors ago (`hasattr(Page, "accessibility")` is `False` on the installed 1.58.0); it's also invoked from a worker thread against Playwright's thread-affine sync API. The call always raises, and a bare `except Exception` swallows it — no `.a11y.json` blob has ever been written by this recorder. Consequence: `selector_filters.py::_count_role` never runs, so `uniqueness_gate` returns `True` (via its `a11y_tree is None` branch) for every `role=` identity signal in every skill this Studio has ever compiled, regardless of whether the role/name is actually unique on the page. Nothing currently downstream depends on that verdict being correct enough to break (the runtime resolver ignores `unique_at_compile` entirely, and the same investigation's F3 fix stopped the compiler punishing signals it can't verify), which is why this shipped unnoticed rather than as a visible failure.
 - **Why required:** the compile-time uniqueness verdict shown in the Human Edit "Selector candidates" panel (`UNIQUE MATCH` badge) is a real claim to the user; for every `role` signal it is currently unconditionally true rather than checked.
 - **Business value:** low on its own (nothing observably breaks today) but removes a latent trust gap in a user-facing confidence signal, and is a prerequisite for any future feature that does start trusting `unique_at_compile` for `role` signals.
-- **Technical value:** fix is scoped and known — swap to `page.locator("body").aria_snapshot()` (present on 1.58), call it inline on the Playwright thread instead of a worker thread, and stop swallowing the exception. Store the YAML in the existing `.a11y.json` blob (e.g. `{"aria_yaml": "..."}`) so `read_a11y_snapshot`'s signature is unchanged; update `selector_filters.py::_count_role` to count `- role "name"` lines in the YAML instead of walking a dict tree, and `llm/selector_regeneration.py::_extract_a11y_node` for the new shape.
-- **Dependencies:** none blocking.
-- **Suggested order:** opportunistic — do before anything starts relying on `role` signal `unique_at_compile` being trustworthy.
-- **Complexity:** S–M.
-- **Success criteria:** a recorded session produces a non-empty `.a11y.json` blob per snapshot; `_count_role` returns real counts against it; a `role=` selector matching 2+ elements on the recorded page is correctly stamped `unique_at_compile: False` at compile time.
+- **Resolution:** Found again, independently, while root-causing a demoqa.com Date of Birth picker replay failure ("Element not found (resolve miss)" on react-datepicker's nameless year `<select>`) — this dead evidence layer is exactly what let `identity_bundle.py::_accessible_name`'s ungated `inner_text` candidate ship the element's concatenated `<option>` list as its fabricated "name", since `resolves_to_nothing` could never verify anything without a real snapshot. Fixed as scoped: `_capture_a11y_async` now calls `page.locator("body").aria_snapshot()` inline (still on the pump-loop's own thread with a 2s join timeout, same as before — not moved to the calling Playwright-sync thread, since the existing thread+timeout structure already isolates a slow/hung call without the reentrancy risk the original scoping note flagged); a capture failure is now recorded once per session in `binding_errors` instead of swallowed. Stored as `{"aria_snapshot": "<yaml>"}` (not `aria_yaml` — matches the API name) in the existing `.a11y.json` blob, so `read_a11y_snapshot`'s signature is unchanged. `selector_filters.py::_count_role` and `llm/selector_regeneration.py::_extract_a11y_node` (the 1-click fix API's own a11y lookup, also named in this item's original scope) both now read the YAML shape via a shared line regex, falling back to the legacy tree-dict walk for snapshots captured before this change. The actual root cause of the replay failure was `_accessible_name` itself, not this item — see `identity_bundle.py`'s `_NAME_FROM_CONTENT_ROLES` gate (`inner_text` is no longer a name candidate for `combobox`/`listbox`/`textbox`/`searchbox`/`spinbutton`/bare `<select>`, and is capped at 80 chars rather than truncated) — but restoring real a11y evidence is what makes the `resolves_to_nothing` guard this item names actually able to catch the *next* one. `runtime/app/resolver.js` and `runtime/app/cascade.js` got the identical name-from-content gate so compile-time and recovery-time naming stay in agreement (an existing invariant this file already documents for the `label_text` gate). Tests: `conxa-cloud/tests/test_nameless_element_identity.py` (dual-shape `_count_role`/`_extract_a11y_node` coverage + the fabricated-name regression), `runtime/test/unit/test_recovery.js` + `test_resolver.js` (the runtime-side gate).
+- **Success criteria:** a recorded session produces a non-empty `.a11y.json` blob per snapshot (confirmed no prior session ever had one — `~/.conxa-build-studio-dev/.../blobs/` held only `.html.gz` files; verifying a fresh recording now produces one needs a live re-record, not yet done this session); `_count_role` returns real counts against it — covered by unit tests against both snapshot shapes; a `role=` selector matching 2+ elements on the recorded page is correctly stamped `unique_at_compile: False` at compile time.
 
 ---
 

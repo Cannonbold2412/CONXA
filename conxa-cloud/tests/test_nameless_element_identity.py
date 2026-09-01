@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 from conxa_compile.compiler.identity_bundle import _accessible_name, generate_deterministic_signals
+from conxa_compile.compiler.selector_filters import resolves_to_nothing
 
 HOVERS_DOM = """
 <html><body><div id="content"><div class="example">
@@ -146,3 +147,128 @@ def test_no_a11y_snapshot_never_drops_a_role_signal():
     ev["target"]["aria_label"] = "Hover over the image for additional information"
     signals = generate_deterministic_signals(ev, HOVERS_DOM, None)
     assert any(s.engine == "role" for s in signals)
+
+
+# ---------------------------------------------------------------------------
+# demoqa.com/automation-practice-form regression: react-datepicker's year <select> has no
+# id/name/aria-label/<label>. `page.accessibility.snapshot()` was removed from Playwright
+# (this repo pins 1.58.0), and the session that hit this recorded no a11y evidence at all
+# (a bare-except swallowed the AttributeError) — so `resolves_to_nothing` could never verify
+# anything, and `_accessible_name`'s ungated `inner_text` candidate shipped the concatenated
+# <option> list ("1900 1901 1902 ... 1915") as the element's "name": a
+# role=combobox[name="1900 1901 ..."] selector Playwright never computes, reported at replay
+# as "Element not found (resolve miss)".
+# ---------------------------------------------------------------------------
+
+YEAR_SELECT_OPTIONS = " ".join(str(y) for y in range(1900, 1917))  # the recorded option[0..16] text
+
+
+def _year_select_target(inner_text: str = YEAR_SELECT_OPTIONS) -> dict:
+    return {
+        "tag": "select",
+        "role": "combobox",
+        "inner_text": inner_text,
+        "aria_label": None,
+        "alt": None,
+        "title": None,
+        "placeholder": None,
+        "name": None,
+        "label_text": None,
+    }
+
+
+def test_nameless_select_is_not_named_from_its_concatenated_option_list():
+    assert _accessible_name(_year_select_target()) == ""
+
+
+def test_button_is_still_named_from_its_own_inner_text():
+    """Control: the inner_text gate is role-specific, not a blanket removal — a button
+    genuinely IS named from its own visible text per ARIA "name from content"."""
+    target = {"tag": "button", "role": "button", "inner_text": "Submit", "aria_label": None,
+              "alt": None, "title": None, "placeholder": None, "label_text": None}
+    assert _accessible_name(target) == "Submit"
+
+
+def test_overlong_inner_text_is_dropped_not_truncated_even_for_a_name_from_content_role():
+    """A name this long (81+ chars) reads as fabricated content rather than a real accessible
+    name — dropped outright, never shipped as a truncated (and therefore unmatchable) selector."""
+    target = {"tag": "button", "role": "button", "inner_text": "x" * 81, "aria_label": None,
+              "alt": None, "title": None, "placeholder": None, "label_text": None}
+    assert _accessible_name(target) == ""
+
+
+def test_nameless_select_gets_no_role_or_relational_signal():
+    """The fabricated name is never even a candidate — no role/relational signal exists to
+    verify or drop, unlike the <img> case above which needed the resolves_to_nothing gate."""
+    ev = {
+        "target": _year_select_target(),
+        "semantic": {"role": "combobox"},
+        "selectors": {"css": "select.react-datepicker__year-select", "xpath": "", "text_based": ""},
+        "anchors": [],
+    }
+    signals = generate_deterministic_signals(ev, "<html><body><select></select></body></html>", None)
+    engines = {s.engine for s in signals}
+    assert "role" not in engines
+    assert "relational" not in engines
+    assert any(s.engine.startswith("css") for s in signals), "must still fall through to structural identity"
+
+
+# ---------------------------------------------------------------------------
+# _count_role against the current a11y evidence shape ({"aria_snapshot": "<yaml>"} —
+# Locator.aria_snapshot()'s YAML, replacing the removed Page.accessibility tree-dict).
+# The legacy dict-tree shape (HOVERS_A11Y above) stays supported for snapshots captured
+# before this change; both must gate a fabricated role+name selector identically.
+# ---------------------------------------------------------------------------
+
+YEAR_SELECT_ARIA_SNAPSHOT = {
+    "aria_snapshot": (
+        '- textbox "Date of Birth"\n'
+        "- combobox:\n"
+        '  - option "1900" [selected]\n'
+        '  - option "1901"\n'
+        "- button \"Submit\""
+    ),
+}
+
+
+def test_resolves_to_nothing_true_for_fabricated_name_against_aria_snapshot_yaml():
+    fabricated = f'internal:role=combobox[name="{YEAR_SELECT_OPTIONS}"]'
+    assert resolves_to_nothing(fabricated, "<html></html>", YEAR_SELECT_ARIA_SNAPSHOT) is True
+
+
+def test_resolves_to_nothing_false_for_a_real_name_against_aria_snapshot_yaml():
+    real = 'internal:role=textbox[name="Date of Birth"]'
+    assert resolves_to_nothing(real, "<html></html>", YEAR_SELECT_ARIA_SNAPSHOT) is False
+
+
+def test_resolves_to_nothing_matches_nameless_role_node_against_aria_snapshot_yaml():
+    nameless = "internal:role=combobox"
+    assert resolves_to_nothing(nameless, "<html></html>", YEAR_SELECT_ARIA_SNAPSHOT) is False
+
+
+# ---------------------------------------------------------------------------
+# llm/selector_regeneration.py::_extract_a11y_node — the 1-click fix API's own a11y-node
+# lookup (BUILD-10's other named consumer, feeds the LLM re-compile prompt). Same dual-shape
+# requirement as _count_role above; this is its own separate implementation, not a shared
+# helper, so it needs its own coverage.
+# ---------------------------------------------------------------------------
+
+def test_extract_a11y_node_matches_against_aria_snapshot_yaml():
+    from conxa_compile.llm.selector_regeneration import _extract_a11y_node
+
+    node = _extract_a11y_node(YEAR_SELECT_ARIA_SNAPSHOT, {"role": "textbox", "aria_label": "Date of Birth"})
+    assert node == {"role": "textbox", "name": "Date of Birth"}
+
+
+def test_extract_a11y_node_no_match_against_aria_snapshot_yaml():
+    from conxa_compile.llm.selector_regeneration import _extract_a11y_node
+
+    node = _extract_a11y_node(YEAR_SELECT_ARIA_SNAPSHOT, {"role": "checkbox", "aria_label": "Nothing here"})
+    assert node is None
+
+
+def test_extract_a11y_node_still_matches_legacy_tree_dict_shape():
+    from conxa_compile.llm.selector_regeneration import _extract_a11y_node
+
+    node = _extract_a11y_node(HOVERS_A11Y, {"role": "img", "aria_label": "User Avatar"})
+    assert node == {"role": "img", "name": "User Avatar"}

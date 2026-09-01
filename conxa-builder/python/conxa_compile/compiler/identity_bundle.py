@@ -133,6 +133,20 @@ _LABELLED_TAGS = frozenset({
     "textbox", "searchbox", "combobox", "listbox", "spinbutton", "checkbox", "radio",
 })
 
+# ARIA "name from content" roles — the only roles the accessibility tree actually derives a
+# name from an element's own inner text. Everything else (combobox, listbox, textbox,
+# searchbox, spinbutton, slider, img, region, a bare <select>...) computes its name from
+# aria-label/aria-labelledby/<label> only — never from concatenating its own contents, so an
+# inner_text candidate for those is fabricated, not read: react-datepicker's year <select> has
+# no name, and its <option> text ("1900 1901 1902 ... 1915") is not an accessible name any
+# browser or Playwright would ever compute for it. Same class of bug the _LABELLED_TAGS gate
+# above already fixed for label_text; this is the inner_text half of the same function.
+_NAME_FROM_CONTENT_ROLES = frozenset({
+    "button", "link", "heading", "cell", "gridcell", "columnheader", "rowheader",
+    "checkbox", "radio", "menuitem", "menuitemcheckbox", "menuitemradio",
+    "option", "tab", "treeitem", "switch", "tooltip",
+})
+
 
 def _accessible_name(target: dict[str, Any]) -> str:
     """Element's accessible name, or "" when it genuinely has none.
@@ -152,9 +166,19 @@ def _accessible_name(target: dict[str, Any]) -> str:
         target.get("aria_label"),
         target.get("alt"),
         target.get("title"),
-        str(target.get("inner_text") or "")[:80],
         target.get("placeholder"),
     ]
+    role_or_tag = {str(target.get("tag") or "").lower(), str(target.get("role") or "").lower()}
+    if role_or_tag & _NAME_FROM_CONTENT_ROLES:
+        inner_text = str(target.get("inner_text") or "").strip()
+        # No [:80] truncation: a truncated name inside an exact-match [name="…"] selector is a
+        # guaranteed miss. 80 chars is instead a plausibility ceiling on THIS candidate only —
+        # inner_text this long (react-datepicker's whole option list concatenated, e.g.) reads
+        # as fabricated content, not a real accessible name, so it's dropped rather than
+        # shipped half-cut. aria_label/alt/title/placeholder/label_text below are author-set,
+        # not concatenated content, and stay uncapped.
+        if inner_text and len(inner_text) <= 80:
+            candidates.append(inner_text)
     if (
         str(target.get("tag") or "").lower() in _LABELLED_TAGS
         or str(target.get("role") or "").lower() in _LABELLED_TAGS

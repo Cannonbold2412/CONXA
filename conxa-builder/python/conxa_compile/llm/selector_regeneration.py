@@ -136,20 +136,41 @@ def _dom_snippet_for_llm(dom_snapshot: str, max_chars: int = 60000) -> str:
     return dom_snapshot[:max_chars] + "\n<!-- truncated -->\n"
 
 
+_ARIA_SNAPSHOT_LINE_RE = re.compile(r'^\s*-\s+([a-zA-Z][a-zA-Z0-9]*)(?:\s+"((?:[^"\\]|\\.)*)")?')
+
+
 def _extract_a11y_node(
     tree: dict[str, Any] | None,
     target: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Depth-first search for the a11y node matching target role + accessible name.
+    """Find the a11y node matching target role + accessible name.
 
     Returns the first node whose role matches and whose accessible name contains
     the target's aria_label or inner_text (first 50 chars). Returns None if the
     tree is absent or no match is found — caller falls back to CSS-only path.
+
+    Two shapes, mirroring selector_filters.py::_count_role: `{"aria_snapshot": "<yaml>"}`
+    (current — Locator.aria_snapshot(), one `- role "name":` line per node, matched
+    top-to-bottom since document order is as good a tie-break as depth-first tree order)
+    and a legacy `{"role": ..., "children": [...]}` tree dict (sessions recorded before
+    Playwright dropped Page.accessibility).
     """
     if not tree or not target:
         return None
     t_role = (target.get("role") or "").lower().strip()
     t_name = (target.get("aria_label") or target.get("inner_text") or "").strip().lower()[:50]
+
+    yaml_text = tree.get("aria_snapshot") if isinstance(tree, dict) else None
+    if isinstance(yaml_text, str):
+        for line in yaml_text.splitlines():
+            m = _ARIA_SNAPSHOT_LINE_RE.match(line)
+            if not m:
+                continue
+            n_role = m.group(1).strip().lower()
+            n_name = (m.group(2) or "").strip().lower()
+            if t_role and n_role == t_role and (not t_name or t_name in n_name):
+                return {"role": m.group(1), "name": m.group(2) or ""}
+        return None
 
     def _walk(node: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(node, dict):

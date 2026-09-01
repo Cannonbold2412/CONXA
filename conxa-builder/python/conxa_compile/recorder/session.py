@@ -277,6 +277,7 @@ class RecordingSession:
     # A11y capture: one-strike degradation if slow (> 500ms).
     _last_a11y_capture_time: float = 0.0
     _a11y_skip_count: int = 0
+    _a11y_capture_error_logged: bool = False
     # Multi-tab identity: Page (by object identity) -> "tab_0", "tab_1", ... in discovery order.
     # Populated only from the pump loop (Playwright calls are unsafe inside expose_binding
     # callbacks — see _binding_sink_sync). tab_0 is always the initial page, so single-tab
@@ -1065,28 +1066,41 @@ class RecordingSession:
         metrics.inc("events_captured")
 
     def _capture_a11y_async(self, page: Any) -> dict[str, Any] | None:
-        """Capture a11y tree in a thread with 2s timeout. Returns tree dict or None on failure/timeout."""
+        """Capture an a11y snapshot in a thread with 2s timeout.
+
+        `Page.accessibility` was removed from Playwright (this repo pins 1.58.0, which has
+        no such attribute) — `Locator.aria_snapshot()` is the replacement, returning a YAML
+        string rather than a tree dict. Wrapped as {"aria_snapshot": <yaml>} so on-disk blob
+        shape and read_a11y_snapshot's return type stay dict-shaped for callers.
+        Returns the wrapper dict, or None on failure/timeout.
+        """
         if not settings.snapshot_capture_a11y:
             return None
-        result = {"tree": None, "elapsed": 0.0}
+        result: dict[str, Any] = {"snapshot": None, "elapsed": 0.0, "error": None}
         def _capture():
             start = time.time()
             try:
-                result["tree"] = page.accessibility.snapshot()
-                result["elapsed"] = time.time() - start
-            except Exception:
+                result["snapshot"] = page.locator("body").aria_snapshot()
+            except Exception as exc:  # noqa: BLE001 — reported below, not swallowed silently
+                result["error"] = str(exc)
+            finally:
                 result["elapsed"] = time.time() - start
         thread = threading.Thread(target=_capture, daemon=True)
         thread.start()
         thread.join(timeout=2.0)
         if thread.is_alive():
             return None
-        tree = result.get("tree")
+        snapshot = result.get("snapshot")
         elapsed = result.get("elapsed", 0.0)
         self._last_a11y_capture_time = elapsed
         if elapsed > 0.5:
             self._a11y_skip_count = 3
-        return tree if isinstance(tree, dict) else None
+        if not isinstance(snapshot, str) or not snapshot.strip():
+            if not self._a11y_capture_error_logged:
+                self._a11y_capture_error_logged = True
+                self.binding_errors.append(f"a11y_capture_error: {result.get('error') or 'empty snapshot'}")
+            return None
+        return {"aria_snapshot": snapshot}
 
     def _capture_dom_snapshot_sync(self, page: Any, dom_sig_short: str) -> dict[str, Any]:
         """Capture (and dedupe) the full DOM + a11y tree for the current page.
@@ -1969,6 +1983,9 @@ class SessionRegistry:
 
     def get(self, session_id: str) -> RecordingSession | None:
         return self._sessions.get(session_id)
+
+    def all(self) -> list[RecordingSession]:
+        return list(self._sessions.values())
 
     def pop(self, session_id: str) -> RecordingSession | None:
         """Remove a session without stopping the browser (used on failed start)."""

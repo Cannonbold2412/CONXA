@@ -6,6 +6,10 @@
 When a developer stopped or restarted the Build Studio app while working on it, the background program would print a wall of scary-looking error messages before closing. Nothing was actually broken by this — it happened after any in-progress recording had already finished — but it looked alarming and cluttered the logs, like a car alarm going off every time you turn the engine off. The app is now told to properly close down any recording session and its browser before it fully exits, instead of just being yanked away mid-task, and the harmless leftover warning that could still slip through is now quietly ignored instead of printed as a scary error.
 — 2026-09-01
 
+## Found and fixed why a recorded date-of-birth picker failed when tested — 2026-09-01
+A workflow that filled in a date-of-birth calendar was tested and failed with "element not found." The calendar step itself turned out to be fine — the real problem was a much older, much bigger issue: a background check that verifies "does this name I'm about to use for a button or field actually exist on the page" had been silently broken for weeks, ever since a software update changed how that check reads a page. It's like a spell-checker that quietly stopped running months ago — nobody noticed until it let through a name for a year-picker that was actually the text of every year in its dropdown list mashed together, which of course matched nothing when the workflow tried to click it. That check is now working again, and a second guard was added so it can never again fail silently without anyone knowing.
+— 2026-09-01
+
 ## Recording now leaves hover-menu watching switched off unless you turn it on — 2026-09-01
 Every recording used to watch for hover-triggered menus (things that only appear when your mouse rests over something) automatically, even on sites that don't have any. That watching produces noisy, hard-to-review results, so most recordings paid the cost for a feature they never used. Now it's off by default, with a plain checkbox on the recording setup screen — "This workflow uses hover menus" — for the cases that actually need it.
 — 2026-09-01

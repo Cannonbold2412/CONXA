@@ -140,13 +140,29 @@ const LABELLED_TAGS = new Set([
   "textbox", "searchbox", "combobox", "listbox", "spinbutton", "checkbox", "radio",
 ]);
 
+// ARIA "name from content" roles — mirrors identity_bundle.py's _NAME_FROM_CONTENT_ROLES.
+// A combobox/listbox/textbox/searchbox/spinbutton/bare <select> never gets its accessible
+// name from its own inner text (concatenated <option> text isn't a name any browser
+// computes), so recovery must not treat inner_text as a name candidate for those either —
+// it would recover on a name the compiler itself refuses to fabricate.
+const NAME_FROM_CONTENT_ROLES = new Set([
+  "button", "link", "heading", "cell", "gridcell", "columnheader", "rowheader",
+  "checkbox", "radio", "menuitem", "menuitemcheckbox", "menuitemradio",
+  "option", "tab", "treeitem", "switch", "tooltip",
+]);
+
 function a11yRecoveryName(fingerprint) {
   const fp = asObject(fingerprint);
   const isLabelled = LABELLED_TAGS.has(String(fp.tag || "").toLowerCase())
     || LABELLED_TAGS.has(String(fp.role || "").toLowerCase());
   const labelName = isLabelled ? fp.label_text : "";
+  const isNamedFromContent = NAME_FROM_CONTENT_ROLES.has(String(fp.tag || "").toLowerCase())
+    || NAME_FROM_CONTENT_ROLES.has(String(fp.role || "").toLowerCase());
+  const innerTextName = isNamedFromContent ? fp.inner_text : "";
+  // `name` is deliberately excluded — the HTML form-field attribute, never an ARIA
+  // accessible-name source (identity_bundle.py's _accessible_name never includes it either).
   return String(
-    fp.aria_label || fp.name || fp.alt || fp.title || fp.inner_text || fp.placeholder || labelName || "",
+    fp.aria_label || fp.alt || fp.title || innerTextName || fp.placeholder || labelName || "",
   ).trim();
 }
 

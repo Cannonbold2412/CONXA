@@ -49,10 +49,12 @@ def save_dom_snapshot(session_id: str, html: str) -> tuple[str, Path]:
 
 
 def save_a11y_snapshot(session_id: str, snapshot: dict[str, Any] | None, dom_hash_value: str) -> Path | None:
-    """Write Playwright accessibility snapshot keyed to the same dom_hash.
+    """Write a Playwright accessibility snapshot keyed to the same dom_hash.
 
-    Co-locating the a11y tree under the same hash lets the compiler load both
-    blobs together via snapshot_ref.
+    `snapshot` is `{"aria_snapshot": "<yaml>"}` — `Locator.aria_snapshot()`'s YAML string,
+    wrapped so the blob stays dict-shaped (Playwright dropped the old `Page.accessibility`
+    tree-dict API this used to store). Co-locating it under the same hash lets the compiler
+    load both blobs together via snapshot_ref.
     """
     if snapshot is None:
         return None

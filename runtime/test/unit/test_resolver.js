@@ -175,3 +175,33 @@ test("alt participates in fingerprint name matching", () => {
   );
   assert.strictEqual(s, 1);
 });
+
+// Mirrors identity_bundle.py's _NAME_FROM_CONTENT_ROLES gate: a combobox never gets its
+// accessible name from its own inner text, so scoring must not treat a node whose `.name`
+// happens to equal that concatenated option-list text as a "name agreement" — that would
+// disagree with the compiler, which refuses to emit a role signal built from the same
+// fabricated name in the first place. Regression for react-datepicker's nameless year
+// <select>, whose <option> text ("1900 1901 1902 ... 1915") is not an accessible name.
+test("inner_text does not participate in name matching for a nameless combobox", () => {
+  const optionListText = "1900 1901 1902 1903 1904 1905 1906 1907 1908 1909 1910";
+  const fp = { tag: "select", role: "combobox", inner_text: optionListText };
+  const nodeMatchingOptionList = { role: "combobox", name: optionListText, text: "unrelated" };
+  const nodeNotMatching = { role: "combobox", name: "something else entirely", text: "unrelated" };
+  // Before the gate: nodeMatchingOptionList would score higher (fabricated name agreement).
+  // After: neither gets a name-signal contribution, so both score identically on role alone.
+  assert.strictEqual(
+    scoreCandidate(nodeMatchingOptionList, fp),
+    scoreCandidate(nodeNotMatching, fp),
+  );
+});
+
+// Control: the same inner_text DOES still participate in name matching for a role that is
+// genuinely named from its content (a button), proving the gate is role-specific, not a
+// blanket removal of inner_text from name matching.
+test("inner_text still participates in name matching for a name-from-content role (button)", () => {
+  const s = scoreCandidate(
+    { role: "button", name: "Submit", text: "Submit", testid: "" },
+    { tag: "button", role: "button", inner_text: "Submit" },
+  );
+  assert.strictEqual(s, 1);
+});
