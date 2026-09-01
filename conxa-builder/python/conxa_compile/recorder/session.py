@@ -1065,31 +1065,42 @@ class RecordingSession:
         self._rewrite_events_jsonl(session_dir)
         metrics.inc("events_captured")
 
-    def _capture_a11y_async(self, page: Any) -> dict[str, Any] | None:
-        """Capture an a11y snapshot in a thread with 2s timeout.
+    A11Y_CAPTURE_TIMEOUT_MS = 2000
+
+    def _capture_a11y_snapshot(self, page: Any) -> dict[str, Any] | None:
+        """Capture an a11y snapshot, bounded by Playwright's own timeout.
 
         `Page.accessibility` was removed from Playwright (this repo pins 1.58.0, which has
         no such attribute) — `Locator.aria_snapshot()` is the replacement, returning a YAML
         string rather than a tree dict. Wrapped as {"aria_snapshot": <yaml>} so on-disk blob
         shape and read_a11y_snapshot's return type stay dict-shaped for callers.
         Returns the wrapper dict, or None on failure/timeout.
+
+        MUST run on the thread that owns the Playwright session. The sync API is greenlet-based
+        and bound to its creating thread, so calling it from a worker thread raises
+        "Cannot switch to a different thread" — which is exactly what the previous
+        threading.Thread wrapper did, on every event of every recording, making a11y capture
+        dead-on-arrival since it was written. The blast radius was silent and wide: with no
+        a11y tree on disk, identity_bundle.py's resolves_to_nothing() could not verify that a
+        role+name selector actually resolves in the page it came from, so fabricated accessible
+        names (a react-select input "named" after the nearest heading, e.g.) shipped as the
+        bundle's highest-durability signal and matched nothing at replay.
+
+        The thread only ever existed to bound the call; aria_snapshot takes a native `timeout`,
+        so the bound is kept without leaving the session's thread.
         """
         if not settings.snapshot_capture_a11y:
             return None
         result: dict[str, Any] = {"snapshot": None, "elapsed": 0.0, "error": None}
-        def _capture():
-            start = time.time()
-            try:
-                result["snapshot"] = page.locator("body").aria_snapshot()
-            except Exception as exc:  # noqa: BLE001 — reported below, not swallowed silently
-                result["error"] = str(exc)
-            finally:
-                result["elapsed"] = time.time() - start
-        thread = threading.Thread(target=_capture, daemon=True)
-        thread.start()
-        thread.join(timeout=2.0)
-        if thread.is_alive():
-            return None
+        start = time.time()
+        try:
+            result["snapshot"] = page.locator("body").aria_snapshot(
+                timeout=self.A11Y_CAPTURE_TIMEOUT_MS
+            )
+        except Exception as exc:  # noqa: BLE001 — reported below, not swallowed silently
+            result["error"] = str(exc)
+        finally:
+            result["elapsed"] = time.time() - start
         snapshot = result.get("snapshot")
         elapsed = result.get("elapsed", 0.0)
         self._last_a11y_capture_time = elapsed
@@ -1139,7 +1150,7 @@ class RecordingSession:
         # Capture a11y tree (best-effort, may be unavailable on some pages).
         a11y_path_str: str | None = None
         if settings.snapshot_capture_a11y and self._a11y_skip_count == 0:
-            tree = self._capture_a11y_async(page)
+            tree = self._capture_a11y_snapshot(page)
             if tree is not None:
                 try:
                     if snapshot_store.save_a11y_snapshot(self.session_id, tree, h):
@@ -1244,6 +1255,20 @@ class RecordingSession:
                 "a11y_path": snapshot_info.get("a11y_path"),
             },
         }
+        # bridge.js's optional observations. `body` is an explicit allow-list, so anything not
+        # named here is silently replaced by RecordedEvent's None default — which is exactly what
+        # happened to all five of these: the bridge computed them correctly on every event and
+        # the finalizer dropped them on the floor, leaving date_context/choice_context/branch_hint
+        # null in every recording ever made. That made the date-picker and multiple-choice
+        # features dead on arrival end-to-end (the compiler had nothing to collapse or derive a
+        # choice payload from) despite both being implemented and unit-tested on either side of
+        # this line. Copy through only when present, so an older bridge that does not send them
+        # still validates.
+        for observation in ("branch_hint", "date_context", "choice_context",
+                            "optionality", "post_condition"):
+            value = payload.get(observation)
+            if value is not None:
+                body[observation] = value
         return RecordedEvent.model_validate(body)
 
     def _make_synthetic_payload(self, kind: str, value_str: str, src_page: Any | None = None) -> dict[str, Any]:
