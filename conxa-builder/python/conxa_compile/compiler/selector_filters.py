@@ -111,6 +111,48 @@ def is_brittle_deep_chain(selector: str, *, max_xpath_segments: int = 10, max_cs
     return False
 
 
+_POSITIONAL_RE = re.compile(r":nth-(?:of-type|child)\(", re.I)
+# A segment carries real identity when it names the element by class / id / attribute rather
+# than by its position among siblings. `select.react-datepicker__year-select` qualifies;
+# `div:nth-of-type(2)` does not.
+_IDENTIFYING_SEG_RE = re.compile(r"[.#\[]")
+
+
+def salvage_deep_css_tail(selector: str, *, max_css_child_depth: int = 6) -> str:
+    """Shortest identifying tail of an over-deep CSS chain, or "" when nothing is salvageable.
+
+    `is_brittle_deep_chain` is right that a long positional chain is fragile — but discarding it
+    outright also throws away the element's only durable identity when that identity sits in the
+    LAST segment. react-datepicker's year <select> recorded as an 8-deep chain ending in
+    `select.react-datepicker__year-select`: the head is positional noise, the tail is a unique,
+    semantic, non-positional selector. The whole thing was being blanked to "", leaving that step
+    with no matchable signal at all.
+
+    Returns the shortest tail (fewest segments) that is free of positional pseudo-classes, names
+    the element by class/id/attribute, and passes the ordinary quality gates.
+    """
+    if ">" not in selector:
+        return ""
+    segments = [s.strip() for s in selector.split(">")]
+    segments = [s for s in segments if s]
+    if len(segments) <= max_css_child_depth:
+        return ""
+    if not segments or _POSITIONAL_RE.search(segments[-1]):
+        return ""
+    if not _IDENTIFYING_SEG_RE.search(segments[-1]):
+        return ""
+    # Grow the tail from the right, stopping at the first positional segment — a positional
+    # ancestor re-introduces exactly the fragility the depth gate exists to reject.
+    for take in range(1, min(len(segments), max_css_child_depth) + 1):
+        tail_segments = segments[-take:]
+        if take > 1 and _POSITIONAL_RE.search(tail_segments[0]):
+            break
+        candidate = " > ".join(tail_segments)
+        if selector_passes_filters(candidate):
+            return candidate
+    return ""
+
+
 def _strip_invalid_role_fragments(selector: str) -> str:
     """Remove [role="<invalid>"] fragments from compound aria selectors.
 
@@ -145,6 +187,14 @@ def filter_selectors_dict(selectors: dict[str, Any] | None) -> dict[str, Any]:
             salvaged = _strip_invalid_role_fragments(s)
             if salvaged and selector_passes_filters(salvaged):
                 out[key] = salvaged
+                continue
+        # An over-deep CSS chain often carries the element's only durable identity in its last
+        # segment. Keep that tail rather than dropping the channel to "" and leaving the step
+        # with nothing matchable.
+        if key == "css":
+            tail = salvage_deep_css_tail(s)
+            if tail:
+                out[key] = tail
                 continue
         out[key] = ""
     return out

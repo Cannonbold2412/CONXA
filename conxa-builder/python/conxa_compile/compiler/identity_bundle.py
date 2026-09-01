@@ -13,6 +13,7 @@ from conxa_compile.compiler.selector_filters import (
     dedup_by_orthogonality,
     is_low_quality_anchor,
     resolves_to_nothing,
+    salvage_deep_css_tail,
     selector_passes_filters,
     uniqueness_gate,
 )
@@ -26,6 +27,13 @@ _EXCLUDED_ROLES = frozenset({
 
 # Engines for which we skip the selector_passes_filters check (internal: grammar passes it)
 _NATIVE_ENGINES = frozenset({"testid", "role", "text_based", "relational"})
+
+# Elements whose inner text is the concatenation of their <option> children, not visible page
+# text. Playwright's text engine does not match these by that content, and the live DOM reports
+# it without the whitespace the recorder's innerText read inserts — so the recorded string can
+# match neither the selector engine nor the runtime's own descriptor. Mirrored by bridge.js's
+# OPTION_CONTENT_TAGS and resolver.js's OPTION_CONTENT_TAGS; all three must agree.
+_OPTION_CONTENT_TAGS = frozenset({"select", "datalist", "optgroup", "combobox", "listbox"})
 
 
 def generate_deterministic_signals(
@@ -60,8 +68,14 @@ def generate_deterministic_signals(
         candidates.append(("role", to_playwright_grammar("role", role, ax_name)))
 
     # 3. text-based (visible-text)
+    # Skipped for option-content elements: a <select>'s inner text is its concatenated <option>
+    # list, which Playwright's text engine never matches the <select> by. Emitting it anyway put
+    # a guaranteed-miss selector in the bundle's highest-durability slot and pushed the element's
+    # real identity below it. bridge.js's buildTextSelector now refuses to record these at all;
+    # this gate is what heals sessions recorded before that fix, without a re-record.
     text_val = str(selectors.get("text_based") or "").strip()
-    if text_val:
+    tag_or_role = {str(target.get("tag") or "").lower(), str(semantic.get("role") or target.get("role") or "").lower()}
+    if text_val and not (tag_or_role & _OPTION_CONTENT_TAGS):
         candidates.append(("text_based", to_playwright_grammar("text", text_val)))
 
     # 4. relational from first *stable* (non-ephemeral) anchor phrase (spatial-anchor)
@@ -78,6 +92,12 @@ def generate_deterministic_signals(
 
     # 5. CSS (structural fallback)
     css_sel = str(selectors.get("css") or "").strip()
+    if css_sel:
+        # An over-deep chain is rejected wholesale by selector_passes_filters below. When its
+        # last segment names the element by class/id/attribute, that tail is the element's only
+        # durable identity — keep it instead of losing the channel entirely.
+        if not selector_passes_filters(css_sel):
+            css_sel = salvage_deep_css_tail(css_sel)
     if css_sel:
         engine = "css-id" if re.search(r"#[a-zA-Z][\w-]*", css_sel) else "css-structural"
         candidates.append((engine, css_sel))

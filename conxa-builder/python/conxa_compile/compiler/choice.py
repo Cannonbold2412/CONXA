@@ -85,6 +85,9 @@ def derive_choice(ev: dict[str, Any]) -> dict[str, Any] | None:
             "multi": False,
             "group_key": str(cc.get("group_key") or ""),
             "group_label": str(cc.get("group_label") or ""),
+            # Control that reopens a popup listbox at replay. "" for always-visible groups
+            # (native <select>, a radio fieldset), which need no opening gesture.
+            "opener_selector": str(cc.get("opener_selector") or ""),
             "options": options,
             # The recorded answer's label, not its value -- reconcile_inputs_with_step_values
             # seeds the auto-declared input's `default` from this, and a default an agent reads
