@@ -116,6 +116,32 @@ function _choiceHints(step) {
   return hints.control_kind === "choice" ? asObject(hints.choice) : null;
 }
 
+// How long to wait for a popup listbox to render its options after clicking its opener. Short:
+// this is a local UI toggle, not a network round-trip, and a miss falls through to the ordinary
+// locator wait below rather than failing here.
+const CHOICE_MENU_OPEN_TIMEOUT_MS = 2000;
+
+/** Click a popup listbox's opener when its options are not already on the page.
+ *
+ * Deterministic and zero-LLM (Tier 1): the opener is a compile-time recorded selector, not a
+ * guess. A no-op when the menu is already open, when the recording captured no opener (an
+ * always-visible group, or a skill compiled before openers were recorded), or when the opener
+ * cannot be clicked — in every one of those cases the caller's own locator wait is still the
+ * thing that decides success or failure, so this never converts a real miss into a false pass.
+ */
+async function _ensureChoiceMenuOpen(page, choice, option) {
+  const opener = String((choice && choice.opener_selector) || "").trim();
+  if (!opener || !option || !option.selector) return;
+  try {
+    if (await page.locator(option.selector).count()) return; // already open
+    await page.locator(opener).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+    await page.locator(option.selector).first()
+      .waitFor({ state: "attached", timeout: CHOICE_MENU_OPEN_TIMEOUT_MS });
+  } catch (_) {
+    // Leave the outcome to the caller's locator step.
+  }
+}
+
 // Single-option choice (radio/select/aria_radio/aria_listbox): resolve the caller's value against
 // the recorded option set, or fail closed naming every valid option — never fall back to
 // whichever option happened to be recorded, which would silently submit a wrong answer.
@@ -370,6 +396,10 @@ const HANDLERS = {
     // own recorded selector instead, the same way set_radio acts on an ARIA radio's own element.
     if (choice && choice.kind === "aria_listbox") {
       const { option } = _resolveChoiceOption(step, inputs, choice);
+      // A popup listbox's options exist only while its menu is open, and the click that opens it
+      // is not a recorded step (it lands on a role-less container the recorder discards as noise).
+      // Open it here when it isn't already, or the option below can only ever miss.
+      await _ensureChoiceMenuOpen(page, choice, option);
       const targetStep = stepWithSelector(step, option.selector);
       await runLocatorStep(page, targetStep, inputs, locator => {
         return locator.click({ timeout: ACTION_TIMEOUT_MS });
@@ -849,4 +879,5 @@ module.exports = {
   enrichStepsWithRecovery,
   applyStepOverrides,
   _dateValueMatches,
+  _ensureChoiceMenuOpen,
 };
