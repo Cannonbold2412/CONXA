@@ -692,3 +692,249 @@ def test_select_records_choice_context(page: Page) -> None:
     choice = events[0]["choice_context"]
     assert choice["kind"] == "select"
     assert [o["value"] for o in choice["options"]] == ["us", "ca", "mx"]
+
+
+# ── Unmatchable-selector regressions (demoqa practice form) ──────────────────
+#
+# buildTextSelector and buildXPath each emitted a selector that could never match the
+# element it was derived from, and both occupied slots in the compiled bundle ahead of
+# signals that could. See tests/test_popup_choice_identity.py for the compile-side half.
+
+
+def test_select_gets_no_text_selector_from_its_option_list(page: Page) -> None:
+    # A <select>'s innerText is its concatenated <option> text. Playwright's text engine
+    # never matches a <select> by that, so recording one guarantees a replay miss.
+    _install_bridge(
+        page,
+        '<select id="year"><option>1900</option><option>1901</option><option>1902</option></select>',
+    )
+    page.select_option("#year", "1901")
+    page.wait_for_timeout(120)
+
+    events = _action_events(page, "select")
+    assert events, "no select event recorded"
+    assert events[0]["selectors"]["text_based"] == ""
+
+
+def test_text_selector_is_dropped_rather_than_truncated(page: Page) -> None:
+    # `text="…"` is an EXACT match, so a truncated string can never match its own element.
+    long_text = "word " * 40  # comfortably over the 80-char cap
+    _install_bridge(page, f'<div role="button" id="b" tabindex="0">{long_text}</div>')
+    page.click("#b")
+    page.wait_for_timeout(120)
+
+    events = _action_events(page, "click")
+    assert events, "no click event recorded"
+    assert events[0]["selectors"]["text_based"] == ""
+
+
+def test_short_text_still_produces_a_text_selector(page: Page) -> None:
+    _install_bridge(page, '<div role="button" id="b" tabindex="0">Submit</div>')
+    page.click("#b")
+    page.wait_for_timeout(120)
+
+    events = _action_events(page, "click")
+    assert events, "no click event recorded"
+    assert events[0]["selectors"]["text_based"] == 'text="Submit"'
+
+
+def test_depth_capped_xpath_is_relative_not_absolute(page: Page) -> None:
+    # buildXPath stops at xpath_max_depth. Emitting `/a/b/c` for an element deeper than the
+    # cap claims an absolute path from the document root, which matches nothing.
+    depth = 16
+    html = "".join(f"<div id='d{i}'>" for i in range(depth))
+    html += '<button id="deep">Go</button>' + "</div>" * depth
+    _install_bridge(page, html)
+    page.click("#deep")
+    page.wait_for_timeout(120)
+
+    events = _action_events(page, "click")
+    assert events, "no click event recorded"
+    xpath = events[0]["selectors"]["xpath"]
+    assert xpath.startswith("//"), f"depth-capped xpath must be relative, got {xpath!r}"
+    assert page.locator(f"xpath={xpath}").count() >= 1, f"{xpath!r} matched nothing"
+
+
+def test_shallow_xpath_stays_absolute_and_matches(page: Page) -> None:
+    _install_bridge(page, '<div><button id="shallow">Go</button></div>')
+    page.click("#shallow")
+    page.wait_for_timeout(120)
+
+    events = _action_events(page, "click")
+    assert events, "no click event recorded"
+    xpath = events[0]["selectors"]["xpath"]
+    assert not xpath.startswith("//")
+    assert page.locator(f"xpath={xpath}").count() == 1
+
+
+def test_popup_listbox_records_the_control_that_opens_it(page: Page) -> None:
+    # The options only exist while the menu is open, and the opening click lands on a
+    # role-less container the recorder discards — so the opener has to be captured here or
+    # the selection can never be replayed.
+    _install_bridge(
+        page,
+        """
+        <div id="wrap">
+          <input id="combo" role="combobox" aria-controls="lb" aria-expanded="true" />
+          <div id="lb" role="listbox">
+            <div role="option" id="o0">NCR</div>
+            <div role="option" id="o1">Haryana</div>
+          </div>
+        </div>
+        """,
+    )
+    page.click("#o0")
+    page.wait_for_timeout(150)
+
+    events = _action_events(page, "select_option")
+    assert events, "aria listbox click was not recorded as select_option"
+    cc = events[0]["choice_context"]
+    assert cc is not None and cc["kind"] == "aria_listbox"
+    assert cc["opener_selector"] == "#combo"
+
+
+def test_always_visible_group_records_no_opener(page: Page) -> None:
+    # A radiogroup is never hidden behind a popup — there is nothing to open.
+    _install_bridge(
+        page,
+        """
+        <div role="radiogroup" id="rg">
+          <div role="radio" id="r0" data-value="a">A</div>
+          <div role="radio" id="r1" data-value="b">B</div>
+        </div>
+        """,
+    )
+    page.click("#r0")
+    page.wait_for_timeout(150)
+
+    events = _action_events(page, "set_radio")
+    assert events, "aria radio click was not recorded as set_radio"
+    assert events[0]["choice_context"]["opener_selector"] == ""
+
+
+# ── Calendar day cells (demoqa date-of-birth regression) ─────────────────────
+#
+# A react-datepicker day is `<div role="gridcell" tabindex="-1">`. isInteractiveNode's role
+# allow-list omitted "gridcell" and the tabindex check deliberately rejects -1 (roving-tabindex
+# widgets give every unfocused item -1), so resolveMeaningfulTarget found no interactive
+# ancestor and returned null: the click that actually COMMITS the date was never recorded. The
+# replayed run changed year and month, the calendar visibly moved, and the field kept its
+# original date.
+
+
+def _calendar_html(aria_label: str = "Choose Thursday, March 15th, 2007") -> str:
+    cells = "".join(
+        f'<div role="gridcell" tabindex="-1" class="day" aria-label="d{i}">{i}</div>'
+        for i in range(1, 29)
+    )
+    return f"""
+    <input id="dob" class="form-control" />
+    <div role="grid" class="datepicker">
+      <div class="header">March 2007</div>
+      <button aria-label="Previous Month">&lt;</button>
+      <button aria-label="Next Month">&gt;</button>
+      {cells}
+      <div role="gridcell" tabindex="-1" class="day" id="target" aria-label="{aria_label}">15</div>
+    </div>
+    """
+
+
+def test_calendar_day_cell_click_is_recorded(page: Page) -> None:
+    _install_bridge(page, _calendar_html())
+    page.click("#target")
+    page.wait_for_timeout(150)
+
+    events = _action_events(page, "click")
+    assert events, "a role=gridcell day cell click was not recorded at all"
+    assert events[0]["target"]["role"] == "gridcell"
+
+
+def test_calendar_day_click_carries_the_parsed_date(page: Page) -> None:
+    # aria-label prose + an ordinal suffix ("15th") both defeat a bare Date.parse.
+    _install_bridge(page, _calendar_html())
+    page.click("#target")
+    page.wait_for_timeout(150)
+
+    events = _action_events(page, "click")
+    dc = events[0]["date_context"]
+    assert dc is not None, "no date_context on a calendar day click"
+    assert dc["role"] == "day"
+    assert dc["iso_date"] == "2007-03-15"
+
+
+def test_recorded_date_is_not_shifted_by_the_local_timezone(page: Page) -> None:
+    # The parsed date is LOCAL midnight; formatting it through toISOString() moves it back a day
+    # on every positive-offset zone (IST, CET, …). This asserts the calendar day, not UTC's.
+    _install_bridge(page, _calendar_html("January 1st, 2020"))
+    page.click("#target")
+    page.wait_for_timeout(150)
+
+    dc = _action_events(page, "click")[0]["date_context"]
+    assert dc["iso_date"] == "2020-01-01", "date shifted a day — toISOString() is back"
+
+
+@pytest.mark.parametrize(
+    "label,expected",
+    [("2007-03-15", "2007-03-15"), ("March 15, 2007", "2007-03-15"), ("15 March 2007", "2007-03-15")],
+)
+def test_iso_and_plain_aria_date_formats_still_parse(page: Page, label: str, expected: str) -> None:
+    # A fresh page per case: bridge.js installs once per JS context (__SKILL_BRIDGE_V1__).
+    _install_bridge(page, _calendar_html(label))
+    page.click("#target")
+    page.wait_for_timeout(150)
+    dc = _action_events(page, "click")[0]["date_context"]
+    assert dc["iso_date"] == expected, f"{label!r} parsed as {dc['iso_date']!r}"
+
+
+@pytest.mark.parametrize(
+    "role", ["treeitem", "menuitemcheckbox", "menuitemradio", "searchbox", "spinbutton"]
+)
+def test_other_composite_widget_item_roles_are_recorded(page: Page, role: str) -> None:
+    # gridcell was one omission in a list that means "an individual activatable item".
+    _install_bridge(page, f'<div role="{role}" id="it" tabindex="-1">X</div>')
+    page.click("#it")
+    page.wait_for_timeout(120)
+    assert _action_events(page, "click"), f"role={role} click was not recorded"
+
+
+def test_container_roles_are_still_not_treated_as_the_target(page: Page) -> None:
+    # A click must resolve to the ITEM, never the surrounding widget — recording the container
+    # would replay against the wrong element.
+    _install_bridge(page, '<div role="listbox" id="box" style="padding:40px">plain area</div>')
+    page.click("#box", position={"x": 5, "y": 5})
+    page.wait_for_timeout(150)
+    assert not _action_events(page, "click"), "a bare listbox container was recorded as a target"
+
+
+def test_calendar_root_is_the_widget_not_the_day_cell(page: Page) -> None:
+    # CALENDAR_ROOT_SELECTORS matches on class SUBSTRINGS ("[class*='datepicker']"), and every
+    # descendant of a widget repeats the library prefix — react-datepicker's day cell is
+    # `react-datepicker__day`, which matches that selector itself. findCalendarRoot stopped at
+    # the first match walking up, so the CELL became the "grid": date_context.grid and .cell came
+    # back as the same date-specific selector, the runtime scoped its day search inside the
+    # recorded cell (which has no day-number descendant, only its own text), and the header /
+    # prev / next / year+month selects that all live ABOVE the cell came back empty.
+    _install_bridge(
+        page,
+        """
+        <div class="react-datepicker">
+          <div class="react-datepicker__header">March 2007</div>
+          <select class="react-datepicker__year-select"><option>2007</option></select>
+          <select class="react-datepicker__month-select"><option>March</option></select>
+          <div class="react-datepicker__month">
+            <div class="react-datepicker__day" id="d15" role="gridcell" tabindex="-1"
+                 aria-label="Choose Thursday, March 15th, 2007">15</div>
+          </div>
+        </div>
+        """,
+    )
+    page.click("#d15")
+    page.wait_for_timeout(150)
+
+    dc = _action_events(page, "click")[0]["date_context"]
+    assert dc["role"] == "day"
+    assert dc["grid"] != dc["cell"], "the day cell was reported as its own calendar grid"
+    assert "aria-label" not in dc["grid"], (
+        f"grid is a date-specific selector ({dc['grid']!r}) — it can only ever match the "
+        "recorded day, so a different target date could never be picked"
+    )

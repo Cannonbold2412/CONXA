@@ -322,6 +322,22 @@
     return String(raw);
   }
 
+  // ARIA roles that name an INDIVIDUAL activatable control or item — the thing a user actually
+  // clicks. Container roles (grid, listbox, menu, tree, radiogroup) are deliberately absent: a
+  // click lands on the item, and treating the container as the target would record the wrong
+  // element. `gridcell` is what a calendar day cell carries (react-datepicker renders
+  // `<div role="gridcell" tabindex="-1">`); without it, resolveMeaningfulTarget walked past the
+  // day, found no interactive ancestor and returned null, so the click that actually COMMITS a
+  // date was never recorded. The run replayed as "open picker, change year, change month" with
+  // no day pick — the calendar visibly moved and the field kept its original date. The
+  // tabindex check below cannot cover these: roving-tabindex widgets give every unfocused item
+  // tabindex="-1" by design.
+  const INTERACTIVE_ROLES = [
+    "button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "tab",
+    "menuitem", "menuitemcheckbox", "menuitemradio", "option", "combobox",
+    "gridcell", "treeitem", "spinbutton", "slider",
+  ];
+
   function isInteractiveNode(n) {
     if (!n || n.nodeType !== 1) return false;
     const tag = n.tagName.toLowerCase();
@@ -329,11 +345,7 @@
       return true;
     }
     const r = ((n.getAttribute && n.getAttribute("role")) || "").toLowerCase();
-    if (
-      ["button", "link", "textbox", "checkbox", "radio", "switch", "tab", "menuitem", "option", "combobox"].indexOf(
-        r
-      ) >= 0
-    ) {
+    if (INTERACTIVE_ROLES.indexOf(r) >= 0) {
       return true;
     }
     if (tag === "label" && n.htmlFor) return true;
@@ -412,13 +424,31 @@
       node = node.parentElement;
       depth++;
     }
-    return "/" + segs.join("/");
+    // `/a/b/c` is an ABSOLUTE XPath — it only matches when the first segment is the document
+    // element. The walk above stops at xpathDepthMax, so for any element deeper than the cap we
+    // were emitting a relative path wearing an absolute prefix, which matches nothing, ever
+    // (react-datepicker's year <select> compiled to `/div[2]/div[2]/…`: 0 matches). Only claim
+    // absolute when we actually reached the root; otherwise `//` anchors it as a descendant path.
+    const reachedRoot = !node || node.nodeType !== 1;
+    return (reachedRoot ? "/" : "//") + segs.join("/");
   }
 
+  // A <select>'s innerText is its concatenated <option> list, not visible page text. Playwright's
+  // text engine never matches a <select> by its options, so a text selector built from one is a
+  // guaranteed miss that still occupies the bundle's highest-durability slot. Same reasoning as
+  // identity_bundle.py's _NAME_FROM_CONTENT_ROLES gate, applied to the text channel.
+  const OPTION_CONTENT_TAGS = { select: 1, datalist: 1, optgroup: 1 };
+
   function buildTextSelector(el) {
-    const t = safeText(el, 80);
-    if (!t) return "";
-    const esc = t.replace(/"/g, '\\"');
+    if (!el || !el.tagName) return "";
+    if (OPTION_CONTENT_TAGS[el.tagName.toLowerCase()]) return "";
+    // Read one char past the cap so an over-long text is detectable rather than silently cut.
+    const raw = safeText(el, 81);
+    if (!raw) return "";
+    // `text="…"` is an EXACT match in Playwright's grammar, so a truncated string can never
+    // match the element it came from. Emit nothing rather than a selector that cannot resolve.
+    if (raw.length > 80) return "";
+    const esc = raw.replace(/"/g, '\\"');
     return `text="${esc}"`;
   }
 
@@ -823,7 +853,22 @@
     let cur = el;
     for (let depth = 0; depth < 6 && cur && cur.nodeType === 1; depth++) {
       if (_isCalendarGridNode(cur)) {
+        // Take the OUTERMOST calendar node, not the first one matched. CALENDAR_ROOT_SELECTORS
+        // matches on class substrings ("[class*='datepicker']"), and every descendant of a
+        // widget repeats the library prefix in its own class — react-datepicker's day cell is
+        // `react-datepicker__day`, which matches that selector itself. Stopping at the first hit
+        // therefore returned the CELL as the "grid", so date_context.grid and .cell were the same
+        // date-specific selector: the runtime scoped its day search INSIDE the recorded cell (a
+        // cell has no day-number descendant, only its own text) and could never find any day but
+        // the one recorded. Widening also picks up the header, prev/next and year/month selects,
+        // which all live above the cell and were coming back empty.
         let root = cur;
+        let up = cur.parentElement;
+        for (let w = 0; w < 6 && up && up.nodeType === 1; w++) {
+          if (_isCalendarGridNode(up)) root = up;
+          up = up.parentElement;
+        }
+        // A wrapper holding the nav chrome may sit just outside the matched widget.
         if (!_findNavButton(root, "next") && !_findNavButton(root, "prev")) {
           let widen = root.parentElement;
           for (let w = 0; w < 3 && widen; w++) {
@@ -852,13 +897,46 @@
     return null;
   }
 
+  // Calendar cells label themselves in prose with an ordinal day — react-datepicker writes
+  // aria-label="Choose Thursday, March 15th, 2007". Date.parse rejects that outright (both the
+  // leading words and the "15th" suffix), so every aria-labelled day cell parsed to null, no
+  // iso_date reached DateContext, and compiler/date_picker.py had no day event to collapse a
+  // year/month/day run around. The replayed run then changed year and month but never picked a
+  // day, and the field kept whatever date it already had.
+  function _isoDateCandidates(s) {
+    const raw = String(s).trim();
+    const out = [raw];
+    // "March 15th, 2007" -> "March 15, 2007"
+    const deOrdinal = raw.replace(/(\d{1,2})(st|nd|rd|th)\b/gi, "$1");
+    if (deOrdinal !== raw) out.push(deOrdinal);
+    // Pull a bare date out of a sentence, ISO first, then "Month D, YYYY" / "D Month YYYY".
+    const patterns = [
+      /\d{4}-\d{2}-\d{2}/,
+      /[A-Za-z]{3,}\s+\d{1,2},?\s+\d{4}/,
+      /\d{1,2}\s+[A-Za-z]{3,},?\s+\d{4}/,
+    ];
+    for (const re of patterns) {
+      const m = deOrdinal.match(re);
+      if (m) out.push(m[0]);
+    }
+    return out;
+  }
+
   function _parseDateFromString(s) {
     if (!s) return null;
-    const t = Date.parse(s);
-    if (isNaN(t)) return null;
-    const d = new Date(t);
-    if (d.getFullYear() < 1900 || d.getFullYear() > 2200) return null;
-    return d.toISOString().slice(0, 10);
+    for (const candidate of _isoDateCandidates(s)) {
+      const t = Date.parse(candidate);
+      if (isNaN(t)) continue;
+      const d = new Date(t);
+      if (d.getFullYear() < 1900 || d.getFullYear() > 2200) continue;
+      // Local parts, never toISOString(): a date string with no time parses to LOCAL midnight,
+      // which toISOString() then converts to UTC — on any positive-offset zone (IST, CET, …)
+      // that lands on the PREVIOUS day, so every recorded date was silently off by one.
+      return d.getFullYear()
+        + "-" + String(d.getMonth() + 1).padStart(2, "0")
+        + "-" + String(d.getDate()).padStart(2, "0");
+    }
+    return null;
   }
 
   // Attribute name is reported alongside the parsed date so the compiler can tell the runtime
@@ -1008,6 +1086,38 @@
     return captureAssociatedLabel(el) || safeText(el, 120) || String(el.value || "");
   }
 
+  /** Selector for the control that OPENS a popup listbox, or "" when the group is always visible.
+   *
+   * A custom dropdown's options exist in the DOM only while its menu is open, and the click that
+   * opens it lands on a role-less, id-less <div> that resolveMeaningfulTarget correctly discards
+   * as noise — so nothing in the recording ever reopens the menu, and the option step can never
+   * be replayed. Capturing the opener alongside the options is what makes the selection
+   * reproducible without recording every intermediate click.
+   *
+   * Preference order is the ARIA contract first (`[role=combobox][aria-controls=<listbox id>]`,
+   * which any compliant widget exposes), then the nearest ancestor carrying a stable id — the
+   * container that survives the menu closing (react-select's `#state`, e.g.).
+   */
+  function _choiceOpenerSelector(group) {
+    if (!group) return "";
+    try {
+      const id = group.id;
+      if (id) {
+        const owner = document.querySelector(
+          `[role="combobox"][aria-controls="${id}"],[role="combobox"][aria-owns="${id}"],` +
+          `[aria-haspopup="listbox"][aria-controls="${id}"]`
+        );
+        // The owner must survive the menu closing to be usable at replay; an owner rendered
+        // inside the popup itself is no more reachable than the options were.
+        if (owner && !group.contains(owner)) return _selectorForElement(owner);
+      }
+      for (let n = group.parentElement; n && n !== document.body; n = n.parentElement) {
+        if (n.id) return _selectorForElement(n);
+      }
+    } catch (_e) {}
+    return "";
+  }
+
   function _fieldsetLegendLabel(el) {
     const fs = el.closest("fieldset");
     if (!fs) return null;
@@ -1100,6 +1210,7 @@
         group_key: groupSelector.id || "",
         group_label: _ariaGroupLabel(groupSelector) || "",
         group_selector: _selectorForElement(groupSelector),
+        opener_selector: _choiceOpenerSelector(groupSelector),
         options: members.slice(0, _CHOICE_OPTIONS_MAX).map((m) => ({
           value: m.getAttribute("data-value") || safeText(m, 120) || "",
           label: safeText(m, 120) || m.getAttribute("aria-label") || "",
