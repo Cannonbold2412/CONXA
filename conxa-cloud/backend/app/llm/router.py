@@ -31,7 +31,11 @@ class PoolEntry:
     api_key: str
     text_model: str
     vision_model: str
-    pool: str = "free"  # "free" | "premium" — see Settings.llm_premium_providers
+    pool: str = "free"  # "free" | "starter" | "pro" — see Settings.llm_starter_provider / llm_pro_provider
+    # Model to retry on this same entry when the primary model fails (empty = no fallback).
+    # Only Starter/Pro tiers set these today; Free-pool entries leave them empty.
+    fallback_text_model: str = ""
+    fallback_vision_model: str = ""
     # "bearer" (Authorization: Bearer <key>, every pooled provider) or
     # "api_key_header" (api-key: <key> — Azure OpenAI's REST auth, used only
     # by BYOK entries; see app/services/byok.py).
@@ -223,6 +227,8 @@ class LLMRouter:
                 text_model=provider_cfg.text_model,
                 vision_model=provider_cfg.vision_model,
                 pool=provider_cfg.pool,
+                fallback_text_model=provider_cfg.fallback_text_model,
+                fallback_vision_model=provider_cfg.fallback_vision_model,
             )
             self.pool.append(entry)
         # Ensures a full pool sweep gets tried even when max_retries (a config
@@ -234,10 +240,11 @@ class LLMRouter:
     def _next_available_entry(self, *, for_vision: bool = False, pool: str | None = None) -> PoolEntry | None:
         """Pick next available entry from pool using LRU, skipping cooled entries.
 
-        ``pool`` (None = no filter) restricts to "free" or "premium" entries —
-        the caller passes the requesting workspace's compile_pool capability
-        (docs/PRD.md §11). A pool with no matching entries falls through to
-        None just like an exhausted pool, rather than silently mixing tiers."""
+        ``pool`` (None = no filter) restricts to "free", "starter", or "pro"
+        entries — the caller passes the requesting workspace's compile_pool
+        capability (docs/PRD.md §11). A pool with no matching entries falls
+        through to None just like an exhausted pool, rather than silently
+        mixing tiers."""
         if not self.pool:
             return None
 
@@ -272,7 +279,7 @@ class LLMRouter:
         """Earliest clear time (monotonic) among entries matching ``for_vision``
         and ``pool`` (None = no filter), or None if no such entries exist at all (a
         config gap, not a cooldown). Filtering on ``pool`` matters — without it a
-        Free-tier caller could be told to wait out a Premium-only entry's cooldown.
+        Free-tier caller could be told to wait out a Starter/Pro-only entry's cooldown.
         Accounts for quarantine too, since a quarantined entry isn't selectable
         even once its modality cooldown clears."""
         candidates = [
@@ -376,9 +383,9 @@ class LLMRouter:
     ) -> dict[str, Any] | None:
         """Route a text-only LLM call to an available provider.
 
-        ``pool`` restricts to "free" or "premium" providers; if the requested
-        pool has no available entry, falls back to any pool rather than
-        failing a paying customer's compile over a provider misconfiguration."""
+        ``pool`` restricts to "free", "starter", or "pro" providers; if the
+        requested pool has no available entry, falls back to any pool rather
+        than failing a paying customer's compile over a provider misconfiguration."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
@@ -450,7 +457,15 @@ class LLMRouter:
         is_vision_task = task in {"anchor_vision", "anchor_vision_batch", "vision_reasoning", "region_selector"}
         model = payload.get("model")
         if not model:
-            model = entry.vision_model if is_vision_task else entry.text_model
+            primary_model = entry.vision_model if is_vision_task else entry.text_model
+            fallback_model = entry.fallback_vision_model if is_vision_task else entry.fallback_text_model
+            # ponytail: retries land on the same entry when the pool has just one
+            # matching entry (the common Starter/Pro shape), so attempt>0 == "primary
+            # already failed on this entry" and switching to the fallback model is
+            # correct. A multi-key tier can rotate to a fresh key on attempt>0 and
+            # skip straight to its fallback model without trying that key's primary
+            # first — track per-entry tried-model state if that edge case matters.
+            model = fallback_model if (attempt > 0 and fallback_model) else primary_model
 
         # Prepare payload with the selected model
         payload_with_model = dict(payload)

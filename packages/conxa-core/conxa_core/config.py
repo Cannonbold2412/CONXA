@@ -92,7 +92,10 @@ class ProviderConfig:
     api_key: str
     text_model: str
     vision_model: str
-    pool: str = "free"  # "free" | "premium" — see Settings.llm_premium_providers
+    pool: str = "free"  # "free" | "starter" | "pro" — see Settings.llm_starter_* / llm_pro_*
+    # Model to retry on the same entry when the primary model fails. Empty = no fallback.
+    fallback_text_model: str = ""
+    fallback_vision_model: str = ""
 
 
 def _provider_env(name: str) -> AliasChoices:
@@ -425,9 +428,34 @@ class Settings(BaseSettings):
     # a degraded pool returns a real 502 with error_detail instead of Render's edge
     # dropping the connection first. See docs/TRD.md §13.2.
     llm_router_total_budget_secs: float = 75.0
-    # Comma-separated provider names (e.g. "google_ai_studio,nvidia_nim") routed
-    # to Starter/Pro compiles; providers not listed here serve the Free pool.
-    llm_premium_providers: str = Field(default="", validation_alias=_provider_env("LLM_PREMIUM_PROVIDERS"))
+    # Starter and Pro each get a fully independent, single-deployment provider
+    # block — own endpoint, own keys, own text/vision models, own fallback
+    # models — rather than pointing at one of the Free-pool providers above.
+    # A tier with no llm_{tier}_endpoint/api_keys configured contributes no
+    # pool entry, so that plan's compiles fall back to the Free pool.
+    llm_starter_provider: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_PROVIDER"))
+    llm_starter_endpoint: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_ENDPOINT"))
+    llm_starter_api_keys: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_API_KEYS"))
+    llm_starter_text_model: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_TEXT_MODEL"))
+    llm_starter_vision_model: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_VISION_MODEL"))
+    llm_starter_fallback_text_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_STARTER_FALLBACK_TEXT_MODEL")
+    )
+    llm_starter_fallback_vision_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_STARTER_FALLBACK_VISION_MODEL")
+    )
+
+    llm_pro_provider: str = Field(default="", validation_alias=_provider_env("LLM_PRO_PROVIDER"))
+    llm_pro_endpoint: str = Field(default="", validation_alias=_provider_env("LLM_PRO_ENDPOINT"))
+    llm_pro_api_keys: str = Field(default="", validation_alias=_provider_env("LLM_PRO_API_KEYS"))
+    llm_pro_text_model: str = Field(default="", validation_alias=_provider_env("LLM_PRO_TEXT_MODEL"))
+    llm_pro_vision_model: str = Field(default="", validation_alias=_provider_env("LLM_PRO_VISION_MODEL"))
+    llm_pro_fallback_text_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_PRO_FALLBACK_TEXT_MODEL")
+    )
+    llm_pro_fallback_vision_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_PRO_FALLBACK_VISION_MODEL")
+    )
 
     # Cashfree payment gateway. These intentionally do not use the SKILL_ prefix.
     cashfree_app_id: str = Field(default="", validation_alias="CASHFREE_APP_ID")
@@ -515,11 +543,9 @@ class Settings(BaseSettings):
     def enabled_llm_providers(self) -> list[ProviderConfig]:
         """Load all enabled LLM providers with their API keys, returning a flat pool.
 
-        Providers named in llm_premium_providers (comma-separated, e.g.
-        "google_ai_studio,nvidia_nim") are tagged pool="premium" — Starter/Pro
-        compile against them, Free stays on the untagged "free" pool
-        (docs/PRD.md §11's compile_pool capability)."""
-        premium = {p.strip() for p in self.llm_premium_providers.split(",") if p.strip()}
+        Every provider below is tagged pool="free" (docs/PRD.md §11's compile_pool
+        capability). Starter and Pro each get their own independent, single-deployment
+        block instead (see _tier_provider_configs) — tagged pool="starter"/"pro"."""
         providers_config = [
             ("groq", self.groq_enabled, self.groq_endpoint, self.groq_api_keys,
              self.groq_text_model, self.groq_vision_model),
@@ -552,10 +578,52 @@ class Settings(BaseSettings):
                     api_key=key,
                     text_model=text_model,
                     vision_model=vision_model,
-                    pool="premium" if provider_name in premium else "free",
+                    pool="free",
                 ))
 
+        result.extend(self._tier_provider_configs(
+            "starter", self.llm_starter_provider, self.llm_starter_endpoint,
+            self.llm_starter_api_keys, self.llm_starter_text_model, self.llm_starter_vision_model,
+            self.llm_starter_fallback_text_model, self.llm_starter_fallback_vision_model,
+        ))
+        result.extend(self._tier_provider_configs(
+            "pro", self.llm_pro_provider, self.llm_pro_endpoint,
+            self.llm_pro_api_keys, self.llm_pro_text_model, self.llm_pro_vision_model,
+            self.llm_pro_fallback_text_model, self.llm_pro_fallback_vision_model,
+        ))
+
         return result
+
+    def _tier_provider_configs(
+        self,
+        pool: str,
+        provider: str,
+        endpoint: str,
+        api_keys_str: str,
+        text_model: str,
+        vision_model: str,
+        fallback_text_model: str,
+        fallback_vision_model: str,
+    ) -> list[ProviderConfig]:
+        """Build the pool entries for a single-deployment tier (Starter/Pro): its own
+        provider label, endpoint, keys, and text/vision models, independent of the
+        Free-pool providers above. No endpoint/keys configured = no entries, so that
+        tier's compiles fall back to the Free pool."""
+        if not endpoint or not provider:
+            return []
+        return [
+            ProviderConfig(
+                provider=provider,
+                endpoint=endpoint,
+                api_key=key,
+                text_model=text_model,
+                vision_model=vision_model,
+                pool=pool,
+                fallback_text_model=fallback_text_model,
+                fallback_vision_model=fallback_vision_model,
+            )
+            for key in self._split_api_keys(api_keys_str)
+        ]
 
     @model_validator(mode="after")
     def _require_env_auth_consistency(self) -> "Settings":

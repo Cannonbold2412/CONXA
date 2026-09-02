@@ -60,7 +60,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
         "white_label": False,
         "ops_tier": "basic",
         "analytics_retention_days": 90,
-        "compile_pool": "premium",
+        "compile_pool": "starter",
         "byok": False,
         "vision_fallback_on_exhaustion": False,
     },
@@ -74,7 +74,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
         "white_label": False,
         "ops_tier": "full",
         "analytics_retention_days": 365,
-        "compile_pool": "premium",
+        "compile_pool": "pro",
         "byok": False,
         "vision_fallback_on_exhaustion": False,
     },
@@ -322,7 +322,7 @@ def _limits_from_billing(billing: dict[str, Any]) -> dict[str, Any]:
         limits["distribution"] = str(overrides["distribution"])
     if "ops_tier" in overrides and str(overrides["ops_tier"]) in ("none", "basic", "full"):
         limits["ops_tier"] = str(overrides["ops_tier"])
-    if "compile_pool" in overrides and str(overrides["compile_pool"]) in ("free", "premium"):
+    if "compile_pool" in overrides and str(overrides["compile_pool"]) in ("free", "starter", "pro", "premium"):
         limits["compile_pool"] = str(overrides["compile_pool"])
     if "white_label" in overrides:
         limits["white_label"] = bool(overrides["white_label"])
@@ -602,10 +602,12 @@ def trial_ends_at(billing: dict[str, Any]) -> str | None:
 
 
 def compile_pool_for(principal: Principal) -> str:
-    """"free" or "premium" — which router pool this workspace's plan compiles
-    against (docs/PRD.md §11). Free trials get the free-tier LLM rotation;
-    Starter and up route to premium providers, where compile quality directly
-    determines skill reliability."""
+    """"free", "starter", or "pro" — which router pool this workspace's plan
+    compiles against (docs/PRD.md §11). Free trials get the multi-provider free-tier
+    rotation; Starter and Pro each route to their own single designated provider,
+    where compile quality directly determines skill reliability. Enterprise/
+    Development still carry "premium" (unchanged) and fall back to any pool
+    since no provider is tagged "premium" anymore."""
     limits = _limits_from_billing(billing_for(principal))
     return str(limits.get("compile_pool") or "free")
 
