@@ -23,7 +23,7 @@ jobs:
       contents: write  # needed to create GitHub Releases
 
     env:
-      HOST_VERSION: ${{ github.ref_name || inputs.tag }}
+      HOST_VERSION: ${{ inputs.tag || github.ref_name }}
       # Exact Node @yao-pkg/pkg embeds for the node24 target. Keep in lockstep with
       # build-runtime-app.yml's NODE_VERSION so app bytecode matches this exe's V8.
       NODE_VERSION: "24.15.0"
@@ -226,7 +226,7 @@ jobs:
     permissions:
       contents: write
     env:
-      HOST_VERSION: ${{ github.ref_name || inputs.tag }}
+      HOST_VERSION: ${{ inputs.tag || github.ref_name }}
       NODE_VERSION: "24.15.0"
     steps:
       - name: Checkout

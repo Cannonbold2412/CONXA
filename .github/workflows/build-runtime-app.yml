@@ -34,7 +34,7 @@ jobs:
       contents: write  # needed to create GitHub Releases
 
     env:
-      APP_VERSION: ${{ github.ref_name || inputs.tag }}
+      APP_VERSION: ${{ inputs.tag || github.ref_name }}
       # Node version for the build environment — used for obfuscation tooling and
       # npm ci. No longer load-bearing for V8 bytecode compatibility; any 24.x works.
       NODE_VERSION: "24"
