@@ -783,8 +783,16 @@ async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, l
       app = byHost(_hostOf(opts.fallbackUrl));
     }
     if (!app) {
-      matchedBy = "group-apps[0]-default";
-      app = group.apps[0];
+      // Neither the failing page's own host nor the manifest's fallback host matches any
+      // app this group actually manages a saved session for. That means the redirect isn't
+      // a tracked app's session dying — it's something else (most commonly a workflow's own
+      // recorded login step failing on bad credentials against a site that was never
+      // registered as a group app in the first place). Guessing group.apps[0] here used to
+      // name a real, uninvolved app (e.g. "Render") in the user-facing error for a failure
+      // that had nothing to do with it — worse than no guess. Report unresolved and let the
+      // caller fall back to the plain step-failure message instead of fabricating a culprit.
+      if (logFn) logFn("info", "reauth_app_unresolved", { workspace_id, loginUrl, fallbackUrl: opts.fallbackUrl || null });
+      return { authPending: false, unresolved: true, loginUrl };
     }
     if (logFn) logFn("info", "reauth_app_resolved", { workspace_id, appId: app.id, matchedBy });
     return {

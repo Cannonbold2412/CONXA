@@ -51,6 +51,47 @@ function makePage(url, title = "My App") {
     assert.equal(await isAuthFailure(makePage("https://dashboard.render.com/services")), false);
   });
 
+  // Regression (2026-09-02, mega-workflow): a skill that deliberately records a login page —
+  // the-internet.herokuapp.com/login, whose form the workflow itself fills in — was reported as
+  // "your saved sign-in expired" for an app the failing step never touched, AND lost its whole
+  // Tier 1-4 recovery cascade (run.js short-circuits to stepFailure on an auth verdict).
+  const RECORDED_LOGIN_STEPS = [
+    { type: "navigate", url: "https://the-internet.herokuapp.com/login" },
+    { type: "type", selector: "role=textbox[name=\"Username\"]" },
+  ];
+
+  await test("a login page the recording navigated to → NOT auth failure", async () => {
+    assert.equal(
+      await isAuthFailure(makePage("https://the-internet.herokuapp.com/login"), RECORDED_LOGIN_STEPS),
+      false
+    );
+  });
+
+  await test("recorded-url match ignores query and trailing slash", async () => {
+    assert.equal(
+      await isAuthFailure(makePage("https://the-internet.herokuapp.com/login/?x=1"), RECORDED_LOGIN_STEPS),
+      false
+    );
+  });
+
+  await test("a DIFFERENT login page in the same run → still auth failure", async () => {
+    assert.equal(
+      await isAuthFailure(makePage("https://dashboard.render.com/login"), RECORDED_LOGIN_STEPS),
+      true
+    );
+  });
+
+  await test("no steps passed → unchanged behaviour", async () => {
+    assert.equal(await isAuthFailure(makePage("https://the-internet.herokuapp.com/login")), true);
+  });
+
+  await test("a recorded url does not suppress the TITLE heuristic elsewhere", async () => {
+    assert.equal(
+      await isAuthFailure(makePage("https://the-internet.herokuapp.com/secure", "Session Expired"), RECORDED_LOGIN_STEPS),
+      true
+    );
+  });
+
   await test("title 'Sign in to Render' → auth failure", async () => {
     assert.equal(await isAuthFailure(makePage("https://render.com/other", "Sign in to Render")), true);
   });

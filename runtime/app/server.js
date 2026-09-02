@@ -86,9 +86,9 @@ const _getParkedRecovery    = require("./recovery_park").getParked;
 const _setParkedRecovery    = require("./recovery_park").setParked;
 const _discardParkImpl      = require("./recovery_park").discardPark;
 const _discardAllParksImpl  = require("./recovery_park").discardAllParks;
-// Per-skill escalation stage for the split Tier 3 (semantic) → Tier 4 (vision)
-// recovery rounds + the candidate_index nomination maps published by each
-// digest. See recovery_stage.js.
+// Per-skill round state for agent-mediated recovery (round count + the stagnation
+// cap) plus the candidate_index nomination maps published by each digest. Every
+// round is armed; there is no tier escalation. See recovery_stage.js.
 const recoveryStage = require("./recovery_stage");
 const PARK_TTL_MS = Number(process.env.CONXA_RECOVERY_PARK_TTL_MS) || 180000;
 // RT-3: parks are keyed per skill (`${workspace_id}:${slug}`), not a single process-wide slot —
@@ -1387,7 +1387,7 @@ async function _handleTool(name, args, extra) {
           // Multi-tab: check auth on the tab the step actually failed on, not always the
           // initial tab — a login redirect in a second tab would otherwise go undetected.
           const _failedPage = runErr.failedPage || page;
-          if (failedStep !== null && await isAuthFailure(_failedPage)) {
+          if (failedStep !== null && await isAuthFailure(_failedPage, steps)) {
             // The page that actually bounced to a login screen is the right host to resolve
             // the dead app from — for a group pack, entry.manifest.target_url is the START
             // app, which is wrong when a SIBLING app's session is the one that died (see
@@ -1398,19 +1398,25 @@ async function _handleTool(name, args, extra) {
               groupId: entry.manifest && entry.manifest.group_id,
               fallbackUrl: entry.manifest?.target_url,
             });
-            throw Object.assign(
-              new Error(refreshResult.message),
-              {
-                session_expired: true,
-                login_url: refreshResult.loginUrl || loginUrl,
-                failedAt: failedStep,
-                fromEntry: entry,
-                // No window was opened for this failure (see captureReAuth) — the shared
-                // session_expired handler below must not tell the user "once signed in", since
-                // nothing has prompted them to sign in yet at this point.
-                authWindowOpened: false,
-              }
-            );
+            // captureReAuth couldn't tie the failing page to any app this group actually
+            // manages a saved session for — the login redirect isn't a tracked session dying
+            // (see its comment). Don't dress up an unrelated step failure as a session expiry
+            // for a made-up app; fall through to the real error below instead.
+            if (!refreshResult.unresolved) {
+              throw Object.assign(
+                new Error(refreshResult.message),
+                {
+                  session_expired: true,
+                  login_url: refreshResult.loginUrl || loginUrl,
+                  failedAt: failedStep,
+                  fromEntry: entry,
+                  // No window was opened for this failure (see captureReAuth) — the shared
+                  // session_expired handler below must not tell the user "once signed in", since
+                  // nothing has prompted them to sign in yet at this point.
+                  authWindowOpened: false,
+                }
+              );
+            }
           }
           runErr.fromEntry = entry;
           throw runErr;

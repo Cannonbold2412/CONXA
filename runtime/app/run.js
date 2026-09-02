@@ -301,7 +301,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
     // fix — running it anyway just burns ~10s against a login page before server.js's own
     // isAuthFailure check (which triggers the re-auth window) gets a turn. Skip straight to
     // stepFailure so that check runs immediately.
-    if (await isAuthFailure(page)) {
+    if (await isAuthFailure(page, steps)) {
       t.emit("step_fail", { si: i, fc: "auth_failure" });
       throw stepFailure(step, i, primaryErr, preShot);
     }
@@ -352,8 +352,22 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
 const AUTH_FAILURE_URL_RE = /\/(login|signin|sign-in|auth|logout|session-expired)(\/|$|\?)/i;
 const AUTH_FAILURE_TITLE_RE = /sign\s*in|log\s*in|session\s*expired|authentication\s*required/i;
 
-async function isAuthFailure(page) {
+// A skill can legitimately record a login page as an ordinary step — a demo app's /login form
+// the workflow itself fills in. The heuristics above can't tell that apart from a session that
+// died, and getting it wrong is expensive twice over: the step loses its whole Tier 1-4 recovery
+// cascade (run.js short-circuits straight to stepFailure), and the user is told their saved
+// sign-in expired for an app the failing step never touched. A URL the recording deliberately
+// navigated to is not a redirect, so it is not a session expiry.
+function _isRecordedUrl(steps, url) {
+  if (!Array.isArray(steps) || !url) return false;
+  const bare = (u) => String(u).split("#")[0].split("?")[0].replace(/\/$/, "");
+  const live = bare(url);
+  return steps.some((s) => s && s.type === "navigate" && s.url && bare(s.url) === live);
+}
+
+async function isAuthFailure(page, steps) {
   const url = page.url();
+  if (_isRecordedUrl(steps, url)) return false;
   if (AUTH_FAILURE_URL_RE.test(url)) return true;
   try {
     const title = await page.title();

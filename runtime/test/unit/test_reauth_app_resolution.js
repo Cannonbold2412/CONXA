@@ -71,17 +71,21 @@ async function run() {
     assert.strictEqual(resolved.data.matchedBy, "manifest-fallback-host");
   });
 
-  await check("falls back to the group's first app when nothing matches at all", async () => {
+  await check("does not blame an unrelated app when nothing matches at all", async () => {
     const calls = [];
     const logFn = (_level, event, data) => calls.push({ event, data });
-    await browser.captureReAuth(WORKSPACE_ID, "https://accounts.google.com/o/oauth2/auth", null, tmpDataDir, logFn, {
+    // Neither host matches any group app — e.g. a workflow's own recorded login step
+    // failing on bad credentials against a site that was never registered as a group app.
+    // Must NOT guess group.apps[0] (Render) here; that used to blame a real, uninvolved
+    // app for a failure that had nothing to do with it.
+    const result = await browser.captureReAuth(WORKSPACE_ID, "https://accounts.google.com/o/oauth2/auth", null, tmpDataDir, logFn, {
       groupId: "g1",
       fallbackUrl: "https://also-unmatched.example.net",
     });
-    const resolved = calls.find((c) => c.event === "reauth_app_resolved");
-    assert.ok(resolved);
-    assert.strictEqual(resolved.data.appId, "app_render"); // group.apps[0]
-    assert.strictEqual(resolved.data.matchedBy, "group-apps[0]-default");
+    assert.strictEqual(result.unresolved, true);
+    assert.ok(!calls.find((c) => c.event === "reauth_app_resolved"), "must not resolve a fabricated app");
+    const unresolved = calls.find((c) => c.event === "reauth_app_unresolved");
+    assert.ok(unresolved, "expected a reauth_app_unresolved log");
   });
 
   fs.rmSync(tmpDataDir, { recursive: true, force: true });
