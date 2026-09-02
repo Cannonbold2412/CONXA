@@ -1355,7 +1355,7 @@ Response:
     "distribution": "external",
     "white_label": false,
     "ops_tier": "basic",
-    "compile_pool": "premium",
+    "compile_pool": "starter",
     "byok": false,
     "vision_fallback_on_exhaustion": false
   },

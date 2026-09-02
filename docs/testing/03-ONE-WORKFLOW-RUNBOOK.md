@@ -55,9 +55,20 @@ Tabs: you will end up with ~7 tabs — that is intentional.
 ### B — Mutator fixture (tab 2: localhost:8099/mutator.html)
 5. Type `Mega Test Run` into the **name** field.
 6. Type `mega@test.local` into the **email** field.
-7. Click **Submit** (whatever its label currently says — it relabels every 0.7 s).
+7. Click **the drifting button** (whatever its label currently says — it cycles `Go` / `Send` /
+   `Do It` / `Proceed` every 0.7 s and jumps to the bottom of the page).
 8. Wait for / assert text **"Thanks, Mega Test Run!"**.
 > Proves: H-1 DOM mutation between record & replay.
+
+> **A drift-healing test must never target a commit-intent or destructive element.** The
+> compiler classifies a click whose intent reads as a commit (`submit`/`confirm`, or any
+> `submit_text_tokens` entry — see `policy/default_policy.json`) as *irreversible*, and PROD-3
+> deliberately gives an irreversible step Layer 1 and **no re-resolution at any tier** — no a11y
+> retry, no agent park. Such a step can only ever fail closed, so it can never demonstrate
+> healing. This bit the mutator fixture once already (its button was labelled `Submit`, every
+> replay ended in `destructive_recovery_halted`); `conxa-cloud/tests/test_fixture_intent_classification.py`
+> now pins the fixture's vocabulary to the policy so it cannot regress silently.
+
 
 ### C — Dynamic identity (tab 3: http://uitestingplayground.com — plain http, its https cert is broken)
 9. On the **Dynamic ID** page: click **Button with Dynamic ID**.

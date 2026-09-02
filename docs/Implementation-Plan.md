@@ -370,7 +370,7 @@ single-app tasks instead of business processes, and pricing existed with four di
   machine binding at the LLM proxy and compile-reserve chokepoints; distribution/white-label gating on
   installer upload and publish; `ops_tier` gating across the dashboard/audit/drift routes; analytics
   retention filtering on read; a compile-credit add-on (+25/mo, stacks via Cashfree); a tiered
-  free/premium LLM router pool.
+  free/starter/pro LLM router pool.
 - **Enterprise BYOK** (Azure OpenAI) — `app/services/byok.py`, AES-256-GCM key-at-rest, new
   `PUT/GET/DELETE /api/v1/workspace/llm-key` routes, `LLMRouter.call_entry_directly` for the one-off
   deployment call path.

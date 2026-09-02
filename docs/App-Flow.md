@@ -621,12 +621,41 @@ flowchart TD
 
 **Two behavioural tiers, not four.** Tier A is in-process and free: exception ladder, a11y re-probe,
 transient retry, re-hover, dialog-scope. It may change *when* or *where* it looks; it never settles
-for a different element. Tier B is one armed agent payload — ranked digest plus screenshots plus
+for a different element — with one qualification: the **a11y re-probe** does re-resolve by
+accessible name, so it can land on a different node (through the same fingerprint scoring and
+uniqueness margin as primary resolution). That distinction is what gates a destructive step: it
+runs every Tier A stage EXCEPT the a11y re-probe. See "Destructive steps get Tier A minus
+re-identification" below. Tier B is one armed agent payload — ranked digest plus screenshots plus
 recording-time context — not a text-only round followed by a later vision round. A failed step gets
 at most two Tier B rounds; round two carries what round one nominated. The runtime never calls
 Claude Desktop; each round is a *response* the client answers with its own `execute_skill` resume.
 Studio sandbox sets `CONXA_MAX_RECOVERY_TIER=2` so a step that survives Tier A fails deterministically.
 See `docs/TRD.md` §10.1.
+
+**Destructive steps get Tier A minus re-identification (PROD-3, revised 2026-09-02).** The line for
+an irreversible step (pay / delete / submit — `identity_bundle.destructive`, set at compile time) is
+*re-identification*, not tier. It may retry the **same** element under different timing or a
+narrower scope; it may never be re-resolved to a different one:
+
+| Tier A stage | re-tries | destructive step |
+|---|---|---|
+| L1 exception ladder | `primarySelector` after one targeted remedy | runs |
+| a11y re-probe | a node matched by **accessible name** | **skipped** — can land elsewhere |
+| transient (+250 ms) | `primarySelector` | runs |
+| re-hover → retry | `primarySelector` | runs |
+| dialog scope | `primarySelector`, scoped into a dialog | runs |
+
+This replaced a blanket halt before all of Layer 2. That halt was written when Layer 2 still
+contained a fallback-selector walk and a fuzzy text match — both picked a different element by text
+affinity and clicked `.first()` with no uniqueness gate. Once those were deleted, blocking the
+remaining same-selector stages while still allowing L1's identical same-selector retry was an
+accident of where the gate sat, not a safety property. Double-dispatch protection is unaffected and
+orthogonal: the EXEC-24 action guard still refuses any re-dispatch whose first attempt may already
+have landed.
+
+An unhealed destructive step is still terminal — `run.js` marks it `destructiveHalt` regardless of
+which stage it stopped at, so `server.js`'s `parkable` predicate keeps it out of the agent park. A
+`step_overrides` candidate pick is re-identification by another name.
 
 **Validated closing edge:** the agent's `step_overrides` pick (a `candidate_index` nomination from
 the ranked digest, or an explicit selector) is never applied blind. A nominated index is resolved to
@@ -818,7 +847,7 @@ flowchart TD
     F -->|No| H[Proceed: compile reserve / LLM proxy call]
     H --> I{compile_pool = premium and BYOK configured?}
     I -->|Yes| J[Route to workspace's Azure OpenAI deployment]
-    I -->|No| K[Route to shared pool: free or premium tier]
+    I -->|No| K[Route to shared pool: free, starter, or pro tier]
 
     B -->|Installer upload| L{distribution=external requested?}
     L -->|Yes| M{Plan distribution = external?}

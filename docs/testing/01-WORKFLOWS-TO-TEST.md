@@ -58,6 +58,15 @@ Local fixtures live in [`fixtures/`](fixtures/): `mutator.html` (DOM mutates eve
 Serve over HTTP (`python -m http.server 8099 --directory docs\testing\fixtures *> server.log`),
 never `file://`.
 
+> **A drift-healing test must never target a commit-intent or destructive element.** The
+> compiler classifies a click whose intent reads as a commit (`submit`/`confirm`, or any
+> `submit_text_tokens` entry — see `policy/default_policy.json`) as *irreversible*, and PROD-3
+> deliberately gives an irreversible step Layer 1 and **no re-resolution at any tier** — no a11y
+> retry, no agent park. Such a step can only ever fail closed, so it can never demonstrate
+> healing. This bit the mutator fixture once already (its button was labelled `Submit`, every
+> replay ended in `destructive_recovery_halted`); `conxa-cloud/tests/test_fixture_intent_classification.py`
+> now pins the fixture's vocabulary to the policy so it cannot regress silently.
+
 ---
 
 # LEVEL 1 — EASY
@@ -473,14 +482,18 @@ Manual time: ~45 min setup + ~15 min recording + ~30 min gauntlet + optional ove
 | H-11/H-12 | Canvas + CAPTCHA refuse cleanly | R7 |
 
 ### PHASE 0 — Setup
-Fixture: serve [`fixtures/mutator.html`](fixtures/mutator.html) (`npx serve -l 3000 .`) — Submit
-button visibly jumps/relabels every ~0.7 s. Accounts: saucedemo `standard_user/secret_sauce`;
+Fixture: serve [`fixtures/mutator.html`](fixtures/mutator.html) on :8099 (same server as every
+other fixture — `python -m http.server 8099 --directory docs\testing\fixtures`). Its button
+visibly jumps to the bottom of the page and relabels every ~0.7 s, cycling `Go` / `Send` /
+`Do It` / `Proceed`. Accounts: saucedemo `standard_user/secret_sauce`;
 Juice Shop throwaway; computer-database none. Studio running, group `MEGA-11` created + auth done;
 terminal tailing sessions; MCP client connected (`list_skills` works).
 
 ### PHASE 1 — The single recording (in exactly this order, no stopping)
 - **A — Mutator (tab 1, ~6 steps, H-1):** type `Mega Test Run` name, `mega@test.local` email,
-  click Submit (whatever its label says now), wait for "Thanks, Mega Test Run!".
+  click the drifting button (whatever its label says now — `Go`/`Send`/`Do It`/`Proceed`), wait
+  for "Thanks, Mega Test Run!". None of those labels reads as a commit, which is what keeps the
+  step re-resolvable — see the note in Phase 0's fixture list.
 - **B — Scroll + late-render (new tab 2, ~8 steps, H-2):** `/infinite_scroll` scroll to 4 blocks +
   assert; `/dynamic_loading/2` Start → wait spinner → click "Hello World!".
 - **C — Iframe ping-pong (same tab, ~10 steps, H-10):** `/nested_frames` act LEFT → RIGHT →

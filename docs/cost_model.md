@@ -442,7 +442,7 @@ not a re-derivation from current per-token provider pricing.
 
 | | **Free** | **Starter** | **Pro** | **Enterprise** |
 |--|-----------|-------------|---------|----------------|
-| LLM provider | Free-tier rotation + standard queue | Premium pool (`compile_pool="premium"`) | Premium pool, priority queue | BYOK (Azure OpenAI) or premium |
+| LLM provider | Free-tier rotation + standard queue | Starter's dedicated provider (`compile_pool="starter"`) | Pro's dedicated provider (`compile_pool="pro"`), priority queue | BYOK (Azure OpenAI) or premium |
 | Seats | 1 | 3 | 10 | Contracted |
 | Machines | 1 | 3 | 10 | Contracted |
 | Compile credits / month | 25 | 200 | 500 | Unlimited |

@@ -1118,10 +1118,11 @@ including a genuinely manual one — as renderer-initiated, dropping it exactly 
 pre-`manual_navigate` bug this feature fixed.
 
 The compiler compiles `manual_navigate` straight into a real `action=navigate` step — the same
-step type `_insert_start_navigate_step`/`_insert_user_tab_navigate_steps` already produce for a
-recording's start page and user-opened tabs (`build.py::_navigate_step`): `page.goto(to_url)` on
-replay, no element target, no LLM intent, no vision anchors. No runtime change was needed — the
-`navigate` action was already fully executable.
+step type `_insert_start_navigate_step` produces for a recording's start page, and the synthetic
+`manual_navigate` **event** `_insert_tab_markers` inserts for a user-opened tab
+(`build.py::_navigate_step`/`_make_tab_navigate_event`): `page.goto(to_url)` on replay, no
+element target, no LLM intent, no vision anchors. No runtime change was needed — the `navigate`
+action was already fully executable.
 
 Two gates must stay in sync with this kind, and both fail **silently** when they aren't:
 
@@ -2053,8 +2054,9 @@ Code files are what execution needs; artifacts are what *recovery* needs, and on
 **"Strict Mode" — a pack-declared ceiling (PROD-3).** A skill pack's `manifest.json` may carry an optional `max_recovery_tier` (1–4). The runtime's effective ceiling for a run is `min(host CONXA_MAX_RECOVERY_TIER, pack max_recovery_tier ?? host ceiling)` — a pack can only ever be *more* restrictive than the host it runs on, never looser (`server.js::_effectiveRecoveryTier`). Every agent-mediated decision (override application, park/resume, failure-response tier and messaging) uses this per-run effective value; status/registration endpoints (`get_runtime_status`, telemetry `capabilities`) still report the host baseline, since they answer "what can this host do," not "what was this one run capped at." Today `max_recovery_tier` is set per build via `CONXA_STRICT_MODE_MAX_TIER` (`skill_package_builder_output.py`) — a Studio UI toggle for setting it per workflow is not yet built.
 
 **Entity binding and the destructive-recovery halt (PROD-3).** Two related, previously-broken mechanisms, now wired end to end:
-- `identity_bundle.destructive` — set at compile time by `destructive_semantics.classify_consequence()` (click steps whose intent matches the destructive-token vocabulary, or that are a commit/submit action). Serialized onto the execution step's top-level `destructive` flag (`skill_package_builder_saved_skill.py::_copy_saved_common`) — the field `runtime/app/cascade.js::recoverStep` reads to stop the cascade after Layer 1 (EXEC-24 P5) and refuse the a11y/transient/re-hover/dialog-scope stages, rather than re-resolving its way to a Delete button.
+- `identity_bundle.destructive` — set at compile time by `destructive_semantics.classify_consequence()` (click steps whose intent matches the destructive-token vocabulary, or that are a commit/submit action). Serialized onto the execution step's top-level `destructive` flag (`skill_package_builder_saved_skill.py::_copy_saved_common`) — the field `runtime/app/cascade.js::recoverStep` reads to refuse **re-identification** (EXEC-24 P5), rather than re-resolving its way to a Delete button. Revised 2026-09-02: the gate is now around `recoverWithA11y` alone, not around all of Layer 2. A destructive step runs the L1 ladder, the transient (+250 ms) retry, the re-hover retry and dialog scope — every one of which re-tries `primarySelector` itself and therefore cannot land on a different element — and skips only the a11y re-probe, which resolves by accessible name and can. The previous blanket halt dated from when Layer 2 also held a fallback-selector walk and a fuzzy text match (both picked a different element and clicked `.first()` with no uniqueness gate); once those were deleted, blocking the remaining same-selector stages while still permitting L1's identical same-selector retry was an accident of gate placement, not a safety property. The skip emits `destructive_reidentify_skipped` / `rec_skip`; it deliberately does not set `guard.blocked`, which would short-circuit the very stages it now permits. Double-dispatch protection is orthogonal and unchanged (the EXEC-24 action guard still blocks a re-dispatch whose first attempt may already have landed). Covered by `runtime/test/unit/test_cascade_destructive.js`.
 - **Entity binding** (`EntityBinding` on `SkillStep`) — for a step whose target sits inside a repeating list/table row, the compiler (`conxa_compile/compiler/entity_binding.py`) detects a `container_selector` matching every sibling row plus an `identifier` (preferring a declared run input over the recorded literal text) that picks out this run's specific row. At runtime, `resolution.js::entityRoots` narrows resolution to the row whose text contains the interpolated identifier — requiring an *exact single match*; zero or ambiguous (>1) matches fail closed (`entityNotFound`), never falling back to the unscoped page. Both the primary resolve path and every recovery stage's locator path go through this narrowing, so recovery can never substitute a same-looking element from a different row.
+- `destructiveHalt` is now set by `run.js` from `step.destructive` directly whenever recovery fails to heal the step, rather than being inferred from the guard's `destructive-no-guess` reason — with the same-element Layer 2 stages running for destructive steps, the cascade no longer stops at a single predictable point, but the agent-park exclusion must hold on every path.
 - Both halts (`destructiveHalt`, `entityNotFound`) are deliberate stops, not exhausted recovery: `server.js`'s `parkable` predicate excludes them (no agent-mediated resume is ever offered), and `failure_response.js` returns a plain terminal message instead of a Tier B candidate digest — offering a ranked "pick a different element" list here would invite exactly the wrong-row guess the halt exists to prevent.
 - **Publish gate.** An irreversible step whose compiler-detected entity binding was never confirmed by the vendor in the editor cannot be saved (`editor/patch_gate.py::irreversible_step_requires_confirmed_entity_binding`) or published (`handlers/workflows.py::_require_confirmed_entity_bindings`, since patch_gate only fires on an edit). A step with no detected repeating container has nothing to confirm and is unaffected.
 - Scope note: this is the *safety-core* slice of PROD-3 (danger classification, entity binding, fail-closed recovery, Strict Mode). Dry-run/stage-then-commit, compensation workflows, before/after screenshots, and a published per-skill safety score remain open — see `TODO.md` PROD-3.
@@ -2588,7 +2590,7 @@ enforcement (the field exists on the signed document, unused by the runtime toda
 ### 13.1 Provider Pool
 
 The cloud maintains a flat pool of `(provider, endpoint, api_key, text_model, vision_model, pool, auth_style)`
-tuples. Multiple keys per provider expand to multiple entries. `PoolEntry.pool` (`"free"` | `"premium"`)
+tuples. Multiple keys per provider expand to multiple entries. `PoolEntry.pool` (`"free"` | `"starter"` | `"pro"`)
 and `auth_style` (`"bearer"` | `"api_key_header"`) were added 2026-08-08 for the tiered compile pool
 and BYOK (§13.1a, §13.5) — every pooled provider keeps `auth_style="bearer"`, only BYOK entries use
 `"api_key_header"`.
@@ -2602,16 +2604,30 @@ Disabled by default (toggle via env): Cerebras, Together, OpenRouter, Mistral.
 
 ### 13.1a Tiered Compile Pool
 
-`Settings.llm_premium_providers` (env `LLM_PREMIUM_PROVIDERS`, comma-separated provider names, e.g.
-`google_ai_studio,nvidia_nim`) tags matching providers `pool="premium"` in `enabled_llm_providers()`;
-everything else defaults to `pool="free"`. `llm_proxy_routes._meter_and_call` reads the calling
-workspace's `compile_pool` capability (`entitlements.compile_pool_for`) and passes it to
-`route_text`/`route_vision` as the `pool` kwarg. `LLMRouter._next_available_entry` filters on it.
+Starter and Pro each get a fully independent, single-deployment provider block — not a name pointing at
+one of the Free-pool providers in §13.1, but their own `LLM_{TIER}_PROVIDER` (label), `_ENDPOINT`,
+`_API_KEYS`, `_TEXT_MODEL`, `_VISION_MODEL`, `_FALLBACK_TEXT_MODEL`, and `_FALLBACK_VISION_MODEL`.
+`Settings._tier_provider_configs()` builds one `ProviderConfig` per key (comma-separated, like every
+other provider) tagged `pool="starter"`/`pool="pro"`; `enabled_llm_providers()` appends them after the
+Free-pool list, which stays `pool="free"` unconditionally. No `_ENDPOINT`/`_API_KEYS` configured for a
+tier means it contributes zero entries. `llm_proxy_routes._meter_and_call` reads the calling workspace's
+`compile_pool` capability (`entitlements.compile_pool_for`) and passes it to `route_text`/`route_vision`
+as the `pool` kwarg; `LLMRouter._next_available_entry` filters on it.
 
-If the requested pool has no available entry (e.g. no premium provider configured), the router falls
-back to any pool rather than failing a paying customer's compile over an ops misconfiguration — logged
-via `_debug_log`, not surfaced as an error. At least one premium provider must be enabled for Starter/Pro
-compile quality to actually differ from Free; see `ROUTER_SETUP.md`.
+**Fallback model:** `PoolEntry.fallback_text_model`/`fallback_vision_model` (copied from the tier's
+`_FALLBACK_TEXT_MODEL`/`_FALLBACK_VISION_MODEL`) name a second model to retry on the *same* key when the
+primary model's call fails. `_call_provider` picks the fallback once `attempt > 0` for that call. This
+is attempt-indexed, not per-entry state, so it's exact for the common one-key-per-tier shape (every
+retry in `_route`'s loop lands back on the tier's only entry); a tier configured with multiple keys can
+have a later attempt rotate to a fresh key and reach straight for its fallback model without trying that
+key's primary first — a documented `ponytail:` cut in the code, not tracked as separate per-entry state.
+Free-pool entries never set a fallback model, so this never activates outside Starter/Pro.
+
+If the requested pool has no available entry (e.g. a tier's `_ENDPOINT`/`_API_KEYS` unset), the router
+falls back to any pool rather than failing a paying customer's compile over an ops misconfiguration —
+logged via `_debug_log`, not surfaced as an error. Enterprise/Development still carry
+`compile_pool="premium"` (unchanged) and, since no provider is tagged `"premium"` anymore except BYOK's
+synthetic entry (§13.5), fall back to any pool unless BYOK is configured.
 
 ### 13.2 Router Behavior
 
@@ -2739,7 +2755,8 @@ The cloud exposes four customer-visible numeric meters, all defined in `PLAN_LIM
   tier with a hard machine restriction — see the machine lock and delta-sync gate under §13.4a.
 - `white_label` — bool; Enterprise only
 - `ops_tier` — `"none"` (Free), `"basic"` (Starter), `"full"` (Pro, Enterprise)
-- `compile_pool` — `"free"` or `"premium"`; which router pool compiles route to (§13.1a)
+- `compile_pool` — `"free"`, `"starter"`, or `"pro"` (Enterprise/Development still carry `"premium"`);
+  which router pool compiles route to (§13.1a)
 - `byok` — bool; Enterprise only (§13.5)
 - `vision_fallback_on_exhaustion` — bool; `False` on every plan by default. Unlike the capabilities
   above, this is deliberately **not** plan-gated — it's an ops reliability lever, not a paid feature,
@@ -2761,11 +2778,14 @@ Plan defaults:
   internal distribution, no white-label, `ops_tier="none"`, free compile pool, no BYOK.
 - `starter`: 3 seats, 3 machines (Build Studio dev-side seats only — its distributed installer output
   reaches unlimited customer machines), 200 compile credits/mo, 2.5M Human Edit tokens/mo, external
-  distribution, no white-label, `ops_tier="basic"`, premium compile pool, no BYOK.
+  distribution, no white-label, `ops_tier="basic"`, `"starter"` compile pool (its own single designated
+  provider, §13.1a), no BYOK.
 - `pro`: 10 seats, 10 machines, 500 compile credits/mo, 10M Human Edit tokens/mo, external
-  distribution, Conxa-branded (no white-label), `ops_tier="full"`, premium compile pool, no BYOK.
+  distribution, Conxa-branded (no white-label), `ops_tier="full"`, `"pro"` compile pool (its own single
+  designated provider, §13.1a), no BYOK.
 - `enterprise`: explicit workspace overrides for the numeric limits; capability floor is external
-  distribution, white-label, `ops_tier="full"`, premium pool, BYOK.
+  distribution, white-label, `ops_tier="full"`, `"premium"` pool (unchanged; falls back to any pool
+  unless BYOK provides a matching entry), BYOK.
 - `development`: unlimited numerics, full capabilities.
 
 Legacy `basic` billing records normalize to `starter`. Paid (Cashfree-subscribed) workspaces use `billing:<current_period_end_unix>` as the usage period and reset at the next monthly payment timestamp stored on the billing record. Workspaces without a subscription timestamp fall back to the UTC calendar month (`YYYY-MM`) and reset at the first day of the next UTC month.
@@ -3131,9 +3151,11 @@ makes that misconfiguration loud instead of silent.
 
 **Optional, not boot-required (2026-08-08)** — each fails gracefully (not down) when unset, so they're
 deliberately absent from the required list above:
-- `LLM_PREMIUM_PROVIDERS` — comma-separated provider names routed to the `"premium"` compile pool
-  (§13.1a). Unset means every provider is `"free"`-pool, so Starter/Pro compiles get no quality lift
-  over Free until this is configured.
+- `LLM_STARTER_*` / `LLM_PRO_*` (`PROVIDER`, `ENDPOINT`, `API_KEYS`, `TEXT_MODEL`, `VISION_MODEL`,
+  `FALLBACK_TEXT_MODEL`, `FALLBACK_VISION_MODEL`) — each tier's own independent single-deployment
+  provider block, routed to the `"starter"`/`"pro"` compile pool respectively (§13.1a). Unset
+  `_ENDPOINT`/`_API_KEYS` means that tier contributes no pool entries, so Starter/Pro compiles get no
+  quality lift over Free until these are configured.
 - `SKILL_BYOK_ENCRYPTION_KEY` — 32 raw bytes, base64-encoded, for Enterprise BYOK key-at-rest
   encryption (§13.5). Unset means BYOK storage refuses every write/read (`byok_not_configured`, 500)
   rather than silently storing plaintext.
