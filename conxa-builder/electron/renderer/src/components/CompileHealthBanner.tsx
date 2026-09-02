@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, ChevronRight, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronRight, RotateCw, XCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { CompileHealth } from '@/types/workflow'
@@ -14,6 +14,11 @@ const STATUS_META: Record<string, { label: string; variant: 'success' | 'warning
   ok: { label: 'Compiled cleanly', variant: 'success', icon: CheckCircle2 },
   review_needed: { label: 'Review recommended', variant: 'warning', icon: AlertTriangle },
   failed: { label: 'Compile issues', variant: 'destructive', icon: XCircle },
+  // Set by the editor mutations (workflow_mutations.py::_invalidate_compile_report) after a
+  // step reorder/insert/delete — the confidence/warning data below no longer lines up with the
+  // current step list, so this is deliberately distinct from review_needed rather than falling
+  // through to it and implying the (now stale) numbers are still trustworthy.
+  stale: { label: 'Recompile to refresh confidence', variant: 'warning', icon: RotateCw },
 }
 
 /**

@@ -19,6 +19,27 @@ from conxa_compile.editor.workflow_dto import _build_reference_for_audit, collec
 from conxa_compile.policy.bundle import get_policy_bundle
 from pydantic import ValidationError as PydanticValidationError
 
+
+def _invalidate_compile_report(doc: dict[str, Any]) -> None:
+    """Mark `compile_report` stale in place after a mutation changes the top-level step list's
+    length, order, or per-step action/intent.
+
+    compile_report (compiler/build.py::_build_compile_report) is built once at compile time and
+    is indexed by top-level step position. A reorder/insert/delete shifts every later index out
+    from under it; workflow_dto.py::_compile_health then surfaces confidence/warnings against
+    steps that no longer exist at those positions — Human Edit's compile-health banner pointed an
+    approver at the wrong step. Clearing `steps` (rather than trying to patch indices) is the
+    only way to stop misleading step-index buttons; only a real recompile can produce
+    trustworthy per-step confidence again."""
+    report = doc.get("compile_report")
+    if not isinstance(report, dict) or not report:
+        return
+    report = dict(report)
+    report["status"] = "stale"
+    report["steps"] = []
+    doc["compile_report"] = report
+
+
 def validate_skill_document(document: dict[str, Any]) -> dict[str, Any]:
     policy = get_policy_bundle().data
     steps_raw = (document.get("skills") or [{}])[0].get("steps") or []
@@ -53,6 +74,7 @@ def reorder_steps(document: dict[str, Any], new_order: list[int]) -> dict[str, A
     skills[0] = block
     doc["skills"] = skills
     doc = _remap_intent_graph_indices(doc, {new_order[p]: p for p in range(n)})
+    _invalidate_compile_report(doc)
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     doc["meta"] = meta
@@ -77,6 +99,7 @@ def delete_step_at(document: dict[str, Any], step_index: int) -> dict[str, Any]:
         doc,
         {i: (None if i == step_index else i if i < step_index else i - 1) for i in range(original_len)},
     )
+    _invalidate_compile_report(doc)
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     doc["meta"] = meta
@@ -207,6 +230,7 @@ def confirm_optional_interstitial(document: dict[str, Any], step_index: int) -> 
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills
+    _invalidate_compile_report(doc)
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     doc["meta"] = meta
@@ -344,6 +368,7 @@ def insert_step_after(document: dict[str, Any], action_kind: str, insert_after: 
     doc = _remap_intent_graph_indices(
         doc, {i: (i if i < insert_at else i + 1) for i in range(original_len)}
     )
+    _invalidate_compile_report(doc)
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     doc["meta"] = meta

@@ -122,6 +122,52 @@ def test_intent_graph_remap_on_insert() -> None:
     assert _graph_pairs(out) == [(0, "i0"), (2, "i1"), (3, "i2")]
 
 
+# --- compile_report goes stale on any step-shape-changing edit (mega-workflow investigation) -
+#
+# compile_report is built once at compile time and indexed by top-level step position
+# (compiler/build.py::_build_compile_report). A reorder/delete/insert shifts every later
+# index out from under it, so the Human Edit compile-health banner
+# (editor/workflow_dto.py::_compile_health) was pointing an approver at the wrong step's
+# confidence/warnings after any edit. _invalidate_compile_report must fire on every mutation
+# that changes step count/order.
+
+def _doc_with_report() -> dict:
+    doc = _doc_with_graph()
+    doc["compile_report"] = {
+        "status": "ok",
+        "steps_total": 3,
+        "min_confidence": 0.95,
+        "steps_with_warnings": 0,
+        "steps": [{"index": 0, "intent": "i0", "warnings": []}],
+        "llm_router_stats": {},
+    }
+    return doc
+
+
+def test_compile_report_marked_stale_on_reorder() -> None:
+    out = reorder_steps(_doc_with_report(), [2, 0, 1])
+    assert out["compile_report"]["status"] == "stale"
+    assert out["compile_report"]["steps"] == []
+
+
+def test_compile_report_marked_stale_on_delete() -> None:
+    out = delete_step_at(_doc_with_report(), 1)
+    assert out["compile_report"]["status"] == "stale"
+    assert out["compile_report"]["steps"] == []
+
+
+def test_compile_report_marked_stale_on_insert() -> None:
+    out = insert_step_after(_doc_with_report(), "click", 0)
+    assert out["compile_report"]["status"] == "stale"
+    assert out["compile_report"]["steps"] == []
+
+
+def test_compile_report_absent_is_a_noop() -> None:
+    # No compile_report yet (never compiled) — must not raise or synthesize one.
+    out = reorder_steps(_doc_with_graph(), [2, 0, 1])
+    assert "compile_report" not in out
+
+
 # --- L-2: dedup rewrites the {{name}} token inside a mixed value ---------------------------
 
 def test_dedup_rewrites_mixed_value_token() -> None:
