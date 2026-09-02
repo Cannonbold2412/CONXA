@@ -4,16 +4,24 @@
 <form onsubmit="event.preventDefault(); show();">
   <input id="f-name" placeholder="name" />
   <input id="f-email" placeholder="email" />
-  <button id="btn-submit">Submit</button>
+  <button type="button" id="tgt-go">Go</button>
 </form>
 <div id="out" hidden>Thanks, <span id="out-name"></span>!</div>
 <script>
   // Every 700 ms: rewrite every id/class, move the button in the DOM,
   // and change its label — while keeping it clickable.
-  const names = ['btn-submit','cta-go','act-send','do-it'];
-  const labels = ['Submit','Go','Send','Do It'];
+  //
+  // The label/id vocabulary deliberately avoids "submit"/"confirm" and every entry in the
+  // compiler's submit_text_tokens (sign in, log in, login, submit, continue, next, place order,
+  // pay now, confirm — policy/default_policy.json). A target whose intent reads as a commit is
+  // classified irreversible, and PROD-3 gives an irreversible step Layer 1 and NO re-resolution
+  // at any tier (cascade.js) — so it can only ever fail closed, never heal. That makes it
+  // useless as an H-1 drift target: this fixture exists to prove the runtime heals a renamed,
+  // reclassed, relocated element, which requires a step recovery is allowed to re-resolve.
+  const names = ['tgt-go','cta-go','act-send','do-it'];
+  const labels = ['Go','Send','Do It','Proceed'];
   let i = 0;
-  document.getElementById('btn-submit').addEventListener('click', e => {
+  document.getElementById('tgt-go').addEventListener('click', e => {
     e.preventDefault();
     show();
   });
