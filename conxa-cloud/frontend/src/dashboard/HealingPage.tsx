@@ -61,8 +61,8 @@ export function HealingPage() {
         {[
           ['Steps that needed recovery', fmtNumber(cascade.entered_recovery), 'text-zinc-100', `of ${fmtNumber(cascade.resolved_directly + cascade.entered_recovery)} steps run`],
           ['Healed without a human', fmtNumber(cascade.healed), 'text-emerald-300', `${fmtPercent(cascade.heal_rate)} of recovery attempts`],
-          ['Healed at zero token cost', fmtNumber(cascade.zero_token_heals), 'text-cyan-300', 'Tier 1–2, no model call'],
-          ['Needed a model', `${agentShare}%`, agentShare >= 20 ? 'text-amber-300' : 'text-zinc-300', 'Tier 3–4 escalations'],
+          ['Healed at zero token cost', fmtNumber(cascade.zero_token_heals), 'text-cyan-300', 'Tier A, no model call'],
+          ['Needed a model', `${agentShare}%`, agentShare >= 20 ? 'text-amber-300' : 'text-zinc-300', 'Tier B escalations'],
         ].map(([title, value, tone, sub]) => (
           <div key={String(title)} className="min-w-0 px-4 py-3.5">
             <p className="truncate text-[11px] font-medium text-zinc-500">{title}</p>

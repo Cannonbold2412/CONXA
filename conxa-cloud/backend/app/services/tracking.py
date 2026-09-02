@@ -32,11 +32,13 @@ logger = logging.getLogger(__name__)
 
 _DAY_MS = 86_400_000
 _RECOVERY_TYPES = ("Selector", "Text Anchor", "Text Variant", "Vision")
+# Product names (A/B). Method is still Selector/…/Vision; keys must stay unique so
+# two methods in the same product tier don't overwrite each other.
 _RECOVERY_TIERS = (
-    ("Tier 1", "Selector"),
-    ("Tier 2", "Text Anchor"),
-    ("Tier 3", "Text Variant"),
-    ("Tier 4", "Vision"),
+    ("Tier A", "Selector"),
+    ("Tier A", "Text Anchor"),
+    ("Tier B", "Text Variant"),
+    ("Tier B", "Vision"),
 )
 
 
@@ -494,9 +496,8 @@ def _record_time_ms(record: dict[str, Any]) -> int:
 
 def _event_recovery_type(evt: dict[str, Any]) -> str:
     code = str(evt.get("e") or "").lower()
-    # Agent-mediated (Tier 3 semantic + Tier 4 vision) escalation. The runtime bundles both
-    # signals into a single recovery request — there's no code path today that fires one
-    # without the other — so this is classified as "Vision", the more complete signal.
+    # Agent-mediated (Tier B) escalation. The runtime ships digest + screenshots in one
+    # request — so this is classified as "Vision", the more complete signal.
     if code == "tier_escalated":
         return "Vision"
     key = str(evt.get("rt") or evt.get("sc") or evt.get("tier") or evt.get("sel") or "").lower()
@@ -518,16 +519,16 @@ def _event_recovery_type(evt: dict[str, Any]) -> str:
 def _event_recovery_tier(evt: dict[str, Any], recovery_type: str) -> str:
     code = str(evt.get("e") or "").lower()
     if code == "tier_escalated":
-        return "Tier 4" if int(_number(evt.get("l"))) >= 4 else "Tier 3"
+        return "Tier B"
     key = str(evt.get("rt") or evt.get("sc") or evt.get("tier") or evt.get("sel") or "").lower()
     if key in {"selector", "selector_retry", "candidate_fallback", "dialog_scope", "tier1_compiled"}:
-        return "Tier 1"
+        return "Tier A"
     if key.startswith("a11y") or key in {"text_anchor", "tier2_a11y"}:
-        return "Tier 2"
+        return "Tier A"
     if key in {"text_variant", "fuzzy", "fuzzy_dom", "tier3_llm", "llm_intent"}:
-        return "Tier 3"
+        return "Tier B"
     if key in {"vision", "vision_recovery", "tier4_vision"}:
-        return "Tier 4"
+        return "Tier B"
     for tier, mapped_type in _RECOVERY_TIERS:
         if recovery_type == mapped_type:
             return tier
@@ -826,16 +827,18 @@ def _dashboard_metrics(
                 "total_count": 0,
                 "last_seen": 0,
                 "tier_counts": {
-                    name: {"tier": name, "recovery_type": mapped_type, "count": 0}
+                    mapped_type: {"tier": name, "recovery_type": mapped_type, "count": 0}
                     for name, mapped_type in _RECOVERY_TIERS
                 },
             },
         )
         step_row["total_count"] += count
         step_row["last_seen"] = max(int(step_row["last_seen"]), last_seen)
-        if tier not in step_row["tier_counts"]:
-            step_row["tier_counts"][tier] = {"tier": tier, "recovery_type": recovery_type, "count": 0}
-        step_row["tier_counts"][tier]["count"] += count
+        bucket = step_row["tier_counts"].setdefault(
+            recovery_type, {"tier": tier, "recovery_type": recovery_type, "count": 0}
+        )
+        bucket["tier"] = tier
+        bucket["count"] += count
 
     for record in range_records:
         summary = record.get("summary") or {}
@@ -872,7 +875,7 @@ def _dashboard_metrics(
                 workflow=workflow,
                 step_index=None,
                 recovery_type="Selector",
-                tier="Tier 1",
+                tier="Tier A",
                 count=recovered_steps,
                 last_seen=_record_time_ms(record),
             )
@@ -969,9 +972,9 @@ def _dashboard_metrics(
                         "total_count": step["total_count"],
                         "last_seen": step["last_seen"],
                         "tier_counts": [
-                            step["tier_counts"][tier]
-                            for tier, _mapped_type in _RECOVERY_TIERS
-                            if step["tier_counts"][tier]["count"] > 0
+                            step["tier_counts"][mapped_type]
+                            for _tier, mapped_type in _RECOVERY_TIERS
+                            if step["tier_counts"].get(mapped_type, {}).get("count", 0) > 0
                         ],
                     }
                     for step in sorted(

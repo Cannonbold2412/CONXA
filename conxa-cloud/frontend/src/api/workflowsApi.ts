@@ -169,7 +169,7 @@ export type TrackingRunStep = {
 export type TrackingDashboardRange = '24h' | '7d' | '30d' | '90d'
 export type TrackingGranularity = 'hour' | 'day'
 export type TrackingRecoveryType = 'Selector' | 'Text Anchor' | 'Text Variant' | 'Vision'
-export type TrackingRecoveryTier = 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4' | 'Unknown'
+export type TrackingRecoveryTier = 'Tier A' | 'Tier B' | 'Unknown'
 
 export type TrackingDashboardResponse = {
   range: TrackingDashboardRange
@@ -341,7 +341,7 @@ export type TrackingCascade = {
   tier_touch: Array<{ tier: string; steps: number }>
   /** Steps that healed without ever reaching a paid tier — a count of steps, not tier hits. */
   zero_token_heals: number
-  /** Steps whose recovery reached Tier 3 or 4, healed or not. */
+  /** Steps whose recovery reached Tier B, healed or not. */
   agent_assisted: number
 }
 

@@ -37,8 +37,8 @@ ROI_NAMESPACE = "roi_assumptions"
 
 _HOUR_MS = 3_600_000
 
-_TIER_ORDER = ("Tier 1", "Tier 2", "Tier 3", "Tier 4")
-_ZERO_TOKEN_TIERS = ("Tier 1", "Tier 2")  # project invariant: Tier 1/2 cost no LLM tokens
+_TIER_ORDER = ("Tier A", "Tier B")
+_ZERO_TOKEN_TIERS = ("Tier A",)  # in-process; Tier B is the agent-mediated handoff
 
 _RANGES: dict[str, tuple[int, str]] = {
     "24h": (1, "hour"),
@@ -383,7 +383,7 @@ def health_score(
 
     tier_counts = recovery_tier_totals(records)
     total_recoveries = sum(tier_counts.values())
-    agent_recoveries = tier_counts.get("Tier 3", 0) + tier_counts.get("Tier 4", 0)
+    agent_recoveries = tier_counts.get("Tier B", 0)
     agent_share = round((agent_recoveries / total_recoveries) * 100, 1) if total_recoveries else 0.0
     agent_value = round(100.0 - agent_share, 1)
 
@@ -401,7 +401,7 @@ def health_score(
          f"Worst step needs recovery on {worst_drift}% of runs" if drift_rows
          else "No steps showing repeat drift"),
         ("agent_dependence", "Zero-token healing", agent_value,
-         f"{agent_share}% of recoveries needed an agent (Tier 3+)" if total_recoveries
+         f"{agent_share}% of recoveries needed an agent (Tier B)" if total_recoveries
          else "No recoveries needed in this period"),
         ("runtime_freshness", "Runtime freshness", freshness_value,
          f"{fresh} of {len(registrations)} runtimes reported in the last 30 days" if registrations
@@ -644,7 +644,7 @@ def recovery_cascade(records: list[dict[str, Any]]) -> dict[str, Any]:
     count is returned alongside as ``resolved_directly`` so the panel can state the ratio in
     words instead of drowning it in a diagram.
 
-    The node order is strictly layered (Entered → Tier 1 → … → Tier 4 → Healed/Failed), which
+    The node order is strictly layered (Entered → Tier A → Tier B → Healed/Failed), which
     keeps the graph acyclic as any Sankey layout requires.
     """
     node_names = ["Entered recovery", *_TIER_ORDER, "Healed", "Failed"]
@@ -677,9 +677,9 @@ def recovery_cascade(records: list[dict[str, Any]]) -> dict[str, Any]:
             add(tiers[-1], outcome)
 
             # A step counts as a free heal only if it healed AND never reached a paid tier.
-            # Summing Tier 1/2 touches instead would double-count a step that tried both, and
-            # would credit a step that started at Tier 1 and only succeeded after escalating
-            # to a model — neither of which is a recovery that cost nothing.
+            # Summing Tier A event hits instead would double-count a step that tried two
+            # in-process methods, and would credit a step that started at A and only
+            # succeeded after escalating to a model — neither of which is a recovery that cost nothing.
             used_paid_tier = any(tier not in _ZERO_TOKEN_TIERS for tier in tiers)
             if used_paid_tier:
                 agent_assisted += 1
@@ -1009,7 +1009,7 @@ def insights(
             )
 
     total_recoveries = sum(tier_totals.values())
-    agent_recoveries = tier_totals.get("Tier 3", 0) + tier_totals.get("Tier 4", 0)
+    agent_recoveries = tier_totals.get("Tier B", 0)
     if total_recoveries >= 10:
         share = round((agent_recoveries / total_recoveries) * 100, 1)
         if share >= 20:
@@ -1018,7 +1018,7 @@ def insights(
                 "agent_dependence",
                 "Self-healing is escalating to the agent too often",
                 (
-                    f"{share}% of recoveries needed Tier 3 or 4, which costs model tokens. "
+                    f"{share}% of recoveries needed Tier B, which costs model tokens. "
                     "Republishing the affected skills would move them back to free recovery."
                 ),
                 f"{share}%",

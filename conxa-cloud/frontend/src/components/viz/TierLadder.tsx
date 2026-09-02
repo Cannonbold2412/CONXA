@@ -7,8 +7,8 @@ export type TierCount = { tier: string; steps?: number; count?: number }
 /**
  * The recovery ladder as ranked bars.
  *
- * Split at the Tier 2/3 boundary because that boundary is the product's economics: Tier 1
- * and 2 resolve locally at zero model cost, Tier 3 and 4 call a model. An operator reading
+ * Split at the A/B boundary because that boundary is the product's economics: Tier A
+ * resolves locally at zero model cost, Tier B calls a model. An operator reading
  * this needs to see how much of their healing is free, not just how much there is.
  */
 export function TierLadder({ counts, showFootnote = true }: { counts: TierCount[]; showFootnote?: boolean }) {
@@ -45,7 +45,7 @@ export function TierLadder({ counts, showFootnote = true }: { counts: TierCount[
       })}
       {showFootnote && (
         <p className="pt-1 text-xs leading-relaxed text-[#6b7280]">
-          Tier 1–2 resolve locally and cost nothing. Tier 3–4 call a model.
+          Tier A resolves locally and costs nothing. Tier B calls a model.
         </p>
       )}
     </div>

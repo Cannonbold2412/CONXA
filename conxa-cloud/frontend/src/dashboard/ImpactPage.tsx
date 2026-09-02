@@ -257,8 +257,8 @@ export function ImpactPage() {
           <dl className="space-y-3">
             {[
               ['Runs that self-healed mid-execution', roi.measured.self_healed_runs, 'Would otherwise have needed a person'],
-              ['Steps healed at zero token cost', roi.measured.zero_token_recoveries, 'Healed at Tier 1 or 2, never escalated'],
-              ['Steps that needed a model', roi.measured.agent_assisted_recoveries, 'Reached Tier 3 or 4 — the billable path'],
+              ['Steps healed at zero token cost', roi.measured.zero_token_recoveries, 'Healed at Tier A, never escalated'],
+              ['Steps that needed a model', roi.measured.agent_assisted_recoveries, 'Reached Tier B — the billable path'],
               ['Runtimes gone quiet', data.stale_runtimes, 'No report in over 30 days'],
             ].map(([title, value, detail]) => (
               <div key={String(title)} className="flex items-start justify-between gap-3">

@@ -29,16 +29,19 @@ export function seriesColor(index: number): string {
 }
 
 export const TIER_COLORS: Record<string, string> = {
+  'Tier A': 'var(--tier-1)',
+  'Tier B': 'var(--tier-4)',
+  // Wire leftovers — map if an old payload still arrives.
   'Tier 1': 'var(--tier-1)',
-  'Tier 2': 'var(--tier-2)',
-  'Tier 3': 'var(--tier-3)',
+  'Tier 2': 'var(--tier-1)',
+  'Tier 3': 'var(--tier-4)',
   'Tier 4': 'var(--tier-4)',
 }
 
-export const TIER_ORDER = ['Tier 1', 'Tier 2', 'Tier 3', 'Tier 4'] as const
+export const TIER_ORDER = ['Tier A', 'Tier B'] as const
 
-/** Tier 1 and 2 resolve without any model call — the platform's zero-cost band. */
-export const ZERO_TOKEN_TIERS = new Set(['Tier 1', 'Tier 2'])
+/** Tier A resolves without any model call — the platform's zero-cost band. */
+export const ZERO_TOKEN_TIERS = new Set(['Tier A', 'Tier 1', 'Tier 2'])
 
 export function tierColor(tier: string): string {
   return TIER_COLORS[tier] ?? OTHER_COLOR

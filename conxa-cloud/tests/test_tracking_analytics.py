@@ -143,13 +143,13 @@ def test_window_records_filters_by_run_time():
 def test_step_recovery_paths_records_ordered_tier_sequence():
     record = _record(events=[_selector_recovery(0, _NOW), _a11y_recovery(0, _NOW + 1)])
     paths = step_recovery_paths(record)
-    assert paths[0]["tiers"] == ["Tier 1", "Tier 2"]
+    assert paths[0]["tiers"] == ["Tier A"]
     assert paths[0]["failed"] is False
 
 
 def test_step_recovery_paths_dedupes_consecutive_repeats_of_a_tier():
     record = _record(events=[_selector_recovery(0, _NOW), _selector_recovery(0, _NOW + 1)])
-    assert step_recovery_paths(record)[0]["tiers"] == ["Tier 1"]
+    assert step_recovery_paths(record)[0]["tiers"] == ["Tier A"]
 
 
 def test_step_recovery_paths_ignores_steps_that_never_recovered():
@@ -173,13 +173,12 @@ def test_recovery_cascade_builds_layered_links():
     records = [_record(events=[_selector_recovery(0, _NOW), _a11y_recovery(0, _NOW + 1)])]
     cascade = recovery_cascade(records)
     names = [n["name"] for n in cascade["nodes"]]
-    assert names == ["Entered recovery", "Tier 1", "Tier 2", "Tier 3", "Tier 4", "Healed", "Failed"]
+    assert names == ["Entered recovery", "Tier A", "Tier B", "Healed", "Failed"]
 
     edges = {(names[l["source"]], names[l["target"]]): l["value"] for l in cascade["links"]}
     assert edges == {
-        ("Entered recovery", "Tier 1"): 1,
-        ("Tier 1", "Tier 2"): 1,
-        ("Tier 2", "Healed"): 1,
+        ("Entered recovery", "Tier A"): 1,
+        ("Tier A", "Healed"): 1,
     }
     assert cascade["entered_recovery"] == 1
     assert cascade["healed"] == 1
@@ -191,7 +190,7 @@ def test_recovery_cascade_routes_failed_steps_to_failed_node():
     cascade = recovery_cascade(records)
     names = [n["name"] for n in cascade["nodes"]]
     edges = {(names[l["source"]], names[l["target"]]) for l in cascade["links"]}
-    assert ("Tier 1", "Failed") in edges
+    assert ("Tier A", "Failed") in edges
     assert cascade["failed"] == 1
     assert cascade["heal_rate"] == 0.0
 
@@ -203,13 +202,13 @@ def test_recovery_cascade_counts_zero_token_heals_from_tier_1_and_2_only():
         _record(events=[_fuzzy_recovery(2)], run_id="c"),
     ]
     cascade = recovery_cascade(records)
-    assert cascade["zero_token_heals"] == 2  # Tier 3 fuzzy match is excluded
+    assert cascade["zero_token_heals"] == 2  # Tier B fuzzy match is excluded
     assert cascade["agent_assisted"] == 1
 
 
 def test_recovery_cascade_does_not_credit_a_step_that_escalated_to_a_paid_tier():
-    """A step that tried Tier 1, failed, then healed at Tier 3 did not heal for free.
-    Counting Tier 1/2 touches instead of outcomes would credit it anyway."""
+    """A step that tried Tier A, then healed at Tier B did not heal for free.
+    Counting Tier A event hits instead of outcomes would credit it anyway."""
     records = [_record(events=[_selector_recovery(0, _NOW), _fuzzy_recovery(0, _NOW + 1)])]
     cascade = recovery_cascade(records)
     assert cascade["healed"] == 1
@@ -256,7 +255,7 @@ def test_recovery_tier_totals_classifies_each_tier():
         _record(events=[_fuzzy_recovery(0)], run_id="c"),
         _record(events=[{"e": "tier_escalated", "ts": _NOW, "si": 0, "l": 4}], run_id="d"),
     ]
-    assert recovery_tier_totals(records) == {"Tier 1": 1, "Tier 2": 1, "Tier 3": 1, "Tier 4": 1}
+    assert recovery_tier_totals(records) == {"Tier A": 2, "Tier B": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +328,7 @@ def test_step_analytics_counts_attempts_failures_and_recoveries():
     assert step_one["recoveries"] == 1
     assert step_one["success_rate"] == 50.0
     assert step_one["dominant_failure_code"] == "timeout"
-    assert step_one["tier_counts"] == [{"tier": "Tier 2", "count": 1}]
+    assert step_one["tier_counts"] == [{"tier": "Tier A", "count": 1}]
 
 
 def test_step_analytics_derives_failure_from_summary_when_no_step_fail_event():
@@ -423,7 +422,7 @@ def test_health_score_factor_contributions_sum_to_the_score():
 
 
 def test_health_score_penalises_agent_dependence():
-    """Tier 3/4 recoveries cost tokens; leaning on them is a fragility signal even when
+    """Tier B recoveries cost tokens; leaning on them is a fragility signal even when
     every run still succeeds."""
     zero_token = health_score(
         [_record(events=[_selector_recovery(0)])],
@@ -610,7 +609,7 @@ def test_insights_flags_assertion_decay():
 def test_insights_flags_agent_dependence_above_threshold():
     rows = insights(
         workflows=[], assertion_rows=[], drift_rows=[], failure_rows=[],
-        tier_totals={"Tier 1": 5, "Tier 2": 2, "Tier 3": 3},
+        tier_totals={"Tier A": 7, "Tier B": 3},
         stale_runtimes=0, metrics={"total_executions": 10},
         previous_records=[], current_records=[],
     )

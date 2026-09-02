@@ -553,9 +553,9 @@ def test_tracking_dashboard_aggregates_workspace_metrics(monkeypatch, tmp_path):
         (row["tier"], row["recovery_type"]): row["count"]
         for row in step_zero["tier_counts"]
     } == {
-        ("Tier 1", "Selector"): 1,
-        ("Tier 2", "Text Anchor"): 1,
-        ("Tier 3", "Text Variant"): 1,
+        ("Tier A", "Selector"): 1,
+        ("Tier A", "Text Anchor"): 1,
+        ("Tier B", "Text Variant"): 1,
     }
     assert body["most_failed_workflows"][0]["workflow"] == "workflow-b"
     assert body["most_failed_steps"][0]["step_index"] == 2

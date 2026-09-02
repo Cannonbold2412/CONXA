@@ -1,7 +1,7 @@
 'use client'
 
 import { cn } from '@/lib/utils'
-import { TIER_ORDER, tierColor } from './chartTheme'
+import { ZERO_TOKEN_TIERS, tierColor } from './chartTheme'
 
 export type FlowStep = {
   index: number
@@ -63,7 +63,7 @@ export function ExecutionFlow({ steps }: { steps: FlowStep[] }) {
                     key={tier}
                     className="inline-flex items-center gap-1 rounded-full border border-white/10 px-1.5 py-0.5 text-xs text-[#9ba3af]"
                     title={
-                      TIER_ORDER.indexOf(tier as (typeof TIER_ORDER)[number]) < 2
+                      ZERO_TOKEN_TIERS.has(tier)
                         ? `${tier} — resolved locally, no model tokens`
                         : `${tier} — required a model call`
                     }

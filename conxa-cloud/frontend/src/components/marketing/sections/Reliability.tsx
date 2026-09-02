@@ -22,7 +22,7 @@ const RUN: FlowStep[] = [
     index: 4,
     label: 'Attach the compliance certificate',
     status: 'recovered',
-    tiers: ['Tier 2'],
+    tiers: ['Tier A'],
     assertionsPassed: 2,
     assertionsFailed: 0,
   },
@@ -34,10 +34,8 @@ const RUN: FlowStep[] = [
 
 /** Of 100 steps that needed recovery, where each one finished. */
 const RESOLVED_BY_TIER = [
-  { tier: 'Tier 1', steps: 62 },
-  { tier: 'Tier 2', steps: 26 },
-  { tier: 'Tier 3', steps: 8 },
-  { tier: 'Tier 4', steps: 3 },
+  { tier: 'Tier A', steps: 88 },
+  { tier: 'Tier B', steps: 11 },
 ]
 
 function VizPanel({ title, caption, children }: { title: string; caption: string; children: ReactNode }) {
@@ -123,7 +121,7 @@ export function Reliability() {
             <Reveal delay={0.08}>
               <VizPanel
                 title="What the healing costs you"
-                caption="Tiers 1 and 2 are deterministic and run locally — no model, no tokens, no bill. Only the last two reach for one."
+                caption="Tier A is deterministic and runs locally — no model, no tokens, no bill. Only Tier B reaches for one."
               >
                 {/* The panel caption above already says this, at a readable size. */}
                 <TierLadder counts={RESOLVED_BY_TIER} showFootnote={false} />
