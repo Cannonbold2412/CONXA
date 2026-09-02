@@ -178,3 +178,58 @@ def test_should_merge_typing_never_merges_across_a_tab_boundary() -> None:
 
     assert sess._should_merge_typing(ev_tab0, ev_tab1) is False
     assert sess._should_merge_typing(ev_tab0, ev_tab0.model_copy(deep=True)) is True
+
+
+def test_popup_event_is_stamped_with_the_popups_own_tab_not_the_openers() -> None:
+    """Regression (2026-09-02, mega-workflow steps 28-30). The popup event used to be stamped
+    with the tab that CLICKED the link, because _on_popup runs inside Playwright's own event
+    callback — a tick before _register_new_pages_sync names the new page. Every event around the
+    popup then said the same tab id, _insert_tab_markers saw no transition, and the compiled
+    skill never mentioned the second tab: the replay drove the original tab from the background
+    for the rest of the run. The lookup is now deferred to the pump-loop drain by object key.
+    """
+    sess = RecordingSession(session_id="tab-popup-deferred")
+    opener = FakePage(url="https://the-internet.herokuapp.com/windows")
+    sess._context = FakeContext([opener])
+    sess._register_new_pages_sync()
+    sess._page = opener
+
+    # The popup fires BEFORE the pump loop has registered it — exactly the real ordering.
+    popup = FakePage(opener=opener, video_path=None, url="https://the-internet.herokuapp.com/windows/new")
+    sess._on_popup(popup, opener)
+    assert sess._tab_id_for_page(popup) is None, "popup must still be unregistered at enqueue time"
+
+    payload, src_page, _ = sess._pending_payloads.get_nowait()
+    assert payload["_tab_key"] == id(popup)
+    # src_page is untouched: visuals and page.url still belong to the tab that clicked.
+    assert src_page is opener
+    assert payload["page"]["url"] == opener.url
+
+    # Pump tick: registration happens, then the drain resolves the deferred key.
+    sess._context.pages = [opener, popup]
+    sess._register_new_pages_sync()
+
+    tab_key = payload.pop("_tab_key")
+    tab = sess._tab_context_for_tab_id(sess._tab_ids.get(tab_key))
+    assert tab["id"] == "tab_1"
+    assert tab["opened_by"] == "site"
+    assert tab["opener_tab"] == "tab_0"
+
+
+def test_popup_that_closes_before_registration_keeps_the_openers_tab() -> None:
+    """A popup that never survives to a pump tick is never assigned an id; the deferred lookup
+    misses and the event falls back to today's opener-stamped behavior rather than failing."""
+    sess = RecordingSession(session_id="tab-popup-vanished")
+    opener = FakePage(url="https://x.test/")
+    sess._context = FakeContext([opener])
+    sess._register_new_pages_sync()
+    sess._page = opener
+
+    popup = FakePage(opener=opener, video_path=None, url="https://x.test/gone")
+    sess._on_popup(popup, opener)
+    payload, _, _ = sess._pending_payloads.get_nowait()
+
+    # No _register_new_pages_sync — the popup is gone.
+    tab_key = payload.pop("_tab_key")
+    assert sess._tab_ids.get(tab_key) is None
+    assert sess._tab_context_for_page(opener)["id"] == "tab_0"

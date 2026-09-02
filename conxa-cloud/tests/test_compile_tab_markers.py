@@ -192,3 +192,50 @@ def test_empty_steps_or_events_is_a_no_op() -> None:
     assert _insert_start_navigate_step([], [{"page": {"url": "https://a.test/"}}]) == []
     steps = [_step("click", {})]
     assert _insert_start_navigate_step(steps, []) == steps
+
+
+def test_site_opened_popup_gets_a_tab_open_and_a_switch_back() -> None:
+    """Regression (2026-09-02, mega-workflow steps 28-30). Recorded: click a target="_blank"
+    link on tab_0, the browser opens tab_1, the user switches straight back to tab_0 and keeps
+    working — tab_1 is never interacted with. Once the recorder stamps the popup event with the
+    popup's OWN tab (session.py::_on_popup's tab_key), the tab-id transition exists and this
+    function produces the pair the runtime needs: bind + front the popup, then front tab_0
+    again. Without it the replay drives tab_0 from behind the popup for the rest of the run.
+    """
+    events = [
+        _ev("tab_0", "click", "https://x.test/windows"),
+        _ev("tab_1", "popup", "https://x.test/windows/new"),
+        _ev("tab_0", "navigate", "https://x.test/login"),
+        _ev("tab_0", "click", "https://x.test/login"),
+    ]
+    out = _insert_tab_markers(events)
+    assert [(e["action"]["action"], e["tab"]["id"]) for e in out] == [
+        ("click", "tab_0"),
+        ("tab_open", "tab_1"),
+        ("popup", "tab_1"),
+        ("tab_switch", "tab_0"),
+        ("navigate", "tab_0"),
+        ("click", "tab_0"),
+    ]
+
+
+def test_site_opened_popup_marker_carries_its_opener_forward() -> None:
+    """The tab_open the popup produces must stay opened_by="site" with its opener — that is
+    what routes the runtime to drain the pending-page queue (binding the real popup) instead of
+    calling context.newPage(), and what keeps _insert_user_tab_navigate_steps from synthesizing
+    a navigate the replayed click already performs."""
+    popup_ev = {
+        "action": {"action": "popup"},
+        "tab": {"id": "tab_1", "index": 1, "opened_by": "site", "opener_tab": "tab_0"},
+        "page": {"url": "https://x.test/windows/new"},
+    }
+    out = _insert_tab_markers([_ev("tab_0"), popup_ev, _ev("tab_0")])
+    opened = next(e for e in out if e["action"]["action"] == "tab_open")
+    ctx = _build_tab_context(opened)
+    assert ctx["id"] == "tab_1"
+    assert ctx["opened_by"] == "site"
+    assert ctx["opener_tab"] == "tab_0"
+
+    # opened_by="site" tabs must NOT get a synthesized navigate — the replayed click opens them.
+    steps = [_step("tab_open", ctx)]
+    assert _insert_user_tab_navigate_steps(steps, [opened]) == steps

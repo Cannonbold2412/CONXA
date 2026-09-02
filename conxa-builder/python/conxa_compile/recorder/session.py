@@ -713,7 +713,10 @@ class RecordingSession:
             )
 
     def _tab_context_for_page(self, page: Any | None) -> dict[str, Any]:
-        tab_id = self._tab_id_for_page(page) or "tab_0"
+        return self._tab_context_for_tab_id(self._tab_id_for_page(page))
+
+    def _tab_context_for_tab_id(self, tab_id: str | None) -> dict[str, Any]:
+        tab_id = tab_id or "tab_0"
         meta = self._tab_meta.get(tab_id, {})
         return {
             "id": tab_id,
@@ -1053,7 +1056,17 @@ class RecordingSession:
         session_dir = self.data_root / "sessions" / self.session_id
         session_dir.mkdir(parents=True, exist_ok=True)
         page_for_visuals = src_page or self._active_page_sync()
-        payload["tab"] = self._tab_context_for_page(page_for_visuals)
+        # _tab_key (see _enqueue_synthetic) names a page the recorder could not resolve to a tab
+        # id when the event fired. It is resolvable now — the pump loop registers new pages
+        # before draining this queue. src_page stays the visuals/URL source either way: for a
+        # popup that is deliberately the tab that CLICKED the link, not the tab that opened.
+        tab_key = payload.pop("_tab_key", None)
+        deferred_tab_id = self._tab_ids.get(tab_key) if tab_key is not None else None
+        payload["tab"] = (
+            self._tab_context_for_tab_id(deferred_tab_id)
+            if deferred_tab_id
+            else self._tab_context_for_page(page_for_visuals)
+        )
         event = self._finalize_payload_sync(page_for_visuals, session_dir, payload)
         with self._lock:
             if self._materialized and self._should_merge_typing(self._materialized[-1], event):
@@ -1305,9 +1318,19 @@ class RecordingSession:
             "dom_signature_short": "",
         }
 
-    def _enqueue_synthetic(self, kind: str, value_str: str, src_page: Any | None = None) -> None:
+    def _enqueue_synthetic(
+        self, kind: str, value_str: str, src_page: Any | None = None, tab_key: int | None = None
+    ) -> None:
+        """`tab_key` is id(page) for a page whose tab id is NOT yet assigned at enqueue time —
+        a popup, which Playwright reports from inside its own event callback, a tick before
+        _register_new_pages_sync gets to name it. Stashing the raw object key (no Playwright
+        call, so it is safe from inside that callback) defers the lookup to the pump-loop
+        drain, which runs after registration. Without it the event is stamped with the OPENER's
+        tab and the new tab never appears in the event stream at all."""
         try:
             payload = self._make_synthetic_payload(kind, value_str, src_page)
+            if tab_key is not None:
+                payload["_tab_key"] = tab_key
             self._pending_payloads.put((payload, src_page, None))
             self._last_enqueue_at = time.monotonic()
         except Exception as exc:  # noqa: BLE001
@@ -1583,16 +1606,29 @@ class RecordingSession:
             except Exception:  # noqa: BLE001
                 pass
             # Best-effort dict lookup only — no Playwright call here (same reentrancy hazard
-            # documented at _binding_sink_sync). The popup page is usually still unregistered
-            # at this instant; the pump loop assigns it a real tab id within one tick (~0.2s),
-            # well before any recorded event needs it.
+            # documented at _binding_sink_sync). The popup page is almost always still
+            # unregistered at this instant, so this is usually None; id(popup) below is what
+            # actually resolves it, one pump tick later.
             tab_id = self._tab_id_for_page(popup)
             # src_page is the page whose "popup" listener fired — the tab that actually clicked
             # the link, not whatever tab happens to be _active_page_sync() at this instant. Without
             # this, a popup opened from a background tab gets stamped with the wrong tab (usually
             # tab_0), and the compiler inserts a spurious tab_switch back to it before the real
             # tab_open for the new tab — see _insert_tab_markers.
-            self._enqueue_synthetic("popup", json.dumps({"url": url, "tab_id": tab_id}), src_page=src_page)
+            #
+            # tab_key stamps the event with the POPUP's own tab instead of the opener's. That is
+            # what makes the new tab exist in the event stream: _insert_tab_markers derives
+            # tab_open/tab_switch purely from a tab-id transition between consecutive events, so
+            # a popup stamped with its opener produces no transition, no markers, and a compiled
+            # skill that never mentions the second tab — the replay then drives the original tab
+            # from the background for the rest of the run. src_page is untouched and still owns
+            # visuals and page.url.
+            self._enqueue_synthetic(
+                "popup",
+                json.dumps({"url": url, "tab_id": tab_id}),
+                src_page=src_page,
+                tab_key=id(popup),
+            )
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"popup_event_error: {exc!s}")
 
