@@ -306,6 +306,17 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
   // Once a stage refuses to re-dispatch, no later stage may act either: they differ only in HOW
   // they find an element, and the reason to stop is about the page, not the strategy.
   const stopped = () => !!g.blocked;
+  // Single exit for "recovery did not heal this step". A destructive step logs its deliberate
+  // no-guess stop HERE rather than before Layer 2, because it now runs the same-element half of
+  // Layer 2 first — the halt is the outcome, not the entry condition. Deliberately does not set
+  // g.blocked: that would make stopped() abort the very stages this change exists to allow.
+  const fail = () => {
+    if (step.destructive === true) {
+      appendRecoveryEvent({ event: "destructive_recovery_halted", slug, step_index: stepIndex });
+      tracker.emit("rec_halt", { si: stepIndex, why: "destructive" });
+    }
+    return false;
+  };
 
   // Layer 1 — deterministic exception ladder (targeted single remedy).
   // (Alternate-signal recovery is inherent: resolveStep already walks all bundle signals in
@@ -315,32 +326,40 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
     tracker.emit("tier_ok", { si: stepIndex, tier: "layer1", sel: l1 });
     return { tier: "L1", method: l1 };
   }
-  if (stopped()) return false;
+  if (stopped()) return fail();
 
-  // EXEC-24 / the failure model's "no guess on irreversible actions" rule, implemented at last.
-  // A destructive step (pay / delete / submit — flagged at compile time) gets Layer 1 and nothing
-  // more: the L1 ladder's remedies are waits, scrolls and overlay dismissals plus ONE verified
-  // retry of the recorded target. Everything below still re-resolves — a different element
-  // chosen by accessible name, or the same selector re-scoped to a dialog — and re-resolution is
-  // the single worst thing to gamble on for a Delete button. Fail closed and let a human or the
-  // agent decide, rather than deleting the wrong row confidently.
-  if (step.destructive === true) {
-    g.blocked = g.blocked || "destructive-no-guess";
-    appendRecoveryEvent({ event: "destructive_recovery_halted", slug, step_index: stepIndex });
-    tracker.emit("rec_halt", { si: stepIndex, why: "destructive" });
-    return false;
+  // EXEC-24 / the failure model's "no guess on irreversible actions" rule. The line is
+  // RE-IDENTIFICATION, not tier: a destructive step (pay / delete / submit — flagged at compile
+  // time) may retry the SAME element under different timing or a narrower scope, but must never
+  // be re-resolved to a different one. Acting on the wrong row is the failure this exists to
+  // prevent; waiting 250ms longer is not.
+  //
+  // This used to halt the whole cascade here, which was correct when the stages below still
+  // included a fallback-selector walk and a fuzzy text match — both picked a different element.
+  // Those were deleted (see the dialog-scope comment below), and what remains splits cleanly:
+  // recoverWithA11y re-probes by accessible name and CAN land on a different node, so it stays
+  // blocked; transient / re-hover / dialog-scope all re-try `primarySelector` itself and cannot,
+  // which makes them identical in kind to the L1 retry a destructive step already gets. Blocking
+  // those while allowing L1 was an accident of where the gate sat, not a safety property.
+  //
+  // Failing the step is still terminal for the agent: run.js marks any unhealed destructive step
+  // `destructiveHalt`, which keeps it out of server.js's recovery park — a step_overrides
+  // candidate pick is re-identification by another name.
+  if (step.destructive !== true) {
+    bail();
+    if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline, g)) return { tier: "L2", method: "a11y" };
+    if (stopped()) return fail();
+  } else {
+    appendRecoveryEvent({ event: "destructive_reidentify_skipped", slug, step_index: stepIndex });
+    tracker.emit("rec_skip", { si: stepIndex, why: "destructive" });
   }
-
-  bail();
-  if (await recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline, g)) return { tier: "L2", method: "a11y" };
-  if (stopped()) return false;
 
   bail();
   await page.waitForTimeout(250);
   if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "transient_recovered", slug, step_index: stepIndex });
   }, baseline, g)) return { tier: "L2", method: "transient" };
-  if (stopped()) return false;
+  if (stopped()) return fail();
 
   // Layer 2 — re-hover-then-retry (menu reveals), then dialog scoping.
   if (asArray(asObject(step.handler_hints).hover_chain).length) {
@@ -349,7 +368,7 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
     if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
       appendRecoveryEvent({ event: "layer2_rehover", slug, step_index: stepIndex });
     }, baseline, g)) return { tier: "L2", method: "rehover" };
-    if (stopped()) return false;
+    if (stopped()) return fail();
   }
 
   // Dialog scope is the last deterministic stage, and it is deliberately the ONLY remaining one
@@ -364,7 +383,7 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
   bail();
   return (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g))
     ? { tier: "L2", method: "dialog" }
-    : false;
+    : fail();
 }
 
 async function maybeCapturePreStep(page, step) {

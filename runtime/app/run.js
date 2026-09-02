@@ -320,9 +320,15 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
     if (!recovered) {
       if (guard.blocked) {
         primaryErr.recoveryHaltReason = guard.blocked;
-        if (guard.blocked === "destructive-no-guess") primaryErr.destructiveHalt = true;
-        else primaryErr.actionMayHaveTakenEffect = true;
+        if (guard.blocked !== "destructive-no-guess") primaryErr.actionMayHaveTakenEffect = true;
       }
+      // PROD-3: an irreversible step recovery could not heal is never handed to the agent for a
+      // candidate override, whichever stage it stopped at — a step_overrides pick is
+      // re-identification by another name, the one thing a destructive step must never do. This
+      // used to be implied by cascade.js halting before Layer 2 and setting `destructive-no-guess`
+      // on the guard; now that the same-element Layer 2 stages run for destructive steps too, the
+      // rule is stated here instead of inferred from where the cascade stopped.
+      if (step.destructive === true) primaryErr.destructiveHalt = true;
       t.emit("step_fail", { si: i, fc: mapErrorToCode(primaryErr) });
       throw stepFailure(step, i, primaryErr, preShot);
     }
