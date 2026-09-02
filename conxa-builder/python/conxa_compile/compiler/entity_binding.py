@@ -26,6 +26,16 @@ Step = dict[str, Any]
 
 _MIN_SIBLINGS = 2
 _MAX_IDENTIFIER_LEN = 80
+# How many ancestor levels above the target to search for a "row". A genuine repeating-record
+# row (a <tr>, a card <li>, a list item div) wraps its actionable control tightly — the target
+# sits directly inside it or one level deeper. Walking further up hits page-layout chrome
+# instead: grid-framework utility classes like Foundation/Bootstrap's ubiquitous ".row" (or
+# Tailwind's ".grid") repeat all over unrelated sections of nearly every page for pure layout,
+# with no relation to data records. Unbounded, that made detect_entity_binding treat something
+# like a login page's `<body> > div.row` (one row is #flash-messages, the other is the whole
+# page content) as a 2-row "list", then pick a fragment of the page's own help text as the
+# record identifier — corrupting an ordinary Login button into a phantom record lookup.
+_MAX_ROW_SEARCH_DEPTH = 3
 
 # Text that repeats identically on every row (button/control labels) and therefore identifies
 # nothing. Merged with the destructive-intent vocabulary so a Delete button's own label is never
@@ -115,7 +125,7 @@ def detect_entity_binding(ev: Step) -> EntityBinding | None:
     matching siblings is treated as the row. Returns None when nothing repeats — there is no
     wrong row to guard against."""
     ancestors = ev.get("ancestors") or []
-    for i in range(len(ancestors) - 1):
+    for i in range(min(len(ancestors) - 1, _MAX_ROW_SEARCH_DEPTH)):
         row = ancestors[i] or {}
         parent = ancestors[i + 1] or {}
         row_tag = str(row.get("tag") or "").strip().lower()

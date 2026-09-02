@@ -78,6 +78,31 @@ class TestDetectEntityBinding:
         ev = _table_event(rows, target_row_index=0)
         assert detect_entity_binding(ev) is None
 
+    def test_ignores_layout_grid_siblings_far_up_the_tree(self):
+        # Regression: a login button on a page built with a Foundation/Bootstrap-style CSS
+        # framework, where <body> happens to have two unrelated `<div class="row">` children
+        # (a flash-messages banner and the page's own content wrapper) purely for layout.
+        # Unbounded ancestor search used to treat that coincidence as a 2-row "list" and pick a
+        # fragment of the page's own help text as the record identifier, turning an ordinary
+        # button into a phantom record lookup that halts execution with "could not be uniquely
+        # located". The real target sits tightly inside its own (non-repeating) form, several
+        # levels below body — the row match must not reach that far up the tree.
+        ancestors = [
+            {"tag": "form", "id": "login", "classes": [], "outer_html": "<form id=\"login\"></form>"},
+            {"tag": "div", "id": "", "classes": ["example"], "outer_html": "<div class=\"example\"></div>"},
+            {"tag": "div", "id": "content", "classes": ["large-12", "columns"], "outer_html": "<div id=\"content\"></div>"},
+            {"tag": "div", "id": "", "classes": ["row"], "outer_html": "<div class=\"row\">page content</div>"},
+            {"tag": "body", "id": "", "classes": [],
+             "outer_html": (
+                 '<body>'
+                 '<div class="row"><div id="flash-messages"></div></div>'
+                 '<div class="row"><div id="content"></div></div>'
+                 '</body>'
+             )},
+        ]
+        ev = {"action": {"action": "click"}, "semantic": {"final_intent": "click_login_button"}, "ancestors": ancestors}
+        assert detect_entity_binding(ev) is None
+
 
 class TestIdentifierUpgrade:
     def test_prefers_declared_input_over_literal(self):
