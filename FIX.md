@@ -2,6 +2,38 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Starter and Pro plans can each get their own AI provider, keys, and models — 2026-09-02
+Before this change, the Starter and Pro paid plans shared one pool of "better" AI providers with no way to tell them apart — like two different membership tiers using the exact same checkout line. Now each plan gets its own completely separate setup: its own provider, its own access keys, its own primary model for reading text, its own primary model for reading images, and its own backup model to try if the first one has trouble. Starter and Pro can now genuinely differ in quality and cost, not just in price on paper. The free plan is untouched and still draws from its usual wide pool of providers.
+— 2026-09-02
+
+## Risky steps can now repair themselves again, without ever picking a different button — 2026-09-02
+Steps we treat as a point of no return — pay, delete, submit — were given only the first round of self-repair and then stopped dead. That was the right instinct for the wrong reason: the later rounds we were blocking are mostly just "wait a moment longer", "open the menu again" or "look inside the dialog box", all of which press the exact same button. Only one of them genuinely goes looking for a different-looking button, and that one is still blocked. So a risky step now gets the same patience as every other step, while the rule that matters — never act on a different record — is untouched. If it still cannot finish, it stops for a human exactly as before, and is never handed to the assistant to guess at.
+— 2026-09-02
+
+## Fixed a check that compared new answers against old ones — 2026-09-02
+A finished automation is meant to check its own work: after typing a name or an address into a box, it double-checks the box actually holds what was typed. That double-check was quietly using the answer recorded during setup instead of whatever the customer's own automation actually supplied on the day, so any run using different real information — a different name, a different phone number — would fail its own double-check even though the box was completely correct. It now compares against the answer that was actually supplied, not the one from the recording.
+— 2026-09-02
+
+## The workflow editor's health summary no longer points at the wrong step — 2026-09-02
+After compiling an automation, a small health panel shows which steps look shaky and how confident the system is about each one. Editing a workflow afterwards — adding, removing, or reordering a step — used to leave that panel showing numbers from before the edit, so it could flag "step 12" as risky when step 12 was now something completely different. The panel now recognises when an edit has happened and asks for a fresh check instead of showing stale, misleading numbers.
+— 2026-09-02
+
+## Stopped one form field from being labelled with a different field's answer — 2026-09-02
+When guessing a field's name for a recording, the studio looks at nearby text for a caption. On a two-part State-and-City form, it sometimes picked up the State field's already-chosen answer ("Uttar Pradesh") and used that as the City field's label, because the guesser didn't realise that text belonged to a different, live input rather than being a plain caption. The City selector built from that mislabel barely worked at all. The studio now recognises when nearby text belongs to another live field and skips it, so it keeps looking for a real caption instead.
+— 2026-09-02
+
+## Fixed a test that could never pass, no matter how long we waited — 2026-09-02
+One of our own practice pages deliberately renames and moves a button every second, to check that automations can still find it after a website changes. But the button was called "Submit", and we treat anything that looks like a Submit as a point of no return — pay, delete, place order — so the automation is built to stop dead rather than hunt for a lookalike. That safety rule is right, and it stays. The practice page was the thing at fault: it was asking us to prove we can recover on the one kind of button we promise never to guess about. The button now carries a harmless label instead, and a check makes sure nobody quietly renames it back.
+— 2026-09-02
+
+## Confirmed that waiting longer would not have helped — 2026-09-02
+The obvious guess for a step that cannot find its button is that we did not wait long enough. Here we already retry about twenty times inside every attempt, and the run stopped after under three seconds because a safety rule chose to stop, not because the clock ran out. Raising the wait would have let the practice page's button randomly flip back to its old name every so often and made the test go green by luck — which is worse than a red test, because it would have hidden the fact that nothing was actually being repaired.
+— 2026-09-02
+
+## Fixed the invisible "Recompile" button in the Build Studio — 2026-09-02
+The confirmation popup for recompiling a workflow had a button whose text was nearly impossible to see, like a "Submit" button printed in white ink on white paper. The button's real color was supposed to win, but a mixing mistake meant the browser sometimes reverted to a default pale color instead. Any other popup built the same way could have shown the same problem. The mixing is now done correctly everywhere, so button colors always show up the way they're meant to.
+— 2026-09-02
+
 ## The dashboard now shows the same two repair stages as the product — 2026-09-02
 The operations screens and the public reliability section still labelled repairs as four numbered rungs, so a free local retry looked like two different paid stages. They now show the two stages that actually exist: a free local retry, and a smarter ask that uses the customer's own AI. The numbers underneath are unchanged — only the names on the charts.
 — 2026-09-02
@@ -792,3 +824,7 @@ We are bringing on two unpaid student interns and needed to give each one a clea
 
 **Planned making Conxa run on its own, without needing a paid Claude or Codex account — 2026-09-01**
 Right now a customer cannot run a single automation unless they already pay for someone else's AI assistant, which rules out most of the market before we even start. The backlog now carries a plan to give Conxa its own assistant inside the app, powered by a model we host, with the option to plug in your own AI account instead, and to buy credits by scanning a QR code without leaving the app. The plan also flags the one thing that must not slip: the assistant is what repairs automations when a website changes, so a cheaper brain there quietly means less reliable automations, and we now have a number to watch that tells us if that happens.
+
+## Fixed a step that got another step's information by mistake — 2026-09-02
+A long test recording that opens several new browser tabs failed partway through: a step meant to pick a date from a calendar instead tried to click a phone-number box, and the calendar popup never even opened. The cause was a bookkeeping slip further back in the build process — when the tool inserted an extra "go to this new tab" instruction, it forgot to also update its own internal counter, so every step after that point quietly got matched up with the wrong piece of recorded information, like a class photo where the name tags shifted by one person. This also explains two other odd things noticed earlier: a login button whose click target had been swapped for a password's typed value, and several steps at the end of long recordings going missing without any warning. The counter now stays correct by construction, and if it ever slips again the build now stops and says so loudly instead of quietly shipping a broken automation.
+— 2026-09-02
