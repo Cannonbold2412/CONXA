@@ -40,7 +40,11 @@ PUBLIC_SKILL_PACK_SYNC_PREFIXES = ("/api/v1/skill-packs/",)
 # endpoints (list/create/delete workflows) — only these two specific, package-token
 # guarded sub-paths are exempt from the Clerk gate.
 PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_GET = ("/skill-packs/delta",)
-PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST = ("/tracking/events",)
+# "/artifacts" is the per-skill recovery-artifact fetch (skillpack_update_routes.
+# get_skill_artifacts) — sync-token guarded like the delta beside it. No Clerk-protected
+# dashboard route under /api/v1/workflows/ ends in this segment, which is what keeps the
+# suffix match from widening the exemption past the one route it is meant for.
+PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST = ("/tracking/events", "/artifacts")
 
 # Installer downloads are fetched by end users who have no Clerk account; the
 # company slug in the path is the only credential and the file is non-sensitive.
@@ -71,9 +75,12 @@ def _is_public_path(path: str, method: str = "GET") -> bool:
         return True
     if method.upper() == "GET" and normalized.startswith("/api/v1/workflows/"):
         return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_GET)
-    if method.upper() == "POST" and normalized.endswith("/events"):
-        if any(normalized.startswith(p) for p in PUBLIC_TRACKING_EVENT_PREFIXES):
+    if method.upper() == "POST":
+        if normalized.endswith("/events") and any(normalized.startswith(p) for p in PUBLIC_TRACKING_EVENT_PREFIXES):
             return True
+        # Checked for every versioned-workflow POST, not just the ones ending in "/events" —
+        # this used to sit inside that condition, which made the suffix list below unreachable
+        # for anything but tracking ingest.
         if normalized.startswith("/api/v1/workflows/"):
             return any(normalized.endswith(s) for s in PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST)
     return False

@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import secrets
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
@@ -136,6 +138,45 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
+# The skill's code: small JSON, shipped inline in the delta response and required before a
+# workflow can run at all. Everything else in a skill directory is an ARTIFACT — today that
+# means `visuals/`, the recording-time screenshots the agent recovery tier compares against.
+# Artifacts are bytes, not kilobytes, so they never ride the delta body; they are listed there
+# as metadata and fetched separately (see get_skill_artifacts).
+_CODE_FILES = ("execution.json", "recovery.json", "inputs.json", "manifest.json", "validation.json")
+
+
+def _resolve_skill_dir(packs_dir: Path, group_id: str, slug: str) -> Path:
+    """Packs published before group-nesting shipped still have their files at the old flat
+    ``packs_dir/slug/`` location — serve from there so already-published companies don't go
+    stuck on "no_change" forever just because they haven't republished."""
+    skill_dir = packs_dir / group_id / slug
+    if skill_dir.is_dir():
+        return skill_dir
+    legacy_dir = packs_dir / slug
+    return legacy_dir if legacy_dir.is_dir() else skill_dir
+
+
+def _artifact_entries(skill_dir: Path) -> list[dict[str, str]]:
+    """``[{path, sha256}]`` for every non-code file in the skill — metadata only, never content.
+
+    Deliberately a "not code" rule rather than a `visuals/` allow-list: a new kind of recovery
+    artifact then ships without also needing a change here, and the failure mode of the inverse
+    (a new artifact silently never syncing) is the exact bug this whole endpoint exists to fix.
+    """
+    if not skill_dir.is_dir():
+        return []
+    out: list[dict[str, str]] = []
+    for fpath in sorted(skill_dir.rglob("*")):
+        if not fpath.is_file():
+            continue
+        rel = fpath.relative_to(skill_dir).as_posix()
+        if rel in _CODE_FILES:
+            continue
+        out.append({"path": rel, "sha256": _sha256_file(fpath)})
+    return out
+
+
 def _pack_version(workspace_id: str) -> str:
     pack_path = skill_packs_dir(workspace_id) / "pack.json"
     if not pack_path.is_file():
@@ -175,23 +216,25 @@ def _build_delta(workspace_id: str, since_map: dict[str, str]) -> dict[str, Any]
         current_version = _skill_version(workspace_id, slug)
         client_version = since_map.get(slug, "0")
         group_id = skill_groups.get(slug) or "_default"
-        skill_dir = packs_dir / group_id / slug
-        if not skill_dir.is_dir():
-            # Packs published before group-nesting shipped still have their files at the
-            # old flat `packs_dir/slug/` location on cloud storage — serve from there so
-            # already-published companies don't go stuck on "no_change" forever just
-            # because they haven't republished. `group_id` is still reported below so the
-            # client writes its copy into the new nested location regardless.
-            legacy_dir = packs_dir / slug
-            if legacy_dir.is_dir():
-                skill_dir = legacy_dir
+        # `group_id` is still reported below so the client writes its copy into the new
+        # nested location regardless of where it was served from.
+        skill_dir = _resolve_skill_dir(packs_dir, group_id, slug)
 
         if current_version == client_version or not skill_dir.is_dir():
-            skills_out.append({"name": slug, "action": "no_change", "group": group_id})
+            # Artifacts are listed even when the CODE is unchanged. They are fetched on a
+            # separate pass that may not have finished (or may never have run, for a pack
+            # installed before artifact sync existed), so gating the listing on a version bump
+            # would leave every already-installed customer waiting for an unrelated republish
+            # before their recovery screenshots could ever arrive.
+            entry: dict[str, Any] = {"name": slug, "action": "no_change", "group": group_id}
+            artifacts = _artifact_entries(skill_dir)
+            if artifacts:
+                entry["artifacts"] = artifacts
+            skills_out.append(entry)
             continue
 
         files: list[dict[str, Any]] = []
-        for fname in ("execution.json", "recovery.json", "inputs.json", "manifest.json", "validation.json"):
+        for fname in _CODE_FILES:
             fpath = skill_dir / fname
             if not fpath.is_file():
                 continue
@@ -200,7 +243,14 @@ def _build_delta(workspace_id: str, since_map: dict[str, str]) -> dict[str, Any]
                 "sha256": _sha256_file(fpath),
                 "content_base64": base64.b64encode(fpath.read_bytes()).decode("ascii"),
             })
-        skills_out.append({"name": slug, "version": current_version, "action": "update", "group": group_id, "files": files})
+        update: dict[str, Any] = {
+            "name": slug, "version": current_version, "action": "update",
+            "group": group_id, "files": files,
+        }
+        artifacts = _artifact_entries(skill_dir)
+        if artifacts:
+            update["artifacts"] = artifacts
+        skills_out.append(update)
 
     return {"skills": skills_out}
 
@@ -246,6 +296,83 @@ def get_skill_pack_delta_v2(
     generations; see ``_delta_impl``/``_build_delta``."""
     validate_installer_version(installer_version)
     return _delta_impl(workspace_id, since, request)
+
+
+# ─── Recovery artifacts ───────────────────────────────────────────────────────
+
+
+class ArtifactRequest(BaseModel):
+    # SHA-256 hashes the machine already holds in its content-addressed store. Everything the
+    # skill has that is NOT in this list comes back in the zip.
+    have: list[str] = Field(default_factory=list)
+
+
+@versioned_router.post("/{installer_version}/{workspace_id}/skill-packs/{slug}/artifacts")
+def get_skill_artifacts(
+    installer_version: str,
+    workspace_id: str,
+    slug: str,
+    body: ArtifactRequest,
+    request: Request = None,
+) -> Response:
+    """One zip holding exactly the artifacts this machine is missing, for one skill.
+
+    The machine already knows what it lacks — its artifact store is keyed by content hash, so
+    "do I have this hash" IS the delta computation, done locally. It sends the answer; this
+    returns precisely the difference. That makes first install (send nothing, get everything)
+    and a later update (send all but three, get three) the same code path, with no separate
+    protocol for either.
+
+    NOT rate limited, unlike the delta route beside it. The artifact pass runs immediately after
+    the code files land — that is the whole point, so execution is never blocked waiting for
+    screenshots — and the delta route's 5-minutes-per-token limit would refuse it every time.
+    Authentication is identical, so this exempts pacing, never access.
+
+    Returns the zip bytes directly rather than a link to one. Render's free plan has no
+    persistent disk (the reason _ensure_skill_pack_on_disk exists at all), so an archive written
+    somewhere to be fetched afterwards is exactly the kind of thing that would be gone by the
+    time the client asked for it.
+    """
+    validate_installer_version(installer_version)
+    token = _extract_token(request) if request else None
+    _verify_sync_token(workspace_id, token)
+
+    _ensure_skill_pack_on_disk(workspace_id)
+    packs_dir = skill_packs_dir(workspace_id)
+    pack_path = packs_dir / "pack.json"
+    if not pack_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Skill pack not found: {workspace_id}")
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    if slug not in (pack.get("skills") or []):
+        raise HTTPException(status_code=404, detail=f"Skill not found: {slug}")
+
+    group_id = (pack.get("skill_groups") or {}).get(slug) or "_default"
+    skill_dir = _resolve_skill_dir(packs_dir, group_id, slug)
+
+    # An unknown hash is ignored rather than rejected: the store is shared across every skill and
+    # workspace on the machine, so it legitimately holds hashes this particular skill never had.
+    have = {str(h).lower() for h in body.have if isinstance(h, str)}
+
+    buf = io.BytesIO()
+    # ZIP_STORED, not DEFLATED: these are JPEG/PNG, already compressed. Deflating them again
+    # spends CPU on a shared instance to save approximately nothing.
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for entry in _artifact_entries(skill_dir):
+            if entry["sha256"].lower() in have:
+                continue
+            zf.write(skill_dir / entry["path"], arcname=entry["path"])
+
+    payload = buf.getvalue()
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={
+            # The client verifies this before extracting — same contract as every other
+            # artifact the runtime downloads (manifest_manager.downloadArtifact).
+            "X-Artifact-Sha256": hashlib.sha256(payload).hexdigest(),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ─── Telemetry ────────────────────────────────────────────────────────────────
