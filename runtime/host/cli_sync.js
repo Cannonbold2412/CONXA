@@ -50,6 +50,11 @@ async function run(CONXA_DIR, APP_ROOT, versionManager, hostVersion) {
     await sync.syncSkillPacks(skillPacksDir, {
       timeoutMs: 5 * 60 * 1000,
       log: (m) => process.stdout.write(`${m}\n`),
+      // Recovery artifacts are fetched on an unawaited background pass, and this process
+      // exists to finish and exit — background work here would either hold the installer
+      // open or be killed halfway through. Nothing is lost: the artifacts are only read
+      // when a step fails, and server.js's startup sync on first launch collects them.
+      artifacts: false,
     });
     process.stdout.write("[bootstrap] sync: install-time skill sync complete\n");
   } catch (e) {

@@ -68,4 +68,39 @@ function downloadBuffer(url, opts = {}) {
   });
 }
 
-module.exports = { get, request, fetchJSON, downloadBuffer };
+// ── Authenticated POST returning raw bytes ───────────────────────────────────
+// downloadBuffer above is GET-only and sends no headers, so it cannot carry the sync token or
+// the request body the artifact endpoint needs. That endpoint is a POST because the machine
+// tells the cloud which hashes it already holds — the request IS the delta computation — and a
+// list of dozens of hashes does not belong in a query string.
+//
+// Resolves { body, headers } rather than a bare buffer: the response carries the archive's own
+// SHA-256 in a header, and the caller must verify it before extracting anything.
+function postForBuffer(url, opts = {}) {
+  const { token = null, json = null, timeoutMs = 60000, requireOkStatus = true } = opts;
+  const payload = Buffer.from(JSON.stringify(json === null ? {} : json), "utf8");
+  return new Promise((resolve, reject) => {
+    const headers = {
+      "User-Agent": "conxa-runtime/1.0",
+      "Content-Type": "application/json",
+      "Content-Length": payload.length,
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const req = request(url, { method: "POST", headers }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        if (requireOkStatus && res.statusCode !== 200) {
+          return reject(new Error(`HTTP ${res.statusCode}`));
+        }
+        resolve({ body: Buffer.concat(chunks), headers: res.headers, statusCode: res.statusCode });
+      });
+      res.on("error", reject);
+    });
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error("post timeout")); });
+    req.on("error", reject);
+    req.end(payload);
+  });
+}
+
+module.exports = { get, request, fetchJSON, downloadBuffer, postForBuffer };

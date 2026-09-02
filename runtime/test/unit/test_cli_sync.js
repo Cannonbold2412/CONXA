@@ -23,7 +23,7 @@ test("cli_sync.run calls syncSkillPacks with CONXA_DIR/skill-packs", async () =>
   const appDir = mkAppDir(`
     const fs = require("fs");
     module.exports.syncSkillPacks = async (dir, opts) => {
-      fs.writeFileSync(${JSON.stringify(callsFile)}, JSON.stringify({ dir, timeoutMs: opts.timeoutMs }));
+      fs.writeFileSync(${JSON.stringify(callsFile)}, JSON.stringify({ dir, timeoutMs: opts.timeoutMs, artifacts: opts.artifacts }));
     };
   `);
   const versionManager = { resolveCurrent: () => appDir };
@@ -33,6 +33,10 @@ test("cli_sync.run calls syncSkillPacks with CONXA_DIR/skill-packs", async () =>
   const call = JSON.parse(fs.readFileSync(callsFile, "utf8"));
   assert.strictEqual(call.dir, path.join(conxaDir, "skill-packs"));
   assert.ok(call.timeoutMs >= 60000, "install-time sync should get a generous timeout, not server.js's 4s default");
+  // The artifact pass is deliberately unawaited, and this process exists to finish and exit —
+  // background work here would either hold the installer open or be killed halfway. Nothing is
+  // lost: artifacts are only read when a step fails, and the server's startup sync collects them.
+  assert.strictEqual(call.artifacts, false, "install-time sync must not start the background artifact pass");
 });
 
 test("cli_sync.run never throws when no app layer is staged", async () => {

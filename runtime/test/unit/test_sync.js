@@ -320,3 +320,83 @@ test("a successful sync clears a previously recorded sync error for that skill",
   fs.rmSync(skillPacksDir, { recursive: true, force: true });
 });
 
+
+// ── Pass two: recovery artifacts must never hold up execution ────────────────────────────────
+// The whole point of splitting the sync is that workflows can run the moment the CODE files
+// activate. Artifacts are only read when a step fails and reaches the agent recovery tier, so
+// waiting on them would charge every start for something almost no run uses.
+
+const httpClient = require("../../app/http_client");
+
+function withSlowArtifactFetch(fn) {
+  const original = httpClient.postForBuffer;
+  const state = { started: false, finished: false };
+  httpClient.postForBuffer = async () => {
+    state.started = true;
+    await new Promise((r) => setTimeout(r, 150));
+    state.finished = true;
+    // An empty archive: this test is about timing, not extraction.
+    return { body: Buffer.alloc(0), statusCode: 200, headers: {} };
+  };
+  return Promise.resolve(fn(state)).finally(() => { httpClient.postForBuffer = original; });
+}
+
+const ARTIFACT_DELTA = {
+  skills: [{
+    name: "skill-a", action: "no_change", group: "_default",
+    artifacts: [{ path: "visuals/Image_1.jpg", sha256: "a".repeat(64) }],
+  }],
+};
+
+test("the artifact pass does not block the sync — the gate opens without it", async (t) => {
+  const skillPacksDir = mkSkillPacksDir();
+  writePack(skillPacksDir, "acme", { skills: [] });
+  const getMock = mockDeltaResponse(ARTIFACT_DELTA);
+  t.after(() => getMock.mock.restore());
+
+  await withSlowArtifactFetch(async (state) => {
+    await syncSkillPacks(skillPacksDir, { timeoutMs: 4000, log: () => {} });
+    assert.ok(state.started, "pass two was started");
+    assert.ok(!state.finished, "but sync resolved without waiting for it — this is the gate");
+    // Let it finish so it cannot leak into a later test.
+    await new Promise((r) => setTimeout(r, 250));
+    assert.ok(state.finished);
+  });
+});
+
+test("artifacts:false starts no background pass at all", async (t) => {
+  const skillPacksDir = mkSkillPacksDir();
+  writePack(skillPacksDir, "acme", { skills: [] });
+  const getMock = mockDeltaResponse(ARTIFACT_DELTA);
+  t.after(() => getMock.mock.restore());
+
+  await withSlowArtifactFetch(async (state) => {
+    // The install-time `sync` subcommand passes this: that process exists to exit, and
+    // unawaited work would either hold the installer open or be killed halfway.
+    await syncSkillPacks(skillPacksDir, { timeoutMs: 4000, log: () => {}, artifacts: false });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(!state.started, "no artifact request may be issued when the caller opted out");
+  });
+});
+
+test("a failing artifact pass leaves the sync itself clean", async (t) => {
+  const skillPacksDir = mkSkillPacksDir();
+  const packPath = writePack(skillPacksDir, "acme", { skills: [] });
+  const getMock = mockDeltaResponse(ARTIFACT_DELTA);
+  t.after(() => getMock.mock.restore());
+
+  const original = httpClient.postForBuffer;
+  httpClient.postForBuffer = async () => { throw new Error("network down"); };
+  try {
+    await syncSkillPacks(skillPacksDir, { timeoutMs: 4000, log: () => {} });
+    await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    httpClient.postForBuffer = original;
+  }
+
+  const pack = JSON.parse(fs.readFileSync(packPath, "utf8"));
+  // A missing screenshot costs the agent tier one signal out of several. A sync error would
+  // make a perfectly working skill show as failed on the Deployment dashboard.
+  assert.deepStrictEqual(pack.last_sync_errors, {}, "a failed artifact fetch is not a sync failure");
+  assert.deepStrictEqual(pack.skills, ["skill-a"], "pass one's results stand regardless");
+});

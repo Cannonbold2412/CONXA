@@ -59,6 +59,8 @@
       "_note": "Extracted from server.js: resolveTargetHosts — every required app's host per run, feeding host_lock.js; pure so the multi-app union stays unit-testable." },
     { "name": "failure_response.js",  "profile": "default",
       "_note": "Extracted from server.js: Tier 3/4 failure-payload assembly." },
+    { "name": "artifact_store.js",    "profile": "default",
+      "_note": "Content-addressed store for recovery artifacts; required by sync.js and failure_response.js." },
     { "name": "recovery_stage.js",    "profile": "default",
       "_note": "Split Tier 3 (semantic) → Tier 4 (vision) escalation stage + stagnation hard cap + candidate_index nomination maps." },
     { "name": "candidate_digest.js",  "profile": "default",

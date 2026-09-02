@@ -3,6 +3,8 @@ const fs     = require("fs");
 const path   = require("path");
 const crypto = require("crypto");
 const httpClient = require("./http_client");
+const artifactStore = require("./artifact_store");
+const { ARTIFACT_INDEX_FILE } = artifactStore;
 
 // Prefer the host-bridged instance (bootstrap.js sets this) so every layer shares one
 // implementation of the junction-handling logic; fall back to a local copy for direct
@@ -41,7 +43,7 @@ function atomicWrite(targetPath, content, expectedSha256) {
 // never needs a backup-copy dance the way flat-file sync used to — a failed activation
 // just leaves `current` pointing at whatever it pointed at before.
 
-async function _syncCompany(skillPacksDir, workspace_id, log) {
+async function _syncCompany(skillPacksDir, workspace_id, log, artifactTasks = null) {
   const packPath = path.join(skillPacksDir, workspace_id, "pack.json");
   if (!fs.existsSync(packPath)) return;
 
@@ -223,21 +225,135 @@ async function _syncCompany(skillPacksDir, workspace_id, log) {
   } else {
     log(`[sync:status] ${workspace_id} sync completed with no successful activations`);
   }
+
+  // Hand the caller pass two's work. Everything above is pass one: the code files, which
+  // execution genuinely needs — the gate opens the moment they activate. Artifacts are only
+  // ever read when a step FAILS and reaches the agent recovery tier, so making anyone wait on
+  // them would be charging every run for something almost no run uses.
+  //
+  // Collected here rather than started here: this function runs inside syncSkillPacks' hard
+  // timeout, and pass two must outlive it (see syncSkillPacks).
+  if (artifactTasks) {
+    for (const s of delta.skills || []) {
+      if (!s || !s.name || !Array.isArray(s.artifacts) || !s.artifacts.length) continue;
+      const url = _artifactEndpoint(syncEndpoint, s.name);
+      if (!url) continue;  // legacy unversioned sync endpoint — no artifact route exists for it
+      const skillRoot = path.join(skillPacksDir, workspace_id, s.group || "_default", s.name);
+      artifactTasks.push({
+        workspace_id, slug: s.name, url, token,
+        artifacts: s.artifacts,
+        // Resolved after activation above, so an updated skill gets its NEW version directory.
+        skillDir: versionManager.resolveCurrent(skillRoot),
+      });
+    }
+  }
 }
 
-async function _doSync(skillPacksDir, log) {
+// The artifact route is the versioned delta's sibling:
+//   .../workflows/{gen}/{ws}/skill-packs/delta  →  .../workflows/{gen}/{ws}/skill-packs/{slug}/artifacts
+// A pack still carrying the legacy unversioned `/skill-packs/{ws}/delta` endpoint has no
+// artifact route to derive, and gets none — republishing moves it onto the versioned form.
+function _artifactEndpoint(syncEndpoint, slug) {
+  const base = String(syncEndpoint || "").split("?")[0];
+  if (!/\/workflows\/[^/]+\/[^/]+\/skill-packs\/delta$/.test(base)) return null;
+  return base.replace(/\/delta$/, `/${encodeURIComponent(slug)}/artifacts`);
+}
+
+/**
+ * Pass two: fetch the recovery artifacts this machine is missing, one skill at a time.
+ *
+ * One request per skill, carrying the hashes already in the store — so the response holds
+ * exactly the difference, and first install (send nothing, receive everything) and a routine
+ * update (send all but three, receive three) are the same code path. One request per skill also
+ * means there is no concurrency policy to invent: the burst that would otherwise hit a small
+ * cloud instance is simply not created.
+ *
+ * Nothing here may fail the sync, block execution, or record a sync error. A missing screenshot
+ * costs the agent tier one signal out of several; a sync marked failed would make a working
+ * skill look broken. Interruption is free — the next sync diffs against the store again and asks
+ * for whatever is still absent.
+ */
+async function _syncArtifacts(skillPacksDir, tasks, log) {
+  const AdmZip = require("./host_bridge").hostRequire("adm-zip");
+  for (const task of tasks) {
+    try {
+      const have = artifactStore.haveHashes(skillPacksDir, task.artifacts);
+      if (have.length >= task.artifacts.length) continue;  // nothing missing for this skill
+
+      const res = await httpClient.postForBuffer(task.url, { token: task.token, json: { have }, timeoutMs: 60000 });
+      const expected = String(res.headers["x-artifact-sha256"] || "").toLowerCase();
+      if (expected) {
+        const actual = crypto.createHash("sha256").update(res.body).digest("hex");
+        if (actual !== expected) throw new Error(`archive checksum mismatch: expected ${expected}, got ${actual}`);
+      }
+      if (!res.body.length) continue;
+
+      const wanted = new Map(task.artifacts.map(a => [String(a.path), String(a.sha256 || "").toLowerCase()]));
+      let stored = 0;
+      for (const entry of new AdmZip(res.body).getEntries()) {
+        if (entry.isDirectory) continue;
+        const sha = wanted.get(entry.entryName);
+        // Only files the listing vouched for are stored, under the hash the listing named —
+        // artifact_store.put re-hashes and rejects a mismatch, so a zip cannot introduce a file
+        // the delta never described, nor write one under someone else's hash.
+        if (!sha) continue;
+        artifactStore.put(skillPacksDir, sha, entry.entryName, entry.getData());
+        stored++;
+      }
+      if (stored) log(`[sync:artifacts] ${task.workspace_id}/${task.slug} stored ${stored} artifact${stored !== 1 ? "s" : ""}`);
+    } catch (e) {
+      log(`[sync:artifacts:warn] ${task.workspace_id}/${task.slug} — ${e.message}`);
+    }
+
+    // The index, written whether or not anything was downloaded this round. The store is keyed
+    // by CONTENT, but recovery only knows an artifact's PATH (`visual_ref` in recovery.json), so
+    // without this mapping the bytes would be on disk and unreachable. Separate try/catch: a
+    // failed download must not also cost the index for artifacts that were already stored.
+    try {
+      if (task.skillDir) {
+        fs.writeFileSync(
+          path.join(task.skillDir, ARTIFACT_INDEX_FILE),
+          JSON.stringify({ artifacts: task.artifacts }),
+        );
+      }
+    } catch (e) {
+      log(`[sync:artifacts:warn] ${task.workspace_id}/${task.slug} — ${e.message}`);
+    }
+  }
+}
+
+async function _doSync(skillPacksDir, log, artifactTasks = null) {
   if (!fs.existsSync(skillPacksDir)) return;
   const workspaceIds = fs.readdirSync(skillPacksDir);
-  await Promise.allSettled(workspaceIds.map(workspaceId => _syncCompany(skillPacksDir, workspaceId, log)));
+  await Promise.allSettled(
+    workspaceIds.map(workspaceId => _syncCompany(skillPacksDir, workspaceId, log, artifactTasks))
+  );
 }
 
 // Public: run sync with a hard timeout.
 // Default 4s — skill packs are small JSON files; parallel downloads complete well within this.
-async function syncSkillPacks(skillPacksDir, { timeoutMs = 4000, log = console.error } = {}) {
+//
+// Two passes, and only the first one is allowed to hold anyone up:
+//
+//   Pass one (awaited, inside the timeout) — the code files. Workflows cannot run without them,
+//   so this is the gate, and it stays on the tight budget it always had.
+//
+//   Pass two (started after, deliberately NOT awaited) — recovery artifacts. Bytes, not
+//   kilobytes, and read only when a step fails and reaches the agent tier, which for a healthy
+//   skill is never. Awaiting them would make every start pay for something almost no run uses;
+//   putting them inside the race would just get them killed at 4s, every time.
+//
+// `artifacts: false` skips pass two entirely. The install-time `sync` subcommand passes it: that
+// process exists to exit, and leaving background work running would either hold the installer
+// open or be killed halfway. Nothing is lost — the server's own startup sync picks them up.
+async function syncSkillPacks(skillPacksDir, { timeoutMs = 4000, log = console.error, artifacts = true } = {}) {
   let timer;
+  // Collected by reference rather than returned, so whatever pass one managed to finish is still
+  // usable when the race below times out on an unrelated workspace.
+  const artifactTasks = artifacts ? [] : null;
   try {
     await Promise.race([
-      _doSync(skillPacksDir, log),
+      _doSync(skillPacksDir, log, artifactTasks),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("sync timeout")), timeoutMs); }),
     ]);
   } finally {
@@ -246,7 +362,17 @@ async function syncSkillPacks(skillPacksDir, { timeoutMs = 4000, log = console.e
     // on this process, like the NSIS installer's install-time `sync` subcommand —
     // alive until it fires, up to timeoutMs later. Clear it either way.
     clearTimeout(timer);
+
+    // In `finally`, so a timeout on one workspace still lets the workspaces that DID finish
+    // fetch their artifacts. Not awaited, and its rejection is swallowed: pass two is an
+    // optimisation on a path that already degrades gracefully — a step that fails before its
+    // screenshot arrives just fetches that one file inline, and worst case the agent tier runs
+    // without a reference image, exactly as it does today.
+    if (artifactTasks && artifactTasks.length) {
+      _syncArtifacts(skillPacksDir, artifactTasks, log)
+        .catch((e) => log(`[sync:artifacts:warn] pass failed — ${e.message}`));
+    }
   }
 }
 
-module.exports = { syncSkillPacks };
+module.exports = { syncSkillPacks, _syncArtifacts, _artifactEndpoint };
