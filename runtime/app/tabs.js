@@ -36,8 +36,18 @@ function createTabRegistry(initialPage) {
   // handed out again as a different tab — see the pendingPages drain below.
   const bound = new Set([initialPage]);
   const pendingPages = [];
-  context.on("page", (page) => { pendingPages.push(page); });
-  return { context, pages, pendingPages, bound };
+  // Chromium hands the foreground to every newly created tab. The runtime's own page switches
+  // already reclaim it (see _settle), but a page the runtime never asked for — a site-opened
+  // popup, a window.open from a timer — moves the foreground with no step boundary to hang a
+  // reclaim off. Left unreclaimed, every later step drives a BACKGROUND tab: invisible under
+  // watch, and with rAF/timers throttled, which stalls Playwright's actionability "stable"
+  // wait. This flag is that missing signal; _settleIfSwitched consumes and clears it.
+  const registry = { context, pages, pendingPages, bound, foregroundStale: false };
+  context.on("page", (page) => {
+    pendingPages.push(page);
+    registry.foregroundStale = true;
+  });
+  return registry;
 }
 
 /**
@@ -76,12 +86,14 @@ function stepInheritsPage(step) {
  * execution to a different page — including returning to the initial page via an explicit or
  * implicit tab_0, the case that used to replay with no load wait and no bringToFront — gets
  * the full _settle treatment. Same-page steps skip it; run.js's waitForPageLoad already covers
- * their post-navigation load wait.
+ * their post-navigation load wait. The one exception is registry.foregroundStale — a page the
+ * runtime does not own appeared and took the foreground, so even a same-page step settles, to
+ * bring its own page back to the front (see createTabRegistry).
  */
 async function resolveStepPage(registry, step, opts = {}) {
   if (!stepNamesTab(step)) {
     const initial = registry.pages.get("tab_0");
-    return _settleIfSwitched(initial, step, opts);
+    return _settleIfSwitched(registry, initial, step, opts);
   }
 
   const tabId = step.tab.id;
@@ -90,7 +102,7 @@ async function resolveStepPage(registry, step, opts = {}) {
   if (existing) {
     try {
       if (!existing.isClosed()) {
-        return _settleIfSwitched(existing, step, opts);
+        return _settleIfSwitched(registry, existing, step, opts);
       }
     } catch (_) { /* fall through to re-resolve */ }
   }
@@ -139,7 +151,7 @@ async function resolveStepPage(registry, step, opts = {}) {
   }
 
   registry.pages.set(tabId, page);
-  return _settleIfSwitched(page, step, opts);
+  return _settleIfSwitched(registry, page, step, opts);
 }
 
 // Settle only when this step actually moves execution to a different page than the previous
@@ -154,12 +166,20 @@ async function resolveStepPage(registry, step, opts = {}) {
 // coming (this used to be the 60s+ hang before a workflow's own first `navigate` step, since a
 // fresh tab_0 sits on about:blank with no `tab` block at all). A site-opened popup is expected
 // to navigate itself a beat after creation, which is exactly the wait performed.
-function _settleIfSwitched(page, step, opts) {
+function _settleIfSwitched(registry, page, step, opts) {
   const prev = opts.prevPage;
-  if (page && prev === page) return Promise.resolve(page);
+  // Consume the flag whether or not it is used — it describes one foreground move, and the
+  // very next _settle (this one, or the switch that made this an early return moot) reclaims it.
+  const stale = registry.foregroundStale;
+  registry.foregroundStale = false;
+  if (page && prev === page && !stale) return Promise.resolve(page);
   return _settle(page, {
     ...opts,
     awaitNavigation: stepNamesTab(step) && step.tab.opened_by !== "user",
+    // Something else took the foreground. Reclaim it regardless of watch mode: a backgrounded
+    // page throttles rAF/timers in headless too, and the invisible switch is only the
+    // watch-mode symptom of the same problem.
+    forceFront: stale,
   });
 }
 
@@ -185,7 +205,8 @@ async function _settle(page, opts) {
     } catch (_) { /* page.url() itself can throw on a torn-down page — proceed to the load wait */ }
   }
   await page.waitForLoadState("domcontentloaded", { timeout }).catch(() => {});
-  if (opts.watch) {
+  if (opts.watch || opts.forceFront) {
+    if (opts.forceFront && opts.onPhase) opts.onPhase("foreground_reclaimed");
     await page.bringToFront().catch(() => {});
   }
   return page;

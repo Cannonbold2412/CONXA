@@ -341,6 +341,59 @@ test("consecutive steps on the same page do not re-settle", async () => {
   assert.strictEqual(frontCalls, 0, "no page switch — no bringToFront");
 });
 
+// Regression (2026-09-02, mega-workflow step 28-35): a click with target="_blank" opens a tab
+// Chromium immediately puts in FRONT. Every following step stays on the original tab, so the
+// prevPage === page early return skipped settlement and bringToFront was never called — the
+// run drove the original tab from the background for the remaining ~80 steps while the popup
+// sat visible. The user saw "it never switched tabs"; the failure surfaced 6 steps later.
+test("a page appearing mid-run reclaims the foreground even with no page switch", async () => {
+  const ctx = fakeContext();
+  const initial = fakePage("tab_0", { url: "https://a.test/" });
+  initial.context = () => ctx;
+  const registry = createTabRegistry(initial);
+
+  // Step N runs on tab_0 and clears the flag createTabRegistry never set.
+  const first = await resolveStepPage(registry, {}, { prevPage: initial, watch: true });
+  assert.strictEqual(first.id, "tab_0");
+
+  let frontCalls = 0;
+  const phases = [];
+  initial.bringToFront = async () => { frontCalls++; };
+
+  // The click on step N opened a popup nothing in the skill ever references.
+  ctx.fireNewPage(fakePage("orphan-popup", { url: "https://b.test/new" }));
+
+  // Step N+1 is still on tab_0 — same page, but the foreground moved.
+  const second = await resolveStepPage(registry, {}, {
+    prevPage: initial, watch: true, loadTimeoutMs: 4000, onPhase: (p) => phases.push(p),
+  });
+  assert.strictEqual(second, initial);
+  assert.strictEqual(frontCalls, 1, "a page that stole the foreground must be displaced");
+  assert.ok(phases.includes("foreground_reclaimed"), `expected phase marker, got ${phases}`);
+
+  // One appearance, one reclaim — the flag must not latch.
+  const third = await resolveStepPage(registry, {}, { prevPage: initial, watch: true });
+  assert.strictEqual(third, initial);
+  assert.strictEqual(frontCalls, 1, "flag must clear after one reclaim");
+});
+
+test("foreground reclaim does not depend on watch mode", async () => {
+  const ctx = fakeContext();
+  const initial = fakePage("tab_0", { url: "https://a.test/" });
+  initial.context = () => ctx;
+  const registry = createTabRegistry(initial);
+  await resolveStepPage(registry, {}, { prevPage: initial });
+
+  let frontCalls = 0;
+  initial.bringToFront = async () => { frontCalls++; };
+  ctx.fireNewPage(fakePage("orphan-popup", { url: "https://b.test/new" }));
+
+  // watch:false — a backgrounded page still throttles rAF/timers, which stalls Playwright's
+  // actionability "stable" wait. The invisible switch is only the watch-mode symptom.
+  await resolveStepPage(registry, {}, { prevPage: initial });
+  assert.strictEqual(frontCalls, 1, "headless runs must reclaim the foreground too");
+});
+
 test("closeExtraTabs: closes every tracked page not in the keep set", async () => {
   const a = fakePage("a");
   const b = fakePage("b");
