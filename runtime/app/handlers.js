@@ -44,7 +44,6 @@ const {
   parseKeyboardShortcut,
   baseSelector,
   stepWithSelector,
-  textSelector,
 } = require("./locators");
 
 // tab_open/tab_switch/popup are NOT here (see tabs.js): the tab switch they mark already
@@ -809,9 +808,11 @@ function enrichStepsWithRecovery(steps, recovery) {
     if (!rec) return step;
 
     const selectorContext = asObject(rec.selector_context);
-    const fallback = asObject(rec.fallback);
-    const textVariants = asArray(fallback.text_variants)
-      .filter(text => typeof text === "string" && text.trim());
+    // `fallback.text_variants` and `selector_context.alternatives` are no longer emitted by the
+    // builder (2026-09) and the `fallback_selectors` this used to synthesize from them had no
+    // reader left once the fallback-selector walk was deleted from the cascade. `alternatives` is
+    // still spread here rather than dropped, because a pack built before that change still
+    // carries it and `candidates` IS live — `try_dismiss` steps read it (handlers.js above).
     const recCandidates = unique([
       selectorContext.primary,
       ...asArray(selectorContext.alternatives),
@@ -820,13 +821,12 @@ function enrichStepsWithRecovery(steps, recovery) {
     return {
       ...step,
       candidates: unique([...asArray(step.candidates), ...recCandidates]),
-      fallback_selectors: [
-        ...asArray(step.fallback_selectors),
-        ...textVariants.map(textSelector),
-      ],
       anchors: asArray(rec.anchors).filter(anchor => anchor && typeof anchor.text === "string" && anchor.text.trim()),
       _intent: rec.intent || "",
       _visual_ref: rec.visual_ref || "",
+      // Where this element sat on the page at recording time. The agent tier gets a ranked list
+      // of what is on the page NOW; this is the only thing in the payload that says what changed.
+      _recorded_context: asObject(rec.recorded_context),
     };
   });
 }

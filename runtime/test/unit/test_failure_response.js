@@ -1,12 +1,14 @@
 "use strict";
-// Unit tests for failure_response.js — the Tier 3/4 recovery-payload assembly
+// Unit tests for failure_response.js — the agent recovery-payload assembly
 // extracted from server.js. Mock page objects only; no browser, no network.
 //
-// Tier model (2026-08 redesign): Tier 3 (semantic, browser-use-style indexed
-// digest) and Tier 4 (vision, CUA-style screenshots) fire as SEPARATE MCP
-// round-trips — first agent round for a step is always Tier 3; later rounds
-// escalate to Tier 4. Module-level escalation state (recovery_stage.js) is
-// keyed by `${workspace}:${slug}` — every test uses its own slug to isolate.
+// Tier model: the agent round is ARMED from round one — ranked indexed digest
+// (browser-use style) AND screenshots (CUA style) in the same payload. The old
+// split (text-only first round, vision withheld for a separate later round) was
+// a token-cost lever that starved the attempt most likely to succeed. Ceiling 3
+// and 4 are now identical; ceiling 2 stays deterministic with no agent handoff.
+// Module-level round state (recovery_stage.js) is keyed by
+// `${workspace}:${slug}` — every test uses its own slug to isolate.
 const test   = require("node:test");
 const assert = require("node:assert");
 const fs     = require("fs");
@@ -18,6 +20,7 @@ const {
   stepRecoveryContext,
   digestTargetContext,
   executedStepsBreadcrumb,
+  recordedContextBlock,
 } = require("../../app/failure_response");
 const pageScripts = require("../../app/page_scripts");
 
@@ -122,7 +125,7 @@ test("ceiling 2 (Build Studio): deterministic text-only failure, no screenshots"
   assert.ok(events.some(e => e.event === "recovery_ceiling_reached"));
 });
 
-test("tier 3 first round: indexed digest, candidate_index protocol, zero screenshots", async () => {
+test("first agent round: indexed digest, candidate_index protocol, screenshots included", async () => {
   let screenshotCalls = 0;
   const page = mockPage({
     inventory: [
@@ -142,8 +145,8 @@ test("tier 3 first round: indexed digest, candidate_index protocol, zero screens
     { ...BASE_DEPS, agentRecoveryEnabled: true, maxRecoveryTier: 4, appendRecoveryEvent: (e) => events.push(e) }
   );
 
-  assert.strictEqual(screenshotCalls, 0, "semantic round must never spend vision tokens");
-  assert.ok(resp.content.every(c => c.type === "text"), "tier 3 payload is text-only");
+  assert.ok(screenshotCalls >= 1, "the first agent round is armed — it captures the live page");
+  assert.ok(resp.content.some(c => c.type === "image"), "screenshots ride along on round one");
 
   const texts = resp.content.filter(c => c.type === "text").map(c => c.text).join("\n");
   assert.match(texts, /resume_from: 1/);
@@ -152,11 +155,11 @@ test("tier 3 first round: indexed digest, candidate_index protocol, zero screens
   assert.match(texts, /ranked against the recorded target/);
   assert.match(texts, /\[0\] button testid=buy-btn "Purchase order"/, "strongest match ranks first");
   assert.match(texts, /\[1\] a "Order history"/);
-  assert.ok(!/── Tier 4/.test(texts), "no vision section in the semantic round");
-  assert.ok(events.some(e => e.event === "agent_recovery_requested" && e.tier === 3 && e.round === 1));
+  assert.ok(events.some(e => e.event === "agent_recovery_requested" && e.tier === 4 && e.round === 1),
+    "round one is already the armed tier");
 });
 
-test("escalation: second round for the same step is tier 4 (vision), separate payload", async () => {
+test("second round for the same step is a fresh armed payload, not a re-roll", async () => {
   let screenshotCalls = 0;
   const page = mockPage({ inventory: [{ tag: "button", text: "Submit" }] });
   page.screenshot = async () => { screenshotCalls++; return Buffer.from("shot"); };
@@ -178,13 +181,13 @@ test("escalation: second round for the same step is tier 4 (vision), separate pa
 
   assert.ok(screenshotCalls >= 1, "vision round captures the failing page");
   const texts = resp.content.map(c => c.text || "").join("\n");
-  assert.match(texts, /Tier 4 \(visual identification\)/);
+  assert.match(texts, /Self-healing recovery\. The deterministic cascade could not resolve/);
   assert.ok(resp.content.some(c => c.type === "image"), "screenshots ride along the vision round");
   assert.match(texts, /candidate_index/, "closing edge unchanged — index nomination or selector");
   assert.ok(events.some(e => e.event === "agent_recovery_requested" && e.tier === 4 && e.round === 2));
 });
 
-test("escalation: an agent-override step that fails again goes straight to tier 4", async () => {
+test("a rejected agent override is reported back so the next round iterates", async () => {
   const page = mockPage();
   const resp = await buildFailureResponse(
     page,
@@ -201,24 +204,35 @@ test("escalation: an agent-override step that fails again goes straight to tier 
     { ...BASE_DEPS, agentRecoveryEnabled: true, maxRecoveryTier: 4 }
   );
   const texts = resp.content.map(c => c.text || "").join("\n");
-  assert.match(texts, /Tier 4 \(visual identification\)/);
+  assert.match(texts, /Self-healing recovery\. The deterministic cascade could not resolve/);
   assert.match(texts, /previous recovery pick/, "reports WHY the last pick was rejected");
 });
 
-test("ceiling 3: second round stays semantic — vision never fires", async () => {
-  let screenshotCalls = 0;
-  const page = mockPage({ inventory: [] });
-  page.screenshot = async () => { screenshotCalls++; return Buffer.from("shot"); };
+test("ceiling 3 now behaves exactly like ceiling 4 — armed from round one", async () => {
+  // Ceiling 3 used to mean "reason, but never spend image tokens" — a cost control that is gone.
+  // Collapsing it leaves one payload shape above the Studio ceiling, so a pack can no longer be
+  // armed for one round and starved for the next.
+  const page = mockPage({ inventory: [{ tag: "button", text: "Go" }] });
+  const events = [];
+  const resp = await buildFailureResponse(
+    page, { message: "not found", failedAt: 0 }, entry("ceiling3"), { emit() {} }, null,
+    { ...BASE_DEPS, agentRecoveryEnabled: true, maxRecoveryTier: 3, appendRecoveryEvent: (e) => events.push(e) },
+  );
 
-  const ent = entry("ceiling3");
-  const commonDeps = { ...BASE_DEPS, agentRecoveryEnabled: true, maxRecoveryTier: 3 };
-  await buildFailureResponse(page, { message: "not found", failedAt: 0 }, ent, { emit() {} }, null, commonDeps);
-  const resp = await buildFailureResponse(page, { message: "not found", failedAt: 0 }, ent, { emit() {} }, null, commonDeps);
+  assert.ok(resp.content.some(c => c.type === "image"), "ceiling 3 gets the screenshots too");
+  assert.ok(events.some(e => e.event === "agent_recovery_requested" && e.tier === 4 && e.round === 1));
+});
 
-  assert.strictEqual(screenshotCalls, 0);
+test("ceiling 2 is untouched — deterministic failure, no agent handoff, no screenshots", async () => {
+  const page = mockPage({ inventory: [{ tag: "button", text: "Go" }] });
+  const resp = await buildFailureResponse(
+    page, { message: "not found", failedAt: 0 }, entry("ceiling2"), { emit() {} }, null,
+    { ...BASE_DEPS, agentRecoveryEnabled: false, maxRecoveryTier: 2 },
+  );
   const texts = resp.content.map(c => c.text || "").join("\n");
-  assert.match(texts, /Tier 3 \(semantic grounding\)/);
   assert.ok(!resp.content.some(c => c.type === "image"));
+  assert.ok(!/candidate_index/.test(texts), "no agent recovery protocol under the Studio ceiling");
+  assert.match(texts, /deterministic cascade only/);
 });
 
 test("stagnation hard cap: identical page across repeat rounds of one tier stops escalation", async () => {
@@ -251,7 +265,8 @@ test("different steps escalate independently (a healed step resets nothing for o
     page, { message: "fail", failedAt: 3 }, ent, { emit() {} }, null, commonDeps
   );
   const texts = respOtherStep.content.map(c => c.text || "").join("\n");
-  assert.match(texts, /Tier 3 \(semantic grounding\)/, "a different failed step starts fresh at tier 3");
+  assert.match(texts, /Self-healing recovery\. The deterministic cascade could not resolve/);
+  assert.match(texts, /resume_from: 3/, "the fresh step's own index, not the one already escalating");
 });
 
 // ── Reference image: describe only what is actually attached ────────────────────────────────
@@ -272,7 +287,7 @@ test("vision round: no reference image on disk — header must not describe one"
   const resp = await visionRound(entry("ref-absent"), 2);
   const texts = resp.content.map(c => c.text || "").join("\n");
 
-  assert.match(texts, /Tier 4 \(visual identification\)/);
+  assert.match(texts, /Self-healing recovery\. The deterministic cascade could not resolve/);
   assert.ok(!/recording-time reference image only shows/.test(texts),
     "must not describe a reference image that is not attached");
   assert.match(texts, /No recording-time reference image is available/,
@@ -299,4 +314,58 @@ test("vision round: reference image present — header describes it and it rides
     "reference image is labelled in the payload");
   assert.ok(resp.content.filter(c => c.type === "image").length >= 2,
     "reference image rides along with the live screenshots");
+});
+
+// ── Recorded page structure ─────────────────────────────────────────────────────────────────
+// Everything else in the payload describes the page as it is NOW, which answers "what is here?"
+// but not "what changed" — and drift is a change. The recorded neighbourhood is the other half of
+// that comparison, compiled at build time from signals the recorder already captured.
+
+test("recordedContextBlock: renders the recorded neighbourhood and warns it may be stale", () => {
+  const block = recordedContextBlock({
+    failedStep: {
+      _recorded_context: {
+        parent: "div#toolbar[role=toolbar]",
+        siblings: ["button#export:Export", "button#print:Print"],
+        index_in_parent: 3,
+        form_context: "form#report",
+      },
+    },
+  });
+
+  assert.match(block, /AT RECORDING TIME/);
+  assert.match(block, /div#toolbar/);
+  assert.match(block, /button#export:Export/);
+  assert.match(block, /do not assume it still holds/,
+    "the recorded structure is evidence of the past, never a claim about the present");
+});
+
+test("recordedContextBlock: null when the pack predates recorded context", () => {
+  assert.strictEqual(recordedContextBlock({ failedStep: {} }), null);
+  assert.strictEqual(recordedContextBlock({ failedStep: { _recorded_context: {} } }), null,
+    "an empty object must not produce a meaningless block");
+  assert.strictEqual(recordedContextBlock({}), null);
+});
+
+test("the agent payload carries the recorded structure beside the live digest", async () => {
+  const page = mockPage({ inventory: [{ tag: "button", text: "Export" }] });
+  const resp = await buildFailureResponse(
+    page,
+    {
+      message: "not found",
+      failedAt: 0,
+      failedStep: {
+        type: "click",
+        identity_bundle: { fingerprint: { role: "button", inner_text: "Export" } },
+        _recorded_context: { parent: "div#toolbar[role=toolbar]", index_in_parent: 3 },
+      },
+    },
+    entry("recorded-ctx"), { emit() {} }, null,
+    { ...BASE_DEPS, agentRecoveryEnabled: true, maxRecoveryTier: 4 },
+  );
+
+  const texts = resp.content.map(c => c.text || "").join("\n");
+  assert.match(texts, /AT RECORDING TIME/);
+  assert.match(texts, /div#toolbar/);
+  assert.match(texts, /Interactive elements NOW/, "sits alongside the live list, not instead of it");
 });

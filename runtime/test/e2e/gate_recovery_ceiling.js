@@ -4,10 +4,12 @@
 // Stages a skill whose click step cannot be resolved by any zero-token tier (bad signals,
 // no fallbacks), then drives it twice:
 //   • CONXA_MAX_RECOVERY_TIER=2 (Build Studio) → deterministic terminal failure: text says
-//     "Recovery ceiling Tier 2", and there is NO agent-recovery payload (no Tier 3/4 blocks,
-//     no screenshot).
-//   • CONXA_MAX_RECOVERY_TIER=4 (Claude/MCP)   → structured agent recovery: Tier 3 (semantic)
-//     + Tier 4 (vision) blocks, the step_overrides protocol, and a screenshot.
+//     "Recovery ceiling Tier 2", and there is NO agent-recovery payload (no digest, no
+//     step_overrides protocol, no screenshot).
+//   • CONXA_MAX_RECOVERY_TIER=4 (Claude/MCP)   → the ARMED agent round, in ONE payload: the
+//     ranked candidate digest, the step_overrides protocol, and screenshots. Since the 2026-09
+//     redesign there is no text-only first round to escalate from — round one carries
+//     everything (see docs/TRD.md §10.1), so ceiling 3 behaves identically to ceiling 4.
 //
 // Usage: node gate_recovery_ceiling.js <path-to-host-exe>
 //   Env: PLAYWRIGHT_BROWSERS_PATH (installed chromium) — required.
@@ -136,16 +138,18 @@ function runOnce(ceiling) {
   console.log("# ceiling 2 (Build Studio — deterministic, no agent recovery)");
   const t2 = await runOnce(2);
   assert(/Recovery ceiling Tier 2/.test(t2.text), "T2: response states the Tier 2 ceiling", t2.text || t2.stderr);
-  assert(!/Tier 3 \(semantic\)/.test(t2.text), "T2: no Tier 3 semantic block", t2.text);
+  assert(!/Interactive elements NOW/.test(t2.text), "T2: no candidate digest", t2.text);
   assert(!t2.hasImage, "T2: no screenshot / vision payload", t2.text);
   assert(!/step_overrides/.test(t2.text), "T2: no agent override protocol offered", t2.text);
 
-  console.log("# ceiling 4 (Claude/MCP — structured Tier 3 + Tier 4 recovery)");
+  console.log("# ceiling 4 (Claude/MCP — one armed agent round)");
   const t4 = await runOnce(4);
-  assert(/Tier 3 \(semantic\)/.test(t4.text), "T4: includes Tier 3 semantic block", t4.text || t4.stderr);
-  assert(/Tier 4 \(vision\)/.test(t4.text), "T4: includes Tier 4 vision block", t4.text);
+  assert(/Self-healing recovery\. The deterministic cascade could not resolve/.test(t4.text),
+    "T4: the armed agent round fires", t4.text || t4.stderr);
+  assert(/Interactive elements NOW/.test(t4.text), "T4: includes the ranked candidate digest", t4.text);
   assert(/step_overrides/.test(t4.text), "T4: offers the step_overrides closing-edge protocol", t4.text);
-  assert(t4.hasImage, "T4: includes a screenshot for vision recovery", t4.text);
+  // The point of the redesign: the pictures arrive on the FIRST round, not a later one.
+  assert(t4.hasImage, "T4: round one already carries screenshots", t4.text);
 
   console.log(`# pass ${10 - fails}\n# fail ${fails}`);
   process.exit(fails ? 1 : 0);

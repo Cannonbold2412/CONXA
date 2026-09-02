@@ -1,26 +1,28 @@
 "use strict";
 /**
- * recovery_stage.js — per-skill escalation state for agent-mediated recovery,
- * where Tier 3 (semantic, browser-use-style grounding) and Tier 4 (vision,
- * CUA-style) fire as SEPARATE MCP round-trips instead of one combined payload.
+ * recovery_stage.js — per-skill round state for agent-mediated recovery.
  *
  * The runtime never calls Claude Desktop — it RESPONDS to execute_skill with a
- * recovery request, and the client resumes by calling execute_skill again. Two
- * separate calls therefore mean two distinct failure-response shapes in
- * sequence: the first agent round for a step is Tier 3 (text-only, ranked
- * indexed digest); any subsequent round for that step escalates to Tier 4
- * (screenshots added). Broad trigger, decided 2026-08-25: escalation happens
- * whether the Tier 3 override failed validation or validated and the step
- * still failed — vision adds information in both cases.
+ * recovery request, and the client resumes by calling execute_skill again. Each
+ * round is therefore one MCP round-trip, and every round for a failed step
+ * carries the same fully-armed payload: the ranked indexed digest, the live
+ * screenshots, and the recording-time reference when it is on disk.
+ *
+ * This replaced a two-shape escalation (round one text-only at "tier 3", vision
+ * withheld for a later "tier 4" round). Splitting them was a token-cost lever,
+ * and it inverted the priority: the first round is the likeliest to succeed, so
+ * it is the round that should be best armed. Withholding the screenshots saved
+ * tokens on attempts that worked and cost a whole wasted round-trip — the entire
+ * digest re-sent — on the attempts that needed them most.
  *
  * Stagnation hard cap: browser-use detects frozen pages softly (PageFingerprint
  * nudge); we flip that to a HARD stop. If the page fingerprint is unchanged
  * across CONSECUTIVE recovery rounds — STAGNATION_LIMIT of them — further paid
  * rounds are refused and the step fails deterministically. The first identical
- * round is always allowed, which is precisely what lets the designed Tier 3 →
- * Tier 4 escalation fire on an unchanged page (vision adds information even
- * when the DOM hash matches); what stops is anything BEYOND that — repeating
- * the same signal set against a page that never moves.
+ * round is still allowed: round two is not a re-roll, it carries what round one
+ * nominated and what that pick actually matched, so the agent iterates. What
+ * stops is anything BEYOND that — repeating the same signal set against a page
+ * that never moves.
  *
  * Keyed per `${workspace_id}:${slug}` like parks and the retry budget (RT-3):
  * sibling runs of other skills live under their own keys. The same shared-key
@@ -30,9 +32,16 @@
  * starting fresh runs. Bounded growth: one small record per failed step.
  */
 
-// Consecutive identical-fingerprint recovery rounds tolerated before
-// escalation stops. 2 = first repeat allowed (the T3 → T4 escalation),
-// second repeat refused.
+// Consecutive identical-fingerprint recovery rounds tolerated before recovery
+// stops. 2 = the first repeat is allowed, the second is refused — so a failed
+// step gets two agent rounds against an unchanged page and no more.
+//
+// The allowance used to be justified by the T3 → T4 escalation: a second round
+// on an unchanged page was worth paying for because it added vision. Now that
+// the first round is already armed, the justification is different but the
+// number is the same — round two carries what round one tried and what its pick
+// actually matched, so the agent iterates on a rejection rather than re-rolling
+// the identical guess.
 const STAGNATION_LIMIT = 2;
 
 const _stages = new Map(); // key -> { rounds: { [stepIndex]: { count, tier, fp, stagnantRun } } }
@@ -78,22 +87,22 @@ function recordRound(key, stepIndex, tier, fp) {
 
 /**
  * Which tier THIS failure response should use for the failed step.
- *   • No prior agent round on this step and no failed override behind us → 3.
- *   • Any prior agent round on this step (the broad rule) → 4.
- *   • Clamped by the ceiling: CONXA_MAX_RECOVERY_TIER=3 keeps every round
- *     semantic (vision never fires); ceiling 2 never reaches here (handled by
- *     the deterministic Studio path in failure_response.js).
+ *
+ * Always 4 — the agent tier is armed from its first round. The old split (round
+ * one text-only at tier 3, screenshots withheld for a later tier 4 round) was a
+ * token-cost optimisation, and it cost more than it saved: the first round is
+ * the one most likely to succeed, so it is the round that should carry the most
+ * information. Withholding the pictures bought a cheaper first attempt at the
+ * price of a wasted round-trip — the whole ranked digest re-sent — whenever that
+ * attempt failed for want of them.
+ *
+ * Ceiling 3 and ceiling 4 are therefore identical now; a pack that set 3 to opt
+ * out of image costs gets the armed payload like everything else. Ceiling 2 is
+ * unchanged and never reaches here (handled by the deterministic Studio path in
+ * failure_response.js).
  */
-function nextRecoveryTier({ key, failedStep, err, maxRecoveryTier }) {
-  const st = _stages.get(key);
-  const stepIndex = typeof (err && err.failedAt) === "number" ? err.failedAt : -1;
-  const priorRound = st && stepIndex >= 0 ? st.rounds[stepIndex] : null;
-  const overrideBehindUs = !!(err && err.overrideValidationFailed) ||
-    !!(failedStep && failedStep._agent_override);
-  const escalated = (priorRound && priorRound.count >= 1) || overrideBehindUs;
-  // Ceiling clamp: CONXA_MAX_RECOVERY_TIER=3 keeps every round semantic
-  // (vision never fires); 4 is the default. Ceiling 2 never reaches here.
-  return Math.min(escalated ? 4 : 3, maxRecoveryTier >= 4 ? 4 : 3);
+function nextRecoveryTier({ maxRecoveryTier }) {
+  return maxRecoveryTier >= 3 ? 4 : maxRecoveryTier;
 }
 
 /**

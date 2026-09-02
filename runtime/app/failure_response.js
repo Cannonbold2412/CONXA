@@ -1,22 +1,26 @@
 "use strict";
 /**
  * failure_response.js — assembly of the MCP failure response payloads, extracted
- * from server.js so the LLM prompt-engineering text (the Tier 3/4 recovery
- * requests) is unit-testable without loading the whole server.
+ * from server.js so the LLM prompt-engineering text (the agent recovery request)
+ * is unit-testable without loading the whole server.
  *
- * Three shapes, decided by the recovery-tier ceiling (CONXA_MAX_RECOVERY_TIER)
- * and the per-step escalation stage (recovery_stage.js):
+ * Two shapes, decided by the recovery-tier ceiling (CONXA_MAX_RECOVERY_TIER):
  *   • ceiling 2 (Build Studio): a concise, deterministic failure. No agent
  *     handoff, no screenshots — the compiled pack is judged on its T1/T2 merits.
- *   • ceiling ≥ 3, first agent round for the step — TIER 3 (semantic): a
- *     browser-use-style ranked, indexed candidate digest of the live page; the
- *     client nominates a candidate_index (reflection contract) or a selector.
- *     No screenshots — text-first is the cost lever.
- *   • ceiling ≥ 4, subsequent round for the same step — TIER 4 (vision): a
- *     SEPARATE round-trip that adds screenshots (CUA-style visual grounding).
+ *   • ceiling ≥ 3: the ARMED agent round — a browser-use-style ranked, indexed
+ *     candidate digest of the live page, plus CUA-style visual grounding (the
+ *     failure screenshot, the pre-step screenshot, and the recording-time
+ *     reference image when it is actually present on disk). The client nominates
+ *     a candidate_index (reflection contract) or a selector, and the runtime
+ *     re-verifies that pick against a uniqueness gate before acting.
  *
- * Tiers 3 and 4 are conceptually distinct signals shipped as separate MCP
- * calls (2026-08 redesign; they used to be one combined payload).
+ * EVERY round is armed. This replaced a split where round one was text-only and
+ * screenshots were withheld for a separate later round — a token-cost lever that
+ * inverted the priority. The first round is the likeliest to succeed, so it is
+ * the one that should be best armed; withholding saved tokens on the attempts
+ * that were going to work anyway and cost a whole wasted round-trip (the entire
+ * digest re-sent) on the ones that actually needed the pictures. Ceiling 3 and 4
+ * now behave identically; ceiling 2 is unchanged.
  *
  * Everything that used to be a server.js module-level binding arrives via `deps`,
  * evaluated at call time (server.js binds some of them late inside its SDK try block).
@@ -27,9 +31,10 @@ const pageScripts = require("./page_scripts");
 const { capturePageFingerprint, parkKey } = require("./recovery_park");
 const recoveryStage = require("./recovery_stage");
 const { buildIndexedDigest } = require("./candidate_digest");
+const artifactStore = require("./artifact_store");
 
 // Compact, recovery-relevant description of the step the cascade could not resolve.
-// Drives Tier 3 (semantic) matching: the agent matches THIS intent against the live DOM.
+// Drives semantic matching: the agent matches THIS intent against the live DOM.
 function stepRecoveryContext(err) {
   const step = err && err.failedStep ? err.failedStep : null;
   if (!step) return null;
@@ -207,7 +212,7 @@ function frameNotFoundNoteText(err) {
 
 // PROD-3 — the failure model's "no guess on irreversible actions" rule: a destructive step that
 // exhausted Layer 1, or any step whose bound record could not be uniquely re-located, never
-// reaches the Tier 3/4 candidate digest below. Offering a ranked "pick a different element" list
+// reaches the armed round's candidate digest below. Offering a ranked "pick a different element" list
 // here would invite exactly the wrong-row guess the halt exists to prevent — this is a deliberate
 // stop, not exhausted recovery, so it reads and behaves like one (see buildFailureResponse's
 // !agentRecoveryEnabled terminal branch, which this mirrors).
@@ -231,10 +236,58 @@ function haltReasonNoteText(err) {
 }
 
 // Shared reasoning context for both tiers: intent, post-condition, trace, geometry.
+// Where the target sat on the page when the workflow was RECORDED — parent element, the
+// siblings around it, its index among them, and the enclosing form.
+//
+// Everything else in the payload describes the page as it is now. That is enough to answer
+// "what is here?", but drift is a *change*, and a live inventory cannot express one. This block
+// is the other half of the comparison: "it used to sit in the toolbar, third child, next to
+// Export" is what turns an unfindable button into a moved one. Compiled at build time from
+// signals the recorder already captured, so it costs nothing at runtime and works offline.
+function recordedContextBlock(err) {
+  const step = err && err.failedStep ? err.failedStep : null;
+  const ctx = step && step._recorded_context;
+  if (!ctx || typeof ctx !== "object" || !Object.keys(ctx).length) return null;
+  return `Where this element sat AT RECORDING TIME (structure may since have changed — compare ` +
+    `against the live list above, do not assume it still holds):\n${JSON.stringify(ctx)}`;
+}
+
+// Locate the recording-time reference image for the failed step, if this machine actually has it.
+//
+// Two lookups, in order of trustworthiness:
+//
+//   1. The step's own `visual_ref` (compiled into recovery.json) resolved through the
+//      content-addressed artifact store. This is the real path: it survives step renumbering,
+//      because the store is keyed by bytes rather than by `Image_<n>` position.
+//   2. The legacy in-pack `visuals/` folder. Packs published before artifacts synced separately
+//      keep their images inside the skill directory, and the Studio sandbox stages them there.
+//
+// Returns null when neither has it — an ordinary state, not a failure. `visuals/` genuinely did
+// not reach customer machines for a long time, and the header adapts rather than describing an
+// image that was never attached.
+function _resolveVisualRef(err, resolvedEntry, failedAt, deps) {
+  const visualRef = err && err.failedStep && err.failedStep._visual_ref;
+  if (visualRef && deps && deps.skillPacksDir) {
+    const stored = artifactStore.resolveByPath(deps.skillPacksDir, resolvedEntry.skillDir, visualRef);
+    if (stored) return stored;
+  }
+
+  const inPack = visualRef
+    ? [path.join(resolvedEntry.skillDir, visualRef)]
+    : [".jpg", ".jpeg", ".png"].map(ext =>
+        path.join(resolvedEntry.skillDir, "visuals", `Image_${failedAt + 1}${ext}`));
+  for (const candidate of inPack) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 function buildContextSections(err, steps, failedAt, viewport, scrollY, stepAssertions) {
   const out = [];
   const intent = stepRecoveryContext(err);
   if (intent) out.push(`Failed step intent: ${JSON.stringify(intent)}`);
+  const recorded = recordedContextBlock(err);
+  if (recorded) out.push(recorded);
   const expected = expectedStateBlock(err, stepAssertions);
   if (expected) out.push(expected);
   const breadcrumb = executedStepsBreadcrumb(steps, failedAt);
@@ -288,9 +341,9 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
   }
 
   const stageKey = parkKey(resolvedEntry.workspace_id || "", resolvedEntry.slug || "");
-  // Which tier THIS round uses: first agent round for the step → 3 (semantic),
-  // any later round → 4 (vision), clamped by the ceiling.
-  const tier = recoveryStage.nextRecoveryTier({ key: stageKey, failedStep: err.failedStep, err, maxRecoveryTier });
+  // Always the armed tier above the Studio ceiling — kept as a call rather than a constant
+  // because the ceiling still decides it, and telemetry still reports it.
+  const tier = recoveryStage.nextRecoveryTier({ maxRecoveryTier });
 
   // Stagnation hard cap (browser-use's soft PageFingerprint nudge, flipped to a hard stop):
   // identical page state across consecutive recovery rounds means nothing is changing — the
@@ -342,42 +395,7 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
 
   const earlyDiffers = earlySnapshotDiffers(err, currentInventory);
 
-  // ── Tier 3 — semantic round: text-only, browser-use-style indexed digest ──
-  if (tier <= 3) {
-    const header =
-      `Execution failed at step ${stepNo} (Tier 1–2 cascade exhausted): ${err.message}\n` +
-      `Page URL: ${url}\n\n` +
-      `Self-healing recovery — Tier 3 (semantic grounding). Below is a ranked, indexed list of ` +
-      `every interactive element on the live page right now, ordered by how well each matches ` +
-      `this step's recorded target. Identify the element the failed step was meant to act on, ` +
-      `then resume by calling execute_skill again with:\n` +
-      `  resume_from: ${failedAt ?? 0}\n` +
-      `  step_overrides: { "${resumeKey}": { "candidate_index": <index>, "confidence": <0-1>, "why": "<one line>" } }\n` +
-      `Rules:\n` +
-      `- Nominate ONLY an index from the ranked list (or a selector you can read straight off ` +
-      `one of its entries, e.g. its testid). The runtime re-verifies your pick against a ` +
-      `uniqueness gate before acting — it never blindly trusts it.\n` +
-      `- The list is ranked most-likely-first; entries were chosen by relevance, not position.\n` +
-      `- Do not guess — if no listed element matches the intent, tell the user the page has ` +
-      `changed and ask how to proceed.${notes}`;
-
-    const t3 = [contextSections];
-    if (digest.shown) {
-      t3.push(`Interactive elements NOW — ranked against the recorded target ` +
-        `(${digest.shown} of ${digest.total} shown; nominate via candidate_index):\n${digest.text}`);
-    } else {
-      t3.push(`No actionable interactive elements were enumerable on the current page — ` +
-        `tell the user the page has changed.`);
-    }
-    if (earlyDiffers) {
-      t3.push(`Elements at the moment of failure, before Tier 1–2 remedies ran (may include ` +
-        `since-closed transient UI — do not treat as current):\n${JSON.stringify(err.earlyDomSnapshot)}`);
-    }
-
-    return { content: [{ type: "text", text: header }, { type: "text", text: t3.join("\n\n") }] };
-  }
-
-  // ── Tier 4 — vision round: separate call, CUA-style visual grounding ──
+  // ── The armed agent round: ranked digest + CUA-style visual grounding ──
   // P7: capture as JPEG (lossless PNG is 3-8× larger; Claude token cost is dimension-based either way)
   const failShot = await page.screenshot({ type: "jpeg", quality: 80 }).catch(() => null);
 
@@ -387,15 +405,14 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
 
   let visualRefData = null, visualRefMime = null;
   if (resolvedEntry && failedAt !== null && !alreadySentRef) {
-    const visualDir = path.join(resolvedEntry.skillDir, "visuals");
-    const stepNum   = failedAt + 1;
-    for (const ext of [".jpg", ".jpeg", ".png"]) {
-      const candidate = path.join(visualDir, `Image_${stepNum}${ext}`);
-      if (fs.existsSync(candidate)) {
-        visualRefData = fs.readFileSync(candidate).toString("base64");
-        visualRefMime = ext === ".png" ? "image/png" : "image/jpeg";
+    const refPath = _resolveVisualRef(err, resolvedEntry, failedAt, deps);
+    if (refPath) {
+      try {
+        visualRefData = fs.readFileSync(refPath).toString("base64");
+        visualRefMime = path.extname(refPath).toLowerCase() === ".png" ? "image/png" : "image/jpeg";
         if (deps.sentVisualRefs && visualRefKey) deps.sentVisualRefs.add(visualRefKey);
-        break;
+      } catch (_) {
+        visualRefData = null;  // unreadable is the same as absent — the header adapts either way
       }
     }
   }
@@ -414,9 +431,10 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
   const header =
     `Execution failed at step ${stepNo} (Tier 1–2 cascade exhausted): ${err.message}\n` +
     `Page URL: ${url}\n\n` +
-    `Self-healing recovery — Tier 4 (visual identification). Semantic grounding alone did not ` +
-    `settle this step, so look at the screenshots below the way a human would. ` +
-    `${groundTruthSentence} Then resume by calling execute_skill again with:\n` +
+    `Self-healing recovery. The deterministic cascade could not resolve this step's element, so ` +
+    `identify it yourself: the ranked element list below is ground truth for what EXISTS on the ` +
+    `page, and the screenshots show what it LOOKS like. ${groundTruthSentence} ` +
+    `Then resume by calling execute_skill again with:\n` +
     `  resume_from: ${failedAt ?? 0}\n` +
     `  step_overrides: { "${resumeKey}": { "candidate_index": <index>, "confidence": <0-1>, "why": "<one line>" } }\n` +
     `Rules:\n` +
@@ -454,4 +472,5 @@ module.exports = {
   digestTargetContext,
   expectedStateBlock,
   executedStepsBreadcrumb,
+  recordedContextBlock,
 };

@@ -189,20 +189,6 @@ function textSelector(value) {
   return text ? `text=${JSON.stringify(text)}` : "";
 }
 
-function fallbackSelectors(step) {
-  return unique([
-    ...asArray(step.candidates),
-    ...asArray(step.fallback_selectors),
-    ...asArray(step.fallback_text_variants).map(value => textSelector(String(value))),
-    ...[step.value, step.label, step.aria_label]
-      .filter(value => typeof value === "string" && value.trim() && value.length < 60)
-      .map(textSelector),
-    ...asArray(step.anchors)
-      .filter(anchor => anchor && typeof anchor.text === "string" && anchor.text.trim())
-      .map(anchor => textSelector(anchor.text)),
-  ]);
-}
-
 // Step executor helpers
 
 async function runLocatorStep(page, step, inputs, action, selector = PRIMARY) {
@@ -295,7 +281,6 @@ module.exports = {
   stepSelector,
   stepWithSelector,
   textSelector,
-  fallbackSelectors,
   runLocatorStep,
   hasTarget,
   clickFirst,

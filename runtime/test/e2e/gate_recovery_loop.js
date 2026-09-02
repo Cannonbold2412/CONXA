@@ -1,7 +1,7 @@
 "use strict";
 // End-to-end proof of the COMPLETE self-healing loop through the real exe + MCP, with the
 // agent role scripted (exactly the protocol Claude follows):
-//   execute_skill (broken step) → runtime returns Tier 3/4 recovery request → "agent" reads the
+//   execute_skill (broken step) -> runtime returns the armed recovery request -> "agent" reads the
 //   DOM inventory, picks the correct selector → execute_skill resume_from + step_overrides →
 //   the step heals and the run reaches "Done."
 //
@@ -32,7 +32,7 @@ const APP_FILES = [
 // Click step whose recorded identity matches NOTHING on the live page (wrong testid, wrong
 // accessible name, no fallbacks) — so Tier 1 AND Tier 2 are genuinely exhausted. The actual
 // actionable element (data-testid=gate-btn) still exists, so a recovering agent reading the DOM
-// inventory can identify and select it. This is the case that only Tier 3/4 can heal.
+// inventory can identify and select it. This is the case only the agent tier can heal.
 const BROKEN_EXECUTION = [
   { type: "navigate", url: "{{fixture_url}}" },
   {
@@ -105,7 +105,7 @@ function done(code, msg) {
   process.exit(code);
 }
 
-// The "agent": from a Tier 3 recovery request, read the live DOM inventory and choose the
+// The "agent": from the armed recovery request, read the live DOM inventory and choose the
 // selector for the element matching the failed step's intent.
 function agentPickSelector(text) {
   const m = text.match(/Interactive elements now on the page \(\d+\):\s*(\[[\s\S]*?\])/);
@@ -129,8 +129,8 @@ function agentPickSelector(text) {
       arguments: { skill: "gate-skill", company: "gate", inputs: { fixture_url: FIXTURE_URL }, watch: false } });
     const text1 = ((r1.result && r1.result.content) || []).filter(c => c.type === "text").map(c => c.text).join("\n");
     if (/^Done\./m.test(text1)) return done(1, "not ok - step unexpectedly succeeded; broken fixture did not fail");
-    if (!/Tier 3 \(semantic\)/.test(text1)) return done(1, `not ok - no Tier 3 recovery request:\n${text1.slice(0, 500)}`);
-    console.log("ok - initial run failed and returned a Tier 3/4 recovery request");
+    if (!/Interactive elements NOW/.test(text1)) return done(1, `not ok - no agent recovery request:\n${text1.slice(0, 500)}`);
+    console.log("ok - initial run failed and returned an armed agent recovery request");
 
     // 2. Agent picks the corrected selector from the recovery request.
     const selector = agentPickSelector(text1);

@@ -1,9 +1,17 @@
 "use strict";
 // Recovery cascade seam, extracted from run.js: the Tier 1 deterministic ladder
-// and the Tier 2 zero-token mechanisms (a11y re-probe, fallback selectors,
-// dialog scope, fuzzy text, re-hover), each closing through a verified action
-// re-run. LLM fires at Tier 3+ only (AGENTS.md Key Invariants) — nothing in
-// this module performs network I/O (CI-guarded by check_recovery_purity.js).
+// and the Tier 2 zero-token mechanisms (a11y re-probe, re-hover, dialog scope),
+// each closing through a verified action re-run. LLM fires at Tier 3+ only
+// (AGENTS.md Key Invariants) — nothing in this module performs network I/O
+// (CI-guarded by check_recovery_purity.js).
+//
+// Every stage here obeys one rule: it may change WHEN or WHERE it looks, never WHICH element it
+// settles for. A stage either retries the recorded selector (after a wait, scroll, dismissal,
+// hover or dialog scoping) or clears the same uniqueness gate primary resolution uses. Stages
+// that guessed a different element by text affinity and clicked `.first()` ungated used to live
+// here and were deleted: a wrong click mutates the page before the agent tier ever sees it, so
+// they lowered the ceiling of the tier behind them. Identity guessing now happens only where a
+// wrong guess is caught before it acts.
 const { classifyException, remedyFor } = require("./recovery");
 const { appendRecoveryEvent } = require("./recovery_log");
 const { SECONDARY_ACTION_TIMEOUT_MS, CAPTURE_PRESTEP } = require("./run_config");
@@ -11,9 +19,7 @@ const { asObject, asArray, isNonIdempotent } = require("./step_utils");
 const { rootCandidates } = require("./resolution");
 const {
   stepWithSelector,
-  fallbackSelectors,
   walkHoverChain,
-  locatorEvaluateAll,
 } = require("./locators");
 const { executeStep } = require("./handlers");
 const { verifyStep, hasRequiredAssertion, capturePreStepSignature, signatureChanged } = require("./assertions");
@@ -28,7 +34,6 @@ const INTERACTIVE_STEP_TYPES = new Set([
 ]);
 
 const DIALOG_CONTAINERS = ['[role="dialog"]', '[role="alertdialog"]', '[aria-modal="true"]', ".modal"];
-const TEXT_MATCH_TAG_RE = /^(button|a|input|select|textarea)/i;
 
 // ── EXEC-24: the action guard ────────────────────────────────────────────────────────────────
 //
@@ -212,22 +217,6 @@ async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, bas
   }
 }
 
-async function recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, skipSelector, tracker, baseline = null, guard = null) {
-  for (const selector of fallbackSelectors(step)) {
-    if (skipSelector && selector === skipSelector) continue;
-    const recovered = await recoverWithSelector(page, step, inputs, selector, () => {
-      appendRecoveryEvent({ event: "layer_recovered", layer: 2, slug, step_index: stepIndex, recovery_selector: selector });
-      tracker.emit("rec_ok", { si: stepIndex, sc: "selector" });
-    }, baseline, guard);
-    if (recovered) return true;
-    // Each fallback is a DIFFERENT element; once the guard has stopped, walking the rest of the
-    // list would be exactly the compounding-wrong-target case this whole change exists to stop.
-    if (guard && guard.blocked) return false;
-  }
-
-  return false;
-}
-
 async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null, guard = null) {
   if (step.type !== "click" || !primarySelector) return false;
 
@@ -244,42 +233,6 @@ async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, prima
   return false;
 }
 
-async function recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline = null, guard = null) {
-  const intent = [step.value, step.label, step.aria_label, step._intent]
-    .filter(value => typeof value === "string" && value.trim())
-    .map(value => value.trim())[0];
-  const tagMatch = primarySelector.match(TEXT_MATCH_TAG_RE);
-  const tagHint = tagMatch ? tagMatch[1].toLowerCase() : null;
-
-  if (!intent || !tagHint) return false;
-
-  try {
-    const fuzzyIndex = await locatorEvaluateAll(page, step, inputs, tagHint, intent, (elements, needle) => {
-      const lowerNeedle = needle.toLowerCase();
-      return Array.from(elements).findIndex(element => {
-        const text = (
-          element.innerText ||
-          element.value ||
-          element.getAttribute("aria-label") ||
-          element.getAttribute("placeholder") ||
-          ""
-        ).trim().toLowerCase();
-        return text && (text === lowerNeedle || text.includes(lowerNeedle) || lowerNeedle.includes(text));
-      });
-    });
-
-    if (fuzzyIndex < 0) return false;
-
-    const selector = `${tagHint} >> nth=${fuzzyIndex}`;
-    return await recoverWithSelector(page, step, inputs, selector, () => {
-      appendRecoveryEvent({ event: "layer_recovered", layer: 3, slug, step_index: stepIndex, mode: "fuzzy" });
-      tracker.emit("rec_ok", { si: stepIndex, sc: "text_variant" });
-    }, baseline, guard);
-  } catch (_) {
-    return false;
-  }
-}
-
 // Layer 1 deterministic ladder: apply a single targeted remedy keyed off the exception class,
 // then retry the primary selector once. Zero-token. Returns true if the retry succeeded.
 async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline = null, guard = null) {
@@ -290,8 +243,8 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
     // as it was when the post-condition check failed. Retrying the same primary selector here
     // would just re-run the identical action and re-fail the same check. Skip the single-remedy
     // L1 retry entirely and let the cascade fall through to L2's resolution-changing mechanisms
-    // (a11y re-probe, fallback selectors, dialog scope, fuzzy text) below, each of which
-    // re-verifies the post-condition via recoverWithSelector before reporting success.
+    // (a11y re-probe, re-hover, dialog scope) below, each of which re-verifies the
+    // post-condition via recoverWithSelector before reporting success.
     return false;
   }
   try {
@@ -367,10 +320,10 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
   // EXEC-24 / the failure model's "no guess on irreversible actions" rule, implemented at last.
   // A destructive step (pay / delete / submit — flagged at compile time) gets Layer 1 and nothing
   // more: the L1 ladder's remedies are waits, scrolls and overlay dismissals plus ONE verified
-  // retry of the recorded target. Everything below is "find something close" — a different
-  // element chosen by accessible name, a positional nth= match, a fallback text variant — which
-  // is the single worst thing to do to a Delete button. Fail closed and let a human or the agent
-  // decide, rather than deleting the wrong row confidently.
+  // retry of the recorded target. Everything below still re-resolves — a different element
+  // chosen by accessible name, or the same selector re-scoped to a dialog — and re-resolution is
+  // the single worst thing to gamble on for a Delete button. Fail closed and let a human or the
+  // agent decide, rather than deleting the wrong row confidently.
   if (step.destructive === true) {
     g.blocked = g.blocked || "destructive-no-guess";
     appendRecoveryEvent({ event: "destructive_recovery_halted", slug, step_index: stepIndex });
@@ -389,7 +342,7 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
   }, baseline, g)) return { tier: "L2", method: "transient" };
   if (stopped()) return false;
 
-  // Layer 2 — re-hover-then-retry (menu reveals), then the existing fallback mechanisms.
+  // Layer 2 — re-hover-then-retry (menu reveals), then dialog scoping.
   if (asArray(asObject(step.handler_hints).hover_chain).length) {
     bail();
     await walkHoverChain(page, step, inputs);
@@ -399,14 +352,19 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
     if (stopped()) return false;
   }
 
+  // Dialog scope is the last deterministic stage, and it is deliberately the ONLY remaining one
+  // that changes where we look: it re-searches the SAME primary selector inside an open dialog
+  // container, so it can never land on a different element. The two stages that used to follow it
+  // (a fallback-selector walk and a fuzzy text match) were deleted — both picked a *different*
+  // element by text affinity and clicked `.first()` with no uniqueness gate, which is the one
+  // thing recovery must not do. Their upside is covered by the agent tier, which reasons over a
+  // ranked digest and has its pick re-verified; their downside was unique to them, because a
+  // wrong click mutates the page before the agent tier ever sees it, and no later tier can undo
+  // that. Identity guessing belongs where a wrong guess is caught, not where it is dispatched.
   bail();
-  if (await recoverWithFallbackSelectors(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g)) return { tier: "L2", method: "fallback" };
-  if (stopped()) return false;
-  bail();
-  if (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g)) return { tier: "L2", method: "dialog" };
-  if (stopped()) return false;
-  bail();
-  return (await recoverWithFuzzyText(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g)) ? { tier: "L2", method: "fuzzy" } : false;
+  return (await recoverWithDialogScope(page, step, inputs, slug, stepIndex, primarySelector, tracker, baseline, g))
+    ? { tier: "L2", method: "dialog" }
+    : false;
 }
 
 async function maybeCapturePreStep(page, step) {
@@ -420,9 +378,7 @@ module.exports = {
   recoverWithSelector,
   a11yRecoveryName,
   recoverWithA11y,
-  recoverWithFallbackSelectors,
   recoverWithDialogScope,
-  recoverWithFuzzyText,
   layer1Ladder,
   recoverStep,
   maybeCapturePreStep,
