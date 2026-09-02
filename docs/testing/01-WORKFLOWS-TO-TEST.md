@@ -114,7 +114,7 @@ S2 dynamic-id page: click "Button with Dynamic ID". Selector must NOT contain th
 (stable_hash stripped). Execute twice — second run faces a fresh ID.
 
 ### Segment B — Changing text + moved elements (C.3/C.4)
-S2 Text Input page: type "Conxa", click the button whose label changes. Expect Tier 1–2 heal at
+S2 Text Input page: type "Conxa", click the button whose label changes. Expect Tier A heal at
 zero tokens — log which tier. Moved-element check: local HTML with a button top-left; compile,
 then move it inside a collapsed sidebar and re-run — role/text signals must carry it.
 
@@ -352,17 +352,18 @@ AV-5 tier surprises → recovery cascade regression.
 
 ---
 
-## WF-7 — Recovery-cascade drill: force Tier 2 and Tier 3 on purpose (+ live self-heal suite)
+## WF-7 — Recovery-cascade drill: force Tier A and Tier B on purpose (+ live self-heal suite)
 
 **Sites:** local [`fixtures/recovery-fixture.html`](fixtures/recovery-fixture.html) + live-site legs ·
 **Steps:** ~6 per replay × 6 + live legs
 
-Workflows above hope recovery never fires; this makes it fire deterministically. Tier recap:
-T1 mechanical fix from the Playwright error (re-find/scroll/dismiss/wait) — zero tokens. T2 other
-*deterministic* ways (a11y role+name, fallback alternatives in `recovery.json`, dialog scoping,
-fuzzy text) — zero tokens. T3 ranked indexed list of live interactive elements + intent/anchors sent
-to Claude, which replies a candidate_index verified against the uniqueness gate — paid. (T4
-screenshots out of scope — TODO EXEC-3.)
+Workflows above hope recovery never fires; this makes it fire deterministically. Tier recap
+(`docs/TRD.md` §10.1): **Tier A** mechanical fix from the Playwright error (re-find/scroll/dismiss/wait)
+plus a11y role+name and dialog-scope — zero tokens, never a guessed different element. **Tier B**
+armed agent round: ranked indexed list of live interactive elements + screenshots + intent, Claude
+replies a candidate_index verified against the uniqueness gate — paid. Studio ceiling 2 stops at A;
+MCP ceiling 4 allows B (up to two armed rounds). Log lines still use the old numbers (`tier2_a11y`,
+`agent_recovery_requested {tier:3}`) — that is the wire format, not the product names.
 
 ### Setup
 Serve `docs/testing/fixtures` on :8099. Record minimal skill against
@@ -384,9 +385,9 @@ Events: `layer_recovered layer:2 tier2_a11y`, `repair_event`, `agent_recovery_re
 | # | Variant | Where | Expected |
 |---|---|---|---|
 | R0 | `clean` | Studio Run Test | Passes, clicked `clean:target`, ZERO recovery events. Anything else = weak compiled identity; fix before continuing |
-| R1 | `?v=t2` | Studio Run Test (ceiling 2) | Passes via Tier 2 (`tier2_a11y`/`layer_recovered`), zero agent events, exactly one click `t2:target`. Free-self-heal proof |
+| R1 | `?v=t2` | Studio Run Test (ceiling 2) | Passes via Tier A (`tier2_a11y`/`layer_recovered`), zero agent events, exactly one click `t2:target`. Free-self-heal proof |
 | R2 | `?v=t3` | Studio Run Test (ceiling 2) | FAILS deterministically with `recovery_ceiling_reached`, no screenshots. Negative control: sandbox never spends tokens |
-| R3 | `?v=t3` | Claude Desktop `execute_skill` | Full T3 loop: fail T1/T2 → `agent_recovery_requested` → Claude replies candidate_index → `agent_override_applied` → resumes and completes. Server log: exactly `t3:target`, NOT a decoy (ranking + uniqueness gate) |
+| R3 | `?v=t3` | Claude Desktop `execute_skill` | Full Tier B loop: fail Tier A → `agent_recovery_requested` → Claude replies candidate_index → `agent_override_applied` → resumes and completes. Server log: exactly `t3:target`, NOT a decoy (ranking + uniqueness gate) |
 | R4 | `?v=gone` | Claude Desktop | Claude declines honestly or nomination rejected (`agent_override_rejected`) → clean typed failure naming the step. A "success" here = ranking/gating regression |
 | R5 | `?v=gone` again, same session | Claude Desktop | Budget/stagnation guards bite: `retry_budget_exhausted`, `recovery_stagnant_stop`. Failure gets cheaper, never more expensive |
 
@@ -670,7 +671,7 @@ clear error, no crash.
 ### Final gate
 All boxes ticked or fixed-and-retested; clean-machine tested; telemetry matches the session.
 **Hard blockers (any ONE = NO-GO):** credentials in build output · `/readyz` failing · FS-DB
-fallback active · cross-company leakage · Tier 1/2 burning tokens · broken update rollback.
+fallback active · cross-company leakage · Tier A burning tokens · broken update rollback.
 
 Test Run Info + Issues Found tables: fill date/tester/versions and log issues with severity and
 fix status; sign GO/NO-GO at the bottom of the run.
@@ -682,7 +683,7 @@ fix status; sign GO/NO-GO at the bottom of the run.
 - **Tab-landing correctness** — next action after any switch lands in the expected tab (EXEC-5 #43).
 - **Download/upload verification** — runtime waits for download completion; confirms upload success
   rather than fire-and-forget (EXEC-5 #31/#32).
-- **Recovery tier ceiling** — more than a couple of Tier 3 escalations on stable demo sites = red flag.
+- **Recovery tier ceiling** — more than a couple of Tier B escalations on stable demo sites = red flag.
 - **Long-run stability** — degradation past ~step 25 (memory, stale frame refs, iframe offsets).
 - **Compile step count** — truncation above 30 steps at compile, separate from runtime replay.
 - **File identity in loops** — each upload carries ITS OWN iteration's file, not a loose match.
@@ -693,7 +694,7 @@ fix status; sign GO/NO-GO at the bottom of the run.
 
 1. CAPTCHA/OTP not automatable — graceful handoff (WF-2/E.13-14 analogs, WF-9 R7).
 2. Canvas apps can't build identity — clean error, not hang (WF-9 R7).
-3. Tier 1/2 deterministic only — no silent LLM fallback (verify zero proxy calls in WF-7).
+3. Tier A deterministic only — no silent LLM fallback (verify zero proxy calls in WF-7).
 4. `frame_enter`/`frame_exit` never retried — fail fast, no hang (WF-2 Segments D/E).
 5. Cloud never compiles/executes — only telemetry/sync leaves the machine.
 6. Tracking endpoint outside `/api/v1` — known tracked exception, not a discovery.

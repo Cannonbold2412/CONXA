@@ -301,7 +301,7 @@ Renamed from `TestPluginPage.tsx` in the 2026-08-12 Plugin→Workflow/SkillPack 
 **UX issues:**
 - Runtime must be installed locally for testing — there's no inline message when it's not found (just `runtime_not_found` error code).
 - No visual step-by-step progress during test execution.
-- No "passed without AI recovery" caveat yet (Studio only exercises Tier 1/2 recovery, `CONXA_MAX_RECOVERY_TIER=2` — see `docs/App-Flow.md`); adding it is Phase 3 of the redesign.
+- No "passed without AI recovery" caveat yet (Studio only exercises Tier A recovery, `CONXA_MAX_RECOVERY_TIER=2` — see `docs/App-Flow.md`); adding it is Phase 3 of the redesign.
 
 ---
 
@@ -416,7 +416,7 @@ column. A visible "scroll sideways" hint appears below `lg`.
 
 **Telemetry visuals (`reliability`):** this section reuses the **real dashboard viz components** rather
 than drawing marketing approximations of them — `viz/ExecutionFlow.tsx` for a run whose certificate-upload
-step self-heals at Tier 2, and `viz/TierLadder.tsx` for where recovery finishes. It replaces three
+step self-heals at Tier A, and `viz/TierLadder.tsx` for where recovery finishes. It replaces three
 hand-drawn static SVGs (`MaintenanceChart` / `LockMark` / `CostChart`) that used to live in `Outcomes.tsx`.
 Two rules apply and must not regress: (1) the figures are **explicitly labelled illustrative** in visible
 body text — there is no customer proof yet (`PRODUCT.md`; `docs/PRD.md` §8, "this is a diagram, not a
@@ -425,7 +425,7 @@ moat"), so they may never be captioned as measured results; (2) the dashboard co
 `showFootnote` prop on `TierLadder`, because its built-in footnote is `text-zinc-600` on Panel Black,
 which is below the 4.5:1 body-text floor for this surface.
 
-**Copy constraints (do not regress):** no SOC 2 / HIPAA / GDPR / ITAR / certification claims; recovery Tiers 3–5 are described as *assisted*, never "fully autonomous" or "never breaks"; no invented metrics, customer logos, or testimonials; Windows-only runtime, macOS as roadmap. Allowed claims are the shipped ones — local execution, AES-256-GCM sessions in the OS keychain, credentials never in published skills, Ed25519-signed updates, admin-only publishing plus audit log, telemetry limited to event codes, unlimited free executions.
+**Copy constraints (do not regress):** no SOC 2 / HIPAA / GDPR / ITAR / certification claims; recovery Tier B is described as *assisted*, never "fully autonomous" or "never breaks"; no invented metrics, customer logos, or testimonials; Windows-only runtime, macOS as roadmap. Allowed claims are the shipped ones — local execution, AES-256-GCM sessions in the OS keychain, credentials never in published skills, Ed25519-signed updates, admin-only publishing plus audit log, telemetry limited to event codes, unlimited free executions.
 
 **Assets:** `DemoStory.tsx` embeds the product demo video (YouTube, click-to-play — the iframe is only injected on click, so it costs nothing at page load). Real product screenshots live in `public/marketing/screenshots/`, wired through `primitives/ShotFrame.tsx`: the four `shot_*.png` files are **cropped derivatives** of the originals — cropped both to stay legible at column width and, in the case of `shot_execution.png`, to remove the personal chat-history rail from the Claude Desktop capture. Keep the originals; re-crop rather than swapping in a raw full-window capture. `public/marketing/examples-stack.png` is an AI-generated illustration (Codex `image_gen`) whose background is exactly `#06080b`, so it composites seamlessly on the Void Black canvas — match that background on any replacement.
 

@@ -600,17 +600,12 @@ loop below and normal recovery still applies. See TRD §10.6.
 ```mermaid
 flowchart TD
     A[executeStep for step N] --> B[resolveStep: IdentityBundle over live DOM]
-    B --> C{Tier 1: deterministic ladder over all signals}
+    B --> C{Tier A: timing and obstruction — same element, never a guess}
     C -->|Resolved| D[withLocator: perform action]
-    C -->|Fail| E{Tier 2: a11y / re-hover / fallback / dialog / fuzzy}
-    E -->|Resolved| D
-    E -->|Fail| F{Recovery ceiling ≥ 3?}
+    C -->|Fail| F{Recovery ceiling ≥ 3?}
     F -->|No — Build Studio| N[Deterministic failure: report, no agent handoff]
-    F -->|Yes — Claude/MCP| G0{Which agent round is this for the step?}
-    G0 -->|First| G3[Tier 3 semantic — SEPARATE call: intent + expected post-condition + trace + ranked indexed digest of live elements → Claude nominates candidate_index]
-    G0 -->|Later| G4[Tier 4 vision — SEPARATE call: screenshots + refreshed digest → Claude identifies visually]
-    G3 --> J[Claude resumes: execute_skill resume_from + step_overrides candidate_index/selector]
-    G4 --> J
+    F -->|Yes — Claude/MCP| G0[Tier B armed round: ranked digest + screenshots + recorded context]
+    G0 --> J[Claude resumes: execute_skill resume_from + step_overrides candidate_index/selector]
     J --> P{Park still live and fingerprint matches?}
     P -->|No| Q[Refuse resume: ask agent to restart the skill]
     P -->|Yes| K[Adopt parked page; resolve nominated index → derived selector; validate against fingerprint]
@@ -624,12 +619,14 @@ flowchart TD
     L -->|Required fails| G0
 ```
 
-**Two separate agent calls, escalating.** Tier 3 (semantic, browser-use-style ranked indexed digest)
-and Tier 4 (vision, screenshots) are no longer one combined payload — the first agent round for a
-failed step is always Tier 3 (text-only, zero vision tokens), and only if that round does not fix
-the step does the runtime return a separate Tier 4 payload with screenshots. The runtime never
-calls Claude Desktop; each tier is a distinct *response* shape that the client answers with its own
-`execute_skill` resume call.
+**Two behavioural tiers, not four.** Tier A is in-process and free: exception ladder, a11y re-probe,
+transient retry, re-hover, dialog-scope. It may change *when* or *where* it looks; it never settles
+for a different element. Tier B is one armed agent payload — ranked digest plus screenshots plus
+recording-time context — not a text-only round followed by a later vision round. A failed step gets
+at most two Tier B rounds; round two carries what round one nominated. The runtime never calls
+Claude Desktop; each round is a *response* the client answers with its own `execute_skill` resume.
+Studio sandbox sets `CONXA_MAX_RECOVERY_TIER=2` so a step that survives Tier A fails deterministically.
+See `docs/TRD.md` §10.1.
 
 **Validated closing edge:** the agent's `step_overrides` pick (a `candidate_index` nomination from
 the ranked digest, or an explicit selector) is never applied blind. A nominated index is resolved to
@@ -643,11 +640,11 @@ agent was reasoning is discarded, and the resume is refused outright rather than
 mid-plan on a fresh, different page. And if the page stops changing entirely across consecutive
 recovery rounds, the stagnation hard cap refuses to spend further tokens. See `docs/TRD.md` §10.1.
 
-**Re-verified recovery:** a "resolved" in Tier 1/2 above isn't the end of the story for a
+**Re-verified recovery:** a "resolved" in Tier A above isn't the end of the story for a
 consequential step — every remedy that re-runs the action re-checks the post-condition
 (`verifyStep`) before being counted as recovered (`runtime/run.js` `recoverWithSelector`). A
-verify-fail also skips straight past the Tier 1 single-remedy retry (re-running the same action
-against the same, already-checked DOM can't fix it) into Tier 2's resolution-changing mechanisms.
+verify-fail skips the exception-ladder single-remedy retry (re-running the same action against the
+same, already-checked DOM can't fix it) and continues the rest of Tier A (a11y / re-hover / dialog).
 See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify wiring.
 
 ---

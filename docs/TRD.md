@@ -497,7 +497,7 @@ before it ever started.
   idle-close timer only starts once a lease is released, which also fixes a former bug where a
   headless run longer than the old always-armed 90s timer had its browser closed out from under
   it mid-execution.
-- **Recovery park isolation.** The Tier 3/4 parked-failure page (`recovery_park.js`) is keyed per
+- **Recovery park isolation.** The Tier B parked-failure page (`recovery_park.js`) is keyed per
   `${workspace_id}:${slug}`, not a single process-wide slot — one run failing and parking must
   never discard a sibling run's parked recovery window. A park holds its browser lease for its
   full TTL (`CONXA_RECOVERY_PARK_TTL_MS`, default 180s) rather than the idle cache's shorter
@@ -1194,6 +1194,23 @@ event — usually `tab_0` — and `_insert_tab_markers` (§7.1) then inserts a s
 back to `tab_0` before the real `tab_open` for the new tab. At replay, `runtime/tabs.js` follows
 that marker and execution bounces to the wrong tab.
 
+**A `popup` event is stamped with the POPUP's own tab, resolved one pump tick late.** `src_page`
+above stays the opener — it is still the right page for visuals and `page.url` — but the event's
+`tab` block names the new tab. `_on_popup` runs inside Playwright's own event callback, where no
+Playwright call is allowed and the popup page is not yet registered, so `_tab_id_for_page(popup)`
+returns `None` there. `_enqueue_synthetic(..., tab_key=id(popup))` stashes the raw object key (the
+same key `_tab_ids` is already keyed by, so no Playwright call is needed) and `_consume_payload_sync`
+resolves it at drain time — the pump loop calls `_register_new_pages_sync()` before draining, so the
+id exists by then. A popup that closes before the next tick is never registered and simply falls
+back to the opener's tab.
+
+This is load-bearing because `_insert_tab_markers` (§7.1) derives markers purely from a tab-id
+*transition* between consecutive events. A popup stamped with its opener produces no transition,
+therefore no `tab_open` and no `tab_switch` back — and if the recording never interacts with the new
+tab (click a `target="_blank"` link, then switch straight back), the compiled skill never mentions
+the second tab at all. At replay the click still opens a real tab, Chromium puts it in front, and
+every later step drives the original tab from the background for the rest of the run (see §9.1a).
+
 ---
 
 ## 7. Compilation Pipeline
@@ -1370,7 +1387,7 @@ a compiled custom-picker step (`control_kind === "date_picker"`) whose typed att
 Native `<input type=month|week|time>` is untouched — their recorded values (`"2026-09"`,
 `"2026-W38"`, `"14:30"`) aren't full ISO dates, so `date_picker.js`'s parser correctly declines them
 and the handler falls through to its original unconditional fill/click. Zero LLM calls throughout —
-the Tier 1/2 zero-token invariant (§10.2b) holds for this handler exactly as for every other.
+the Tier A zero-token invariant (§10.2b) holds for this handler exactly as for every other.
 
 **Select-based month/year navigation is a first-class date-picker interaction too** (2026-08-30
 follow-up, found in a real demoqa.com Practice Form recording: react-datepicker's
@@ -1483,7 +1500,7 @@ recorder-context → compile-time-derivation → runtime-pure-module shape):
   native `<select>`) and throws a `{badInput: true}`-marked error naming every valid option on a
   mismatch — `run.js`'s existing `primaryErr.badInput` check (already used by the upload handler's
   analogous "folder given to a single-file control" case) fails the step straight through instead of
-  burning Tier 3+ LLM recovery on a value that was never going to resolve by re-finding the element.
+  burning Tier B LLM recovery on a value that was never going to resolve by re-finding the element.
   A checkbox-group step reads `inputs[step.input_binding]` directly (bypassing `interpolate()`,
   which only substitutes inside a string template) since its value is a list, then sets every
   group member's checked state to match — absolute, not relative.
@@ -1498,7 +1515,7 @@ the nearest ancestor carrying a stable id; an owner rendered inside the popup it
 being no more reachable at replay than the options were. `compiler/choice.py` carries it through to
 `handler_hints.choice.opener_selector`, and `handlers.js::_ensureChoiceMenuOpen` clicks it before
 the `aria_listbox` branch resolves its option — but only when the option is not already on the
-page, so an open menu is never toggled shut. This stays Tier 1 (deterministic, zero-LLM): the
+page, so an open menu is never toggled shut. This stays Tier A (deterministic, zero-LLM): the
 opener is a compile-time recorded selector, never a guess. It is `""` for an always-visible group
 (a native `<select>`, a radio fieldset), and for any skill compiled before this change — in both
 cases the helper is a no-op and the caller's own locator wait still decides the outcome.
@@ -1812,10 +1829,10 @@ For each step in `execution.json`:
 4. executeStep() — primary action
    ├── interpolate input variables ({{variable}} substitution)
    ├── resolveStep() — IdentityBundle resolution over the live DOM
-   │   ├── Tier 1: deterministic exception ladder over all bundle signals (in-process, zero-token)
-   │   ├── Tier 2: a11y re-probe / re-hover / fallback / dialog-scope / fuzzy (in-process, zero-token)
-   │   ├── Tier 3: LLM semantic recovery — intent + DOM inventory → Claude (agent-mediated; ceiling ≥ 3)
-   │   └── Tier 4: Vision recovery — screenshot → Claude (agent-mediated; ceiling ≥ 3)
+   │   ├── Tier A: exception ladder, then a11y re-probe / transient retry / re-hover /
+   │   │           dialog-scope — same element or uniqueness-gated (in-process, zero-token)
+   │   └── Tier B: armed agent recovery — ranked digest + screenshots + reference image →
+   │               Claude nominates, runtime verifies (agent-mediated; ceiling ≥ 3, two rounds)
    └── withLocator() — perform the action
 5. verifyStep() — check Assertion[] (§10.2a) independently of the action's own success
    ├── required (enforced) assertion → verify-fail descends into recovery, re-verified on
@@ -1911,10 +1928,22 @@ the A→B→A return leg replayed with no wait and no visibility change while cl
 tab. Same-page steps skip the settle — `run.js`'s `waitForPageLoad` already covers their
 post-navigation load wait.
 
+**A page the runtime does not own also moves the foreground** (`tabs.js`, `registry.foregroundStale`).
+The rule above tracks *which page the steps run on*; it cannot see the browser's own foreground
+moving. Chromium hands the foreground to every newly created tab, so a site-opened popup — even one
+no step ever references — leaves every following same-page step driving a background tab: invisible
+under watch, and with rAF/timers throttled, which stalls Playwright's actionability `stable` wait.
+The registry's existing `context.on("page", ...)` listener now sets `foregroundStale`;
+`_settleIfSwitched` consumes and clears it, and a set flag suppresses the same-page early return so
+the step settles with `forceFront`. `forceFront` deliberately ignores `watch` — throttling applies
+headless too — and emits a `foreground_reclaimed` phase marker. Rejected alternative: calling
+`bringToFront()` on every step, which would make concurrent watch-mode runs (§4.5) fight for the OS
+foreground continuously rather than only on switches.
+
 `server.js` attaches its per-page diagnostics (console errors, failed requests, downloads) to every
 tab opened during a run (`_context.on("page", _attachPageListeners)`), not just the initial one —
 previously a download triggered from a second tab was never captured at all. On a step failure, the
-Tier 3/4 park (§10.1) and the failure response use the tab the failing step actually ran on
+Tier B park (§10.1) and the failure response use the tab the failing step actually ran on
 (`runErr.failedPage`), not always the initial page, so the recovery request's DOM fingerprint
 describes the page that failed.
 
@@ -1952,7 +1981,7 @@ steps are therefore always parameterised, end to end:
 | Bind | Uploads always bind to the input name `file_path`, never a label-derived name — otherwise "File Uploader" / "Attach document" / "Upload CSV" would each yield a differently named input for the same concept | `compiler/input_binding.py::derive_input_binding` |
 | Package | Recorded file *metadata* is recognised explicitly (it is truthy JSON, so an `or` fallback would pass it through as if it were a path) and replaced with `{{file_path}}`; a literal path or custom placeholder typed by hand in Human Edit is preserved as authored. The auto-declared input's description is enriched with the recorded example filename and states that **a folder path may be given** when the page's control accepts more than one file. It deliberately does **not** claim how many files the control takes — that is a property of the live page (`multiple`), not of how many files happened to be picked while recording, and a single-file recording against a multi-select control is normal | `skill_package_builder_saved_skill.py::_upload_input_descriptions` |
 | Execute | `interpolate()` → `trim()` → strip one matching pair of surrounding double quotes (Windows Explorer's "Copy as path" quotes any path containing spaces, and Node only treats a bare drive letter as absolute — a quoted path would be silently joined onto the runtime's CWD) → **if the result is a directory, expand it to every file directly inside** (non-recursive, subdirectories excluded, naturally sorted so `invoice-2` precedes `invoice-10`) → `locator.setInputFiles(paths)`. An empty resolved path, or a folder containing no files, **throws** rather than skipping: silently not uploading a document while reporting success is this action's worst failure mode. `server.js`'s required-input gate should already have rejected the empty case; this is defence in depth | `runtime/run.js::resolveUploadPaths`, `HANDLERS.upload` |
-| Gate | When more than one file resolved, the handler asks the **live element** whether it accepts multiple (`locator.evaluate(el => el.multiple)`) before acting. An explicit `false` throws a `badInput` error naming the file count and what to pass instead; an unreadable probe stays permissive and lets `setInputFiles` have its say. `badInput` surfaces immediately from `withLocator`'s retry loop and **skips the recovery cascade entirely** in `runPlan` — re-finding the element cannot fix wrong input, and letting it reach Tier 3+ would spend LLM tokens on a caller mistake the message already explains. Same short-circuit shape as the `isAuthFailure` check beside it | `runtime/run.js::HANDLERS.upload`, `withLocator`, `runPlan` |
+| Gate | When more than one file resolved, the handler asks the **live element** whether it accepts multiple (`locator.evaluate(el => el.multiple)`) before acting. An explicit `false` throws a `badInput` error naming the file count and what to pass instead; an unreadable probe stays permissive and lets `setInputFiles` have its say. `badInput` surfaces immediately from `withLocator`'s retry loop and **skips the recovery cascade entirely** in `runPlan` — re-finding the element cannot fix wrong input, and letting it reach Tier B would spend LLM tokens on a caller mistake the message already explains. Same short-circuit shape as the `isAuthFailure` check beside it | `runtime/run.js::HANDLERS.upload`, `withLocator`, `runPlan` |
 
 Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_skill_package_builder.py`, `test_phases.py`,
 `test_recorder_session.py`.
@@ -1961,46 +1990,78 @@ Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_skill_package_buil
 
 ## 10. Recovery Architecture
 
-### 10.1 Four-Tier Recovery Cascade + Ceiling
+### 10.1 Two-Tier Recovery Cascade + Ceiling
 
-> This table is the canonical, authoritative recovery-tier reference — `README.md`, `AGENTS.md`, `docs/PRD.md`, `docs/App-Flow.md`, and `docs/cost_model.md` all link here rather than repeating it. Some of those docs describe this as a "5-tier" cascade, counting human review/escalation after T4 is exhausted as an informal fifth tier — that's a framing difference, not a contradiction; the automated cascade itself has exactly four tiers.
+> This table is the canonical, authoritative recovery reference — `README.md`, `AGENTS.md`, `docs/PRD.md`, `docs/App-Flow.md`, and `docs/cost_model.md` all link here rather than repeating it. Docs describing a "4-tier" or "5-tier" cascade predate the 2026-09 redesign below and are stale; the internal tier *numbers* (1–4) survive in `CONXA_MAX_RECOVERY_TIER`, `manifest.json`'s `max_recovery_tier`, and the `recovery_tier{N}` telemetry codes, but there are two behavioural tiers.
 
-**Auth failures short-circuit the cascade.** A login redirect is not a selector/DOM problem T1/T2 can fix — before entering the cascade, `run.js` checks `isAuthFailure(page)` (URL/title heuristic) and, if true, fails the step immediately rather than spending T1/T2's ~10s budget against a login page. `server.js` then routes it through the non-blocking interactive-login flow (`docs/Auth-and-Updater.md` §1.3) instead of the T3/T4 agent-recovery payload — no screenshot, no DOM inventory, just an instruction to sign in and resume.
+**The 2026-09 redesign — why two, and why split here.** The old cascade was ordered by *cost*: two free deterministic tiers, then two paid agent tiers. That optimises spend, not healing rate, and one rung actively worked against the goal. Two of the old T2 stages (`recoverWithFallbackSelectors`, `recoverWithFuzzyText`) **guessed a different element by text affinity and clicked `.first()` with no uniqueness gate**. A wrong click *mutates the page*, and the agent tier runs afterwards — so a missed guess did not merely fail, it handed the most capable tier a page that no longer matched the recording, and nothing downstream could undo that. Both stages were deleted; their upside is covered by the agent tier, which reasons over a ranked digest and has its pick re-verified before it acts.
+>
+> The surviving split is by **problem class, not cost**: Tier A fixes *when* (timing, obstruction — the element was right, the moment was wrong, and no model can improve on that); Tier B fixes *identity* (the element genuinely moved). The invariant that makes Tier A safe: **it may change when or where it looks, never which element it settles for.**
+
+**Auth failures short-circuit the cascade.** A login redirect is not a selector/DOM problem Tier A can fix — before entering the cascade, `run.js` checks `isAuthFailure(page, steps)` (URL/title heuristic) and, if true, fails the step immediately rather than spending Tier A's ~10s budget against a login page. **A login page the recording itself navigated to is exempt** (2026-09-02): a skill can legitimately drive a login form as ordinary work, and the URL heuristic cannot tell that apart from a session that died. `isAuthFailure` first compares the live URL (query/hash/trailing slash stripped) against every `navigate` step's recorded `url` in this skill and returns `false` on a match — the recording deliberately went there, so it is not a redirect. Without this, such a step lost its entire A/B cascade *and* was reported to the user as "your saved sign-in expired" for an app the failing step never touched. `server.js` passes the same `steps` to its own post-failure check. The argument is optional, so callers that do not pass it keep the pre-existing behaviour. `server.js` then routes it through the non-blocking interactive-login flow (`docs/Auth-and-Updater.md` §1.3) instead of the Tier B agent-recovery payload — no screenshot, no DOM inventory, just an instruction to sign in and resume.
 
 When step resolution fails to find the target (and it isn't an auth failure):
 
-| Tier | Mechanism | LLM Cost | Trigger | Where |
+| Tier | Fixes | Mechanism | LLM Cost | Where |
 |---|---|---|---|---|
-| **T1** | Deterministic exception ladder (re-resolve / scroll / dismiss-overlay / wait-stable/enabled) over all bundle signals | Zero | Always first | `run.js` (in-process) |
-| **T2** | a11y re-probe (role+name through the matcher), re-hover, fallback selectors, dialog-scope, fuzzy text | Zero | T1 fails | `run.js` (in-process) |
-| **T3** | LLM **semantic** recovery — browser-use-style **ranked indexed candidate digest** of the live page → Claude nominates a `candidate_index` | Yes (text) | First agent round for the step | Agent-mediated handoff (`failure_response.js`) |
-| **T4** | **Vision** recovery — failure screenshot + reference image + refreshed digest → Claude identifies visually | Yes (vision) | Second agent round for the step (separate call) | Agent-mediated handoff (`failure_response.js`) |
+| **A — Reflex**<br>(internal T1/T2) | **Timing and obstruction.** The element was correct; the moment was wrong. | L1 exception ladder (re-resolve / scroll / dismiss-overlay / wait-stable / wait-enabled / wait-navigation) over all bundle signals, then a11y re-probe (role+name **through the matcher**, fingerprint-checked and uniqueness-gated), a transient retry, re-hover for menu reveals, and dialog-scope (the **same** selector re-searched inside an open dialog) | Zero | `cascade.js::recoverStep` (in-process) |
+| **B — Reasoning**<br>(internal T3/T4) | **Identity.** The element genuinely moved, was renamed, or now lives inside a menu. | One **armed** payload: browser-use-style ranked indexed candidate digest of the live page + step intent + expected post-condition + executed-steps trace + failure screenshot + pre-step screenshot + recording-time reference image when present. Claude nominates a `candidate_index`; the runtime re-verifies it. | Yes (text + vision) | Agent-mediated handoff (`failure_response.js`) |
 
-**Tiers 1–2 are in-process and zero-token** (`run.js:recoverStep`). **Tiers 3–4 are agent-mediated and fire as SEPARATE MCP round-trips** (2026-08 redesign; they were previously one combined payload). The runtime never calls Claude Desktop — it *responds* to `execute_skill` with a recovery request, and the client resumes by calling `execute_skill` again. The first agent round for a failed step is always **Tier 3** (semantic): step intent, expected post-condition, executed-steps trace, and a ranked indexed digest of every interactive element on the live page. If that round does not fix the step (broad trigger — whether the override failed validation or executed and the step still failed), the next failure response is **Tier 4** (vision): a separate payload adding pre-step/failure screenshots plus the recording-time reference image, with vision-first instructions. Escalation state lives per skill+step in `recovery_stage.js`; a healed step resets nothing for other steps. This is the **closing edge** of the cascade.
+**Tier A is in-process and zero-token** (`cascade.js::recoverStep`, CI-guarded by `check_recovery_purity.js`). **Tier B is agent-mediated**: the runtime never calls Claude Desktop — it *responds* to `execute_skill` with a recovery request, and the client resumes by calling `execute_skill` again.
 
-**Tier 3 grounding — ranked indexed digest (`candidate_digest.js`).** Borrowed from browser-use's serialized-DOM presentation with two documented departures: (a) **rank-then-cap, never positional truncation** — candidates are ranked against the recorded target's identity signals (anchor-text affinity > testid/id match > role match > tag affinity), then serialized as numbered lines `[i] role=… name="…"` under browser-use's 40k-char budget, stopping whole-entry; (b) **the integer index is a transient prompt convenience only**, never durable identity — durable identity stays the compiled IdentityBundle.
+**Every Tier B round is armed.** This replaced a split where round one was text-only and screenshots were withheld for a separate later round. That was a token-cost lever and it inverted the priority: the first round is the likeliest to succeed, so it is the one that should be best armed. Withholding saved tokens on the attempts that were going to work anyway, and cost a whole wasted round-trip — the entire 40k-char digest re-sent — on the ones that actually needed the pictures. `recovery_stage.js::nextRecoveryTier` now depends only on the ceiling. A failed step gets **two** rounds (`STAGNATION_LIMIT`), and round two is not a re-roll: it carries what round one nominated and what that pick actually matched, so the agent iterates. This is the **closing edge** of the cascade.
 
-**Reflection contract.** The T3/T4 prompts ask the agent to resume with `step_overrides: { "<idx>": { "candidate_index": <n>, "confidence": <0-1>, "why": "<one line>" } }`; an explicit `{ "selector": … }` remains supported for compatibility. A nominated index is resolved to a derived selector (`[data-testid] > #id > internal:role[name] > text`, captured when the digest was built, stored per skill in `recovery_stage.js`) and pushed through the same uniqueness gate as an explicit selector below — the LLM nominates, the runtime verifies.
+**Tier B grounding — ranked indexed digest (`candidate_digest.js`).** Borrowed from browser-use's serialized-DOM presentation with two documented departures: (a) **rank-then-cap, never positional truncation** — candidates are ranked against the recorded target's identity signals (anchor-text affinity > testid/id match > role match > tag affinity), then serialized as numbered lines `[i] role=… name="…"` under browser-use's 40k-char budget, stopping whole-entry; (b) **the integer index is a transient prompt convenience only**, never durable identity — durable identity stays the compiled IdentityBundle.
 
-**Stagnation hard cap.** browser-use detects frozen pages softly (PageFingerprint nudge); the runtime flips that to a hard stop: if the page fingerprint is unchanged across consecutive recovery rounds — `STAGNATION_LIMIT = 2` identical rounds — further paid rounds are refused (`recovery_stagnant_stop`) and the step fails deterministically. The first identical round is still allowed, which is exactly what lets the designed T3→T4 escalation fire on an unchanged page (vision adds information even when the DOM hash matches); what stops is anything beyond that.
+**Reflection contract.** The Tier B prompts ask the agent to resume with `step_overrides: { "<idx>": { "candidate_index": <n>, "confidence": <0-1>, "why": "<one line>" } }`; an explicit `{ "selector": … }` remains supported for compatibility. A nominated index is resolved to a derived selector (`[data-testid] > #id > internal:role[name] > text`, captured when the digest was built, stored per skill in `recovery_stage.js`) and pushed through the same uniqueness gate as an explicit selector below — the LLM nominates, the runtime verifies.
 
-**Recovery ceiling (`CONXA_MAX_RECOVERY_TIER`, 1–4, default 4).** The zero-token cascade always runs; the env var caps how far the agent-mediated handoff goes:
-- **Claude / MCP execution → ceiling 4** (default): full cascade — T3 (semantic) first, then T4 (vision) as a separate round.
-- **Ceiling 3**: semantic rounds only — the vision payload never fires and never captures a screenshot.
-- **Build Studio sandbox → ceiling 2** (`conxa_runtime.py` sets `CONXA_MAX_RECOVERY_TIER=2`): no agent handoff. A step surviving T1/T2 fails deterministically so the compiled pack is judged on its own merits — there is no agent in a headless Studio run to act on a recovery request.
+**Stagnation hard cap.** browser-use detects frozen pages softly (PageFingerprint nudge); the runtime flips that to a hard stop: if the page fingerprint is unchanged across consecutive recovery rounds — `STAGNATION_LIMIT = 2` identical rounds — further paid rounds are refused (`recovery_stagnant_stop`) and the step fails deterministically. The first identical round is still allowed: round two carries the previous nomination and what it actually matched, so the agent iterates rather than re-rolling. What stops is anything beyond that.
+
+**Recovery ceiling (`CONXA_MAX_RECOVERY_TIER`, 1–4, default 4).** Tier A always runs; the env var caps whether the agent-mediated handoff happens at all:
+- **Claude / MCP execution → ceiling 4** (default): Tier A, then Tier B armed, up to two rounds.
+- **Ceiling 3**: identical to ceiling 4 since the 2026-09 redesign. It previously meant "semantic rounds only, never spend image tokens"; that opt-out was removed deliberately — one payload shape above the Studio ceiling means a pack can no longer be armed for one round and starved for the next. The value is still accepted so existing packs and hosts keep working.
+- **Build Studio sandbox → ceiling 2** (`conxa_runtime.py` sets `CONXA_MAX_RECOVERY_TIER=2`): no agent handoff, unchanged. A step surviving Tier A fails deterministically so the compiled pack is judged on its own merits — there is no agent in a headless Studio run to act on a recovery request.
+
+**What Tier B is given about the PAST (2026-09).** The ranked digest describes the page as it is now, which answers "what is here?" but not "what changed" — and drift is a change. Two blocks supply the other half of that comparison:
+
+- **`recorded_context`** — the target's neighbourhood at recording time: parent element, surrounding siblings, index among them, enclosing form. Compiled from signals the recorder already captured (`bridge.js::captureAncestors`'s sibling `context`, surviving into the saved skill via `build.py`'s `signals["context"]`), emitted per step into `recovery.json` by `_recorded_context_for_saved_step`, and rendered by `failure_response.js::recordedContextBlock`. A few hundred bytes; rides the existing sync; works offline. This is what turns "cannot find this button" into "it used to sit in the toolbar next to Export".
+- **`visual_ref`** — the recording-time screenshot, delivered by the artifact pass below.
+
+`failure_response.js` describes the reference image **only when it is genuinely attached**. Describing it unconditionally (which it did until 2026-09, against a file that never synced) invited the model to invent what it showed, in the one tier that decides where to click.
+
+### 10.1a Recovery artifact delivery
+
+Code files are what execution needs; artifacts are what *recovery* needs, and only when a step fails. Shipping them on one path would make every start wait for bytes almost no run reads, so the sync runs two passes and only the first one gates anything.
+
+| | Pass one — code | Pass two — artifacts |
+|---|---|---|
+| Content | `execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json` (`_CODE_FILES`) | everything else in the skill dir; today `visuals/` |
+| Transport | inline base64 in the delta response | one zip per skill, `POST …/skill-packs/{slug}/artifacts` |
+| Timing | awaited, inside `syncSkillPacks`' hard timeout — **the execution gate** | started in `finally`, **never awaited** |
+| Failure | records `last_sync_errors`, skill shows as failed | logged only; never a sync error, never blocks a run |
+
+**The request is the delta.** The machine's artifact store is keyed by content hash, so "do I have this?" is answered locally. It POSTs the hashes it already holds (`artifact_store.haveHashes`) and receives exactly the difference — making first install (send nothing, get everything) and a routine update (send all but three, get three) the same code path. `artifacts: [{path, sha256}]` metadata rides the delta response, and is sent for `no_change` skills too, so a pack installed before this existed can backfill without waiting for an unrelated republish.
+
+**The store** (`runtime/app/artifact_store.js`) lives at `<CONXA_DIR>/artifacts/<sha256><ext>` — **beside** `skill-packs/`, never inside it, so `version_manager`'s per-version pruning can't delete an artifact another retained version still points at. Content addressing buys four things: the free delta above; immunity to step renumbering (`Image_3.jpg` → `Image_4.jpg` is the same bytes, so nothing downloads); dedupe across both versions and skills; and free resume, since whatever landed is already recognised. `put()` re-hashes before writing, so a corrupted or substituted artifact never reaches the tier that decides where to click.
+
+**`artifacts.json`** is written into the skill's active version directory by the artifact pass: the store is keyed by content but `visual_ref` is a path, so this index is what makes the store readable at recovery time (`artifact_store.resolveByPath`).
+
+**Not rate limited.** The delta route allows one request per token per 5 minutes; the artifact pass runs immediately after the code lands, so it is deliberately exempt (`get_skill_artifacts` never calls `_check_rate_limit`). Authentication is identical — the exemption is pacing, not access. The route is a POST under `/api/v1/workflows/`, so it is listed in `security.py`'s `PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST`.
+
+**Install-time sync opts out** (`cli_sync.js` passes `artifacts: false`): that process exists to exit, and unawaited work would either hold the installer open or be killed halfway. The server's own startup sync collects them on first launch. A pack still carrying the legacy unversioned `sync_endpoint` gets no artifacts — there is no artifact route to derive from it; republishing moves it onto the versioned form.
 
 **"Strict Mode" — a pack-declared ceiling (PROD-3).** A skill pack's `manifest.json` may carry an optional `max_recovery_tier` (1–4). The runtime's effective ceiling for a run is `min(host CONXA_MAX_RECOVERY_TIER, pack max_recovery_tier ?? host ceiling)` — a pack can only ever be *more* restrictive than the host it runs on, never looser (`server.js::_effectiveRecoveryTier`). Every agent-mediated decision (override application, park/resume, failure-response tier and messaging) uses this per-run effective value; status/registration endpoints (`get_runtime_status`, telemetry `capabilities`) still report the host baseline, since they answer "what can this host do," not "what was this one run capped at." Today `max_recovery_tier` is set per build via `CONXA_STRICT_MODE_MAX_TIER` (`skill_package_builder_output.py`) — a Studio UI toggle for setting it per workflow is not yet built.
 
 **Entity binding and the destructive-recovery halt (PROD-3).** Two related, previously-broken mechanisms, now wired end to end:
-- `identity_bundle.destructive` — set at compile time by `destructive_semantics.classify_consequence()` (click steps whose intent matches the destructive-token vocabulary, or that are a commit/submit action). Serialized onto the execution step's top-level `destructive` flag (`skill_package_builder_saved_skill.py::_copy_saved_common`) — the field `runtime/app/cascade.js::recoverStep` reads to stop the cascade after Layer 1 (EXEC-24 P5) and refuse the fallback-selector/a11y/dialog/fuzzy-text stages, rather than "finding something close" to a Delete button.
+- `identity_bundle.destructive` — set at compile time by `destructive_semantics.classify_consequence()` (click steps whose intent matches the destructive-token vocabulary, or that are a commit/submit action). Serialized onto the execution step's top-level `destructive` flag (`skill_package_builder_saved_skill.py::_copy_saved_common`) — the field `runtime/app/cascade.js::recoverStep` reads to stop the cascade after Layer 1 (EXEC-24 P5) and refuse the a11y/transient/re-hover/dialog-scope stages, rather than re-resolving its way to a Delete button.
 - **Entity binding** (`EntityBinding` on `SkillStep`) — for a step whose target sits inside a repeating list/table row, the compiler (`conxa_compile/compiler/entity_binding.py`) detects a `container_selector` matching every sibling row plus an `identifier` (preferring a declared run input over the recorded literal text) that picks out this run's specific row. At runtime, `resolution.js::entityRoots` narrows resolution to the row whose text contains the interpolated identifier — requiring an *exact single match*; zero or ambiguous (>1) matches fail closed (`entityNotFound`), never falling back to the unscoped page. Both the primary resolve path and every recovery stage's locator path go through this narrowing, so recovery can never substitute a same-looking element from a different row.
-- Both halts (`destructiveHalt`, `entityNotFound`) are deliberate stops, not exhausted recovery: `server.js`'s `parkable` predicate excludes them (no agent-mediated resume is ever offered), and `failure_response.js` returns a plain terminal message instead of a Tier 3/4 candidate digest — offering a ranked "pick a different element" list here would invite exactly the wrong-row guess the halt exists to prevent.
+- Both halts (`destructiveHalt`, `entityNotFound`) are deliberate stops, not exhausted recovery: `server.js`'s `parkable` predicate excludes them (no agent-mediated resume is ever offered), and `failure_response.js` returns a plain terminal message instead of a Tier B candidate digest — offering a ranked "pick a different element" list here would invite exactly the wrong-row guess the halt exists to prevent.
 - **Publish gate.** An irreversible step whose compiler-detected entity binding was never confirmed by the vendor in the editor cannot be saved (`editor/patch_gate.py::irreversible_step_requires_confirmed_entity_binding`) or published (`handlers/workflows.py::_require_confirmed_entity_bindings`, since patch_gate only fires on an edit). A step with no detected repeating container has nothing to confirm and is unaffected.
 - Scope note: this is the *safety-core* slice of PROD-3 (danger classification, entity binding, fail-closed recovery, Strict Mode). Dry-run/stage-then-commit, compensation workflows, before/after screenshots, and a published per-skill safety score remain open — see `TODO.md` PROD-3.
 
-**Recovery request payload — current-state grounding.** `server.js:_buildFailureResponse` always captures the interactive-element inventory *live, after* the T1/T2 cascade has run — this is the state the agent's corrected selector will actually act on, since in-process remedies (dismiss-overlay, scroll, re-hover) can themselves change the page. The pre-cascade inventory (`run.js:captureEarlyDomSnapshot`, taken at the exact moment of failure) is included as a clearly-labeled secondary block only when it differs from the current one — e.g. a dropdown that was open at failure time but has since closed. The payload also carries: the step's expected post-condition (compiled assertions plus, when the failure was a verify-fail rather than a resolution miss, which assertion actually failed), a compact trace of already-executed steps, and explicit grounding instructions telling the agent that the current screenshot/inventory are ground truth and the recording-time reference image may be outdated.
+**Recovery request payload — current-state grounding.** `server.js:_buildFailureResponse` always captures the interactive-element inventory *live, after* the Tier A cascade has run — this is the state the agent's corrected selector will actually act on, since in-process remedies (dismiss-overlay, scroll, re-hover) can themselves change the page. The pre-cascade inventory (`run.js:captureEarlyDomSnapshot`, taken at the exact moment of failure) is included as a clearly-labeled secondary block only when it differs from the current one — e.g. a dropdown that was open at failure time but has since closed. The payload also carries: the step's expected post-condition (compiled assertions plus, when the failure was a verify-fail rather than a resolution miss, which assertion actually failed), a compact trace of already-executed steps, and explicit grounding instructions telling the agent that the current screenshot/inventory are ground truth and the recording-time reference image may be outdated.
 
-**Closing edge — `step_overrides`.** `execute_skill` accepts `step_overrides: { "<0-based step index>": { "candidate_index": <n>, "confidence": <0-1>, "why": "…" } }` (preferred — a Tier 3/4 reflection-contract nomination against the ranked digest) or `{ "selector": "<Playwright selector>" }` (keyed by the same index as `resume_from`). On resume the resolved selector is injected via the step's `_explicit_selector` channel (`run.js:applyStepOverrides`) and validated (`run.js:validateOverrideSelector`) against the step's recorded fingerprint before it is allowed to act — extending the "resolver never blindly picks candidate[0]" invariant (§10.2a) to the agent-override path. A unique match is accepted outright; a multi-match is scored the same way `resolver.js` scores compiled signals (reusing `scoreCandidate`) and only accepted when the winner clears the uniqueness margin. A no-match or ambiguous (tied) selector is rejected — the runtime does **not** fall through to `.first()` — and the resume instead returns a fresh recovery request that reports what the selector actually matched, so the agent iterates instead of silently acting on the wrong element. A `candidate_index` that no longer resolves (stale digest) is reported as `agent_override_rejected { reason: "stale-candidate-index" }` and skipped — the next failure response carries a freshly ranked digest. Overrides are honoured only when the ceiling ≥ 3, so a stray override can never silently rewrite a pack under deterministic Studio test.
+**Closing edge — `step_overrides`.** `execute_skill` accepts `step_overrides: { "<0-based step index>": { "candidate_index": <n>, "confidence": <0-1>, "why": "…" } }` (preferred — a Tier B reflection-contract nomination against the ranked digest) or `{ "selector": "<Playwright selector>" }` (keyed by the same index as `resume_from`). On resume the resolved selector is injected via the step's `_explicit_selector` channel (`run.js:applyStepOverrides`) and validated (`run.js:validateOverrideSelector`) against the step's recorded fingerprint before it is allowed to act — extending the "resolver never blindly picks candidate[0]" invariant (§10.2a) to the agent-override path. A unique match is accepted outright; a multi-match is scored the same way `resolver.js` scores compiled signals (reusing `scoreCandidate`) and only accepted when the winner clears the uniqueness margin. A no-match or ambiguous (tied) selector is rejected — the runtime does **not** fall through to `.first()` — and the resume instead returns a fresh recovery request that reports what the selector actually matched, so the agent iterates instead of silently acting on the wrong element. A `candidate_index` that no longer resolves (stale digest) is reported as `agent_override_rejected { reason: "stale-candidate-index" }` and skipped — the next failure response carries a freshly ranked digest. Overrides are honoured only when the ceiling ≥ 3, so a stray override can never silently rewrite a pack under deterministic Studio test.
 
 **Cross-call page parking (the state-preservation half of the closing edge).** Agent recovery is inherently cross-call (runtime fails → Claude reasons → runtime resumes). If the failed page were torn down, the resume would begin on a blank page and `resume_from` would skip the navigation that established state — so the agent's *correct* selector would act on the wrong page and fail again. On a parkable failure (single run, ceiling ≥ 3, a selector/verify failure that is not auth/cancel), the runtime **parks the live page+context+browser** keyed by skill+company instead of closing it (`server.js:_parkedRecovery`), together with a cheap page-state token (`capturePageFingerprint`: url + interactive-element count + a hash of visible body text), with a TTL (`CONXA_RECOVERY_PARK_TTL_MS`, default 180s) that closes it if the agent never resumes. When the matching resume-with-override arrives, the runtime recomputes the fingerprint and compares it to the one captured at park time — a page that has since navigated or whose interactive-element count shifted materially (a live SPA re-render, a timer, a websocket push) is treated as **diverged**: the park is discarded and the override is refused rather than silently applied to state the agent never actually reasoned about. If no live, state-matching park exists at all (TTL expired, page crashed, or diverged), the runtime refuses the resume outright — it does not fall back to silently opening a fresh page mid-plan — and asks the agent to restart the skill from the beginning. When the park does match, the runtime adopts it and applies the override to the exact DOM the recovery request described. An unrelated/new run discards any stale park first. Headless browsers are reclaimed by `browser.js`'s per-company idle cache; a visible (`watch`) browser is closed on discard. Events: `recovery_park_created` / `recovery_park_resumed` / `recovery_park_discarded` / `recovery_park_state_mismatch` / `recovery_resume_refused`.
 
@@ -2225,8 +2286,12 @@ fail fast (recompile required).
   `tier1_dismiss_pattern` event. Reactive only: the ladder never sweeps proactively for
   overlays, so UI the workflow intends to interact with is touched only after it actually
   blocked a recorded target.
-- **Layer 2:** a11y re-probe, transient retry, **re-hover-then-retry** (walks the precompiled
-  `handler_hints.hover_chain` for menu reveals), fallback selectors, dialog scope, fuzzy text.
+- **Layer 2:** a11y re-probe (through the matcher — fingerprint-checked and uniqueness-gated),
+  transient retry, **re-hover-then-retry** (walks the precompiled `handler_hints.hover_chain` for
+  menu reveals), and dialog scope (the same selector re-searched inside an open dialog). The
+  fallback-selector walk and fuzzy-text match were removed in 2026-09: both clicked `.first()` on
+  a text-derived selector with no uniqueness gate, mutating the page before the agent tier could
+  read it. No Layer 2 stage may now act on an element it has not verified is the recorded one.
 - **Re-verify on recovery:** every Layer 1/2 remedy that re-runs the action funnels through
   `recoverWithSelector`, which — when the step carries a required assertion — re-invokes
   `verifyStep` after the re-run and only reports the remedy successful if the post-condition
@@ -2258,12 +2323,12 @@ which locates each landmark on the live page (testid → aria-label → primary 
 scores it with the **pure resolver** (`scoreCandidate`, zero LLM). If a majority of landmarks are
 missing (default: ≥50% below a 0.5 agreement threshold) it emits a **`drift_detected`** event.
 This is **warn-not-block** — execution always proceeds and per-step recovery still applies (consistent
-with the zero-token Tier 1/2 rule). The cloud aggregates these per (workflow, version) via
+with the zero-token Tier A rule). The cloud aggregates these per (workflow, version) via
 `_pre_exec_drift_queue` and returns them under `pre_exec` in the `/drift` response.
 
 ### 10.3 Dialog-Scoped Recovery
 
-If the element is expected inside a dialog, recovery first restricts the search to `[role="dialog"]`, `[role="alertdialog"]`, `[aria-modal="true"]`, `.modal`. Fuzzy fallback expands to the full page if no match.
+If the element is expected inside a dialog, Tier A first restricts the search to `[role="dialog"]`, `[role="alertdialog"]`, `[aria-modal="true"]`, `.modal` — the **same** selector, not a fuzzy guess.
 
 ### 10.4 No-Recovery Steps
 
@@ -2273,7 +2338,7 @@ If the element is expected inside a dialog, recovery first restricts the search 
 
 Optional interstitials — cookie/consent banners, session-expired screens, optional MFA, A/B-tested
 variants — used to be indistinguishable from a genuine selector failure: every such case escalated
-through the full recovery cascade, including paid Tier 3/4 LLM recovery billed to the customer's
+through the full recovery cascade, including paid Tier B LLM recovery billed to the customer's
 own Claude usage. Three step types give the compiled skill a way to express "this element sometimes
 appears" directly, so the runtime handles it without ever touching recovery:
 
@@ -2287,7 +2352,7 @@ appears" directly, so the runtime handles it without ever touching recovery:
 presence probe (selector-count or `identity_bundle.signals` resolution, polled via the existing
 `pollPositive`). `runBranchBody` executes each nested step through the same `executeStep`/`HANDLERS`
 dispatch as top-level steps, wrapping each in try/catch so a failed nested action (e.g. the accept
-button moved) is swallowed rather than propagated — the branch body never escalates to Tier 1-4
+button moved) is swallowed rather than propagated — the branch body never escalates to Tier A/B
 recovery, since `recoverStep` only fires on a throw escaping `runPlan`'s per-step try. Nested steps
 that carry only a plain `selector` (no `identity_bundle`) are normalized via `resolvableBranchStep`
 into string mode (`_explicit_selector`, the same mechanism recovery uses) — interactive handlers
@@ -2355,7 +2420,7 @@ nested dict inside `steps[step_index]["branch"]["steps"]` instead of a top-level
 routes through the same `_apply_step_patch` helper (selector-quality gates + `identity_bundle`
 rebuild) the top-level flow uses. `patch_gate.py::validate_editor_patch` gained an
 `in_branch_body` flag: when true, `recovery`/`validation` patch keys are rejected outright, since
-branch bodies are best-effort and never enter Tier 1-4 recovery (this section, above) — a nested
+branch bodies are best-effort and never enter Tier A/B recovery (this section, above) — a nested
 step's recovery/validation blocks would be dead configuration if editable. `try_dismiss`'s
 `candidates` and `wait_for_one_of`'s `options` accept a normal `branch` key patch (each selector
 quality-gated the same way as `target.primary_selector`) but have no dedicated authoring UI yet —

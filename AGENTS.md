@@ -143,7 +143,7 @@ runtime/                    Node.js MCP server — ships to ~/.conxa/ on custome
                             assertions/locators/handlers/cascade/uploads (one-way deps)
     resolver.js             Pure, browser-independent element resolver — durability-walk + uniqueness/margin gate
     resolve_adapter.js      Browser-side adapter: pre-gathers candidate descriptors from live Playwright page for resolver.js
-    recovery.js             L1 exception ladder + L2 re-hover / a11y cascade (Tier 1–2, zero LLM tokens;
+    recovery.js             L1 exception ladder + L2 a11y/re-hover/dialog (Tier A, zero LLM tokens;
                             purity CI-guarded by app/check_recovery_purity.js)
     install_identity.js     Writes version.json and integrity metadata for the app layer on first install
     skill_loader.js         Skill pack loading + input validation
@@ -283,7 +283,7 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | IdentityBundle / signal compilation | `conxa_compile/compiler/identity_bundle.py`, `selector_grammar.py`, `stable_hash.py` |
 | Selector scoring / anchor quality | `conxa_compile/compiler/selector_score.py`, `selector_filters.py` (anchor quality gates) |
 | Runtime element resolution | `runtime/app/resolver.js` (pure, unit-testable) + `runtime/app/resolve_adapter.js` (Playwright adapter) |
-| Runtime recovery cascade | `runtime/app/recovery.js` — L1 exception ladder + L2 a11y/fallback (Tier 1–2, zero tokens) |
+| Runtime recovery cascade | `runtime/app/cascade.js` + `recovery.js` — Tier A (in-process, zero tokens) then Tier B (armed agent handoff). Canonical table: `docs/TRD.md` §10.1 |
 | Assertions / outcome validation | `conxa_compile/compiler/validation_planner.py`; runtime `verifyAssertions()` in `run.js` |
 | Skill package building | `conxa_compile/skill_package_builder.py` (data-only output, auth excluded) |
 | LLM calls (compile side) | task clients in `conxa_compile/llm/` → `conxa_core.llm.get_router()` → cloud proxy |
@@ -322,14 +322,14 @@ Self-updates poll `/api/v1/updates/runtime-manifest` (manifest_version 2; deps k
 These are non-negotiable. Do not work around them.
 
 - **Auth files never enter build output.** `auth/auth.json`, Playwright storageState, and credentials are local runtime state only. `skill_package_builder.py` enforces this — the check must remain.
-- **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. Do not introduce silent LLM fallbacks into compiled-selector or a11y resolution paths. `recovery.js` implements L1/L2; `run.js` escalates to Tier 3+ only after both are exhausted.
+- **Tier A recovery costs zero LLM tokens.** LLM fires at Tier B only. Do not introduce silent LLM fallbacks into compiled-selector or a11y resolution paths. `cascade.js` implements Tier A (exception ladder + a11y / re-hover / dialog-scope); the runtime escalates to Tier B (armed agent recovery) only after Tier A is exhausted. Internal ceiling numbers 1–4 still exist on `CONXA_MAX_RECOVERY_TIER` (Studio = 2, MCP = 4) — they are not the product names.
 - **Iframe chain is preserved verbatim** from recording through compile and execution. Bounding boxes are page-level (offsets accumulated up the parent chain in `session.py`).
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** These are navigation markers, not interactable elements. They are never retried.
 - **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. Do not route anything else there. **Known exception (tracked in `TODO.md`, not accepted as permanent):** `tracking_routes.py`'s public telemetry-ingest endpoint currently lives at `/api/tracking/{company}/events`, not `/api/v1/tracking/...`. This was found during a 2026-07 documentation audit and needs a proper fix with compat handling for already-deployed runtimes — do not treat it as sanctioned, and do not add further routes outside `/api/v1` by analogy with it.
 - **The cloud does not compile or execute.** Recording, compilation, skill package building, and skill execution are local-only. Keep them that way.
 - **Host exe built `--no-bytecode`.** V8 bytecode (.jsc) masks the Node version and causes the Playwright selector engine to segfault in pkg-bundled binaries. Never re-enable bytecode for the host exe.
 - **Resolver never blindly picks `candidate[0]`.** `resolver.js` requires the winning candidate's margin over the runner-up to clear `uniqueMargin` (default 0.15); otherwise it falls through to the next signal. Do not add shortcut paths that skip this gate.
-- **LLM does not write selector strings on the primary compile path.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators when a workflow is first compiled. LLM is retained for: per-step intent, relational vision anchors, recovery describe-then-match (Tier 3+), and the workflow intent graph. The one exception is the 1-click fix API (`compiler/patch.py::_regenerate_compiled_selectors`, via `llm/selector_regeneration.py`), which re-runs LLM-assisted selector generation against the original DOM snapshot when a user manually re-targets a step's element in the editor — this is a narrow, user-initiated re-compile path, not part of the primary compiler.
+- **LLM does not write selector strings on the primary compile path.** `IdentityBundle` + `selector_grammar.py` are the sole selector generators when a workflow is first compiled. LLM is retained for: per-step intent, relational vision anchors, recovery describe-then-match (Tier B), and the workflow intent graph. The one exception is the 1-click fix API (`compiler/patch.py::_regenerate_compiled_selectors`, via `llm/selector_regeneration.py`), which re-runs LLM-assisted selector generation against the original DOM snapshot when a user manually re-targets a step's element in the editor — this is a narrow, user-initiated re-compile path, not part of the primary compiler.
 - **App-layer min_host is enforced at load time.** `bootstrap.js` reads `version.json` from `conxa-app/` and refuses to load if `min_host` > current host semver. Do not bypass this check when bumping the app layer.
 
 ---

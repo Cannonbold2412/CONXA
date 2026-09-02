@@ -1,6 +1,6 @@
 # Conxa Cost & Revenue Model
 
-**Last Updated:** August 22, 2026
+**Last Updated:** September 2, 2026
 **Status:** Living document — iterate as assumptions change
 
 ---
@@ -242,44 +242,40 @@ When a company ships a plugin update, customers pull the new version. The `/skil
 
 Recovery cost during execution is paid by the **customer's own Claude Desktop subscription or API key**, never by Conxa (see "What Conxa Actually Does" above). It's documented here anyway because it drives the cost/latency the *customer* experiences per step, and because compile-time decisions (selector quality, `recovery.json` fallback richness) directly change how often a run reaches the expensive tiers.
 
-The runtime resolves each step through up to four tiers (`docs/TRD.md` §10.1, the authoritative tier table): **Tier 1** (in-process exception ladder), **Tier 2** (in-process a11y/fallback re-derivation using `recovery.json`'s `selector_context`), and **Tier 3/4** (agent-mediated — since 2026-08 these fire as **separate round-trips**: the first agent round for a failed step is Tier 3, a text-only ranked indexed candidate digest; only if that round fails does a separate Tier 4 vision request with screenshots go back to the MCP client). Tiers 1–2 are zero-token by design; Tiers 3 and 4 are now priced per round below.
+The runtime has two behavioural tiers (`docs/TRD.md` §10.1): **Tier A** (in-process: exception ladder, then a11y / re-hover / dialog-scope — zero tokens) and **Tier B** (agent-mediated, every round armed with ranked digest + screenshots). Studio caps `CONXA_MAX_RECOVERY_TIER=2` so a step that survives Tier A fails without a model. Internal numbers 1–4 remain on the env var and telemetry; they are not the product names. Tier A is free by design; Tier B is priced per round below.
 
 | Outcome | LLM tokens | Who pays | Added wall time vs. a normal step | Basis |
 |---|---|---|---|---|
 | **No recovery needed** (primary selector hits) | 0 | — | none — baseline step time (~6–8s, mostly page interaction/wait) | Observed baseline from `transient_recovered`/normal steps in a live run |
-| **Tier 1** (exception ladder) | 0 | — | ~none — absorbed into the same step timeout | `recovery.js` L1, in-process |
-| **Tier 2** (a11y/fallback re-derivation) | 0 | — | ~none — comparable to baseline (~6.4s observed) | `recovery.js` L2, reads `recovery.json`'s `selector_context`, in-process |
-| **Tier 3** (agent-mediated semantic round — first agent round for the step) | ~900–2,300 tokens/round (ranked indexed digest ≈700–2,000 tokens — usually smaller than the old unranked JSON dump since it's rank-capped — + Claude's nomination response ≈150–300) | **Customer's own Claude subscription/API — never Conxa** | +5–8s per round (T1/T2 exhaustion ~10–17s before escalating, then agent reasoning latency) | Text-only: no screenshot is captured or sent in this round |
-| **Tier 4** (agent-mediated vision round — fires only if the Tier 3 round didn't fix the step) | ~1,500–2,400 tokens/round (screenshot ≈1,300–1,400 by Claude's image formula + refreshed digest ≈100–600 + fix response ≈150–300) | **Customer's own Claude subscription/API — never Conxa** | additional +5–8s round-trip | Separate call after a failed T3 round |
+| **Tier A** (timing/obstruction — same element) | 0 | — | ~none — absorbed into the same step timeout | `cascade.js::recoverStep`, in-process |
+| **Tier B** (armed agent round — digest + screenshots) | ~2,500–3,500 tokens/round (ranked digest ≈700–2,000 + screenshot(s) ≈1,300–1,400 + nomination ≈150–300) | **Customer's own Claude subscription/API — never Conxa** | +5–8s per round (Tier A exhaustion ~10–17s before escalating, then agent reasoning latency) | Every round is armed; there is no cheaper text-only first round |
 
-A step that heals on the first (semantic) round therefore costs roughly half of the old combined payload; the old ~3,000-token combined figure is now the worst case spanning TWO rounds (T3 then T4). A stagnation hard cap stops escalation entirely when the page fingerprint is unchanged across consecutive recovery rounds, so a frozen page can no longer burn repeated paid rounds.
+A failed step gets at most two Tier B rounds (`STAGNATION_LIMIT`). Round two is not a re-roll: it carries what round one nominated. A stagnation hard cap stops further paid rounds when the page fingerprint is unchanged. The old "Tier 3 text then Tier 4 vision as separate shapes" split is gone — withholding screenshots from the first round saved tokens on attempts that were going to work and wasted a whole round-trip on the ones that needed pictures.
 
 **Caveats on the token figures:** these are estimates, not exact counts. Measuring the *real* number requires either an Anthropic API key (to run `messages.count_tokens` against the reconstructed recovery payload) or Console usage access — neither was available when this was measured, and the recovery screenshot/DOM payload isn't persisted to disk, so it can't be re-measured after the fact. The wall-clock timings, by contrast, are exact — pulled directly from `~/.conxa/logs/recovery.log` timestamps (`terminal_failure` → `agent_recovery_requested` → `agent_override_applied` → `recovery_park_resumed`).
 
-#### Tier 3 vs. Tier 4 Cost Breakdown
+#### What's in a Tier B round
 
-Since 2026-08, Tier 3 (semantic) and Tier 4 (vision) fire as **separate round-trips**, not one combined request: the first agent round for a failed step is always Tier 3 (no screenshots), and only a failed T3 round produces a separate T4 vision payload. The historical figures below are kept for reference — the "combined" row was the old single-payload behavior:
-
-| Signal alone | What's in it | ~Tokens/occurrence |
+| Signal | What's in it | ~Tokens/occurrence |
 |---|---|---|
-| **Tier 3 only** (semantic — now the normal first round) | Ranked indexed candidate digest (~700–2,000; rank-capped so it's usually smaller than the old raw JSON inventory at ~800–2,000) + Claude's nomination fix response (~150–300) | **~900–2,300** (typical ~1,500) |
-| **Tier 4 only** (vision — now a separate second round) | Screenshot, Claude's image-token formula (~1,300–1,400) + refreshed digest + fix response (~150–300) | **~1,450–1,700+** |
-| **Tier 3 + 4 combined** (pre-2026-08 single payload; today = worst case across both rounds of a stubborn step) | DOM inventory + screenshot + **one** shared fix response | **~2,500–3,500** (typical ~3,000) |
+| **Armed round (current)** | Ranked indexed candidate digest (~700–2,000) + screenshot(s) (~1,300–1,400) + nomination (~150–300) | **~2,500–3,500** (typical ~3,000) |
+| Historical: text-only first round (pre-2026-09) | Digest + nomination, no images | ~900–2,300 |
+| Historical: vision-only second round (pre-2026-09) | Screenshot + refreshed digest + nomination | ~1,450–1,700+ |
 
 #### Worked Examples — Full Workflow Run
 
-Using the actual 8-step workflow this cascade was tested against. **Baseline** (~1,200 tokens) is the one-time cost of a clean `execute_skill` round trip: the MCP tool schemas (mostly a cache-read after the first call in a conversation), the tool call itself, and a short "Done." result — no recovery payload at all. Each recovery occurrence is additive on top of that; since the tier split, a step that heals on its first (semantic) round adds ~1,500 instead of ~3,000, and only stubborn steps pay for both rounds:
+Using the actual 8-step workflow this cascade was tested against. **Baseline** (~1,200 tokens) is the one-time cost of a clean `execute_skill` round trip: the MCP tool schemas (mostly a cache-read after the first call in a conversation), the tool call itself, and a short "Done." result — no recovery payload at all. Each Tier B occurrence is additive on top of that:
 
-| Scenario | Tier 3/4 occurrences | Token math | **Total tokens** |
+| Scenario | Tier B occurrences | Token math | **Total tokens** |
 |---|---|---|---|
 | Perfectly run workflow (no recovery) | 0 | ~1,200 baseline | **~1,200** |
 | 1 LLM recovery | 1 | 1,200 + (1 × 3,000) | **~4,200** |
 | 2 LLM recoveries | 2 | 1,200 + (2 × 3,000) | **~7,200** |
 | 3 LLM recoveries | 3 | 1,200 + (3 × 3,000) | **~10,200** |
 
-These are per-workflow-run figures, not per-step — most steps in a healthy workflow resolve via Tier 1/2 (zero tokens) and never show up in this table at all. The number that matters for a given workflow is simply how many of its steps are weak enough to fall through to Tier 3/4 on a given run; each one adds roughly one more ~3,000-token increment above.
+These are per-workflow-run figures, not per-step — most steps in a healthy workflow resolve via Tier A (zero tokens) and never show up in this table at all. The number that matters for a given workflow is simply how many of its steps are weak enough to fall through to Tier B on a given run; each one adds roughly one more ~3,000-token increment above.
 
-**Why this matters for compile-time decisions:** every step that reaches Tier 3/4 costs the *customer* real tokens and ~15 extra seconds, on top of Conxa's own compile-time incentive to keep selectors strong. A workflow with weak `IdentityBundle` signals and a thin `recovery.json` (missing `selector_context.alternatives`, sparse `anchors`) will lean on Tier 3/4 more often in production — worse customer experience, even though it costs Conxa nothing directly. Selector/anchor quality at compile time is the only lever that controls this.
+**Why this matters for compile-time decisions:** every step that reaches Tier B costs the *customer* real tokens and extra seconds, on top of Conxa's own compile-time incentive to keep selectors strong. A workflow with weak `IdentityBundle` signals and a thin `recovery.json` will lean on Tier B more often in production — worse customer experience, even though it costs Conxa nothing directly. Selector/anchor quality at compile time is the only lever that controls this.
 
 #### What This Costs the End Customer Running a Plugin Locally
 
@@ -293,7 +289,7 @@ Anthropic doesn't publish exact message counts (they vary by message/attachment 
 | Max 5x | $100/mo | ~225 |
 | Max 20x | $200/mo | ~900 |
 
-A Conxa `execute_skill` call maps roughly to **1 message-equivalent per attempt**: a clean run (no recovery) is 1 message; each Tier 3/4 occurrence needs one more (the runtime's recovery request + the agent's follow-up `execute_skill` call with `step_overrides`) — Tier 1/2 recoveries are free, in-process, and don't add a message. So:
+A Conxa `execute_skill` call maps roughly to **1 message-equivalent per attempt**: a clean run (no recovery) is 1 message; each Tier B occurrence needs one more (the runtime's recovery request + the agent's follow-up `execute_skill` call with `step_overrides`) — Tier A recoveries are free, in-process, and don't add a message. So:
 
 | Plan | ~Clean runs / 5hr (0 recoveries) | ~Runs / 5hr (avg. 1 recovery/run) | ~Runs / 5hr (avg. 2 recoveries/run) |
 |---|---|---|---|
@@ -301,7 +297,7 @@ A Conxa `execute_skill` call maps roughly to **1 message-equivalent per attempt*
 | Max 5x | ~225 | ~112 | ~75 |
 | Max 20x | ~900 | ~450 | ~300 |
 
-**Bottom line for customer-facing messaging:** running Conxa-built workflows costs a Pro/Max subscriber $0 extra — it just draws down their existing 5-hour message allowance, same as any other Claude Desktop conversation. The number of runs they can fit in a session depends almost entirely on how often the workflow needs Tier 3/4 recovery, which is why compile-time selector/anchor quality (above) is the thing that actually protects their usage budget, not anything Conxa charges for.
+**Bottom line for customer-facing messaging:** running Conxa-built workflows costs a Pro/Max subscriber $0 extra — it just draws down their existing 5-hour message allowance, same as any other Claude Desktop conversation. The number of runs they can fit in a session depends almost entirely on how often the workflow needs Tier B recovery, which is why compile-time selector/anchor quality (above) is the thing that actually protects their usage budget, not anything Conxa charges for.
 
 ---
 
@@ -759,11 +755,11 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 ### Telemetry Quality (Track Daily)
 - Total runs reported
 - Success rate (primary selector hit, no recovery)
-- Recovery rate (needed Tier 1–4 — there are four tiers, not five; see `docs/TRD.md` §10.1)
-- Free-repair share: steps that finished **without ever** reaching a paid Tier 3/4 LLM call. Count
+- Recovery rate (needed Tier A or B — two behavioural tiers; see `docs/TRD.md` §10.1)
+- Free-repair share: steps that finished **without ever** reaching a paid Tier B LLM call. Count
   outcomes per step, not attempts — counting attempts double-counts a step that tried two free
   methods and wrongly counts a step that tried a free method, failed, then paid for an LLM call
-- Unresolved failures (all four tiers exhausted)
+- Unresolved failures (both tiers exhausted)
 
 As of 2026-08-07 these are no longer manual queries — the operations dashboard computes them
 (`app/services/tracking_analytics.py`, surfaced on `/dashboard/healing` and the overview health
@@ -830,6 +826,7 @@ score), so the figures in this doc can be checked against measured fleet data ra
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-09-02 | — | v21: Re-synced execution-time recovery costs with `docs/TRD.md` §10.1. The product now has two behavioural tiers — A (in-process, zero tokens) and B (armed agent round, digest + screenshots). The old four-number ladder and the "text-only first, vision later" split are gone; ceiling env `CONXA_MAX_RECOVERY_TIER` still uses 2 vs 4. |
 | 2026-08-22 | Kiran | v20: Re-synced the doc with `docs/PRD.md` §11 and the enforced tier table (`PLAN_LIMITS`/`ADDON_TIERS` in `conxa-cloud/backend/app/services/entitlements.py`). Fixed Human Edit pool figures that still carried pre-repricing numbers (1M/10M/50M → 500K/2.5M/10M for Free/Starter/Pro) and the stale per-compilation LLM costs that contradicted the doc's own per-step math ($0.54/$0.11/$1.93/$0.39 → $0.21/$0.042/$0.81/$0.162, blended $0.195/$0.695 → $0.075/$0.292). Replaced the fictional "+25 credits/mo add-on at ₹4,999" with the real add-on catalog: +20 @ ₹3,999, +50 @ ₹9,999, +100 @ ₹19,999, +250 @ ₹49,999, each stacking Human Edit tokens too. Aligned Free's distribution wording with PRD §11 — installs are unlimited on every tier; what Free is capped at is one build machine ("capped at 1 install" was stale). Added the installer-icon capability row (Starter and up, per PRD 2026-08-09). Marked the old Week-1–2 limits confirmation as superseded; updated the Month-2 validation item to current Starter numbers. Added "Future Horizons — Revenue Projections & Cost Posture" from PRD §11/§14: how "pay for reach, not for runs" extends across Horizon 2 (concurrency capacity + review-resolver seats on customer-owned workers) and Horizon 3 (instrumentation-based reach on customer infrastructure), what each horizon earns the next, the §14.5 open questions that gate pricing work, and explicit planning guidance not to fold unratified horizon figures into forecasts. |
 | 2026-08-09 | Kiran | v19: Re-verified all LLM provider pricing against current provider docs (previously checked June 3, 2026) — GPT-5.4-mini, GPT-5.4, Together AI Gemma 4 31B, and Claude Sonnet 4.6 are all **unchanged**. Added real Claude Opus 4.8/5 pricing ($5/$25 per MTok, down from the retired Opus 4.1's $15/$75) in place of the old unpriced "quality upgrade path" note. Flagged new Claude Sonnet 5 introductory pricing ($2/$10 through Aug 31, 2026, converging to Sonnet 4.6's $3/$15 on Sept 1) — not worth a router migration for the discount alone. Replaced the free-tier plan's vague "$0.075/1M" shadow price with the actual current Gemini Flash-Lite rate ($0.10/1M) and recomputed the notional free-plan cost figures accordingly (real Conxa cost remains $0). Documented concrete, sourced free-tier rate limits for Groq (30 req/min, 6,000 TPM, 14,400 req/day), Google AI Studio (5–15 req/min, 1,000 req/day — noting Google pulled Pro-family Gemini models from the free tier on April 1, 2026, leaving only Flash/Flash-Lite eligible), and NVIDIA NIM (~40 req/min, 1,000 free credits). Fixed the stale "Last Updated" header, which still read July 2 despite the doc's own revision history extending to Aug 8. No changes to Conxa's own subscription pricing, tier structure, or unit economics — this pass only re-verified upstream LLM provider costs. |
 | 2026-08-08 | Kiran | v18: Repriced around the capability ladder following the Centelon pilot demo (docs/PRD.md §11). Switched headline pricing from USD to INR (Starter ₹19,999/mo, Pro ₹49,999/mo, Enterprise from ₹99,999/mo). Removed the installer-slot meter entirely — no limit on how many product slugs a workspace publishes under; added a machines meter (1/3/10) as the trial-abuse and seat-integrity control instead. Free became a 30-day trial, capped at 1 install, rather than a permanent tier. Lowered compile credits (25/200/500) and Human Edit pool (500K/2.5M/10M) from the prior numbers. Added capability gates that aren't numeric meters: distribution (internal-only on Free/Starter, external on Pro/Enterprise), installer branding (Conxa on Pro, white-label on Enterprise), ops tier (none/basic/full), and BYOK (Azure OpenAI, Enterprise only). Added a compile-credit add-on (+25/mo for ₹4,999, Starter/Pro). Unit-economics scenarios and cost-per-tier tables recomputed at the new numbers; margins are marked indicative pending a full re-derivation from current per-token provider pricing. |

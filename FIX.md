@@ -2,6 +2,50 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The dashboard now shows the same two repair stages as the product — 2026-09-02
+The operations screens and the public reliability section still labelled repairs as four numbered rungs, so a free local retry looked like two different paid stages. They now show the two stages that actually exist: a free local retry, and a smarter ask that uses the customer's own AI. The numbers underneath are unchanged — only the names on the charts.
+— 2026-09-02
+
+## Docs now call the two repair stages by their real names — 2026-09-02
+Guides and product write-ups still talked about four numbered repair stages, including a cheap text-only ask followed by a later picture ask. The product has two stages: a free local retry that waits, scrolls, and closes pop-ups without guessing a different button, and a smarter ask that always includes both the page list and the pictures. The numbered labels still exist on the machine for compatibility, but people reading the docs will now see the same two-stage story as the product.
+— 2026-09-02
+
+## Automations now switch back to the right tab after a link opens a new one — 2026-09-02
+If a workflow clicked a link that opened a second tab, and the person recording had then gone straight back to the first tab to carry on working, the automation would keep working in the first tab but the second tab stayed in front on screen. Everything after that point happened out of sight, behind the tab nobody was watching — and because a hidden tab is slowed down by the browser itself, steps that were fine when recorded started failing minutes later. It's like a shop assistant carrying on serving you from behind a door that swung shut. Automations now notice when a new tab jumps in front and bring the tab they are actually working in back to the front, so what you see matches what is happening.
+— 2026-09-02
+
+## New tabs opened by a link are now recorded properly — 2026-09-02
+When a link opened a new tab during recording, the studio wrote it down against the tab that was clicked rather than the new tab itself, because the browser tells us about the new tab a fraction of a second before it has a name for it. The result was a recording that never mentioned the second tab at all, so the finished automation had no idea a tab had ever opened or that the person had switched back. New recordings now wait that fraction of a second and name the tab correctly, so the automation replays the switch across and the switch back exactly as it was recorded. Workflows recorded before today are unaffected until they are recorded again, but the fix above still keeps them working.
+— 2026-09-02
+
+## Workflows that sign in as part of their job are no longer mistaken for expired logins — 2026-09-02
+Some workflows deliberately include a sign-in page as an ordinary step — filling in a demo account's login form is just part of the task. Whenever a step failed on a page like that, the system assumed a saved sign-in had expired, told the customer to log back in to an app the workflow had never touched, and skipped its own repair attempts entirely because it thought there was nothing to repair. It now checks whether the workflow itself chose to go to that page; if it did, the failure is treated as an ordinary problem and gets the full repair effort it deserves.
+— 2026-09-02
+
+## Local app rebuild now includes the screenshot store — 2026-09-02
+A recent change added a local store for the pictures used when an automation needs to repair a broken step. The rebuild script refused to run because that new file was not on the shipping list, so a local rebuild would have left those pictures out of the engine customers actually run. The file is now on the list, and the rebuild can finish.
+— 2026-09-02
+
+## Fixed a workflow blaming the wrong company when a login step failed — 2026-09-02
+When a step in a workflow that has its own built-in sign-in (not a saved login from another connected app) failed because the wrong password was entered, the system used to guess that some unrelated, already-connected company's saved sign-in had "expired" — and it would name a real company in the error message even though that company was never touched by the workflow. It's like a repair van blaming the wrong customer's account for an unrelated bill. Now, if the system can't tie a failure to a specific connected company it actually manages a saved sign-in for, it no longer makes up a name — it just reports the real, honest error instead.
+— 2026-09-02
+
+## Fixed an ordinary button being mistaken for a length "record" that needed extra protection — 2026-09-02
+Some buttons — like "Delete this invoice" — get an extra safety check that first confirms the system found the exact right row before clicking, so it never deletes the wrong one. That check was accidentally triggering on completely ordinary buttons too, like a ordinary "Login" button, because many websites reuse the same layout style (a "row" of the page) in more than one unrelated place — a coincidence with nothing to do with repeated data. When that happened, the system picked a stray sentence of the page's own instructional text as the button's supposed "identity," and later refused to click the button at all, saying it couldn't confirm which "record" it was. The check now only looks close around the button itself, not all the way up to the whole page layout, so it no longer mistakes ordinary page structure for a list of records.
+— 2026-09-02
+
+## Automations now stop guessing when a button moves — 2026-09-02
+When a website changed and an automation could not find a button, it used to try clicking whatever looked roughly similar — a "Save" button when it wanted "Save changes and continue", for example. That guess was rarely right, and a wrong click changes the page, so by the time the smart repair step got its turn it was staring at a screen that no longer matched what was recorded. Those two guessing steps are now gone. The automation still waits, scrolls and closes pop-ups on its own, but it only ever clicks something it has actually confirmed is the right thing.
+— 2026-09-02
+
+## Repairs now get the full picture on the first try — 2026-09-02
+When an automation asks Claude for help fixing a broken step, it used to send a written description first and hold the screenshots back for a second attempt, to save money. That saved a little on the repairs that were going to work anyway and wasted a whole extra round on the ones that actually needed to see the screen. Now the first request includes everything at once — the list of what's on the page and the pictures. Repairs still stop after two attempts, so nothing runs away.
+— 2026-09-02
+
+## Stopped telling Claude to look at a picture that was never sent — 2026-09-02
+The repair instructions told Claude to compare the live screen against a picture taken while the workflow was recorded. That picture never actually reaches a customer's computer — it is left behind when skills are downloaded — so we were asking Claude to compare against something that wasn't there, which invites it to imagine what it showed. The instructions now only mention the picture when it is genuinely attached, and otherwise say plainly that there isn't one. Getting the pictures delivered properly is the next piece of work.
+— 2026-09-02
+
 ## The "time saved" number on the Impact page now uses real recorded time, not a guess — 2026-09-02
 Before, the dashboard's "hours saved" figure came from an admin typing in a guess of how long a task takes by hand. Now, since the recording studio already timed the person doing the task once while recording it, that real time is used automatically the first time a workflow is published — the admin can still type in their own number later if they want to change it, and that choice is always kept. The dashboard now also shows how long the automated run actually took next to it, and quietly subtracts a small, fixed 20 seconds per run for the time a person still spends just starting it, so the number reflects real savings rather than pretending it's completely free.
 — 2026-09-02

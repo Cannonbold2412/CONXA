@@ -226,7 +226,7 @@ skill_package_builder.py     data-only skill package (auth files never included)
 
 ### Runtime — Self-Healing Recovery Cascade
 
-For every step, tiers run in order and LLM fires only at Tier 3+ — see `docs/TRD.md` §10.1 for the authoritative tier table.
+For every step, Tier A (in-process, zero tokens) runs first; LLM fires only at Tier B (armed agent handoff) — see `docs/TRD.md` §10.1 for the authoritative table.
 
 ### MCP Tools (exposed to Claude)
 
@@ -287,7 +287,7 @@ Tagged `app-v*` push triggers `build-runtime-app.yml`: obfuscates the business-l
 These are non-negotiable.
 
 - **Auth files never enter build output.** `auth/auth.json`, Playwright storageState, and credentials are local runtime state only. `skill_package_builder.py` enforces this.
-- **Tier 1/2 recovery costs zero LLM tokens.** LLM fires at Tier 3+ only. No silent LLM fallbacks in compiled-selector or a11y paths.
+- **Tier A recovery costs zero LLM tokens.** LLM fires at Tier B only. No silent LLM fallbacks in compiled-selector or a11y paths.
 - **Iframe chain is preserved verbatim** from recording through compile through execution. Bounding boxes are page-level (offsets accumulated up the parent chain).
 - **`frame_enter` / `frame_exit` steps get `no_recovery_block`.** Never retried.
 - **All API routes live under `/api/v1`.** The frontend and runtime both depend on this prefix. One known exception is tracked in `TODO.md` — see `CLAUDE.md`'s Key Invariants for detail.

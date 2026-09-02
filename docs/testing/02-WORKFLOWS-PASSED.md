@@ -28,7 +28,7 @@ Internet workflow coverage:  ▓▓▓▓░░░░░░░░░░░░░
 Last updated: 2026-08-26
 Passed workflows:             3   (1 flagship + 2 precursors/supporting)
 Longest verified workflow:    42 steps · 6 tabs · 6 hosts · 5 domains
-Zero-token recovery proven:   yes (Tier 1 dismiss ladder, real Chromium)
+Zero-token recovery proven:   yes (Tier A dismiss ladder, real Chromium)
 Auth exclusion verified:      yes (no secrets in published bundles)
 
 Headroom note: the proven SHAPE (multi-tab + file handoff + authenticated chains) suggests a

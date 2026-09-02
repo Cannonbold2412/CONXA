@@ -651,7 +651,7 @@ edits (add/remove/reorder) go through `insert_branch_step`/`delete_branch_step`/
 `reorder_branch_steps` (`conxa_compile/editor/workflow_mutations.py`), while per-field edits on a
 nested step reuse `cmd_patch_step` with an optional `path` parameter (e.g. `"branch.steps[1]"`)
 that addresses the nested dict inside `branch.steps` instead of a top-level step. Nested steps
-cannot patch `recovery`/`validation` (branch bodies never enter Tier 1-4 recovery, so those
+cannot patch `recovery`/`validation` (branch bodies never enter Tier A/B recovery, so those
 blocks are meaningless there — enforced by `patch_gate.py::validate_editor_patch`'s
 `in_branch_body` flag). `try_dismiss`/`wait_for_one_of` accept a normal `branch` key patch
 (candidates/options, quality-gated the same way as any selector) but have no dedicated authoring
@@ -935,13 +935,17 @@ class WorkflowIntentGraph(BaseModel):
 | Code | Meaning | Extra fields |
 |---|---|---|
 | `wf_start` | Workflow execution begins | `tot` (total steps) |
-| `step_ok` | Step succeeded | `si` (step index), `tier` (1–4) |
+| `step_ok` | Step succeeded | `si` (step index), `tier` (1–4 wire code; 1–2 = Tier A, 3–4 = Tier B) |
 | `step_fail` | Step failed | `si`, `code` (error code) |
-| `recovery_tier{N}` | Recovery tier N attempted | `si` |
+| `recovery_tier{N}` | Recovery rung N attempted (legacy numbers; 1–2 = A, 3–4 = B) | `si` |
 | `tier_ok` | A resolution/recovery tier succeeded | `si`, `tier`, `sel` |
 | `verify_fail` | Post-action VERIFY failed | `si`, `ch` (assertion channel) |
 | `verify_result` | Full post-action assertion audit for a step that carries assertions (emitted on the primary execution path, pass or fail — not on recovery re-verification) | `si`, `ok` (overall pass/fail), `n` (assertion count), `advFail` (count of failed advisory/non-required assertions) |
-| `repair_event` | A step was recovered — drift signal for the admin flywheel queue | `step_id`, `tier` (L1/L2), `method`, `score`, `margin`, `stable_hash_match`, `stable_hash`, `drift_hint`, `app_version_fingerprint` |
+| `repair_event` | A step was recovered — drift signal for the admin flywheel queue | `step_id`, `tier` (`L1`/`L2` inside Tier A, or agent for B), `method`, `score`, `margin`, `stable_hash_match`, `stable_hash`, `drift_hint`, `app_version_fingerprint` |
+
+**`recovery.json` per-step field changes (2026-09).** Added: `recorded_context` — where the target sat on the page at recording time (`parent`, `siblings` capped at 8, `index_in_parent`, `form_context`), so the agent recovery tier can compare the live page against the recorded structure instead of only describing the present. Removed: `fallback.text_variants` and `selector_context.alternatives`, which fed the two Layer 2 guessing stages deleted from the runtime cascade — nothing reads them. `selector_context.primary`, `anchors` and `visual_ref` are unchanged, as is the execution step's unrelated `target.fallback_selectors` (a *primary resolution* input, despite the similar name).
+
+**Retired recovery signals (2026-09).** The fallback-selector walk and fuzzy-text match were removed from Layer 2 (see `docs/TRD.md` §10.1), so three values stop appearing on new runtimes: `rec_ok` with `sc: "text_variant"`, `repair_event` with `method: "fuzzy"` or `method: "fallback"`, and the `layer_recovered` recovery-log entry with `mode: "fuzzy"`. Nothing was renamed and no consumer breaks — the values simply go to zero. Historical rows keep them, so dashboards aggregating over past windows must still tolerate them. `recovery_tier{N}` and the `tier` field keep their 1–4 numbering; only the behavioural grouping changed.
 | `drift_detected` | Pre-execution structural drift warning (advisory; emitted at run start, never blocks) | `total` (landmarks), `missing`, `drift_ratio`, `missing_intents` (≤5), `url` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
 | `wf_fail` | Workflow failed | `dur`, `fsi` (failed step index), `fc` (failure code) |
@@ -1145,9 +1149,19 @@ POST /api/v1/admin/workflows/generations                                        
 ```
 GET  /api/v1/skill-packs/{workspace_id}/delta                                   # legacy
 GET  /api/v1/workflows/{installer_version}/{workspace_id}/skill-packs/delta     # versioned; same as §5.9
+POST /api/v1/workflows/{installer_version}/{workspace_id}/skill-packs/{slug}/artifacts   # recovery artifacts
 POST /api/v1/tracking/{workspace_id}/events                                     # legacy ingest
 POST /api/v1/workflows/{installer_version}/{workspace_id}/tracking/events       # versioned ingest; same as §5.6
 ```
+
+**POST …/skill-packs/{slug}/artifacts** (added 2026-09) — one zip holding exactly the recovery artifacts this machine is missing, for one skill. Request `{"have": ["<sha256>", …]}` lists the hashes already in the machine's content-addressed store; the response body is `application/zip` containing every artifact whose hash is *not* in that list, with the archive's own checksum in the `X-Artifact-Sha256` response header. An unknown hash is ignored rather than rejected — the store is shared across every skill and workspace on the machine, so it legitimately holds hashes this skill never had. Nothing missing returns a valid empty zip, not an error.
+
+Three deliberate differences from the delta route beside it:
+- **Not rate limited.** The delta allows one request per token per 5 minutes; the artifact pass runs immediately after the code files land, so that window would refuse it every time. Authentication is identical — the exemption is pacing, never access.
+- **Zip bytes returned directly**, not a link to one. Render's free plan has no persistent disk (the reason `_ensure_skill_pack_on_disk` exists), so an archive written somewhere to be fetched afterwards could be gone by the time the client asked.
+- **No legacy unversioned equivalent.** A pack still carrying the old `sync_endpoint` shape gets no artifacts until it is republished onto the versioned form.
+
+The delta response gained a matching per-skill `artifacts: [{path, sha256}]` array — metadata only, never `content_base64`. It is present on `no_change` entries too, so a pack installed before artifact sync existed can backfill without waiting for an unrelated republish. Everything not in the five-file code set (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) is an artifact; today that means `visuals/`. See `docs/TRD.md` §10.1a for the two-pass client behaviour and the on-disk store.
 
 Every versioned route validates `{installer_version}` against the allow-list (400 `unsupported_installer_version` otherwise) and delegates to the exact same shared implementation function as its legacy, unversioned counterpart — behavior is identical across generations. **`{installer_version}` is frozen into an installer at build time** (stamped into `pack.json.installer_version` at publish time by Build Studio, read from `GET /api/v1/workflows/generations`'s `current` field) and is never reassigned remotely for an already-installed runtime. "Migrating customers to a new generation" means Conxa flips the *default* generation that **new** installer builds stamp (`POST /api/v1/admin/workflows/generations`) — it does not, and cannot, change the URLs already baked into a customer's machine. The legacy, unversioned routes are kept mounted **permanently** as the implicit "v1" behavior for every already-deployed installer — never removed.
 
@@ -1644,7 +1658,7 @@ run-summary shape as above) and `steps` — the per-step outcome used by the run
 {
   "steps": [
     {"index": 0, "label": "Step 1", "status": "ok", "tiers": [], "assertionsPassed": 1, "assertionsFailed": 0},
-    {"index": 2, "label": "Step 3", "status": "recovered", "tiers": ["Tier 1", "Tier 2"], "assertionsPassed": 0, "assertionsFailed": 0},
+    {"index": 2, "label": "Step 3", "status": "recovered", "tiers": ["Tier A"], "assertionsPassed": 0, "assertionsFailed": 0},
     {"index": 3, "label": "Step 4", "status": "failed", "tiers": [], "assertionsPassed": 0, "assertionsFailed": 1},
     {"index": 4, "label": "Step 5", "status": "not_reached", "tiers": [], "assertionsPassed": 0, "assertionsFailed": 0}
   ]
@@ -1653,6 +1667,7 @@ run-summary shape as above) and `steps` — the per-step outcome used by the run
 
 `status` is derived server-side (`tracking_analytics.run_step_flow`) rather than in the
 frontend, so the run view and the dashboard aggregates classify a recovery the same way.
+`tiers` uses the product labels `Tier A` (in-process) and `Tier B` (agent). Runtime event codes may still say `recovery_tier{N}` (1–2 = A, 3–4 = B).
 `run.js` does not reliably emit a per-step success event, so a step is treated as healed
 unless it is positively known to have failed; steps after the failing one are reported as
 `not_reached` rather than omitted.
@@ -1676,7 +1691,7 @@ Returns the pre-existing keys (`metrics`, `recovery_type_usage`, `recovery_usage
 | `kpis[]` | `{key, label, unit, direction, value, previous, delta, delta_pct, series[]}`. `direction` (`up_good`/`down_good`) tells the UI which way is an improvement per metric |
 | `health` | `{score, grade, factors[], summary}`. `score` is `null` (grade `"No telemetry"`) for a workspace with no runs — never 0. Factor weights sum to 100: success rate 40, assertion pass rate 20, drift resistance 15, zero-token healing 15, runtime freshness 10 |
 | `workflows[]` | Per-skill rollups grouped by `(company, workflow_id)` — runs, success rate, `success_rate_delta` vs the previous equal period, recovery/unattended rate, p50/p95 duration, and a nested `versions[]` breakdown |
-| `recovery_cascade` | Sankey `{nodes, links}` over `Entered recovery → Tier 1…4 → Healed \| Failed`, plus `entered_recovery`, `healed`, `failed`, `heal_rate`, `resolved_directly`, `tier_touch[]`, `zero_token_heals`, `agent_assisted` |
+| `recovery_cascade` | Sankey `{nodes, links}` over `Entered recovery → Tier A → Tier B → Healed \| Failed`, plus `entered_recovery`, `healed`, `failed`, `heal_rate`, `resolved_directly`, `tier_touch[]`, `zero_token_heals`, `agent_assisted` |
 | `reliability_heatmap` | `{cells[{weekday, hour, runs, successful, failed, success_rate}], max_runs}`, UTC |
 | `failure_codes[]` | `{code, count, last_seen, workflow_count}` |
 | `roi` | `{assumptions, estimated{...}, measured{...}}` — see below |
@@ -1687,7 +1702,7 @@ Returns the pre-existing keys (`metrics`, `recovery_type_usage`, `recovery_usage
 Only steps that entered recovery appear in `recovery_cascade`; the far larger directly-resolved
 population is reported as `resolved_directly` instead, because folding it in would compress
 every other band to a hairline. `zero_token_heals` counts **steps that healed without ever
-reaching a paid tier** — not Tier 1/2 event hits, which would double-count a step that tried
+reaching a paid tier** — not Tier A event hits, which would double-count a step that tried
 both and would credit a step that only succeeded after escalating to a model.
 
 `roi.estimated` (hours saved, value) depends on the stored assumptions; `roi.measured`

@@ -262,7 +262,7 @@ no Build Studio authoring path — they could only be produced by hand-editing a
   `try_dismiss` candidates and `wait_for_one_of` option selectors, rejects nested-body content
   smuggled through the parent's own patch) and an `in_branch_body` flag that rejects
   `recovery`/`validation` patches on nested steps (branch bodies are best-effort and never enter
-  Tier 1-4 recovery — CLAUDE.md invariant).
+  Tier A/B recovery — CLAUDE.md invariant).
 - **Frontend — Tier 1 (Review, default view):** `CompileHealthBanner.tsx` (workflow-level status
   banner under the page header), `WorkflowPlanPanel.tsx` (new "Workflow plan" tool pane), safety
   badges + `BranchSummaryBadge` on `WorkflowStepItem.tsx`, `BranchSubList.tsx` (indented
@@ -324,8 +324,8 @@ leave the intended result unmet.
 - **Runtime** (`runtime/run.js`): new `value_equals`/`state_changed` handlers in `verifyStep`;
   the recovery cascade (`recoverWithSelector` and everything that funnels through it) now
   re-invokes `verifyStep` after re-running the action and only reports success if the
-  post-condition re-holds; a verify-fail (`recovery.js` `descend-layer2`) skips the Tier 1
-  single-remedy retry and falls straight to Tier 2's resolution-changing mechanisms.
+  post-condition re-holds; a verify-fail (`recovery.js` `descend-layer2`) skips the exception-ladder
+  single-remedy retry and continues the rest of Tier A (a11y / re-hover / dialog).
 - **Human Editor:** the retarget wizard's Phase 3, "Confirm & apply," is now "Validation" —
   `RetargetPhaseValidation.tsx` shows the enforced post-condition plus advisory checks as an
   editable flat list, round-tripped through `cmd_retarget_apply`'s new `edited_assertions`

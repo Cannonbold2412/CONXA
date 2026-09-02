@@ -62,7 +62,7 @@ Tabs: you will end up with ~7 tabs — that is intentional.
 ### C — Dynamic identity (tab 3: http://uitestingplayground.com — plain http, its https cert is broken)
 9. On the **Dynamic ID** page: click **Button with Dynamic ID**.
 10. On the **Text Input** page: type `Conxa`, then click the button whose label changes.
-> Proves: stable_hash strips dynamic IDs; changing-text heals at Tier 1–2 zero tokens (C.1/C.3).
+> Proves: stable_hash strips dynamic IDs; changing-text heals at Tier A zero tokens (C.1/C.3).
 
 ### D — the-internet marathon (tab 4: the-internet.herokuapp.com)
 Late render:

@@ -183,8 +183,8 @@ without the agent having to reason its way out of it.
 Four structural properties, each traceable to how the system is actually built:
 
 - **It survives the UI changing.** Elements are identified by several independent signals rather than
-  one brittle selector, and a four-tier recovery ladder repairs drift at run time — the first two tiers
-  deterministic and free.
+  one brittle selector, and a two-tier recovery ladder repairs drift at run time — Tier A
+  deterministic and free, Tier B only when the element itself moved.
 - **It costs nothing per run.** Execution happens on the customer's own machine, so Conxa has no
   marginal cost per execution and charges none. Installs and runs are unlimited on every tier; nobody
   is ever penalised for using it more (§11).
@@ -417,7 +417,7 @@ A Node.js MCP server that installs on the machine where work actually happens. I
 - Registers itself into every AI agent host it finds installed on that machine
 - Syncs skill packs from the cloud — delta only, SHA-256 verified, atomically written
 - Exposes each skill as a first-class agent tool
-- Executes skills locally through a real browser, with the four-tier self-healing recovery cascade
+- Executes skills locally through a real browser, with the two-tier self-healing recovery cascade
   (`docs/TRD.md` §10.1)
 - Reports structured execution telemetry back
 - Updates itself from a signed manifest
@@ -515,13 +515,13 @@ which is the failure mode that makes operations teams distrust automation perman
 
 ### Self-healing execution
 
-When a step cannot find its target, the runtime escalates through a four-tier recovery cascade rather
-than failing. Tiers 1 and 2 are deterministic, in-process, and cost nothing: re-resolve through the
+When a step cannot find its target, the runtime escalates through a two-tier recovery cascade rather
+than failing. **Tier A** is deterministic, in-process, and costs nothing: re-resolve through the
 other identity signals, scroll, dismiss what is covering the element, wait for it to settle, re-probe by
-role and name, fall back to alternates, search within the active dialog, match text fuzzily. Only when
-both are exhausted does the runtime hand a structured recovery request up to the AI agent that called
-it — first with the live page inventory, then with screenshots — and the agent resumes the run with a
-corrected target that is validated before it is allowed to act.
+role and name, re-hover a menu, search within the active dialog — always the *same* element, never a
+guess. Only when that is exhausted does **Tier B** hand an armed recovery request up to the AI agent
+that called it — ranked live-page inventory plus screenshots plus recording-time context — and the
+agent resumes the run with a corrected target that is validated before it is allowed to act.
 
 Two consequences worth stating explicitly. **Conxa never pays for recovery**, because the expensive
 tiers run on the agent subscription the customer already has. And **the cheap tiers do most of the
@@ -776,8 +776,7 @@ Three properties follow from that, and they are the whole model:
 
 1. **Our costs sit at build time, not run time.** Compilation is where the model spend happens. It is
    one-time per workflow version, and it is exactly what we meter.
-2. **We never pay for recovery either.** The free recovery tiers are deterministic and local; the
-   expensive tiers run on the customer's own AI subscription (§8). Reliability improvements do not
+2. **We never pay for recovery either.** Tier A is deterministic and local; Tier B runs on the customer's own AI subscription (§8). Reliability improvements do not
    raise our cost of goods.
 3. **Therefore success is never punished.** A customer who runs a skill a million times costs us the
    same as one who runs it twice. No competitor with cloud execution can offer that without rebuilding
@@ -802,11 +801,11 @@ A custom installer icon is available from Starter upward, independent of full wh
 (still Enterprise-only) — a paying workspace can put its own icon on the `.exe` without needing the
 rest of white-label's Conxa-branding removal.
 
-Self-healing stays in every tier including Free. It costs Conxa nothing — the two zero-token recovery
-tiers are deterministic and local, and the LLM-backed tiers run on the customer's own agent subscription
-— and a free tier without it teaches people the product breaks, which is the opposite of what a trial is
-for. What Free *doesn't* get is reach: it is capped at one machine and expires after 30 days, which is
-what stops "free forever" from quietly substituting for Pro.
+Self-healing stays in every plan including Free. It costs Conxa nothing — Tier A is deterministic
+and local, and Tier B runs on the customer's own agent subscription — and a free plan without it
+teaches people the product breaks, which is the opposite of what a trial is for. What Free *doesn't*
+get is reach: it is capped at one machine and expires after 30 days, which is what stops "free forever"
+from quietly substituting for Pro.
 
 ### What is metered
 
@@ -891,7 +890,7 @@ actively shipping in this space. The compiler is hard work. Hard is not the same
 
 What is actually hard to copy:
 
-**The recovery ladder.** Four tiers, the cheap ones doing most of the work, a model involved only as a
+**The recovery ladder.** Two tiers, the cheap one doing most of the work, a model involved only as a
 last resort — and even then billed to someone else. Making automation degrade gracefully instead of
 breaking hard is an execution architecture, not a compiler trick (`docs/TRD.md` §10.1).
 
@@ -988,8 +987,8 @@ is always a next one, and being the vendor who said no is worth more than the wo
 ### Product Health
 
 - Skill compilation success rate
-- Execution success rate (steps completed without Tier 3+ recovery)
-- Recovery success rate (failures resolved by Tier 1–4 before escalation)
+- Execution success rate (steps completed without Tier B recovery)
+- Recovery success rate (failures resolved by Tier A or B before giving up)
 - Skill reuse rate across executions
 - Human-intervention rate — share of runs that reach a review point, and time spent waiting there
 - Unattended completion rate — runs that finish with no person involved at any point
@@ -1019,7 +1018,7 @@ is always a next one, and being the vendor who said no is worth more than the wo
 
 **Capability goes to the data; the cloud holds neither.** Customer data never transits through Conxa infrastructure. Compilation runs on the builder's machine, execution runs on the machine doing the work, and — as the product grows — scale and intelligence run on infrastructure the customer owns too (§14). The cloud coordinates: it hosts, versions, distributes, meters and bills. It does not execute, and it does not store the customer's business data. This is a security and trust property, not just an architecture choice, and it is the one property that must survive every future stage of the product intact.
 
-**Zero-cost recovery by default.** Tier 1 and 2 recovery cost nothing. LLM escalation is a last resort, not a default fallback. Skills should be compiled with enough redundancy that most real-world UI drift resolves without an LLM call.
+**Zero-cost recovery by default.** Tier A recovery costs nothing. LLM escalation (Tier B) is a last resort, not a default fallback. Skills should be compiled with enough redundancy that most real-world UI drift resolves without an LLM call.
 
 **AI-native from the protocol up.** Conxa is not bolted onto an existing automation platform. It is designed from the ground up for AI agent consumption via MCP — skills are first-class agent tools, not wrapped scripts.
 
@@ -1113,7 +1112,7 @@ context — and the **human review points**, the places where a person genuinely
 something, supply a judgement, or take over.
 
 **Execute.** Conxa executes those workflows reliably on the machine where the work happens, with
-deterministic replay, compiled assertions, and the four-tier self-healing recovery cascade. Humans stay
+deterministic replay, compiled assertions, and the two-tier self-healing recovery cascade. Humans stay
 in the loop exactly where the recording said they were needed — not as a fallback when automation
 fails, but as a designed part of the process.
 
