@@ -39,6 +39,9 @@ jobs:
           python -m pip install --ignore-installed PyJWT -r conxa-cloud/backend/requirements.txt
           python -m pip install pytest ruff razorpay
 
+      - name: Install Chromium for Playwright tests
+        run: python -m playwright install chromium
+
       - name: Ruff lint (Build Studio Python)
         run: ruff check conxa-builder/python
 
