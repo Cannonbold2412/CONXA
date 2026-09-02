@@ -938,3 +938,42 @@ def test_calendar_root_is_the_widget_not_the_day_cell(page: Page) -> None:
         f"grid is a date-specific selector ({dc['grid']!r}) — it can only ever match the "
         "recorded day, so a different target date could never be picked"
     )
+
+
+def test_sibling_combobox_value_is_not_captured_as_this_fields_label(page: Page) -> None:
+    # captureAssociatedLabel's fallback #6 walks preceding siblings looking for a short text
+    # caption. A react-select-style "City" field sitting right after a "State" field picked up
+    # the STATE field's own rendered selected-value text ("Uttar Pradesh") as its label — that
+    # text is the OTHER field's live answer, not a caption for this one, and it changes
+    # independently of what this field actually is (mega-workflow investigation: this exact
+    # shape produced label_text="Uttar Pradesh" on the City input, which the compiler then used
+    # to build a near-zero-confidence `label:has-text("Uttar Pradesh") + input` selector).
+    _install_bridge(
+        page,
+        """
+        <div id="stateCity-wrapper">
+          <div class="col">
+            <div id="state" class="css-container">
+              <div class="css-value-container">
+                <div class="css-single-value">Uttar Pradesh</div>
+                <input id="state-input" />
+              </div>
+            </div>
+          </div>
+          <div class="col">
+            <div id="city" class="css-container">
+              <div class="css-value-container">
+                <input id="city-input" />
+              </div>
+            </div>
+          </div>
+        </div>
+        """,
+    )
+    page.click("#city-input")
+    page.keyboard.type("L")
+    page.wait_for_timeout(200)
+
+    events = _type_events(page)
+    assert len(events) == 1
+    assert events[0]["target"]["label_text"] != "Uttar Pradesh"

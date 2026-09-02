@@ -601,6 +601,15 @@
         const sib = children[i];
         if (!sib || sib.contains(el)) continue;
         if (_SKIP_INTERACTIVE.has(sib.tagName.toLowerCase())) continue;
+        // A sibling that itself CONTAINS a live control (a react-select-style wrapper <div>
+        // around a hidden <input>, an ARIA combobox/listbox, a contenteditable) is that OTHER
+        // field's own container, not a caption for this one -- its visible text is that other
+        // field's currently selected/typed value, which changes independently of this element
+        // and has nothing to do with what this element is. Concretely: a "City" input recorded
+        // right after a "State" combobox picked up the state's rendered value ("Uttar Pradesh")
+        // as its own label_text, because _SKIP_INTERACTIVE only caught a bare <input> sibling,
+        // never a wrapper <div> around one (audit finding, mega-workflow investigation).
+        if (sib.querySelector && sib.querySelector('input,select,textarea,[contenteditable],[role="combobox"],[role="listbox"]')) continue;
         const txt = safeText(sib, 80);
         // A sibling whose entire text is a month+year string ("August 2026") is never a real
         // field label — it's a live "current value" readout (a calendar widget's own header is
