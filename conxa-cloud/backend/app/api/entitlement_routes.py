@@ -24,7 +24,7 @@ from app.services.entitlements import (
     set_installer_domain,
 )
 from app.services.rbac import require_admin
-from app.services.saas import upsert_billing
+from app.services.saas import upsert_billing, workspace_ids_for_email
 
 router = APIRouter(tags=["entitlements"])
 _ASSIGNABLE_PLANS = {"free", "starter", "pro", "enterprise"}
@@ -49,7 +49,8 @@ class InstallerDomainBody(BaseModel):
 
 
 class AssignPlanBody(BaseModel):
-    workspace_id: str = Field(..., min_length=1, max_length=256)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=256)
+    email: str | None = Field(default=None, min_length=1, max_length=320)
     plan: str = Field(..., min_length=1, max_length=32)
     duration_days: int | None = Field(default=None, gt=0, le=3650)
 
@@ -152,18 +153,39 @@ def post_assign_plan(body: AssignPlanBody, authorization: str = Header(default="
     ``duration_days``, if given, time-boxes the grant: entitlements.normalize_plan
     reverts the workspace to "free" once ``plan_expires_at`` passes, with no
     downgrade job needed. Omit it for a permanent grant (also clears any prior
-    expiry when re-assigning a workspace that previously had a timed grant)."""
+    expiry when re-assigning a workspace that previously had a timed grant).
+
+    Pass either ``workspace_id`` directly or ``email`` — the customer's login
+    email, resolved to a workspace_id via every user we've seen sign in with
+    it. ``email`` only works once they've signed into the dashboard at least
+    once, and 409s (with the candidate workspace_ids) if it's ambiguous
+    across more than one workspace."""
     _require_admin(authorization)
     plan = body.plan.strip().lower()
     if plan not in _ASSIGNABLE_PLANS:
         raise HTTPException(status_code=400, detail=f"unknown_plan: must be one of {sorted(_ASSIGNABLE_PLANS)}")
+
+    workspace_id = (body.workspace_id or "").strip()
+    if not workspace_id:
+        if not body.email:
+            raise HTTPException(status_code=400, detail="workspace_id or email required")
+        matches = workspace_ids_for_email(body.email)
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"no workspace found for {body.email}")
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{body.email} belongs to multiple workspaces, pass workspace_id: {matches}",
+            )
+        workspace_id = matches[0]
+
     expires_at = int(time.time() + body.duration_days * 86400) if body.duration_days else None
     billing = upsert_billing(
-        body.workspace_id,
+        workspace_id,
         {"plan": plan, "status": "active", "plan_expires_at": expires_at},
     )
     return {
-        "workspace_id": body.workspace_id,
+        "workspace_id": workspace_id,
         "plan": plan,
         "expires_at": expires_at,
         "limits": PLAN_LIMITS[plan],

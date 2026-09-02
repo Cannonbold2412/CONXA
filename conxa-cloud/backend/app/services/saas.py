@@ -459,6 +459,31 @@ def billing_for_workspace(workspace_id: str) -> dict[str, Any]:
     return billing
 
 
+def workspace_ids_for_email(email: str) -> list[str]:
+    """Workspace IDs for every user we've ever seen sign in with this email
+    (case-insensitive). Used by the manual plan-grant admin endpoint to turn
+    a customer's email into the workspace_id upsert_billing needs — nothing
+    else in the product looks a user up by email, so this stays local rather
+    than calling out to Clerk's Admin API."""
+    needle = email.strip().lower()
+    if not needle:
+        return []
+    with _lock:
+        state = _read_state()
+        user_ids = {
+            uid
+            for uid, row in state.get("users", {}).items()
+            if isinstance(row, dict) and str(row.get("email") or "").strip().lower() == needle
+        }
+        return sorted(
+            {
+                row.get("workspace_id")
+                for row in state.get("memberships", [])
+                if isinstance(row, dict) and row.get("user_id") in user_ids and row.get("workspace_id")
+            }
+        )
+
+
 def membership_count_for(workspace_id: str) -> int:
     """Best-effort local/dev seat count backed by SaaS membership state."""
     with _lock:
