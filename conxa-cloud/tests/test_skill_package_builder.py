@@ -750,11 +750,11 @@ class TestSavedSkillJsonBuild:
                 "anchors": [
                     {"text": "{{database_name}}", "priority": 2},
                 ],
-                "fallback": {"text_variants": ["{{database_name}}"], "role": "link"},
-                "selector_context": {
-                    "primary": 'text="{{database_name}}"',
-                    "alternatives": ['[role="link"][name="{{database_name}}"]'],
-                },
+                # `text_variants` and `selector_context.alternatives` are deliberately absent:
+                # they fed the fallback-selector walk and fuzzy text match deleted from the
+                # runtime cascade in 2026-09, and nothing reads them now.
+                "fallback": {"role": "link"},
+                "selector_context": {"primary": 'text="{{database_name}}"'},
             }
         ]
 
@@ -807,6 +807,78 @@ class TestSavedSkillJsonBuild:
 
         recovery = json.loads((skill_dir / "recovery.json").read_text(encoding="utf-8"))
         assert recovery["steps"][0]["visual_ref"] == "visuals/Image_1.jpg"
+
+    def test_saved_skill_recovery_carries_recorded_page_structure(self, tmp_path):
+        """The agent recovery tier is handed a ranked list of what is on the page NOW. That
+        describes the present but not the change, and drift IS a change — so the recorded
+        neighbourhood ships alongside it as the structural before-picture."""
+        saved_skill = {
+            "meta": {"id": "skill_ctx", "title": "Export Report"},
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {
+                            "action": "click",
+                            "target": {"primary_selector": 'text="Export"'},
+                            "signals": {
+                                "context": {
+                                    "parent": 'div#toolbar[role=toolbar]',
+                                    "siblings": [f"button#b{i}:Btn {i}" for i in range(12)],
+                                    "index_in_parent": 3,
+                                    "form_context": "form#report",
+                                    # Merged in by the compiler, but they describe the visit,
+                                    # not where the element sat — must not be carried over.
+                                    "page_url": "https://app.example/reports",
+                                    "page_title": "Reports",
+                                    "timing": {"dwell_ms": 900},
+                                },
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="export_report",
+            saved_skill=saved_skill,
+        )
+
+        recovery = json.loads(
+            (tmp_path / "skills" / "export_report" / "recovery.json").read_text(encoding="utf-8")
+        )
+        ctx = recovery["steps"][0]["recorded_context"]
+        assert ctx["parent"] == "div#toolbar[role=toolbar]"
+        assert ctx["index_in_parent"] == 3
+        assert ctx["form_context"] == "form#report"
+        # Capped so the block stays a few hundred bytes and cannot crowd out the live ranked
+        # digest it sits beside (candidate_digest.js enforces a 40k-char budget).
+        assert ctx["siblings"] == [f"button#b{i}:Btn {i}" for i in range(8)]
+        assert not {"page_url", "page_title", "timing"} & set(ctx)
+
+    def test_saved_skill_recovery_omits_recorded_context_when_unrecorded(self, tmp_path):
+        """Packs recorded before this shipped simply have no context signals — the key is
+        omitted rather than emitted empty, so the payload never carries a meaningless block."""
+        saved_skill = {
+            "meta": {"id": "skill_noctx", "title": "Export Report"},
+            "inputs": [],
+            "skills": [
+                {"steps": [{"action": "click", "target": {"primary_selector": 'text="Export"'}}]}
+            ],
+        }
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="export_report",
+            saved_skill=saved_skill,
+        )
+
+        recovery = json.loads(
+            (tmp_path / "skills" / "export_report" / "recovery.json").read_text(encoding="utf-8")
+        )
+        assert "recorded_context" not in recovery["steps"][0]
 
     def test_saved_skill_export_drops_url_state_and_preserves_frame(self, tmp_path):
         saved_skill = {

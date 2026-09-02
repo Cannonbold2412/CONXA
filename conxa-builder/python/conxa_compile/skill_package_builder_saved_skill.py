@@ -847,45 +847,51 @@ def _saved_recovery_anchors(step: dict[str, Any], target_text: str) -> list[dict
     return out[:4]
 
 
-def _fallback_text_variants_for_saved_step(target_text: str) -> list[str]:
-    variants: list[str] = []
-    if target_text:
-        variants.append(target_text)
-    lowered = target_text.lower()
-    if "delete" in lowered:
-        variants.extend(["Delete", "Remove"])
-    elif "remove" in lowered:
-        variants.extend(["Remove", "Delete"])
-    elif "continue" in lowered:
-        variants.extend(["Continue", "Next"])
-    elif "next" in lowered:
-        variants.extend(["Next", "Continue"])
-    elif "save" in lowered:
-        variants.extend(["Save", "Update"])
-    out: list[str] = []
-    for item in variants:
-        clean = " ".join(str(item or "").split())
-        if clean and clean not in out:
-            out.append(clean)
-    return out[:4]
+# How many sibling summaries to carry into recovery.json. The recorder already caps each one's
+# text at 40 chars (bridge.js siblingSummaries), so this bounds the whole block to a few hundred
+# bytes per step — small enough to ride the existing sync and to sit alongside the live ranked
+# digest without eating into its 40k-char budget (candidate_digest.js).
+_RECORDED_CONTEXT_SIBLING_MAX = 8
 
 
-def _saved_step_fallback_selectors(step: dict[str, Any], primary_selector: str, target_text: str) -> list[str]:
-    target = step.get("target") if isinstance(step.get("target"), dict) else {}
-    raw = target.get("fallback_selectors") if isinstance(target.get("fallback_selectors"), list) else []
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        selector = str(item or "").strip()
-        if not selector or selector == primary_selector or selector in seen:
-            continue
-        if "{{" in target_text and "{{" not in selector:
-            continue
-        if selector.startswith("/") or selector.startswith("./") or selector.startswith("//") or "xpath" in selector.lower():
-            continue
-        out.append(selector)
-        seen.add(selector)
-    return out[:5]
+def _recorded_context_for_saved_step(step: dict[str, Any]) -> dict[str, Any]:
+    """Where this element sat on the page AT RECORDING TIME — the structural before-picture.
+
+    The agent recovery tier is handed a ranked list of what is on the page *now*. That describes
+    the present but not the change, and drift is a change: "it used to sit in the toolbar next to
+    Export" is what identifies a moved button, and nothing in a live inventory can say it.
+
+    Everything here was already captured by the recorder (bridge.js's `context`) and already
+    survives into the saved skill (build.py's `signals["context"]`) — this only selects the
+    structural fields and drops the rest. `page_url`/`page_title`/`timing` are merged into the
+    same dict by the compiler and are deliberately excluded: they describe the visit, not the
+    element's position in the page.
+    """
+    signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
+    context = signals.get("context") if isinstance(signals.get("context"), dict) else {}
+    if not context:
+        return {}
+
+    out: dict[str, Any] = {}
+    parent = str(context.get("parent") or "").strip()
+    if parent:
+        out["parent"] = parent
+
+    raw_siblings = context.get("siblings")
+    if isinstance(raw_siblings, list):
+        siblings = [" ".join(str(s or "").split()) for s in raw_siblings if str(s or "").strip()]
+        if siblings:
+            out["siblings"] = siblings[:_RECORDED_CONTEXT_SIBLING_MAX]
+
+    index_in_parent = context.get("index_in_parent")
+    if isinstance(index_in_parent, int):
+        out["index_in_parent"] = index_in_parent
+
+    form_context = str(context.get("form_context") or "").strip()
+    if form_context:
+        out["form_context"] = form_context
+
+    return out
 
 
 def _saved_step_visual_ref(step_id: int, visuals_dir: Path | None) -> str | None:
@@ -1006,15 +1012,20 @@ def _build_saved_skill_recovery(
                 "role": target_role,
             },
             "anchors": _saved_recovery_anchors(step, target_text),
-            "fallback": {
-                "text_variants": _fallback_text_variants_for_saved_step(target_text),
-                "role": target_role,
-            },
-            "selector_context": {
-                "primary": selector,
-                "alternatives": _saved_step_fallback_selectors(step, selector, target_text),
-            },
+            # `text_variants` and `selector_context.alternatives` used to live here. They fed the
+            # runtime's fallback-selector walk and fuzzy text match — two Layer 2 stages deleted in
+            # 2026-09 because they clicked `.first()` on a text-derived selector with no uniqueness
+            # gate. The variant generator was the worst of it: it expanded "Save changes" into
+            # "Save"/"Update" and "Delete" into "Remove", which is exactly how a step could act on
+            # the wrong control. Nothing reads either field now, so they are no longer emitted.
+            # `target.fallback_selectors` on the EXECUTION step is unrelated and still live — it
+            # feeds primary resolution via selector_grammar.py.
+            "fallback": {"role": target_role},
+            "selector_context": {"primary": selector},
         }
+        recorded_context = _recorded_context_for_saved_step(step)
+        if recorded_context:
+            entry["recorded_context"] = recorded_context
         visual_ref = _saved_step_visual_ref(step_id, visuals_dir)
         if visual_ref:
             entry["visual_ref"] = visual_ref
