@@ -27,6 +27,10 @@ jobs:
       # Exact Node @yao-pkg/pkg embeds for the node24 target. Keep in lockstep with
       # build-runtime-app.yml's NODE_VERSION so app bytecode matches this exe's V8.
       NODE_VERSION: "24.15.0"
+      # Job-wide so the Chromium install and every step that can launch a browser
+      # (including the "offline" unit suite — test_group_required_apps.js launches
+      # a real browser for its no-required-apps case) agree on where it lives.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
 
     steps:
       - name: Checkout
@@ -74,12 +78,20 @@ jobs:
         working-directory: runtime
         run: node check_host_manifest.js
 
+      - name: Install Chromium (needed by unit suite and the execution gate)
+        # test_group_required_apps.js's no-required-apps case launches a real
+        # browser, so this must run before "Unit tests" below, not just before
+        # the execution gate further down.
+        working-directory: runtime
+        run: npx playwright install chromium
+
       - name: Unit tests — offline suite (test/unit/)
-        # `npm test` = `node --test test/unit/`: only the sandboxed, offline
-        # unit tests (os.tmpdir() + env overrides, no network, no browser —
-        # they never touch the runner's real filesystem state; see the header
-        # comment in test_mcp_register.js). Browser/exe-dependent scripts live
-        # in test/e2e/ and are run explicitly by their own gate steps below.
+        # `npm test` = `node --test test/unit/`: sandboxed (os.tmpdir() + env
+        # overrides, no network, never touches the runner's real filesystem
+        # state; see the header comment in test_mcp_register.js) but NOT
+        # browser-free — test_group_required_apps.js launches a real Chromium.
+        # Exe/host-dependent scripts live in test/e2e/ and are run explicitly
+        # by their own gate steps below.
         working-directory: runtime
         run: npm test
 
@@ -119,12 +131,6 @@ jobs:
         # the resulting exe (the init-only gate in build-runtime-app.yml will NOT catch it).
         run: npm run build:win
 
-      - name: Install Chromium for execution gate
-        working-directory: runtime
-        run: npx playwright install chromium
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
-
       - name: Execution gate — real skill replay (selector engine must resolve)
         # Drives the freshly-built exe through a hermetic navigate+click skill against a
         # local file:// fixture and asserts it reaches "Done.". This is the check that
@@ -132,8 +138,6 @@ jobs:
         # elements). The app layer defaults to the current runtime/ source.
         working-directory: runtime
         run: node test/e2e/gate_replay.js dist/conxa-runtime.exe
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.pw-browsers
 
       - name: Stage keytar.node for release
         working-directory: runtime
