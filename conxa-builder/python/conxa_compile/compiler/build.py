@@ -214,13 +214,45 @@ def _make_tab_marker_event(action: str, tab: dict[str, Any], url: str) -> dict[s
     }
 
 
+def _make_tab_navigate_event(tab: dict[str, Any], url: str) -> dict[str, Any]:
+    """A synthetic `manual_navigate` event immediately following a user-opened tab's `tab_open`
+    marker — _build_step's existing manual_navigate branch (not a MARKER_ACTIONS no-op) turns
+    this into a real `navigate` step. Same minimal-fields shape as _make_tab_marker_event, for
+    the same reason (never round-tripped through RecordedEvent.model_validate).
+
+    Inserted here, at the EVENT level, rather than as a step spliced in after the fact
+    (the old _insert_user_tab_navigate_steps): every later pass that walks `steps` and `events`
+    in lockstep (hover-chain population, choice-group collapse, date-picker collapse) depends on
+    steps[i] mapping 1:1 onto events[i], and a step inserted without a matching event silently
+    breaks that for everything downstream. Producing the extra event here instead keeps the
+    invariant true by construction all the way through the step-building loop.
+    """
+    return {
+        "action": {"action": "manual_navigate", "timestamp": "", "value": json.dumps({"to_url": url})},
+        "target": {},
+        "frame": {},
+        "tab": tab,
+        "page": {"url": url, "title": ""},
+    }
+
+
 def _insert_tab_markers(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Insert a tab_open/tab_switch marker event immediately before the first event recorded
     on a different tab than the previous event — the tab-context twin of frame_enter/
     frame_exit, and compiled through the same no-op MARKER_ACTIONS path. tab_open the first
     time a tab id is seen, tab_switch when returning to one already seen (including back to
     the initial tab). The very first event never gets a marker — that's just the recording's
-    starting tab, not something that "opened" mid-workflow."""
+    starting tab, not something that "opened" mid-workflow.
+
+    A `tab_open` for a tab the *user* opened (Ctrl+T or similar — nothing on the recorded page
+    ever opens it) is immediately followed by a synthetic `manual_navigate` event to the tab's
+    destination URL (see _make_tab_navigate_event). runtime/tabs.js::resolveStepPage creates a
+    blank page for opened_by="user" tabs and relies on "the recorded first action on this tab"
+    being a navigate; without this, a user-opened tab replays as a permanently blank page and
+    every subsequent step on it fails with "Element not found". opened_by="site" tabs (a
+    link/window.open) get no such event — the click that triggers them is itself replayed
+    normally and the browser navigates them as a natural side effect, exactly like it did at
+    record time."""
     if not events:
         return events
     out: list[dict[str, Any]] = []
@@ -232,7 +264,10 @@ def _insert_tab_markers(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         tab_id = str(tab.get("id") or "tab_0")
         if i > 0 and tab_id != prev_tab_id:
             marker_action = "tab_switch" if tab_id in seen_tabs else "tab_open"
-            out.append(_make_tab_marker_event(marker_action, tab, str((ev.get("page") or {}).get("url") or "")))
+            url = str((ev.get("page") or {}).get("url") or "")
+            out.append(_make_tab_marker_event(marker_action, tab, url))
+            if marker_action == "tab_open" and str(tab.get("opened_by") or "") == "user" and url:
+                out.append(_make_tab_navigate_event(tab, url))
             seen_tabs.add(tab_id)
         out.append(ev)
         prev_tab_id = tab_id
@@ -256,42 +291,12 @@ def _navigate_step(url: str, tab: dict[str, Any]) -> SkillStep:
     )
 
 
-def _insert_user_tab_navigate_steps(
-    steps: list[SkillStep], cleaned_events: list[dict[str, Any]]
-) -> list[SkillStep]:
-    """After a `tab_open` marker for a tab the *user* opened (Ctrl+T or similar — nothing on
-    the recorded page ever opens it), synthesize a `navigate` step to the tab's destination
-    URL right after it.
-
-    runtime/tabs.js::resolveStepPage creates a blank page for opened_by="user" tabs and relies
-    on "the recorded first action on this tab" being a navigate — but the compiler never
-    actually produced one: tab_open is a MARKER_ACTIONS no-op (_build_step), so the URL
-    _insert_tab_markers already computed (line ~207, from the first real event recorded on the
-    new tab) was simply discarded. Without this, a user-opened tab replays as a permanently
-    blank page and every subsequent step on it fails with "Element not found".
-
-    opened_by="site" tabs (a link/window.open) are excluded on purpose — the click that
-    triggers them is itself replayed normally and the browser navigates them as a natural side
-    effect, exactly like it did at record time. Only opened_by="user" tabs have no replayed
-    action that would ever cause them to load anything.
-    """
-    out: list[SkillStep] = []
-    for step, ev in zip(steps, cleaned_events):
-        out.append(step)
-        if step.action != "tab_open" or step.tab.get("opened_by") != "user":
-            continue
-        url = str((ev.get("page") or {}).get("url") or "").strip()
-        if not url:
-            continue
-        out.append(_navigate_step(url, step.tab))
-    return out
-
-
 def _insert_start_navigate_step(
     steps: list[SkillStep], cleaned_events: list[dict[str, Any]]
 ) -> list[SkillStep]:
     """Give the recording's own starting tab the same leading `navigate` step every
-    user-opened tab already gets from _insert_user_tab_navigate_steps.
+    user-opened tab already gets (via the synthetic manual_navigate event
+    _insert_tab_markers inserts for it — see _make_tab_navigate_event).
 
     _insert_tab_markers deliberately emits no tab_open marker for the recording's initial tab —
     "that's just the recording's starting tab, not something that 'opened' mid-workflow." That's
@@ -301,9 +306,8 @@ def _insert_start_navigate_step(
     see FIX.md. This makes tab_0 consistent with every other tab: the skill's own first step is
     a `navigate` to wherever the recording actually started.
 
-    Must run AFTER _insert_user_tab_navigate_steps (it prepends, which would desync that
-    function's zip(steps, cleaned_events) if run first) and AFTER _populate_hover_chains
-    (same reason: it indexes steps[i] against cleaned_events[i]).
+    Must run AFTER _populate_hover_chains and the choice/date-picker collapses (it prepends,
+    which would desync their steps[i]-against-events[i] indexing if run first).
     """
     if not steps or not cleaned_events:
         return steps
@@ -653,7 +657,17 @@ def _build_identity_bundle(
 
 
 def _populate_hover_chains(steps: list[SkillStep], events: list[dict[str, Any]], session_id: str = "") -> None:
-    """Set handler_hints.hover_chain on steps whose recorded predecessor was a hover (Phase 7)."""
+    """Set handler_hints.hover_chain on steps whose recorded predecessor was a hover (Phase 7).
+
+    Requires steps[i] to map 1:1 onto events[i] — same invariant collapse_choice_group_runs and
+    collapse_date_picker_runs depend on. A caller that violates it (an earlier pass inserted a
+    step with no matching event, or vice versa) gets a loud failure here instead of hints
+    silently landing on the wrong steps."""
+    if len(steps) != len(events):
+        raise ValueError(
+            f"_populate_hover_chains: steps ({len(steps)}) and events ({len(events)}) "
+            "must be the same length — an earlier pass desynced them"
+        )
     from conxa_compile.compiler.action_semantics import detect_hover_precondition
     for i, ev in enumerate(events):
         prev_ev = events[i - 1] if i > 0 else None
@@ -661,7 +675,7 @@ def _populate_hover_chains(steps: list[SkillStep], events: list[dict[str, Any]],
             continue
         dom_html, a11y_tree = _load_step_snapshot(prev_ev, session_id)
         hover_signals = generate_deterministic_signals(prev_ev, dom_html=dom_html, a11y_tree=a11y_tree)
-        if hover_signals and i < len(steps):
+        if hover_signals:
             steps[i].handler_hints.hover_chain = hover_signals
 
 
@@ -712,14 +726,21 @@ def _build_assertions(
     # value we typed/selected — this is the action's own direct effect, independent of wait_for.
     # Prefer the live readback (catches framework normalization/combobox commits the recorded
     # intent value wouldn't show) over the recorded value; redacted/absent readback falls back.
+    # Never override a templated {{binding}} value, though — the whole point of a bound input is
+    # that a later run supplies a DIFFERENT value than what was recorded, and runtime's
+    # assertions.js interpolates `expected` against that run's inputs. Overwriting it with the
+    # literal recorded readback bakes in this recording's answer forever, so the assertion
+    # fails on every subsequent run with different input (audit finding — see FIX.md).
     raw_value = (ev.get("action") or {}).get("value")
     is_key_event = isinstance(raw_value, str) and raw_value.strip().startswith("{")
+    is_bound_value = isinstance(value, str) and value.startswith("{{")
     effective_value = value
     if (
         classified_effect == "value_set"
         and isinstance(value_readback, str)
         and value_readback
         and value_readback != "{{REDACTED}}"
+        and not is_bound_value
     ):
         effective_value = value_readback
     if (
@@ -1144,7 +1165,12 @@ def _prefetch_vision_anchors(
     candidates: list[tuple[int, dict[str, Any]]] = []
     for i, ev in enumerate(cleaned_events):
         action_payload = optimize_scroll(ev)
-        if action_payload == "scroll" or action_payload in MARKER_ACTIONS:
+        # manual_navigate (retyped address bar, or the synthetic event
+        # _make_tab_navigate_event inserts for a user-opened tab) compiles straight to a
+        # `navigate` step with no element target — same as scroll and the MARKER_ACTIONS
+        # no-ops, _build_step never reads a vision anchor for it, so prefetching one here is
+        # pure waste.
+        if action_payload in ("scroll", "manual_navigate") or action_payload in MARKER_ACTIONS:
             continue
         candidates.append((i, ev))
     if not candidates:
@@ -1343,9 +1369,10 @@ def _build_step(
         # The user retyped the address bar (or used a bookmark) mid-recording — CDP's
         # Page.frameRequestedNavigation told the recorder no click/submit/script on the page
         # asked for this, so no other recorded step will ever reproduce it. Compile straight to
-        # the same `navigate` step type _insert_start_navigate_step/_insert_user_tab_navigate_steps
-        # already use for tab-open/start navigations — page.goto(to_url) on replay, no element
-        # target, no LLM intent, no vision anchors.
+        # the same `navigate` step type _insert_start_navigate_step and the synthetic
+        # manual_navigate event _make_tab_navigate_event inserts for user-opened tabs already
+        # use for tab-open/start navigations — page.goto(to_url) on replay, no element target,
+        # no LLM intent, no vision anchors.
         raw_value = str((ev.get("action") or {}).get("value") or "")
         to_url = ""
         try:
@@ -1773,9 +1800,9 @@ def compile_skill_package(
         for i, e in enumerate(cleaned_events)
     ]
     # Prose application must happen here, while steps[i] still maps 1:1 onto
-    # cleaned_events[i] — the synthetic-navigate inserts below shift positions.
+    # cleaned_events[i] — the leading-navigate insert at the end of this function prepends,
+    # which shifts positions.
     _apply_intent_graph_to_steps(steps, intent_graph)
-    steps = _insert_user_tab_navigate_steps(steps, cleaned_events)
     _log_vision_anchor_fallback_summary(steps)
 
     # Phase 7: populate hover_chain handler hints from hover-then-act sequences. Must run before

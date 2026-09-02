@@ -5,18 +5,31 @@ its recorded event. See conxa_compile/compiler/build.py and compiler/step_anchor
 """
 from __future__ import annotations
 
+import json
+
 from conxa_compile.compiler.build import (
     _build_tab_context,
     _insert_start_navigate_step,
     _insert_tab_markers,
-    _insert_user_tab_navigate_steps,
 )
+from conxa_compile.compiler.choice import collapse_choice_group_runs
+from conxa_compile.compiler.date_picker import collapse_date_picker_runs
 from conxa_compile.compiler.step_anchors import _tab_signature, _target_key
 from conxa_core.models.skill_spec import SkillStep
+
+import pytest
 
 
 def _ev(tab_id: str, action: str = "click", url: str = "") -> dict:
     return {"action": {"action": action}, "tab": {"id": tab_id, "index": 0}, "page": {"url": url}}
+
+
+def _user_tab(tab_id: str, index: int = 1) -> dict:
+    return {"id": tab_id, "index": index, "opened_by": "user", "opener_tab": None}
+
+
+def _site_tab(tab_id: str, index: int = 1, opener: str = "tab_0") -> dict:
+    return {"id": tab_id, "index": index, "opened_by": "site", "opener_tab": opener}
 
 
 def _step(action: str, tab: dict) -> SkillStep:
@@ -104,60 +117,66 @@ def test_tab_signature_defaults_to_tab_0_when_absent() -> None:
     assert _tab_signature({"tab": {}}) == "tab_0"
 
 
-def test_user_opened_tab_gets_synthesized_navigate_step() -> None:
+def test_user_opened_tab_gets_synthesized_manual_navigate_event() -> None:
     """runtime/tabs.js creates a blank page for opened_by="user" tabs and expects the first
-    action on it to be a navigate — the compiler must actually produce one."""
-    tab = {"id": "tab_1", "index": 1, "opened_by": "user", "opener_tab": None}
-    steps = [_step("click", {}), _step("tab_open", tab), _step("click", tab)]
+    action on it to be a navigate — the compiler must actually produce one. This now happens at
+    the EVENT level (a synthetic manual_navigate event right after the tab_open marker), not as
+    a step spliced in after the step-building loop — inserting it as a bare step used to desync
+    steps[i] from events[i] for every later index-based pass (hover chains, choice/date-picker
+    collapse), which is exactly what broke mega-workflow's date_pick step (2026-09-02)."""
+    tab = _user_tab("tab_1")
     events = [
-        {"page": {"url": "https://a.test/"}},
-        {"page": {"url": "https://b.test/dashboard"}},
-        {"page": {"url": "https://b.test/dashboard"}},
+        _ev("tab_0", url="https://a.test/"),
+        {"action": {"action": "click"}, "tab": tab, "page": {"url": "https://b.test/dashboard"}},
     ]
-    out = _insert_user_tab_navigate_steps(steps, events)
-    assert [s.action for s in out] == ["click", "tab_open", "navigate", "click"]
-    nav = out[2]
-    assert nav.url == "https://b.test/dashboard"
-    assert nav.tab == tab
-    assert nav.recovery.strategies == []
-    assert nav.validation.success_conditions == {"url": "https://b.test/dashboard"}
+    out = _insert_tab_markers(events)
+    kinds = [(e["action"]["action"], e.get("tab", {}).get("id")) for e in out]
+    assert kinds == [
+        ("click", "tab_0"),
+        ("tab_open", "tab_1"),
+        ("manual_navigate", "tab_1"),
+        ("click", "tab_1"),
+    ]
+    nav_ev = out[2]
+    assert json.loads(nav_ev["action"]["value"]) == {"to_url": "https://b.test/dashboard"}
+    assert nav_ev["tab"] == tab
 
 
-def test_site_opened_tab_gets_no_synthesized_navigate_step() -> None:
+def test_site_opened_tab_gets_no_synthesized_navigate_event() -> None:
     """opened_by="site" tabs (a link/window.open) are navigated by the click that's already
-    replayed as a normal step — no synthetic navigate should be inserted."""
-    tab = {"id": "tab_1", "index": 1, "opened_by": "site", "opener_tab": "tab_0"}
-    steps = [_step("click", {}), _step("tab_open", tab), _step("click", tab)]
+    replayed as a normal step — no synthetic navigate event should be inserted."""
+    tab = _site_tab("tab_1")
     events = [
-        {"page": {"url": "https://a.test/"}},
-        {"page": {"url": "https://b.test/"}},
-        {"page": {"url": "https://b.test/"}},
+        _ev("tab_0", url="https://a.test/"),
+        {"action": {"action": "click"}, "tab": tab, "page": {"url": "https://b.test/"}},
     ]
-    out = _insert_user_tab_navigate_steps(steps, events)
-    assert [s.action for s in out] == ["click", "tab_open", "click"]
+    out = _insert_tab_markers(events)
+    assert [e["action"]["action"] for e in out] == ["click", "tab_open", "click"]
 
 
-def test_tab_switch_gets_no_synthesized_navigate_step() -> None:
+def test_tab_switch_gets_no_synthesized_navigate_event() -> None:
     """Only tab_open (first visit) should ever get a synthesized navigate — tab_switch means
     the tab is already live and resolveStepPage reuses the existing page."""
-    tab = {"id": "tab_0", "index": 0, "opened_by": "user", "opener_tab": None}
-    steps = [_step("click", {}), _step("tab_switch", tab), _step("click", tab)]
+    tab1 = _user_tab("tab_1")
     events = [
-        {"page": {"url": "https://a.test/"}},
-        {"page": {"url": "https://a.test/"}},
-        {"page": {"url": "https://a.test/"}},
+        _ev("tab_0", url="https://a.test/"),
+        {"action": {"action": "click"}, "tab": tab1, "page": {"url": "https://b.test/"}},
+        _ev("tab_0", url="https://a.test/"),
     ]
-    out = _insert_user_tab_navigate_steps(steps, events)
-    assert [s.action for s in out] == ["click", "tab_switch", "click"]
+    out = _insert_tab_markers(events)
+    kinds = [e["action"]["action"] for e in out]
+    assert kinds == ["click", "tab_open", "manual_navigate", "click", "tab_switch", "click"]
 
 
-def test_user_opened_tab_with_no_recorded_url_gets_no_navigate_step() -> None:
+def test_user_opened_tab_with_no_recorded_url_gets_no_navigate_event() -> None:
     """Never synthesize a navigate to an empty URL — no worse than the pre-fix behavior."""
-    tab = {"id": "tab_1", "index": 1, "opened_by": "user", "opener_tab": None}
-    steps = [_step("tab_open", tab), _step("click", tab)]
-    events = [{"page": {"url": ""}}, {"page": {"url": ""}}]
-    out = _insert_user_tab_navigate_steps(steps, events)
-    assert [s.action for s in out] == ["tab_open", "click"]
+    tab = _user_tab("tab_1")
+    events = [
+        _ev("tab_0"),
+        {"action": {"action": "click"}, "tab": tab, "page": {"url": ""}},
+    ]
+    out = _insert_tab_markers(events)
+    assert [e["action"]["action"] for e in out] == ["click", "tab_open", "click"]
 
 
 def test_recording_gets_a_leading_navigate_to_where_it_started() -> None:
@@ -222,8 +241,8 @@ def test_site_opened_popup_gets_a_tab_open_and_a_switch_back() -> None:
 def test_site_opened_popup_marker_carries_its_opener_forward() -> None:
     """The tab_open the popup produces must stay opened_by="site" with its opener — that is
     what routes the runtime to drain the pending-page queue (binding the real popup) instead of
-    calling context.newPage(), and what keeps _insert_user_tab_navigate_steps from synthesizing
-    a navigate the replayed click already performs."""
+    calling context.newPage(), and what keeps _insert_tab_markers from synthesizing a
+    manual_navigate event the replayed click already performs."""
     popup_ev = {
         "action": {"action": "popup"},
         "tab": {"id": "tab_1", "index": 1, "opened_by": "site", "opener_tab": "tab_0"},
@@ -236,6 +255,101 @@ def test_site_opened_popup_marker_carries_its_opener_forward() -> None:
     assert ctx["opened_by"] == "site"
     assert ctx["opener_tab"] == "tab_0"
 
-    # opened_by="site" tabs must NOT get a synthesized navigate — the replayed click opens them.
-    steps = [_step("tab_open", ctx)]
-    assert _insert_user_tab_navigate_steps(steps, [opened]) == steps
+    # opened_by="site" tabs must NOT get a synthesized manual_navigate event — the replayed
+    # click opens them.
+    open_idx = out.index(opened)
+    assert out[open_idx + 1]["action"]["action"] != "manual_navigate"
+
+
+def _date_open_event() -> dict:
+    return {
+        "action": {"action": "focus"},
+        "tab": {"id": "tab_1", "index": 1},
+        "target": {"tag": "input", "label_text": "Date of Birth"},
+        "selectors": {"css": "#dateOfBirthInput", "aria": "", "xpath": ""},
+        "date_context": None,
+        "page": {"url": "https://b.test/form"},
+    }
+
+
+def _date_day_event() -> dict:
+    return {
+        "action": {"action": "click"},
+        "tab": {"id": "tab_1", "index": 1},
+        "target": {"tag": "div"},
+        "selectors": {"css": ".day--15", "aria": "", "xpath": ""},
+        "date_context": {
+            "role": "day",
+            "iso_date": "2026-09-15",
+            "cell_attr": "",
+            "grid": ".calendar",
+            "header": ".calendar__month",
+            "header_text": "September 2026",
+            "prev": ".calendar__prev",
+            "next": ".calendar__next",
+            "cell": ".day--15",
+            "field": "#dateOfBirthInput",
+            "field_display_value": "",
+        },
+        "page": {"url": "https://b.test/form"},
+    }
+
+
+def test_user_tab_open_no_longer_desyncs_a_later_date_picker_collapse() -> None:
+    """Regression (2026-09-02, mega-workflow steps 62-67): a `date_pick` step compiled with the
+    wrong element's identity because _insert_user_tab_navigate_steps spliced a bare `navigate`
+    step into `steps` without a matching event, shifting every following steps[i]/events[i] pair
+    by one and feeding collapse_date_picker_runs a desynced pair. It silently collapsed the
+    wrong step instead of the day-cell run.
+
+    Now the navigate is a synthetic EVENT (_make_tab_navigate_event, inserted by
+    _insert_tab_markers), so a steps list built 1:1 from the resulting events list — exactly
+    what build.py's step-building loop produces — stays aligned into the date-picker collapse
+    below, and the collapsed date_pick correctly picks up the day cell's own identity."""
+    user_tab_open = {
+        "action": {"action": "click"},
+        "tab": {"id": "tab_0", "index": 0},
+        "page": {"url": "https://a.test/"},
+    }
+    tab1_click = {
+        "action": {"action": "click"},
+        "tab": _user_tab("tab_1"),
+        "page": {"url": "https://b.test/form"},
+    }
+    cleaned_events = [user_tab_open, tab1_click, _date_open_event(), _date_day_event()]
+    events = _insert_tab_markers(cleaned_events)
+
+    # Sanity: the marker pass inserted exactly one tab_open + one manual_navigate event ahead
+    # of the original 4 — steps built 1:1 from `events` must total 6, never fewer.
+    assert len(events) == 6
+
+    # Stand in for build.py's per-event step-building loop (_build_step): one step per event,
+    # action carried straight through, matching cleaned_events[i]'s content 1:1.
+    steps = [
+        _step("tab_open" if e["action"]["action"] == "tab_open" else
+              "navigate" if e["action"]["action"] == "manual_navigate" else
+              e["action"]["action"], e.get("tab") or {})
+        for e in events
+    ]
+    steps[4].semantic_description = "opener-marker"  # the focus step that opens the field
+    steps[5].semantic_description = "day-cell-marker"  # the actual day-cell pick
+
+    out = collapse_date_picker_runs(steps, events, {})
+    assert len(out) == 5, "no step should be dropped by the collapse"
+    date_pick = out[-1]
+    assert date_pick.action == "date_pick"
+    assert date_pick.semantic_description == "opener-marker", (
+        "the collapsed date_pick must fold the OPENER step (steps[4]), not some shifted step — "
+        "this is the exact corruption the desync produced in mega-workflow"
+    )
+    assert date_pick.handler_hints.date_picker["strategy"] == "typed_first"
+
+
+def test_collapse_choice_group_runs_raises_on_desynced_lengths() -> None:
+    with pytest.raises(ValueError):
+        collapse_choice_group_runs([_step("click", {}), _step("click", {})], [_ev("tab_0")], {})
+
+
+def test_collapse_date_picker_runs_raises_on_desynced_lengths() -> None:
+    with pytest.raises(ValueError):
+        collapse_date_picker_runs([_step("click", {}), _step("click", {})], [_ev("tab_0")], {})

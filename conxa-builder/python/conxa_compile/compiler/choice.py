@@ -125,7 +125,12 @@ def collapse_choice_group_runs(
     `_policy` kept for call-site symmetry with collapse_date_picker_runs; unused here since the
     binding name comes from the group's own label/key, not a target-anchored
     derive_input_binding lookup."""
-    n = min(len(steps), len(events))
+    if len(steps) != len(events):
+        raise ValueError(
+            f"collapse_choice_group_runs: steps ({len(steps)}) and events ({len(events)}) "
+            "must be the same length — an earlier pass desynced them"
+        )
+    n = len(steps)
     out: list[Any] = []
     synced_events: list[dict[str, Any]] = []
     i = 0

@@ -315,7 +315,12 @@ def collapse_date_picker_runs(
     two `date_pick` steps. Any run without at least one day-cell pick (e.g. the grid was opened
     and navigated — including via a year/month select — but never actually picked from) is left
     untouched; this pass can only improve a compile, never regress one."""
-    n = min(len(steps), len(events))
+    if len(steps) != len(events):
+        raise ValueError(
+            f"collapse_date_picker_runs: steps ({len(steps)}) and events ({len(events)}) "
+            "must be the same length — an earlier pass desynced them"
+        )
+    n = len(steps)
     out: list[SkillStep] = []
     i = 0
     while i < n:
