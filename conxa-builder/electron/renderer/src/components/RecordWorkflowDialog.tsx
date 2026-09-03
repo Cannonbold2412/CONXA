@@ -167,15 +167,29 @@ export function RecordWorkflowDialog({
           current && current.requestId === event.request_id ? null : current,
         )
         window.conxa.raiseWindow(false)
+        return
+      }
+      if (event.action === 'js_dialog_resolved') {
+        // The backend has actually accepted/dismissed the dialog and brought the recording
+        // browser back to front by this point — see answerJsDialog below for why we wait for
+        // this instead of unpinning as soon as resolveJsDialog's RPC call returns.
+        window.conxa.raiseWindow(false)
       }
     })
   }, [activeSession])
 
   async function answerJsDialog(accepted: boolean) {
     if (!activeSession || !pendingDialog) return
+    // resolveJsDialog only confirms the answer was queued, not that the recorder has processed
+    // it — that happens on the recorder's own next pump tick, which is when the dialog is
+    // actually accepted/dismissed and the recording browser is brought back to front. Unpinning
+    // Studio right here (on the RPC ack) used to race that: Studio would drop its always-on-top
+    // pin before the recording browser regained focus, leaving neither window truly focused —
+    // the first click back in the browser just refocused it instead of registering, so it
+    // looked like the click had to be done twice. Closing our own modal immediately is still
+    // fine; only the un-pin waits for the "js_dialog_resolved" event above.
     await resolveJsDialog(activeSession, pendingDialog.requestId, accepted, promptText)
     setPendingDialog(null)
-    window.conxa.raiseWindow(false)
   }
 
   return (

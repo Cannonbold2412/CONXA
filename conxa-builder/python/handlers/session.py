@@ -335,6 +335,17 @@ class SessionMixin:
                 session_id=sess.session_id,
                 request_id=request_id,
             )
+            # Fires once a human-answered dialog has actually been accepted/dismissed and the
+            # recording browser has been brought back to front — see RecordingSession's
+            # on_js_dialog_resolved doc comment. cmd_resolve_js_dialog's own return only means
+            # the answer was queued, not that this happened yet, so the Studio must wait for
+            # this event (not that RPC response) before releasing its always-on-top pin.
+            sess.on_js_dialog_resolved = lambda request_id: _emit_event(
+                None,
+                action="js_dialog_resolved",
+                session_id=sess.session_id,
+                request_id=request_id,
+            )
             try:
                 self._loop.run(sess.start())
             except RuntimeError as exc:

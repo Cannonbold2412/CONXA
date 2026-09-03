@@ -30,6 +30,7 @@ from conxa_core.sanitize import scrub_surrogates as _sanitize_surrogates
 from conxa_core.storage import snapshots as snapshot_store
 
 
+from conxa_compile.recorder.dialog_server import DIALOG_OVERRIDE_SCRIPT_TEMPLATE, DialogSyncServer
 from conxa_compile.recorder.frame_utils import (
     _frame_context_and_offset_sync,
     _frame_element_attrs_and_rect,
@@ -268,11 +269,29 @@ class RecordingSession:
     # unanswered too long is auto-accepted by _drain_js_dialog_sync's timeout fallback, so the
     # Studio can close a modal that would otherwise sit there forever.
     on_js_dialog_cancelled: Any = None
+    # Set by the caller before start(): (request_id) -> None. Fired once a human-answered dialog
+    # has actually been accepted/dismissed AND _bring_dialog_page_to_front_sync has run — not
+    # when resolve_js_dialog() is merely called. The Studio RPC handler acks resolve_js_dialog
+    # the instant the answer is queued, well before this pump-loop tick processes it; if the
+    # Studio dropped its own always-on-top pin on that early ack, neither window would hold real
+    # OS focus and the human's next click would land on nothing. Waiting for this event before
+    # unpinning is what actually hands focus back to the recording browser.
+    on_js_dialog_resolved: Any = None
     # (request_id, dialog, type, message, opened_at_monotonic, src_page) for the one outstanding
     # dialog. A JS dialog blocks the page's renderer thread until accept()/dismiss() is called,
     # so only one can ever be pending at a time.
     _pending_dialog: Any = None
     _dialog_results: SimpleQueue = field(default_factory=SimpleQueue)
+    # Local HTTP server that answers window.alert/confirm/prompt via the page-side override
+    # injected in _run_sync_recorder — see dialog_server.py's module docstring for why: the
+    # CDP-based path above still exists (for beforeunload, which isn't overridable this way),
+    # but a slow-answered alert/confirm/prompt held open via CDP could be resolved by Chromium
+    # itself before our own accept() call reached it. None outside a non-auth_mode recording.
+    _dialog_server: DialogSyncServer | None = None
+    # (accepted, dialog_type, message, text, href) tuples queued by the dialog-server callbacks
+    # (foreign thread) for _drain_dialog_server_events_sync (driver thread) to turn into
+    # recorded dialog_accept/dialog_dismiss steps.
+    _dialog_server_events: SimpleQueue = field(default_factory=SimpleQueue)
     _last_snapshot_ref: str = ""
     # A11y capture: one-strike degradation if slow (> 500ms).
     _last_a11y_capture_time: float = 0.0
@@ -355,6 +374,9 @@ class RecordingSession:
         return url_matches_pattern(url, self.wait_for_url, exclude_prefix=start_base)
 
     def _shutdown_playwright_sync(self) -> None:
+        if self._dialog_server is not None:
+            self._dialog_server.stop()
+            self._dialog_server = None
         if self._context is not None:
             self._context.close()
             self._context = None
@@ -636,6 +658,39 @@ class RecordingSession:
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"nav_history_parse_error: {exc!s}")
             return None
+
+    def _pump_ping_sync(self, page: Any) -> None:
+        """Forces a Playwright round-trip so its sync-API dispatcher keeps servicing incoming
+        messages (bridge/binding callbacks, dialog and nav events) between recorded actions —
+        called once per open page, every pump tick. The return value is never used; only the
+        round-trip matters.
+
+        Deliberately NOT page.evaluate()/frame.evaluate(): those execute inside the page's own
+        renderer, which a native JS dialog blocks with no way back — Playwright's evaluate() has
+        no timeout parameter at all (see the note on _BRIDGE_INSTALL_SETTLE_S for the same
+        constraint elsewhere in this file). If a dialog opened in the instant this ping was
+        in flight, that call would simply never return, wedging this exact loop — which is the
+        only thing that can ever resolve the dialog it's now stuck behind. That reentrancy
+        deadlock was the actual root cause of a real bug: Studio's own dialog modal would get
+        answered but never close, and the still-unacknowledged native dialog would eventually
+        surface in Chromium and need answering a second time.
+
+        Page.getNavigationHistory is a browser/target-level CDP command — it never touches
+        Runtime.evaluate, so it cannot be blocked by an open dialog. Reusing the per-page CDP
+        session _ensure_nav_history_session_sync already keeps for Back/Forward tracking avoids
+        creating a second one just for this."""
+        session = self._nav_cdp_sessions.get(id(page))
+        if session is not None:
+            try:
+                session.send("Page.getNavigationHistory")
+                return
+            except Exception:  # noqa: BLE001
+                pass  # fall through to the evaluate() fallback below
+        # No CDP session available for this page (creation failed earlier, or it hasn't been
+        # through _register_new_pages_sync yet this tick) — evaluate() is a fallback for that
+        # rarer case, not the routine path, so the dialog-hang risk it carries is bounded by how
+        # rarely it's actually reached.
+        page.evaluate("() => 0")
 
     def _queue_nav_history_check(self, page: Any) -> None:
         if self.auth_mode or page is None:
@@ -1526,17 +1581,122 @@ class RecordingSession:
             self.binding_errors.append(f"dialog_event_error: {exc!s}")
 
     def resolve_js_dialog(self, request_id: str, accepted: bool, text: str | None) -> None:
-        """Called from any thread with the Studio dialog's answer. Queued, not applied
-        directly: Dialog.accept()/dismiss() are sync-API calls and must run on the recorder's
-        own driver thread — see _drain_js_dialog_sync in the pump loop."""
+        """Called from any thread with the Studio dialog's answer. request_id belongs to
+        exactly one of two mechanisms: the local dialog server (alert/confirm/prompt, the
+        common case — resolving it there simply unblocks the page-side synchronous XHR
+        directly, nothing further to do) or, if that doesn't recognize it, the older CDP path
+        (beforeunload only) — queued there, not applied directly, since Dialog.accept()/
+        dismiss() are sync-API calls that must run on the recorder's own driver thread. See
+        _drain_js_dialog_sync in the pump loop."""
+        if self._dialog_server is not None and self._dialog_server.resolve(
+            request_id, accepted, text or ""
+        ):
+            return
         self._dialog_results.put((request_id, accepted, text or ""))
+
+    # ─── DialogSyncServer callbacks — run on the server's own per-request thread, NOT the ───
+    # recorder's driver thread. Only Studio-notification calls (on_js_dialog_request/
+    # _resolved/_cancelled — plain stdio JSON broadcasts, no Playwright involved) are safe to
+    # make directly from here. Anything that touches a Playwright page object is queued onto
+    # _dialog_server_events instead and drained on the driver thread by
+    # _drain_dialog_server_events_sync, exactly like resolve_file_pick/_file_pick_results do
+    # for the same reason elsewhere in this file.
+
+    def _on_dialog_server_opened(
+        self, request_id: str, dialog_type: str, message: str, default_value: str
+    ) -> None:
+        if self.on_js_dialog_request is not None:
+            try:
+                self.on_js_dialog_request(request_id, dialog_type, message, default_value)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_dialog_server_answered(
+        self,
+        request_id: str,
+        dialog_type: str,
+        message: str,
+        accepted: bool,
+        text: str,
+        href: str,
+    ) -> None:
+        self._dialog_server_events.put((accepted, dialog_type, message, text, href))
+        if self.on_js_dialog_resolved is not None:
+            try:
+                self.on_js_dialog_resolved(request_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_dialog_server_timed_out(
+        self, request_id: str, dialog_type: str, message: str, href: str
+    ) -> None:
+        # Mirrors the old CDP path's timeout fallback exactly: forced accept with empty text,
+        # rather than a dismiss, so a workflow depending on "something" being entered doesn't
+        # additionally have to handle a forgotten-dialog dismiss as a distinct outcome.
+        self.binding_errors.append("dialog_timeout_autoaccept")
+        self._dialog_server_events.put((True, dialog_type, message, "", href))
+        if self.on_js_dialog_cancelled is not None:
+            try:
+                self.on_js_dialog_cancelled(request_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _page_by_href_sync(self, href: str) -> Any | None:
+        """Best-effort page lookup by URL — dialog-server events carry only the page's
+        location.href at the moment of the call, not a direct Playwright page reference (the
+        override runs as in-page JS talking to an HTTP server, not a Playwright event with a
+        page already attached). Falls back to the active page if no exact match is found (e.g.
+        the page navigated between the call and this lookup); a same-URL multi-tab race is a
+        rare, accepted degradation — this file already tolerates comparable edge cases
+        elsewhere (see e.g. _ensure_nav_history_session_sync's docstring)."""
+        if href:
+            for page in self._open_pages_sync():
+                try:
+                    if page.url == href:
+                        return page
+                except Exception:  # noqa: BLE001
+                    continue
+        return self._active_page_sync()
+
+    def _drain_dialog_server_events_sync(self) -> None:
+        """Pump-loop only, every tick. Turns queued dialog-server answers/timeouts into
+        recorded dialog_accept/dialog_dismiss steps — deferred here (rather than done directly
+        in the _on_dialog_server_* callbacks above) because resolving a page by URL and
+        building the synthetic payload both touch Playwright objects, unsafe outside the driver
+        thread."""
+        while True:
+            try:
+                accepted, dialog_type, message, text, href = self._dialog_server_events.get_nowait()
+            except Empty:
+                return
+            src_page = self._page_by_href_sync(href)
+            self._enqueue_synthetic(
+                "dialog_accept" if accepted else "dialog_dismiss",
+                json.dumps({"type": dialog_type, "message": message, "value": text}),
+                src_page=src_page,
+            )
 
     def _bring_dialog_page_to_front_sync(self, src_page: Any | None) -> None:
         """Accepting/dismissing a dialog closes it at the CDP level immediately, but the
         window sat behind the Studio modal (which we pin on top while asking) while it closed,
         and Windows can leave the now-dead dialog's pixels on screen until that window repaints.
         Activating the tab forces Chromium to redraw, clearing the stale image — no minimizing,
-        the human lands back in the same browser window they were using."""
+        the human lands back in the same browser window they were using.
+
+        Windows' foreground-lock restriction blocks a background process from stealing focus
+        unless it holds a one-shot grant from AllowSetForegroundWindow — _run_sync_recorder
+        takes that grant once at browser launch so the *first* bring_to_front() (right after
+        goto()) succeeds, but that grant is consumed by that single use. Every later call here
+        (i.e. every dialog answered during the recording) needs its own fresh grant, or Windows
+        silently no-ops the activation with no error anywhere, and Studio is left looking
+        permanently pinned on top of the recording browser."""
+        import sys as _sys
+        if _sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.AllowSetForegroundWindow(-1)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             page = src_page if src_page is not None else self._active_page_sync()
             if page is not None and not page.is_closed():
@@ -1562,13 +1722,26 @@ class RecordingSession:
         if answer is not None:
             ans_request_id, accepted, text = answer
             if ans_request_id != request_id:
-                return  # stale answer for an already-resolved/overlapped dialog — drop it
+                # Was live when the Studio was asked but no longer matches the currently
+                # pending dialog (e.g. a second dialog fired and overwrote _pending_dialog
+                # before this answer was drained — see the overlap guard in _on_dialog). The
+                # human's answer is lost; previously this returned with no trace at all, which
+                # made a stuck recording undiagnosable. The Studio never hears back for this
+                # request either way, so it's left showing a dialog that can no longer be
+                # resolved — the real dialog stays open until the human answers it natively or
+                # the timeout below auto-accepts it.
+                self.binding_errors.append(
+                    f"dialog_answer_dropped: expected {request_id}, got {ans_request_id}"
+                )
+                return
             self._pending_dialog = None
+            resolved = False
             try:
                 if accepted:
                     dialog.accept(text)
                 else:
                     dialog.dismiss()
+                resolved = True
             except Exception as exc:  # noqa: BLE001
                 self.binding_errors.append(f"dialog_resolve_error: {exc!s}")
             self._bring_dialog_page_to_front_sync(src_page)
@@ -1577,6 +1750,19 @@ class RecordingSession:
                 json.dumps({"type": dtype, "message": message, "value": text}),
                 src_page=src_page,
             )
+            if resolved and self.on_js_dialog_resolved is not None:
+                try:
+                    self.on_js_dialog_resolved(request_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            elif not resolved and self.on_js_dialog_cancelled is not None:
+                # accept()/dismiss() actually failed (dialog_resolve_error above) — the Studio
+                # otherwise has no way to know its answer didn't take, and would stay pinned on
+                # top forever waiting for a "resolved" event that will never come.
+                try:
+                    self.on_js_dialog_cancelled(request_id)
+                except Exception:  # noqa: BLE001
+                    pass
             return
         if time.monotonic() - opened_at > _JS_DIALOG_TIMEOUT_S:
             self._pending_dialog = None
@@ -1715,6 +1901,15 @@ class RecordingSession:
                 self._bridge_script = _load_bridge_script(self.capture_hover)
                 self._context.expose_binding("__skillReport", self._binding_sink_sync)
                 self._context.add_init_script(self._bridge_script)
+                dialog_server = DialogSyncServer(
+                    on_opened=self._on_dialog_server_opened,
+                    on_answered=self._on_dialog_server_answered,
+                    on_timed_out=self._on_dialog_server_timed_out,
+                )
+                self._dialog_server = dialog_server
+                self._context.add_init_script(
+                    DIALOG_OVERRIDE_SCRIPT_TEMPLATE.replace("{PORT}", str(dialog_server.port))
+                )
                 self._context.on("page", self._on_context_page)
                 self._page = self._context.new_page()
             else:
@@ -1755,16 +1950,32 @@ class RecordingSession:
                 # Assign tab ids to any page not yet registered (new tab, popup, Ctrl+T) —
                 # must happen before anything below reads self._tab_ids/_tab_meta.
                 self._register_new_pages_sync()
+                if not self.auth_mode:
+                    # Independent of the CDP _pending_dialog machinery above — the dialog
+                    # server (alert/confirm/prompt) resolves itself on its own thread the
+                    # instant a human answers, unrelated to this loop's cadence; this just
+                    # turns whatever landed in the queue since the last tick into recorded
+                    # steps. See _drain_dialog_server_events_sync's docstring for why this
+                    # can't be done directly from the dialog-server thread instead.
+                    self._drain_dialog_server_events_sync()
                 # Pump the Playwright sync driver so binding callbacks are delivered
                 # continuously while recording (not only around teardown calls).
                 # Skip in auth_mode — no bridge callbacks to pump.
                 if not self.auth_mode:
                     for page in self._open_pages_sync():
+                        if self._pending_dialog is not None and self._pending_dialog[5] is page:
+                            # A dialog opened on exactly this page since the top-of-loop check
+                            # a few lines up — skip every renderer-touching call against it this
+                            # tick (bridge install, pump ping) so we don't reproduce the
+                            # reentrancy deadlock that guard exists to prevent. See
+                            # _pump_ping_sync's docstring for why the guard above alone isn't
+                            # enough: this closes the same race for the page it just landed on.
+                            continue
                         try:
                             self._log_bridge_attempt("<pump>", "tick_frame_check_begin")
                             self._ensure_bridge_installed_sync(page)
                             self._log_bridge_attempt("<pump>", "tick_page_eval_begin")
-                            page.evaluate("() => 0")
+                            self._pump_ping_sync(page)
                             self._log_bridge_attempt("<pump>", "tick_page_eval_done")
                         except Exception as exc:  # noqa: BLE001
                             self.binding_errors.append(f"pump_error: {exc!s}")
@@ -1958,9 +2169,10 @@ class RecordingSession:
                     for page in self._open_pages_sync():
                         try:
                             self._ensure_bridge_installed_sync(page)
-                            page.evaluate("() => 0")
+                            self._pump_ping_sync(page)
                         except Exception:
                             pass
+                    self._drain_dialog_server_events_sync()
                     drained = 0
                     try:
                         while True:

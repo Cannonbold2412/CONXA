@@ -844,6 +844,65 @@ def test_drain_js_dialog_ignores_a_stale_answer_for_an_already_resolved_dialog()
     assert sess._pending_dialog[0] == "req-2"
 
 
+def test_drain_js_dialog_logs_a_dropped_answer_instead_of_silently_discarding_it() -> None:
+    """Previously the stale-answer branch above just `return`ed with no trace — a human's answer
+    to a Studio dialog could vanish with nothing anywhere to explain why the recording seemed to
+    hang. Losing the answer is still correct (see the test above); doing it silently was the bug."""
+    sess = RecordingSession(session_id="dialog-drain-stale-logged")
+    dialog = _FakeDialog("alert", "Second alert")
+    sess._pending_dialog = ("req-2", dialog, "alert", "Second alert", 0.0, None)
+    sess.resolve_js_dialog("req-1", True, "")
+
+    sess._drain_js_dialog_sync()
+
+    assert any(
+        e.startswith("dialog_answer_dropped: expected req-2, got req-1")
+        for e in sess.binding_errors
+    )
+
+
+def test_drain_js_dialog_fires_on_js_dialog_resolved_only_after_a_successful_answer() -> None:
+    """The Studio waits for this event before releasing its always-on-top pin (see
+    RecordWorkflowDialog.tsx's answerJsDialog) — it must only fire once the dialog was actually
+    accepted/dismissed, not merely because an answer arrived."""
+    sess = RecordingSession(session_id="dialog-drain-resolved-event")
+    dialog = _FakeDialog("prompt", "I am a JS Prompt")
+    sess._pending_dialog = ("req-1", dialog, "prompt", "I am a JS Prompt", 0.0, None)
+    sess.resolve_js_dialog("req-1", True, "Conxa prompt")
+    resolved: list[str] = []
+    sess.on_js_dialog_resolved = resolved.append
+
+    sess._drain_js_dialog_sync()
+
+    assert resolved == ["req-1"]
+
+
+def test_drain_js_dialog_notifies_cancelled_when_accept_itself_fails() -> None:
+    """If dialog.accept()/dismiss() raises (e.g. the dialog handle went stale), the Studio must
+    not be told "resolved" — it would otherwise stay pinned on top forever waiting for a
+    confirmation that already happened wrong. Falling back to on_js_dialog_cancelled reuses the
+    signal the Studio already understands as "stop waiting, close your modal"."""
+    sess = RecordingSession(session_id="dialog-drain-resolve-error")
+
+    class _ExplodingDialog(_FakeDialog):
+        def accept(self, prompt_text: str = "") -> None:
+            raise RuntimeError("dialog already handled")
+
+    dialog = _ExplodingDialog("prompt", "I am a JS Prompt")
+    sess._pending_dialog = ("req-1", dialog, "prompt", "I am a JS Prompt", 0.0, None)
+    sess.resolve_js_dialog("req-1", True, "Conxa prompt")
+    resolved: list[str] = []
+    cancelled: list[str] = []
+    sess.on_js_dialog_resolved = resolved.append
+    sess.on_js_dialog_cancelled = cancelled.append
+
+    sess._drain_js_dialog_sync()
+
+    assert resolved == []
+    assert cancelled == ["req-1"]
+    assert any(e.startswith("dialog_resolve_error:") for e in sess.binding_errors)
+
+
 def test_drain_js_dialog_auto_accepts_past_the_timeout(monkeypatch) -> None:
     """A forgotten Studio modal must not be able to wedge a recording forever — see
     _JS_DIALOG_TIMEOUT_S. The recorder must still get an explicit signal to close its UI."""
@@ -864,3 +923,208 @@ def test_drain_js_dialog_auto_accepts_past_the_timeout(monkeypatch) -> None:
     assert "dialog_timeout_autoaccept" in sess.binding_errors
     payload, _src_page, _src_frame = sess._pending_payloads.get_nowait()
     assert payload["action"]["action"] == "dialog_accept"
+
+
+class _FakeCdpSession:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    def send(self, method: str, params: dict | None = None) -> dict:
+        self.sent.append(method)
+        return {}
+
+
+class _FakePageThatHangsOnEvaluate:
+    """Stands in for a page whose renderer is blocked by an open native dialog: evaluate()
+    never returns (here: raises instead, since a test can't actually hang) — exactly the
+    reentrancy deadlock _pump_ping_sync exists to avoid touching in the first place."""
+
+    def evaluate(self, expression: str, arg=None) -> None:
+        raise AssertionError(
+            "page.evaluate() was called — this is exactly the call that hangs forever "
+            "against a dialog-blocked renderer with no timeout available"
+        )
+
+
+def test_pump_ping_uses_the_cdp_session_and_never_touches_evaluate() -> None:
+    """The routine path, every pump tick: must go through Page.getNavigationHistory (a
+    browser/target-level CDP command immune to a dialog blocking the renderer), never
+    page.evaluate() — see _pump_ping_sync's docstring for the deadlock this replaced."""
+    sess = RecordingSession(session_id="pump-ping-cdp")
+    page = _FakePageThatHangsOnEvaluate()
+    cdp = _FakeCdpSession()
+    sess._nav_cdp_sessions[id(page)] = cdp
+
+    sess._pump_ping_sync(page)  # would raise via the fake if it fell through to evaluate()
+
+    assert cdp.sent == ["Page.getNavigationHistory"]
+
+
+def test_pump_ping_falls_back_to_evaluate_only_without_a_cdp_session() -> None:
+    """No CDP session yet for this page (creation failed, or it hasn't been registered this
+    tick) — the rarer fallback path still exists, and is the only path where evaluate() is
+    used at all."""
+    sess = RecordingSession(session_id="pump-ping-fallback")
+
+    class _FakePage:
+        def __init__(self) -> None:
+            self.evaluate_calls = 0
+
+        def evaluate(self, expression: str, arg=None) -> int:
+            self.evaluate_calls += 1
+            return 0
+
+    page = _FakePage()
+
+    sess._pump_ping_sync(page)
+
+    assert page.evaluate_calls == 1
+
+
+# The other half of the reentrancy race — a dialog opening on a page between the pump loop's
+# top-of-tick _pending_dialog check and this per-page block reaching that same page — lives
+# entirely inside _run_sync_recorder's per-tick loop (real Playwright pages, real threading),
+# not something this file's fixtures can drive without a live browser. It's covered by the
+# guard directly above the bridge-install/pump-ping calls in that loop: skip a page the
+# pending dialog names before touching either. See docs/testing/ for the live recording
+# repro that exercises this end to end.
+
+
+# ─── DialogSyncServer integration (session.py side) ────────────────────────────────────────
+# A real recording showed alert() succeeding but confirm()/prompt() failing whenever the human
+# took more than a few seconds to answer — Chromium apparently has its own patience limit for
+# an unacknowledged CDP dialog that no amount of sequencing on the Python side can extend. These
+# tests cover the pieces added to route alert/confirm/prompt through DialogSyncServer instead
+# (a local HTTP server the page's own overridden window.alert/confirm/prompt talk to via a
+# synchronous XHR, so the real native dialog never opens and there's nothing for Chromium to
+# grow impatient with). beforeunload still goes through the older CDP path tested above.
+
+
+class _FakeDialogServer:
+    def __init__(self, owns_request_id: str | None = None) -> None:
+        self.owns_request_id = owns_request_id
+        self.resolve_calls: list[tuple[str, bool, str]] = []
+
+    def resolve(self, request_id: str, accepted: bool, text: str) -> bool:
+        self.resolve_calls.append((request_id, accepted, text))
+        return request_id == self.owns_request_id
+
+
+def test_resolve_js_dialog_routes_through_the_dialog_server_first() -> None:
+    """The common case: alert/confirm/prompt answers belong to the dialog server, which
+    unblocks the page's own synchronous XHR directly — must not also fall through to the
+    older CDP-path queue."""
+    sess = RecordingSession(session_id="resolve-routes-to-server")
+    fake = _FakeDialogServer(owns_request_id="req-1")
+    sess._dialog_server = fake
+
+    sess.resolve_js_dialog("req-1", True, "conxa")
+
+    assert fake.resolve_calls == [("req-1", True, "conxa")]
+    assert sess._dialog_results.empty()
+
+
+def test_resolve_js_dialog_falls_back_to_cdp_queue_for_a_request_the_server_does_not_own() -> None:
+    """beforeunload answers don't belong to the dialog server (it only intercepts
+    alert/confirm/prompt) — must still reach the older _dialog_results queue that
+    _drain_js_dialog_sync drains."""
+    sess = RecordingSession(session_id="resolve-falls-back-to-cdp")
+    fake = _FakeDialogServer(owns_request_id="some-other-request")
+    sess._dialog_server = fake
+
+    sess.resolve_js_dialog("req-1", True, "")
+
+    assert fake.resolve_calls == [("req-1", True, "")]
+    request_id, accepted, text = sess._dialog_results.get_nowait()
+    assert (request_id, accepted, text) == ("req-1", True, "")
+
+
+class _FakePageForHref:
+    def __init__(self, url: str, closed: bool = False) -> None:
+        self.url = url
+        self._closed = closed
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+
+def test_page_by_href_finds_the_matching_open_page() -> None:
+    sess = RecordingSession(session_id="page-by-href-match")
+    wanted = _FakePageForHref("https://example.com/checkout")
+    other = _FakePageForHref("https://example.com/cart")
+
+    class _Ctx:
+        pages = [other, wanted]
+
+    sess._context = _Ctx()
+
+    found = sess._page_by_href_sync("https://example.com/checkout")
+
+    assert found is wanted
+
+
+def test_page_by_href_falls_back_to_active_page_when_nothing_matches() -> None:
+    """A page can navigate between the dialog-server call and this lookup — matching this
+    file's existing tolerance for similar edge cases (e.g. nav-history's own docstring)."""
+    sess = RecordingSession(session_id="page-by-href-fallback")
+    only_page = _FakePageForHref("https://example.com/somewhere-else")
+
+    class _Ctx:
+        pages = [only_page]
+
+    sess._context = _Ctx()
+    sess._page = only_page
+
+    found = sess._page_by_href_sync("https://example.com/checkout")
+
+    assert found is only_page
+
+
+def test_dialog_server_answered_queues_a_dialog_accept_event_and_resolves_the_studio() -> None:
+    sess = RecordingSession(session_id="dialog-server-answered")
+    resolved: list[str] = []
+    sess.on_js_dialog_resolved = resolved.append
+
+    sess._on_dialog_server_answered("req-1", "prompt", "Enter name", True, "conxa", "https://x.test")
+
+    assert resolved == ["req-1"]
+    accepted, dialog_type, message, text, href = sess._dialog_server_events.get_nowait()
+    assert (accepted, dialog_type, message, text, href) == (True, "prompt", "Enter name", "conxa", "https://x.test")
+
+
+def test_dialog_server_timed_out_queues_a_forced_accept_and_logs_it() -> None:
+    """Mirrors the old CDP timeout path exactly: forced accept with empty text (not a
+    dismiss), so a downstream step depending on "something" being entered doesn't also have
+    to handle a distinct forgotten-dialog-dismiss outcome."""
+    sess = RecordingSession(session_id="dialog-server-timeout")
+    cancelled: list[str] = []
+    sess.on_js_dialog_cancelled = cancelled.append
+
+    sess._on_dialog_server_timed_out("req-1", "confirm", "Are you sure?", "https://x.test")
+
+    assert cancelled == ["req-1"]
+    assert "dialog_timeout_autoaccept" in sess.binding_errors
+    accepted, dialog_type, message, text, href = sess._dialog_server_events.get_nowait()
+    assert (accepted, dialog_type, message, text, href) == (True, "confirm", "Are you sure?", "", "https://x.test")
+
+
+def test_drain_dialog_server_events_records_a_dialog_accept_step() -> None:
+    sess = RecordingSession(session_id="drain-dialog-server-events")
+    page = _FakePageForHref("https://example.com/checkout")
+
+    class _Ctx:
+        pages = [page]
+
+    sess._context = _Ctx()
+    sess._dialog_server_events.put((True, "prompt", "Enter name", "conxa", "https://example.com/checkout"))
+
+    sess._drain_dialog_server_events_sync()
+
+    payload, src_page, _src_frame = sess._pending_payloads.get_nowait()
+    assert payload["action"]["action"] == "dialog_accept"
+    assert json.loads(payload["action"]["value"]) == {
+        "type": "prompt",
+        "message": "Enter name",
+        "value": "conxa",
+    }
+    assert src_page is page

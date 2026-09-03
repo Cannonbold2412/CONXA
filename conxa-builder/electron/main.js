@@ -42,12 +42,13 @@ process.env.CONXA_ELECTRON_IS_PACKAGED = app.isPackaged ? "1" : "0";
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
+  process.exit(0);
 }
 
 // Windows: app already running — focus it and forward the deep-link URL.
 app.on("second-instance", (_event, argv) => {
   const url = argv.find((a) => a.startsWith("conxa-studio://"));
-  if (mainWindow) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
     if (url) mainWindow.webContents.send("deep-link", url);
