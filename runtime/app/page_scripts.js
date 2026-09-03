@@ -196,6 +196,72 @@ function inventoryEntryForElement(el) {
   return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
 }
 
+// EXEC-30 — live overlay probe. domInventory() truncates at 50 entries IN DOM ORDER, so a modal
+// appended late to <body> can be cut out entirely even though it is the only thing blocking the
+// step. This answers "is something sitting on top of the page right now" directly, independent of
+// inventory order, and also catches the case where an overlay HIDES the target rather than
+// intercepting a click (which never throws INTERCEPTED at all).
+// ponytail: three hit-test points (center, top-center, bottom-center), not a full z-order sweep —
+// upgrade to a denser grid if a real overlay is ever missed by all three.
+function overlayProbe() {
+  const DIALOG_SEL = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], .modal';
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const points = [[vw / 2, vh / 2], [vw / 2, vh * 0.15], [vw / 2, vh * 0.85]];
+
+  function isOverlayish(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    if (el.matches && el.matches(DIALOG_SEL)) return true;
+    const cs = window.getComputedStyle(el);
+    return cs.position === "fixed" || cs.position === "sticky";
+  }
+
+  function outermostOverlay(startEl) {
+    let found = null;
+    let el = startEl;
+    while (el && el !== document.body && el !== document.documentElement) {
+      if (isOverlayish(el)) found = el; // keep walking — want the OUTERMOST match
+      el = el.parentElement;
+    }
+    return found;
+  }
+
+  let container = null;
+  for (const [x, y] of points) {
+    const hit = document.elementFromPoint(x, y);
+    const candidate = outermostOverlay(hit);
+    if (candidate) { container = candidate; break; }
+  }
+  if (!container) return null;
+
+  const rect = container.getBoundingClientRect();
+  const coverage = (Math.max(0, rect.width) * Math.max(0, rect.height)) / (vw * vh);
+  if (coverage < 0.05) return null; // a slim sticky header is not "the story"
+
+  const controls = Array.from(container.querySelectorAll(
+    'button, a[href], input, [role="button"], [role="link"]'
+  )).slice(0, 15).map(el => {
+    const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
+    const tag  = el.tagName.toLowerCase();
+    const type = el.getAttribute("type")        || "";
+    const role = el.getAttribute("role")        || "";
+    const id   = el.id                          || undefined;
+    const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
+    if (!text && !type && !id && !dt) return null;
+    return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
+  }).filter(Boolean);
+
+  return {
+    container: {
+      tag: container.tagName.toLowerCase(),
+      id: container.id || undefined,
+      class: container.className && typeof container.className === "string" ? container.className.slice(0, 120) : undefined,
+      role: container.getAttribute("role") || undefined,
+      text: (container.innerText || "").trim().slice(0, 120),
+    },
+    controls,
+  };
+}
+
 module.exports = {
   extractDescriptor,
   rafStable,
@@ -206,5 +272,6 @@ module.exports = {
   pageFingerprint,
   domInventory,
   inventoryEntryForElement,
+  overlayProbe,
   INVENTORY_SELECTOR,
 };

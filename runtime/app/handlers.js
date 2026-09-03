@@ -847,13 +847,23 @@ function enrichStepsWithRecovery(steps, recovery) {
 // it to the derived selector captured when that digest was built. The mapping is looked up,
 // never trusted blindly — the derived selector still goes through validateOverrideSelector's
 // uniqueness-margin gate on resume, exactly like an explicit one.
+//
+// EXEC-30: `dismiss` is a SEPARATE field from the target override above — it names a control
+// to click BEFORE the step's own action runs, for an unrecorded overlay blocking the target
+// (never the target itself). Composable with a target override in the same entry: "clear this
+// modal, THEN retarget the step". `{ escape: true }` is the plain-Escape form (no selector to
+// gate — run.js's dispatch treats it identically to the Tier A ladder's own Escape press).
+// The derived selector is NOT trusted here either: run.js routes it through
+// dismiss_patterns.js's isSafeDismissLabel gate at the moment it's clicked.
 function applyStepOverrides(steps, overrides, opts = {}) {
   if (!Array.isArray(steps) || !overrides || typeof overrides !== "object") return steps;
   const out = steps.slice();
   for (const [rawKey, rawVal] of Object.entries(overrides)) {
     const idx = Number(rawKey);
     if (!Number.isInteger(idx) || idx < 0 || idx >= out.length) continue;
+
     let selector = null;
+    let patch = null;
     if (typeof rawVal === "string") {
       selector = rawVal;
     } else if (rawVal && typeof rawVal === "object") {
@@ -862,9 +872,31 @@ function applyStepOverrides(steps, overrides, opts = {}) {
       } else if (Number.isInteger(rawVal.candidate_index) && typeof opts.resolveCandidateIndex === "function") {
         selector = opts.resolveCandidateIndex(idx, rawVal.candidate_index);
       }
+
+      const dismiss = rawVal.dismiss;
+      if (dismiss && typeof dismiss === "object") {
+        let dismissSelector = null;
+        if (typeof dismiss.selector === "string" && dismiss.selector.trim()) {
+          dismissSelector = dismiss.selector.trim();
+        } else if (Number.isInteger(dismiss.candidate_index) && typeof opts.resolveCandidateIndex === "function") {
+          dismissSelector = opts.resolveCandidateIndex(idx, dismiss.candidate_index);
+        }
+        if (dismissSelector) {
+          patch = { ...(patch || {}), _dismiss_selector: dismissSelector };
+        } else if (dismiss.escape === true) {
+          patch = { ...(patch || {}), _dismiss_escape: true };
+        }
+      }
     }
-    if (typeof selector !== "string" || !selector.trim()) continue;
-    out[idx] = { ...out[idx], _explicit_selector: selector.trim(), _agent_override: true };
+
+    if (typeof selector === "string" && selector.trim()) {
+      patch = { ...(patch || {}), _explicit_selector: selector.trim() };
+    }
+    if (!patch) continue;
+    // A dismiss-only override still needs the parked failed page adopted on resume (the
+    // overlay it targets only exists there) — server.js's _resumeOverride check reads this
+    // same flag, so it must be set whether or not a target selector was also given.
+    out[idx] = { ...out[idx], ...patch, _agent_override: true };
   }
   return out;
 }

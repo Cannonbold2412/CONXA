@@ -142,6 +142,13 @@ function executedStepsBreadcrumb(steps, failedAt) {
 // about must be captured fresh. Merges a frame-scoped inventory when the step targets an
 // iframe — document.querySelectorAll cannot see into frames, and a "ground truth" that
 // silently omits the entire frame would be worse than none.
+//
+// EXEC-30: also runs the live overlay probe and merges its controls tagged `in_overlay`.
+// domInventory() truncates at 50 entries in DOM ORDER, so a modal appended late to <body> can
+// be cut out of the plain inventory entirely — the probe answers "is something covering the
+// page right now" independent of that ordering, and catches the case where an overlay HIDES
+// the target rather than intercepting a click (never an INTERCEPTED classification at all).
+// Returns { inventory, overlay } — `overlay` is the probe's container descriptor, or null.
 async function gatherInventory(page, err, deps) {
   let inventory = null;
   try {
@@ -160,7 +167,56 @@ async function gatherInventory(page, err, deps) {
       }
     } catch (_) {}
   }
-  return Array.isArray(inventory) ? inventory : null;
+
+  let overlay = null;
+  try {
+    const probed = await page.evaluate(pageScripts.overlayProbe);
+    if (probed && probed.container) {
+      overlay = probed.container;
+      inventory = [
+        ...(Array.isArray(inventory) ? inventory : []),
+        ...(Array.isArray(probed.controls) ? probed.controls.map(e => ({ ...e, in_overlay: true })) : []),
+      ];
+    }
+  } catch (_) {}
+
+  return { inventory: Array.isArray(inventory) ? inventory : null, overlay };
+}
+
+// EXEC-30 — say the overlay is there, and how to clear it. Only emitted when the live probe
+// actually found one. Distinct from frameNotFoundNoteText/overrideNoteText but same shape:
+// appended into `notes`.
+function overlayNoteText(overlay, resumeKey) {
+  if (!overlay) return "";
+  const label = overlay.text ? ` ("${overlay.text.slice(0, 80)}")` : "";
+  return `\n\nNote: something is currently covering the page${label} — rows tagged [overlay] in ` +
+    `the ranked element list below belong to it. If this looks like an incidental popup (a promo, ` +
+    `a consent banner, a permission prompt) rather than something the recorded workflow expects, ` +
+    `you may dismiss it before retrying: add "dismiss": { "candidate_index": <index> } (or ` +
+    `{ "selector": "…" }, or { "escape": true }) inside step_overrides["${resumeKey}"], alongside ` +
+    `or instead of a target override. Only nominate a close/cancel/skip/dismiss control — never ` +
+    `accept/confirm/agree/submit/delete/pay/subscribe or any other commit-style control; the ` +
+    `runtime refuses those regardless. If the overlay is asking you to commit to something ` +
+    `(confirm, accept, pay, delete) rather than merely blocking the view, it is not incidental — ` +
+    `do not dismiss it, stop and tell the user instead.`;
+}
+
+// EXEC-30 — the PREVIOUS round's dismiss nomination was refused. Tell the agent why, the same
+// way overrideNoteText explains a rejected target pick, so it doesn't just repeat the mistake.
+function dismissRejectedNoteText(err) {
+  const reason = err && err.failedStep && err.failedStep._dismiss_rejected;
+  if (!reason) return "";
+  if (reason === "no-match") {
+    return `\n\nYour previous dismiss nomination matched no element on the current page — the ` +
+      `overlay may have already closed, or the selector/index was stale. Check the current ` +
+      `[overlay] rows before nominating again.`;
+  }
+  if (reason === "unsafe-label") {
+    return `\n\nYour previous dismiss nomination was refused: its label reads as a commit action ` +
+      `(accept/confirm/submit/delete/etc.), not an incidental dismissal, so the runtime would not ` +
+      `click it. Only nominate a close/cancel/skip-style control.`;
+  }
+  return `\n\nYour previous dismiss nomination could not be applied (${reason}).`;
 }
 
 // Secondary, and only when it actually differs from the current one: the inventory at the
@@ -378,7 +434,7 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
   const resumeKey = failedAt !== null ? String(failedAt) : "0";
 
   // Ground truth: live, post-cascade inventory — always fresh (see gatherInventory).
-  const currentInventory = await gatherInventory(page, err, { frameScopedInventory });
+  const { inventory: currentInventory, overlay } = await gatherInventory(page, err, { frameScopedInventory });
 
   // Rank-and-cap against the recorded target (never positional truncation), then publish the
   // nomination map so the next execute_skill call can resolve candidate_index → derived
@@ -391,7 +447,8 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
   try { scrollY = await page.evaluate(pageScripts.getScrollY); } catch (_) {}
 
   const contextSections = buildContextSections(err, steps, failedAt, viewport, scrollY, stepAssertions);
-  const notes = `${frameNotFoundNoteText(err)}${overrideNoteText(err)}`;
+  const notes = `${frameNotFoundNoteText(err)}${overrideNoteText(err)}` +
+    `${overlayNoteText(overlay, resumeKey)}${dismissRejectedNoteText(err)}`;
 
   const earlyDiffers = earlySnapshotDiffers(err, currentInventory);
 
@@ -473,4 +530,7 @@ module.exports = {
   expectedStateBlock,
   executedStepsBreadcrumb,
   recordedContextBlock,
+  gatherInventory,
+  overlayNoteText,
+  dismissRejectedNoteText,
 };

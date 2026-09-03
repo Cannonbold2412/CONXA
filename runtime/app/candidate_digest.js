@@ -93,6 +93,9 @@ function truncateLabel(text) {
 
 function formatDigestLine(index, entry) {
   const bits = [String(entry.tag || "?")];
+  // EXEC-30: tag a control the live overlay probe found so the agent can spot a dismiss
+  // candidate at a glance instead of hunting through the whole ranked list for one.
+  if (entry.in_overlay) bits.push("[overlay]");
   if (entry.type) bits.push(`type=${entry.type}`);
   if (entry.role) bits.push(`role=${entry.role}`);
   if (entry["data-testid"]) bits.push(`testid=${entry["data-testid"]}`);

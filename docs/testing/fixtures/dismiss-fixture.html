@@ -48,6 +48,19 @@
       // Bespoke: nothing in the static list matches — the ladder must find nothing.
       bespoke: '<div class="banner" id="b"><span>We value your privacy</span>' +
                '<button id="bespoke-x" onclick="dismiss(this)">OK sure</button></div>',
+      // EXEC-30: full-viewport promo modal, no role/aria-modal — nothing in the static
+      // KNOWN_DISMISS_SELECTORS list matches this, and it is not consent-toolkit shaped. Carries
+      // both a safe close control AND a tempting commit control ("Buy now") in the same banner,
+      // so a test can prove the agent-nominated dismiss path clicks ONLY the close button.
+      promo: '<div class="banner" id="b"><span>Get 20% off your first order!</span>' +
+             '<button aria-label="Close" onclick="dismiss(this)">×</button>' +
+             '<button onclick="log(\'promo-buy-now\')">Buy now</button></div>',
+      // EXEC-30: a genuine commit-style dialog (role="dialog") — the safety gate must refuse a
+      // nomination of "Delete", never click it, and leave the dialog exactly as it was.
+      confirm: '<div class="banner" id="b" role="dialog" aria-modal="true">' +
+               '<span>Delete this account? This cannot be undone.</span>' +
+               '<button onclick="log(\'confirm-delete\')">Delete</button>' +
+               '<button onclick="dismiss(this)">Cancel</button></div>',
     };
     if (banners[v]) document.body.insertAdjacentHTML("beforeend", banners[v]);
     if (v === "escdialog") {

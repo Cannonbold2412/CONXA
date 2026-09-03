@@ -15,12 +15,18 @@ process.env.CONXA_DIR = process.env.CONXA_DATA_DIR;
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { KNOWN_DISMISS_SELECTORS, dismissKnownOverlay } = require("../../app/dismiss_patterns");
+const {
+  KNOWN_DISMISS_SELECTORS, dismissKnownOverlay,
+  DISMISS_ALLOW_RE, DISMISS_DENY_RE, isSafeDismissLabel, dismissAgentNominated,
+} = require("../../app/dismiss_patterns");
 const learned = require("../../app/learned_dismissals");
 const { layer1Ladder } = require("../../app/run");
+const { applyStepOverrides } = require("../../app/handlers");
 
 // Mock page: `present` maps selector -> count; `failClicks` lists selectors whose click throws.
-function mockPage({ present = {}, failClicks = [], url = "https://shop.test/page" } = {}) {
+// `labels` (EXEC-30) maps selector -> { label, inDialogChrome } for the agent-nominated path's
+// evaluate() call.
+function mockPage({ present = {}, failClicks = [], labels = {}, url = "https://shop.test/page" } = {}) {
   const clicks = [];
   const escapes = [];
   return {
@@ -28,6 +34,7 @@ function mockPage({ present = {}, failClicks = [], url = "https://shop.test/page
     locator: (sel) => ({
       count: async () => (present[sel] ? 1 : 0),
       first: () => ({
+        evaluate: async () => labels[sel] || { label: "", inDialogChrome: false },
         click: async () => {
           if (failClicks.includes(sel)) throw new Error("intercepts pointer events");
           clicks.push(sel);
@@ -229,4 +236,128 @@ test("nothing matches anywhere → ladder still just returns after Escape, no fa
   assert.strictEqual(result, false);
   assert.strictEqual(page._escapes.length, 1);
   assert.deepStrictEqual(page._clicks, []);
+  // EXEC-30: an INTERCEPTED failure with no known-pattern match must flag the error so the
+  // agent-tier failure payload can say "unrecognized overlay" instead of a bare not-found.
+  assert.strictEqual(err.unknownOverlay, true);
+});
+
+test("a known-pattern SUCCESS must not also set unknownOverlay", async () => {
+  const page = mockPage({ present: { "#onetrust-accept-btn-handler": true } });
+  const err = new Error("#buy3 intercepts pointer events");
+  await layer1Ladder(page, { type: "wait", ms: 1 }, {}, "slug-known-ok", 9, "#buy3", err);
+  assert.strictEqual(err.unknownOverlay, undefined);
+});
+
+// ─── isSafeDismissLabel (EXEC-30 gate) ──────────────────────────────────────────
+
+test("isSafeDismissLabel: allow-list phrasing passes", () => {
+  for (const label of ["Close", "×", "✕", "No thanks", "Not now", "Skip", "Maybe later", "Dismiss", "Cancel"]) {
+    assert.strictEqual(isSafeDismissLabel(label), true, label);
+  }
+});
+
+test("isSafeDismissLabel: deny-list phrasing fails, even with allow-ish words nearby", () => {
+  for (const label of ["Confirm", "Accept all", "Delete", "Pay now", "Decline", "Submit", "Agree and close", "Confirm and dismiss"]) {
+    assert.strictEqual(isSafeDismissLabel(label), false, label);
+  }
+});
+
+test("isSafeDismissLabel: empty label only trusted inside dialog/modal chrome", () => {
+  assert.strictEqual(isSafeDismissLabel("", { inDialogChrome: true }), true);
+  assert.strictEqual(isSafeDismissLabel("", { inDialogChrome: false }), false);
+  assert.strictEqual(isSafeDismissLabel(""), false, "default is untrusted");
+});
+
+test("DISMISS_ALLOW_RE / DISMISS_DENY_RE stay disjoint on the canonical word lists", () => {
+  const allowWords = ["close", "dismiss", "cancel", "skip", "not now", "no thanks", "maybe later", "later"];
+  for (const w of allowWords) assert.ok(!DISMISS_DENY_RE.test(w), `${w} must not also match deny`);
+});
+
+// ─── dismissAgentNominated (EXEC-30) ────────────────────────────────────────────
+
+test("dismissAgentNominated: no element on the live page → no-match, nothing clicked", async () => {
+  const page = mockPage({});
+  const result = await dismissAgentNominated(page, "#ghost");
+  assert.deepStrictEqual(result, { ok: false, reason: "no-match" });
+  assert.deepStrictEqual(page._clicks, []);
+});
+
+test("dismissAgentNominated: present but labelled as a commit action → unsafe-label, nothing clicked", async () => {
+  const page = mockPage({
+    present: { "#delete-btn": true },
+    labels: { "#delete-btn": { label: "Delete this account", inDialogChrome: true } },
+  });
+  const result = await dismissAgentNominated(page, "#delete-btn");
+  assert.deepStrictEqual(result, { ok: false, reason: "unsafe-label", label: "Delete this account" });
+  assert.deepStrictEqual(page._clicks, []);
+});
+
+test("dismissAgentNominated: present and labelled as a close/cancel affordance → clicked", async () => {
+  const page = mockPage({
+    present: { "#promo-close": true },
+    labels: { "#promo-close": { label: "Close", inDialogChrome: false } },
+  });
+  const result = await dismissAgentNominated(page, "#promo-close");
+  assert.deepStrictEqual(result, { ok: true, selector: "#promo-close", label: "Close" });
+  assert.deepStrictEqual(page._clicks, ["#promo-close"]);
+});
+
+test("dismissAgentNominated: unlabeled icon button inside dialog chrome is trusted", async () => {
+  const page = mockPage({
+    present: { "#icon-x": true },
+    labels: { "#icon-x": { label: "", inDialogChrome: true } },
+  });
+  const result = await dismissAgentNominated(page, "#icon-x");
+  assert.strictEqual(result.ok, true);
+});
+
+test("dismissAgentNominated: unlabeled icon button OUTSIDE dialog chrome is refused", async () => {
+  const page = mockPage({
+    present: { "#icon-x": true },
+    labels: { "#icon-x": { label: "", inDialogChrome: false } },
+  });
+  const result = await dismissAgentNominated(page, "#icon-x");
+  assert.deepStrictEqual(result, { ok: false, reason: "unsafe-label", label: "" });
+});
+
+// ─── applyStepOverrides — dismiss field (EXEC-30) ───────────────────────────────
+
+test("applyStepOverrides: dismiss.candidate_index resolves to _dismiss_selector via the map fn", () => {
+  const steps = [{ type: "click" }];
+  const resolveCandidateIndex = (stepIdx, candIdx) => (stepIdx === 0 && candIdx === 2 ? "#promo-close" : null);
+  const out = applyStepOverrides(steps, { "0": { dismiss: { candidate_index: 2 } } }, { resolveCandidateIndex });
+  assert.strictEqual(out[0]._dismiss_selector, "#promo-close");
+  assert.strictEqual(out[0]._agent_override, true, "dismiss-only override must still flag _agent_override so server.js adopts the parked page");
+});
+
+test("applyStepOverrides: dismiss.selector is used directly", () => {
+  const steps = [{ type: "click" }];
+  const out = applyStepOverrides([...steps], { "0": { dismiss: { selector: "#x" } } });
+  assert.strictEqual(out[0]._dismiss_selector, "#x");
+  assert.strictEqual(out[0]._agent_override, true);
+});
+
+test("applyStepOverrides: dismiss.escape sets _dismiss_escape, no selector needed", () => {
+  const steps = [{ type: "click" }];
+  const out = applyStepOverrides([...steps], { "0": { dismiss: { escape: true } } });
+  assert.strictEqual(out[0]._dismiss_escape, true);
+  assert.strictEqual(out[0]._dismiss_selector, undefined);
+  assert.strictEqual(out[0]._agent_override, true);
+});
+
+test("applyStepOverrides: dismiss + target override compose on the same step", () => {
+  const steps = [{ type: "click" }];
+  const out = applyStepOverrides([...steps], {
+    "0": { selector: "#target", dismiss: { selector: "#promo-close" } },
+  });
+  assert.strictEqual(out[0]._explicit_selector, "#target");
+  assert.strictEqual(out[0]._dismiss_selector, "#promo-close");
+  assert.strictEqual(out[0]._agent_override, true);
+});
+
+test("applyStepOverrides: an unresolvable dismiss.candidate_index (no map fn) is silently skipped", () => {
+  const steps = [{ type: "click" }];
+  const out = applyStepOverrides([...steps], { "0": { dismiss: { candidate_index: 2 } } });
+  assert.strictEqual(out[0]._dismiss_selector, undefined);
+  assert.strictEqual(out[0]._agent_override, undefined, "no patch applied → no override flag either");
 });

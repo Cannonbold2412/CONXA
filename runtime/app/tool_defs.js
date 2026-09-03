@@ -29,7 +29,7 @@ const CORE_TOOL_DEFS = [
         resume_from: { type: "integer", description: "0-based step index to resume from after a failure (the value reported in the failure response)." },
         step_overrides: {
           type: "object",
-          description: "Tier 3/4 self-healing: map of \"<step index>\" → { \"candidate_index\": <n>, \"confidence\": <0-1>, \"why\": \"<one line>\" } (preferred — pick the index of the element you identified from the runtime's ranked Tier 3/4 element list) or { \"selector\": \"<Playwright selector>\" }. The runtime re-verifies every pick against a uniqueness gate before acting. Selector preference, when explicit: [data-testid=\"…\"], then #id, then internal:role=<role>[name=\"…\"], then text=\"…\". Example: { \"7\": { \"candidate_index\": 0, \"confidence\": 0.9, \"why\": \"old button renamed; ranked entry matches intent\" } }.",
+          description: "Tier 3/4 self-healing: map of \"<step index>\" → { \"candidate_index\": <n>, \"confidence\": <0-1>, \"why\": \"<one line>\" } (preferred — pick the index of the element you identified from the runtime's ranked Tier 3/4 element list) or { \"selector\": \"<Playwright selector>\" }. The runtime re-verifies every pick against a uniqueness gate before acting. Selector preference, when explicit: [data-testid=\"…\"], then #id, then internal:role=<role>[name=\"…\"], then text=\"…\". Example: { \"7\": { \"candidate_index\": 0, \"confidence\": 0.9, \"why\": \"old button renamed; ranked entry matches intent\" } }. May ALSO carry a \"dismiss\" entry when the failure response flagged an unrecognized overlay (rows tagged [overlay] in the ranked list): { \"candidate_index\": <n> } or { \"selector\": \"…\" } or { \"escape\": true }, composable with a target override in the same entry (clear the overlay, then retarget). The runtime only ever clicks a close/cancel/skip/dismiss-style control — nominating an accept/confirm/agree/submit/delete/pay/subscribe control is refused. Example: { \"7\": { \"dismiss\": { \"candidate_index\": 2 } } }.",
         },
         review_results: {
           type: "object",
@@ -56,7 +56,7 @@ const CORE_TOOL_DEFS = [
               workspace_id: { type: "string" },
               inputs:  { type: "object" },
               resume_from:    { type: "integer", description: "0-based step index to resume from after a failure." },
-              step_overrides: { type: "object", description: "Tier 3/4 self-healing overrides keyed by step index — prefer candidate_index nominations from the ranked element list (see execute_skill)." },
+              step_overrides: { type: "object", description: "Tier 3/4 self-healing overrides keyed by step index — prefer candidate_index nominations from the ranked element list, plus an optional \"dismiss\" entry for an unrecognized overlay (see execute_skill)." },
               review_results: { type: "object", description: "AI review checkpoint answers keyed by step index (see execute_skill)." },
             },
             required: ["skill"],

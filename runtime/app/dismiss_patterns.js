@@ -84,4 +84,58 @@ async function dismissKnownOverlay(page, { learned = [], timeoutMs = DISMISS_PRO
   return { selectors: clicked, source };
 }
 
-module.exports = { KNOWN_DISMISS_SELECTORS, dismissKnownOverlay, DISMISS_PROBE_TIMEOUT_MS };
+// ── EXEC-30: gate for an AGENT-NOMINATED dismissal ─────────────────────────────────────────────
+// The static ladder above is a closed list the runtime built itself — every entry was chosen by
+// us, so it never needs a runtime safety check. An agent nomination is different: Tier B is
+// picking an element off a live, previously-unseen page, and it can only ever act on it if the
+// label reads as an incidental dismissal, never a commit. Deny wins on any conflict (a button
+// labelled "Confirm and close" must never be clicked).
+const DISMISS_ALLOW_RE = /\b(close|dismiss|cancel|skip|not now|no thanks|maybe later|later|continue without)\b|[×✕✖]/i;
+const DISMISS_DENY_RE = /\b(confirm|accept|agree|allow|submit|save|delete|remove|pay|buy|order|subscribe|decline|reject|opt[\s-]?out)\b/i;
+
+// label: the element's accessible-name-ish string (aria-label || innerText || title).
+// inDialogChrome: whether the element sits inside dialog/modal/alertdialog chrome — an unlabeled
+// icon button (a bare "×" with no text) is only trusted there, never on arbitrary page chrome.
+function isSafeDismissLabel(label, { inDialogChrome = false } = {}) {
+  const text = String(label || "").trim();
+  if (DISMISS_DENY_RE.test(text)) return false;
+  if (DISMISS_ALLOW_RE.test(text)) return true;
+  return !text && inDialogChrome;
+}
+
+const DIALOG_CHROME_SEL = '[role="dialog"], [role="alertdialog"], [aria-modal="true"], .modal, dialog';
+
+// Click an element the agent nominated for overlay dismissal, gated by isSafeDismissLabel.
+// Mirrors dismissKnownOverlay's caution but for a single, untrusted, agent-picked selector:
+//   - no match on the live page → { ok:false, reason:"no-match" }
+//   - present but its label fails the gate → { ok:false, reason:"unsafe-label", label }
+//   - gate passes → click it → { ok:true, selector, label }
+// Never throws for an ordinary miss; only a genuinely broken page (locator API failure) escapes.
+async function dismissAgentNominated(page, selector, { timeoutMs = DISMISS_PROBE_TIMEOUT_MS } = {}) {
+  if (!selector) return { ok: false, reason: "no-match" };
+  const locator = page.locator(selector);
+  if ((await locator.count()) < 1) return { ok: false, reason: "no-match" };
+  const first = locator.first();
+
+  const info = await first.evaluate((el, dialogSel) => ({
+    label: (el.getAttribute("aria-label") || el.innerText || el.getAttribute("title") || "").trim().slice(0, 120),
+    inDialogChrome: !!el.closest(dialogSel),
+  }), DIALOG_CHROME_SEL).catch(() => ({ label: "", inDialogChrome: false }));
+
+  if (!isSafeDismissLabel(info.label, { inDialogChrome: info.inDialogChrome })) {
+    return { ok: false, reason: "unsafe-label", label: info.label };
+  }
+
+  await first.click({ timeout: timeoutMs });
+  return { ok: true, selector, label: info.label };
+}
+
+module.exports = {
+  KNOWN_DISMISS_SELECTORS,
+  dismissKnownOverlay,
+  DISMISS_PROBE_TIMEOUT_MS,
+  DISMISS_ALLOW_RE,
+  DISMISS_DENY_RE,
+  isSafeDismissLabel,
+  dismissAgentNominated,
+};

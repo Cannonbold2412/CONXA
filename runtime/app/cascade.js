@@ -274,6 +274,11 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
           for (const selector of hit.selectors) learnedDismissals.record(page.url(), selector);
           appendRecoveryEvent({ event: "tier1_dismiss_pattern", slug,
             step_index: stepIndex, pattern: hit.selectors.join(" | "), source: hit.source });
+        } else if (primaryErr) {
+          // EXEC-30: an INTERCEPTED failure that no known pattern could clear — flag it so the
+          // agent tier's failure payload can say "this looks like an unrecognized overlay"
+          // instead of a bare element-not-found, and offer the dismiss override.
+          primaryErr.unknownOverlay = true;
         }
       } catch (_) {}
     } else if (remedy === "wait-stable" || remedy === "wait-enabled") {

@@ -1000,6 +1000,33 @@ async function _handleTool(name, args, extra) {
       } catch (_) { _park = null; }
       if (_park) { clearTimeout(_park.timer); _setParkedRecovery(_parkKey, null); }
     }
+
+    // EXEC-32: a resume_from that names a step with a pending recovery park, but supplies no
+    // step_overrides entry for it, is not resolving anything — the caller (agent) most likely
+    // forgot the override. Falling through here would discard the park below and silently run
+    // this skill from resumeFrom on a FRESH page: steps before resumeFrom — including navigate —
+    // are skipped by design on a resume, so the step would execute against about:blank and report
+    // a misleading "Element not found" as if it were a real ground-truth failure. Only refuse when
+    // a park actually exists: resume_from with no override is legitimate when there is nothing
+    // parked (e.g. resuming after an auth pause on the same still-open page, below) — that must
+    // keep working exactly as before.
+    if (_effAgentEnabled && resolved.length === 1 && primary.isResume && !_resumeOverride
+      && _existingPark && primary.steps[primary.resumeFrom]) {
+      appendRecoveryEvent({ event: "recovery_resume_missing_override", slug: primary.entry.slug, step_index: primary.resumeFrom });
+      _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: primary.resumeFrom, fc: "recovery_resume_missing_override" });
+      if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
+      runRegistry.end(_runId);
+      await _receiptFlush;
+      await _tracker.flush();
+      _tracker.destroy();
+      return err(
+        `Step ${primary.resumeFrom + 1} has a pending recovery request awaiting your pick, but this call ` +
+        `supplied resume_from: ${primary.resumeFrom} with no step_overrides entry for it. Call execute_skill ` +
+        `again for "${primary.entry.slug}" with step_overrides: { "${primary.resumeFrom}": { "candidate_index": ` +
+        `<index> } } (or a selector) to resolve it, or without resume_from to restart the skill from the beginning.`
+      );
+    }
+
     // A park still sitting under THIS skill's own key that we did not adopt (state diverged, a
     // non-resume call, or an override that didn't match) is stale for this run — discard it so it
     // can neither leak a browser nor interfere with what's about to run.

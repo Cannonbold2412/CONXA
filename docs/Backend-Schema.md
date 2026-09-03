@@ -681,6 +681,15 @@ optional_hint: dict | None   # {"kind": "try_dismiss", "container_signal": "<sel
   `action` to `try_dismiss`, seeds `branch.candidates` from the step's own recorded selector plus
   the hint's `container_signal`, and clears `optional_hint`.
 
+**Not to be confused with runtime-replay overlay dismissal (EXEC-30).** `optional_hint`/
+`try_dismiss` above are compile-time, human-confirmed mechanisms for an interstitial *seen during
+recording*. A separate, later mechanism handles an overlay the recording never saw at all: at
+replay, `execute_skill`'s `step_overrides["<idx>"].dismiss` (`{ candidate_index }` / `{ selector }`
+/ `{ escape: true }`) lets the Tier B agent clear an unrecognized popup before retrying the
+recorded step, gated so only a close/cancel/skip-style control is ever clicked. See
+`docs/TRD.md` §10.1 for the full mechanism and the `overlay_dismissed`/`overlay_dismiss_rejected`
+telemetry codes above.
+
 ### 3.4e Multi-Tab Context (TabContext)
 
 `RecordedEvent.tab` (`packages/conxa-core/conxa_core/models/events.py::TabContext`) records which
@@ -942,6 +951,8 @@ class WorkflowIntentGraph(BaseModel):
 | `verify_fail` | Post-action VERIFY failed | `si`, `ch` (assertion channel) |
 | `verify_result` | Full post-action assertion audit for a step that carries assertions (emitted on the primary execution path, pass or fail — not on recovery re-verification) | `si`, `ok` (overall pass/fail), `n` (assertion count), `advFail` (count of failed advisory/non-required assertions) |
 | `repair_event` | A step was recovered — drift signal for the admin flywheel queue | `step_id`, `tier` (`L1`/`L2` inside Tier A, or agent for B), `method`, `score`, `margin`, `stable_hash_match`, `stable_hash`, `drift_hint`, `app_version_fingerprint` |
+| `overlay_dismissed` | (EXEC-30) A `step_overrides.dismiss` pick cleared an unrecognized overlay before the resumed step's own action | `si`, `src` (`"agent"`) |
+| `overlay_dismiss_rejected` | (EXEC-30) A `dismiss` pick was refused — no match on the live page, or its label read as a commit action | `si`, `why` (`"no-match"` \| `"unsafe-label"`) |
 
 **`recovery.json` per-step field changes (2026-09).** Added: `recorded_context` — where the target sat on the page at recording time (`parent`, `siblings` capped at 8, `index_in_parent`, `form_context`), so the agent recovery tier can compare the live page against the recorded structure instead of only describing the present. Removed: `fallback.text_variants` and `selector_context.alternatives`, which fed the two Layer 2 guessing stages deleted from the runtime cascade — nothing reads them. `selector_context.primary`, `anchors` and `visual_ref` are unchanged, as is the execution step's unrelated `target.fallback_selectors` (a *primary resolution* input, despite the similar name).
 

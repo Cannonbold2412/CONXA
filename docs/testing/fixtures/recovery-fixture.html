@@ -9,6 +9,9 @@
   .ghost{opacity:.85}
   #clicklog{position:fixed;top:8px;right:8px;background:#fffa;border:1px solid #888;
             padding:8px;font-size:12px;white-space:pre-wrap}
+  .sidebar{position:fixed;bottom:0;right:0;width:36px;height:120px;overflow:hidden;
+           background:#eee;border:1px solid #888}
+  .sidebar-inner{width:220px;padding:8px}
 </style>
 </head>
 <body>
@@ -55,8 +58,51 @@
       // Honest-failure case: the target is gone entirely. Recovery should end in a clean typed
       // failure (or a Claude decline) — never a confident wrong click.
       gone:  [btn({ class:"ghost" }, "Nothing to see here", "other")],
+      // Suite D.1 — rename only: every strong signal survives, only the visible label changes.
+      d1:    [btn({ id:"checkout-btn", "data-testid":"buy-btn", "aria-label":"Buy Now",
+                    class:"btn-primary" }, "Confirm Purchase", "target")],
     };
-    (variants[v] || variants.clean).forEach(b => controls.appendChild(b));
+    if (v === "d2") {
+      // Suite D.2 — move: identity unchanged (testid/id/aria-label/text all survive), but the
+      // button is nested one level deeper than recorded (div#controls > div.wrapper > button
+      // instead of div#controls > button) — the recorded parent/index no longer holds. Proves a
+      // live contract signal (testid) isn't misled by a stale recorded_context.
+      const wrapper = document.createElement("div");
+      wrapper.className = "wrapper";
+      wrapper.appendChild(btn({ id:"checkout-btn", "data-testid":"buy-btn", "aria-label":"Buy Now",
+                                 class:"btn-primary" }, "Buy Now", "target"));
+      controls.appendChild(wrapper);
+    } else if (v === "d3") {
+      // Suite D.3 — past healing: label AND structure AND testid drift at once, id dropped too —
+      // nothing deterministic is left to match on. Expect Tier B escalation or a clean final
+      // error, never a crash or a hang.
+      const wrapper = document.createElement("div");
+      wrapper.className = "wrapper-deep";
+      wrapper.appendChild(btn({ "aria-label":"Finalize Order", class:"btn-primary" },
+                                "Finalize Order", "target"));
+      controls.appendChild(wrapper);
+    } else if (v === "d5") {
+      // Suite D.5 — slow render: identity unchanged, only its appearance is delayed 5s. Tests
+      // wait/retry tuning, not identity resolution.
+      setTimeout(() => {
+        controls.appendChild(btn({ id:"checkout-btn", "data-testid":"buy-btn", "aria-label":"Buy Now",
+                                    class:"btn-primary" }, "Buy Now", "target"));
+      }, 5000);
+    } else if (v === "moved") {
+      // WF-2 Segment B remainder (C.4) — moved element: strip every attribute signal (id,
+      // data-testid, aria-label, class), keep only role (button) + visible text, and relocate it
+      // deep inside a collapsed sidebar far from the recorded top-left position. Only role/text
+      // signals should carry resolution.
+      const sidebar = document.createElement("nav");
+      sidebar.className = "sidebar";
+      const inner = document.createElement("div");
+      inner.className = "sidebar-inner";
+      inner.appendChild(btn({}, "Buy Now", "target"));
+      sidebar.appendChild(inner);
+      document.body.appendChild(sidebar);
+    } else {
+      (variants[v] || variants.clean).forEach(b => controls.appendChild(b));
+    }
   </script>
 </body>
 </html>

@@ -62,6 +62,8 @@ const {
   extractZipOnce,
   uniqueDownloadName,
 } = require("./uploads");
+const { dismissAgentNominated } = require("./dismiss_patterns");
+const learnedDismissals = require("./learned_dismissals");
 
 // checkRetryBudget is exported for server.js's budget enforcement; kept under its
 // own name to make the "budget is checked there, not here" split explicit.
@@ -140,6 +142,9 @@ function stepFailure(step, stepIndex, cause, preShot) {
     if (cause.entityNotFound) err.entityNotFound = true;
     if (cause.tabNotFound) err.tabNotFound = true;
     if (cause.failedPage) err.failedPage = cause.failedPage;
+    // EXEC-30: Tier A's known-pattern ladder saw an INTERCEPTED failure and cleared nothing —
+    // tell the agent tier this looks like an unrecognized overlay, not a plain missing element.
+    if (cause.unknownOverlay) err.unknownOverlay = true;
   }
   return err;
 }
@@ -238,6 +243,36 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
         continue;
       }
       throw Object.assign(new Error("ai_review_pause"), { reviewPause: true, stepIndex: i, step, page });
+    }
+
+    // EXEC-30 — agent-nominated overlay dismissal (Tier B closing edge). applyStepOverrides
+    // (handlers.js) stamped this step with _dismiss_selector/_dismiss_escape when the previous
+    // failure response's step_overrides carried a `dismiss` entry for this index. Runs exactly
+    // once — the override only ever lands on the resumed index — BEFORE the step's own action,
+    // never in place of it: whether or not the dismissal actually clicked something, the
+    // recorded step still runs immediately after.
+    if (step._dismiss_selector || step._dismiss_escape) {
+      if (step._dismiss_escape) {
+        await page.keyboard.press("Escape").catch(() => {});
+        appendRecoveryEvent({ event: "tierb_overlay_dismissed", slug, step_index: i, method: "escape", source: "agent" });
+        t.emit("overlay_dismissed", { si: i, src: "agent" });
+      } else {
+        const result = await dismissAgentNominated(page, step._dismiss_selector).catch(err => ({ ok: false, reason: "error", message: err && err.message }));
+        if (result.ok) {
+          learnedDismissals.record(page.url(), result.selector);
+          appendRecoveryEvent({ event: "tierb_overlay_dismissed", slug, step_index: i,
+            selector: result.selector, label: result.label, source: "agent" });
+          t.emit("overlay_dismissed", { si: i, src: "agent" });
+        } else {
+          appendRecoveryEvent({ event: "overlay_dismiss_rejected", slug, step_index: i, reason: result.reason });
+          t.emit("overlay_dismiss_rejected", { si: i, why: result.reason });
+          // Ride along on the step object (already carried forward as err.failedStep on a
+          // later failure) so the next failure response can explain the refusal — no new
+          // plumbing through stepFailure needed.
+          step._dismiss_rejected = result.reason;
+        }
+      }
+      await page.waitForTimeout(150).catch(() => {}); // let the DOM settle before the real attempt
     }
 
     const preShot = await maybeCapturePreStep(page, step);
