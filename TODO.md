@@ -41,12 +41,12 @@ Counts below are computed straight from the section headers in this file (unique
 
 | Priority | Remaining | Total | Resolved |
 |---|---|---|---|
-| P0 — Critical / Time-Sensitive | 10 | 20 | 10 |
+| P0 — Critical / Time-Sensitive | 11 | 21 | 10 |
 | P1 — Blocking / Foundational | 5 | 8 | 3 |
-| P2 — High Value, Do Soon (incl. Discovered Items) | 30 | 35 | 5 |
+| P2 — High Value, Do Soon (incl. Discovered Items) | 31 | 36 | 5 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
 | P4 — Low Urgency, Opportunistic | 31 | 39 | 8 |
-| **Total** | **99** | **124** | **25** |
+| **Total** | **101** | **126** | **25** |
 
 ---
 
@@ -340,6 +340,79 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** M.
 - **Success criteria:** the mutator fixture's relabelled button heals at Tier 2 with zero LLM tokens (`tier2_*` in `recovery.log`, not `Element not found`); a destructive renamed element still halts; a unit test covers both.
 
+
+### EXEC-29 — Hover-reveal and native JS dialog steps still fail at live replay despite recorder + handler support
+- **Category:** Execution & Recovery
+- **Description:** Found 2026-09-03 running the `03-ONE-WORKFLOW-RUNBOOK.md` mega-workflow (Segment D, `the-internet.herokuapp.com` `/hovers` and `/javascript_alerts`). The hover-then-click step and the alert/confirm/prompt dialog steps did not replay reliably — even though the recorder has captured hover reveals and native dialogs correctly since the 2026-08-26 fixes (see `FIX.md`) and the runtime has real handlers for both (`runtime/app/handlers.js`'s `hover` and `dialog_accept`/`dialog_dismiss`; `runtime/app/locators.js::walkHoverChain`; `cascade.js` Layer 2 re-hover). The specific failure mode wasn't captured with `events.jsonl`/`recovery.log` evidence this session — that's the immediate next step before root-causing. `research-analysis/05-reliability/architectures/hover.md` documents theoretical hover-then-click gaps (hover context lost on recovery, no re-hover-then-retry) as a starting point, though `walkHoverChain`/`cascade.js`'s Layer 2 already appear to implement a re-hover retry, so that doc may be stale relative to current code and worth re-checking against `git log` before trusting its gap list.
+- **Why required:** hover-revealed menus and native dialogs are ordinary UI patterns, not edge cases — the-internet's `/hovers` and `/javascript_alerts` are literally the reference examples of each — so any real workflow touching either can't currently be trusted to replay clean.
+- **Business value:** hover-revealed menu items and confirm/prompt dialogs are common in admin/back-office UIs, a core target segment.
+- **Technical value:** closes a live-verified gap between "the plumbing exists" (recorder, compiler, runtime handlers) and "it actually works end to end."
+- **Dependencies:** needs a fresh minimal repro (record + replay against `/hovers` and `/javascript_alerts` alone, not buried in a 100-step take) with `events.jsonl`/`recovery.log` attached before root-causing.
+- **Suggested order:** next mega-workflow re-run — reproduce in isolation first. Longer-term idea floated during this session (not yet justified): if the deterministic hover/dialog path can't be made reliable, consider a vision/ML-assisted hover detector and, further out, a built-in first-party browser instead of driving native OS dialogs — both out of scope until the deterministic path is proven to actually fail on a clean repro, not just observed to fail once inside a long recording.
+- **Complexity:** unknown until reproduced — S if it's a timing/pacing issue, M if it's the hover-chain/dialog-queue logic itself.
+- **Success criteria:** `the-internet.herokuapp.com`'s `/hovers` (hover avatar → click "View profile") and `/javascript_alerts` (Alert/Confirm/Prompt accept, prompt text echoed) replay clean at zero LLM tokens, both in isolation and inside the full mega-workflow take.
+
+### ~~EXEC-30~~ — Replace blind auto-dismiss of unknown popups with Tier B reasoning at replay — **Resolved 2026-09-03**
+
+- **Resolution:** Tier A's `dismiss_patterns.js` ladder is unchanged. An `INTERCEPTED` failure that
+  survives it untouched is now flagged `unknownOverlay`; `failure_response.js` runs a live overlay
+  probe (`page_scripts.js::overlayProbe` — hit-tests three viewport points, walks to the outermost
+  dialog/modal/fixed/sticky ancestor covering ≥5% of the viewport, independent of the ordinary
+  50-entry DOM-order-truncated inventory) and merges its controls into the ranked digest tagged
+  `[overlay]`. The failure text names the overlay and offers `step_overrides["<idx>"].dismiss`
+  (`{ candidate_index }` / `{ selector }` / `{ escape: true }`), composable with a target override.
+  A nominated control is gated by `dismiss_patterns.js::isSafeDismissLabel` (allow-list beats
+  deny-list, deny wins on conflict, an unlabeled icon button trusted only inside dialog/modal
+  chrome) before it is ever clicked — PROD-3's no-guess rule applied to dismissal, so a genuine
+  commit-style dialog is never auto-dismissed. A successful dismissal is written to the host-scoped
+  learned store, so a repeat occurrence on that host clears at Tier A for zero tokens next time.
+  See `docs/TRD.md` §10.1 for the full mechanism.
+- **Category:** Execution & Recovery
+- **Description:** `dismiss_patterns.js` (Tier A, zero LLM tokens) is deliberately conservative — it only clicks accept/close affordances on a fixed list of known consent toolkits, scoped to dialog/modal chrome, reactive-only after an `INTERCEPTED` classification. That known-pattern list should stay, since it resolves the common cookie-banner case for free. The gap is what happens when a popup **doesn't** match the known list: today it just fails through to Tier B (or exhausts recovery) with no attempt at an unknown-but-dismissable overlay. Give Tier B armed-agent recovery an explicit "unexpected overlay" reasoning path — compare the live page against the expected/recorded state, recognize something unrecorded is covering the target ("the page should look like X, there's a Y sitting on top of it"), dismiss it (Escape / close / cancel — never a decline or destructive-adjacent affordance), and retry the original step — instead of failing outright. This is scoped to **runtime replay only** (`runtime/app/cascade.js` Tier A→B escalation); it does not touch record-time `optional_hint`/`try_dismiss` (§3.4d, Backend-Schema.md), which is a separate human-confirmed, compile-time mechanism for interstitials seen *during recording*.
+- **Why required:** unknown popups (A/B test modals, promo interstitials, browser permission prompts, one-off toolkit variants not in the known list) currently either go unhandled or would require someone to keep hand-expanding `KNOWN_DISMISS_SELECTORS` forever. Reasoning about expected-vs-actual page state generalizes past any fixed selector list.
+- **Business value:** fewer runs that fail purely because of an unrecorded, incidental popup — directly improves the "self-healing" reliability story for real-world sites, which are full of ad-hoc modals the compiler never saw.
+- **Technical value:** extends the existing Tier B armed-agent describe-then-match pattern (already used for element recovery) to overlay dismissal, rather than inventing a new mechanism; keeps Tier A's zero-token fast path intact for the majority case.
+- **Careful:** must stay behind the same PROD-3 destructive-halt discipline as everything else — an unexpected dialog that looks like a genuine confirm/commit step (not an incidental overlay) must not be auto-dismissed. Only cancel/close/escape-style dismissal, never accept/confirm on an unrecognized dialog.
+- **Dependencies:** none functionally, but should reuse `cascade.js`'s existing Tier A→B escalation plumbing and `failure_response.js::stepRecoveryContext` payload shape rather than adding a parallel path.
+- **Suggested order:** P2 — after EXEC-28/EXEC-29 land, since it's the same recovery-cascade area.
+- **Complexity:** M.
+- **Success criteria:** a popup not in `KNOWN_DISMISS_SELECTORS` (e.g. a promo modal on a test fixture) gets dismissed via Tier B reasoning and the original step succeeds on retry, with a distinct log/telemetry marker (not conflated with element-recovery Tier B calls); a genuine unrecorded confirm-style dialog is left alone / halts rather than being auto-accepted.
+
+### EXEC-31 — WF-7's Tier 2 fixture variant no longer exercises the a11y recovery cascade
+- **Category:** Execution & Recovery
+- **Description:** Found running `docs/testing/04-COVERAGE-BUMP-RUNBOOK.md`'s R1 row (`?v=t2`) against skill `wf-7-dfe37300`, 2026-09-03. `resolver.js` walks every compiled `identity_bundle.signals` entry durability-ranked *before* `cascade.js`'s Tier 2 ever engages — the cascade only fires on a full resolver miss. The fixture's `t2` variant (`docs/testing/fixtures/recovery-fixture.html`) strips `data-testid`/`aria-label`/text but leaves `id="checkout-btn"` intact, and that id is already compiled in as identity signal #5 (`css-id`, durability 0.4275) in `execution.json`'s `identity_bundle.signals` — so the step resolves at Tier 0/primary and never reaches `cascade.js` at all. `recovery.log` showed zero recovery events for that row.
+- **Why required:** WF-7's stated purpose is proving "the deterministic zero-token recovery tier (Tier A) actually heals real drift" — but under the current architecture, any drift that preserves even one compiled orthogonal signal is absorbed by primary resolution, not recovery. There is currently no fixture variant that exercises Tier 2 a11y recovery specifically: the only full-miss variants (`t3`/`gone`) skip straight past Tier 2 to the agent tier.
+- **Business value:** same as the general "self-healing recovery" claim — if the Tier 2 a11y-only path has no fixture exercising it, a real regression there has no way to be caught before it reaches a customer.
+- **Technical value:** closes a real gap between what the runbook claims to test and what it actually exercises.
+- **Careful:** don't "fix" this by weakening the compiler's structural signal — the `css-id` survival is intentional resilience, working as designed. The fix is a *new* fixture variant that fails everything the compiler bakes in as a primary signal (including structural/css-id) while still leaving an a11y-derivable identity behind — not just relabeling the existing `t2` row.
+- **Dependencies:** `docs/testing/fixtures/recovery-fixture.html`, `docs/testing/04-COVERAGE-BUMP-RUNBOOK.md`.
+- **Suggested order:** whenever recovery-cascade coverage work is revisited; not blocking anything else.
+- **Complexity:** S — one new fixture variant plus a runbook row update, once the right "Tier-2-only" drift shape is designed.
+- **Success criteria:** a fixture variant produces a genuine `tier2_*` entry in `recovery.log` with zero agent tokens, distinct from a primary-resolution success.
+- **Found via:** manual R0–R5 pass of `04-COVERAGE-BUMP-RUNBOOK.md`'s WF-7 recovery drill, 2026-09-03.
+
+### EXEC-33 — `tracking.py`'s recovery-type dashboard mapping doesn't classify EXEC-30's overlay-dismissal events
+- **Category:** Execution & Recovery
+- **Description:** EXEC-30 added two new runtime telemetry codes, `overlay_dismissed` and `overlay_dismiss_rejected` (`docs/Backend-Schema.md` §4.1). `conxa-cloud/backend/app/services/tracking.py`'s `_event_recovery_type`/`_event_recovery_tier` (and the four-entry `_RECOVERY_TIERS` table it's built from) only recognize the pre-existing Selector/Text Anchor/Text Variant/Vision method codes — an overlay dismissal ingests and stores fine, but falls through `_event_recovery_type` returning `""` and never counts toward a step's `tier_counts` in the per-step recovery dashboard, so the dashboard undercounts recovery activity on any run that dismissed an overlay.
+- **Why required:** deliberately deferred at EXEC-30 ship time rather than adding a fifth recovery *type* under time pressure — an overlay dismissal genuinely isn't an element-recovery *method* (it doesn't change which element the step targets), so it may deserve its own dashboard column rather than folding into the Selector/Text Anchor/Text Variant/Vision taxonomy. Needs a product call, not just a code change.
+- **Dependencies:** `docs/TRD.md` §10.1 (EXEC-30 mechanism), `conxa-cloud/backend/app/services/tracking.py`.
+- **Suggested order:** low priority — cosmetic dashboard gap, not a correctness issue (the runtime-side gating and learned-store behavior are unaffected).
+- **Complexity:** S once the taxonomy question is settled.
+- **Success criteria:** a run containing an `overlay_dismissed` event shows up in the per-step recovery dashboard, however it's ultimately classified.
+
+### ~~EXEC-32~~ — `resume_from` without a matching `step_overrides` entry silently replays from a blank page — **Resolved 2026-09-03**
+- **Category:** Execution & Recovery
+- **Resolution:** `server.js` now refuses cleanly instead of falling through: when `resume_from` names a step index with a pending recovery park but the call supplies no `step_overrides` entry for it, the run is refused with `Step N has a pending recovery request awaiting your pick...` (event `recovery_resume_missing_override`), and — unlike the old silent path — the park is **kept alive** rather than discarded, so a follow-up call with the correct override still works. Scoped tightly via `_existingPark`: a `resume_from` with no override and *no* pending park (e.g. resuming after an auth pause on the same still-open page) is untouched and keeps working exactly as before. Verified live against the real dev runtime: two repeated forgetful resumes both got the clear message (park survived both), and the legitimate override-resume path (R3 of `04-COVERAGE-BUMP-RUNBOOK.md`) still completes normally — no regression.
+- **Description:** Found running WF-7's R5 row (repeated `?v=gone` recovery to trip the stagnation guard). Calling `execute_skill` with `resume_from: N` but no `step_overrides["N"]` does not resume the parked failed page — `server.js`'s resume/park branch requires `primary.steps[resumeFrom]._agent_override` to be set. Without it, the call silently starts a fresh run beginning at step N, skipping every earlier step including `navigate`, so the resumed step executes against `about:blank`. The tool response then reports a misleading `"Element not found (resolve miss)"` with a screenshot of a blank tab presented the same way as a real ground-truth failure, with nothing indicating the page was never navigated.
+- **Why required:** an agent (or any MCP caller) that sends `resume_from` without an override — a plausible mistake, since the two are logically separable inputs — gets a confusing, wrong diagnosis instead of a clear error naming the actual problem.
+- **Business value:** a misleading failure message burns an agent's reasoning budget chasing the wrong cause (looks like the target vanished, not like the caller misused the API).
+- **Technical value:** cheap, well-scoped fix — validate at the entry point instead of failing downstream with a confusing symptom.
+- **Careful:** fix at the API boundary (`server.js`, near the `resume_from` handling) rather than changing resume semantics broadly — a bare `resume_from` with no override might legitimately mean "just retry from here" to some caller, so decide between erroring clearly and implementing that literally (re-run the original selector after a fresh navigate). Either beats the current silent blank-page fallthrough.
+- **Dependencies:** none. Reproduces deterministically: `execute_skill` with `resume_from` set, `step_overrides` omitted, on any previously-failed step.
+- **Suggested order:** low priority, defensive/DX fix.
+- **Complexity:** S.
+- **Success criteria:** `resume_from` without a `step_overrides` entry for that step either (a) errors with a message naming the missing override, or (b) is documented and implemented as "retry step N after a fresh navigate" — never a silent blank-page attempt reported as a ground-truth element-not-found.
+- **Found via:** manual R0–R5 pass of `04-COVERAGE-BUMP-RUNBOOK.md`'s WF-7 recovery drill, 2026-09-03.
 
 ### BUILD-22 — Templatizer rewrote a step's selector with an unrelated input placeholder
 - **Category:** Builder
@@ -716,15 +789,16 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 
 ### PROD-19 — Conxa as a standalone execution platform: own agent harness (OpenCode) + hosted model (Kimi K3) + in-app credits
 - **Category:** Product Strategy
+- **See also:** [`docs/Execution-Platform-Session.md`](docs/Execution-Platform-Session.md); **v0.1 (2026-09-04):** `conxa-execute/` is form + a **vendored OpenCode loop** (pinned commit in `conxa-execute/NOTICE`), not a binary-only pin of their desktop. Hosted Kimi, credits, review cards still open.
 - **Description:** Today a customer cannot execute a skill without also owning an MCP client — in practice a paid Claude or Codex subscription. That makes a third-party subscription a hard prerequisite for our product, caps the addressable market at people who already pay someone else, and hands the most valuable part of the loop to a competitor. Direction agreed 2026-09-01: build Conxa into a self-contained execution platform. Four parts: (1) an agent harness of our own, using the open-source **OpenCode** rather than writing a loop from scratch; (2) a **hosted model tier** served through the existing cloud LLM proxy, starting with **Kimi K3** and later fine-tuned on our own recovery data; (3) **bring-your-own-API-key**, so customers who already pay Anthropic/OpenAI/anyone can point the harness at their own key and spend nothing with us on tokens; (4) **in-app credit purchase with QR-code payment**, so a customer can top up from inside the app without leaving for a billing portal.
 - **Why required:** removes the single largest adoption blocker (needing someone else's paid product first), and moves us from "a skill format that runs inside Claude Desktop" to "a platform that executes."
 - **Business value:** opens the entire market of companies with no AI subscription; makes execution itself billable instead of free-riding on the customer's Claude plan; BYO-key keeps the price-sensitive and the enterprise-procurement segments on the same product; QR top-up removes the checkout drop-off that a redirect to a billing page always costs.
 - **Technical value:** most of the plumbing exists. `conxa-cloud/backend/app/llm/router.py` is already an OpenAI-compatible multi-provider pool with per-provider `text_model`/`vision_model` read from env, so adding Kimi is configuration, not code; `services/llm_metering.py` already meters; Cashfree is already wired for payment. What is genuinely new is the harness, the credit ledger, and the model-choice plumbing.
 - **The constraint that decides the design:** the runtime **has no LLM client of its own** and never calls a model directly. Tier B recovery is performed by *the calling agent's model*, which reasons about the failure and hands back `_agent_override` for the runtime to apply (`runtime/app/server.js:963`, `sc: "agent_override"`). So whichever model sits behind our harness is not a chat convenience — it becomes the self-healing brain that today is Claude Opus running free on the customer's own subscription. A weaker model there makes skills measurably less durable, which is the entire product promise. Model choice is a reliability decision, not a cost decision.
 - **What's left:**
-  1. **Direct-run front door (do first, needs no model).** Skills already declare their inputs (`get_skill_inputs`). A localhost page served by the runtime — pick skill, fill declared inputs, run — removes the MCP-client dependency on its own, in about a week, with zero token cost. It is also the fallback when a customer's credits run out mid-month.
+  1. ~~**Direct-run front door (do first, needs no model).**~~ **Started 2026-09-04** in Conxa Execute (pick skill, fill declared inputs, run over MCP). Still needs an installer and polish; not a localhost page on the runtime.
   2. **Recovery-data capture (do second, cheap, compounds).** The supervised pair we would need to fine-tune on — broken page state → the correction that worked → whether the retry passed — exists in memory today and is discarded. `runtime/app/server.js:963` emits only `si`/`l`/`sc` short codes; the winning `_agent_override` never leaves the machine, and `capturePageFingerprint`'s parked DOM state is dropped after use. Emitting the full pair is a few lines in a path that already runs, and every month it is not on is a month of training data lost. **Requires explicit opt-in and a retention policy first** — this payload is customer DOM and selectors, materially more sensitive than the current short codes. That is the same consent the hosted model will need anyway.
-  3. **Harness on OpenCode.** Evaluate OpenCode as the loop rather than hand-rolling one. Keep the loop **in the runtime, local** — the "cloud does not execute" invariant stays intact and the cloud serves tokens only. Scope the system prompt to the skill list plus declared inputs and refuse everything else; the moment the front door answers a question that is not "which skill, what inputs," we are maintaining a general assistant on someone else's weights.
+  3. ~~**Harness on OpenCode.**~~ **Started 2026-09-04** — sliced `packages/llm` + stdio MCP client vendored under `conxa-execute/vendor/opencode/` (MIT, pinned commit). Chat is locked to `list_skills` / `get_skill_inputs` / `execute_skill`. Not their TUI/desktop; upgrades are a re-copy from a new pin.
   4. **Hosted model tier.** Add Kimi K3 as a router entry. Two things to verify on the model card before committing: **vision support** (`router.py:260-261` skips providers with no `vision_model`, and recovery's relational-anchor and drawn-region-retarget paths need it — if K3 is text-only, keep a vision provider enabled alongside or those tasks fall through to nothing), and **multi-turn tool-calling reliability**, since the loop calls `execute_skill`/`get_skill_inputs` repeatedly and feeds failures back in.
   5. **Auth.** The runtime already holds a per-workspace bearer token; either extend `/api/v1/llm/proxy` to accept it or bake an LLM token into `pack.json` beside the sync token.
   6. **BYO key.** Per-workspace stored credential, used instead of our pool; metering records usage but bills nothing. Decide storage (keyring vs. cloud) and whether BYO-key runs still report recovery telemetry.
