@@ -19,6 +19,7 @@ import {
   PackageCheck,
   PencilLine,
   PlayCircle,
+  RefreshCw,
   Settings,
   UploadCloud,
 } from 'lucide-react'
@@ -217,6 +218,35 @@ function DesktopSidebar({ collapsed, setCollapsed }: { collapsed: boolean; setCo
   )
 }
 
+/** Refetches every active query on the page — placed just left of the user
+ * widget so it reads as "refresh this screen's data" everywhere at once,
+ * without each page wiring its own button. */
+function HeaderRefreshButton() {
+  const qc = useQueryClient()
+  const [spinning, setSpinning] = useState(false)
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      className="shrink-0 text-zinc-400 hover:bg-white/5 hover:text-white"
+      title="Refresh"
+      aria-label="Refresh"
+      onClick={async () => {
+        setSpinning(true)
+        try {
+          await qc.refetchQueries({ type: 'active' })
+        } finally {
+          setSpinning(false)
+        }
+      }}
+    >
+      <RefreshCw className={cn('size-4', spinning && 'animate-spin')} />
+    </Button>
+  )
+}
+
 function UserWidget() {
   const { identity, setIdentity } = useAuth()
   if (!identity) return null
@@ -293,6 +323,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
                 <div className={cn('relative flex items-center gap-3 px-4 sm:px-6', HEADER_ROW_HEIGHT)}>
                   <HeaderBackButton />
                   <HeaderPageTitle />
+                  <HeaderRefreshButton />
                   <UserWidget />
                   <HeaderExtra />
                 </div>
