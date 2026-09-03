@@ -1,4 +1,4 @@
-# ⏳ Workflows To Test — sorted easy → hard
+# ⏳ Workflows To Test
 
 > **Shortcut:** almost everything here (WF-1…WF-10) is consolidated into ONE mega-recording
 > with click-by-click manual steps in
@@ -12,8 +12,7 @@ file's dashboard.
 
 Consolidation rule used for this file: **fewer but longer workflows**. Related small tests are
 merged into one long recording wherever they share sites or mechanics, so a single record →
-compile → replay session covers many checks at once. Difficulty increases down the list — run
-top to bottom.
+compile → replay session covers many checks at once.
 
 ---
 
@@ -69,110 +68,73 @@ never `file://`.
 
 ---
 
-# LEVEL 1 — EASY
-
 ## WF-1 — Starter marathon: navigation, login, forms, tabs, single-file transfer, alerts
 
-**Sites:** S11 + S1 + S3 · **Steps:** ~30 total (recorded as 2–3 takes) · **Tabs:** up to 3
+**Sites:** S11 (en.wikipedia.org) + S1 (the-internet.herokuapp.com) + S3 (demoqa.com) ·
+**Tabs:** up to 3
 
-One combined session covering every basic mechanic. Record each leg separately if cleaner;
-compile all.
+Legs A (Wikipedia control baseline), B (S1 login + credential grep), C (S3 form fill), D (S1
+new-tab/popup round trip), and E (download → new-tab upload handoff) all **passed** via the
+`03-ONE-WORKFLOW-RUNBOOK.md` follow-up run, 2026-09-03 — see the "Follow-up run" entry in
+[`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md). Credential grep came back clean.
 
-### Leg A — Trivial click-through (control baseline)
-Target `https://en.wikipedia.org/wiki/Main_Page`: click "Random article" → click first link in
-article body → stop. Compile → confirm selectors contain **no raw dynamic IDs** → Run Test →
-package → install → `execute_skill` via MCP. Telemetry event visible in cloud = PASS.
-
-### Leg B — Simple login ⭐ security check
-On S1 `/login`: type `tomsmith` / `SuperSecretPassword!` → Login → wait for "You logged into a
-secure area!" flash. Compile and package, then **grep the generated bundle folder for
-`SuperSecretPassword`** — found = CRITICAL STOP (auth-exclusion invariant broken).
-
-### Leg C — Form fill with varied field types
-S3 `/text-box`: fill name/email/address → Submit → verify echo block. Then S3
-`/automation-practice-form`: pick Gender radio, Hobbies checkbox, note Subject combobox behavior,
-Submit.
-
-### Leg D — New tab / popup round trip (also confirms old break test B-1)
-On S1 `/windows`: click "Click Here" (opens tab showing only "New Window") → in tab B assert
-heading reads "New Window" (impossible on tab A) → switch back to tab A → click "Elemental
-Selenium". **Dangerous variant:** re-record so tab B contains an element that *also exists* on
-tab A — it must act on the *new* tab's copy, never silently on the original (`tabs.js::resolveStepPage`).
-
-### Leg E — Single download → new-tab upload handoff
-S1 `/download` → download any file → new tab → `demoqa.com/upload-download` → Select File →
-verify filename echoed. Replay **without** supplying any `file_path` input — must succeed via the
-compiled `{{downloaded_file}}` binding (exact recorded filename match required).
-
-### Leg F — Native JS dialogs
+### Leg F — Native JS dialogs ⚠️ still unproven
 S1 `/javascript_alerts`: Alert → accept; Confirm → accept; Prompt → type text → accept. Verify
-result assertions ("You clicked: Ok", typed text echoed).
+result assertions ("You clicked: Ok", typed text echoed). This leg did **not** replay reliably in
+the 2026-09-03 follow-up run despite the recorder and runtime both having real support for native
+dialogs — see `TODO.md` **EXEC-29**. Needs a clean isolated repro with `events.jsonl`/
+`recovery.log` evidence before it can graduate.
 
-**PASS:** all legs end-to-end clean, credential grep CLEAN, zero LLM calls at runtime.
-**Where failures go:** `TODO.md` EXEC-5 (#43 tab landing, #31/#32 download/upload verification);
-credential leak = hard blocker, fix first.
+**Where failures go:** `TODO.md` EXEC-29 (dialog replay); EXEC-5 (#43 tab landing, #31/#32
+download/upload verification, both already proven — reopen only on regression).
 
 ---
 
 ## WF-2 — Rich-element gauntlet: iframes, dynamic identity, widgets, scroll, hover, drag
 
-**Sites:** S1 + S4 + S3 + S2 · **Steps:** ~45–55 across segments · **Tabs:** 1
+**Sites:** S1 (the-internet.herokuapp.com) + S4 (jqueryui.com) + S3 (demoqa.com) +
+S2 (ui-test-automation-playground.blogspot.com) · **Tabs:** 1
 
-### Segment A — Dynamic IDs (C.1)
-S2 dynamic-id page: click "Button with Dynamic ID". Selector must NOT contain the captured ID
-(stable_hash stripped). Execute twice — second run faces a fresh ID.
+Segments A (dynamic IDs, C.1), C (late-rendered elements, C.5), D (iframe chain preservation,
+E.1), and G (infinite scroll, E.7) all **passed** via the `03-ONE-WORKFLOW-RUNBOOK.md` follow-up
+run, 2026-09-03 — see [`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md). Segment B (both halves —
+changing-text C.3 via the runbook, and moved-element C.4 via a standalone fixture run) **passed**
+2026-09-03 — see **P-4** in [`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md). Everything below is
+still open.
 
-### Segment B — Changing text + moved elements (C.3/C.4)
-S2 Text Input page: type "Conxa", click the button whose label changes. Expect Tier A heal at
-zero tokens — log which tier. Moved-element check: local HTML with a button top-left; compile,
-then move it inside a collapsed sidebar and re-run — role/text signals must carry it.
+### Segment E (remainder) — Nested iframes bonus: datepicker (E.2) ⚠️ untested
+The runbook's Segment D proves the LEFT/BOTTOM nested-frame chain itself (offset accumulation).
+Not covered: S4 datepicker, one iframe deep — navigate next month ×2, pick day 15; re-run with a
+different target month to see if it generalizes.
 
-### Segment C — Late-rendered elements (C.5)
-S1 `/dynamic_loading/1` (hidden div appears after 2s) then `/dynamic_loading/2`: Start → wait →
-click/assert "Hello World!". Watch whether waiting polls adaptively or replays a fixed delay.
-
-### Segment D — Iframe chain preservation (E.1)
-S1 `/iframe` (TinyMCE): click bold toolbar → into editor iframe → type "Hello from Conxa" →
-select-all → Bold. Review compile: `frame_enter`/`frame_exit` markers present and verbatim?
-Markers get `no_recovery_block` and fail fast instead of hanging. Verify text formatted at replay.
-
-### Segment E — Nested iframes + offset accumulation (E.2)
-S1 `/nested_frames`: act inside LEFT frame → BOTTOM frame (different parent chains). Clicks must
-land pixel-correct (offsets accumulate up the chain). Bonus: S4 datepicker — widget lives one
-iframe deep; navigate next month ×2, pick day 15; re-run with different target month to see if it
-generalizes.
-
-### Segment F — Autocomplete/typeahead race (E.6)
+### Segment F — Autocomplete/typeahead race (E.6) ⚠️ untested
 S4 `/autocomplete/` type "ja" → pick "JavaScript"; plus S3 `/select-menu` custom Select2-style
 dropdowns. Execute twice — watch typing vs async option render race.
 
-### Segment G — Infinite scroll (E.7)
-S1 `/infinite_scroll`: scroll until 4 blocks loaded → click last paragraph. Are wheel gestures
-recorded? Is the lazy element resolvable?
+### Segment H — Hover menus (E.8) ⚠️ failed 2026-09-03
+S1 `/hovers`: hover avatar 2 → "View profile". Did **not** replay reliably in the runbook follow-up
+run despite real recorder/runtime support for hover reveals — see `TODO.md` **EXEC-29**. Needs an
+isolated repro with `events.jsonl`/`recovery.log` evidence.
 
-### Segment H — Hover menus (E.8)
-S1 `/hovers`: hover avatar 2 → "View profile".
+### Segment I — Drag and drop (E.9) — confirmed hard limitation
+S1 `/drag_and_drop`: box A onto box B; S3 `/sortable`: item 5 to position 1. Reconfirmed as a hard
+limitation in the 2026-09-03 follow-up run (skipped with a warning at build time, unchanged since
+`FIX.md` 2026-08-26) — not a new gap, no further action needed here.
 
-### Segment I — Drag and drop (E.9)
-S1 `/drag_and_drop`: box A onto box B; S3 `/sortable`: item 5 to position 1. Expected likely gap —
-quantify precisely.
-
-### Segment J — Shadow DOM (C.6)
+### Segment J — Shadow DOM (C.6) ⚠️ untested
 S1 `/shadow_content`: interact inside shadow root. Note separately what happens at RECORD vs
 EXECUTE time; document exactly where the chain breaks if it does.
 
-**PASS:** per-segment as noted; iframe chain invariant holds; zero runtime LLM calls except where
-Tier escalation is deliberately provoked (none in this WF).
-**Where failures go:** EXEC-5 (#43), iframe pipeline issues → TRD "Iframe Pipeline" owners;
-selector durability → compiler items in `TODO.md`.
+**Where failures go:** EXEC-29 (hover replay); EXEC-5 (#43, already proven — reopen only on
+regression); iframe pipeline issues → TRD "Iframe Pipeline" owners; selector durability → compiler
+items in `TODO.md`.
 
 ---
 
-# LEVEL 2 — MEDIUM
-
 ## WF-3 — Scale stress: 50-step warm-up → 100+ step flagship → banking marathon
 
-**Sites:** S7 + S5 + S6 · **Tabs:** 1 · The headline showcase.
+**Sites:** S7 (computer-database.gatling.io) + S5 (saucedemo.com) + S6 (parabank.parasoft.com) ·
+**Tabs:** 1 · The headline showcase.
 
 ### Leg A — 50-step warm-up
 S7: ONE take ~50 actions — search "Apple" → open result → back → filter "IBM" → open → back →
@@ -206,7 +168,8 @@ compiled skill replays forever after one compile.
 
 ## WF-4 — Real-app journeys: SPA CRUD, money checkout, multi-site relay, i18n, reviews
 
-**Sites:** S8 + S5 + S14 + S11 + S9
+**Sites:** S8 (opensource-demo.orangehrmlive.com) + S5 (saucedemo.com) +
+S14 (automationexercise.com) + S11 (en.wikipedia.org) + S9 (demo.owasp-juice.shop)
 
 ### Leg A — Heavy SPA CRUD
 S8 OrangeHRM: Dashboard → Admin → User Management → Add user (fill form, save) → search new user →
@@ -239,7 +202,8 @@ loudly (never wrong-click).
 
 ## WF-5 — Files at scale: bulk 20-file transfer + cross-run consistency
 
-**Sites:** S15/S16/S1/S3 · **Steps:** ~25 per run × multiple runs · **Tabs:** 2
+**Sites:** S15 (filebin.net) / S16 (github.com public repo folder) / S1 (the-internet.herokuapp.com)
+/ S3 (demoqa.com) · **Steps:** ~25 per run × multiple runs · **Tabs:** 2
 
 Two mechanics — decide which you're testing before recording:
 
@@ -291,11 +255,10 @@ retention → W-7 follow-ups.
 
 ---
 
-# LEVEL 3 — HARD
-
 ## WF-6 — Conditional branch steps in one workflow (EXEC-1)
 
-**Site:** S1 only (`/entry_ad` + `/login`) · **Steps:** ~15–20 · **Tabs:** 1
+**Site:** S1 (the-internet.herokuapp.com) only (`/entry_ad` + `/login`) · **Steps:** ~15–20 ·
+**Tabs:** 1
 
 Tests steps that must **succeed whether or not something appears** — popups, expired-session
 dialogs, A/B outcomes. All three primitives (`try_dismiss`, `if_present`, `wait_for_one_of`) in
@@ -363,6 +326,10 @@ AV-5 tier surprises → recovery cascade regression.
 
 ## WF-7 — Recovery-cascade drill: force Tier A and Tier B on purpose (+ live self-heal suite)
 
+**Passed in full 2026-09-03** — fixture replay matrix (R0–R5) and the live-site self-heal suite
+(D.1–D.7) both moved to `02-WORKFLOWS-PASSED.md` **P-3**. D.6 needed a substitute mechanism
+(the spec's sort-control shuffle no longer exists on the named live site) — see P-3 for detail.
+
 **Sites:** local [`fixtures/recovery-fixture.html`](fixtures/recovery-fixture.html) + live-site legs ·
 **Steps:** ~6 per replay × 6 + live legs
 
@@ -428,6 +395,9 @@ nominates, runtime verifies"); failure is bounded and gets cheaper.
 
 ## WF-8 — Remaining break tests: budget poisoning, timeouts, endurance, wrong-row safety
 
+**Sites:** S3 (demoqa.com, B-4) + WF-1/WF-3's known-good skill (B-6/B-7) +
+S14 (automationexercise.com, B-8)
+
 (B-1, B-2, B-3, B-5 are folded into WF-1/WF-5 as post-fix confirmations.)
 
 ### B-4 — Poison the retry budget (failure makes the next run worse)
@@ -463,6 +433,11 @@ guidance); B-7 → new TODO per symptom; B-8 → PROD-3 directly.
 ---
 
 ## WF-9 — EXEC-11 mega-workflow: one recording, one replay gauntlet (R1–R8)
+
+**Sites:** local [`fixtures/mutator.html`](fixtures/mutator.html) + S1 (the-internet.herokuapp.com)
++ S4 (jqueryui.com, datepicker) + S5 (saucedemo.com) + S9 (demo.owasp-juice.shop) +
+S7 (computer-database.gatling.io) · R6/R7 also touch S11 (en.wikipedia.org) + S12 (excalidraw.com)
++ S13 (google.com/recaptcha/api2/demo) · **Tabs:** 4
 
 ~60 steps, 6 domains, 4 tabs in ONE take, then eight replays of the SAME skill turning it into
 every hard-mode test. Log under `TODO.md` TEST-12 (governance gaps → PROD-18).
@@ -541,6 +516,9 @@ consecutive passes.
 
 ## WF-10 — Environment chaos + input-data edge cases
 
+**Sites:** S5 (saucedemo.com, WF-4 Leg B checkout, suggested known-good skill) + any packaged
+skill for Suite H
+
 Run chaos against a known-good skill (WF-4 Leg B checkout works well).
 
 ### Chaos matrix (Suite G)
@@ -576,6 +554,8 @@ Also verify `get_skill_inputs` declares fields properly so a customer's agent kn
 ---
 
 ## WF-11 — Cloud & entitlement gates (plan-tier limits)
+
+**Sites:** none — cloud API only, no browser workflow
 
 Backend locally: `cd conxa-cloud/backend && uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`.
 Grab a Clerk JWT from frontend dev-server network tab; admin token from `CONXA_ADMIN_TOKEN`.
@@ -623,6 +603,10 @@ telemetry under fire — 20 rapid executions → `/tracking/{co}/events` batches
 ---
 
 ## WF-12 — Production-readiness go / no-go checklist
+
+**Sites:** any practice site for Phase 4's record step (S1 the-internet.herokuapp.com / S3
+demoqa.com convenient) + Conxa's own cloud dashboard/Studio/installer surfaces for every other
+phase
 
 Full-system pass before calling Conxa production-ready. Clean Windows VM simulates the customer.
 Accounts needed: company owner, team member, fresh customer. Tick in order; on failure stop, note
