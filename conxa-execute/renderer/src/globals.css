@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --bg: #141413;
+  --bg-sidebar: #1c1c1a;
+  --bg-elevated: #2a2a28;
+  --bg-hover: #252523;
+  --bg-active: #30302e;
+  --fg: #f5f4f0;
+  --fg-muted: #b4b2a9;
+  --fg-dim: #8a8880;
+  --line: rgba(255, 255, 255, 0.08);
+  --brand: #d97757;
+  --brand-hover: #e08565;
+  --ok: #7dcea0;
+  --err: #e07a7a;
+  --warn: #d4a054;
+  --radius: 12px;
+  --font-ui: Inter, system-ui, sans-serif;
+  --font-display: "Source Serif 4", Georgia, serif;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-sidebar: var(--bg-sidebar);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-active: var(--bg-active);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-dim: var(--fg-dim);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-ok: var(--ok);
+  --color-err: var(--err);
+  --font-sans: var(--font-ui);
+  --font-serif: var(--font-display);
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, textarea { font-family: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+*:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand) 70%, white);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

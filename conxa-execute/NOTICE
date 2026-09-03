@@ -1,0 +1,9 @@
+OpenCode (anomalyco/opencode)
+Commit: a935432b5ce337523dfc5014629a09bc16784c42
+License: MIT (see vendor/opencode/LICENSE)
+
+This product includes a sliced copy of OpenCode’s agent loop and OpenAI-compatible
+provider (packages/llm), plus a stdio MCP client derived from their MCP module.
+TUI, desktop, IDE, and default shell/file tools are not included.
+
+Copyright (c) 2025 opencode

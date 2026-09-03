@@ -104,6 +104,8 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
       skill_package_builder.py, installer_builder.py, conxa_runtime.py
   pyinstaller.spec          Bundles conxa_core + conxa_compile into dist/backend/
 
+conxa-execute/              v0.1 Conxa Execute (PROD-19) — form + BYO chat; MCP client to installed runtime
+
 conxa-cloud/                Thin cloud SaaS — proxy / auth / billing / dashboard / hosting
   backend/                  FastAPI (depends on conxa-core; NO recorder/compiler/Playwright)
     app/
