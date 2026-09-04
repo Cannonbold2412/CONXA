@@ -17,6 +17,24 @@ When a workflow in `01-WORKFLOWS-TO-TEST.md` passes manually:
 
 > Hand-maintained estimate of how many real-world internet workflows Conxa can currently
 > record → compile → replay reliably, based only on passes in this file.
+> **2026-09-04 (no re-rate):** WF-2 Segment J — a real shadow-DOM web component (Shoelace's
+> `<sl-button>`) now compiles to a durable, unique role-based selector instead of an ambiguous
+> generic CSS class (see **P-8**; root cause and fix in `FIX.md` 2026-09-04). First proof on a
+> modern shadow-DOM component library, but a single site/library, not broad site-class coverage —
+> doesn't move the ceiling on its own.
+> **2026-09-04 (no re-rate):** WF-2 Segment F — a jQuery UI autocomplete suggestion pick now
+> compiles to the actual clicked option instead of a selector contaminated with an unrelated
+> input's placeholder (see **P-7**; the same bug had already corrupted a Login button's selector
+> on an earlier recording, `TODO.md` **BUILD-22**, now resolved with the correct root cause). A
+> selector-integrity fix, not new site-class coverage, so this doesn't move the ceiling on its own.
+> **2026-09-04 (no re-rate):** WF-2 Segment E (remainder) — a nested-iframe calendar widget's date
+> pick now compiles into a real, reusable input instead of a frozen literal click (see **P-6**;
+> root cause and fix in `FIX.md` 2026-09-04). Closes the last open piece of Segment E. A single
+> supporting pass, not a re-rate on its own.
+> **2026-09-04 (no re-rate):** WF-1 Leg F (native JS dialog replay — alert/confirm/prompt, typed
+> answer echoed) passed clean after the `TODO.md` EXEC-29 fix (see **P-5**). Closes half of the
+> "soft gap" called out below; hover-reveal (`/hovers`, EXEC-29a) is still open. A single-leg
+> precursor pass, not a re-rate on its own.
 > **Bumped 22%→23% (2026-09-03, same day):** WF-7's live-site self-heal suite (D.1–D.7) also
 > passed in full, closing out the LAST unproven piece named in the prior bump note. D.6 is the
 > first proof this session that relational/structural identity resolution — and resolver.js's
@@ -70,7 +88,8 @@ reliability, not missing architecture.
 | Bulk ZIP download observed mid-run | ✅ download side only | Mega-workflow 2026-08-25 |
 | Entity-specific cart action (right row removed, not first row — H-5/PROD-3 sales-blocker) | ✅ proven | Runbook follow-up 2026-09-03 |
 | Slow-network headroom + honest mid-run session-death failure (no hang, no zombie process) | ✅ proven | Runbook follow-up 2026-09-03 (R3/R4) |
-| Hover-reveal + native-dialog replay (`/hovers`, `/javascript_alerts`) | ❌ not reliable yet — soft gap, not a hard wall | Runbook follow-up 2026-09-03; `TODO.md` EXEC-29 |
+| Native JS dialog replay (alert/confirm/prompt, typed answer echoed) | ✅ proven | P-5, 2026-09-04 (`TODO.md` EXEC-29) |
+| Hover-reveal replay (`/hovers`) | 🧪 beta — needs human review, not a hard wall | Runbook follow-up 2026-09-03; `TODO.md` EXEC-29a |
 | Agent-mediated (Tier B) recovery: ranked candidate digest → verified override → resume, no wrong-decoy click | ✅ proven | WF-7 drill R3, 2026-09-03 |
 | Studio deterministic ceiling: zero-token negative control (no agent tokens spent even when recovery is theoretically possible) | ✅ proven | WF-7 drill R2, 2026-09-03 |
 | Honest decline when no plausible match exists (no wrong-guess click) | ✅ proven | WF-7 drill R4, 2026-09-03 |
@@ -79,6 +98,8 @@ reliability, not missing architecture.
 | Never assumes stale/leftover page state is current — always verifies or self-navigates | ✅ proven | WF-7 Suite D.4, 2026-09-03 |
 | Relational/anchor-based identity resolves correctly on a real live site under real position drift, including resolver.js's ambiguous-candidates fall-through with no per-item testid | ✅ proven | WF-7 Suite D.6, 2026-09-03 |
 | 30+ step single-domain chain · dynamic/self-heal elements · 20-file bulk identity · branch steps live replay | ⏳ pending | see `01-WORKFLOWS-TO-TEST.md` |
+| Nested-iframe calendar-widget date pick, parameterized as a real reusable input (not a frozen literal) | ✅ proven | P-6, 2026-09-04 |
+| jQuery UI-style autocomplete suggestion pick (menu container correctly resolved to the clicked item, selector never contaminated by an unrelated preceding input) | ✅ proven | P-7, 2026-09-04 |
 
 ---
 
@@ -257,6 +278,181 @@ runtime's slow-network and mid-run-death resilience (H-2/H-3 shapes) are solid. 
 sharper line around two remaining real gaps — hover and native-dialog replay — that looked closed
 on paper (recorder support landed 2026-08-26, runtime handlers already exist) but aren't proven
 end to end yet. Full detail: `TODO.md` **TEST-12**'s 2026-09-03 update.
+
+---
+
+## Passed Workflow P-5 — WF-1 Leg F: native JS dialog replay (alert/confirm/prompt)
+
+**Date passed:** 2026-09-04 10:17 local (Build Studio sandbox replay, run `r_mtmsuy52_ga9ei`,
+session `7fb53d62-bd70-44fc-a957-0267a600f526` in `~/.conxa-build-studio-dev`).
+
+**Shape:** S1 `/javascript_alerts` — click "Click for JS Alert" → accept; click "Click for JS
+Confirm" → accept; click "Click for JS Prompt" → type answer → accept. 7 compiled steps.
+
+**Result:** `steps_executed:7`, `execute_success`, zero recovery events in `recovery.log`, zero
+LLM calls. Clean end to end — the earlier hang (`r_mtm1ttc8_ilx68`, 2026-09-03) and the follow-up
+dropped-answer/timeout failure (`r_mtmsrh2t_iaqah`, 2026-09-04 10:14) do not reproduce.
+
+**Why this matters:** confirms the `TODO.md` **EXEC-29** fix — reordering recorded dialog events
+by timestamp, exempting dialog markers from duplicate-collapse, and pre-arming the dialog handler
+one step ahead to avoid the replay deadlock — actually closes the gap live, not just in the fix's
+own reasoning. Native JS dialogs graduate out of the "soft gap" bucket; hover-reveal (`/hovers`)
+remains open separately under `TODO.md` **EXEC-29a**.
+
+---
+
+## Passed Workflow P-6 — WF-2 Segment E (remainder): nested-iframe datepicker, parameterized (E.2)
+
+**Date passed:** 2026-09-04 (Build Studio, session `e12eb59d-7000-416a-ae1a-9c440a9a3282` in
+`~/.conxa-build-studio-dev`).
+
+**Shape:** S4 (jqueryui.com/datepicker) — one iframe deep: open the date field, navigate next
+month ×2, click day 15, compile, replay.
+
+**What was fixed en route:** the recording compiled and replayed the exact clicked date correctly
+from the start, but the date was baked in as a literal, not exposed as an input — jQuery UI's day
+cells carry no `data-date`/`aria-label`/`title` at all, only the bare day number as text, which
+`bridge.js`'s date-cell detector didn't recognize. Fixed by adding a text-based fallback (day
+number + the cell's ancestor `data-month`/`data-year`, or the grid's header text) with an
+overflow/disabled-cell exclusion so an adjacent month's greyed day is never mistaken for the
+picked one — see `FIX.md` 2026-09-04.
+
+### What was confirmed
+
+- The compiled skill's iframe click run collapsed into one `action: "date_pick"` step
+  (`handler_hints.control_kind: "date_picker"`, `input_binding: "due_date"`) instead of raw
+  literal clicks.
+- The skill's `inputs` array now declares a real `{"id": "due_date", "type": "date", "default":
+  "2026-07-15", ...}` — a caller can now pass a different date at execution time.
+- New regression coverage added: `conxa-cloud/tests/test_recorder_bridge_js.py`'s three
+  jQuery-UI-shaped fixtures (bare-text day cell via ancestor attrs, via header-text fallback, and
+  overflow-cell exclusion) — 56/56 passing across `test_recorder_bridge_js.py` +
+  `test_date_picker_collapse.py`.
+
+### Why this passes matters
+
+Closes the last open piece of WF-2 Segment E named in `01-WORKFLOWS-TO-TEST.md`, and generalizes
+past jQuery UI specifically: any calendar widget whose day cells carry no machine attribute and no
+aria-label (bare visible day-number text only) now compiles into a real, reusable date input
+instead of a frozen recording of one specific day.
+
+---
+
+## Passed Workflow P-7 — WF-2 Segment F: autocomplete/typeahead selector integrity (E.6)
+
+**Date passed:** 2026-09-04 17:20 local (Build Studio, session `cc93a956-e6f3-45ec-a7cd-5c8cfb4382b1`
+in `~/.conxa-build-studio-dev`; skill `wf-2-s-f-0580ba31`).
+
+**Shape:** S4 (`jqueryui.com/autocomplete`) — type into the tags field, pick the "JavaScript"
+suggestion; plus S3 (`demoqa.com/select-menu`) — pick a value from a `react-select` widget.
+8 compiled steps.
+
+**What was fixed en route:** an earlier attempt on this same segment (`WF-2-S-F`, session
+`3651c833`) compiled a click that could never match at replay. Two independent bugs, both
+root-caused and fixed:
+
+- **Recorder (`bridge.js`):** jQuery UI's menu widget puts `tabindex="0"` on the `<ul>` itself
+  while each item's clickable node is `tabindex="-1"` — the recorder's container-vs-item walk
+  accepted the whole `<ul>` as the click target instead of the clicked `<li>`, so the recorded
+  target text was "Java JavaScript" (both options concatenated) instead of "JavaScript".
+- **Packager (`skill_package_builder_saved_skill.py`):** a blind rewrite armed on any `type` step
+  whose value was a bare input placeholder and unconditionally overwrote the *next* click's
+  selector with it, with no check the two steps were related. This produced
+  `selector: text="{{tags}}"` on the option-pick click. The same mechanism, on an unrelated earlier
+  recording, had already turned a Login button's selector into `text="{{user_password}}"` —
+  `TODO.md` **BUILD-22**, whose original root-cause guess (an index desync) was wrong; this is the
+  real mechanism, now resolved. Both rewrite passes were deleted rather than patched.
+
+See `FIX.md` 2026-09-04 for the plain-language writeup.
+
+### What was confirmed
+
+- `last_test_status: passed`, no error, replayed with non-default inputs
+  (`tags: "javascript"`, `react_select_3_listbox: "Mr."`).
+- The compiled option-pick step is now `intent: select_autocomplete_suggestion`,
+  `selector: text="JavaScript"`, confidence 0.85, zero warnings — matching its own identity bundle,
+  not contaminated by the preceding `type` step's placeholder.
+- No step in the compiled skill's `execution.json` or `recovery.json` contains an unrelated `{{`
+  placeholder.
+- New regression coverage: `conxa-cloud/tests/test_recorder_bridge_js.py`'s menu-container-item
+  test, and `conxa-cloud/tests/test_saved_skill_selector_integrity.py` pinning the BUILD-22 fix —
+  full suite (1164 passed, 1 pre-existing skip) green.
+
+### What did not pass or was not exercised
+
+- **The `select-menu` "Select Option" field and second `react-select` widget** from the original
+  recording attempt didn't reappear in this fresh recording (only one `select_option` step was
+  captured) — narrower scope than the segment's own instructions describe, not a regression.
+  Separately, an *orphaned-input* variant of this same demoqa page (a required input with no step
+  consuming it) was found during the investigation and filed as `TODO.md` **BUILD-24**.
+
+### Why this pass matters
+
+Confirms the click-target and selector-integrity fixes hold on a real fresh recording, not just in
+unit tests — and, independently, root-causes and closes out `TODO.md` **BUILD-22**, a
+credential-shaped selector bug that had been open since 2026-09-02.
+
+---
+
+## Passed Workflow P-8 — WF-2 Segment J: Shadow DOM click identity (C.6)
+
+**Date passed:** 2026-09-04 (Build Studio, workflow `wf-2-s-j-218b116d`, session
+`bd0accba-8262-4def-b06a-46e54e7ef1a6` in `~/.conxa-build-studio-dev`).
+
+**Shape:** `https://shoelace.style/components/button` — a real interactive shadow-DOM web
+component library (Shoelace's `<sl-button>`, a native `<button>` inside an open shadow root).
+Recording clicked a promo banner's dismiss button, scrolled, then clicked the "Primary" variant
+button demo. 3 compiled steps.
+
+**What was fixed en route:** an earlier attempt on this same segment (`WF-2-S-J`, session
+`7d5fe8ef`) compiled with `compile_min_confidence: 0.21` and failed replay with "Ambiguous element
+resolution (no signal cleared uniqueness gate)". Root cause: the shadow-internal `<button>` a click
+resolves to has no visible label of its own — Shoelace projects it in from the light-DOM host — so
+the recorder captured empty `inner_text`/`aria_label`, and the compiler fell back to a generic CSS
+class shared by every button of that variant on the page. A uniqueness check that can't see inside
+shadow roots (`_count_css` runs against a plain HTML snapshot) wrongly stamped that non-unique
+selector `unique_at_compile=True` anyway, so it shipped instead of being rejected — and the real
+resolver, with live shadow access, correctly refused to guess between the actual matches at replay.
+Fixed in `bridge.js` (falls back to the shadow host's own text/aria-label when the clicked
+element's own are empty, and now populates the previously-unused `shadow_path` field) and in
+`identity_bundle.py`/`selector_filters.py`/`build.py` (a shadow-sourced structural CSS signal's
+`unique_at_compile` stamp is no longer trusted). See `FIX.md` 2026-09-04 for the plain-language
+writeup.
+
+### What was confirmed
+
+- `last_test_status: passed`, no error.
+- The real target step (clicking "Primary") compiled as `intent: click_primary_button_example`,
+  `primary_selector: role=button[name="Primary"]`, `selector_confidence: 0.95`, zero warnings —
+  the accessible name ("Primary") was correctly recovered and a unique role-based selector chosen,
+  not the old generic CSS-class fallback.
+- New regression coverage:
+  `test_recorder_bridge_js.py::test_shadow_button_with_empty_own_label_falls_back_to_host_text` and
+  `test_element_fingerprint.py::test_css_structural_signal_not_trusted_unique_when_shadow_sourced`
+  reproduce the exact failure mechanism and pin the fix — full suite (1166 passed, 1 pre-existing
+  skip) green.
+
+### What did not pass or was not exercised
+
+- The accidental first click (the promo banner's "No, thanks" button) still compiled at low
+  confidence (0.21, structural CSS only) — its `inner_text` was correctly captured ("No, thanks",
+  no shadow root involved for this one), but its role-based candidate was independently dropped as
+  "resolves to nothing" against the recorded snapshot, most likely because the banner hadn't
+  finished mounting/animating in at the moment the snapshot was taken. Replay still succeeded here
+  (only one matching button was actually present), but this step's low-confidence selector is a
+  separate, pre-existing gap (snapshot-timing vs. a real animated element), not a shadow-DOM issue
+  — not chased further per this segment's scope.
+- The `shadow_path`-population and `css_shadow_unverifiable` compiler guard weren't directly
+  exercised by this run's winning step — the click landed on the light-DOM host directly (a quirk
+  of how the browser resolves clicks on slotted text), so no shadow boundary was actually crossed
+  in `composedPath()` this time. Both are covered by the unit tests above, which construct the
+  shadow-crossing case directly.
+
+### Why this pass matters
+
+First real proof that Conxa can identify and durably select an element rendered by a modern
+shadow-DOM web component library (Shoelace, and by extension similar libraries like Ionic or
+Vaadin) — previously an untested, then a confirmed-broken, class of site.
 
 ---
 

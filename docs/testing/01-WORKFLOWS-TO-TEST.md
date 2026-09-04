@@ -76,17 +76,12 @@ never `file://`.
 Legs A (Wikipedia control baseline), B (S1 login + credential grep), C (S3 form fill), D (S1
 new-tab/popup round trip), and E (download → new-tab upload handoff) all **passed** via the
 `03-ONE-WORKFLOW-RUNBOOK.md` follow-up run, 2026-09-03 — see the "Follow-up run" entry in
-[`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md). Credential grep came back clean.
+[`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md). Credential grep came back clean. Leg F (native
+JS dialogs) also **passed**, 2026-09-04 — see **P-5** in `02-WORKFLOWS-PASSED.md`. All legs of WF-1
+are now graduated.
 
-### Leg F — Native JS dialogs ⚠️ still unproven
-S1 `/javascript_alerts`: Alert → accept; Confirm → accept; Prompt → type text → accept. Verify
-result assertions ("You clicked: Ok", typed text echoed). This leg did **not** replay reliably in
-the 2026-09-03 follow-up run despite the recorder and runtime both having real support for native
-dialogs — see `TODO.md` **EXEC-29**. Needs a clean isolated repro with `events.jsonl`/
-`recovery.log` evidence before it can graduate.
-
-**Where failures go:** `TODO.md` EXEC-29 (dialog replay); EXEC-5 (#43 tab landing, #31/#32
-download/upload verification, both already proven — reopen only on regression).
+**Where failures go (regressions only):** `TODO.md` EXEC-34 (remaining unbounded `.evaluate()`
+sites, unrelated follow-up); EXEC-5 (#43 tab landing, #31/#32 download/upload verification).
 
 ---
 
@@ -102,28 +97,27 @@ changing-text C.3 via the runbook, and moved-element C.4 via a standalone fixtur
 2026-09-03 — see **P-4** in [`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md). Everything below is
 still open.
 
-### Segment E (remainder) — Nested iframes bonus: datepicker (E.2) ⚠️ untested
-The runbook's Segment D proves the LEFT/BOTTOM nested-frame chain itself (offset accumulation).
-Not covered: S4 datepicker, one iframe deep — navigate next month ×2, pick day 15; re-run with a
-different target month to see if it generalizes.
+### Segment E (remainder) — Nested iframes bonus: datepicker (E.2) ✅ passed 2026-09-04
+Moved to [`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md) — see **P-6**.
 
-### Segment F — Autocomplete/typeahead race (E.6) ⚠️ untested
-S4 `/autocomplete/` type "ja" → pick "JavaScript"; plus S3 `/select-menu` custom Select2-style
-dropdowns. Execute twice — watch typing vs async option render race.
+### Segment F — Autocomplete/typeahead race (E.6) ✅ passed 2026-09-04
+Moved to [`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md) — see **P-7**.
 
-### Segment H — Hover menus (E.8) ⚠️ failed 2026-09-03
+### Segment H — Hover menus (E.8) 🧪 beta — needs human review
 S1 `/hovers`: hover avatar 2 → "View profile". Did **not** replay reliably in the runbook follow-up
-run despite real recorder/runtime support for hover reveals — see `TODO.md` **EXEC-29**. Needs an
-isolated repro with `events.jsonl`/`recovery.log` evidence.
+run despite real recorder/runtime support for hover reveals — see `TODO.md` **EXEC-29a** (split
+out 2026-09-04 from the native-JS-dialog half of this same investigation, which turned out to be
+an unrelated record-ordering/replay-deadlock bug, now resolved — EXEC-29). Downgraded to beta
+(too flaky for unattended replay, requires a human to watch/confirm each run) until an isolated
+repro with `events.jsonl`/`recovery.log` evidence lands a real fix.
 
 ### Segment I — Drag and drop (E.9) — confirmed hard limitation
 S1 `/drag_and_drop`: box A onto box B; S3 `/sortable`: item 5 to position 1. Reconfirmed as a hard
 limitation in the 2026-09-03 follow-up run (skipped with a warning at build time, unchanged since
 `FIX.md` 2026-08-26) — not a new gap, no further action needed here.
 
-### Segment J — Shadow DOM (C.6) ⚠️ untested
-S1 `/shadow_content`: interact inside shadow root. Note separately what happens at RECORD vs
-EXECUTE time; document exactly where the chain breaks if it does.
+### Segment J — Shadow DOM (C.6) ✅ passed 2026-09-04
+Moved to [`02-WORKFLOWS-PASSED.md`](02-WORKFLOWS-PASSED.md) — see **P-8**.
 
 **Where failures go:** EXEC-29 (hover replay); EXEC-5 (#43, already proven — reopen only on
 regression); iframe pipeline issues → TRD "Iframe Pipeline" owners; selector durability → compiler

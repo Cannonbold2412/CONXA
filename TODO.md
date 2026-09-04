@@ -43,10 +43,10 @@ Counts below are computed straight from the section headers in this file (unique
 |---|---|---|---|
 | P0 — Critical / Time-Sensitive | 11 | 21 | 10 |
 | P1 — Blocking / Foundational | 5 | 8 | 3 |
-| P2 — High Value, Do Soon (incl. Discovered Items) | 31 | 36 | 5 |
+| P2 — High Value, Do Soon (incl. Discovered Items) | 32 | 37 | 5 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
 | P4 — Low Urgency, Opportunistic | 31 | 39 | 8 |
-| **Total** | **101** | **126** | **25** |
+| **Total** | **102** | **127** | **25** |
 
 ---
 
@@ -341,16 +341,43 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Success criteria:** the mutator fixture's relabelled button heals at Tier 2 with zero LLM tokens (`tier2_*` in `recovery.log`, not `Element not found`); a destructive renamed element still halts; a unit test covers both.
 
 
-### EXEC-29 — Hover-reveal and native JS dialog steps still fail at live replay despite recorder + handler support
+### EXEC-29a — Hover-reveal steps still fail at live replay despite recorder + handler support
 - **Category:** Execution & Recovery
-- **Description:** Found 2026-09-03 running the `03-ONE-WORKFLOW-RUNBOOK.md` mega-workflow (Segment D, `the-internet.herokuapp.com` `/hovers` and `/javascript_alerts`). The hover-then-click step and the alert/confirm/prompt dialog steps did not replay reliably — even though the recorder has captured hover reveals and native dialogs correctly since the 2026-08-26 fixes (see `FIX.md`) and the runtime has real handlers for both (`runtime/app/handlers.js`'s `hover` and `dialog_accept`/`dialog_dismiss`; `runtime/app/locators.js::walkHoverChain`; `cascade.js` Layer 2 re-hover). The specific failure mode wasn't captured with `events.jsonl`/`recovery.log` evidence this session — that's the immediate next step before root-causing. `research-analysis/05-reliability/architectures/hover.md` documents theoretical hover-then-click gaps (hover context lost on recovery, no re-hover-then-retry) as a starting point, though `walkHoverChain`/`cascade.js`'s Layer 2 already appear to implement a re-hover retry, so that doc may be stale relative to current code and worth re-checking against `git log` before trusting its gap list.
-- **Why required:** hover-revealed menus and native dialogs are ordinary UI patterns, not edge cases — the-internet's `/hovers` and `/javascript_alerts` are literally the reference examples of each — so any real workflow touching either can't currently be trusted to replay clean.
-- **Business value:** hover-revealed menu items and confirm/prompt dialogs are common in admin/back-office UIs, a core target segment.
+- **Description:** Found 2026-09-03 running the `03-ONE-WORKFLOW-RUNBOOK.md` mega-workflow (Segment D, `the-internet.herokuapp.com` `/hovers`). The hover-then-click step did not replay reliably — even though the recorder has captured hover reveals correctly since the 2026-08-26 fixes (see `FIX.md`) and the runtime has real handlers (`runtime/app/handlers.js`'s `hover`; `runtime/app/locators.js::walkHoverChain`; `cascade.js` Layer 2 re-hover). The specific failure mode wasn't captured with `events.jsonl`/`recovery.log` evidence this session — that's the immediate next step before root-causing. `research-analysis/05-reliability/architectures/hover.md` documents theoretical hover-then-click gaps (hover context lost on recovery, no re-hover-then-retry) as a starting point, though `walkHoverChain`/`cascade.js`'s Layer 2 already appear to implement a re-hover retry, so that doc may be stale relative to current code and worth re-checking against `git log` before trusting its gap list. (This item used to be filed jointly with the native-JS-dialog half of the same repro — see the resolved dialog entry below, split out 2026-09-04 once the dialog half's root cause turned out to be unrelated: a record-time event-ordering race plus a replay-time deadlock, neither of which touches hovering.)
+- **Why required:** hover-revealed menus are an ordinary UI pattern, not an edge case — the-internet's `/hovers` is literally the reference example — so any real workflow touching one can't currently be trusted to replay clean.
+- **Business value:** hover-revealed menu items are common in admin/back-office UIs, a core target segment.
 - **Technical value:** closes a live-verified gap between "the plumbing exists" (recorder, compiler, runtime handlers) and "it actually works end to end."
-- **Dependencies:** needs a fresh minimal repro (record + replay against `/hovers` and `/javascript_alerts` alone, not buried in a 100-step take) with `events.jsonl`/`recovery.log` attached before root-causing.
-- **Suggested order:** next mega-workflow re-run — reproduce in isolation first. Longer-term idea floated during this session (not yet justified): if the deterministic hover/dialog path can't be made reliable, consider a vision/ML-assisted hover detector and, further out, a built-in first-party browser instead of driving native OS dialogs — both out of scope until the deterministic path is proven to actually fail on a clean repro, not just observed to fail once inside a long recording.
-- **Complexity:** unknown until reproduced — S if it's a timing/pacing issue, M if it's the hover-chain/dialog-queue logic itself.
-- **Success criteria:** `the-internet.herokuapp.com`'s `/hovers` (hover avatar → click "View profile") and `/javascript_alerts` (Alert/Confirm/Prompt accept, prompt text echoed) replay clean at zero LLM tokens, both in isolation and inside the full mega-workflow take.
+- **Dependencies:** needs a fresh minimal repro (record + replay against `/hovers` alone, not buried in a 100-step take) with `events.jsonl`/`recovery.log` attached before root-causing.
+- **Suggested order:** next mega-workflow re-run — reproduce in isolation first.
+- **Complexity:** unknown until reproduced — S if it's a timing/pacing issue, M if it's the hover-chain logic itself.
+- **Success criteria:** `the-internet.herokuapp.com`'s `/hovers` (hover avatar → click "View profile") replays clean at zero LLM tokens, both in isolation and inside the full mega-workflow take.
+
+### ~~EXEC-29~~ — Native JS dialog steps hang at live replay (WF-1 Leg F) — **Resolved 2026-09-04**
+- **Resolution:** Two independent defects, one shared cause: the human's dialog answer was modelled as a free-standing recorded step, sequenced independently of the click that caused it.
+  1. **Record-order defect:** the dialog server answers from its own request thread while the triggering click's own payload only reaches the recorder once the page's JS thread unblocks after the dialog closes, so the two could land in the raw event stream in either order. Two adjacent `dialog_accept` markers (a confirm's answer directly followed by a prompt's) tripped `clean_steps`'s duplicate-consecutive-action collapse — built for real double-clicks, which carry a target; a marker carries none — and silently dropped the second one, losing the prompt's typed answer. Fixed with `pipeline/run.py::_reorder_by_timestamp` (stable-sorts every recorded event by its own `action.timestamp` before any other processing) and by exempting every `MARKER_ACTIONS` step from `clean_steps`'s duplicate-collapse rule (`step_anchors.py`) — the same latent bug existed for two consecutive `download_observed` markers.
+  2. **Replay-deadlock defect:** a native dialog blocks the very Playwright call that opens it — `click()` does not resolve until the dialog is answered — so waiting for the *following* `dialog_accept` step to drain it deadlocks by construction: that step can never run because the step before it never returns. Fixed by having `run.js`'s per-step loop look one step ahead and pre-arm the answer via a one-shot `page.once("dialog", ...)` *before* dispatching the step that opens it, so the dialog resolves the instant it opens.
+  3. **Hardening (same investigation):** `cascade.js::recoverStep` now refuses to run any recovery stage while a dialog is pending (mirrors `verifyStep`'s existing `dialog_pending` short-circuit) instead of grinding through unbounded page calls against a frozen renderer; a new shared deadline seam (`runtime/app/page_eval.js`) wraps the highest-risk `.evaluate()` calls (the gate check every action goes through, and the failure-response inventory/overlay probes) so a blocked renderer surfaces as a typed failure in seconds rather than hanging past the run's own 210s watchdog (which is poll-based and cannot interrupt a single stuck call). See `docs/TRD.md` §10.3 and `docs/Backend-Schema.md` §3.4h for the full writeup.
+  4. **Not yet done:** not every `.evaluate()`/`.count()` call in `runtime/app/` is routed through the new seam yet, and there is no CI guard preventing a new unguarded call from being added — see the follow-up item below. The Build Studio's "Run Test" flow also still has no cancel button and no client-side timeout (`ipc.cmd`/`cmd_test_workflow` are unbounded; the only backstop is the 900s runtime-tool subprocess timeout) — filed separately below.
+- **Category:** Execution & Recovery
+- **Description:** WF-1 Leg F (`the-internet.herokuapp.com/javascript_alerts`: Alert/Confirm/Prompt accept, prompt text echoed) recorded cleanly but hung on replay in Studio Run Test — the browser sat on an open native alert for over two minutes before the run finally errored with a confusing "Target page, context or browser has been closed" (the user had closed the window manually) rather than anything naming a dialog.
+- **Found via:** live repro against session `7fb53d62` / run `r_mtm1ttc8_ilx68` in `~/.conxa-build-studio-dev`, 2026-09-04.
+
+### EXEC-34 — Route every remaining `runtime/app/` `.evaluate()`/`.count()` call through the page_eval.js deadline seam, add a CI guard
+- **Category:** Execution & Recovery
+- **Description:** EXEC-29's fix converted the two highest-risk unbounded `page.evaluate()` call sites (the primary-resolution gate check that runs on every action, and the failure-response inventory/overlay probes) to route through the new `runtime/app/page_eval.js` deadline seam. The remaining raw `.evaluate()`/`.count()` sites in `runtime/app/` (`drift.js`, `dismiss_patterns.js`, `recovery_park.js`, `handlers.js`'s scroll/multiple-select checks, `resolve_adapter.js`, and a couple more in `resolution.js`) are lower-traffic but share the same theoretical hazard — a blocked renderer (a `beforeunload` prompt, a throttled background tab) leaves the call hanging with no way for the run's own watchdog to interrupt it.
+- **Why required:** consistency — a partial conversion means the hazard this fix exists to close can still be hit through an unconverted path, and a future contributor adding a new `.evaluate()` call has no signal telling them to use the seam instead of a bare call.
+- **Dependencies:** `runtime/app/page_eval.js` (EXEC-29).
+- **Suggested order:** low priority — the two highest-value sites are already fixed; this is completeness + guard-rail work.
+- **Complexity:** S–M: mechanical for the call-site conversions, plus a small guard test (in the style of the existing recovery-purity/`app-layer-files.json` guards) asserting no bare `.evaluate(` appears in `runtime/app/` outside `page_eval.js`.
+- **Success criteria:** every `.evaluate()`/`.count()` call in `runtime/app/` routes through `evalOn`; a guard test fails if a new bare call is added.
+
+### ~~EXEC-35~~ — Build Studio's "Run Test" has no cancel button and no client-side timeout — **Resolved 2026-09-04**
+- **Category:** Studio / DX
+- **Description:** Found during the EXEC-29 investigation: `WorkflowTests.tsx`'s `runTest()`, the Electron IPC bridge (`ipc.cmd`), and `cmd_test_workflow` are all unbounded — the only backstops are the runtime's own 210s `EXECUTION_DEADLINE_MS` (which a wedged single Playwright call can bypass — see EXEC-29/EXEC-34) and `runtime_tool.py`'s 900s subprocess timeout. A hung test shows a frozen "Testing…" with no elapsed counter for up to 15 minutes, and `server.js` already exposes a working `cancel_execution` MCP tool that nothing in the Studio ever calls.
+- **Resolution:** `cmd_test_workflow` (`handlers/workflows.py`) now tracks each workflow's in-flight run in a small module-level registry (`_active_test_runs`), populated once the sandbox is staged and filled in with the runtime's `run_id` the moment it's known (relayed live through the existing `_phase_sink`/`test_phase` mechanism, seconds before the run finishes). A new `cmd_cancel_test_workflow` handler looks up that `run_id` and calls the runtime's existing `cancel_execution` MCP tool over the same cached stdio connection `call_runtime_tool` already keeps open — no new transport, no runtime-side change, and no risk to the persistent-process warm-start optimization (a raw process kill would have taken that down too). A cancel that lands before `run_id` is known just sets a flag `_phase_sink` checks once it arrives. `cmd_test_workflow` now also recognizes the runtime's "Execution cancelled." response text and returns a distinct `status: "cancelled"` instead of recording it as a failed test. On the frontend, `WorkflowTests.tsx` gained a Cancel button (visible only while a test is running) wired to a new `cancelTestWorkflow()` API call, and every "Testing…" label now shows live elapsed time via a 1s UI timer.
+- **Dependencies:** `runtime/app/server.js`'s existing `cancel_execution` tool; `conxa-builder/python/conxa_compile/runtime_tool.py`; `WorkflowTests.tsx`.
+- **Complexity:** M — needs a cancel affordance in the UI, a run_id round-trip to call `cancel_execution`, and probably a visible elapsed-time indicator.
+- **Success criteria:** a Run Test in progress can be cancelled from the UI and returns to idle within a few seconds; a test that runs past some visible threshold shows elapsed time, not just a static "Testing…" label.
 
 ### ~~EXEC-30~~ — Replace blind auto-dismiss of unknown popups with Tier B reasoning at replay — **Resolved 2026-09-03**
 
@@ -414,7 +441,64 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Success criteria:** `resume_from` without a `step_overrides` entry for that step either (a) errors with a message naming the missing override, or (b) is documented and implemented as "retry step N after a fresh navigate" — never a silent blank-page attempt reported as a ground-truth element-not-found.
 - **Found via:** manual R0–R5 pass of `04-COVERAGE-BUMP-RUNBOOK.md`'s WF-7 recovery drill, 2026-09-03.
 
-### BUILD-22 — Templatizer rewrote a step's selector with an unrelated input placeholder
+### ~~BUILD-22 — Templatizer rewrote a step's selector with an unrelated input placeholder~~ — RESOLVED 2026-09-04
+Root cause was NOT the `_insert_tab_markers` desync this item originally guessed. It was two blind
+selector-rewrite passes in `skill_package_builder_saved_skill.py`
+(`_repair_parameterized_search_result_selectors` for `execution.json`,
+`_repair_saved_step_click_selectors` for `recovery.json`): each armed on ANY `type`/`fill` step
+whose value was a lone `{{placeholder}}` and unconditionally overwrote the NEXT `click` step's
+`text=` selector with it — no check the two were related. Confirmed via a second, independent
+recording (WF-2-S-F, jQuery UI autocomplete): typing `{{tags}}` then clicking the "JavaScript"
+suggestion produced `selector: text="{{tags}}"` on the click, same mechanism as this item's
+`text="{{user_password}}"`. Both passes deleted; a compiled step's selector now always matches its
+own identity bundle. Regression-pinned by
+`conxa-cloud/tests/test_saved_skill_selector_integrity.py` and an updated
+`test_skill_package_builder.py::test_saved_skill_does_not_rewrite_a_hardcoded_search_result_click_with_the_prior_input`.
+
+**Tradeoff accepted:** the deleted passes also implemented an intentional feature — a
+search-result click whose recorded text equals what was just typed got its selector rebound to the
+input placeholder, so a replay with a different search term still clicked the new result. That
+behavior is gone; such a click now keeps its literal recorded text and falls to the recovery
+cascade on a different input. Reintroducing this safely (gated on the click's own recorded text
+actually equaling the typed value, not merely "some click follows some type") is open work — see
+the new item below this one.
+
+### BUILD-22b — Reintroduce search-result-follows-input rebinding, gated correctly
+- **Category:** Builder
+- **Description:** BUILD-22's fix deleted the packager-time rewrite that bound a search-result
+  click's selector to the immediately preceding typed input, because it fired unconditionally with
+  no relatedness check. The underlying feature was real: a workflow that searches for something
+  and clicks the top/matching result should still work when replayed with a different search term.
+  Rebuild it at compile time (where the recorded literal value still exists, unlike in the
+  packager), gated on the click's own recorded text actually equaling the typed literal.
+- **Why required:** without this, "search then click the result" skills only work for the exact
+  value recorded; every other input falls through to the recovery cascade.
+- **Dependencies:** BUILD-22 (resolved 2026-09-04).
+- **Complexity:** S–M.
+- **Success criteria:** a search->click-result skill compiled with a real relatedness check
+  rebinds the click selector to the input when (and only when) the click's own recorded text
+  matches the typed value; an unrelated click (e.g. a Login button after a password field) is
+  never touched.
+
+### BUILD-24 — react-select `select_option` dropped silently while its input stays required
+- **Category:** Builder
+- **Description:** Found while investigating BUILD-22 on the WF-2-S-F recording (demoqa.com
+  `/select-menu`): the raw recording picks "Group 1, option 1" from the `react-select-2` widget
+  (`select_option` on `#react-select-2-option-0-0`), and the compiler still declares
+  `react_select_2_listbox` as a required input in `manifest.json` / `input.json` — but the
+  compiled `execution.json` never contains a step that acts on it. The input exists with nothing
+  to bind it to; the action it describes silently never runs.
+- **Why required:** same family as BUILD-23 (a compile that drops steps with no warning naming
+  them) — the customer sees a required input asking for a value that the compiled skill will
+  never use.
+- **Dependencies:** none. Reproduces from session `3651c833-918d-4e54-97bc-514a6356503d`
+  (`WF-2-S-F`).
+- **Complexity:** S–M to find which pass drops it; likely needs the same fix as BUILD-23's dropped
+  steps.
+- **Success criteria:** every `inputs_required` entry a compiled skill declares has at least one
+  step in `execution.json` that consumes it, or the compile report names the input it dropped.
+
+### BUILD-22-OLD (superseded, kept for history) — Templatizer rewrote a step's selector with an unrelated input placeholder
 - **Category:** Builder
 - **Description:** In the 2026-09-02 mega-workflow compile (session `9d19890f`), step 35 is `the-internet.herokuapp.com`'s **Login** submit button. The master skill records it correctly (`primary_selector: text="Login"`, `intent: click_login_button`), and the compiled `identity_bundle` still says `internal:text="Login"` — but the packaged `execution.json` step carries `selector: text="{{user_password}}"`, and `recovery.json` step 35 carries `intent: "click_user_password"`. The preceding step is a `type` into the password field, so the templatizer appears to have cross-contaminated the Login click with the value and intent of the step before it. At replay the top-level selector can never match; the step falls straight through to the recovery cascade on every run.
 - **Why required:** a selector that interpolates a *secret* is worse than a broken one — the compiled skill now embeds the shape of a password into a text matcher, and any recovery payload built from that step's selector context carries it too. It is also silently wrong: nothing in the compile report flags a selector that no longer resembles its own identity bundle.
@@ -736,7 +820,7 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** L — approve/reject is the small half and reuses EXEC-13's machinery almost wholesale; judgement input needs the typed input contract and schema validation; hand-over is the genuinely new part and carries the real risk (yielding and reclaiming a live page mid-run).
 - **Success criteria:** a workflow authored with each of the three review shapes compiles, publishes, and replays on a customer machine; at each review point the run pauses and the person is prompted in the browser the runtime is driving, with the page in the state the run left it; a judgement value supplied by the person is bound as a named input and demonstrably changes a later step's behaviour; a rejected approval aborts cleanly with an audit record; a hand-over returns control to the run with the page re-validated before the next step acts; a review that is never answered times out per its configured `on_failure` policy and leaks no browser; the workflow remains testable in the Build Studio sandbox; and telemetry distinguishes a planned review from a recovery-triggered handoff.
 
-## P2 — High Value, Do Soon (28 remaining / 33 total)
+## P2 — High Value, Do Soon (29 remaining / 34 total)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1128,6 +1212,126 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** n/a — founder/maintainer decisions, not engineering tasks. Each one should end with a written position in `docs/PRD.md` §14.5 replacing the open question.
 - **Success criteria:** each of the six questions has a recorded answer (or an explicit, dated deferral with a reason) in `docs/PRD.md` §14.5, and any backlog item gated on one names which.
 
+### BUILD-25 — Compile-time semantic pass: a learned/LLM layer for the four edge-case families that hand-written rules keep losing to
+- **Category:** Builder
+- **Description:** Four separate compiler passes have converged on the same failure shape: a
+  hand-written rule with hand-tuned constants that works on the recordings it was written against,
+  breaks on the next unfamiliar widget or page, and leaves the difference for a human to fix in
+  Human Review. Adding another constant or another branch has stopped paying — in each case the
+  rule is not too *simple*, it is looking at **too little of the recording to decide correctly**.
+  The proposal is to add one compile-time model pass that sees the whole workflow at once and
+  emits *suggestions*, leaving every existing deterministic pass in place. The four problems:
+
+  1. **De-duplication / leftover noise.** `conxa_compile/pipeline/dedupe.py` has exactly three
+     rules — drop a `focus` superseded by an action on the same element within the next
+     `_FOCUS_LOOKAHEAD = 3` events; collapse the click/type noise bracketing a `select` within
+     `_SELECT_NOISE_LOOKAROUND = 2` events either side; drop consecutive identical scrolls. Both
+     lookaround constants were derived from one react-datepicker recording (see that file's own
+     docstring). Everything outside those three shapes — a stray click that opened nothing, a
+     mis-click and correction, an accidental scroll-then-scroll-back — survives into the compiled
+     workflow for a reviewer to delete by hand. The recorder already captures the evidence needed
+     to judge this (`state_change.dom_diff`, `post_condition.classified_effect`, including the
+     literal value `"none"`), and no pass currently uses it for noise removal.
+  2. **Hardcoded values that should be variables.** `conxa_compile/compiler/input_binding.py`
+     walks a fixed ladder — `label_text` → `placeholder` → `aria_label` → value regex (email /
+     phone / URL / ISO date / digits) → `semantic.input_type`. Every signal on that ladder is
+     **local to a single field**, so at the moment it names a field it cannot see any other field
+     in the workflow. Two email inputs therefore cannot become `sender_email` / `recipient_email`;
+     they collide, and `build.py::_deduplicate_input_bindings` papers over the collision by
+     appending `_2`, `_3`. Separately, a typed value the ladder finds no name for stays frozen as
+     the literal recorded text (a customer name, an amount, a reference number) and the reviewer
+     has to notice and bind each one manually. Deciding *whether* a value should vary at all needs
+     the workflow's purpose, which no field-local signal carries. **This is the clearest case of
+     the four: no additional local rule can fix it, because the required information is
+     workflow-global.**
+  3. **Date pickers — too many of them.** `conxa_compile/compiler/date_picker.py` is 378 lines
+     handling one widget family, and its own docstring enumerates the vendors it was built
+     against (MUI, react-datepicker, flatpickr, Ant Design, jQuery UI). That enumeration is the
+     tell: widget #6 needs a code change, a release, and until then a reviewer stitching raw
+     day-cell clicks together by hand. Two live instances of exactly this are already tracked
+     below as **COMPILE-1** (an orphaned raw day-click when the same field is picked twice) and
+     **COMPILE-2** (`_findAnchoredField` misses react-datepicker's DOB field, silently degrading
+     `typed_first` to `grid_only`). Both are real bugs; neither is the last one of its kind.
+  4. **Hover-step noise.** Hover capture is already gated three ways and still over-produces:
+     `bridge.js`'s smart-hover path is opt-in per recording, waits a `hover_dwell_ms = 400`
+     dwell, and diffs a before/after actionable-element signature (limits 160 / 60 / 80) to decide
+     whether the hover revealed anything; `pipeline/run.py::_drop_non_actionable_hover_events`
+     then drops any hover whose bounding box is under 2px. What survives is still noisy, and the
+     consumer makes it worse: `compiler/action_semantics.py::detect_hover_precondition` only ever
+     inspects the **immediately preceding** event, so a mouse traverse that fires several hovers
+     before the click contributes one hover-chain hint and leaves the rest as standalone steps.
+     Related but distinct from **EXEC-29a** (hover-reveal steps failing at live replay) — that is
+     a replay problem, this is a "the recording contains steps that were never intentional" problem.
+
+- **What the model would actually do:** annotate, never rewrite. Concretely three outputs, emitted
+  into `compile_report` as a suggestions list (`{step_index, kind, current, proposed, why}`) that a
+  reviewer accepts or rejects in Human Edit:
+  - `rename_binding` / `parameterize_literal` — problem 2, using whole-workflow context.
+  - `flag_noise` — problem 1 and 4, using the already-recorded "did this action change anything"
+    evidence.
+  - `group_steps` — problem 3, *labelling* a run of steps as one semantic unit so the existing
+    `collapse_date_picker_runs` executor knows where to look, rather than teaching the collapse
+    pass about a sixth vendor. **Deliberately last** — grouping implies collapsing, which touches
+    the steps↔events 1:1 alignment that `date_picker.py` and `upload_binding.py` both depend on
+    and that has already produced one silent desync bug (see BUILD-22 / BUILD-23).
+- **Which kind of model — and what is NOT proposed:**
+  - **Prompted LLM pass (recommended start).** The vehicle already exists:
+    `llm/workflow_intent.py::build_workflow_intent_graph` is already one call per compile with a
+    whole-workflow view, a compact payload (`build.py::_intent_graph_inputs` — action, target text,
+    URL, heuristic hint; no DOM, no screenshots), local caching keyed on a content hash, and a
+    graceful empty-on-failure path back to the rules-only route. Bindings do not exist yet at the
+    point that call runs (it fires *before* the per-step loop), so the naming pass wants to be a
+    second call sited after `build.py::_deduplicate_input_bindings`, reusing the same payload shape.
+    No new prompt infrastructure, no new cost line, no new failure mode.
+  - **Fine-tuned model — not yet, and blocked on data we are not collecting.** The supervised pair
+    is (compiled package → the human-corrected package), and **the Human Review before/after diff
+    is not logged anywhere today**. Start logging it regardless of whether a fine-tune ever
+    happens: it is the eval set for the prompt above, and without it there is no way to tell
+    whether a prompt change made suggestions better or worse. This is the compile-time twin of
+    the runtime recovery-data capture already tracked as step 2 of **PROD-19**, and it has the
+    same property — a month not captured is a month of training data permanently lost.
+  - **Classical ML / neural net over hand-built features — not recommended.** The features that
+    would matter here are exactly the semantic ones (what is this workflow *for*, is this value a
+    constant or a parameter) that a small feature-engineered model cannot see and a language model
+    reads natively. Revisit only if the LLM pass proves too slow or too expensive per compile.
+- **Why required:** Human Review is currently the only thing standing between a compiled workflow
+  and these four defects, and it is manual, unmeasured, and repeated on every single recording. It
+  is the largest remaining per-workflow labour cost in the product, and it scales linearly with
+  customers.
+- **Business value:** the vendor's time-to-first-working-skill is the whole onboarding funnel. Every
+  minute a person spends renaming `email_2` or deleting stray hover steps is a minute where the
+  product looks like a recording tool with homework attached rather than a compiler. It is also the
+  single most visible quality signal in a demo.
+- **Technical value:** stops the "add another constant per widget" treadmill in four places at once,
+  and — because the suggestions are a diff a human accepts or rejects — produces the labelled
+  correction data that every later version of this (including a fine-tune) needs, as a side effect
+  of normal use.
+- **Risk / the line to hold:** the model **proposes**, the reviewer **disposes**. Suggestions must
+  never silently mutate the compiled `SkillPackage`; the package must be byte-identical whether the
+  call succeeds, fails, or is disabled. That keeps the existing *"LLM does not write selector
+  strings on the primary compile path"* invariant intact in spirit rather than only in letter, and
+  it means the pass can ship dark (suggestions logged, no UI) before any editor work is done.
+  Element addresses, identity bundles, assertions and the collapse machinery all stay fully
+  deterministic — the model annotates meaning, it does not write the program.
+- **Dependencies:** none blocking. Shares the LLM proxy and cost model with the existing compile
+  calls. Related: **COMPILE-1** / **COMPILE-2** (two live instances of problem 3), **EXEC-29a**
+  (the replay-side half of problem 4), **BUILD-22** / **BUILD-23** (the alignment fragility that
+  makes `group_steps` the risky output), **PROD-19** step 2 (the runtime-side twin of the data
+  capture above).
+- **Suggested order:** (a) log the Human Review before/after diff **now** — cheap, independent of
+  everything else, and time-sensitive; (b) ship the second LLM call emitting `rename_binding` /
+  `parameterize_literal` suggestions into `compile_report`, dark; (c) surface accept/reject chips in
+  Human Edit and measure acceptance rate against the log from (a); (d) add `flag_noise`; (e) only
+  then consider `group_steps`.
+- **Complexity:** L overall, but staged — (a) is S, (b) is S–M (one new call reusing an existing
+  payload builder and cache pattern), (c) is M (editor UI), (d) is S, (e) is M–L and carries the
+  alignment risk above. Steps (a) and (b) are each worth doing on their own merits.
+- **Success criteria:** a compile emits suggestions without ever changing the compiled package;
+  a workflow with two same-named fields yields distinguishing suggested names derived from
+  workflow context rather than `_2` suffixes; every accept/reject is logged with the before/after
+  pair; and the median number of manual edits a reviewer makes per compiled workflow is measurable
+  and demonstrably lower than the pre-pass baseline.
+
 ## P2 Discovered Items (2 remaining / 2 total) (2026-09-02 mega-workflow dev-mode investigation)
 
 ### COMPILE-1 — `collapse_date_picker_runs` leaves an orphaned raw day-click when the same date field is date-picked twice in one recording
@@ -1337,6 +1541,7 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Suggested order:** per `build-order.md`'s sequencing, this is "build third" — after the verified floor and the action-correct handlers (EXEC-5), alongside the autonomous-recovery work (EXEC-4).
 - **Complexity:** L — six related but individually-scoped fixes across the compiler (shadow host-path recording), the resolver (`FrameFingerprint`), and the recovery cascade (CDP pierce escape hatch).
 - **Success criteria:** a recorded workflow targeting an open-shadow-DOM component (e.g., a Salesforce Lightning Web Component) survives a shadow-host id change without falling back to XPath; a closed-shadow target that hard-fails today is recoverable via the CDP escape hatch.
+- **Progress (2026-09-04):** the recording half of #17 landed and is confirmed end-to-end — `bridge.js` now actually populates `shadow_path` by walking `getRootNode().host` chains (previously only the fragile `::part(`/`:host(` string-sniff fallback in `build.py` populated it, so real shadow-DOM clicks recorded `shadow_path: []`), and it falls back to the shadow host's own text/aria-label when the shadow-internal element being clicked has neither (found via a real `shoelace.style` `<sl-button>` repro — see `docs/testing/02-WORKFLOWS-PASSED.md` **P-8**). The compiler no longer trusts a shadow-sourced `css-structural`/`css-id` signal's `unique_at_compile` stamp either (its 0-match count from the shadow-blind HTML snapshot was being masked as "verified unique" instead of "unverifiable"). A fresh manual record → compile → replay against `shoelace.style/components/button` passed, compiling the shadow-DOM button click to a unique `role=button[name="Primary"]` selector at 0.95 confidence. #18 (`FrameFingerprint`/frame-level recovery sub-tier), #24 (closed-shadow CDP pierce), #27 (frame/shadow-aware verification), #39 (wait-for-frame-attached), and #40 (wait-for-shadow-upgrade) remain open.
 
 ### EXEC-8 — Structured Tier-5 human handoff + rule-triggered destructive escalation
 - **Status (2026-08-29):** the destructive-escalation half is resolved — PROD-3's safety core now makes rule-triggered destructive escalation real (`identity_bundle.destructive` is actually set and reaches the runtime; `cascade.js` fails closed rather than falling through to a confident guess; the halt is excluded from agent-mediated park/resume). **Still open, and still this entry's own scope:** the general CAPTCHA/2FA/ambiguous-step "pause and hand to a human" Tier-5 state (`CALL_USER`) — PROD-3 did not build a human-handoff mechanism, only the refuse-to-guess half. See EXEC-21 for the closely related, still-open planned-human-review-point work.
