@@ -442,6 +442,20 @@ def xpath_shadow_guard(engine: str, shadow_path: list[Any] | None) -> bool:
     return engine != "xpath"
 
 
+def css_shadow_unverifiable(engine: str, shadow_path: list[Any] | None) -> bool:
+    """True if a css-structural/css-id signal's unique_at_compile stamp cannot be trusted.
+
+    uniqueness_gate's dom_html is a standard HTML serialization of the recorded snapshot, which
+    never includes open-shadow-root internals — a shadow-sourced CSS selector always counts 0
+    matches there regardless of how many real matches exist on the live page, and identity_bundle
+    calls uniqueness_gate with absent_ok=True, so that 0 gets stamped unique_at_compile=True
+    instead of being flagged as unverifiable. Unlike xpath these selectors aren't dropped outright
+    (role/text signals from the same element usually outrank them once bridge.js's shadow-host
+    accessible-name fallback is populated), but the stamp itself must be corrected post hoc.
+    """
+    return bool(shadow_path) and engine in ("css-structural", "css-id")
+
+
 # ---------------------------------------------------------------------------
 # Ephemeral-anchor filter (used by spatial-anchor / relational signal builders)
 # ---------------------------------------------------------------------------

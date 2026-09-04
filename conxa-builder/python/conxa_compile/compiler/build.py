@@ -625,8 +625,17 @@ def _build_identity_bundle(
     ]
     # Apply XPath guard: drop XPath signals when element is inside a shadow root
     if shadow_path:
-        from conxa_compile.compiler.selector_filters import xpath_shadow_guard
+        from conxa_compile.compiler.selector_filters import css_shadow_unverifiable, xpath_shadow_guard
         signals = [s for s in signals if xpath_shadow_guard(s.engine, shadow_path)]
+        # A css-structural/css-id signal's unique_at_compile=True is meaningless for a
+        # shadow-sourced element (see css_shadow_unverifiable) — correct the stamp rather than
+        # drop the signal, since it can still serve as a fallback below role/text signals.
+        signals = [
+            s.model_copy(update={"unique_at_compile": False})
+            if css_shadow_unverifiable(s.engine, shadow_path) and s.unique_at_compile
+            else s
+            for s in signals
+        ]
 
     # Phase 5: build frame_chain from per-frame fingerprints (the sole frame identity source).
     frame_chain: list[FrameFingerprint] = []

@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed recordings on modern component-based websites losing track of button labels — 2026-09-04
+Some websites are built out of pre-packaged, self-contained widgets (a technique called "shadow DOM" — think of it like a sticker with its own sealed-off mini-page glued onto the real page). When Conxa recorded a click on a button built this way, it could see that something button-shaped got clicked, but not the visible word written on it ("Primary", "Submit", etc.) — that label lived just outside the sealed sticker. Without a name to go on, Conxa fell back to a generic technical description shared by every similarly-styled button on the page, so at playback time it couldn't tell which one was meant and correctly refused to guess rather than click the wrong thing, failing the whole run. The fix teaches the recorder to look just outside the sticker for the real label whenever the button itself has none, so it can once again tell buttons apart by what they actually say. Found using a real public site full of these sealed-widget buttons, confirmed with an automated check that reproduces the exact same setup, and then confirmed for real: a fresh recording against that same site was made, compiled, and replayed in Build Studio, and it correctly picked the intended button by name every time.
+— 2026-09-04
+
 ## Added a refresh button to every screen in Build Studio — 2026-09-04
 Build Studio had no quick way to pull the latest data on a screen — you had to switch pages and back, or restart the app. A small refresh button now sits in the top bar of every screen, just to the left of your account email, and spins briefly while it re-checks everything currently on screen.
 — 2026-09-04

@@ -872,6 +872,21 @@ def test_xpath_dropped_when_shadow_path_present():
     assert len(xpath_signals) == 0
 
 
+def test_css_structural_signal_not_trusted_unique_when_shadow_sourced():
+    # uniqueness_gate's dom_html-based count is blind to shadow-root internals (a standard HTML
+    # serialization never contains them), so a css-structural selector for a shadow-sourced
+    # element always counts 0 matches there and gets absent_ok=True-masked into
+    # unique_at_compile=True regardless of how many real matches exist on the live page — see
+    # FIX.md's WF-2-S-J investigation. The stamp must be corrected once shadow_path is known.
+    from conxa_compile.compiler.build import _build_identity_bundle
+    ev = _make_ev(tag="button", inner_text="", aria_label="", css="button.button.button--primary")
+    ev["shadow_path"] = [{"host": "sl-button", "mode": "open"}]
+    bundle = _build_identity_bundle(ev)
+    css_signals = [s for s in bundle.signals if s.engine in ("css-structural", "css-id")]
+    assert css_signals
+    assert all(not s.unique_at_compile for s in css_signals)
+
+
 def test_no_shadow_allows_xpath():
     from conxa_compile.compiler.build import _build_identity_bundle
     ev = _make_ev(tag="button", inner_text="Submit", role="button", aria_label="Submit")

@@ -162,6 +162,38 @@ def test_open_shadow_root_input_records_type_through_composed_path(page: Page) -
     assert events[0]["target"]["name"] == "shadow_email"
 
 
+def test_shadow_button_with_empty_own_label_falls_back_to_host_text(page: Page) -> None:
+    # Mirrors Shoelace-style wrapper components (<sl-button>Primary</sl-button>): the shadow-
+    # internal <button> composedPath()[0] hands back has no innerText/aria-label of its own —
+    # the visible label only exists on the light-DOM host. Without the host-text fallback, every
+    # such click records with an empty name, leaving only a generic shadow-internal CSS class as
+    # a selector — see FIX.md's WF-2-S-J investigation.
+    _install_bridge(
+        page,
+        """
+        <shadow-btn id="host">Primary</shadow-btn>
+        <script>
+          customElements.define('shadow-btn', class extends HTMLElement {
+            connectedCallback() {
+              const root = this.attachShadow({ mode: 'open' });
+              root.innerHTML = '<button></button>';
+            }
+          });
+        </script>
+        """,
+    )
+
+    page.click("shadow-btn button")
+    page.wait_for_timeout(30)
+
+    events = _events(page)
+    assert len(events) == 1
+    assert events[0]["target"]["tag"] == "button"
+    assert events[0]["target"]["inner_text"] == "Primary"
+    assert events[0]["shadow_path"]
+    assert events[0]["shadow_path"][0]["host"].startswith("shadow-btn")
+
+
 def test_custom_drawer_role_button_records_click(page: Page) -> None:
     _install_bridge(
         page,

@@ -184,6 +184,27 @@
     return String(el.innerText).replace(/\s+/g, " ").trim().slice(0, maxLen);
   }
 
+  // Walks getRootNode().host repeatedly to collect every shadow boundary crossed on the way up
+  // from el. A component like <sl-button>Primary</sl-button> renders a shadow-internal
+  // <button> whose own innerText/aria-label are empty — the visible label only exists on the
+  // light-DOM host — so callers needing the element's real accessible name/text must fall back
+  // to shadowHostChain(el)[0].host once own-element signals come back empty.
+  function shadowHostChain(el) {
+    const chain = [];
+    let node = el;
+    let hops = 0;
+    while (node && hops < 10) {
+      const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+      if (!root || !root.host) break;
+      const host = root.host;
+      const tag = (host.tagName || "").toLowerCase();
+      chain.push({ host: tag + (host.id ? `#${host.id}` : ""), mode: root.mode || "open" });
+      node = host;
+      hops += 1;
+    }
+    return chain;
+  }
+
   function nodeAsElement(node) {
     if (!node) return null;
     if (node.nodeType === 1) return node;
@@ -1236,10 +1257,25 @@
     const tag = (el.tagName && el.tagName.toLowerCase()) || "unknown";
     const id = el.id || null;
     const classes = el.classList ? Array.from(el.classList) : [];
-    const innerText = safeText(el, 2000);
+    let innerText = safeText(el, 2000);
     const role = el.getAttribute("role") || implicitAriaRole(el);
-    const aria = el.getAttribute("aria-label");
+    let aria = el.getAttribute("aria-label");
     const name = el.getAttribute("name");
+    const shadowPath = shadowHostChain(el);
+    // Shadow-DOM component wrappers (e.g. <sl-button>Primary</sl-button>) project their visible
+    // label into the shadow-internal element via a <slot> — the internal element itself (what
+    // composedPath()[0] hands us) has no innerText/aria-label of its own. Without this fallback
+    // every such element records with an empty name, so the compiler's only signal left is a
+    // generic shadow-internal CSS class shared by every sibling of that variant — see FIX.md.
+    if (!innerText && !aria && shadowPath.length) {
+      const host = el.getRootNode().host;
+      // textContent, not innerText: the host's light-DOM label text only renders (and so only
+      // shows up in innerText) when the shadow template actually wires up a <slot> for it — a
+      // misconfigured or slot-less wrapper would otherwise still report no label despite one
+      // being right there in the markup. textContent reads the light DOM directly regardless.
+      innerText = String(host.textContent || "").replace(/\s+/g, " ").trim().slice(0, 2000);
+      aria = host.getAttribute("aria-label");
+    }
     const inputType = el.getAttribute("type") || (isEditableNode(el) && tag !== "select" ? "text" : null);
     const rect = el.getBoundingClientRect();
     const scrollX = window.scrollX || window.pageXOffset || 0;
@@ -1325,6 +1361,7 @@
       context,
       semantic,
       anchors,
+      shadow_path: shadowPath,
       visual_placeholder: {
         bbox,
         viewport,
