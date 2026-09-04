@@ -232,13 +232,27 @@ def set_workflow_status_from_group_auth(workflow_id: str, group_ready: bool) -> 
 
 
 def set_recording(workflow_id: str, session_id: str) -> Workflow | None:
-    """Attach the workflow's single recording (was add_workflow onto Plugin.workflows[])."""
+    """Attach the workflow's single recording (was add_workflow onto Plugin.workflows[]).
+
+    A new recording invalidates any compile/human-edit/test status left over from a
+    previous take of this workflow — otherwise the stage rail keeps showing "ready"
+    against a skill compiled from the discarded recording.
+    """
     workflow = get_workflow(workflow_id)
     if workflow is None:
         return None
     workflow.session_id = session_id
     workflow.recorded_at = time.time()
     workflow.recording_status = "recorded"
+    workflow.skill_id = None
+    workflow.compile_status = None
+    workflow.compile_min_confidence = None
+    workflow.compile_steps_with_warnings = None
+    workflow.edited_at = None
+    workflow.signed_off = False
+    workflow.last_test_status = "never"
+    workflow.last_test_at = None
+    workflow.last_test_error = None
     return save_workflow(workflow)
 
 
