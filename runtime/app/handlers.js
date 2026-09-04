@@ -19,6 +19,7 @@ const {
   locatorCandidates,
   resolveStep,
   rootCandidates,
+  gateLocator,
 } = require("./resolution");
 const {
   parseDateValue,
@@ -199,27 +200,46 @@ function _isoFor(parsed) {
 // compile-time value_equals assertion behind it (date_picker.py never emits one; a literal
 // recorded date would fail VERIFY for every caller-supplied date other than the one recorded),
 // so a false result here must fail the step, not just steer the typed-vs-grid decision.
-function _dateValueMatches(actual, parsed, displayFormat) {
+//
+// trustIsoEquality defaults true for native <input type=date>, where fill()'s value IS raw ISO
+// — a real signal the browser accepted it. For a custom widget (isCustomPicker at the call site)
+// with no compiled display_format, raw ISO text landing back in the field proves nothing: it's
+// just our own literal fill() echoed unparsed, not evidence the widget registered that date (see
+// handlers.js's date_pick handler for the jQuery-UI-shaped case this was found against — a plain
+// text field that happily holds any string typed into it). Callers for that case pass false so an
+// unverifiable typed attempt correctly falls through to the grid strategy instead of a false pass.
+function _dateValueMatches(actual, parsed, displayFormat, { trustIsoEquality = true } = {}) {
   const normalized = String(actual || "").trim().toLowerCase();
   if (!normalized) return false;
-  if (normalized === _isoFor(parsed).toLowerCase()) return true;
+  if (trustIsoEquality && normalized === _isoFor(parsed).toLowerCase()) return true;
   const formatted = formatForDisplay(parsed, displayFormat || "");
   if (!formatted) return false;
   const normFormatted = formatted.toLowerCase();
   return normalized === normFormatted || normalized.includes(normFormatted);
 }
 
+// Every other handler acts through withLocator, which gates via gateLocator() before touching
+// the page (visible -> RAF-stable -> enabled). The calendar-grid driver below acts directly on
+// root.locator(...) instead, since it isn't walking the identity-bundle resolution path — but
+// jQuery UI (and calendar widgets generally) fully replace the header+day-grid DOM on every nav
+// click, so an un-gated click can race that replace. Reuse the same gate here rather than
+// inventing a second stability mechanism.
+async function _gatedClick(locator, step, timeout) {
+  await gateLocator(locator, step).catch(() => {});
+  await locator.click({ timeout });
+}
+
 // Drives one root's calendar grid to the target date: open (unless the grid's already up, as on
 // a range's second leg) -> nav to the target month, bounded and boundary-aware -> click the day
 // cell, preferring a machine-readable attribute rebuilt for THIS date over the recorded (and only
 // ever valid for the recording's own day) cell selector -> optional time option for a datetime.
-async function _driveDatePickerGrid(root, parsed, hints) {
+async function _driveDatePickerGrid(root, parsed, hints, step) {
   if (hints.role !== "range_end" && hints.open) {
     const alreadyOpen = hints.grid
       ? await root.locator(hints.grid).first().isVisible().catch(() => false)
       : false;
     if (!alreadyOpen) {
-      await root.locator(hints.open).first().click({ timeout: ACTION_TIMEOUT_MS });
+      await _gatedClick(root.locator(hints.open).first(), step, ACTION_TIMEOUT_MS);
     }
   }
   if (hints.grid) {
@@ -254,7 +274,7 @@ async function _driveDatePickerGrid(root, parsed, hints) {
       if (delta === null || delta === 0) break; // unparseable header, or already on target month
       const navSelector = delta > 0 ? hints.next : hints.prev;
       if (!navSelector) break;
-      await root.locator(navSelector).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+      await _gatedClick(root.locator(navSelector).first(), step, SECONDARY_ACTION_TIMEOUT_MS);
       // A disabled min/max boundary means this click did nothing — stop rather than loop until
       // MAX_NAV_CLICKS on a header that will never reach the target.
       const after = await root.locator(hints.header).first()
@@ -268,12 +288,12 @@ async function _driveDatePickerGrid(root, parsed, hints) {
   let cellClicked = false;
   if (machineSelector) {
     try {
-      await cellScope.locator(machineSelector).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+      await _gatedClick(cellScope.locator(machineSelector).first(), step, SECONDARY_ACTION_TIMEOUT_MS);
       cellClicked = true;
     } catch (_) { /* fall through to the day-number strategy */ }
   }
   if (!cellClicked) {
-    await cellScope.locator(dayNumberSelector(parsed.day)).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
+    await _gatedClick(cellScope.locator(dayNumberSelector(parsed.day)).first(), step, SECONDARY_ACTION_TIMEOUT_MS);
   }
 
   if (hints.kind === "datetime" && hints.time_option) {
@@ -291,7 +311,7 @@ async function _runDatePickerGrid(page, step, inputs, parsed, hints) {
   let lastErr = null;
   for (const root of roots) {
     try {
-      await _driveDatePickerGrid(root, parsed, hints);
+      await _driveDatePickerGrid(root, parsed, hints, step);
       return;
     } catch (err) {
       lastErr = err;
@@ -512,10 +532,20 @@ const HANDLERS = {
       try {
         await runLocatorStep(page, step, inputs, async locator => {
           await locator.fill(displayValue, { timeout: ACTION_TIMEOUT_MS });
-          try { await locator.press("Enter", { timeout: SECONDARY_ACTION_TIMEOUT_MS }); } catch (_) { /* not every widget commits on Enter */ }
+          // Enter is skipped for a custom picker: focusing the field to fill() it can open a
+          // popup calendar as a side effect (e.g. jQuery UI's showOn:'focus'), and Enter on an
+          // OPEN popup calendar finalizes/closes it right there — confirmed live against
+          // jqueryui.com's own datepicker demo, where that close (and the grid fallback's
+          // immediate re-open right after) races the widget's own fade animation queue and can
+          // leave the calendar getting yanked shut mid-click several actions later, well past
+          // this step. A native input has no popup to corrupt, so it keeps pressing Enter for
+          // widgets that need it to commit.
+          if (!isCustomPicker) {
+            try { await locator.press("Enter", { timeout: SECONDARY_ACTION_TIMEOUT_MS }); } catch (_) { /* not every widget commits on Enter */ }
+          }
           let actual = "";
           try { actual = await locator.inputValue({ timeout: SECONDARY_ACTION_TIMEOUT_MS }); } catch (_) { /* not every widget is a real <input> */ }
-          typedOk = _dateValueMatches(actual, parsed, hints.display_format);
+          typedOk = _dateValueMatches(actual, parsed, hints.display_format, { trustIsoEquality: !isCustomPicker });
         });
       } catch (err) {
         if (!isCustomPicker) throw err; // no grid fallback exists for a native input
