@@ -639,7 +639,17 @@ class TestSavedSkillJsonBuild:
             "blueprint_name",
         ]
 
-    def test_saved_skill_recovery_repairs_hardcoded_search_result_click(self, tmp_path):
+    def test_saved_skill_does_not_rewrite_a_hardcoded_search_result_click_with_the_prior_input(self, tmp_path):
+        # This used to be "repaired" into `text="{{database_name}}"` by a blind rewrite that
+        # armed on ANY preceding type step's placeholder, with no check the click actually
+        # related to it (BUILD-22: the same mechanism turned a Login button's selector into
+        # `text="{{user_password}}"` on an unrelated recording). The rewrite has been removed —
+        # a step's selector must always match its own recorded identity. The tradeoff: a
+        # search->click-the-result skill replayed with a different search term now keeps this
+        # recorded literal selector and falls through to the recovery cascade instead of
+        # following the input automatically. See TODO.md for a follow-up that reintroduces this
+        # binding safely at compile time, gated on the click text actually matching the typed
+        # literal.
         saved_skill = {
             "meta": {"id": "skill_123", "title": "Delete Database"},
             "inputs": [{"id": "database_name", "label": "Database Name", "type": "text"}],
@@ -688,24 +698,19 @@ class TestSavedSkillJsonBuild:
         execution_raw = (skill_dir / "execution.json").read_text(encoding="utf-8")
         recovery_raw = (skill_dir / "recovery.json").read_text(encoding="utf-8")
 
-        assert "{{database_name}}" in execution_raw
-        assert "{{database_name}}" in recovery_raw
-        assert "conxa-db" not in execution_raw
-        assert "conxa-db" not in recovery_raw
+        execution = json.loads(execution_raw)
+        click_steps = [step for step in execution if step["type"] == "click"]
+        assert click_steps[0]["selector"] == 'text="conxa-db"'
+        assert click_steps[1]["selector"] == 'text="Delete Database"'
         assert "recovery_metadata" not in recovery_raw
         assert "generated_by" not in recovery_raw
         assert '"mode"' not in recovery_raw
         assert "visual_metadata" not in recovery_raw
 
-        execution = json.loads(execution_raw)
-        assert execution[2]["selector"] == 'text="{{database_name}}"'
-        assert execution[4]["selector"] == 'text="Delete Database"'
-
         recovery = json.loads(recovery_raw)
-        search_result_entry = next(step for step in recovery["steps"] if step["step_id"] == 3)
-        assert search_result_entry["target"]["text"] == "{{database_name}}"
-        assert search_result_entry["intent"] == "click_database_name"
-        assert search_result_entry["selector_context"]["primary"] == 'text="{{database_name}}"'
+        click_entry = next(entry for entry in recovery["steps"] if entry["intent"] == "click_conxa_db")
+        assert click_entry["selector_context"]["primary"] == 'text="conxa-db"'
+        assert click_entry["target"]["text"] == "conxa-db"
 
     def test_saved_skill_recovery_is_built_from_saved_human_edit_fields(self, tmp_path):
         saved_skill = {

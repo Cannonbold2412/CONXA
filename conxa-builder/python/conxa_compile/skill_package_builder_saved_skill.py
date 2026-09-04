@@ -33,7 +33,6 @@ _LOGIN_MARKERS = frozenset(
 )
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE as _PLACEHOLDER_RE
 from conxa_compile.editor.placeholder_grammar import PLACEHOLDER_RE as _PLACEHOLDER_NAME_RE
 _TEXT_SELECTOR_RE = re.compile(r"^text=(?P<quote>['\"]?)(?P<text>.+?)(?P=quote)$")
 
@@ -782,34 +781,6 @@ def _text_selector_value(selector: Any) -> str:
     return match.group("text").strip()
 
 
-def _quote_text_selector(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'text="{escaped}"'
-
-
-def _repair_parameterized_search_result_selectors(execution_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Use pure typed placeholders for the immediately selected search result."""
-    out: list[dict[str, Any]] = []
-    pending_placeholder = ""
-    for step in execution_steps:
-        step_copy = dict(step)
-        step_type = str(step_copy.get("type") or "")
-        value = str(step_copy.get("value") or "").strip()
-
-        if step_type in {"type", "fill"} and _PLACEHOLDER_RE.match(value):
-            pending_placeholder = value
-        elif step_type == "click" and pending_placeholder:
-            selector_value = _text_selector_value(step_copy.get("selector"))
-            if selector_value and "{{" not in selector_value:
-                step_copy["selector"] = _quote_text_selector(pending_placeholder)
-            pending_placeholder = ""
-        elif step_type not in {"focus", "scroll"}:
-            pending_placeholder = ""
-
-        out.append(step_copy)
-    return out
-
-
 def _normalize_recovery_name(value: Any) -> str:
     text = re.sub(r"[^a-zA-Z0-9]+", "_", str(value or "").strip().lower()).strip("_")
     return text or "action"
@@ -904,28 +875,6 @@ def _saved_step_visual_ref(step_id: int, visuals_dir: Path | None) -> str | None
     return None
 
 
-def _repair_saved_step_click_selectors(source_steps: list[dict[str, Any]]) -> list[str]:
-    repaired: list[str] = []
-    pending_placeholder = ""
-    for step in source_steps:
-        action = _step_action_name(step)
-        if action == "input":
-            action = "type"
-        selector = _step_selector(step)
-        value = str(step.get("value") or "").strip()
-        if action in {"type", "fill"} and _PLACEHOLDER_RE.match(value):
-            pending_placeholder = value
-        elif action == "click" and pending_placeholder:
-            selector_value = _text_selector_value(selector)
-            if selector_value and "{{" not in selector_value:
-                selector = _quote_text_selector(pending_placeholder)
-            pending_placeholder = ""
-        elif action not in {"focus", "scroll"}:
-            pending_placeholder = ""
-        repaired.append(selector)
-    return repaired
-
-
 def _saved_visual_asset_path(step: dict[str, Any], source_session_id: str) -> str:
     signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
     visual = signals.get("visual") if isinstance(signals.get("visual"), dict) else {}
@@ -984,26 +933,20 @@ def _build_saved_skill_recovery(
     visuals_dir: Path | None = None,
 ) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
-    repaired_selectors = _repair_saved_step_click_selectors(source_steps)
-    for step, step_id, selector in zip(source_steps, step_ids, repaired_selectors):
+    for step, step_id in zip(source_steps, step_ids):
         action = _step_action_name(step)
         if action == "input":
             action = "type"
         if action not in RECOVERY_ACTION_TYPES:
             continue
-        selector = str(selector or "").strip()
+        selector = str(_step_selector(step) or "").strip()
         if not selector:
             continue
         target_text = _target_text_from_selector(selector)
-        original_selector_text = _target_text_from_selector(_step_selector(step))
         target = step.get("target") if isinstance(step.get("target"), dict) else {}
         target_role = "textbox" if action in {"type", "fill"} else str(target.get("role") or "")
         raw_intent = str(step.get("intent") or "").strip()
-        old_intent_token = _normalize_recovery_name(original_selector_text)
-        if "{{" in target_text and "{{" not in raw_intent and old_intent_token in _normalize_recovery_name(raw_intent):
-            intent = f"{action}_{_normalize_recovery_name(target_text)}"
-        else:
-            intent = raw_intent or f"{action}_{_normalize_recovery_name(target_text or target_role)}"
+        intent = raw_intent or f"{action}_{_normalize_recovery_name(target_text or target_role)}"
         entry: dict[str, Any] = {
             "step_id": step_id,
             "intent": intent,
@@ -1078,7 +1021,6 @@ def _build_workflow_from_saved_skill(
         execution_steps.append(converted)
         source_steps.append(raw)
         step_ids.append(len(execution_steps))
-    execution_steps = _repair_parameterized_search_result_selectors(execution_steps)
     if not execution_steps:
         raise ValueError(f"Saved skill {meta.get('id') or workflow_slug!r} has no executable steps.")
 
