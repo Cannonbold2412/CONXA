@@ -1008,6 +1008,72 @@
     return null;
   }
 
+  // Last-resort fallback for widgets whose day cell carries NEITHER a machine attribute NOR an
+  // aria-label/title — jQuery UI's stock day cell is exactly this (`<a>15</a>` inside a
+  // `<td data-month data-year>`, nothing else). Without this, such a click never gets a
+  // date_context at all, so collapse_date_picker_runs (date_picker.py) never finds a "day" event
+  // to collapse the run around and the whole open/nav/pick sequence compiles as ordinary,
+  // unparameterized clicks. Returns { iso, attr: "" } — same shape as the aria-label fallback
+  // above, so every downstream consumer (grid_only strategy, runtime's dayNumberSelector) already
+  // handles it with no further changes.
+  const _DAY_NUMBER_RE = /^\d{1,2}$/;
+  const _OVERFLOW_CELL_RE = /disabled|outside|other-month|prev-month|next-month|adjacent/i;
+
+  function _isOverflowOrDisabledCell(cell) {
+    if (!cell) return false;
+    if (cell.getAttribute && (cell.getAttribute("aria-disabled") === "true" || cell.getAttribute("aria-hidden") === "true")) {
+      return true;
+    }
+    if (_OVERFLOW_CELL_RE.test(String(cell.className || ""))) return true;
+    const parent = cell.parentElement;
+    return !!(parent && _OVERFLOW_CELL_RE.test(String(parent.className || "")));
+  }
+
+  // Prefers a nearby ancestor's data-month/data-year (jQuery UI's own `<td>`) over the header
+  // text: exact, and still correct for a multi-month grid where the header doesn't describe
+  // every visible cell. jQuery UI's data-month is 0-indexed; when the header text is available it
+  // disambiguates against that convention instead of assuming it blindly.
+  function _monthYearFromAncestorAttrs(cell, headerText) {
+    const headerDate = headerText ? new Date(headerText.trim()) : null;
+    const headerMonth = headerDate && !isNaN(headerDate.getTime()) ? headerDate.getMonth() + 1 : null;
+    let cur = cell;
+    for (let depth = 0; depth < 3 && cur && cur.nodeType === 1; depth++) {
+      if (cur.getAttribute) {
+        const monthAttr = cur.getAttribute("data-month");
+        const yearAttr = cur.getAttribute("data-year");
+        if (monthAttr !== null && yearAttr !== null) {
+          const year = parseInt(yearAttr, 10);
+          const oneIndexed = parseInt(monthAttr, 10);
+          const zeroIndexed = oneIndexed + 1;
+          const month = headerMonth === oneIndexed ? oneIndexed : zeroIndexed;
+          if (!isNaN(year) && month >= 1 && month <= 12) return { year, month };
+        }
+      }
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function _cellIsoDateFromText(cell, headerText) {
+    if (!cell || _isOverflowOrDisabledCell(cell)) return null;
+    const text = safeText(cell, 10).trim();
+    if (!_DAY_NUMBER_RE.test(text)) return null;
+    const day = parseInt(text, 10);
+    if (day < 1 || day > 31) return null;
+
+    const my = _monthYearFromAncestorAttrs(cell, headerText);
+    if (my) {
+      return `${my.year}-${String(my.month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+    if (headerText) {
+      const d = new Date(headerText.trim());
+      if (!isNaN(d.getTime())) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+    return null;
+  }
+
   function _timeOptionText(el, root) {
     if (!root.contains(el)) return null;
     const txt = safeText(el, 20).trim();
@@ -1093,7 +1159,11 @@
       return { role: "nav", nav: "next", grid: gridSelector, header: headerSelector, header_text: headerText };
     }
 
-    const cellDate = _cellIsoDate(el);
+    let cellDate = _cellIsoDate(el);
+    if (!cellDate) {
+      const iso = _cellIsoDateFromText(el, headerText);
+      if (iso) cellDate = { iso, attr: "" };
+    }
     if (cellDate) {
       const field = _findAnchoredField(gridRoot);
       return {

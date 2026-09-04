@@ -997,6 +997,90 @@ def test_calendar_root_is_the_widget_not_the_day_cell(page: Page) -> None:
     )
 
 
+def _jqueryui_style_html(month_attr: str = "10", year_attr: str = "2026", header: str = "November 2026") -> str:
+    # jQuery UI's actual stock markup: the day <td> carries data-month (0-indexed)/data-year, the
+    # clicked <a> itself carries no attribute and no aria-label/title at all — just the bare day
+    # number as text. No test fixture before this covered that shape; every other calendar test
+    # here gives the day cell a full aria-label sentence, which is exactly why this bug shipped.
+    return f"""
+    <input id="dob" class="form-control" />
+    <div class="ui-datepicker">
+      <div class="ui-datepicker-header">
+        <a class="ui-datepicker-prev" title="Prev">&lt;</a>
+        <a class="ui-datepicker-next" title="Next">&gt;</a>
+        <div class="ui-datepicker-title">{header}</div>
+      </div>
+      <table class="ui-datepicker-calendar">
+        <tbody>
+          <tr>
+            <td class="ui-datepicker-other-month" data-month="{month_attr}" data-year="{year_attr}" id="day30overflow">
+              <a class="ui-state-default" href="#">30</a>
+            </td>
+            <td data-handler="selectDay" data-event="click" data-month="{month_attr}" data-year="{year_attr}" id="day15">
+              <a class="ui-state-default" href="#">15</a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    """
+
+
+def test_jqueryui_style_day_cell_with_no_attributes_is_still_tagged(page: Page) -> None:
+    # The recorder-side fix: _cellIsoDate alone returns null for this markup (no data-date, no
+    # aria-label/title) — buildDateContext must fall back to the cell's own day-number text plus
+    # the ancestor <td>'s data-month/data-year (jQuery UI's real convention, 0-indexed).
+    _install_bridge(page, _jqueryui_style_html())
+    page.click("#day15 a")
+    page.wait_for_timeout(150)
+
+    dc = _action_events(page, "click")[0]["date_context"]
+    assert dc is not None, "a bare-text jQuery UI day cell click was not tagged with date_context at all"
+    assert dc["role"] == "day"
+    assert dc["iso_date"] == "2026-11-15"
+    assert dc["cell_attr"] == "", "no machine attribute exists on this markup — attr must report empty"
+
+
+def test_jqueryui_style_day_cell_falls_back_to_header_text_without_data_attrs(page: Page) -> None:
+    # Same bare-text day cell, but with no data-month/data-year anywhere — only the grid's own
+    # header text ("November 2026") to derive month/year from.
+    html = """
+    <div class="ui-datepicker">
+      <div class="ui-datepicker-header">
+        <a class="ui-datepicker-prev" title="Prev">&lt;</a>
+        <a class="ui-datepicker-next" title="Next">&gt;</a>
+        <div class="ui-datepicker-title">November 2026</div>
+      </div>
+      <table class="ui-datepicker-calendar">
+        <tbody><tr><td id="day15"><a class="ui-state-default" href="#">15</a></td></tr></tbody>
+      </table>
+    </div>
+    """
+    _install_bridge(page, html)
+    page.click("#day15 a")
+    page.wait_for_timeout(150)
+
+    dc = _action_events(page, "click")[0]["date_context"]
+    assert dc is not None
+    assert dc["role"] == "day"
+    assert dc["iso_date"] == "2026-11-15"
+
+
+def test_jqueryui_other_month_overflow_cell_is_not_tagged_as_a_day_pick(page: Page) -> None:
+    # The greyed "30" cell from the previous month (jQuery UI's selectOtherMonths mode makes it
+    # clickable), carrying the SAME data-month/data-year as the real day-15 cell — jQuery UI
+    # stamps overflow cells with the visible month, not their own. Without the overflow/disabled
+    # exclusion this would tag as day 30 of the visible month instead of being left alone as an
+    # ordinary click — exactly the ambiguity the runtime's own dayNumberSelector() already guards
+    # against on the replay side.
+    _install_bridge(page, _jqueryui_style_html())
+    page.click("#day30overflow a")
+    page.wait_for_timeout(150)
+
+    dc = _action_events(page, "click")[0]["date_context"]
+    assert dc is None, "an other-month overflow cell was tagged as a real day pick"
+
+
 def test_sibling_combobox_value_is_not_captured_as_this_fields_label(page: Page) -> None:
     # captureAssociatedLabel's fallback #6 walks preceding siblings looking for a short text
     # caption. A react-select-style "City" field sitting right after a "State" field picked up
