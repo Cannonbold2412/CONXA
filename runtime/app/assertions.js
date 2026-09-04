@@ -6,6 +6,7 @@ const { interpolate } = require("./interpolate");
 const { PAGE_LOAD_TIMEOUT_MS } = require("./run_config");
 const { asObject, asArray, isNonIdempotent } = require("./step_utils");
 const { rootCandidates } = require("./resolution");
+const { withDeadline } = require("./page_eval");
 
 // Phase 8: post-action VERIFY — check compiled post-condition assertions independently of the
 // action's own success. Returns { pass, channel, evidence }. Absent assertions → pass (no-op).
@@ -63,18 +64,9 @@ const VERIFY_POLL_INTERVAL_MS = 250;
 // window after the first "absent" reading avoids a false pass that a moment later would flip back.
 const NEGATIVE_STABILIZE_MS = 500;
 
-// Runs `fn()` but never waits past `deadline` for it — resolves `fallback` instead if the
-// deadline arrives first. The abandoned call (e.g. a page.evaluate against a renderer blocked
-// by an open native dialog) is not cancelled — Playwright/CDP calls aren't cancelable — it just
-// stops being awaited here. That's safe: Promise.race still attaches a handler to it, so a
-// later rejection is not an unhandled rejection, it's just ignored.
-function withDeadline(fn, deadline, fallback) {
-  const remaining = Math.max(0, deadline - Date.now());
-  return Promise.race([
-    fn(),
-    new Promise(resolve => setTimeout(() => resolve(fallback), remaining)),
-  ]);
-}
+// withDeadline moved to page_eval.js (EXEC-29 Guard A) so resolution.js/failure_response.js can
+// share it without a require cycle through this file's own `rootCandidates` dependency.
+// Re-exported below for existing callers of `require("./assertions").withDeadline`.
 
 async function pollPositive(checkFn, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
@@ -254,4 +246,5 @@ module.exports = {
   verifyStep,
   hasRequiredAssertion,
   needsStateChangedBaseline,
+  withDeadline,
 };

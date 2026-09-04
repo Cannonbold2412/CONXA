@@ -801,25 +801,35 @@ async function _drainDialogQueue(ctx) {
   return queue.length ? queue.shift() : null;
 }
 
-HANDLERS["dialog_accept"] = async (_page, step, inputs, ctx) => {
-  const dialog = await _drainDialogQueue(ctx);
+// Shared by the dialog_accept/dialog_dismiss handlers below AND run.js's pre-arm (EXEC-29) —
+// both ultimately answer a live Playwright Dialog the same way from the same recorded step
+// shape, just at different moments relative to the triggering click. Safe to call twice on the
+// same dialog (a pre-armed answer racing the marker step's own drain): Playwright throws on the
+// second accept()/dismiss() call, caught and ignored here exactly as it always was.
+async function answerDialog(dialog, step, inputs) {
   if (!dialog) return;
+  if (step && step.type === "dialog_dismiss") {
+    try { await dialog.dismiss(); } catch (_e) { /* dialog already resolved/gone */ }
+    return;
+  }
   let text = "";
   try {
-    const parsed = JSON.parse(step.value || "{}");
+    const parsed = JSON.parse((step && step.value) || "{}");
     if (parsed && typeof parsed.value === "string") text = parsed.value;
   } catch (_e) { /* non-JSON value: nothing to type */ }
   try {
     await dialog.accept(interpolate(text, inputs));
   } catch (_e) { /* dialog already resolved/gone */ }
+}
+
+HANDLERS["dialog_accept"] = async (_page, step, inputs, ctx) => {
+  const dialog = await _drainDialogQueue(ctx);
+  await answerDialog(dialog, step, inputs);
 };
 
-HANDLERS["dialog_dismiss"] = async (_page, _step, _inputs, ctx) => {
+HANDLERS["dialog_dismiss"] = async (_page, step, inputs, ctx) => {
   const dialog = await _drainDialogQueue(ctx);
-  if (!dialog) return;
-  try {
-    await dialog.dismiss();
-  } catch (_e) { /* dialog already resolved/gone */ }
+  await answerDialog(dialog, step, inputs);
 };
 
 async function executeStep(page, step, inputs, ctx = {}) {
@@ -940,6 +950,7 @@ module.exports = {
   executeStep,
   enrichStepsWithRecovery,
   applyStepOverrides,
+  answerDialog,
   _dateValueMatches,
   _ensureChoiceMenuOpen,
 };

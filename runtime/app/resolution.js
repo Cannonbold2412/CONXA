@@ -9,6 +9,7 @@ const { STALE_RE } = require("./recovery");
 const { interpolate } = require("./interpolate");
 const { envNumber } = require("./run_config");
 const { unique, asObject, asArray } = require("./step_utils");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 // Frame roots are driven solely by identity_bundle.frame_chain (durability-ranked signals per
 // iframe level). Each frame signal selector is a CSS attribute selector (iframe[name=…] etc.),
@@ -155,10 +156,14 @@ async function gateLocator(loc, step) {
 
   await loc.waitFor({ state: "visible", timeout: budget });
 
-  // RAF-stable: bounding box must be unchanged across two animation frames.
+  // RAF-stable: bounding box must be unchanged across two animation frames. EXEC-29 Guard A:
+  // routed through evalOn/withDeadline rather than a bare loc.evaluate() — this call sits on
+  // the hot path of every gated action, so a renderer stuck behind a native dialog (or any
+  // other reason the page's JS thread stops responding) must surface as "not stable yet"
+  // within GATE_BUDGET_MS, not hang the gate — and by extension the whole run — indefinitely.
   try {
-    const stable = await loc.evaluate(pageScripts.rafStable);
-    if (!stable) {
+    const stable = await evalOn(loc, pageScripts.rafStable, undefined, budget);
+    if (!stable || stable === EVAL_TIMED_OUT) {
       await loc.waitFor({ state: "visible", timeout: budget }); // settle once more
     }
   } catch (_) {
@@ -167,7 +172,8 @@ async function gateLocator(loc, step) {
 
   // Enabled: reject disabled / aria-disabled controls.
   try {
-    const disabled = await loc.evaluate(pageScripts.isDisabled);
+    const disabled = await evalOn(loc, pageScripts.isDisabled, undefined, budget);
+    if (disabled === EVAL_TIMED_OUT) return; // couldn't tell — don't block the action on it
     if (disabled) throw new Error("Element is disabled");
   } catch (err) {
     const msg = String((err && err.message) || "");

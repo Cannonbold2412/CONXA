@@ -13,6 +13,7 @@ from typing import Any
 from conxa_compile.compiler.action_semantics import action_name, is_editable_target, looks_like_submit
 from conxa_compile.compiler.selector_filters import is_dynamic_id, selector_passes_filters
 from conxa_compile.compiler.selector_score import ordered_selector_strings, rank_labeled_selector_candidates
+from conxa_compile.editor.action_registry import MARKER_ACTIONS
 from conxa_compile.policy.bundle import get_policy_bundle
 
 Step = dict[str, Any]
@@ -274,7 +275,14 @@ def clean_steps(steps: list[Step], policy: dict[str, Any] | None = None) -> list
                 # same-action-same-key test above matches ANY two consecutive ones. Two real
                 # consecutive Backs — or two address-bar edits to different URLs — must never
                 # collapse into one replayed step.
-                if action in {"browser_back", "browser_forward", "manual_navigate"}:
+                # Markers (dialog_accept/dialog_dismiss, download_observed, tab_open, ...) carry
+                # no element target, so `key` is the same empty value for every one of them —
+                # two REAL, distinct marker events (e.g. confirm's answer followed by prompt's)
+                # would otherwise always look like one duplicated action and lose the second.
+                # Unlike browser_back/forward/manual_navigate above, a marker's `value` also
+                # differs event to event, so there is no same-key-different-content case this
+                # would wrongly preserve.
+                if action in {"browser_back", "browser_forward", "manual_navigate"} or action in MARKER_ACTIONS:
                     cleaned.append(step)
                     continue
                 if action == "type":

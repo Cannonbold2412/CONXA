@@ -299,7 +299,27 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
   return ok ? remedy : false;
 }
 
-async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null, baseline = null, guard = null) {
+async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null, baseline = null, guard = null, dialogQueue = null) {
+  // EXEC-29 — every stage below eventually touches the page (an `.evaluate()` a11y probe, a
+  // fresh `resolveStep`, a plain `waitForTimeout`), and a renderer with an open native dialog
+  // does not run any of that: Chromium blocks the whole tab, not just the action that triggered
+  // the dialog. Re-resolving here is meaningless (there is nothing to observe) and unbounded
+  // (see the individual call sites' own deadline seam, page_eval.js) — so recovery must never
+  // even start while a dialog is pending. `verifyStep` already carries this same short-circuit
+  // (`assertions.js`, channel `dialog_pending`); this is its recovery-side twin.
+  if (dialogQueue && dialogQueue.length) {
+    const pending = dialogQueue[0];
+    let dialogType = "unknown", dialogMessage = "";
+    try { dialogType = pending.type(); dialogMessage = pending.message(); } catch (_) {}
+    if (primaryErr) {
+      primaryErr.dialogPending = true;
+      primaryErr.dialogPendingType = dialogType;
+      primaryErr.dialogPendingMessage = dialogMessage;
+    }
+    appendRecoveryEvent({ event: "recovery_skipped_dialog_pending", slug, step_index: stepIndex, dialog_type: dialogType });
+    tracker.emit("rec_halt", { si: stepIndex, why: "dialog_pending" });
+    return false;
+  }
   // Each Tier 1/2 stage is individually time-bounded, but the cascade as a whole can run for tens
   // of seconds. If the MCP client cancels mid-recovery (e.g. its request timed out), bail at the
   // next stage boundary instead of grinding through every remaining stage on a doomed run.
@@ -360,7 +380,7 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
   }
 
   bail();
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(250).catch(() => {}); // page/context/browser may have closed mid-recovery
   if (await recoverWithSelector(page, step, inputs, primarySelector, () => {
     appendRecoveryEvent({ event: "transient_recovered", slug, step_index: stepIndex });
   }, baseline, g)) return { tier: "L2", method: "transient" };

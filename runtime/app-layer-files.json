@@ -57,6 +57,8 @@
       "_note": "Per-external-host mutual exclusion (RT-3 follow-up) — serializes only runs that overlap on the same target platform." },
     { "name": "target_hosts.js",      "profile": "default",
       "_note": "Extracted from server.js: resolveTargetHosts — every required app's host per run, feeding host_lock.js; pure so the multi-app union stays unit-testable." },
+    { "name": "page_eval.js",         "profile": "default",
+      "_note": "EXEC-29 Guard A: deadline-wrapped page/locator .evaluate() seam; required by resolution.js, assertions.js, failure_response.js." },
     { "name": "failure_response.js",  "profile": "default",
       "_note": "Extracted from server.js: Tier 3/4 failure-payload assembly." },
     { "name": "artifact_store.js",    "profile": "default",

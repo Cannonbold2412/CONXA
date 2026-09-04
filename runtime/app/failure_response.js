@@ -28,6 +28,7 @@
 const fs   = require("fs");
 const path = require("path");
 const pageScripts = require("./page_scripts");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 const { capturePageFingerprint, parkKey } = require("./recovery_park");
 const recoveryStage = require("./recovery_stage");
 const { buildIndexedDigest } = require("./candidate_digest");
@@ -151,8 +152,12 @@ function executedStepsBreadcrumb(steps, failedAt) {
 // Returns { inventory, overlay } — `overlay` is the probe's container descriptor, or null.
 async function gatherInventory(page, err, deps) {
   let inventory = null;
+  // EXEC-29 Guard A: this failure-response path is exactly where a blocked renderer is most
+  // likely — it runs right after the primary action already timed out — so an unbounded
+  // page.evaluate() here previously had no protection at all.
   try {
-    inventory = await page.evaluate(pageScripts.domInventory);
+    const result = await evalOn(page, pageScripts.domInventory);
+    inventory = result === EVAL_TIMED_OUT ? null : result;
   } catch (_) {}
 
   const failedStep = err && err.failedStep;
@@ -170,8 +175,8 @@ async function gatherInventory(page, err, deps) {
 
   let overlay = null;
   try {
-    const probed = await page.evaluate(pageScripts.overlayProbe);
-    if (probed && probed.container) {
+    const probed = await evalOn(page, pageScripts.overlayProbe);
+    if (probed && probed !== EVAL_TIMED_OUT && probed.container) {
       overlay = probed.container;
       inventory = [
         ...(Array.isArray(inventory) ? inventory : []),

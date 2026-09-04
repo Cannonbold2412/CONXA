@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from conxa_compile.llm.semantic_llm import SemanticLLMInput, enrich_semantic
@@ -150,11 +151,33 @@ def _drop_non_actionable_hover_events(events: list[dict[str, Any]]) -> list[dict
     ]
 
 
+def _reorder_by_timestamp(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recorded events normally arrive in causal order, but a native-dialog answer is queued
+    from a different thread than the click that triggered it (session.py's DialogSyncServer
+    resolves on its own request thread, while the triggering click's bridge.js payload only
+    reaches the recorder once the page's JS thread unblocks after the dialog closes) — so the
+    two can land in `_pending_payloads` in either order even though their own timestamps are
+    unambiguous. A stable sort on each event's own `action.timestamp` restores wall-clock order
+    without disturbing events that were already in order (the overwhelming majority). A missing
+    or unparseable timestamp sorts as if it arrived at its original position (min of all valid
+    timestamps minus its index), never reordered past events that do have one."""
+    def _key(pair: tuple[int, dict[str, Any]]) -> tuple[float, int]:
+        idx, ev = pair
+        raw = ((ev.get("action") or {}).get("timestamp"))
+        try:
+            ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return (float("-inf"), idx)
+        return (ts, idx)
+
+    return [ev for _, ev in sorted(enumerate(events), key=_key)]
+
+
 def run_pipeline(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     bundle = get_policy_bundle()
     policy = bundle.data
     validated: list[dict[str, Any]] = []
-    for row in events:
+    for row in _reorder_by_timestamp(events):
         validated.append(RecordedEvent.model_validate(row).model_dump(mode="json"))
     cleaned = [_clean_one(e, policy) for e in _drop_non_actionable_hover_events(validated)]
     sem_enriched = [_semantic_enrich_one(e, policy) for e in cleaned]

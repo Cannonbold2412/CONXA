@@ -48,6 +48,7 @@ const {
   executeStep,
   enrichStepsWithRecovery,
   applyStepOverrides,
+  answerDialog,
 } = require("./handlers");
 const {
   recoverWithSelector,
@@ -281,6 +282,24 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
     // carries one — cheap, but no reason to pay it on every step).
     const stateBaseline = needsStateChangedBaseline(step) ? await capturePreStepSignature(page) : null;
 
+    // EXEC-29 — a native dialog blocks the very Playwright call that opens it: click()/fill()/
+    // etc. do not resolve until the dialog is answered (this is Chromium/CDP behavior, not
+    // something Playwright can be told to skip). Waiting for the FOLLOWING dialog_accept/
+    // dialog_dismiss step to drain ctx.dialogQueue — which is what a pack compiled before this
+    // fix does, and which HANDLERS["dialog_accept"] still supports below for exactly that
+    // reason — therefore deadlocks: that step can never run because this one's action promise
+    // never returns. Arming the answer here, one step ahead of dispatch, means Chromium's
+    // dialog resolves the instant it opens and THIS step's own action returns normally. Safe to
+    // race with the old drain path (answerDialog tolerates being called twice on one dialog —
+    // see its comment in handlers.js).
+    const nextStep = steps[i + 1];
+    let unarmDialog = null;
+    if (nextStep && (nextStep.type === "dialog_accept" || nextStep.type === "dialog_dismiss")) {
+      const onDialog = (dialog) => { answerDialog(dialog, nextStep, inputs).catch(() => {}); };
+      page.once("dialog", onDialog);
+      unarmDialog = () => { try { page.off("dialog", onDialog); } catch (_) {} };
+    }
+
     let primaryErr = null;
     try {
       await executeStep(page, step, inputs, { downloadQueue, dialogQueue });
@@ -312,6 +331,13 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
       primaryErr = err;
       primaryErr.earlyDomSnapshot = await captureEarlyDomSnapshot(page, step, inputs);
       primaryErr.failedPage = page;
+    } finally {
+      // A dialog that never opened (this click didn't actually trigger one — drift, a wrong
+      // element, whatever) must not stay armed into recovery or a later step: it would wrongly
+      // auto-answer the NEXT real dialog this run happens to hit, with an answer meant for a
+      // different one. `.once` already self-removes after firing; this is only load-bearing
+      // for the case where it never fires.
+      if (unarmDialog) unarmDialog();
     }
 
     // Same reasoning as the auth check below: the caller supplied input the page cannot accept
@@ -351,7 +377,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
       signature: stateBaseline,
     });
 
-    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline, guard);
+    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline, guard, dialogQueue);
     if (!recovered) {
       if (guard.blocked) {
         primaryErr.recoveryHaltReason = guard.blocked;

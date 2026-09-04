@@ -766,61 +766,67 @@ synthetic event, same `{from_url, to_url}` value shape as `browser_back`/`browse
   against real pages: an `<a href>` click reports reason `anchorClick` and a form POST reports
   `formSubmissionPost`, so both are correctly excluded.
 
-### 3.4h Native JS dialogs (`dialog_accept` / `dialog_dismiss`, 2026-08-26)
-
-Registering Playwright's `page.on("dialog", ...)` listener stops Playwright's own default
-auto-dismiss, but Chromium still visually renders the native `alert`/`confirm`/`prompt` box —
-so the recorder's old synchronous `dialog.accept()` raced the human and closed it almost
-immediately, and a `prompt` was always accepted with empty text regardless. The recorder now
-holds the dialog open, asks the Studio (new events below), and records the human's real
-answer.
+### 3.4h Native JS dialogs (`dialog_accept` / `dialog_dismiss`, 2026-08-26; record-order + replay-deadlock fix EXEC-29, 2026-09-04)
 
 ```python
 # RecordedEvent.action.value / SkillStep.value (JSON string):
 {"type": "alert" | "confirm" | "prompt", "message": "I am a JS Prompt", "value": "Conxa prompt"}
 ```
 
-- **Recorded by:** `session.py::_on_dialog` (stashes the dialog, fires
-  `on_js_dialog_request`) → Studio modal, pinned `alwaysOnTop` via the `window:raise` IPC
-  handler so it's never hidden behind the recording browser → `cmd_resolve_js_dialog` →
-  `resolve_js_dialog()` (queues the answer) → `session.py::_drain_js_dialog_sync` (pump loop;
-  calls `dialog.accept(text)`/`dialog.dismiss()` and records the marker event). Because the
-  native dialog closes while its window is in the background, Windows can leave its now-dead
-  pixels on screen until that window repaints; `_drain_js_dialog_sync` immediately calls
-  `page.bring_to_front()` to force that repaint — no minimizing, the human lands back in the
-  same browser window. A dialog left unanswered past `_JS_DIALOG_TIMEOUT_S` (120s) is
-  auto-accepted with empty text (also followed by `bring_to_front()`) so it can never wedge
-  the recording; the recorder fires `on_js_dialog_cancelled` so the Studio can close its
-  modal. **Out of scope:** `auth_mode` (the separate login-capture browser) still
-  auto-accepts immediately, unchanged — its pump loop never drains a pending dialog.
-- **New Studio stdio events** (`handlers/session.py`, JSON-RPC-over-stdio, not an HTTP route):
-  `js_dialog_request` (`session_id`, `request_id`, `dialog_type`, `message`, `default_value`)
-  and `js_dialog_cancelled` (`session_id`, `request_id`) — same no-req_id broadcast shape as
-  the existing `file_picker_request` event (§7.1 in `docs/TRD.md`).
-- **New Studio stdio command:** `resolve_js_dialog` (`session_id`, `request_id`, `accepted`,
-  `text`) → `cmd_resolve_js_dialog` in `handlers/session.py`, mirroring
-  `resolve_file_picker`/`cmd_resolve_file_picker`.
+**Recording — two mechanisms.** The primary path (`recorder/dialog_server.py`) overrides
+`window.alert/confirm/prompt` themselves via an init script (`DIALOG_OVERRIDE_SCRIPT_TEMPLATE`),
+before the page's own scripts ever run — a synchronous XHR to a local per-session
+`DialogSyncServer` blocks the page exactly like a real dialog would, and blocks for as long as
+the human takes to answer via the Studio's `alwaysOnTop` modal. This replaced an earlier
+CDP-based `page.on("dialog", ...)` interception (`session.py::_on_dialog` /
+`_drain_js_dialog_sync`) that raced a real Chromium-internal patience limit on a slow confirm/
+prompt; that path is kept only for `beforeunload`, which cannot be overridden as a callable the
+way alert/confirm/prompt can. Either path answers past a 120s timeout with a forced empty
+accept so a forgotten dialog never wedges the recording. **Out of scope:** `auth_mode` (the
+separate login-capture browser) still auto-accepts immediately — its pump loop never drains a
+pending dialog.
+
 - **Compiles to:** a marker `SkillStep` (`action=dialog_accept`/`dialog_dismiss`,
   `no_recovery_block`) whose `value` is the JSON above — `build.py`'s `MARKER_ACTIONS` branch
-  now keeps it, the same way it already keeps `download_observed`'s value. A `prompt`'s typed
-  answer is replaced with `{{dialog_answer}}` and the step gets `input_binding="dialog_answer"`
-  so an agent replaying the skill can answer differently than the human did while recording;
+  keeps it, the same way it keeps `download_observed`'s value. A `prompt`'s typed answer is
+  replaced with `{{dialog_answer}}` and the step gets `input_binding="dialog_answer"` so an
+  agent replaying the skill can answer differently than the human did while recording;
   `alert`/`confirm` and an empty prompt answer stay literal. A second prompt in the same
   workflow dedupes to `dialog_answer_2` via the existing `_deduplicate_input_bindings`.
+- **Record-order fix (EXEC-29):** the dialog server answers from its own request thread, while
+  the triggering click's own recorded payload only reaches the recorder once the page's JS
+  thread unblocks after the dialog closes — the two can land in the raw event stream in either
+  order even though their timestamps are unambiguous. A confirm's answer landing directly next
+  to a prompt's answer, with no click between them, used to trip `clean_steps`'s
+  duplicate-consecutive-action collapse (built for real double-clicks, which carry a target;
+  a marker carries none, so any two adjacent markers compared equal) and silently drop the
+  second one — the prompt's typed answer, in the field repro that surfaced this.
+  `pipeline/run.py::_reorder_by_timestamp` now stable-sorts every recorded event by its own
+  `action.timestamp` before any other processing, and `step_anchors.py::clean_steps` no longer
+  applies the duplicate-collapse rule to any `MARKER_ACTIONS` step (dialog markers,
+  `download_observed`, tab markers, ...) — both defects share this one fix.
 - **Replayed as:** `dialog.accept(interpolate(text, inputs))` / `dialog.dismiss()`
-  (`runtime/app/handlers.js`) — the handler itself is unchanged; it already parsed exactly this
-  `{type,message,value}` shape, it just never received a real `value` before this fix. Reaching
-  it reliably needed two further fixes (2026-08-26): `_drainDialogQueue`'s wait was bumped from
-  `ACTION_TIMEOUT_MS` (2.5s) to a dedicated `DIALOG_WAIT_TIMEOUT_MS` (120s, `run_config.js`),
-  and `verifyStep` (`assertions.js`, §"VERIFY" in `docs/TRD.md`) now skips post-condition
-  verification entirely on a step that left a dialog open — otherwise a required assertion on
-  the *triggering* click step (e.g. `state_changed`) polled a page whose renderer the open
-  dialog was blocking, forever, and this step was never reached at all.
+  (`runtime/app/handlers.js::answerDialog`, shared by the marker handlers below and the pre-arm
+  described next). `_drainDialogQueue`'s wait is `DIALOG_WAIT_TIMEOUT_MS` (120s,
+  `run_config.js`), and `verifyStep` (`assertions.js`) skips post-condition verification
+  entirely on a step that left a dialog open.
+- **Replay-deadlock fix (EXEC-29):** a native dialog blocks the very Playwright call that opens
+  it — `click()`/`fill()`/etc. do not resolve until the dialog is answered, which is Chromium/
+  CDP behavior, not something Playwright can be told to skip. Waiting for the *following*
+  `dialog_accept`/`dialog_dismiss` step to drain `ctx.dialogQueue` — the only mechanism before
+  this fix — therefore deadlocks by construction: that step can never run because the step
+  before it never returns. `run.js`'s per-step loop now looks one step ahead before dispatch;
+  when the next step is a dialog marker, it arms a one-shot `page.once("dialog", ...)` with that
+  marker's answer *before* executing the current step, so Chromium's dialog resolves the
+  instant it opens and the triggering action returns normally. The marker step's own
+  `_drainDialogQueue` path is unchanged and still handles packs compiled before this fix —
+  `answerDialog` tolerates being called twice on the same already-resolved dialog. See
+  `docs/TRD.md`'s runtime-timeout section for the accompanying guards (recovery refuses to run
+  while a dialog is pending; no unbounded `page.evaluate()` on the resolution hot path).
 - **Editor:** unchanged labels ("Accepted dialog"/"Dismissed dialog" →
-  `editor/describe.py` now also surfaces the recorded message and typed answer in the step
-  list).
+  `editor/describe.py` also surfaces the recorded message and typed answer in the step list).
 - **Not covered:** `beforeunload` confirmations (unhandled on both record and replay) and
-  dialogs shown inside the auth-capture browser — see `TODO.md`.
+  dialogs shown inside the auth-capture browser — see `TODO.md` EXEC-25/EXEC-26.
 
 ### 3.5 RecoveryBlock
 

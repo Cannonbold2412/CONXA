@@ -2332,7 +2332,34 @@ with the zero-token Tier A rule). The cloud aggregates these per (workflow, vers
 
 ### 10.3 Dialog-Scoped Recovery
 
-If the element is expected inside a dialog, Tier A first restricts the search to `[role="dialog"]`, `[role="alertdialog"]`, `[aria-modal="true"]`, `.modal` — the **same** selector, not a fuzzy guess.
+If the element is expected inside a dialog, Tier A first restricts the search to `[role="dialog"]`, `[role="alertdialog"]`, `[aria-modal="true"]`, `.modal` — the **same** selector, not a fuzzy guess. This is in-page HTML dialogs/modals only — a **native** browser dialog (window.alert/confirm/prompt) is a different mechanism entirely; see below.
+
+**Native dialogs and recovery (EXEC-29, 2026-09-04).** A native dialog blocks the page's whole
+renderer, not just the action that opened it — every Tier A/B stage eventually touches the
+page (an a11y `.evaluate()` probe, a fresh `resolveStep`, a plain `waitForTimeout`), and none of
+that can run while Chromium is waiting on an unanswered `alert`/`confirm`/`prompt`. `recoverStep`
+(`cascade.js`) therefore refuses to start any stage while `ctx.dialogQueue` is non-empty — the
+same short-circuit `verifyStep` already had (`assertions.js`, channel `dialog_pending`) — and
+fails the step immediately, naming the pending dialog's type and message, rather than grinding
+through stages that cannot possibly do anything. In the common case this never fires at all:
+`run.js`'s per-step loop looks one step ahead and, when the next compiled step is
+`dialog_accept`/`dialog_dismiss`, arms that answer via a one-shot `page.once("dialog", ...)`
+*before* dispatching the current step — so the dialog resolves the instant it opens and the
+triggering click never times out in the first place (see Backend-Schema.md §3.4h for the full
+record/compile/replay history).
+
+**No unbounded `page.evaluate()`.** Playwright gives `.evaluate()` no timeout of its own, and a
+renderer stuck behind a dialog (or any other reason the page's JS thread stops responding —
+`beforeunload`, a throttled background tab) leaves such a call hanging forever; the runtime's own
+`EXECUTION_DEADLINE_MS` watchdog (`server.js`) is poll-based, checked only *between* operations,
+so it cannot interrupt one that is itself stuck. `runtime/app/page_eval.js` provides the shared
+seam (`evalOn`/`withDeadline`) every `.evaluate()` call should route through; it is wired into
+the primary-resolution hot path (`resolution.js::gateLocator`'s RAF-stability/enabled checks,
+which run on every gated action) and the failure-response inventory/overlay probes
+(`failure_response.js::gatherInventory`, which run right after a primary action has already
+timed out — the moment a blocked renderer is most likely). Not yet every `.evaluate()` call in
+`runtime/app/` goes through this seam — see TODO.md EXEC-29's follow-up note for the remaining
+sites.
 
 ### 10.4 No-Recovery Steps
 
