@@ -359,6 +359,14 @@
     "gridcell", "treeitem", "spinbutton", "slider",
   ];
 
+  // A container that only qualifies via the tabindex fallback below (line ~357) can still be
+  // the WRONG target: jQuery UI's Menu widget puts tabindex="0" on the <ul> itself while each
+  // item's clickable node is tabindex="-1" (isInteractiveNode rejects it), so the walk in
+  // resolveMeaningfulTarget would otherwise return the whole list instead of the clicked item.
+  // When that happens, prefer the nearest item ancestor of the ORIGINAL click target.
+  const ITEM_SELECTOR = "li,[role=option],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=treeitem],[role=gridcell]";
+  const CONTAINER_SELECTOR = "ul,ol,[role=listbox],[role=menu],[role=menubar],[role=tree],[role=grid],[role=radiogroup]";
+
   function isInteractiveNode(n) {
     if (!n || n.nodeType !== 1) return false;
     const tag = n.tagName.toLowerCase();
@@ -385,7 +393,16 @@
     if (!el || el.nodeType !== 1) return null;
     let cur = el;
     for (let depth = 0; depth < 14 && cur; depth++) {
-      if (isInteractiveNode(cur)) return cur;
+      if (isInteractiveNode(cur)) {
+        if (cur.matches && cur.matches(CONTAINER_SELECTOR)) {
+          // The tabindex fallback in isInteractiveNode can accept a list/menu container
+          // (e.g. jQuery UI's <ul tabindex="0">) whose items are tabindex="-1" and match
+          // nothing themselves. Prefer the clicked item within it, if there is one.
+          const item = el.closest && el.closest(ITEM_SELECTOR);
+          if (item && cur.contains(item)) return item;
+        }
+        return cur;
+      }
       const tag = cur.tagName ? cur.tagName.toLowerCase() : "";
       if (tag === "body" || tag === "html") break;
       cur = parentOrHost(cur);

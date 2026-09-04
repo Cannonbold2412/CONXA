@@ -938,6 +938,31 @@ def test_container_roles_are_still_not_treated_as_the_target(page: Page) -> None
     assert not _action_events(page, "click"), "a bare listbox container was recorded as a target"
 
 
+def test_menu_container_with_tabindex_resolves_click_to_the_item(page: Page) -> None:
+    # jQuery UI's autocomplete/menu widget puts tabindex="0" on the <ul> itself while each
+    # item's clickable node is tabindex="-1" (isInteractiveNode rejects it, and a bare <li>
+    # matches nothing). Without a container guard, resolveMeaningfulTarget's tabindex fallback
+    # walks past the item and accepts the <ul> — recording "Java JavaScript" (both options
+    # concatenated) as the target instead of the one option actually clicked.
+    _install_bridge(
+        page,
+        """
+        <ul id="menu" tabindex="0" class="ui-menu ui-autocomplete">
+          <li class="ui-menu-item"><div tabindex="-1">Java</div></li>
+          <li class="ui-menu-item"><div tabindex="-1">JavaScript</div></li>
+        </ul>
+        """,
+    )
+    page.click("#menu >> text=JavaScript")
+    page.wait_for_timeout(120)
+
+    events = _action_events(page, "click")
+    assert events, "click on the menu item was not recorded"
+    target = events[0]["target"]
+    assert target["tag"] == "li", f"resolved to {target['tag']!r} instead of the clicked <li>"
+    assert target["inner_text"] == "JavaScript"
+
+
 def test_calendar_root_is_the_widget_not_the_day_cell(page: Page) -> None:
     # CALENDAR_ROOT_SELECTORS matches on class SUBSTRINGS ("[class*='datepicker']"), and every
     # descendant of a widget repeats the library prefix — react-datepicker's day cell is
