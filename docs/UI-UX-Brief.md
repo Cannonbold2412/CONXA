@@ -298,6 +298,8 @@ All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, 
 
 Renamed from `TestPluginPage.tsx` in the 2026-08-12 Plugin→Workflow/SkillPack refactor, dropping the per-automation selector entirely in favor of listing every workflow in the workspace at once via `WorkflowTestList` (renamed from `PluginWorkflowTests.tsx`); `workflowTestSummary()` now takes the full `Workflow[]` list directly instead of a single automation's nested workflows.
 
+**Cancel + elapsed time (EXEC-35, 2026-09-04):** each running test's "Testing…" label now shows live elapsed time, and a Cancel button appears beside it — calls the runtime's `cancel_execution` MCP tool (via a new `cancel_test_workflow` backend command that tracks the run's `run_id`) so a stuck or unwanted test returns to idle in a few seconds instead of only ever ending via the runtime's own 900s subprocess timeout.
+
 **UX issues:**
 - Runtime must be installed locally for testing — there's no inline message when it's not found (just `runtime_not_found` error code).
 - No visual step-by-step progress during test execution.

@@ -357,6 +357,12 @@ export function cancelRecording(
   })
 }
 
+/** Cancels an in-progress Run Test (EXEC-35) via the runtime's cancel_execution tool.
+ * A benign no-op if the test already finished. */
+export function cancelTestWorkflow(workflowId: string): Promise<{ ok: boolean }> {
+  return cmd<{ ok: boolean }>('cancel_test_workflow', { workflow_id: workflowId })
+}
+
 /** Answers a "file_picker_request" event (see RecordWorkflowDialog) with the path(s) the
  * user chose in the Studio's own file-pick dialog, or `null` paths on cancel. */
 export function resolveFilePicker(
@@ -526,7 +532,7 @@ export function testWorkflow(
   inputs: Record<string, unknown> = {},
   headless = false,
   onLog: (message: string) => void = () => {},
-): Promise<unknown> {
+): Promise<{ status: 'passed' | 'cancelled'; message: string }> {
   return withKindLog('workflow_test', onLog, () =>
     cmd('test_workflow', {
       workflow_id: workflowId,

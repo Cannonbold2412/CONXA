@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,34 @@ def _redact_sensitive_test_inputs(skill_id: str, inputs: dict[str, Any]) -> dict
     if not sensitive_ids:
         return inputs
     return {k: ("" if str(k).strip().lower() in sensitive_ids else v) for k, v in inputs.items()}
+
+
+# EXEC-35: tracks the one in-flight "Run Test" per workflow so cmd_cancel_test_workflow can find
+# it. run_id is only known a second or so into the run (relayed via _phase_sink, see
+# cmd_test_workflow) — cancel_requested lets an earlier click still take effect once it arrives.
+_test_run_lock = threading.Lock()
+_active_test_runs: dict[str, dict[str, Any]] = {}
+
+
+def _cancel_active_test_run(workflow_id: str) -> None:
+    """Fire the runtime's cancel_execution tool for workflow_id's tracked run_id.
+    Best-effort: the run may finish on its own between the flag being set and this
+    call landing, in which case the runtime just reports no such run — not an error
+    worth surfacing to the user who already sees the UI return to idle."""
+    with _test_run_lock:
+        tracked = _active_test_runs.get(workflow_id)
+        run_id = tracked.get("run_id") if tracked else None
+    if not tracked or not run_id:
+        return
+    from conxa_compile.runtime_tool import call_runtime_tool
+
+    try:
+        call_runtime_tool(
+            tracked["runtime_dir"], "cancel_execution", {"run_id": run_id},
+            conxa_dir=tracked["conxa_dir"],
+        )
+    except Exception:
+        pass
 
 
 class WorkflowsMixin:
@@ -491,6 +520,20 @@ class WorkflowsMixin:
 
         def _phase_sink(entry: dict[str, Any]) -> None:
             _mark(f"[runtime] {entry.get('phase', '?')} (+{entry.get('ms', 0) / 1000:.1f}s in-runtime)")
+            # EXEC-35: run_id first appears here (relayed from server.js's test_phase log lines),
+            # seconds before call_runtime_tool returns — capture it so cmd_cancel_test_workflow has
+            # something to target, and honor a cancel click that arrived before it was known.
+            run_id = entry.get("run_id")
+            if not run_id:
+                return
+            with _test_run_lock:
+                tracked = _active_test_runs.get(workflow_id)
+                if tracked is None or tracked.get("run_id") is not None:
+                    return
+                tracked["run_id"] = run_id
+                pending_cancel = tracked.get("cancel_requested", False)
+            if pending_cancel:
+                _cancel_active_test_run(workflow_id)
 
         _mark(f"Preparing test for {workflow.name!r}…")
 
@@ -527,6 +570,14 @@ class WorkflowsMixin:
             _mark("Preparing test sandbox…")
             app_dir = _bootstrap_app_dir()
             conxa_dir, test_data_dir = ensure_test_sandbox(runtime_dir, app_dir)
+
+            with _test_run_lock:
+                _active_test_runs[workflow_id] = {
+                    "run_id": None,
+                    "cancel_requested": False,
+                    "runtime_dir": runtime_dir,
+                    "conxa_dir": conxa_dir,
+                }
 
             if not (conxa_dir / "conxa-app" / "current" / "server.js").is_file():
                 message = (
@@ -574,10 +625,18 @@ class WorkflowsMixin:
                 inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
             )
             raise _CommandError("workflow_test_failed", message) from exc
+        finally:
+            with _test_run_lock:
+                _active_test_runs.pop(workflow_id, None)
 
         message = _runtime_result_text(result)
         if not message.startswith("Done."):
             failure = message or "Runtime test failed without a result message."
+            # EXEC-35: a user-initiated cancel (see cmd_cancel_test_workflow) isn't a real
+            # pass/fail signal — don't clobber the last real test result with it.
+            if failure.startswith("Execution cancelled"):
+                sink({"kind": "workflow_test", "message": failure})
+                return {"status": "cancelled", "message": failure, "company": company, "skill": workflow.slug}
             set_workflow_test_error(
                 workflow_id, failure,
                 inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
@@ -590,6 +649,20 @@ class WorkflowsMixin:
         )
         sink({"kind": "workflow_test", "message": message})
         return {"status": "passed", "message": message, "company": company, "skill": workflow.slug}
+
+    def cmd_cancel_test_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Cancel an in-progress Run Test (EXEC-35). A workflow with no active test is a
+        benign no-op, matching cmd_cancel_recording's tolerance of a stale/already-finished id."""
+        workflow_id = _safe_id(payload.get("workflow_id"), "workflow_id")
+        with _test_run_lock:
+            tracked = _active_test_runs.get(workflow_id)
+            if tracked is None:
+                return {"ok": True}
+            tracked["cancel_requested"] = True
+            run_id = tracked.get("run_id")
+        if run_id:
+            _cancel_active_test_run(workflow_id)
+        return {"ok": True}
 
     def cmd_get_usage(self, _payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         import urllib.request

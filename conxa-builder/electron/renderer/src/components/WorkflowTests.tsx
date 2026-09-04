@@ -2,6 +2,7 @@
 import { type RefObject, useEffect, useRef, useState } from 'react'
 import { fetchWorkflow } from '@/api/workflowApi'
 import {
+  cancelTestWorkflow,
   getCompiledSkill,
   testWorkflow,
   type SkillPackBuild,
@@ -21,7 +22,17 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { CheckCircle2, Loader2, PlayCircle, SlidersHorizontal, XCircle } from 'lucide-react'
+import { CheckCircle2, Loader2, PlayCircle, SlidersHorizontal, StopCircle, XCircle } from 'lucide-react'
+
+/** mm:ss once a Run Test passes a minute, plain seconds before that — keeps the
+ * "Testing…" label short while still showing real elapsed time (EXEC-35). */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}m ${seconds}s`
+}
 
 type InputSpec = {
   id: string
@@ -269,6 +280,8 @@ export function WorkflowTestRow({
   const [inputDialogMode, setInputDialogMode] = useState<'edit' | 'run'>('run')
   const [inputError, setInputError] = useState('')
   const [running, setRunning] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [elapsedMs, setElapsedMs] = useState(0)
   const [logs, setLogs] = useState<string[]>([])
   const [runError, setRunError] = useState('')
   const [runDone, setRunDone] = useState(false)
@@ -276,6 +289,16 @@ export function WorkflowTestRow({
   const logRef = useRef<HTMLDivElement>(null)
 
   const stale = isStaleTest(wf, skillPackBuild)
+
+  // EXEC-35: visible elapsed time while a test runs, so a stuck "Testing…" reads as
+  // "how long has this been going" instead of a static, unreadable label.
+  useEffect(() => {
+    if (!running) return
+    const startedAt = Date.now()
+    setElapsedMs(0)
+    const timer = setInterval(() => setElapsedMs(Date.now() - startedAt), 1000)
+    return () => clearInterval(timer)
+  }, [running])
 
   // Load input specs eagerly so we know which button layout to use.
   useEffect(() => {
@@ -357,11 +380,13 @@ export function WorkflowTestRow({
     try {
       const parsedInputs: Record<string, unknown> = {}
       for (const spec of inputSpecs) parsedInputs[spec.id] = inputs[spec.id] ?? ''
-      await testWorkflow(wf.id, parsedInputs, false, (msg) => {
+      const result = await testWorkflow(wf.id, parsedInputs, false, (msg) => {
         setLogs((prev) => [...prev, msg])
         setTimeout(() => logRef.current?.scrollTo(0, logRef.current.scrollHeight), 0)
       })
-      setRunDone(true)
+      // A user-initiated cancel (see cancelTest) resolves rather than throws — it's neither
+      // a pass nor a failure worth an error banner, just back to idle.
+      if (result.status !== 'cancelled') setRunDone(true)
       onComplete()
     } catch (err) {
       // Store the RAW message (incl. the "Runtime log tail:" block); the panel formats the
@@ -370,6 +395,18 @@ export function WorkflowTestRow({
       onComplete()
     } finally {
       setRunning(false)
+    }
+  }
+
+  // EXEC-35: stop a hung or unwanted Run Test. Fires and forgets — runTest()'s own
+  // await/finally is what actually flips `running` back to idle once the runtime
+  // acknowledges the cancel.
+  async function cancelTest() {
+    setCancelling(true)
+    try {
+      await cancelTestWorkflow(wf.id)
+    } finally {
+      setCancelling(false)
     }
   }
 
@@ -418,6 +455,13 @@ export function WorkflowTestRow({
         <div className="flex shrink-0 items-center gap-2">
           {testStatusBadge(wf)}
 
+          {running && (
+            <Button size="sm" variant="outline" onClick={() => void cancelTest()} disabled={cancelling}>
+              <StopCircle className="size-3.5" />
+              Cancel
+            </Button>
+          )}
+
           {/* No-inputs workflows: single "Run test" button runs directly */}
           {inputSpecs !== null && inputSpecs.length === 0 && (
             <Button
@@ -431,7 +475,7 @@ export function WorkflowTestRow({
               ) : (
                 <PlayCircle className="size-3.5" />
               )}
-              {running ? 'Testing...' : runDone ? 'Re-run' : 'Run test'}
+              {running ? `Testing… (${formatElapsed(elapsedMs)})` : runDone ? 'Re-run' : 'Run test'}
             </Button>
           )}
 
@@ -459,7 +503,7 @@ export function WorkflowTestRow({
                 ) : (
                   <PlayCircle className="size-3.5" />
                 )}
-                {running ? 'Testing...' : runDone ? 'Re-run' : 'Run test'}
+                {running ? `Testing… (${formatElapsed(elapsedMs)})` : runDone ? 'Re-run' : 'Run test'}
               </Button>
             </>
           )}
@@ -559,7 +603,7 @@ export function WorkflowTestRow({
                 running ? (
                   <>
                     <Loader2 className="size-3.5 animate-spin" />
-                    Testing...
+                    {`Testing… (${formatElapsed(elapsedMs)})`}
                   </>
                 ) : (
                   <>
