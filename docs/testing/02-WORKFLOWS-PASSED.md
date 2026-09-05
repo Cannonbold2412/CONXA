@@ -17,6 +17,17 @@ When a workflow in `01-WORKFLOWS-TO-TEST.md` passes manually:
 
 > Hand-maintained estimate of how many real-world internet workflows Conxa can currently
 > record → compile → replay reliably, based only on passes in this file.
+> **2026-09-04 (no re-rate):** WF-5 Part A (interleaved download→upload identity, GitHub →
+> demoqa.com) passed — see **P-10**. Run at n=5 pairs, not the n=20 the spec calls for; logged as
+> closing this leg anyway by team decision, since `_bind_downloads_to_uploads` binds by filename
+> regardless of pair count. Parts B (all-at-once/ZIP), C (cross-run leakage), and D (collision/popup
+> probes) of WF-5 are still open, so this alone doesn't move the ceiling.
+> **2026-09-04 (no re-rate):** a standalone 104-step, 6-tab, 6-host mega-workflow
+> (`mega-workflow-fc8031f2`) replayed end to end with **zero recovery events** in 57.4s — see
+> **P-9**. More than double P-1's step count, but its site mix (Wikipedia, demoqa, the-internet,
+> uitestingplayground, saucedemo, local fixture) doesn't complete any single named WF-x leg
+> start-to-finish, so it stands alone as a scale/reliability proof rather than closing WF-3 Leg B
+> or WF-9.
 > **2026-09-04 (no re-rate):** WF-2 Segment J — a real shadow-DOM web component (Shoelace's
 > `<sl-button>`) now compiles to a durable, unique role-based selector instead of an ambiguous
 > generic CSS class (see **P-8**; root cause and fix in `FIX.md` 2026-09-04). First proof on a
@@ -63,9 +74,10 @@ When a workflow in `01-WORKFLOWS-TO-TEST.md` passes manually:
 ```
 Internet workflow coverage:  ▓▓▓▓▓▓░░░░░░░░░░░░░░░░  ~23%
 
-Last updated: 2026-09-03
-Passed workflows:             4   (1 flagship, reconfirmed by a 2026-09-03 follow-up run
+Last updated: 2026-09-04
+Passed workflows:             5   (1 flagship, reconfirmed by a 2026-09-03 follow-up run
                                     + 1 full recovery-cascade drill + live self-heal suite (WF-7)
+                                    + 1 bulk-file identity leg (WF-5 Part A, n=5)
                                     + 2 precursors/supporting)
 Longest verified workflow:    42 steps · 6 tabs · 6 hosts · 5 domains (2026-08-25 flagship;
                                     2026-09-03 follow-up run was shorter by design — see below)
@@ -97,7 +109,9 @@ reliability, not missing architecture.
 | Identity survives real DOM drift (rename, restructure, delayed render, stale recorded position) | ✅ proven | WF-7 Suite D.1–D.3/D.5, 2026-09-03 |
 | Never assumes stale/leftover page state is current — always verifies or self-navigates | ✅ proven | WF-7 Suite D.4, 2026-09-03 |
 | Relational/anchor-based identity resolves correctly on a real live site under real position drift, including resolver.js's ambiguous-candidates fall-through with no per-item testid | ✅ proven | WF-7 Suite D.6, 2026-09-03 |
-| 30+ step single-domain chain · dynamic/self-heal elements · 20-file bulk identity · branch steps live replay | ⏳ pending | see `01-WORKFLOWS-TO-TEST.md` |
+| Interleaved bulk download→upload identity binding (each upload traced to its own earlier download by filename, no cross-pairing) | ✅ proven (n=5) | P-10, 2026-09-04 |
+| Dynamic/self-heal elements at scale · 20-file bulk identity at full spec volume · all-at-once (Shape B) bulk transfer · cross-run leakage · branch steps live replay | ⏳ pending | see `01-WORKFLOWS-TO-TEST.md` |
+| 100+ step single compiled skill, 6 tabs/6 hosts in one continuous replay, zero recovery events | ✅ proven | P-9, 2026-09-04 |
 | Nested-iframe calendar-widget date pick, parameterized as a real reusable input (not a frozen literal) | ✅ proven | P-6, 2026-09-04 |
 | jQuery UI-style autocomplete suggestion pick (menu container correctly resolved to the clicked item, selector never contaminated by an unrelated preceding input) | ✅ proven | P-7, 2026-09-04 |
 
@@ -509,6 +523,91 @@ Confirms role + visible text alone — with every attribute and structural-posit
 still correctly re-locate a recorded element after a real, drastic DOM move (not just one level of
 nesting, as D.2 already covered). Closes the last open piece of WF-2 Segment B named in
 `01-WORKFLOWS-TO-TEST.md`.
+
+---
+
+## Passed Workflow P-9 — 104-step, 6-tab, 6-host mega-workflow: scale + zero-recovery reliability
+
+**Date passed:** 2026-09-04 19:12–19:13 UTC (2026-09-05 00:42–00:43 local), Build Studio sandbox
+replay, run `r_mtnbzg5a_3ipkk`, skill `mega-workflow-fc8031f2` (session
+`102b022c-e74b-4915-a96e-b9b18f8cf8c6`) in `~/.conxa-build-studio-dev`.
+
+**Shape:** one recorded skill — **104 compiled steps, 6 tabs** (`tab_open` ×5 + 1 site `popup`),
+**6 hosts** (`en.wikipedia.org`, `demoqa.com`, `the-internet.herokuapp.com`,
+`uitestingplayground.com`, `www.saucedemo.com`, a local fixture server), ~412s original recording.
+Step mix: 21 navigate, 21 focus, 21 click, 14 type, 7 keyboard_shortcut, 5 tab_open, 5 scroll, 2
+select_option, 2 browser_back, 1 each of upload / set_radio / set_checkbox / popup /
+download_observed / date_pick. No iframes in this recording.
+
+### What was confirmed
+
+- `execute_start` declared `total_steps:104`, `max_recovery_tier:2` (Studio ceiling); runtime log
+  shows every step advancing cleanly to `steps_complete:104` in **57.4s** wall time; `execute_success`.
+- **Zero entries in `recovery.log`** for this run_id across all 104 steps — no drift, no self-heal,
+  zero LLM calls.
+- The workflow's `last_test_status` is `"passed"`, `last_test_error: null`.
+
+**Caveat (stale field, not a functional issue):** the workflow's own KV record still carries
+`compile_status: "failed"` — left over from an earlier compile attempt
+(`compile_min_confidence: 0.315`, 6 steps with warnings) that predates this run. The
+`execution.json` that actually executed is a freshly regenerated 185 KB / 104-step package, and
+the run itself completed clean; the field just wasn't refreshed by the successful recompile+test
+cycle that produced this pass — worth a `TODO.md` entry if it recurs on another workflow.
+
+### Why this pass matters
+
+The largest single compiled-and-replayed step count proven in this repo so far — more than double
+P-1's 42 steps — completing in under a minute with zero recovery events across 6 different hosts
+and 6 tabs in one continuous replay. This is the first real evidence toward the "at scale, with no
+degradation" claim `01-WORKFLOWS-TO-TEST.md`'s dashboard still marks pending, though its site mix
+cuts across several named WF-x site lists rather than fulfilling any one leg's specific script
+(WF-3 Leg B's saucedemo-only loop, or WF-9's mutator/jQuery-UI/Juice-Shop/computer-database mix),
+so it stands alone as a scale/reliability proof rather than closing out either of those items.
+
+---
+
+## Passed Workflow P-10 — WF-5 Part A: interleaved download→upload identity chain (n=5)
+
+**Date passed:** 2026-09-04 19:44 UTC (2026-09-05 01:14 local), Build Studio sandbox replay, run
+`r_mtnd3rru_83gtj`, skill `wf-5-l-a-35f14a1f` (workflow `35f14a1f-93be-45df-9536-772c82d4a248`,
+session `2c54060b-ebaf-4da9-b1e1-23057b25a37c`) in `~/.conxa-build-studio-dev`.
+
+**Shape:** download source `github.com/github/gitignore`, upload target
+`demoqa.com/upload-download`. Recorded 5 download→upload pairs interleaved (not batched), in this
+order: `AL.gitignore`, `Actionscript.gitignore`, `Ada.gitignore`, `AdventureGameStudio.gitignore`,
+`Agda.gitignore`. Compiled to 40 steps across 2 tabs (5 `download_observed`, 5 `upload`, plus
+navigate/click/tab_switch steps around each pair). Compile: confidence 0.95, 0 warnings.
+
+### What was confirmed
+
+- Each `upload` step's bound value is a distinct, sequentially incrementing placeholder
+  (`{{downloaded_file}}`, `{{downloaded_file_2}}` … `{{downloaded_file_5}}`), one per upload in
+  recorded order — `_bind_downloads_to_uploads` bound every upload to its own preceding download,
+  never a duplicate or a neighbor's file.
+- Replay logged `run_success`, `steps_executed:40`, matching the compiled step count. Zero entries
+  in `recovery.log` for this run — zero Tier A/B recovery events, zero LLM calls.
+- The replay's own per-run download folder (`sandbox/data/runs/r_mtnd3rru_83gtj/`) contains exactly
+  the 5 expected files, byte-identical (`cmp`) to the files recorded in the original session's
+  download folder — confirms the replay re-downloaded the correct real files rather than reusing a
+  stale/cached copy.
+- Workflow record: `last_test_status: "passed"`, `last_test_error: null`, `signed_off: true`.
+
+### Deviation from spec, logged transparently
+
+`01-WORKFLOWS-TO-TEST.md` specs this leg at 20 pairs; this run used 5. The binding mechanism keys
+strictly on exact recorded filename per pair and has no dependency on pair count, so a clean 5-pair
+result is real evidence the mechanism works — but it is not the same strength of evidence as a
+clean 20-pair result would be, since a lower count gives fewer chances for an off-by-one or
+wrong-neighbor bind to surface. This leg is recorded as **closed at n=5** by team decision; if a
+wrong-pairing bug that only appears at higher volume turns up later, re-open this item and re-test
+at the full spec'd 20.
+
+### Where this doesn't reach
+
+Upload-side identity is confirmed via the compiled binding metadata and the download-side
+byte-match, not a demoqa-side readback of which filename it actually received (no such API exists).
+WF-5 Part B (Shape B, all-at-once ZIP transfer), Part C (cross-run leakage/retention), and Part D
+(same-name collision + popup-download probes) remain open.
 
 ---
 

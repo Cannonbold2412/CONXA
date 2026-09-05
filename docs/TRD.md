@@ -294,6 +294,26 @@ Both identity paths (trusted proxy and Clerk JWT) pass `personal_workspace=not o
 
 Cashfree is the wired payment gateway (`app/api/cashfree_routes.py`, mounted at `/api/v1/subscriptions`; switched from Razorpay 2026-06-30). `POST /create` calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns an `auth_link` for the frontend to redirect to; the workspace↔subscription↔tier mapping is stored server-side (`cashfree_sub_workspace` KV) since Cashfree webhooks only carry the subscription reference id. `POST /verify` fetches the subscription from Cashfree and resolves the tier from its `planId`. `POST /webhooks/cashfree` verifies the signature by sorting all `cf_`-prefixed payload fields and comparing against the shared webhook secret. Activation/charge webhooks persist `current_period_end` so paid usage windows reset on the monthly payment date. **Compile add-on packs are one-time purchases, not subscriptions (rewritten 2026-08-22):** `POST /addon/order` creates a Cashfree Payment Link (`POST /pg/links`) and the frontend redirects to it; payment is confirmed either by the PG webhook (`POST /webhooks/cashfree-orders`, signature over `timestamp + raw body`) or by `POST /addon/verify` after the redirect back — both credit a never-expiring wallet on the billing record exactly once (`cashfree_orders_granted` KV guard). The wallet is drawn down only after the plan's monthly allowance runs out; no Cashfree *plan IDs* are needed for add-ons. See `docs/Backend-Schema.md` §5.4 for the full request/response contracts. Stripe was previously present as orphaned unwired config fields and has since been fully removed (see §17).
 
+### 3.6 Conxa Execute Cloud Backend (added 2026-09-05, identity/subscription/LLM-config/session reworked 2026-09-05)
+
+A separate, standalone Render service (`conxa-execute/backend/`, own `render.yaml`, own Postgres — not part of `conxa-cloud/backend`) backing the `conxa-execute` desktop app's managed chat. Identity is now a **Clerk user** (`app/auth.py::get_current_user`, a JWT-verification dependency mirroring `conxa-cloud/backend/app/api/security.py::verify_clerk_jwt` but kept as a separate, smaller copy — conxa-execute has no dependency on conxa-cloud's backend package). This is deliberately a **separate Clerk application** from conxa-cloud's dashboard: conxa-cloud's JWT claims are shaped around `org_id`/workspace (B2B multi-seat), foreign to Execute's single-consumer-user wallet — no SSO between the two products. Wallet, subscription, and session data all key off the Clerk `user_id`. The prior opaque **Execute Key** model (`app/keys.py`, HMAC-derived from a Cashfree order ref) has been removed — it was unlaunched, so no production data needed migrating.
+
+**Three modes, one desktop app:** the Electron app's Settings now has an explicit BYOK / Top-up / Subscription selector (`renderer/src/SettingsModal.tsx`). BYOK is unchanged — the existing `baseURL`/`apiKey`/`model` fields, zero backend involvement. Top-up and Subscription both route through this backend's `/v1/chat/completions`, authenticated via Clerk (the desktop app performs a PKCE login — `conxa-execute/app/electron/auth_service.js`, a Node port of Build Studio's `conxa-builder/python/services/auth_service.py` flow: fixed-port localhost callback, PKCE S256, token refresh with 60s leeway, tokens encrypted via Electron `safeStorage` to `userData/clerk-session.bin`, no keytar needed).
+
+**Purchase flow:** `GET /plans` (server-rendered HTML) is now purely informational — the actual purchase happens via the authenticated `POST /v1/checkout/{tier}` JSON endpoint (`app/routes_checkout.py`), called by the signed-in Electron app, which opens the returned Cashfree hosted page in the OS browser (`shell.openExternal`) since no Clerk context exists once the browser takes over. `GET /checkout/success` is consequently an unauthenticated redirect target keyed by `order_ref` — it no longer reveals a key (there's nothing to paste anymore); it just confirms payment. One-time packs still credit `app/wallet.py`'s flat balance synchronously at `/checkout/success` (idempotent via `execute_addon_granted` KV). **Subscriptions are now real tiered plans, not recurring top-up:** a subscription charge (webhook only, `POST /webhooks/cashfree`) calls `app/subscription.py::activate_or_renew`, which sets a fresh `period_start`/`period_end` (30 days) and zeroes `quota_used` — a renewal charge starts a new billing period rather than adding to a forever-stacking balance. `app/plans.py::PLAN_TIERS` reuses the same 6 price tiers and pre-created Cashfree plan IDs the old `sub_*` tiers used.
+
+**Quota-reset scheduling** is event-driven, not cron: the renewal webhook advances the period on every successful charge, and `subscription.reset_if_period_elapsed` is a lazy safety-net check run on every proxy call (if `now() > period_end`, reset before checking quota) — no scheduled job exists or is needed at this volume.
+
+**Chat proxy:** `POST /v1/chat/completions` (`app/routes_proxy.py`) is a generic OpenAI-compatible passthrough, deliberately **not** built on `conxa_core.llm`'s router or `conxa_core.config`'s `ProviderConfig` — both are shaped for conxa-cloud's compile-time structured JSON prompts, the wrong call shape for a real multi-turn tool-calling chat history, and conxa-execute is already a separately deployed service with its own provider keys. Provider/model/fallback resolution now lives in its own standalone module, `app/llm_config.py` (own env parsing, same var names as before — `GROQ_API_KEYS`/`GOOGLE_AI_STUDIO_API_KEYS`/`NVIDIA_NIM_API_KEYS` — plus new `*_FALLBACK_TEXT_MODEL` vars), with the retry loop in `app/llm_client.py::call_chat_completions`: on a provider's primary-model failure it retries once with that provider's fallback model (porting the mechanic from `conxa-cloud/backend/app/llm/router.py::_call_provider`) before moving to the next provider. Quota is checked in priority order — active subscription first (debited via `subscription.debit_quota_if_available`), then the top-up wallet — and actual `usage.total_tokens` is debited post-call, floored at 0; the very last request on a near-empty balance can still run slightly over, accepted for v1.
+
+**Wallet storage:** one integer balance per Clerk `user_id`, `kv_store` namespace `execute_wallet` (`app/wallet.py`), credited/debited via a single atomic `UPDATE ... RETURNING` SQL statement — a single numeric balance doesn't need conxa-cloud's advisory-lock read-modify-write machinery, since the row lock during the `UPDATE` already serializes concurrent debits. Subscription rows live in the same `kv_store` under namespace `execute_subscription` (also a single-row-per-user lookup, no listing needed).
+
+**Chat sessions (new, 2026-09-05):** `app/routes_sessions.py` (`GET/POST /v1/sessions`, `GET/PUT/DELETE /v1/sessions/{id}`, all Clerk-authenticated) is the cross-device sync target for signed-in modes, backed by a dedicated `execute_chat_session` table (`app/db_schema.py`) — a per-user ordered-by-recency list needs an index `kv_store` doesn't provide, unlike the wallet/subscription's single-row lookups. This is a sync target, not the primary store: the Electron app's own local storage (below) is read/written on every turn in **every** mode including BYOK, and only pushes to this API afterward for Top-up/Subscription.
+
+**Local session/context persistence (Electron, new 2026-09-05):** ported from opencode's own storage/compaction implementation rather than written from scratch — see `conxa-execute/app/NOTICE` for full attribution and the specific substitutions made. `conxa-execute/app/vendor/opencode/storage/storage.js` mirrors `packages/opencode/src/storage/storage.ts`'s `read/update/write/list/remove` interface (JSON file per key, `session/<id>.json` + `message/<id>.json`), built on the real `effect` npm package (not opencode's private, unpublished `@opencode-ai/core`) — locking uses `Effect.makeSemaphore(1)` rather than opencode's `TxReentrantLock`, because that primitive throws inside effect 3.22.1's own STM internals (reproduced directly, not a usage error); the cost is that concurrent reads of the same file now serialize like writes, an acceptable, documented simplification at this app's scale. `conxa-execute/app/vendor/opencode/session/compaction.js` ports the pruning algorithm from `packages/opencode/src/session/compaction.ts`/`overflow.ts` (same `PRUNE_MINIMUM`/`PRUNE_PROTECT`/`TOOL_OUTPUT_MAX_CHARS` constants), adapted to conxa-execute's flat OpenAI-chat message array instead of opencode's parts-based schema. `main.js`'s `chat:send` now loads prior messages from local storage, prunes if needed, calls `run_turn.js` (unchanged — it already returned the full updated transcript, the gap was purely that nothing persisted it), writes the result back locally, and — for Top-up/Subscription — pushes the same messages to `/v1/sessions/{id}` for sync (a failed push doesn't block the chat; local storage is already this device's source of truth).
+
+Cashfree vendor mechanics (auth headers, base URL, both webhook HMAC schemes) are deliberately duplicated from `conxa-cloud/backend/app/api/cashfree_routes.py` into `conxa-execute/backend/app/cashfree.py` rather than shared via `conxa_core` — see that file's header comment for the extraction plan once this is validated in production.
+
 ---
 
 ## 4. Conxa Runtime (MCP)
@@ -3191,6 +3211,30 @@ deliberately absent from the required list above:
 - ~~`CASHFREE_ADDON_PLAN_ID`~~ - removed 2026-08-22: add-on packs are one-time Payment Link
   purchases and need no plan IDs (only `CASHFREE_APP_ID` / `CASHFREE_SECRET_KEY` /
   `CASHFREE_WEBHOOK_SECRET`).
+
+### 16.1a Conxa Execute Cloud Backend (Render, added 2026-09-05)
+
+```
+Build root:        conxa-execute/backend/
+Build command:     ./build.sh
+  pip install ../../packages/conxa-core
+  pip install -r requirements.txt
+Start command:     ./start.sh
+  uvicorn app.main:app --host 0.0.0.0 --port $PORT
+Health check:      GET /healthz (liveness)
+Environment:       SKILL_AUTH_REQUIRED=true requires (app refuses to boot otherwise —
+                   app/main.py::_validate_production_config):
+  SKILL_DATABASE_URL, SKILL_API_BASE_URL, SKILL_EXECUTE_KEY_HMAC_SECRET,
+  CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_WEBHOOK_SECRET
+```
+
+A standalone service (see §3.6), own `render.yaml`, own Postgres (`conxa-execute-db`) — not
+part of the `conxa-api`/`conxa-db` service above. Reuses conxa-cloud's Cashfree merchant
+account (`CASHFREE_APP_ID`/`CASHFREE_SECRET_KEY`) but its own distinct `CASHFREE_WEBHOOK_SECRET`,
+its own 6 recurring-subscription Cashfree Plan IDs (`CASHFREE_SUB_250K_PLAN_ID` …
+`CASHFREE_SUB_10M_PLAN_ID` — one-time packs need none), and dedicated LLM provider keys
+(`GROQ_API_KEYS`/`GOOGLE_AI_STUDIO_API_KEYS`/`NVIDIA_NIM_API_KEYS`) kept separate from
+conxa-cloud's free-compile pool.
 
 ### 16.2 Cloud Frontend (Vercel)
 

@@ -136,6 +136,11 @@ add 5 computers (≈8 actions each) → delete 2. Note recorder responsiveness/d
 compile wall time + LLM call count; execute; count first-try successes. PASS ≥95% clean, no silent
 degradation warnings.
 
+> **Adjacent evidence (not a pass of this leg):** a separate 104-step, 6-tab, 6-host mega-workflow
+> (`mega-workflow-fc8031f2`) replayed clean with zero recovery events on 2026-09-04 — see **P-9** in
+> `02-WORKFLOWS-PASSED.md`. It proves scale + multi-host reliability but doesn't run saucedemo's
+> specific 6×-loop-then-checkout script below, so Leg B stays open.
+
 ### Leg B — 100+ step flagship ⭐
 S5: ONE continuous take of this loop **6× without pausing** (≈120 actions): sort Z→A → add 2
 products → cart → remove 1 → continue shopping. After loop 6: full checkout → First/Last/Zip →
@@ -206,13 +211,20 @@ Two mechanics — decide which you're testing before recording:
 | Compiled shape | 40 steps, each bound to its own filename | 2 steps |
 | Supported? | Yes | Yes — zip extraction at download time (EXEC-20); upload takes a folder path (W-8) |
 
-### Part A — Shape A unrolled loop
+### Part A — Shape A unrolled loop ✅ passed (at n=5, not the n=20 below)
 Download source: S16 GitHub folder raw links (fixed set) or S1 `/download` (drifts).
 Upload target: `demoqa.com/upload-download` (single-file input is fine here).
 Record download #N → upload #N interleaved ×20. `_bind_downloads_to_uploads` binds each upload to
 its own earlier download by exact recorded filename — **identity check: file #7 uploaded must be
 file #7 downloaded**, not #3 or a duplicate. Also confirm the 20-iteration loop replays from the
 compiled sequence, not LLM re-deciding clicks per file (zero runtime LLM calls).
+
+> **Passed 2026-09-04 — see P-10 in `02-WORKFLOWS-PASSED.md`.** Run used 5 interleaved pairs
+> (`github.com/github/gitignore` → `demoqa.com/upload-download`), not the 20 specced above —
+> logged as closing this leg by team decision. `_bind_downloads_to_uploads` bound each upload to
+> a distinct incrementing placeholder in recorded order (no duplicate/cross binding), replay was
+> `run_success` with zero recovery events and zero LLM calls, and the per-run download folder
+> byte-matched the original recorded files. Parts B, C, and D below are still open.
 
 ### Part B — Shape B genuinely 20 at once
 Upload 20 dummy files to a filebin bin by hand → "Download files" → one ZIP (one
@@ -226,6 +238,19 @@ files at once, replay with a folder of 3 — count arrivals. Recording with one 
 with a folder of 20 is legitimate and worth testing. Single-file control + folder → immediate
 typed refusal, no recovery cascade, zero tokens.
 ⚠️ Public file hosts — generated dummy files only, never real documents.
+
+> **Partial — download/ZIP leg only, 2026-09-05.** Workflow `WF-5-S-A`
+> (`63a419a0-a526-4aa7-960c-84d9ccb78828`, session `e58b63a5-17ef-46d8-8185-69c470de79b0`)
+> uploaded 8 files to a fresh filebin bin, clicked "Download files" once, and the ZIP extracted
+> to all 8 files — the download/`download_observed`/zip-extraction mechanic checks out. Compiled
+> and test-replayed, `last_test_status: passed`, but **not a Part B pass**: the recorded reupload
+> leg only opened `storage.filebin.net` presigned view/download links, never an actual
+> `<input type="file" multiple>` upload target, and the test replay's `file_path` input was a
+> single external file, not a folder — so the W-8 folder-expansion mechanism was never exercised.
+> Compile also came back `review_needed`. **Still open:** reupload to a real multi-file input,
+> the 3-file folder pre-check, the 5-file full-scale folder replay (using 5 in place of the 20
+> specced above, matching the Part A team decision), and the single-file-control-vs-folder
+> refusal check.
 
 ### Part C — Cross-run consistency (does yesterday's run leak into today's?)
 Run A: replay the skill against one 20-file set (`report-01…20.pdf`). Confirm downloads land under
@@ -436,6 +461,13 @@ S7 (computer-database.gatling.io) · R6/R7 also touch S11 (en.wikipedia.org) + S
 ~60 steps, 6 domains, 4 tabs in ONE take, then eight replays of the SAME skill turning it into
 every hard-mode test. Log under `TODO.md` TEST-12 (governance gaps → PROD-18).
 Manual time: ~45 min setup + ~15 min recording + ~30 min gauntlet + optional overnight.
+
+> **Adjacent evidence (not a pass of this workflow):** a separate 104-step, 6-tab, 6-host
+> mega-workflow (`mega-workflow-fc8031f2`) replayed clean with zero recovery events on 2026-09-04 —
+> see **P-9** in `02-WORKFLOWS-PASSED.md`. It's larger than this spec's ~60-step target and proves
+> the same scale/multi-tab shape, but its sites (Wikipedia, demoqa, the-internet, uitestingplayground,
+> saucedemo, local fixture) don't match this workflow's mutator/jQuery-UI/Juice-Shop/computer-database
+> mix or its R1–R8 replay gauntlet, so WF-9 stays open.
 
 | Tag | Meaning | Exercised by |
 |---|---|---|

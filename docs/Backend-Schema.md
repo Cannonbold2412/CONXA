@@ -2181,6 +2181,16 @@ erDiagram
 | `legal_acceptances` | `{user_id}:{version}` | `{id, user_id, email, name, workspace_id, workspace_slug, workspace_name, role, auth_provider, identity_source, version, document_hashes, documents[], accepted_at, accepted_at_iso, client_ip, user_agent, app_version, machine_hash}` | §5.14 Build Studio legal acceptance — **write-once**, one row per (user, terms version); a repeat acceptance returns the existing row rather than overwriting it, so the stored timestamp is always the moment the person actually agreed. Deliberately *not* stored only in `saas.audit_events`, which is a global 500-entry ring buffer — an acceptance mirrored there for the Audit page (`legal.accepted`) would be evicted long before it was needed as evidence. Added 2026-08-29 |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |
 
+**Conxa Execute Cloud Backend (added 2026-09-05) — separate database, separate `kv_store` table:**
+
+| Namespace | Key | Value | Used by |
+|---|---|---|---|
+| `execute_wallet` | `{key_hash}` (sha256 of the raw Execute Key) | `{tokens_balance}` | conxa-execute token metering (`app/wallet.py`) — credited/debited via one atomic `UPDATE ... RETURNING` statement, no advisory lock needed for a single numeric balance |
+| `execute_order_key` | `{order_ref}` (Cashfree order/subscription reference id) | `{tier, key_hash}` (`key_hash` null when the order mints a brand-new key rather than topping up an existing one) | conxa-execute checkout — links a Cashfree order back to which key/tier it funds |
+| `execute_addon_granted` | `{order_ref}` | `{key_hash, tokens}` | conxa-execute one-time pack idempotency guard — grants exactly once across webhook + verify-page double delivery, same pattern as conxa-cloud's `cashfree_orders_granted` (§5.4) |
+| `execute_sub_charge_granted` | `{charge_id}` (per-charge, not per-subscription — see TRD §3.6's open item on the exact Cashfree field) | `{key_hash, tokens}` | conxa-execute subscription renewal idempotency guard — new namespace, since conxa-cloud's subscription webhook (§5.4) only ever set plan status and never needed per-charge idempotency |
+| `execute_cashfree_plans` | `"plans"` (single key) | `{tier: cashfree_plan_id}` | conxa-execute dev-mode fallback that auto-creates the 6 subscription tiers' Cashfree Plan objects when `CASHFREE_SUB_*_PLAN_ID` isn't configured and `SKILL_AUTH_REQUIRED` is false — mirrors conxa-cloud's `cashfree_plans.json`/`db_get("cashfree","plans")` dev fallback |
+
 ---
 
 ## 8. File Storage Map

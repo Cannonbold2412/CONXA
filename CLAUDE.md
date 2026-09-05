@@ -117,6 +117,9 @@ conxa-builder/              Electron desktop studio — records + compiles + bui
   pyinstaller.spec          Bundles conxa_core + conxa_compile into dist/backend/
 
 conxa-execute/              v0.1 Conxa Execute (PROD-19) — form + BYO chat; MCP client to installed runtime
+  backend/                   Standalone cloud backend (own render.yaml, own Postgres) — metered
+                            managed-chat proxy + token-pack billing (Execute Key identity, no
+                            login system); see docs/TRD.md §3.6. BYOK keeps working unmodified
 
 conxa-cloud/                Thin cloud SaaS — proxy / auth / billing / dashboard / hosting
   backend/                  FastAPI (depends on conxa-core; NO recorder/compiler/Playwright)
