@@ -1,0 +1,18 @@
+# conxa-execute cloud backend dependencies.
+# The shared foundation (config, db) is installed separately from
+# ../../packages/conxa-core by build.sh — it brings pydantic, pydantic-settings
+# and SQLAlchemy.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.27.0
+
+# Clerk JWT verification (see app/auth.py) — the Clerk user id is now the
+# billing identity, replacing the old opaque Execute Key.
+PyJWT[crypto]>=2.8.0
+
+# Postgres driver (db.py uses SQLAlchemy + psycopg2 in production)
+psycopg2-binary>=2.9.0
+
+# Form parsing for the /checkout/{tier} form POST
+python-multipart>=0.0.9

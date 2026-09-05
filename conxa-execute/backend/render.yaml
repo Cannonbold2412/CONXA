@@ -1,0 +1,82 @@
+services:
+  # ── conxa-execute cloud backend ─────────────────────────────────────────────
+  # Standalone Render service — its own FastAPI app + Postgres, separate from
+  # conxa-cloud's conxa-api/conxa-db (see conxa-cloud/render.yaml). Reuses the
+  # same Cashfree merchant account as conxa-cloud but its own webhook secret,
+  # and its own dedicated LLM provider keys (kept separate from conxa-cloud's
+  # free-compile pool so a paid product never starves — or gets starved by —
+  # the free one). CONXA_ENV=prod + SKILL_AUTH_REQUIRED=true put the service in
+  # prod mode; the app REFUSES TO BOOT unless every var below is set (see
+  # app/main.py _validate_production_config). Values marked `sync: false` are
+  # entered as secrets in the Render dashboard.
+  - type: web
+    name: conxa-execute-api
+    plan: free
+    runtime: python
+    rootDir: conxa-execute/backend/
+    buildCommand: bash build.sh
+    startCommand: bash start.sh
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: CONXA_ENV
+        value: prod
+      - key: SKILL_AUTH_REQUIRED
+        value: true
+      # Used to build the Cashfree return_url and shown to buyers as the
+      # /v1 base URL to paste into conxa-execute's Settings.
+      - key: SKILL_API_BASE_URL
+        sync: false
+      # Clerk app for this product — deliberately a SEPARATE Clerk application
+      # from conxa-cloud's dashboard (see app/auth.py): conxa-cloud's JWT
+      # claims are shaped around org_id/workspace (B2B multi-seat), foreign to
+      # Execute's single-consumer-user wallet. No SSO between the two products.
+      - key: SKILL_CLERK_ISSUER
+        sync: false
+      - key: SKILL_CLERK_JWKS_URL
+        sync: false
+      - key: SKILL_CLERK_AUDIENCE
+        sync: false
+      - key: SKILL_CLERK_AUTHORIZED_PARTIES
+        sync: false
+      # Cashfree billing — same merchant account as conxa-cloud, distinct webhook secret.
+      - key: CASHFREE_ENV
+        value: PROD
+      - key: CASHFREE_APP_ID
+        sync: false
+      - key: CASHFREE_SECRET_KEY
+        sync: false
+      - key: CASHFREE_WEBHOOK_SECRET
+        sync: false
+      # Pre-created Cashfree Plan objects for the 6 monthly auto-refill token
+      # tiers. One-time packs need no plan IDs (Payment Links are ad hoc).
+      - key: CASHFREE_SUB_250K_PLAN_ID
+        sync: false
+      - key: CASHFREE_SUB_500K_PLAN_ID
+        sync: false
+      - key: CASHFREE_SUB_1M_PLAN_ID
+        sync: false
+      - key: CASHFREE_SUB_2_5M_PLAN_ID
+        sync: false
+      - key: CASHFREE_SUB_5M_PLAN_ID
+        sync: false
+      - key: CASHFREE_SUB_10M_PLAN_ID
+        sync: false
+      # Dedicated LLM provider keys — separate accounts from conxa-cloud's.
+      - key: GROQ_API_KEYS
+        sync: false
+      - key: GOOGLE_AI_STUDIO_API_KEYS
+        sync: false
+      - key: NVIDIA_NIM_API_KEYS
+        sync: false
+      - key: SKILL_DATABASE_URL
+        fromDatabase:
+          name: conxa-execute-db
+          property: connectionString
+
+databases:
+  - name: conxa-execute-db
+    plan: free
+    databaseName: conxa_execute
+    user: conxa_execute
