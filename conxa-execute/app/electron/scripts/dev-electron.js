@@ -4,7 +4,7 @@ const { spawn } = require("child_process");
 const http = require("http");
 const path = require("path");
 
-// package.json lives at conxa-execute/, not electron/ (Studio's script is one level shallower).
+// package.json lives at conxa-execute/app/, not electron/ (Studio's script is one level shallower).
 const root = path.join(__dirname, "..", "..");
 const rendererUrl = process.env.CONXA_RENDERER_URL || "http://localhost:5175";
 

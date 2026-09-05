@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { HistoryRow, SkillRow } from "./bridge";
+import type { ChatMessage, ChatMode, Entitlement, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
 import { SettingsModal } from "./SettingsModal";
-import { Icon, Row, Starburst, paths } from "./ui";
+import { TitleBar } from "./TitleBar";
+import { Icon, Row, paths } from "./ui";
 
 type Mode = "form" | "chat";
 
@@ -9,6 +10,18 @@ function statusLabel(status: string) {
   if (status === "completed") return "Done";
   if (status === "busy") return "Busy";
   return "Failed";
+}
+
+function userDisplayName(identity: Identity | null, signedIn: boolean) {
+  if (identity?.name?.trim()) return identity.name.trim();
+  if (identity?.email?.trim()) return identity.email.split("@")[0];
+  return signedIn ? "Account" : "Guest";
+}
+
+function userInitials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return name.slice(0, 2).toUpperCase();
 }
 
 function fieldList(schema: Record<string, unknown>): { name: string; required: boolean; description: string }[] {
@@ -50,13 +63,39 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const [query, setQuery] = useState("");
-  const [chatLog, setChatLog] = useState<{ role: string; content: string }[]>([]);
+  const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
+  const [chatMode, setChatMode] = useState<ChatMode>("byok");
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [signedIn, setSignedIn] = useState(false);
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
+  const [plansUrl, setPlansUrl] = useState("");
 
   const refreshHistory = useCallback(async () => {
     const h = await api.history();
     setHistory(h.items || []);
+  }, [api]);
+
+  const refreshSessions = useCallback(async () => {
+    const r = await api.listSessions();
+    const list = r.sessions || [];
+    setSessions(list);
+    return list;
+  }, [api]);
+
+  const refreshAccount = useCallback(async () => {
+    const status = await api.authStatus();
+    setSignedIn(status.signedIn);
+    setIdentity(status.identity || null);
+    if (!status.signedIn) {
+      setEntitlement(null);
+      return;
+    }
+    const e = await api.getEntitlement();
+    setEntitlement(e.entitlement || null);
+    setPlansUrl(e.plansUrl || "");
   }, [api]);
 
   const load = useCallback(async () => {
@@ -67,7 +106,18 @@ export function App() {
     setHasKey(Boolean(s.hasKey));
     setBaseURL(s.baseURL || "");
     setModel(s.model || "");
+    setChatMode(s.mode || "byok");
     await refreshHistory();
+    await refreshAccount();
+
+    const list = await refreshSessions();
+    const current = list[0] || (await api.createSession()).session;
+    if (current) {
+      setSessionId(current.id);
+      const loaded = await api.loadSession({ id: current.id });
+      setChatLog(loaded.session?.messages || []);
+    }
+
     if (!st.ok) {
       setSkills([]);
       return;
@@ -80,7 +130,7 @@ export function App() {
       return;
     }
     setSkills(listed.skills || []);
-  }, [api, refreshHistory]);
+  }, [api, refreshHistory, refreshSessions, refreshAccount]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -112,13 +162,18 @@ export function App() {
   }, [api, selected]);
 
   const fields = useMemo(() => fieldList(schema), [schema]);
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return skills;
-    return skills.filter((s) => `${s.name || ""} ${s.skill}`.toLowerCase().includes(q));
-  }, [skills, query]);
-  const emptyChatHome = mode === "chat" && chatLog.length === 0 && !selected;
+  const displayLog = useMemo(
+    () => chatLog.filter((m) => (m.role === "user" || m.role === "assistant") && m.content),
+    [chatLog],
+  );
+  const chatReady = chatMode === "byok" ? hasKey : signedIn;
+  const emptyChatHome = mode === "chat" && displayLog.length === 0 && !selected;
   const formPicker = mode === "form" && !selected;
+  const displayName = userDisplayName(identity, signedIn);
+  const initials = userInitials(displayName);
+  const sessionIndex = sessions.findIndex((s) => s.id === sessionId);
+  const canGoBack = Boolean(selected) || sessionIndex > 0;
+  const canGoForward = sessionIndex >= 0 && sessionIndex < sessions.length - 1;
 
   async function runForm() {
     if (!selected || busy) return;
@@ -132,19 +187,27 @@ export function App() {
 
   async function sendChat() {
     const text = chatInput.trim();
-    if (!text || busy) return;
+    if (!text || busy || !sessionId) return;
     setChatInput("");
-    const next = [...chatLog, { role: "user", content: text }];
-    setChatLog(next);
+    setChatLog((prev) => [...prev, { role: "user", content: text }]);
     setBusy(true);
-    const r = await api.chatSend({ text, messages: next });
+    const r = await api.chatSend({ text, sessionId });
     setBusy(false);
-    setChatLog([...next, { role: "assistant", content: r.ok ? r.text || "" : r.message || "Error" }]);
+    if (r.ok) {
+      // Reload from the session store rather than hand-appending — main.js
+      // may have pruned/compacted the transcript for this turn, and that's
+      // the authoritative post-turn state.
+      const loaded = await api.loadSession({ id: sessionId });
+      setChatLog(loaded.session?.messages || []);
+    } else {
+      setChatLog((prev) => [...prev, { role: "assistant", content: r.message || "Error" }]);
+    }
     await refreshHistory();
+    await refreshSessions();
   }
 
   async function saveSettings() {
-    const r = await api.saveSettings({ baseURL, model, apiKey });
+    const r = await api.saveSettings({ baseURL, model, apiKey, mode: chatMode });
     if (r.ok) {
       setHasKey(Boolean(r.hasKey));
       setApiKey("");
@@ -152,17 +215,80 @@ export function App() {
     }
   }
 
-  function goHome() {
+  async function changeMode(next: ChatMode) {
+    setChatMode(next);
+    await api.saveSettings({ mode: next });
+  }
+
+  async function login() {
+    const r = await api.authLogin();
+    if (r.ok) await refreshAccount();
+  }
+
+  async function logout() {
+    await api.authLogout();
+    await refreshAccount();
+  }
+
+  async function goHome() {
     setSelected(null);
-    setChatLog([]);
     setFormMsg("");
     setMode("chat");
+    const r = await api.createSession();
+    if (r.session) {
+      await refreshSessions();
+      setSessionId(r.session.id);
+      setChatLog([]);
+    }
+  }
+
+  async function pickSession(s: SessionSummary) {
+    setSelected(null);
+    setMode("chat");
+    setSessionId(s.id);
+    const loaded = await api.loadSession({ id: s.id });
+    setChatLog(loaded.session?.messages || []);
   }
 
   function pickSkill(s: SkillRow) {
     setSelected(s);
     setMode("form");
-    setChatLog([]);
+  }
+
+  async function deleteChat(id: string) {
+    await api.deleteSession({ id });
+    const list = await refreshSessions();
+    if (sessionId === id) {
+      const next = list[0] || (await api.createSession()).session;
+      if (next) {
+        setSessionId(next.id);
+        const loaded = await api.loadSession({ id: next.id });
+        setChatLog(loaded.session?.messages || []);
+      } else {
+        setSessionId(null);
+        setChatLog([]);
+      }
+    }
+  }
+
+  async function deleteRun(at: string) {
+    const r = await api.deleteHistory({ at });
+    if (r.ok) setHistory(r.items || []);
+  }
+
+  function handleBack() {
+    if (selected) {
+      setSelected(null);
+      setMode("chat");
+      return;
+    }
+    if (sessionIndex > 0) pickSession(sessions[sessionIndex - 1]);
+  }
+
+  function handleForward() {
+    if (sessionIndex >= 0 && sessionIndex < sessions.length - 1) {
+      pickSession(sessions[sessionIndex + 1]);
+    }
   }
 
   const composer = (
@@ -179,13 +305,15 @@ export function App() {
               sendChat();
             }
           }}
-          disabled={mode === "chat" && (!runtimeOk || !hasKey || busy)}
+          disabled={mode === "chat" && (!runtimeOk || !chatReady || busy)}
           placeholder={
             mode === "form"
-              ? "Switch to Chat to ask in words — or pick a skill on the left."
-              : hasKey
+              ? "Switch to Chat to ask in words — or pick a skill from the home screen."
+              : chatReady
                 ? "How can I help you today?"
-                : "Add your API key in Settings to use chat"
+                : chatMode === "byok"
+                  ? "Add your API key in Settings to use chat"
+                  : "Sign in to CONXA in Settings to use chat"
           }
         />
         <div className="mt-1 flex items-center justify-between gap-2">
@@ -199,11 +327,11 @@ export function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 text-[12px] text-fg-dim">
-            <span>{model || "Your model"}</span>
+            <span>{chatMode === "byok" ? model || "Your model" : "CONXA"}</span>
             <button
               type="button"
               className="flex h-8 w-8 items-center justify-center rounded-full bg-fg text-bg disabled:opacity-30"
-              disabled={mode !== "chat" || !runtimeOk || !hasKey || busy}
+              disabled={mode !== "chat" || !runtimeOk || !chatReady || busy}
               onClick={sendChat}
               aria-label="Send"
             >
@@ -216,19 +344,20 @@ export function App() {
   );
 
   return (
-    <div className="flex h-full bg-bg text-fg">
-      <aside className={`flex shrink-0 flex-col border-r border-line bg-bg-sidebar transition-[width] ${collapsed ? "w-[52px]" : "w-[260px]"}`}>
-        <div className="flex items-center gap-1 px-2 pt-2">
-          <button type="button" className="rounded-md p-1.5 text-fg-muted hover:bg-bg-hover" onClick={() => setCollapsed((v) => !v)} aria-label="Toggle sidebar">
-            <Icon d={paths.panel} />
-          </button>
-          {!collapsed && (
-            <div className="flex rounded-lg bg-bg p-0.5 text-[12px]">
-              <span className="rounded-md bg-bg-active px-2.5 py-1">Form and Chat</span>
-            </div>
-          )}
-        </div>
+    <div className="flex h-full flex-col bg-bg text-fg">
+      <TitleBar
+        onToggleSidebar={() => setCollapsed((v) => !v)}
+        onMenu={() => setShowSettings(true)}
+        onBack={handleBack}
+        onForward={handleForward}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        initials={initials}
+        onProfile={() => setAccountOpen((v) => !v)}
+      />
 
+      <div className="flex min-h-0 flex-1">
+      <aside className={`flex shrink-0 flex-col border-r border-line bg-bg-sidebar transition-[width] ${collapsed ? "w-[52px]" : "w-[260px]"}`}>
         <div className="px-2 pt-3">
           <button type="button" onClick={goHome} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-fg-muted hover:bg-bg-hover hover:text-fg">
             <Icon d={paths.plus} />
@@ -236,32 +365,28 @@ export function App() {
           </button>
         </div>
 
-        {!collapsed && (
-          <div className="px-2 pt-2">
-            <div className="flex items-center gap-2 rounded-lg border border-line bg-bg px-2 py-1.5">
-              <Icon d={paths.search} size={14} />
-              <input className="w-full bg-transparent text-[13px] outline-none placeholder:text-fg-dim" placeholder="Search skills" value={query} onChange={(e) => setQuery(e.target.value)} />
-            </div>
-          </div>
-        )}
-
-        <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
-          {!collapsed && <p className="mb-1 px-2 text-[11px] text-fg-dim">Skills</p>}
-          {filtered.length === 0 && !collapsed && <p className="px-2 text-[12px] text-fg-dim">No skills yet.</p>}
-          {filtered.map((s) => (
+        <div className="sidebar-scroll min-h-0 flex-1 overflow-auto px-2 py-3">
+          {!collapsed && <p className="mb-1 px-2 text-[11px] text-fg-dim">Chats</p>}
+          {sessions.length === 0 && !collapsed && <p className="px-2 text-[12px] text-fg-dim">No chats yet.</p>}
+          {sessions.map((s) => (
             <Row
-              key={`${s.workspace_id || ""}:${s.skill}`}
-              active={selected?.skill === s.skill && selected?.workspace_id === s.workspace_id}
-              onClick={() => pickSkill(s)}
-              icon={<Icon d={paths.play} size={15} />}
+              key={s.id}
+              active={s.id === sessionId}
+              onClick={() => pickSession(s)}
+              onDelete={collapsed ? undefined : () => deleteChat(s.id)}
+              icon={<Icon d={paths.list} size={15} />}
             >
-              {collapsed ? "" : (s.name || s.skill)}
+              {collapsed ? "" : s.title}
             </Row>
           ))}
 
           {!collapsed && <p className="mb-1 mt-5 px-2 text-[11px] text-fg-dim">Runs</p>}
           {history.slice(0, 24).map((h, i) => (
-            <Row key={`${h.at}-${i}`} icon={<Icon d={paths.list} size={15} />}>
+            <Row
+              key={`${h.at}-${i}`}
+              onDelete={collapsed ? undefined : () => deleteRun(h.at)}
+              icon={<Icon d={paths.list} size={15} />}
+            >
               {collapsed ? "" : (
                 <span className="flex w-full items-center justify-between gap-2">
                   <span className="truncate">{h.skill || "run"}</span>
@@ -282,10 +407,12 @@ export function App() {
             </div>
           )}
           <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2 py-2 hover:bg-bg-hover" onClick={() => setAccountOpen((v) => !v)}>
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-bg-active text-xs">C</span>
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-bg-active text-[11px] font-medium text-fg">
+              {initials}
+            </span>
             {!collapsed && (
               <>
-                <span className="min-w-0 flex-1 truncate text-left text-[13px]">Conxa Execute</span>
+                <span className="min-w-0 flex-1 truncate text-left text-[13px]">{displayName}</span>
                 <Icon d={paths.chevron} size={14} />
               </>
             )}
@@ -300,10 +427,7 @@ export function App() {
 
         {emptyChatHome && (
           <div className="flex flex-1 flex-col items-center justify-center px-6 pb-8">
-            <div className="mb-8 flex items-center gap-3">
-              <Starburst />
-              <h1 className="font-serif text-[40px] font-normal tracking-tight">Ready when you are</h1>
-            </div>
+            <h1 className="mb-8 font-serif text-[40px] font-normal tracking-tight">Ready when you are</h1>
             {composer}
             <div className="mt-5 flex max-w-[720px] flex-wrap justify-center gap-2">
               {skills.slice(0, 5).map((s) => (
@@ -334,7 +458,7 @@ export function App() {
         )}
 
         {mode === "form" && selected && (
-          <div className="mx-auto w-full max-w-lg flex-1 overflow-auto px-6 py-10">
+          <div className="mx-auto w-full max-w-lg flex-1 overflow-auto theme-scroll px-6 py-10">
             <h1 className="font-serif text-3xl">{selected.name || selected.skill}</h1>
             {selected.description && <p className="mt-2 text-sm text-fg-muted">{selected.description}</p>}
             <div className="mt-8 space-y-4">
@@ -356,15 +480,17 @@ export function App() {
 
         {mode === "chat" && !emptyChatHome && (
           <div className="flex min-h-0 flex-1 flex-col">
-            {!hasKey && (
+            {!chatReady && (
               <p className="mx-auto mt-4 max-w-[720px] rounded-xl border border-warn/40 bg-[#2a2114] px-4 py-2 text-sm text-[#e8d4b0]">
-                Chat needs your own API key. Open Settings — the form still runs skills with no model.
+                {chatMode === "byok"
+                  ? "Chat needs your own API key. Open Settings — the form still runs skills with no model."
+                  : "Sign in to CONXA in Settings to use chat — the form still runs skills with no login."}
               </p>
             )}
-            <div className="min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
-              {chatLog.map((m, i) => (
+            <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
+              {displayLog.map((m, i) => (
                 <div key={i} className="mx-auto max-w-[720px]">
-                  <div className="mb-1 text-[11px] text-fg-dim">{m.role === "user" ? "You" : "Conxa"}</div>
+                  <div className="mb-1 text-[11px] text-fg-dim">{m.role === "user" ? "You" : "CONXA"}</div>
                   <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</div>
                 </div>
               ))}
@@ -377,6 +503,8 @@ export function App() {
       <SettingsModal
         open={showSettings}
         onClose={() => setShowSettings(false)}
+        mode={chatMode}
+        onModeChange={changeMode}
         baseURL={baseURL}
         model={model}
         apiKey={apiKey}
@@ -385,7 +513,14 @@ export function App() {
         onModel={setModel}
         onApiKey={setApiKey}
         onSave={saveSettings}
+        signedIn={signedIn}
+        identity={identity}
+        entitlement={entitlement}
+        plansUrl={plansUrl}
+        onLogin={login}
+        onLogout={logout}
       />
+      </div>
     </div>
   );
 }

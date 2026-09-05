@@ -23,4 +23,11 @@ function pushHistory(entry) {
   return list.slice(0, 50);
 }
 
-module.exports = { loadHistory, pushHistory };
+function deleteHistoryEntry(at) {
+  const list = loadHistory().filter((e) => e.at !== at);
+  fs.mkdirSync(path.dirname(historyPath()), { recursive: true });
+  fs.writeFileSync(historyPath(), JSON.stringify(list, null, 2));
+  return list;
+}
+
+module.exports = { loadHistory, pushHistory, deleteHistoryEntry };

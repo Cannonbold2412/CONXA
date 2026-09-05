@@ -1,7 +1,7 @@
 {
   "name": "conxa-execute",
   "version": "0.1.0",
-  "description": "Conxa Execute — run recorded skills without a third-party chat app",
+  "description": "CONXA — run recorded skills without a third-party chat app",
   "main": "electron/main.js",
   "author": "Conxa",
   "license": "UNLICENSED",
@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "effect": "^3.22.1",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
   }

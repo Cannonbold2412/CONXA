@@ -14,7 +14,7 @@ let engine = null; // { client, transport }
 
 function runtimeMissingError() {
   const err = new Error(
-    "Conxa runtime is not installed. Install a skill pack first, then reopen Conxa Execute.",
+    "Conxa runtime is not installed. Install a skill pack first, then reopen CONXA.",
   );
   err.code = "runtime_missing";
   return err;

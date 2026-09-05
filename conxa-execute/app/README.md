@@ -1,9 +1,9 @@
-# Conxa Execute (v0.1)
+# CONXA (v0.1)
 
 Windows app to **run** recorded skills without Claude Desktop. The executor is still `conxa-runtime.exe`. This window is another MCP caller.
 
 ```
-cd conxa-execute
+cd conxa-execute/app
 npm install
 npm run dev
 ```
