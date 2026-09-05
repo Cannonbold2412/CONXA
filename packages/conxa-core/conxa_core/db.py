@@ -26,6 +26,14 @@ def _get_engine():
     return _engine
 
 
+def get_engine():
+    """Public accessor for the shared SQLAlchemy engine (Postgres mode) or
+    None (filesystem mode). Lets callers that need atomic multi-statement
+    kv_store updates (e.g. a wallet debit/credit) reuse this module's engine
+    instead of opening a second one."""
+    return _get_engine()
+
+
 def _safe_namespace(namespace: str) -> str:
     """Sanitize a namespace for filesystem use (Windows forbids ':' etc. in path segments;
     namespaces like "manifest:dev" or "skill_packs:{company}:{slug}" use ':' as a joiner)."""

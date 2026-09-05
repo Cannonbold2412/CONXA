@@ -252,6 +252,12 @@ class Settings(BaseSettings):
     installer_signing_key: str = ""
     installer_signing_window: int = 600  # seconds; longer than the proxy window — human download clicks, not machine calls
 
+    # conxa-execute's Execute Key HMAC secret. An Execute Key is derived from a
+    # purchase's Cashfree order/subscription reference id via
+    # HMAC-SHA256(this secret, order_ref) rather than randomly generated and
+    # stored — nothing sensitive ever touches the database. Empty in dev.
+    execute_key_hmac_secret: str = ""
+
     # Enterprise BYOK (Azure OpenAI) key-at-rest encryption. 32 raw bytes,
     # base64-encoded (e.g. `python -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"`).
     # Empty in dev — BYOK storage refuses to encrypt/decrypt without a real key
@@ -466,6 +472,16 @@ class Settings(BaseSettings):
     # Note: compile add-on packs are one-time purchases via Cashfree Payment
     # Links — they need no plan IDs, only the app id / secret key above.
     cashfree_env: str = Field(default="TEST", validation_alias="CASHFREE_ENV")  # TEST | PROD
+
+    # conxa-execute's 6 monthly auto-refill token subscription tiers. One-time
+    # token packs need no plan IDs (Payment Links are created ad hoc), only
+    # recurring subscriptions require a pre-created Cashfree Plan object.
+    cashfree_execute_sub_250k_plan_id: str = Field(default="", validation_alias="CASHFREE_SUB_250K_PLAN_ID")
+    cashfree_execute_sub_500k_plan_id: str = Field(default="", validation_alias="CASHFREE_SUB_500K_PLAN_ID")
+    cashfree_execute_sub_1m_plan_id: str = Field(default="", validation_alias="CASHFREE_SUB_1M_PLAN_ID")
+    cashfree_execute_sub_2_5m_plan_id: str = Field(default="", validation_alias="CASHFREE_SUB_2_5M_PLAN_ID")
+    cashfree_execute_sub_5m_plan_id: str = Field(default="", validation_alias="CASHFREE_SUB_5M_PLAN_ID")
+    cashfree_execute_sub_10m_plan_id: str = Field(default="", validation_alias="CASHFREE_SUB_10M_PLAN_ID")
 
     @field_validator("environment", mode="before")
     @classmethod
