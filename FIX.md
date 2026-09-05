@@ -2,6 +2,70 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Removed skills from the left sidebar — 2026-09-05
+The skills list and skill search are no longer shown in the left panel. Chats and run history stay there; skills can still be picked from the home screen or through chat.
+— 2026-09-05
+
+## Gave CONXA a Claude-style top bar and a personal account footer — 2026-09-05
+The app no longer shows the logo in the top-left or bottom-left of the sidebar. Instead, the bottom-left shows the signed-in person's name (or "Guest" if not signed in). A new slim top bar matches Claude Desktop — menu, sidebar toggle, search, back/forward on the left, and minimize/maximize/close on the right — with a custom frameless window like a modern chat app.
+— 2026-09-05
+
+## Renamed Conxa Execute to CONXA in the app — 2026-09-05
+Every place the app showed "Conxa Execute" as its name now says "CONXA" instead — the window title, sidebar, settings, chat labels, sign-in screens, and checkout pages. Same app, shorter brand name everywhere you see it.
+— 2026-09-05
+
+## Polished the Execute app's left sidebar — 2026-09-05
+The left panel in Conxa Execute now has a three-dot menu on each chat and run row with a Delete option, so you can remove old conversations and run history without digging through files. The scrollbar and text highlight colors were bright white and looked out of place on the dark theme — they now blend in with the rest of the app. The same Conxa logo used in Build Studio is now the official Conxa Execute logo everywhere: taskbar icon, browser tab, sidebar header, home screen, settings, and account button.
+— 2026-09-05
+
+## Gave the Execute chat app real sign-in, real monthly plans, and a memory that survives closing it — 2026-09-05
+The separate desktop chat app ("Conxa Execute") could sell a paid access code, but that code wasn't
+tied to a real account, its "monthly plan" was really just an auto-refill of the same top-up balance,
+and — the biggest gap — every chat forgot everything the moment you closed the app or clicked "New."
+There was also no way to pick up a chat on a different computer. This work adds real sign-in (so a
+person, not a random code, owns their balance and plan), a genuine monthly plan that resets its
+allowance every period instead of just stacking credits forever, and a proper memory for each
+conversation: chats now show up in a list on the left like a normal chat app, and reopening one — even
+after fully closing and restarting — picks up right where it left off. Signed-in chats also sync to
+the cloud, so a conversation follows you to another computer; bring-your-own-key chats keep working
+exactly as before, just with the same "remembers everything" upgrade added on top, kept entirely on
+your own machine. Behind the scenes, if the AI provider serving a signed-in chat has trouble, the
+system now automatically tries a backup model instead of the whole conversation just failing.
+— 2026-09-05
+
+## Built the online store for buying chat tokens in the Execute app — 2026-09-05
+Until now, the separate desktop chat app ("Conxa Execute") only worked if you brought your own
+account and key from an outside AI provider. There was no way for Conxa itself to sell access. This
+adds a small, separate online service, hosted the same way the main Conxa cloud already is, that
+sells prepaid "token" packs for chatting — six sizes, from a small top-up to a big bulk pack, with
+bigger packs costing less per token, plus a monthly auto-refill option on every size. Paying gets you
+a private access code to paste into the app's settings in place of your own key, so Conxa can meter
+usage and refill your balance without needing a full account or password system. Bringing your own
+key still works exactly as before — this is a new option, not a replacement.
+— 2026-09-05
+
+## Logged a passing bulk file-transfer test, and noted it was a smaller test run than originally planned — 2026-09-05
+We had a test planned that downloads 20 files from one website and uploads each one to another
+website, one at a time, to prove the system never mixes up which file goes where. The team actually
+ran it with 5 files instead of 20. Checking the saved test data confirmed it worked perfectly — each
+uploaded file was matched to its own correct download, nothing was mixed up, no extra "please help
+me figure this out" calls were needed, and the downloaded files themselves were byte-for-byte the
+same on replay as during recording. It's now logged as a pass on the test scoreboard, with an honest
+note that it was tested at a smaller size than originally planned, in case a mix-up bug only shows
+up with more files.
+— 2026-09-05
+
+## Logged Conxa's biggest successful test run yet, and updated the test scoreboard — 2026-09-04
+The team keeps a running scoreboard of every recorded routine that's been tried end-to-end. A check
+of the local test data turned up one that hadn't made it onto the scoreboard yet: a single recording
+with over 100 individual actions, spanning six different websites and six browser tabs, that ran
+start to finish in under a minute with zero hiccups and no need for any self-repair along the way.
+That's more than double the size of the previous biggest proven run. It's now added to the "proven"
+list with the honest caveat that it doesn't fully match any one of the specific big test plans still
+on the to-do list, so those stay open — this is extra proof of scale and reliability, not a
+replacement for them.
+— 2026-09-04
+
 ## Fixed recordings on modern component-based websites losing track of button labels — 2026-09-04
 Some websites are built out of pre-packaged, self-contained widgets (a technique called "shadow DOM" — think of it like a sticker with its own sealed-off mini-page glued onto the real page). When Conxa recorded a click on a button built this way, it could see that something button-shaped got clicked, but not the visible word written on it ("Primary", "Submit", etc.) — that label lived just outside the sealed sticker. Without a name to go on, Conxa fell back to a generic technical description shared by every similarly-styled button on the page, so at playback time it couldn't tell which one was meant and correctly refused to guess rather than click the wrong thing, failing the whole run. The fix teaches the recorder to look just outside the sticker for the real label whenever the button itself has none, so it can once again tell buttons apart by what they actually say. Found using a real public site full of these sealed-widget buttons, confirmed with an automated check that reproduces the exact same setup, and then confirmed for real: a fresh recording against that same site was made, compiled, and replayed in Build Studio, and it correctly picked the intended button by name every time.
 — 2026-09-04
