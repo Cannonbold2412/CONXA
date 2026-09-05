@@ -35,7 +35,7 @@ test("url_pattern assertion passes when url matches", async () => {
   assert.strictEqual(r.pass, true);
 });
 
-test("url_pattern assertion fails when url does not match", async () => {
+test("url_pattern assertion fails when url does not match", { timeout: 70000 }, async () => {
   const page = mockPage("https://app.example.com/orders/cart");
   const step = { type: "click", validation: { assertions: [
     { type: "url_pattern", target: "/orders/.*/confirmed", required: true, timeout_ms: 50 },
@@ -43,6 +43,17 @@ test("url_pattern assertion fails when url does not match", async () => {
   const r = await verifyStep(page, step, {});
   assert.strictEqual(r.pass, false);
   assert.strictEqual(r.channel, "url_pattern");
+});
+
+test("hash url_pattern assertion honours the short compiler timeout", async () => {
+  const page = mockPage("https://app.example.com/page");
+  const t0 = Date.now();
+  const step = { type: "click", assertions: [
+    { type: "url_pattern", target: "#detail$", required: true, timeout_ms: 50 },
+  ] };
+  const r = await verifyStep(page, step, {});
+  assert.strictEqual(r.pass, false);
+  assert.ok(Date.now() - t0 < 500, "same-document hash checks should not inherit the page-load budget");
 });
 
 test("selector_present passes when element attached", async () => {

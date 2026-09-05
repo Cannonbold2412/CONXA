@@ -6,7 +6,7 @@ const { interpolate } = require("./interpolate");
 const { PAGE_LOAD_TIMEOUT_MS } = require("./run_config");
 const { asObject, asArray, isNonIdempotent } = require("./step_utils");
 const { rootCandidates } = require("./resolution");
-const { withDeadline } = require("./page_eval");
+const { withDeadline, evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 // Phase 8: post-action VERIFY — check compiled post-condition assertions independently of the
 // action's own success. Returns { pass, channel, evidence }. Absent assertions → pass (no-op).
@@ -34,7 +34,9 @@ const STATE_CHANGED_TEXT_LEN_TOLERANCE = 20;
 async function capturePreStepSignature(page) {
   try {
     const url = page.url();
-    const { textLen, interactiveCount } = await page.evaluate(pageScripts.preStepSignature, STATE_CHANGED_SELECTOR);
+    const sig = await evalOn(page, pageScripts.preStepSignature, STATE_CHANGED_SELECTOR);
+    if (!sig || sig === EVAL_TIMED_OUT) return { url, textLen: 0, interactiveCount: 0 };
+    const { textLen, interactiveCount } = sig;
     return { url, textLen, interactiveCount };
   } catch (_) {
     return null;
@@ -110,17 +112,22 @@ async function anyRootHasMatch(roots, target) {
 
 const URL_ASSERTION_TYPES = new Set(["url_changed", "url_exact", "url_pattern", "url"]);
 
+// Full navigations may need the page-load budget; same-document hash checks do not.
+function assertionTimeout(type, target, declaredMs) {
+  const declared = Number(declaredMs) || 0;
+  if (!URL_ASSERTION_TYPES.has(type)) return declared || 3000;
+  if (type === "url_pattern" || type === "url") {
+    const raw = String(target || "");
+    if (raw.startsWith("#")) return declared || 3000;
+  }
+  return Math.max(declared, PAGE_LOAD_TIMEOUT_MS);
+}
+
 async function evaluateAssertion(roots, page, a, inputs, baseline) {
   const type = String(a.type || "").toLowerCase();
   const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
   const required = a.required !== false;
-  // A URL assertion following navigation shares the page's real load budget, not the compiler's
-  // narrower default (compiled packs can carry a short wait_for timeout from before the page-load
-  // budget was raised) — otherwise a slow navigation fails its own assertion before the page ever
-  // finishes loading.
-  const timeout = URL_ASSERTION_TYPES.has(type)
-    ? Math.max(Number(a.timeout_ms) || 0, PAGE_LOAD_TIMEOUT_MS)
-    : (Number(a.timeout_ms) || 3000);
+  const timeout = assertionTimeout(type, target, a.timeout_ms);
   const startedAt = Date.now();
   let ok = true;
 

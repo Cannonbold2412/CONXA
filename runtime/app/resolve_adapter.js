@@ -6,6 +6,7 @@
 
 const crypto = require("crypto");
 const { extractDescriptor: _extractDescriptor } = require("./page_scripts");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 // Build a getByRole locator from an `internal:role=<role>[name="<name>"]` grammar string.
 // The name is QUOTED in the grammar, which in Playwright's own parser means an EXACT match
@@ -87,8 +88,8 @@ async function gatherCandidates(roots, signals, interpolate, inputs, perSignalCa
       try { all = await locator.all(); } catch (_) { all = []; }
       for (const item of all.slice(0, perSignalCap)) {
         let d;
-        try { d = await item.evaluate(_extractDescriptor); } catch (_) { continue; }
-        if (!d) continue;
+        try { d = await evalOn(item, _extractDescriptor); } catch (_) { continue; }
+        if (!d || d === EVAL_TIMED_OUT) continue;
         d.stableHash = d._hashPayload ? _sha256(d._hashPayload) : "";
         delete d._hashPayload;
         d._loc = item;

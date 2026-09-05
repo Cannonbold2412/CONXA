@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed the build check that tests whether the runtime can click a page — 2026-09-06
+The automated build test that opens a sample page and clicks a button was timing out after three minutes even though the runtime was still working. The wait timer on link checks was being stretched to a full minute even for quick same-page jumps, so a single missed click could burn the entire test budget. The test now uses the shorter wait the skill author intended for those quick checks, the test gives the runtime a bit more total time before giving up, and a few behind-the-scenes browser calls now have safety timeouts so they cannot hang forever.
+— 2026-09-06
+
 ## Removed skills from the left sidebar — 2026-09-05
 The skills list and skill search are no longer shown in the left panel. Chats and run history stay there; skills can still be picked from the home screen or through chat.
 — 2026-09-05

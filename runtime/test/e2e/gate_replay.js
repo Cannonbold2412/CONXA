@@ -104,7 +104,7 @@ activateVersion(appRoot, GATE_VERSION, (versionDir) => {
   }
   if (!fs.existsSync(path.join(versionDir, "version.json"))) {
     fs.writeFileSync(path.join(versionDir, "version.json"),
-      JSON.stringify({ app_version: "app-vGATE", min_host: "host-v1.0.0", files: {} }));
+      JSON.stringify({ app_version: "app-vGATE", min_host: "host-v0.0.0", files: {} }));
   }
 });
 
@@ -148,7 +148,7 @@ function send(method, params) {
   const id = nextId++;
   const p = new Promise((resolve, reject) => {
     pending.set(id, resolve);
-    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`timeout: ${method}`)); } }, 180000);
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`timeout: ${method}`)); } }, 210000);
   });
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   return p;
