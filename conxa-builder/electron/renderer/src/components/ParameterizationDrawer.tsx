@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { Sparkles, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
-import type { WorkflowResponse } from '../types/workflow'
+import type { StepEditorDTO, WorkflowResponse } from '../types/workflow'
 import { fetchWorkflow, patchSkillInputs, postWorkflowReplaceLiterals } from '../api/workflowApi'
 import { Button } from '@/components/ui/button'
 import { fieldTextareaClass } from '@/lib/fieldStyles'
@@ -24,7 +24,7 @@ import {
   type VariableFormRow,
   rowsFromServerInputs,
   rowsToServerPayload,
-  unusedRowIds,
+  stepsUsingVariable,
 } from '@/lib/skillInputVariables'
 
 type Props = {
@@ -88,12 +88,12 @@ function VariableNameField({
 
 function VariableRow({
   row,
-  isUnused,
+  usingSteps,
   onChange,
   onRemove,
 }: {
   row: VariableFormRow
-  isUnused: boolean
+  usingSteps: StepEditorDTO[]
   onChange: (r: VariableFormRow) => void
   onRemove: () => void
 }) {
@@ -192,11 +192,15 @@ function VariableRow({
           />
         </div>
       ) : null}
-      {isUnused ? (
+      {usingSteps.length === 0 ? (
         <p className="text-status-warn flex items-center gap-1 pl-1 text-[0.7rem]">
           <span aria-hidden>▲</span> Not used in any step
         </p>
-      ) : null}
+      ) : (
+        <p className="text-muted-foreground truncate pl-1 text-[0.7rem]">
+          Used in: {usingSteps.map((s) => `Step ${s.step_index + 1}`).join(', ')}
+        </p>
+      )}
     </div>
   )
 }
@@ -234,7 +238,10 @@ export function ParameterizationInlinePanel({ workflow, onSaved, onClose }: Prop
 
   const spottedIds = useMemo(() => collectVariableIdsFromSteps(workflow.steps), [workflow.steps])
   const missing = useMemo(() => missingSpottedIds(spottedIds, rows), [spottedIds, rows])
-  const unused = useMemo(() => new Set(unusedRowIds(spottedIds, rows).map((id) => id.toLowerCase())), [spottedIds, rows])
+  const usageByRowId = useMemo(
+    () => new Map(rows.map((r) => [r.key, stepsUsingVariable(workflow.steps, r.id)])),
+    [rows, workflow.steps],
+  )
 
   // Counts rows that differ from (or are missing from) what the server has saved, so the
   // footer can say something more useful than a bare "Save" prompt.
@@ -409,7 +416,7 @@ export function ParameterizationInlinePanel({ workflow, onSaved, onClose }: Prop
                   <VariableRow
                     key={row.key}
                     row={row}
-                    isUnused={unused.has(row.id.trim().toLowerCase())}
+                    usingSteps={usageByRowId.get(row.key) ?? []}
                     onChange={(next) =>
                       setRows((prev) => {
                         const c = [...prev]

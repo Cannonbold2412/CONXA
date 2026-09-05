@@ -40,6 +40,42 @@ export function collectVariableIdsFromSteps(steps: StepEditorDTO[]): string[] {
   return [...set].sort((a, b) => a.localeCompare(b))
 }
 
+/** Steps (including nested branch steps) that reference this variable id, via either an
+ * explicit parameter binding or a `{{id}}` placeholder anywhere in the step's fields. */
+export function stepsUsingVariable(steps: StepEditorDTO[], id: string): StepEditorDTO[] {
+  const idKey = id.trim().toLowerCase()
+  if (!idKey) return []
+  const out: StepEditorDTO[] = []
+  const visit = (list: StepEditorDTO[]) => {
+    for (const step of list) {
+      const bound = (step.parameter_bindings ?? []).some(
+        (b) => String((b as { variable_id?: string }).variable_id ?? '').toLowerCase() === idKey,
+      )
+      let placed = false
+      if (bound) {
+        out.push(step)
+        placed = true
+      }
+      if (!placed) {
+        // Exclude branch_steps here — nested steps are walked separately below, and including
+        // them would misattribute a variable used only inside a branch to its parent step too.
+        const { branch_steps: _branch, ...rest } = step
+        const blob: string[] = []
+        collectStringsFromValue(rest, blob)
+        for (const s of blob) {
+          if ([...s.matchAll(PLACEHOLDER)].some((m) => m[1]?.toLowerCase() === idKey)) {
+            out.push(step)
+            break
+          }
+        }
+      }
+      if (step.branch_steps?.length) visit(step.branch_steps)
+    }
+  }
+  visit(steps)
+  return out
+}
+
 export function labelFromId(id: string): string {
   if (!id.trim()) return ''
   return id
@@ -196,13 +232,6 @@ export function rowsToServerPayload(
 export function missingSpottedIds(spotted: string[], rows: VariableFormRow[]): string[] {
   const have = new Set(rows.map((r) => r.id.trim().toLowerCase()).filter(Boolean))
   return spotted.filter((id) => !have.has(id.toLowerCase()))
-}
-
-/** Declared rows whose id never appears in any step ({{id}} typed nowhere) — a dead variable
- * the agent would still prompt for (audit finding M2). */
-export function unusedRowIds(spotted: string[], rows: VariableFormRow[]): string[] {
-  const used = new Set(spotted.map((id) => id.toLowerCase()))
-  return rows.map((r) => r.id.trim()).filter((id) => id && !used.has(id.toLowerCase()))
 }
 
 export function addSpottedToRows(
