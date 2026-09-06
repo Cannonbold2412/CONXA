@@ -118,6 +118,22 @@ class PhaseTests(unittest.TestCase):
         self.assertIn("content_fp", out[0]["extras"])
         self.assertEqual(out[0]["extras"]["primary_selector_kind"], "css")
         self.assertIn("selector_signature", out[0]["extras"])
+        self.assertFalse(out[0]["semantic"].get("llm_intent"))
+
+    def test_phase2_infers_input_type_from_label_without_llm(self) -> None:
+        from conxa_compile.pipeline.run import run_pipeline
+
+        ev = _minimal_click_event()
+        ev["action"]["action"] = "fill"
+        ev["target"]["tag"] = "input"
+        ev["target"]["inner_text"] = "Work email"
+        ev["semantic"]["normalized_text"] = "work email"
+        ev["semantic"]["input_type"] = None
+        with patch("conxa_compile.llm.semantic_llm.enrich_semantic") as enrich:
+            out = run_pipeline([ev])
+        enrich.assert_not_called()
+        self.assertEqual(out[0]["semantic"].get("input_type"), "email")
+        self.assertFalse(out[0]["semantic"].get("llm_intent"))
 
     def test_phase5_layered_self_match_executes(self) -> None:
         from conxa_compile.compiler.build import build_signal_reference

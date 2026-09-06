@@ -6,7 +6,6 @@ import re
 from datetime import datetime
 from typing import Any
 
-from conxa_compile.llm.semantic_llm import SemanticLLMInput, enrich_semantic
 from conxa_core.models.events import RecordedEvent
 from conxa_compile.pipeline.dedupe import (
     collapse_select_interaction_noise,
@@ -73,32 +72,34 @@ def _clean_one(ev: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
     return apply_signal_budget(row, policy)
 
 
-def _semantic_enrich_one(ev: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+def _infer_missing_input_type(ev: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    """Fill semantic.input_type from policy regex when the recorder left it blank.
+
+    No LLM: compile intent comes from the workflow-intent graph (or per-step
+    intent fallback). Human Edit 1-click fix still uses enrich_semantic.
+    """
+    sem = ev.get("semantic")
+    if not isinstance(sem, dict) or sem.get("input_type"):
+        return ev
+    sig = policy.get("signals") if isinstance(policy.get("signals"), dict) else {}
+    detectors = sig.get("input_type_detectors") or []
+    if not isinstance(detectors, list):
+        return ev
+    target = ev.get("target") if isinstance(ev.get("target"), dict) else {}
+    norm = str(sem.get("normalized_text") or target.get("inner_text") or "").lower()
+    inferred = ""
+    for det in detectors:
+        if not isinstance(det, dict):
+            continue
+        pat = str(det.get("regex") or "")
+        val = str(det.get("value") or "").strip()
+        if pat and val and re.search(pat, norm, re.I):
+            inferred = val
+            break
+    if not inferred:
+        return ev
     out = dict(ev)
-    sem = dict(out.get("semantic") or {})
-    target = dict(out.get("target") or {})
-    page = dict(out.get("page") or {})
-    raw_text = str(target.get("inner_text") or sem.get("normalized_text") or "")
-    element_type = str(target.get("tag") or sem.get("role") or "")
-    context = str(page.get("title") or "")
-    enriched = enrich_semantic(
-        SemanticLLMInput(raw_text=raw_text, element_type=element_type, context=context)
-    )
-    sem["llm_intent"] = enriched.intent
-    if not sem.get("input_type"):
-        sig = policy.get("signals") if isinstance(policy.get("signals"), dict) else {}
-        detectors = sig.get("input_type_detectors") or []
-        norm = str(sem.get("normalized_text") or enriched.normalized_text).lower()
-        if isinstance(detectors, list):
-            for det in detectors:
-                if not isinstance(det, dict):
-                    continue
-                pat = str(det.get("regex") or "")
-                val = str(det.get("value") or "").strip()
-                if pat and val and re.search(pat, norm, re.I):
-                    sem["input_type"] = val
-                    break
-    out["semantic"] = sem
+    out["semantic"] = {**sem, "input_type": inferred}
     return out
 
 
@@ -180,11 +181,11 @@ def run_pipeline(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in _reorder_by_timestamp(events):
         validated.append(RecordedEvent.model_validate(row).model_dump(mode="json"))
     cleaned = [_clean_one(e, policy) for e in _drop_non_actionable_hover_events(validated)]
-    sem_enriched = [_semantic_enrich_one(e, policy) for e in cleaned]
+    typed = [_infer_missing_input_type(e, policy) for e in cleaned]
     # collapse_select_interaction_noise runs first: fewer noise events left for
     # drop_superseded_focus_events' own lookahead to have to skip past.
     deduped = dedupe_scroll_events(
-        drop_superseded_focus_events(collapse_select_interaction_noise(sem_enriched))
+        drop_superseded_focus_events(collapse_select_interaction_noise(typed))
     )
     scroll_annotated = _annotate_scroll_amounts(deduped)
     return [
