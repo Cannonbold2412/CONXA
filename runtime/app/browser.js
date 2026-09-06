@@ -286,10 +286,13 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       })
     ));
     const allPending = pendings.every((p) => p.authPending);
+    // A real launch failure (chromium missing/mid-install, etc.) on any one app must win
+    // over the generic "windows just opened" message — it's the actionable diagnosis.
+    const failed = pendings.find((p) => p.launchFailed);
     return {
       authPending: allPending,
       loginUrl: pendings[0] && pendings[0].loginUrl,
-      message: allPending ? message : pendings.find((p) => !p.authPending)?.message,
+      message: failed ? failed.message : (allPending ? message : pendings.find((p) => !p.authPending)?.message),
       apps: missingRequired.map((r, i) => ({ id: r.app.id, name: r.app.name, loginUrl: r.app.login_url, ...pendings[i] })),
     };
   }
@@ -525,8 +528,12 @@ async function _buildExecContext(stored, headless = false) {
   return { browser, context };
 }
 
-async function _captureInteractiveAuth(workspace_id, targetUrl, opts = {}) {
-  const { storedState, protectedUrl } = opts;
+// Launch the headed login window and navigate to targetUrl. Kept separate from
+// _waitForInteractiveAuth() so beginInteractiveAuth() can await just this fast part —
+// a chromium.launch()/goto() failure surfaces to the caller immediately instead of
+// being swallowed by a detached background task (see beginInteractiveAuth).
+async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
+  const { storedState } = opts;
   const loginBrowser = await chromium.launch({
     headless: false,
     args: ["--disable-blink-features=AutomationControlled"],
@@ -539,6 +546,18 @@ async function _captureInteractiveAuth(workspace_id, targetUrl, opts = {}) {
     // site would otherwise re-prompt for, instead of forcing a full fresh login.
     ...(storedState ? { storageState: storedState } : {}),
   });
+  const loginPage = await loginCtx.newPage();
+  // Mask Playwright detection at the JS level — prevents "browser not secure" errors
+  await _maskAutomation(loginPage);
+  await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+  return { loginBrowser, loginCtx, loginPage };
+}
+
+// Wait for the user to finish signing in (or close the window) and return the
+// captured session. Runs in the background — see beginInteractiveAuth.
+async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
+  const { protectedUrl } = opts;
+  const { loginBrowser, loginCtx, loginPage } = opened;
   let lastUrl = "";
   let lastState = null;
   let _autoCloseScheduled = false;
@@ -595,13 +614,7 @@ async function _captureInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   };
 
   loginCtx.on("page", attachPage);
-  const loginPage = await loginCtx.newPage();
-
-  // Mask Playwright detection at the JS level — prevents "browser not secure" errors
-  await _maskAutomation(loginPage);
-
   attachPage(loginPage);
-  await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
   // Wait for the user to close all browser windows (event-driven).
   // Also run a periodic re-capture every 1.5 s for apps that write session tokens
@@ -631,11 +644,13 @@ async function _captureInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 // second execute_skill call while the window is open doesn't spawn a second one.
 const _pendingAuth = new Map();
 
-// Open a headed Chromium window for the user to log in, WITHOUT blocking the caller.
-// Returns immediately with { authPending: true, loginUrl, message }; the capture (and
-// session save) happens in the background. The window disconnecting with no session
-// captured (user closed it before signing in) reopens once, then gives up — the next
-// call to this function starts a fresh attempt.
+// Open a headed Chromium window for the user to log in. The launch itself (the fast,
+// synchronous part) is awaited here, so a genuine failure — chromium missing/mid-install,
+// launch permission error, bad navigation — is returned to the caller as the real error
+// instead of the misleading "window opened" message. Once the window is open, waiting
+// for the user to actually sign in happens in the background; the window disconnecting
+// with no session captured (user closed it before signing in) reopens once, then gives
+// up — the next call to this function starts a fresh attempt.
 async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   const { storedState, protectedUrl, authManager, sessionsDir, logFn } = opts;
 
@@ -646,15 +661,26 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   }
   const reopened = existing && existing.status === "done" && existing.outcome === "abandoned";
 
+  let opened;
+  try {
+    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState });
+  } catch (e) {
+    // authPending stays true so the existing "gate on auth" handling in callers still
+    // fires (they only branch on this flag) — only the message differs, carrying the
+    // real failure instead of a claim that a window opened.
+    return { authPending: true, loginUrl: targetUrl, message: e.message, launchFailed: true };
+  }
+
   const handle = { status: "pending", outcome: null };
   _pendingAuth.set(workspace_id, handle);
 
   (async () => {
     let lastErr = null;
+    let currentlyOpen = opened;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { state, protectedUrl: capturedUrl } =
-          await _captureInteractiveAuth(workspace_id, targetUrl, { storedState, protectedUrl });
+          await _waitForInteractiveAuth(workspace_id, currentlyOpen, { protectedUrl });
         await _persistSession(workspace_id, state, authManager, sessionsDir, logFn);
         _writeAuthMeta(workspace_id, { protected_url: capturedUrl });
         handle.status = "done";
@@ -662,6 +688,16 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
         return;
       } catch (e) {
         lastErr = e;
+        // Reopen a fresh window for the retry — the previous one is already closed
+        // (disconnected is what got us here).
+        if (attempt === 0) {
+          try {
+            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState });
+          } catch (e2) {
+            lastErr = e2;
+            break;
+          }
+        }
       }
     }
     handle.status = "done";
