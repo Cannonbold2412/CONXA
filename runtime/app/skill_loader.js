@@ -98,4 +98,34 @@ function hotReloadSkill(workspace_id, slug, skillPacksDir, index) {
   } catch (_) {}
 }
 
-module.exports = { loadSkillRegistry, loadSkillRegistryFromCache, verifySkillIntegrity, hotReloadSkill };
+// Re-read the on-disk manifest, then verify checksums. A long-lived runtime (Studio's
+// reused sandbox process) can hold a stale skillIndex after files were restaged in
+// place; verifying against that copy produces a false checksum mismatch. One retry
+// covers a restage that finished between the first read and the hash.
+function ensureSkillIntegrity(skillPacksDir, index, workspace_id, slug) {
+  const key = `${workspace_id}:${slug}`;
+  const attempt = () => {
+    hotReloadSkill(workspace_id, slug, skillPacksDir, index);
+    const entry = index[key];
+    if (!entry) throw new Error(`Integrity: missing skill ${slug}`);
+    verifySkillIntegrity(entry.skillDir, entry.manifest, entry.slug);
+    return entry;
+  };
+  try {
+    return attempt();
+  } catch (first) {
+    try {
+      return attempt();
+    } catch (_) {
+      throw first;
+    }
+  }
+}
+
+module.exports = {
+  loadSkillRegistry,
+  loadSkillRegistryFromCache,
+  verifySkillIntegrity,
+  hotReloadSkill,
+  ensureSkillIntegrity,
+};

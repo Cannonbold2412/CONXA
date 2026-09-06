@@ -15,6 +15,7 @@ const {
   loadSkillRegistryFromCache,
   verifySkillIntegrity,
   hotReloadSkill,
+  ensureSkillIntegrity,
 } = require("../../app/skill_loader");
 
 function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), "skill-loader-")); }
@@ -118,6 +119,56 @@ test("hotReloadSkill: adds new, updates changed, removes vanished manifests", ()
   fs.unlinkSync(mPath);
   hotReloadSkill("co1", "demo", root, index);
   assert.ok(!("co1:demo" in index), "vanished manifest is dropped from the live index");
+});
+
+test("ensureSkillIntegrity: restaged files pass even when the live index is stale", () => {
+  const root = tmp();
+  stageSkill(root, { slug: "demo", manifest: { name: "v1" } });
+  writePack(root, "co1", ["demo"]);
+  const current = path.join(root, "co1", "_default", "demo", "current");
+  const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
+
+  fs.writeFileSync(path.join(current, "execution.json"), '{"v":1}');
+  fs.writeFileSync(path.join(current, "manifest.json"), JSON.stringify({
+    name: "v1", checksum: { "execution.json": sha('{"v":1}') },
+  }));
+
+  const index = {};
+  hotReloadSkill("co1", "demo", root, index);
+  assert.throws(
+    () => {
+      fs.writeFileSync(path.join(current, "execution.json"), '{"v":2}');
+      fs.writeFileSync(path.join(current, "manifest.json"), JSON.stringify({
+        name: "v2", checksum: { "execution.json": sha('{"v":2}') },
+      }));
+      verifySkillIntegrity(current, index["co1:demo"].manifest, "demo");
+    },
+    /checksum mismatch/,
+    "stale in-memory checksums must fail against a restaged execution.json"
+  );
+
+  const live = ensureSkillIntegrity(root, index, "co1", "demo");
+  assert.strictEqual(live.manifest.name, "v2");
+  assert.strictEqual(live.manifest.checksum["execution.json"], sha('{"v":2}'));
+});
+
+test("ensureSkillIntegrity: a real checksum mismatch still throws after reload", () => {
+  const root = tmp();
+  stageSkill(root, { slug: "demo", manifest: { name: "v1" } });
+  writePack(root, "co1", ["demo"]);
+  const current = path.join(root, "co1", "_default", "demo", "current");
+  const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
+  fs.writeFileSync(path.join(current, "execution.json"), '{"v":1}');
+  fs.writeFileSync(path.join(current, "manifest.json"), JSON.stringify({
+    checksum: { "execution.json": sha('{"v":1}') },
+  }));
+  const index = {};
+  hotReloadSkill("co1", "demo", root, index);
+  fs.writeFileSync(path.join(current, "execution.json"), '{"tampered":true}');
+  assert.throws(
+    () => ensureSkillIntegrity(root, index, "co1", "demo"),
+    /checksum mismatch/
+  );
 });
 
 test("loadSkillRegistryFromCache: serves cache instantly, rebuilds when absent/corrupt", () => {

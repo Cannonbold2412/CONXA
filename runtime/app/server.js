@@ -747,14 +747,16 @@ async function _handleTool(name, args, extra) {
     const resolved = [];
     let _overrideAppliedCount = 0;
     for (const run of runs) {
-      const entry = _resolveSkill(String(run.skill || ""), run.workspace_id ? String(run.workspace_id) : null);
+      let entry = _resolveSkill(String(run.skill || ""), run.workspace_id ? String(run.workspace_id) : null);
       if (!entry) return err(`Skill not found: ${run.skill}. Call list_skills.`);
 
-      // Integrity gate
+      // Integrity gate — re-read manifest from disk first. Studio restages the
+      // pack into the same `current` junction while this process stays alive;
+      // the in-memory skillIndex checksums would otherwise be stale.
       try {
-        skillLoader.verifySkillIntegrity(entry.skillDir, entry.manifest, entry.slug);
+        entry = skillLoader.ensureSkillIntegrity(SKILL_PACKS_DIR, skillIndex, entry.workspace_id, entry.slug);
       } catch (integrityErr) {
-        // Trigger background re-sync
+        // Real mismatch (or missing files) — cloud re-sync is the last resort.
         sync.syncSkillPacks(SKILL_PACKS_DIR, { timeoutMs: 4000, log: (m) => log("info", m) })
           .then(() => { skillIndex = skillLoader.loadSkillRegistry(SKILL_PACKS_DIR, CACHE_DIR); })
           .catch(() => {});
