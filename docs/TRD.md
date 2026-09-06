@@ -367,8 +367,11 @@ Defined in `server.js` `_toolDefinitions()`:
 | `delete_schedule` | Permanently remove one local schedule |
 
 There is no `refresh_skills` tool — skill pack sync runs automatically on startup
-(`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails; nothing
-triggers it on demand today.
+(`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails a
+real on-disk checksum mismatch. Before that gate, `ensureSkillIntegrity` re-reads the
+skill's `manifest.json` from disk (one retry) so a long-lived process — Build Studio's
+reused sandbox runtime — does not fail the first run after a restage against stale
+in-memory checksums. Nothing else triggers a cloud re-sync on demand.
 
 ### 4.2a MCP Registration (`register-mcp` / `unregister-mcp`)
 
@@ -1637,7 +1640,9 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 |---|---|---|
 | `intent_llm.py` | Legacy per-step intent fallback (used only for steps the workflow-intent graph left tokenless) + per-workflow intent graph via `workflow_intent.py` — one call now sources every step's token AND prose (2026-08-25) | Low–High |
 | `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
-| `recovery_llm.py` | Per-step recovery block | Medium |
+| `recovery_llm.py` | Not on the primary compile path (Human Edit layered check / 1-click fix) | Medium |
+
+`semantic_llm.py` (`semantic_enrichment`) is **not** called during normalize or compile. Missing `input_type` is inferred with policy regex only. `enrich_semantic` remains on Human Edit 1-click fix (`compiler/patch.py`).
 
 `anchor_vision_llm.py` always downscales the recorder's screenshot to JPEG bounded at 1024px
 on the longest side (`_downscale_and_encode`) before sending it to a vision provider — every
@@ -1997,11 +2002,11 @@ steps are therefore always parameterised, end to end:
 | Stage | Behaviour | Where |
 |---|---|---|
 | Record | Native OS picker is suppressed and replaced by the Studio's own dialog (§6.1, §7.1); the resulting `set_files()` call still fires the input's `change` event via CDP, and `bridge.js` emits `upload_intent` off it, carrying `JSON.stringify(files)` metadata (`[{name, size, type}]`) for **every** file selected — a multi-select is captured in full — never a path | `recorder/session.py`, `bridge.js` |
-| Clean | An `upload`/`upload_intent` on a file input **supersedes the preceding click/focus on the same target**, exactly the way `type` supersedes a text field's prep click. Replay must never see that click — clicking a file input reopens an OS dialog nothing can drive unattended | `compiler/step_anchors.py::clean_steps` |
+| Clean | An `upload`/`upload_intent` on a file input **supersedes any earlier click/focus on the same target**, even when another click (e.g. Drive's "File upload" menu item) sits between them. Immediate-predecessor merge is not enough: those sites programmatically activate a hidden file input, so the recorder emits click(file), click(menu), upload(file). Replay must never see the file-input click — it is often a 0×0 control whose compiled identity is garbage, and clicking it reopens an OS dialog nothing can drive unattended. Other value-set actions still merge only the immediate predecessor | `compiler/step_anchors.py::clean_steps` |
 | Compile | A file input is **not** an "editable target", so the click→focus rewrite never fires on it (the runtime's `focus` handler clicks before it focuses, which would reopen the dialog) | `compiler/action_semantics.py::is_editable_target` |
 | Bind | Uploads always bind to the input name `file_path`, never a label-derived name — otherwise "File Uploader" / "Attach document" / "Upload CSV" would each yield a differently named input for the same concept | `compiler/input_binding.py::derive_input_binding` |
 | Package | Recorded file *metadata* is recognised explicitly (it is truthy JSON, so an `or` fallback would pass it through as if it were a path) and replaced with `{{file_path}}`; a literal path or custom placeholder typed by hand in Human Edit is preserved as authored. The auto-declared input's description is enriched with the recorded example filename and states that **a folder path may be given** when the page's control accepts more than one file. It deliberately does **not** claim how many files the control takes — that is a property of the live page (`multiple`), not of how many files happened to be picked while recording, and a single-file recording against a multi-select control is normal | `skill_package_builder_saved_skill.py::_upload_input_descriptions` |
-| Execute | `interpolate()` → `trim()` → strip one matching pair of surrounding double quotes (Windows Explorer's "Copy as path" quotes any path containing spaces, and Node only treats a bare drive letter as absolute — a quoted path would be silently joined onto the runtime's CWD) → **if the result is a directory, expand it to every file directly inside** (non-recursive, subdirectories excluded, naturally sorted so `invoice-2` precedes `invoice-10`) → `locator.setInputFiles(paths)`. An empty resolved path, or a folder containing no files, **throws** rather than skipping: silently not uploading a document while reporting success is this action's worst failure mode. `server.js`'s required-input gate should already have rejected the empty case; this is defence in depth | `runtime/run.js::resolveUploadPaths`, `HANDLERS.upload` |
+| Execute | `interpolate()` → `trim()` → strip one matching pair of surrounding double quotes (Windows Explorer's "Copy as path" quotes any path containing spaces, and Node only treats a bare drive letter as absolute — a quoted path would be silently joined onto the runtime's CWD) → **if the result is a directory, expand it to every file directly inside** (non-recursive, subdirectories excluded, naturally sorted so `invoice-2` precedes `invoice-10`) → `locator.setInputFiles(paths)`. Hidden file inputs skip the pre-action visibility GATE (`attached` only) — a 0×0 Drive input is never "visible". A page-level `filechooser` listener suppresses the native OS picker so a recorded "File upload" menu click cannot hang a headed run. An empty resolved path, or a folder containing no files, **throws** rather than skipping: silently not uploading a document while reporting success is this action's worst failure mode. `server.js`'s required-input gate should already have rejected the empty case; this is defence in depth | `runtime/run.js::resolveUploadPaths`, `HANDLERS.upload`, `resolution.js::gateLocator` |
 | Gate | When more than one file resolved, the handler asks the **live element** whether it accepts multiple (`locator.evaluate(el => el.multiple)`) before acting. An explicit `false` throws a `badInput` error naming the file count and what to pass instead; an unreadable probe stays permissive and lets `setInputFiles` have its say. `badInput` surfaces immediately from `withLocator`'s retry loop and **skips the recovery cascade entirely** in `runPlan` — re-finding the element cannot fix wrong input, and letting it reach Tier B would spend LLM tokens on a caller mistake the message already explains. Same short-circuit shape as the `isAuthFailure` check beside it | `runtime/run.js::HANDLERS.upload`, `withLocator`, `runPlan` |
 
 Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_skill_package_builder.py`, `test_phases.py`,
@@ -2116,10 +2121,11 @@ fail fast (recompile required).
 
 - **Compile (`conxa_compile/compiler/identity_bundle.py`, `selector_score.py`,
   `selector_filters.py`):** signals are generated in Playwright native grammar
-  (`internal:testid=`, `internal:role=…[name=…]`, `internal:text=`, relational
+  (`internal:testid=`, named-attr CSS such as `[data-key="19"]` / `li[role="menuitem"][data-key="19"]`,
+  `internal:role=…[name=…]`, `internal:text=`, relational
   `>> right-of=`), scored by `durability = base_durability(engine) × survival_prior ×
   stability_adjustments`, deduplicated to one signal per orthogonality class (test-contract,
-  semantic-aria, visible-text, spatial-anchor, structural), and gated by uniqueness-at-compile,
+  named-attr, semantic-aria, visible-text, spatial-anchor, structural), and gated by uniqueness-at-compile,
   PII-binding, and an xpath/shadow guard. `stable_hash` (`stable_hash.py`) is
   SHA-256 over tag-path + sorted static attrs + AX name, with dynamic
   (focus/hover/active/animation/`is-*`) classes stripped.
@@ -2132,7 +2138,16 @@ fail fast (recompile required).
   `gridcell`/`columnheader`/`rowheader`/`checkbox`/`radio`/`menuitem`/`menuitemcheckbox`/
   `menuitemradio`/`option`/`tab`/`treeitem`/`switch`/`tooltip` — `identity_bundle.py`'s
   `_NAME_FROM_CONTENT_ROLES`) and capped at 80 chars (dropped, not truncated, past that — a
-  truncated name inside an exact `[name="…"]` match is a guaranteed miss); a `combobox`/
+  truncated name inside an exact `[name="…"]` match is a guaranteed miss). A trailing
+  keyboard-accelerator tail (`Alt+C then U`, `Ctrl+S`, …) is stripped from the name and from
+  `text_based` before grammar conversion — Google Drive (and similar) bake those hints into
+  recorded inner text, while Playwright's accessibility snapshot names the control without
+  them; exact equality then dropped the role signal at compile and missed at replay.
+  `_count_role` matches names as Playwright does (case-insensitive substring of the snapshot
+  name), not byte-for-byte equality. Replay (`resolve_adapter.js::roleLocator`) uses the same
+  substring rule via `getByRole({ name })` without `exact: true`, so a compiled prefix still
+  matches a live name that still has the accelerator hint. Ambiguous substring hits are the
+  uniqueness/margin gate's job, not the locator's. a `combobox`/
   `listbox`/`textbox`/`searchbox`/`spinbutton`/bare `<select>` never computes its name from its
   own contents, so `inner_text` is never a candidate for those (2026-09-01 — react-datepicker's
   nameless year `<select>` was being named from its own concatenated `<option>` list). `name` is

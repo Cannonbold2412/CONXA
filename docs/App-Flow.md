@@ -218,11 +218,10 @@ flowchart TD
     G --> H[Normalized event list]
     H --> I[compiler/build.py: compile_skill_package]
     
-    I --> J[intent_llm: generate WorkflowIntentGraph]
+    I --> J[workflow_intent: one text call for the whole workflow]
     J --> K[For each step:]
-    K --> L[llm_selector_generator_v2: ElementFingerprint + compiled_selectors]
-    L --> M[semantic_llm: semantic_description]
-    M --> N[validation_planner: Assertion list]
+    K --> L[IdentityBundle: deterministic selectors]
+    L --> N[validation_planner: Assertion list]
     N --> O[recovery_policy: RecoveryBlock]
     O --> P[confidence/layered: confidence score]
     P --> Q{More steps?}

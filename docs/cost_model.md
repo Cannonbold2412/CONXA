@@ -53,6 +53,8 @@ Every time a company records workflows and compiles them into a new plugin versi
 | **Intent detection** (`generate_intent_with_llm`) | ~200 input + ~50 output tokens | **Fallback only since 2026-08-25** — the single workflow-intent call now emits every step's snake_case token, so this fires per step only for steps the graph left tokenless or when the graph call failed outright. Still **cached** by element hash | 0 typical (was 1), up to 3 on a generic/malformed answer (0 on cache hit) |
 | **Vision anchor generation** (`generate_anchors_for_step_or_raise`) | ~15K input + ~500 output tokens (screenshot JPEG as base64 + prompt) | Every step — but **cached** by screenshot hash | 1 (0 on cache hit) |
 
+Normalize no longer calls `semantic_enrichment` per event (removed 2026-09-06). That pass was leftover: the compiler overwrote its guess with the workflow-intent token. Missing field types are inferred with local regex only. `enrich_semantic` remains for Human Edit 1-click fix, not compile.
+
 **All steps, all DOM conditions:** ~1 LLM call/step (vision anchor) + ONE workflow-intent call per compile typical; a step whose element is genuinely hard to describe can cost up to 4 (3 intent retries + 1 vision anchor).
 **Recompilation (same DOM, cached):** 0–2 calls/step — caching absorbs most of the cost. Note: fallback intent generation has **no template fallback** — a step that never resolves to a specific, non-generic intent is left with a blank `intent` (flagged in Human Edit) rather than a synthesized one, and an unresolved attempt is **not cached**, so it retries in full on every subsequent compile until it succeeds or the underlying page/LLM issue is fixed.
 
