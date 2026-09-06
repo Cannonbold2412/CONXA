@@ -463,6 +463,11 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", (event) => {
+  // Re-entrant: the app.quit() calls below re-emit before-quit. `backend.killed` is
+  // only set by an explicit .kill(), so after a graceful exit it stays false forever —
+  // without this latch the handler would preventDefault() on every pass and the app
+  // could never quit (zombie process holding the single-instance lock).
+  if (app.isQuitting) return;
   app.isQuitting = true;
   if (backend && !backend.killed) {
     // Give the backend a chance to run its own shutdown (joins any open
