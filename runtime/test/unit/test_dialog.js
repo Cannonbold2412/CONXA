@@ -74,9 +74,26 @@ test("answerDialog is safe to call twice on the same dialog (pre-arm racing the 
 // the real interaction between the two paths.
 function mockDialogBlockingPage(dialogType, dialogMessage, dialogQueue) {
   const listeners = { dialog: [(d) => dialogQueue.push(d)] };
+  const makeLocator = () => ({
+    first: () => ({
+      click: async () => {
+        const dialog = fakeDialog(dialogType, dialogMessage);
+        const fired = listeners.dialog.slice();
+        // Real Chromium raises the dialog synchronously as part of dispatching the click,
+        // and click() does not resolve until it's answered — reproduce exactly that: don't
+        // return from this click() call until fired listeners have answered the dialog.
+        for (const fn of fired) fn(dialog);
+        for (let i = 0; i < 200 && !dialog.handled; i++) await new Promise(r => setTimeout(r, 1));
+        if (!dialog.handled) throw new Error("dialog never answered — click() would hang here for real");
+        return null;
+      },
+      waitFor: async () => {},
+    }),
+  });
   const page = {
     url: () => "https://example.test/",
     waitForLoadState: async () => {},
+    waitForTimeout: async () => {},
     screenshot: async () => null,
     context: () => ({ on: () => {}, off: () => {} }),
     once: (event, fn) => { if (event === "dialog") listeners.dialog.push(fn); },
@@ -85,22 +102,8 @@ function mockDialogBlockingPage(dialogType, dialogMessage, dialogQueue) {
       const idx = listeners.dialog.indexOf(fn);
       if (idx >= 0) listeners.dialog.splice(idx, 1);
     },
-    locator: () => ({
-      first: () => ({
-        click: async () => {
-          const dialog = fakeDialog(dialogType, dialogMessage);
-          const fired = listeners.dialog.slice();
-          // Real Chromium raises the dialog synchronously as part of dispatching the click,
-          // and click() does not resolve until it's answered — reproduce exactly that: don't
-          // return from this click() call until fired listeners have answered the dialog.
-          for (const fn of fired) fn(dialog);
-          for (let i = 0; i < 200 && !dialog.handled; i++) await new Promise(r => setTimeout(r, 1));
-          if (!dialog.handled) throw new Error("dialog never answered — click() would hang here for real");
-          return null;
-        },
-        waitFor: async () => {},
-      }),
-    }),
+    locator: () => makeLocator(),
+    getByText: () => makeLocator(),
   };
   return page;
 }
