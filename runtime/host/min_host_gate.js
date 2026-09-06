@@ -9,7 +9,11 @@
  *
  * All side effects are injectable:
  *   - existsSync / readFileSync default to fs
- *   - loadEntry defaults to require(entry)
+ *   - loadEntry defaults to a no-op (the gate check itself must stay inert —
+ *     bootstrap.js is the only caller that wants server.js actually executed,
+ *     and it already supplies its own `loadEntry: (entry) => require(entry)`;
+ *     check-only callers like cli_sync.js/cli_schedule.js must not get the
+ *     full MCP server booted as a side effect of a compatibility check)
  *   - warn defaults to writing to process.stderr
  *
  * Returns a structured result instead of throwing; callers decide how to react
@@ -25,7 +29,7 @@ function _defaultWarn(message) {
 function evaluateAppLayer(dir, hostVersion, options = {}) {
   const existsSync  = options.existsSync || ((p) => require("fs").existsSync(p));
   const readFileSync = options.readFileSync || ((p) => require("fs").readFileSync(p, "utf8"));
-  const loadEntry   = options.loadEntry || ((entry) => { require(entry); });
+  const loadEntry   = options.loadEntry || (() => {});
   const warn        = options.warn || _defaultWarn;
 
   // resolveCurrent()/rollback() return null when nothing is installed yet

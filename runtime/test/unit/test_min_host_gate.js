@@ -109,6 +109,16 @@ test("reports load-failed (with stderr message) when require throws", () => {
   assert.match(warnings[0], /\[bootstrap\] failed to load .*server\.js: boom/);
 });
 
+test("default loadEntry does not execute the entry file", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "minhost-gate-"));
+  fs.writeFileSync(path.join(dir, "version.json"), JSON.stringify({ app_version: "app-v1.0.0" }));
+  const markerPath = path.join(dir, "loaded.marker");
+  fs.writeFileSync(path.join(dir, "server.js"), `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "1");\n`);
+  const r = evaluateAppLayer(dir, "host-v2.0.0", { quiet: true });
+  assert.strictEqual(r.loaded, true);
+  assert.strictEqual(fs.existsSync(markerPath), false);
+});
+
 test("quiet mode suppresses the host-too-old warning but keeps the message in the result", () => {
   const dir = makeTempAppLayer({ versionJson: { min_host: "host-v9.0.0" } });
   const { deps, warnings } = makeDeps();
