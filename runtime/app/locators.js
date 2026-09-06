@@ -14,6 +14,7 @@ const {
   PRIMARY,
   resolveStep,
   gateLocator,
+  isFileInputStep,
   validateOverrideSelector,
   locatorCandidates,
   rootCandidates,
@@ -99,7 +100,12 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
   let lastErr = null;
   for (const locator of candidates) {
     try {
-      if (timeout && selector !== PRIMARY) await locator.first().waitFor({ state: "visible", timeout });
+      if (timeout && selector !== PRIMARY) {
+        await locator.first().waitFor({
+          state: isFileInputStep(step) ? "attached" : "visible",
+          timeout,
+        });
+      }
       await gateLocator(locator.first(), step);
       return await actAndMark(fn, locator);
     } catch (err) {

@@ -4,7 +4,7 @@
 // uniqueness gate, and the frame-scoped DOM inventory used by failure payloads.
 const pageScripts = require("./page_scripts");
 const { resolve: resolveSignals, scoreCandidate, DEFAULT_UNIQUE_MARGIN, DEFAULT_CONFIDENCE_THRESHOLD } = require("./resolver");
-const { gatherCandidates, bundleFingerprint, _extractDescriptor } = require("./resolve_adapter");
+const { gatherCandidates, bundleFingerprint, _extractDescriptor, toLocator } = require("./resolve_adapter");
 const { STALE_RE } = require("./recovery");
 const { interpolate } = require("./interpolate");
 const { envNumber } = require("./run_config");
@@ -98,7 +98,10 @@ async function locatorCandidates(page, step, inputs, selector) {
   if (!resolved) return [];
   let roots = await rootCandidates(page, step, inputs);
   roots = await entityRoots(roots, step, inputs);
-  return roots.map(root => root.locator(resolved));
+  // toLocator, not root.locator(): `resolved` may be a role=/text= string (compiled
+  // `internal:` grammar, or its unprefixed display form) — those need tolerant
+  // accessible-name matching, not Playwright's exact-match selector engine.
+  return roots.map(root => toLocator(root, resolved));
 }
 
 // Sentinel selector marking "resolve the step's primary target via identity_bundle.signals".
@@ -144,6 +147,16 @@ async function resolveStep(page, step, inputs) {
 const GATE_ENABLED = process.env.CONXA_GATE !== "0";
 const GATE_BUDGET_MS = envNumber("CONXA_GATE_BUDGET_MS", 600);
 
+function isFileInputStep(step) {
+  const s = asObject(step);
+  const kind = String(s.type || s.action || "").toLowerCase();
+  if (kind === "upload" || kind === "upload_intent") return true;
+  const fp = asObject(asObject(s.identity_bundle).fingerprint);
+  if (String(fp.input_type || "").toLowerCase() === "file") return true;
+  const semantic = asObject(asObject(s.signals).semantic);
+  return String(semantic.input_type || "").toLowerCase() === "file";
+}
+
 // Phase 8: pre-action GATE — confirm the element is attached, visible, RAF-stable, and enabled
 // before acting. Budget is confidence-adaptive (a high-confidence step gets a shorter wait).
 // Best-effort: gate failures throw so the caller can try the next candidate / recovery.
@@ -153,6 +166,13 @@ async function gateLocator(loc, step) {
   const budget = Number.isFinite(conf) && conf >= 0.85
     ? Math.round(GATE_BUDGET_MS / 2)
     : GATE_BUDGET_MS;
+
+  // Hidden <input type=file> is never visible (Drive keeps one at 0×0). Playwright's
+  // setInputFiles is designed for that. Waiting for "visible" is a guaranteed miss.
+  if (isFileInputStep(step)) {
+    await loc.waitFor({ state: "attached", timeout: budget });
+    return;
+  }
 
   await loc.waitFor({ state: "visible", timeout: budget });
 
@@ -312,6 +332,7 @@ module.exports = {
   locatorCandidates,
   resolveStep,
   gateLocator,
+  isFileInputStep,
   validateOverrideSelector,
   frameScopedInventory,
   captureEarlyDomSnapshot,

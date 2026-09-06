@@ -1354,6 +1354,10 @@ async function _handleTool(name, args, extra) {
         // Playwright silently auto-DISMISSES any native alert/confirm/prompt, which is the
         // opposite of what a recorded "accept" step expects.
         pg.on("dialog", (dialog) => { _dialogQueue.push(dialog); });
+        // A recorded "File upload" menu click opens the OS picker. Listening here suppresses
+        // that native dialog so the run cannot hang in watch mode; the compiled upload step
+        // then setInputFiles on the hidden <input type=file>.
+        pg.on("filechooser", () => {});
       };
 
       _attachPageListeners(page);

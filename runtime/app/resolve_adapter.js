@@ -8,17 +8,39 @@ const crypto = require("crypto");
 const { extractDescriptor: _extractDescriptor } = require("./page_scripts");
 const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 
-// Build a getByRole locator from an `internal:role=<role>[name="<name>"]` grammar string.
-// The name is QUOTED in the grammar, which in Playwright's own parser means an EXACT match
-// (e.g. `internal:role=link[name="Blueprint"]` resolves only "Blueprint", never "Blueprints").
-// getByRole defaults to substring matching, so we pass exact:true to honour the grammar — this
-// keeps the re-parsed locator semantically identical to the native string and is the single
-// role+name code path shared by primary resolution AND a11y recovery. Returns null if not a
-// role grammar string (caller falls back to a raw locator).
+// Build a getByRole locator from a `role=<role>[name="<name>"]` grammar string — the
+// `internal:` prefix is optional so this also handles the display-form string
+// (selector_grammar.py::signal_to_display) that ends up in target.primary_selector /
+// the compiled step's top-level "selector" field.
+// Quoted names in Playwright's *parser* are exact, but we do not re-parse through that
+// parser — we call getByRole. Leave exact at Playwright's default (substring): compile
+// strips trailing accelerator hints ("File upload Alt+C then U" → "File upload"), and the
+// live accessible name still has the hint. exact:true then matches nothing. Ambiguous
+// substring hits (Blueprint vs Blueprints) are the resolver uniqueness/margin gate's job.
 function roleLocator(root, raw) {
-  const rm = String(raw).match(/internal:role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?/);
+  const rm = String(raw).match(/(?:internal:)?role=([a-zA-Z]+)(?:\[name="([^"]*)"\])?/);
   if (!rm) return null;
-  return rm[2] ? root.getByRole(rm[1], { name: rm[2], exact: true }) : root.getByRole(rm[1]);
+  return rm[2] ? root.getByRole(rm[1], { name: rm[2] }) : root.getByRole(rm[1]);
+}
+
+// Build a getByText locator from an `internal:text="…"` / `text="…"` grammar string —
+// same optional-prefix tolerance as roleLocator, and the same substring/case-insensitive
+// default so a compile-time-stripped accelerator hint doesn't break an exact match.
+function textLocator(root, raw) {
+  const s = String(raw);
+  let tm = s.match(/internal:text="([^"]*)"/);
+  if (!tm) tm = s.match(/^text=["']?(.+?)["']?$/);
+  return tm ? root.getByText(tm[1]) : null;
+}
+
+// Engine-agnostic: resolve any selector string (compiled `internal:` grammar, or its
+// unprefixed display form) the same tolerant way, regardless of which runtime path holds
+// it. Used by the primary resolver (via signalToLocator below) and by any other consumer
+// that only has a raw string — recovery's explicit-selector re-runs, drift detection —
+// so a role/text selector never means "exact match" in one place and "substring" in
+// another depending on which code happened to receive it.
+function toLocator(root, raw) {
+  return roleLocator(root, raw) || textLocator(root, raw) || root.locator(raw);
 }
 
 // ── Signal → Playwright locator ────────────────────────────────────────────
@@ -46,10 +68,7 @@ function signalToLocator(root, signal, interpolate, inputs) {
     return roleLocator(root, raw) || root.locator(raw);
   }
   if (engine === "text" || engine === "text_based") {
-    let tm = raw.match(/internal:text="([^"]*)"/);
-    if (!tm) tm = raw.match(/^text=["']?(.+?)["']?$/);
-    if (tm) return root.getByText(tm[1], { exact: true });
-    return root.locator(raw);
+    return textLocator(root, raw) || root.locator(raw);
   }
   if (engine === "relational") {
     // Playwright has no `right-of=`/`left-of=`/… chain engine (the recorded `>> right-of=…`
@@ -62,6 +81,9 @@ function signalToLocator(root, signal, interpolate, inputs) {
   }
   if (engine === "xpath") {
     return root.locator(raw.startsWith("xpath=") ? raw : ("xpath=" + raw));
+  }
+  if (engine === "attr") {
+    return root.locator(raw);
   }
   // css-id, css-structural, css
   return root.locator(raw);
@@ -107,4 +129,7 @@ function bundleFingerprint(bundle) {
   return { ...fp, stable_hash: (bundle && bundle.stable_hash) || "" };
 }
 
-module.exports = { signalToLocator, gatherCandidates, bundleFingerprint, _extractDescriptor, _sha256 };
+module.exports = {
+  signalToLocator, gatherCandidates, bundleFingerprint, _extractDescriptor, _sha256,
+  roleLocator, textLocator, toLocator,
+};

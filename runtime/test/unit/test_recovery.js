@@ -74,6 +74,17 @@ test("a11y recovery name still fabricates from inner_text for a name-from-conten
   );
 });
 
+test("a11y recovery name strips a trailing keyboard-shortcut hint", () => {
+  assert.strictEqual(
+    a11yRecoveryName({
+      role: "menuitem",
+      aria_label: "",
+      inner_text: "File upload Alt+C then U",
+    }),
+    "File upload",
+  );
+});
+
 // `name` is the HTML form-field attribute, never an ARIA accessible-name source
 // (identity_bundle.py's _accessible_name never includes it) — a radio/checkbox GROUP's `name`
 // is the shared group key every sibling carries, so using it here would recover on whichever
@@ -174,4 +185,30 @@ test("gateLocator still swallows unrelated evaluate glitches on the disabled-che
     },
   };
   await assert.doesNotReject(() => gateLocator(loc, { confidence: 0.9 }));
+});
+
+test("gateLocator waits for attached, not visible, on a hidden file input", async () => {
+  const states = [];
+  const loc = {
+    waitFor: async ({ state }) => { states.push(state); },
+    evaluate: async () => { throw new Error("raf/disabled must not run for file inputs"); },
+  };
+  await gateLocator(loc, {
+    type: "upload",
+    identity_bundle: { fingerprint: { input_type: "file" } },
+  });
+  assert.deepStrictEqual(states, ["attached"]);
+});
+
+test("gateLocator waits for attached on a click that targeted a file input", async () => {
+  const states = [];
+  const loc = {
+    waitFor: async ({ state }) => { states.push(state); },
+    evaluate: async () => { throw new Error("raf/disabled must not run for file inputs"); },
+  };
+  await gateLocator(loc, {
+    type: "click",
+    identity_bundle: { fingerprint: { input_type: "file" } },
+  });
+  assert.deepStrictEqual(states, ["attached"]);
 });

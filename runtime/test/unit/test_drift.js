@@ -61,12 +61,13 @@ test("assessDrift: empty landmarks → no drift", () => {
 
 // Fake Playwright page whose locators yield preset descriptors. Each descriptor
 // is returned directly from item.evaluate() (bypassing the real browser extractor).
-function fakePage(byLocator, byText) {
+function fakePage(byLocator, byText, byRole) {
   const handles = (arr) => (arr || []).map((d) => ({ evaluate: async () => d }));
   return {
     url: () => "https://example.test/app",
     locator: (sel) => ({ all: async () => handles(byLocator[sel]) }),
-    getByText: (txt) => ({ all: async () => handles(byText[txt]) }),
+    getByText: (txt) => ({ all: async () => handles((byText || {})[txt]) }),
+    getByRole: (role) => ({ all: async () => handles((byRole || {})[role]) }),
   };
 }
 
@@ -119,4 +120,28 @@ test("detectPreExecDrift: falls back to text when testid missing", async () => {
   const page = fakePage({}, { "Get started": [{ name: "Get started", text: "Get started" }] });
   const r = await detectPreExecDrift(page, fp);
   assert.strictEqual(r.drift, false);
+});
+
+test("detectPreExecDrift: primary_selector role= string resolves via getByRole, not exact-match locator()", async () => {
+  // primary_selector carries signal_to_display()'s unprefixed "role=…[name=\"…\"]" form.
+  // Landmark gathering must route it through toLocator (tolerant getByRole), not
+  // page.locator() directly — which would apply Playwright's exact-match role engine and
+  // never find an element whose live accessible name has extra text (e.g. a keyboard-
+  // accelerator hint) beyond what was compiled.
+  const fp = {
+    landmarks: [{
+      intent: "open file upload",
+      primary_selector: 'role=menuitem[name="File upload"]',
+      inner_text: "File upload",
+    }],
+    landmark_count: 1,
+  };
+  const page = fakePage(
+    {}, // no plain-locator match — proves it did NOT fall through to page.locator()
+    {},
+    { menuitem: [{ role: "menuitem", name: "File upload", text: "File upload" }] },
+  );
+  const r = await detectPreExecDrift(page, fp);
+  assert.strictEqual(r.drift, false);
+  assert.strictEqual(r.missing, 0);
 });

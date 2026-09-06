@@ -166,9 +166,17 @@ function a11yRecoveryName(fingerprint) {
   const innerTextName = isNamedFromContent ? fp.inner_text : "";
   // `name` is deliberately excluded — the HTML form-field attribute, never an ARIA
   // accessible-name source (identity_bundle.py's _accessible_name never includes it either).
-  return String(
+  return stripKeyboardShortcutTail(String(
     fp.aria_label || fp.alt || fp.title || innerTextName || fp.placeholder || labelName || "",
-  ).trim();
+  ).trim());
+}
+
+// Mirrors identity_bundle.py::_strip_keyboard_shortcut_tail. Drive (and similar) append
+// "Alt+C then U" to the visible label; Playwright's accessible name does not.
+const SHORTCUT_TAIL_RE = /\s+(?:(?:Ctrl|Control|Alt|Shift|Cmd|Command|Meta|Win|Windows|Option)\s*\+\s*)+[A-Za-z0-9](?:\s+then\s+(?:(?:(?:Ctrl|Control|Alt|Shift|Cmd|Command|Meta|Win|Windows|Option)\s*\+\s*)+[A-Za-z0-9]|[A-Za-z0-9]))*\s*$/i;
+
+function stripKeyboardShortcutTail(text) {
+  return String(text || "").replace(SHORTCUT_TAIL_RE, "").trim();
 }
 
 async function recoverWithA11y(page, step, inputs, slug, stepIndex, tracker, baseline = null, guard = null) {

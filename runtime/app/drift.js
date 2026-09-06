@@ -11,7 +11,7 @@
 // cascade still runs per step. No LLM is involved; it is pure resolver scoring.
 
 const { scoreCandidate } = require("./resolver");
-const { _extractDescriptor } = require("./resolve_adapter");
+const { _extractDescriptor, toLocator } = require("./resolve_adapter");
 
 const PRESENCE_THRESHOLD = 0.5;      // per-landmark agreement below this = "missing"
 const DRIFT_RATIO_THRESHOLD = 0.5;   // fraction of missing landmarks that trips drift
@@ -71,7 +71,10 @@ async function _gatherForLandmark(page, lm, cap) {
     push(() => page.locator(`[data-testid="${v}"], [data-test-id="${v}"]`));
   }
   if (lm.aria_label) push(() => page.locator(`[aria-label="${_attrValue(lm.aria_label)}"]`));
-  if (lm.primary_selector) push(() => page.locator(lm.primary_selector));
+  // toLocator, not page.locator(): primary_selector may be a role=/text= display string
+  // (selector_grammar.py::signal_to_display) — needs tolerant accessible-name matching,
+  // not Playwright's exact-match selector engine.
+  if (lm.primary_selector) push(() => toLocator(page, lm.primary_selector));
   if (lm.inner_text) push(() => page.getByText(lm.inner_text, { exact: false }));
 
   const descriptors = [];

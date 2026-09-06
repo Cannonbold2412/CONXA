@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { signalToLocator, gatherCandidates, bundleFingerprint } = require("../../app/resolve_adapter");
+const { signalToLocator, gatherCandidates, bundleFingerprint, roleLocator, textLocator, toLocator } = require("../../app/resolve_adapter");
 const { resolve } = require("../../app/resolver");
 
 const idInterp = (s) => s;  // identity interpolate for tests
@@ -45,42 +45,52 @@ test("signalToLocator maps hyphenated data-test-id → literal CSS locator (regr
   assert.ok(root.calls.every(c => c.kind !== "testid"), "getByTestId must not be called for hyphenated attributes");
 });
 
-test("signalToLocator maps role+name → getByRole with exact:true (honours quoted grammar name)", () => {
-  // A quoted name in the grammar (`[name="..."]`) is an EXACT match in Playwright's own parser,
-  // so the re-parsed locator must pass exact:true — otherwise `link[name="Blueprint"]` would also
-  // match "Blueprints" (substring), diverging from the native string's meaning.
+test("signalToLocator maps role+name → getByRole substring (Playwright default)", () => {
+  // Compile may store a shortcut-stripped prefix ("File upload") while the live accessible
+  // name is still "File upload Alt+C then U". exact:true would miss; uniqueness/margin
+  // handles Blueprint vs Blueprints.
   const root = mockRoot();
   signalToLocator(root, { engine: "role", selector: 'internal:role=button[name="Submit order"]' }, idInterp, {});
   assert.strictEqual(root.calls[0].kind, "role");
   assert.strictEqual(root.calls[0].arg, "button");
-  assert.deepStrictEqual(root.calls[0].opts, { name: "Submit order", exact: true });
+  assert.deepStrictEqual(root.calls[0].opts, { name: "Submit order" });
 });
 
-test("signalToLocator maps text → getByText exact", () => {
+test("signalToLocator maps text → getByText substring", () => {
   const root = mockRoot();
   signalToLocator(root, { engine: "text_based", selector: 'internal:text="Save"' }, idInterp, {});
   assert.strictEqual(root.calls[0].kind, "text");
   assert.strictEqual(root.calls[0].arg, "Save");
-  assert.deepStrictEqual(root.calls[0].opts, { exact: true });
+  assert.deepStrictEqual(root.calls[0].opts, undefined);
 });
 
-test("signalToLocator relational falls back to base role+name (exact)", () => {
+test("signalToLocator relational falls back to base role+name (substring)", () => {
   // Playwright has no `right-of=` chain engine, so the spatial part is dropped and the durable
-  // base role+name is resolved (exact, like any role signal); the resolver's uniqueness gate
-  // does the sibling disambiguation the spatial anchor was meant to provide.
+  // base role+name is resolved; the resolver's uniqueness gate does the sibling disambiguation
+  // the spatial anchor was meant to provide.
   const root = mockRoot();
   signalToLocator(root, {
     engine: "relational",
     selector: 'internal:role=button[name="X"] >> right-of=internal:text="Y"',
   }, idInterp, {});
   assert.strictEqual(root.calls[0].kind, "role");
-  assert.deepStrictEqual(root.calls[0].opts, { name: "X", exact: true });
+  assert.deepStrictEqual(root.calls[0].opts, { name: "X" });
 });
 
 test("signalToLocator xpath gets xpath= prefix", () => {
   const root = mockRoot();
   signalToLocator(root, { engine: "xpath", selector: "//div/button" }, idInterp, {});
   assert.deepStrictEqual(root.calls[0], { kind: "locator", arg: "xpath=//div/button", opts: undefined });
+});
+
+test("signalToLocator maps attr → locator() CSS", () => {
+  const root = mockRoot();
+  signalToLocator(root, { engine: "attr", selector: 'li[role="menuitem"][data-key="19"]' }, idInterp, {});
+  assert.deepStrictEqual(root.calls[0], {
+    kind: "locator",
+    arg: 'li[role="menuitem"][data-key="19"]',
+    opts: undefined,
+  });
 });
 
 test("signalToLocator css passes through to locator()", () => {
@@ -180,4 +190,46 @@ test("bundleFingerprint folds stable_hash into the fingerprint", () => {
   const fp = bundleFingerprint({ fingerprint: { role: "button" }, stable_hash: "abc" });
   assert.strictEqual(fp.role, "button");
   assert.strictEqual(fp.stable_hash, "abc");
+});
+
+// signal_to_display() (compiler) strips the "internal:" prefix for the editor UI, and that
+// display string ends up in target.primary_selector / the compiled step's top-level
+// "selector" field. Any runtime path handed that string must resolve it the same tolerant
+// way as the internal:-prefixed form — never fall through to Playwright's exact-match
+// selector engine just because the prefix is missing.
+test("roleLocator matches with or without the internal: prefix", () => {
+  const root = mockRoot();
+  roleLocator(root, 'role=menuitem[name="File upload"]');
+  assert.strictEqual(root.calls[0].kind, "role");
+  assert.strictEqual(root.calls[0].arg, "menuitem");
+  assert.deepStrictEqual(root.calls[0].opts, { name: "File upload" });
+
+  const root2 = mockRoot();
+  roleLocator(root2, 'internal:role=menuitem[name="File upload"]');
+  assert.deepStrictEqual(root2.calls[0], root.calls[0]);
+});
+
+test("textLocator matches with or without the internal: prefix", () => {
+  const root = mockRoot();
+  textLocator(root, 'text="File upload"');
+  assert.strictEqual(root.calls[0].kind, "text");
+  assert.strictEqual(root.calls[0].arg, "File upload");
+
+  const root2 = mockRoot();
+  textLocator(root2, 'internal:text="File upload"');
+  assert.deepStrictEqual(root2.calls[0], root.calls[0]);
+});
+
+test("toLocator routes role/text strings through the tolerant matcher, everything else through locator()", () => {
+  const roleRoot = mockRoot();
+  toLocator(roleRoot, 'role=menuitem[name="File upload"]');
+  assert.strictEqual(roleRoot.calls[0].kind, "role");
+
+  const textRoot = mockRoot();
+  toLocator(textRoot, 'text="Save"');
+  assert.strictEqual(textRoot.calls[0].kind, "text");
+
+  const cssRoot = mockRoot();
+  toLocator(cssRoot, '[data-key="19"]');
+  assert.deepStrictEqual(cssRoot.calls[0], { kind: "locator", arg: '[data-key="19"]', opts: undefined });
 });
