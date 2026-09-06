@@ -862,6 +862,44 @@ class PhaseTests(unittest.TestCase):
         actions = [(s.get("action") or {}).get("action") for s in out]
         self.assertEqual(actions, ["upload_intent", "click"])
 
+    def test_clean_steps_drops_file_input_click_even_with_intervening_menu_click(self) -> None:
+        """Google Drive (and similar) programmatically activate a hidden <input type=file>
+        when the user clicks 'File upload' in a menu. The recorder therefore emits:
+        click(file input), click(menu item), upload_intent(file input). The existing
+        immediate-predecessor merge only pops cleaned[-1], so the file-input click survived
+        compile, replayed as a 0x0 textbox, and failed Test Skill with resolve miss."""
+        from conxa_compile.compiler.step_anchors import clean_steps
+
+        def _file_step(action: str, value=None) -> dict:
+            return {
+                "action": {"action": action, "value": value},
+                "target": {"tag": "input", "id": None, "name": None},
+                "selectors": {"css": "body > input:nth-of-type(2)", "aria": "", "text_based": ""},
+                "semantic": {"role": "textbox", "input_type": "file"},
+                "context": {},
+                "page": {"url": "https://drive.google.com/drive/folders/x", "title": "Data"},
+                "timing": {"timeout": 5000},
+            }
+
+        menu_click = {
+            "action": {"action": "click"},
+            "target": {"tag": "li", "inner_text": "File upload Alt+C then U"},
+            "selectors": {"css": "ul[role=menu] > li:nth-of-type(3)", "text_based": 'text="File upload Alt+C then U"'},
+            "semantic": {"role": "menuitem"},
+            "context": {},
+            "page": {"url": "https://drive.google.com/drive/folders/x", "title": "Data"},
+            "timing": {"timeout": 5000},
+        }
+        seq = [
+            _file_step("click"),
+            menu_click,
+            _file_step("upload_intent", value='[{"name":"Ada.gitignore","size":51,"type":"text/plain"}]'),
+        ]
+        out = clean_steps(seq, {})
+        actions = [(s.get("action") or {}).get("action") for s in out]
+        self.assertEqual(actions, ["click", "upload_intent"])
+        self.assertEqual((out[0].get("target") or {}).get("tag"), "li")
+
     def test_is_editable_target_excludes_file_inputs(self) -> None:
         """A file input isn't a text-entry field -- clicking it invokes a native OS picker, not
         caret placement. Treating it as editable made the click->focus rewrite fire, and

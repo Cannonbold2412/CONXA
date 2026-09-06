@@ -302,7 +302,28 @@ def clean_steps(steps: list[Step], policy: dict[str, Any] | None = None) -> list
         # "change" event exists — without this widening (originally `{"type", "upload",
         # "upload_intent"}` only), a recorded radio pick compiled into two steps: a phantom
         # `focus`/`click` PLUS the real `set_radio`.
-        if action in _VALUE_SET_ACTIONS and cleaned and cleaned[-1] is not None:
+        #
+        # Uploads look back past intervening steps: Drive (and similar) programmatically
+        # activate a hidden <input type=file> when the user clicks a menu item, so the
+        # recorder emits click(file), click(menu), upload_intent(file). The file click is
+        # still prep noise even though it is not cleaned[-1]. Other value-set actions stay
+        # immediate-predecessor only — looking through a later click on a different control
+        # would drop a real open-the-dropdown gesture.
+        if action in {"upload", "upload_intent"}:
+            for i in range(len(cleaned) - 1, -1, -1):
+                prev = cleaned[i]
+                if (
+                    prev is not None
+                    and action_name(prev) in {"click", "focus"}
+                    and _target_key(prev) == key
+                ):
+                    cleaned.pop(i)
+                    for k, idx in list(last_type_index.items()):
+                        if idx > i:
+                            last_type_index[k] = idx - 1
+                        elif idx == i:
+                            last_type_index.pop(k, None)
+        elif action in _VALUE_SET_ACTIONS and cleaned and cleaned[-1] is not None:
             prev = cleaned[-1]
             if prev is not None and action_name(prev) in {"click", "focus"} and _target_key(prev) == key:
                 cleaned.pop()
