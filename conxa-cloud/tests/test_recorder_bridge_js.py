@@ -210,6 +210,21 @@ def test_custom_drawer_role_button_records_click(page: Page) -> None:
     assert events[0]["target"]["aria_label"] == "Create"
 
 
+def test_menuitem_records_role_and_data_key_in_attributes(page: Page) -> None:
+    _install_bridge(
+        page,
+        '<ul role="menu"><li id="up" role="menuitem" data-key="19" data-state="open">File upload</li></ul>',
+    )
+    page.click("#up")
+    page.wait_for_timeout(30)
+    events = _action_events(page, "click")
+    assert events, "click was not recorded"
+    attrs = events[0]["target"].get("attributes") or {}
+    assert attrs.get("role") == "menuitem"
+    assert attrs.get("data-key") == "19"
+    assert "data-state" not in attrs
+
+
 def test_click_that_synchronously_reveals_element_is_captured_in_dom_diff(page: Page) -> None:
     # The click listener runs in the capture phase — before the page's own bubble-phase handler
     # fires. If finalizeState() ran synchronously right there (the historical bug), the "after"

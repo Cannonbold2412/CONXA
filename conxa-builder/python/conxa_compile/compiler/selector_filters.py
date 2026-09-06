@@ -292,7 +292,11 @@ def _count_role(a11y_tree: dict[str, Any], role: str, name: str | None) -> int:
             if m.group(1).strip().lower() != wanted_role:
                 continue
             node_name = (m.group(2) or "").strip().lower()
-            if not wanted_name or node_name == wanted_name:
+            # Playwright getByRole({name}) is a case-insensitive substring of the
+            # accessible name, not an exact string. Exact equality here dropped a
+            # real menuitem whose recorded name still had a keyboard-shortcut tail
+            # ("File upload Alt+C then U") while the snapshot said "File upload".
+            if not wanted_name or wanted_name in node_name:
                 count += 1
         return count
 
@@ -301,7 +305,8 @@ def _count_role(a11y_tree: dict[str, Any], role: str, name: str | None) -> int:
         if not isinstance(node, dict):
             return
         if str(node.get("role") or "").strip().lower() == wanted_role:
-            if not wanted_name or str(node.get("name") or "").strip().lower() == wanted_name:
+            node_name = str(node.get("name") or "").strip().lower()
+            if not wanted_name or wanted_name in node_name:
                 count += 1
         for child in node.get("children") or []:
             walk(child)

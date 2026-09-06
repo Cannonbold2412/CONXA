@@ -18,6 +18,8 @@ _SKIP_ATTRS = frozenset({
     "aria-pressed", "aria-current", "aria-busy",
     "data-state", "data-active", "data-focus", "data-open",
 })
+# Identity emit uses this same skip set (compiler/named_attrs.py). Add a key here
+# only if it is transient state, never if it is durable identity (data-key, data-command).
 
 
 def strip_dynamic_classes(classes: list[str]) -> list[str]:

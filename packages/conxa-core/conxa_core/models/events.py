@@ -62,6 +62,10 @@ class TargetDom(BaseModel):
     # and fell through to label_text — the nearest surrounding text, which is not a name.
     alt: str | None = None
     title: str | None = None
+    # Recorder-captured stable role/data-* attributes (bridge.js::collectIdentityAttrs) —
+    # the compiler's named-attr identity signal reads this. Must stay declared here or
+    # Pydantic's default extra="ignore" silently drops it on RecordedEvent.model_validate().
+    attributes: dict[str, str] = Field(default_factory=dict)
 
 
 class Selectors(BaseModel):

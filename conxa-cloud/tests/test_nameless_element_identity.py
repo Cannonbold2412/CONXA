@@ -213,6 +213,47 @@ def test_nameless_select_gets_no_role_or_relational_signal():
     assert any(s.engine.startswith("css") for s in signals), "must still fall through to structural identity"
 
 
+def test_keyboard_shortcut_tail_stripped_from_accessible_name():
+    from conxa_compile.compiler.identity_bundle import _strip_keyboard_shortcut_tail
+
+    assert _strip_keyboard_shortcut_tail("File upload Alt+C then U") == "File upload"
+    assert _strip_keyboard_shortcut_tail("Save") == "Save"
+    assert _strip_keyboard_shortcut_tail("Cut Ctrl+X") == "Cut"
+    target = {"tag": "li", "role": "menuitem", "inner_text": "File upload Alt+C then U"}
+    assert _accessible_name(target) == "File upload"
+
+
+DRIVE_MENU_DOM = "<html><body><ul role='menu'><li>File upload</li><li>Folder upload</li></ul></body></html>"
+DRIVE_MENU_A11Y = {
+    "role": "WebArea",
+    "name": "Drive",
+    "children": [
+        {"role": "menuitem", "name": "File upload"},
+        {"role": "menuitem", "name": "Folder upload"},
+    ],
+}
+
+
+def test_drive_file_upload_keeps_role_signal_when_snapshot_omits_shortcut():
+    """Recorded inner text includes Drive's accelerator; Playwright's snapshot does not.
+    Exact name matching dropped the role signal; replay then missed on exact text too."""
+    ev = {
+        "target": {"tag": "li", "role": "menuitem", "inner_text": "File upload Alt+C then U"},
+        "semantic": {"role": "menuitem"},
+        "selectors": {
+            "css": "ul[role=menu] > li:nth-of-type(1)",
+            "text_based": 'text="File upload Alt+C then U"',
+            "xpath": "/html/body/ul/li[1]",
+        },
+        "anchors": [],
+    }
+    signals = generate_deterministic_signals(ev, DRIVE_MENU_DOM, DRIVE_MENU_A11Y)
+    role = next(s for s in signals if s.engine == "role")
+    assert role.selector == 'internal:role=menuitem[name="File upload"]'
+    text = next(s for s in signals if s.engine == "text_based")
+    assert text.selector == 'internal:text="File upload"'
+
+
 # ---------------------------------------------------------------------------
 # _count_role against the current a11y evidence shape ({"aria_snapshot": "<yaml>"} —
 # Locator.aria_snapshot()'s YAML, replacing the removed Page.accessibility tree-dict).

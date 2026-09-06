@@ -64,6 +64,12 @@ def test_xpath_orthogonality_class_is_structural() -> None:
     assert tag_orthogonality_class("css-structural") == "structural"
 
 
+def test_attr_engine_outlasts_role_and_is_its_own_class() -> None:
+    assert durability_score("testid", '[data-testid="x"]') > durability_score("attr", '[data-key="19"]')
+    assert durability_score("attr", '[data-key="19"]') > durability_score("role", 'internal:role=menuitem[name="File upload"]')
+    assert tag_orthogonality_class("attr") == "named-attr"
+
+
 # ---------------------------------------------------------------------------
 # display_to_signal engine inference (used by the fallback ranking path)
 # ---------------------------------------------------------------------------

@@ -97,10 +97,10 @@ class IdentitySignal(BaseModel):
     """A single scored, classified selector signal within an IdentityBundle. [executor] —
     `selector` is Playwright grammar; the whole signal is how the browser executor locates
     an element, not part of the durable contract."""
-    engine: str                      # testid | role | aria | text | relational | css-id | css-structural | xpath
+    engine: str                      # testid | attr | role | aria | text | relational | css-id | css-structural | xpath
     selector: str                    # selector string (Playwright grammar preferred)
     durability: float                # 0.0–1.0 from durability_score()
-    orthogonality_class: str         # test-contract | semantic-aria | visible-text | spatial-anchor | structural
+    orthogonality_class: str         # test-contract | named-attr | semantic-aria | visible-text | spatial-anchor | structural
     unique_at_compile: bool = False  # matched exactly 1 node in recorded DOM
     source: str = "compiler"         # compiler | llm | input_bound | user (manually edited in editor)
 

@@ -490,6 +490,62 @@
     return `text="${esc}"`;
   }
 
+  // Bounded identity attributes for IdentityBundle's named-attr engine. Mirrors
+  // compiler/named_attrs.py + stable_hash._SKIP_ATTRS: role + stable data-*, never
+  // testid (separate engine) or transient state. Cap keeps the event payload small.
+  const IDENTITY_SKIP_ATTRS = {
+    "class": 1, "style": 1, "tabindex": 1,
+    "aria-expanded": 1, "aria-selected": 1, "aria-checked": 1, "aria-disabled": 1,
+    "aria-pressed": 1, "aria-current": 1, "aria-busy": 1,
+    "data-state": 1, "data-active": 1, "data-focus": 1, "data-open": 1,
+  };
+  const IDENTITY_TESTID_ATTRS = { "data-testid": 1, "data-test-id": 1, "data-test": 1, "data-cy": 1 };
+  const IDENTITY_ATTR_CAP = 12;
+  const IDENTITY_ATTR_MAX_VALUE = 64;
+  const IDENTITY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const IDENTITY_LONG_HEX_RE = /^[0-9a-f]{16,}$/i;
+  const IDENTITY_ATTR_PREF = ["role", "data-key", "data-command", "data-action", "data-value"];
+
+  function isStableAttrValue(v) {
+    if (!v || v.length > IDENTITY_ATTR_MAX_VALUE) return false;
+    if (IDENTITY_UUID_RE.test(v) || IDENTITY_LONG_HEX_RE.test(v)) return false;
+    if (
+      v.length >= 16 && !/\s/.test(v) &&
+      /[A-Za-z]/.test(v) && /\d/.test(v) && /[A-Z]/.test(v) && /[a-z]/.test(v) &&
+      /^[A-Za-z0-9_\-]+$/.test(v)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function collectIdentityAttrs(el) {
+    const pending = [];
+    if (!el || !el.attributes) return {};
+    for (let i = 0; i < el.attributes.length; i++) {
+      const a = el.attributes[i];
+      const k = String(a.name || "").toLowerCase();
+      if (IDENTITY_SKIP_ATTRS[k] || IDENTITY_TESTID_ATTRS[k]) continue;
+      if (k !== "role" && k.indexOf("data-") !== 0) continue;
+      const v = String(a.value || "").trim();
+      if (!isStableAttrValue(v)) continue;
+      pending.push([k, v]);
+    }
+    pending.sort((a, b) => {
+      const ia = IDENTITY_ATTR_PREF.indexOf(a[0]);
+      const ib = IDENTITY_ATTR_PREF.indexOf(b[0]);
+      const ra = ia === -1 ? 99 : ia;
+      const rb = ib === -1 ? 99 : ib;
+      if (ra !== rb) return ra - rb;
+      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+    });
+    const out = {};
+    for (let i = 0; i < pending.length && i < IDENTITY_ATTR_CAP; i++) {
+      out[pending[i][0]] = pending[i][1];
+    }
+    return out;
+  }
+
   // Stable selector: data-testid > aria-label > name > placeholder > text
   // Priority order matches runtime fingerprint scoring weights.
   function buildStableSelector(el) {
@@ -1443,6 +1499,7 @@
         // "nearest surrounding text" walk, which names an avatar after the paragraph above it.
         alt: el.getAttribute("alt") || null,
         title: el.getAttribute("title") || null,
+        attributes: collectIdentityAttrs(el),
       },
       selectors,
       context,

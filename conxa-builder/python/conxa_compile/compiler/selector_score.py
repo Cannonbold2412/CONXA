@@ -93,6 +93,7 @@ def rank_labeled_selector_candidates(
 # Inverted+normalized Playwright cost model: higher = more durable across app changes.
 _ENGINE_BASE_DURABILITY: dict[str, float] = {
     "testid": 0.99,
+    "attr": 0.96,
     "role": 0.95,
     "aria": 0.95,
     "label": 0.95,
@@ -109,6 +110,7 @@ _ENGINE_BASE_DURABILITY: dict[str, float] = {
 # Orthogonality class per engine — signals in different classes are independent axes of identity.
 _ENGINE_ORTHOGONALITY: dict[str, str] = {
     "testid": "test-contract",
+    "attr": "named-attr",
     "role": "semantic-aria",
     "aria": "semantic-aria",
     "label": "semantic-aria",

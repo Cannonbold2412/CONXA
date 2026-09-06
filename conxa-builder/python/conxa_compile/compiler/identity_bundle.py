@@ -17,6 +17,10 @@ from conxa_compile.compiler.selector_filters import (
     selector_passes_filters,
     uniqueness_gate,
 )
+from conxa_compile.compiler.named_attrs import (
+    backfill_attrs_from_snapshot,
+    synthesize_attr_selector,
+)
 from conxa_compile.compiler.selector_score import rank_by_durability
 from conxa_compile.compiler.selector_grammar import to_playwright_grammar
 from conxa_core.models.skill_spec import IdentitySignal
@@ -34,6 +38,23 @@ _NATIVE_ENGINES = frozenset({"testid", "role", "text_based", "relational"})
 # match neither the selector engine nor the runtime's own descriptor. Mirrored by bridge.js's
 # OPTION_CONTENT_TAGS and resolver.js's OPTION_CONTENT_TAGS; all three must agree.
 _OPTION_CONTENT_TAGS = frozenset({"select", "datalist", "optgroup", "combobox", "listbox"})
+
+# Google Drive (and similar) append accelerator hints to a control's accessible name /
+# inner text: "File upload Alt+C then U". Playwright's accessibility snapshot names the
+# same node "File upload". An exact [name="…"] / internal:text="…" built from the recorded
+# string then matches nothing at compile (role signal dropped) and nothing at replay.
+_SHORTCUT_TAIL_RE = re.compile(
+    r"\s+"
+    r"(?:(?:Ctrl|Control|Alt|Shift|Cmd|Command|Meta|Win|Windows|Option)\s*\+\s*)+[A-Za-z0-9]"
+    r"(?:\s+then\s+(?:(?:(?:Ctrl|Control|Alt|Shift|Cmd|Command|Meta|Win|Windows|Option)\s*\+\s*)+[A-Za-z0-9]|[A-Za-z0-9]))*"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_keyboard_shortcut_tail(text: str) -> str:
+    """Drop a trailing accelerator hint; leave ordinary names untouched."""
+    return _SHORTCUT_TAIL_RE.sub("", text).strip()
 
 
 def generate_deterministic_signals(
@@ -61,6 +82,16 @@ def generate_deterministic_signals(
     if data_testid:
         candidates.append(("testid", to_playwright_grammar("testid", f'[{testid_attr}="{data_testid}"]')))
 
+    # 1b. named-attr (uniqueness-gated role + stable data-* — not testid, not hashed classes)
+    attr_target = target
+    if not target.get("attributes") and dom_html:
+        backfilled = backfill_attrs_from_snapshot(selectors, dom_html)
+        if backfilled:
+            attr_target = {**target, "attributes": backfilled}
+    attr_sel = synthesize_attr_selector(attr_target, semantic, dom_html)
+    if attr_sel:
+        candidates.append(("attr", attr_sel))
+
     # 2. role + name (semantic-aria)
     role = str(semantic.get("role") or target.get("role") or "").strip()
     ax_name = _accessible_name(target)
@@ -73,7 +104,8 @@ def generate_deterministic_signals(
     # a guaranteed-miss selector in the bundle's highest-durability slot and pushed the element's
     # real identity below it. bridge.js's buildTextSelector now refuses to record these at all;
     # this gate is what heals sessions recorded before that fix, without a re-record.
-    text_val = str(selectors.get("text_based") or "").strip()
+    raw_text = str(selectors.get("text_based") or "").strip()
+    text_val = _strip_keyboard_shortcut_tail(re.sub(r'^text=["\']?|["\']?$', "", raw_text).strip())
     tag_or_role = {str(target.get("tag") or "").lower(), str(semantic.get("role") or target.get("role") or "").lower()}
     if text_val and not (tag_or_role & _OPTION_CONTENT_TAGS):
         candidates.append(("text_based", to_playwright_grammar("text", text_val)))
@@ -205,7 +237,7 @@ def _accessible_name(target: dict[str, Any]) -> str:
     ):
         candidates.append(target.get("label_text"))
     for value in candidates:
-        name = str(value or "").strip()
+        name = _strip_keyboard_shortcut_tail(str(value or "").strip())
         if name:
             return name
     return ""
