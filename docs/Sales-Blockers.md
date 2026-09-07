@@ -1,7 +1,8 @@
 # Conxa — Sales Blockers & Implementation Roadmap
 
-**Date:** 2026-07-04 (reviewed 2026-08-08 — repositioned around the capability ladder, code-signing
-blocker unchanged and now more urgent, see below)  
+**Date:** 2026-07-04 (reviewed 2026-09-02 — BYOK, seat enforcement, Fleet/Machine Registry, and the
+PROD-3 safe-action system all shipped since the last review; code-signing remains the sole open
+blocker, see below)  
 **Purpose:** Define what code must ship before Conxa can close its first enterprise customer.
 
 ---
@@ -34,6 +35,37 @@ disqualify in week one than fail in week six:
 | Session lifetime | How long an authenticated session lasts unattended | Determines whether the workflow can run truly unattended vs. needs a human nearby |
 
 See `docs/PRD.md`'s "Workflow Qualification Checklist" section for the full reasoning.
+
+---
+
+## What Shipped Since the Last Review (2026-08-08 → 2026-09-02)
+
+None of this changes the blocker list — code signing is still the only critical-path item — but it
+closes several objections a buyer's security/procurement review would otherwise raise:
+
+- **Bring-your-own-key (Enterprise BYOK).** Enterprise customers can now point Conxa's compile-time
+  LLM calls at their own Azure OpenAI key instead of Conxa's pooled providers — the key is stored
+  AES-256-GCM encrypted at rest. Answers the "our data can't touch a third-party model pool" data-
+  residency objection that regulated buyers (finance, HR, payroll) tend to raise. `docs/Implementation-Plan.md` §"Pricing model".
+- **Per-plan LLM compile pools.** Starter and Pro now each get their own provider/model pool instead
+  of sharing one, so plan tiers actually differ in automation quality, not just price on paper.
+- **Seat limits enforced.** A new member's first request is checked against the plan's seat cap
+  instead of billing silently drifting from what was sold.
+- **Safe-action system (PROD-3) — the "won't touch the wrong record" pitch is now real, not
+  asserted.** Destructive steps (pay, delete, submit) are classified at record time, scoped to the
+  one record they were bound to, and self-repair without ever substituting a different-looking
+  button — shipped 2026-08-29. This is the concrete answer to "how do we know it won't delete the
+  wrong invoice," which is the first question every finance/HR/payroll prospect asks.
+- **Governance & audit hardening (PROD-18).** Tamper-resistant audit trail and run-time policy
+  windows/deny-lists shipped (an explicit require-approval step is still deferred — not required for
+  a first sale). Strengthens the same security-review artifact as the existing audit log (2.3 below).
+- **Terms & Privacy acceptance gate (PROD-17), recorded server-side.** Removes an "did they actually
+  agree to this" gap a legal review would flag.
+- **Company Agent Fleet dashboard (Machine Registry).** Runtime identity, a paginated list of every
+  machine running Conxa, and a revoke endpoint — the concrete answer to "how do we see and kill a
+  machine" in a fleet security review. See `docs/TRD.md` §13.4b.
+- **Compile credit add-on ladder (four tiers, one-time wallet purchases)** and **manual plan grants
+  by customer email** — sales/ops can now provision or top up an account without an engineer.
 
 ---
 

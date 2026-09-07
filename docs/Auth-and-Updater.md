@@ -129,6 +129,8 @@ Verification (`app/api/security.py`):
 4. Optionally check `azp` (authorized party) against an allowlist
 5. Attach `request.state.auth = { subject, org_id, claims }` for downstream handlers
 
+**Admin-token bypass.** If `CONXA_ADMIN_TOKEN` is set and the bearer matches it (constant-time compare), the middleware substitutes synthetic claims `{ sub: "admin", auth_source: "admin_token" }` instead of verifying a Clerk JWT — this only clears the transport-layer gate; each admin route (e.g. `/api/v1/entitlements/admin/*`) still runs its own `_require_admin` check as the real authorization boundary. An unset `CONXA_ADMIN_TOKEN` disables the bypass entirely; any non-matching bearer still goes through full Clerk verification.
+
 ---
 
 ### 1.3 Runtime Authentication (Installer-Embedded Sync Token + Session Encryption)
@@ -166,7 +168,7 @@ The session is only decryptable with the same per-company session key used to en
 
 #### Target website login — first run and mid-execution re-login
 
-`runtime/browser.js`'s `getAuthContext()` resolves a company's browser session on every `execute_skill` call, in order: (1) the encrypted session, decrypted and probed against `pack.json`'s `protected_url` in a throwaway headless browser (`_validateSession`); (2) an unencrypted `_raw_state.json` fallback (installer-included initial session); (3) an interactive login window if neither validates. Mid-execution, `run.js`'s `isAuthFailure()` (URL/title heuristic) detects a login redirect after a step fails, and `server.js` routes it through the same interactive-login path via `captureReAuth()`.
+`runtime/browser.js`'s `getAuthContext()` resolves a company's browser session on every `execute_skill` call, in order: (1) the encrypted session, decrypted and probed against `pack.json`'s `protected_url` in a throwaway headless browser (`_validateSession`); (2) an unencrypted `_raw_state.json` fallback (installer-included initial session); (3) an interactive login window if neither validates. Mid-execution, `run.js`'s `isAuthFailure()` (URL/title heuristic) detects a login redirect after a step fails — but first checks `_isRecordedUrl()`: if the live URL matches a `navigate` step the workflow itself recorded, it is not a redirect, so it is never treated as session expiry (a skill can legitimately record a login page as an ordinary step, e.g. a demo app's own `/login` form). Only once that check clears does `server.js` route the failure through the same interactive-login path via `captureReAuth()`. For group packs, `captureReAuth()` matches the failing page's host against each app's `success_url`/`login_url`, falling back to the manifest's `fallbackUrl` host if that misses; if neither matches any app the group actually holds a session for, it reports `{ unresolved: true }` instead of guessing `group.apps[0]` — the caller falls through to the plain step-failure message rather than naming an uninvolved app in the error.
 
 **Group pre-flight cost model (2026-08-25).** For group packs, `getGroupAuthContext()` only pays the live network probe (above) for a skill's *required* apps, and all required-app probes share one headless browser (`_validateSessionsBatch`) instead of launching one per app. A successful required-app validation is stamped into `<sessions>/_auth_validation_cache.json`; within `CONXA_AUTH_VALIDATION_TTL_MS` (default 6h) later runs skip the probe for that app entirely. The stamp records the session file's mtime — a fresh interactive login rewrites that file and voids the stamp, forcing one re-validation before caching again. Non-required sibling apps are never probed; their stored sessions seed the merged context unconditionally. See `docs/TRD.md` §5.2a ("Runtime resolution") for the full picture.
 
@@ -252,7 +254,7 @@ On cold start (packaged only):
 - `main.js` — `update:check / update:start / update:install / app:version` IPC handlers; `semverGt()`, `stripVersion()`, `sendUpdateStatus()`, `ensureUpdateListeners()`
 - `renderer/src/pages/UpdateRequiredScreen.tsx` — mandatory blocking gate (early-return from App)
 - `renderer/src/hooks/useUpdater.ts` — shared download state hook used by both the gate and Settings
-- `renderer/src/App.tsx` — gate ordering: deps → update check → identity
+- `renderer/src/App.tsx` — gate ordering: deps → update check → identity → legal acceptance (`LegalGate`, PROD-17 — see `docs/UI-UX-Brief.md` §2.1a; fail-closed, dev builds skip it)
 - `renderer/src/pages/SettingsPage.tsx` — `SoftwareUpdateCard` component
 
 ---

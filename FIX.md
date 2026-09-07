@@ -2,6 +2,14 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed a broken automated test for popup-alert handling — 2026-09-07
+A test that checks the assistant answers a browser popup before it freezes was failing in continuous integration. The fake browser page used in that test was missing a few methods the real code now calls when resolving a click target — so the test crashed before it could even check the thing it was meant to check. The mock page now behaves like a real one for those calls, and all five dialog-handling tests pass again.
+— 2026-09-07
+
+## Fixed a sign-in prompt that claimed a window had opened when none did — 2026-09-07
+When a workflow needed you to sign in to an app like Google Drive, the assistant would say "sign in to Google Drive in the window that just opened" — but sometimes no window actually opened, usually because the browser piece hadn't finished installing yet. The old code told you it had opened a window before actually checking whether it could. Now it waits to confirm the window really opened before saying so, and if it genuinely can't, it tells you the real reason instead of a false all-clear. This matters most for the first run on a fresh install, and for workflows that need sign-in to more than one app at once.
+— 2026-09-07
+
 ## Fixed the installer hanging forever on the "Downloading skill package" step — 2026-09-07
 During setup, a quick compatibility check the installer runs was accidentally starting the full assistant connection in the background — the same one that's supposed to stay open and wait for a chat to talk to it. Since no chat was there to talk to it during install, it just sat there forever, and the installer window never closed. It's like a smoke test that was supposed to just check the oven turns on, but actually started baking a cake and left the door shut. Now that check only checks compatibility and nothing else, so the installer finishes normally. The same background task also ran a second, needless skill-download attempt that got rate-limited by our servers — harmless, but it explains the "429" error some installs showed in their logs; that noise is gone too as a side effect.
 — 2026-09-07

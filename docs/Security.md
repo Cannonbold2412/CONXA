@@ -1,6 +1,6 @@
 # Security Gaps
 
-**Status:** Current as of 2026-08-29  
+**Status:** Current as of 2026-09-02  
 **Scope:** Conxa platform — Build Studio, Conxa Cloud, Runtime  
 **Audience:** Internal engineering, security reviewers, auditors
 
@@ -268,6 +268,8 @@ Because the token is in `pack.json` inside every installer binary, it is effecti
 ### Recommended Fix
 
 Issue per-install tokens at installer-download time (requires solving SG-07 first), or move to short-lived tokens derived from the long-lived root token (runtime exchanges the root for a short-lived one at startup, mitigating the impact of leaked installers).
+
+**Note (2026-09-02):** the new recovery-artifact endpoint (`POST .../skill-packs/{slug}/artifacts`, added for the content-addressed artifact store — `app/api/skillpack_update_routes.py:get_skill_artifacts()`) authenticates with this same sync token and is deliberately **not** rate-limited like the delta endpoint beside it (the artifact pass must run immediately after code lands, and the delta route's 5-minutes-per-token limit would block every call). Same blast radius as this gap — read-only, single-company skill data — but a leaked token can now also be used to repeatedly rebuild the zip response for bandwidth/cost, not just poll the delta. No fix planned; tracked here rather than as a new SG since the underlying exposure (a leaked installer token) is identical.
 
 ---
 
