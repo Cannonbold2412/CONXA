@@ -21,6 +21,8 @@ const {
   digestTargetContext,
   executedStepsBreadcrumb,
   recordedContextBlock,
+  anchorSentenceBlock,
+  phaseHintBlock,
 } = require("../../app/failure_response");
 const pageScripts = require("../../app/page_scripts");
 
@@ -345,6 +347,42 @@ test("recordedContextBlock: null when the pack predates recorded context", () =>
   assert.strictEqual(recordedContextBlock({ failedStep: { _recorded_context: {} } }), null,
     "an empty object must not produce a meaningless block");
   assert.strictEqual(recordedContextBlock({}), null);
+});
+
+// anchorSentenceBlock: the prose description a vision LLM wrote at compile time from 5
+// time-offset frames around the recorded action — a plain-English caption alongside
+// recordedContextBlock's structural "where it sat", null-safe the same way.
+
+test("anchorSentenceBlock: renders the recorded description", () => {
+  const block = anchorSentenceBlock({
+    failedStep: { _anchor_sentence: "The blue Sign in button below the password field" },
+  });
+  assert.match(block, /described when recorded/);
+  assert.match(block, /The blue Sign in button below the password field/);
+});
+
+test("anchorSentenceBlock: null when the pack predates the anchor sentence", () => {
+  assert.strictEqual(anchorSentenceBlock({ failedStep: {} }), null);
+  assert.strictEqual(anchorSentenceBlock({ failedStep: { _anchor_sentence: "" } }), null);
+  assert.strictEqual(anchorSentenceBlock({ failedStep: { _anchor_sentence: "   " } }), null,
+    "whitespace-only must not produce a meaningless block");
+  assert.strictEqual(anchorSentenceBlock({}), null);
+});
+
+// phaseHintBlock (BUILD-25 stage e): the compiler's second-opinion pass's label_phase
+// finding, given to the agent tier as a workflow-position prior.
+
+test("phaseHintBlock: renders the labeled phase", () => {
+  const block = phaseHintBlock({ failedStep: { _phase: "login" } });
+  assert.match(block, /workflow's "login" phase/);
+});
+
+test("phaseHintBlock: null when the step was never labeled", () => {
+  assert.strictEqual(phaseHintBlock({ failedStep: {} }), null);
+  assert.strictEqual(phaseHintBlock({ failedStep: { _phase: "" } }), null);
+  assert.strictEqual(phaseHintBlock({ failedStep: { _phase: "   " } }), null,
+    "whitespace-only must not produce a meaningless block");
+  assert.strictEqual(phaseHintBlock({}), null);
 });
 
 test("the agent payload carries the recorded structure beside the live digest", async () => {

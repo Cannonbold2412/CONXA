@@ -867,6 +867,14 @@ function enrichStepsWithRecovery(steps, recovery) {
       // Where this element sat on the page at recording time. The agent tier gets a ranked list
       // of what is on the page NOW; this is the only thing in the payload that says what changed.
       _recorded_context: asObject(rec.recorded_context),
+      // Prose description written by the vision LLM at compile time (looked at 5 time-offset
+      // frames around the action) — a plain-English caption alongside the short anchor phrases.
+      _anchor_sentence: rec.anchor_sentence || "",
+      // BUILD-25 stage e: which part of the journey this step belongs to
+      // (login/navigate/act/verify/cleanup), written by the compiler's
+      // second-opinion pass. "" on any step the pass never ran on or didn't
+      // label. Read by failure_response.js's phaseHintBlock.
+      _phase: rec.phase || "",
     };
   });
 }

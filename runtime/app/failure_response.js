@@ -313,6 +313,30 @@ function recordedContextBlock(err) {
     `against the live list above, do not assume it still holds):\n${JSON.stringify(ctx)}`;
 }
 
+// A plain-English description of the target, written by a vision LLM at compile time from 5
+// time-offset screenshots around the recorded action. Complements recordedContextBlock's
+// structural "where it sat" with a visual/positional description in the same register a human
+// would use — useful when drift is severe enough that neither text nor DOM structure still
+// matches but a human-style description still would.
+function anchorSentenceBlock(err) {
+  const step = err && err.failedStep ? err.failedStep : null;
+  const sentence = step && typeof step._anchor_sentence === "string" ? step._anchor_sentence.trim() : "";
+  if (!sentence) return null;
+  return `How this element was described when recorded: "${sentence}"`;
+}
+
+// BUILD-25 stage e: a workflow-position prior from the compiler's
+// second-opinion pass (compiler/second_opinion.py's label_phase kind) — "this
+// step is in the login phase" is a strong hint for the agent tier about what
+// kind of page it should expect to see. Absent on any step the pass never ran
+// on or didn't label, which is an ordinary state, not a failure.
+function phaseHintBlock(err) {
+  const step = err && err.failedStep ? err.failedStep : null;
+  const phase = step && typeof step._phase === "string" ? step._phase.trim() : "";
+  if (!phase) return null;
+  return `This step is labeled as part of the workflow's "${phase}" phase.`;
+}
+
 // Locate the recording-time reference image for the failed step, if this machine actually has it.
 //
 // Two lookups, in order of trustworthiness:
@@ -349,6 +373,10 @@ function buildContextSections(err, steps, failedAt, viewport, scrollY, stepAsser
   if (intent) out.push(`Failed step intent: ${JSON.stringify(intent)}`);
   const recorded = recordedContextBlock(err);
   if (recorded) out.push(recorded);
+  const anchorSentence = anchorSentenceBlock(err);
+  if (anchorSentence) out.push(anchorSentence);
+  const phaseHint = phaseHintBlock(err);
+  if (phaseHint) out.push(phaseHint);
   const expected = expectedStateBlock(err, stepAssertions);
   if (expected) out.push(expected);
   const breadcrumb = executedStepsBreadcrumb(steps, failedAt);
@@ -535,6 +563,8 @@ module.exports = {
   expectedStateBlock,
   executedStepsBreadcrumb,
   recordedContextBlock,
+  anchorSentenceBlock,
+  phaseHintBlock,
   gatherInventory,
   overlayNoteText,
   dismissRejectedNoteText,
