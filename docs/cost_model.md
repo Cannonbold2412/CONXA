@@ -50,13 +50,14 @@ Every time a company records workflows and compiles them into a new plugin versi
 
 | Call | Prompt size | When | Count/step |
 |------|-------------|------|------------|
-| **Intent detection** (`generate_intent_with_llm`) | ~200 input + ~50 output tokens | **Fallback only since 2026-08-25** — the single workflow-intent call now emits every step's snake_case token, so this fires per step only for steps the graph left tokenless or when the graph call failed outright. Still **cached** by element hash | 0 typical (was 1), up to 3 on a generic/malformed answer (0 on cache hit) |
 | **Vision anchor generation** (`generate_anchors_for_step_or_raise`) | ~15K input + ~500 output tokens (screenshot JPEG as base64 + prompt) | Every step — but **cached** by screenshot hash | 1 (0 on cache hit) |
+
+Intent is a byproduct of the single per-compile workflow-intent call (below), at zero marginal per-step cost. There is no per-step intent fallback (removed 2026-09-09): a step the graph leaves tokenless, or every step if the graph call fails outright, just compiles with a blank/heuristic `intent` (flagged in Human Edit) — no extra LLM call, no retry cost.
 
 Normalize no longer calls `semantic_enrichment` per event (removed 2026-09-06). That pass was leftover: the compiler overwrote its guess with the workflow-intent token. Missing field types are inferred with local regex only. `enrich_semantic` remains for Human Edit 1-click fix, not compile.
 
-**All steps, all DOM conditions:** ~1 LLM call/step (vision anchor) + ONE workflow-intent call per compile typical; a step whose element is genuinely hard to describe can cost up to 4 (3 intent retries + 1 vision anchor).
-**Recompilation (same DOM, cached):** 0–2 calls/step — caching absorbs most of the cost. Note: fallback intent generation has **no template fallback** — a step that never resolves to a specific, non-generic intent is left with a blank `intent` (flagged in Human Edit) rather than a synthesized one, and an unresolved attempt is **not cached**, so it retries in full on every subsequent compile until it succeeds or the underlying page/LLM issue is fixed.
+**All steps, all DOM conditions:** ~1 LLM call/step (vision anchor) + ONE workflow-intent call per compile.
+**Recompilation (same DOM, cached):** 0–1 calls/step — caching absorbs most of the cost.
 
 Selector strings are generated deterministically by `IdentityBundle` + `selector_grammar.py`. No LLM calls are made for selector generation regardless of DOM quality or `data-testid` coverage.
 
@@ -145,7 +146,7 @@ Token costs at Groq (text) + Google AI Studio (vision) — **actually billed to 
 | Recompilation (cached, 3 changed steps) | ~$0.006 | **~$0.042** | **~$0.162** |
 | **Blended (80% recompiles, 15 steps avg)** | **~$0.011** | **~$0.075** | **~$0.292** |
 
-**Key insight on continuous iteration:** Both intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps — the rest are cache hits. This makes daily iteration cheap regardless of provider. Selector strings are generated deterministically at zero token cost in all cases.
+**Key insight on continuous iteration:** Vision anchor calls are cached by element hash (`anchor_vision_llm.py`); the workflow-intent call is cached by a steps-summary+URLs hash (`workflow_intent.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps' vision anchors — the rest are cache hits. This makes daily iteration cheap regardless of provider. Selector strings are generated deterministically at zero token cost in all cases.
 
 **Human Edit pool:** Human Edit can trigger extra LLM calls after the initial compile: step repair, selector or anchor regeneration, validation, and recovery artifact updates. Each plan gets a monthly Human Edit token pool that applies to both text and vision repair calls. The re-target wizard's "draw a new region" step (Pick element phase) is one of these vision calls (`region_selector_vision.py`, cached by DOM hash + drawn bbox so redrawing the same box doesn't re-bill) — it replaced a text-only regenerate call that couldn't actually resolve a drawn region to a DOM element (see `docs/App-Flow.md` §7 re-target wizard note), so this is a cost-neutral swap of one Human Edit call for another, not a new charge:
 
@@ -686,7 +687,7 @@ It's worth being explicit about the value proposition so pricing feels justified
 ### Biggest Impact
 
 **1. Caching is your biggest natural lever (already built)**  
-Intent and vision anchor calls are cached by element hash (`intent_llm.py`, `anchor_vision_llm.py`). A Starter/Pro recompile where 3 steps changed costs ~$0.042, not ~$0.21. Companies iterating daily are still cheap, but internal fair-use alerts should watch customers that repeatedly hit build-heavy usage patterns.
+Vision anchor calls are cached by element hash and the workflow-intent call by a steps-summary+URLs hash (`anchor_vision_llm.py`, `workflow_intent.py`). A Starter/Pro recompile where 3 steps changed costs ~$0.042, not ~$0.21. Companies iterating daily are still cheap, but internal fair-use alerts should watch customers that repeatedly hit build-heavy usage patterns.
 
 **2. Usage naturally drops after launch**
 Most companies spend the first month building and polishing the plugin, then move to 1–2 updates per month. This makes ongoing LLM cost much lower than the full-cap build-month model while subscription revenue continues for dashboard, signing, telemetry retention, support, update delivery, and Conxa healing/runtime updates.

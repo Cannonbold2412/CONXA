@@ -912,7 +912,8 @@ source of both each step's machine-readable `intent_token` (fed to the compiler'
 deterministic logic — recovery policy, destructive gating, validation facets — in
 place of the old per-step `intent_generation` calls) and its readable `intent`
 prose (becomes `semantic_description`, and the Workflow plan in Human Edit).
-Steps the graph leaves tokenless fall back to legacy `intent_llm.py` resolution.
+Steps the graph leaves tokenless (or every step, if the graph call fails outright)
+just compile with a blank/heuristic intent — no per-step LLM fallback call.
 Cached per steps-summary+URLs hash under a v2 key namespace (v1 entries predate
 `intent_token` and are never reused):
 
@@ -948,11 +949,15 @@ returns nothing, or every finding is rejected:
     "step_key": str,   # compiler/step_key.py — identity_bundle.stable_hash + occurrence ordinal,
                         # NEVER step_index (an insert/reorder renumbers every later index —
                         # BUILD-22/BUILD-23)
-    "kind": str,        # "rename_binding" | "parameterize_literal" | "suggest_optional" | "label_phase"
-    "current": str,     # the existing binding name / literal value / "" for label_phase
+    "kind": str,        # "rename_binding" | "parameterize_literal" | "suggest_optional" |
+                        # "label_phase" | "suggest_assertion" | "flag_noise"
+    "current": str,     # the existing binding name / literal value / "" for label_phase,
+                        # suggest_assertion, flag_noise
     "proposed": str,    # a valid {{placeholder}} identifier (rename_binding/parameterize_literal),
-                        # "true"/"false" (suggest_optional), or one of
-                        # login/navigate/act/verify/cleanup (label_phase)
+                        # "true"/"false" (suggest_optional), one of login/navigate/act/verify/
+                        # cleanup (label_phase), a JSON string {"type": ..., "target": ...}
+                        # (suggest_assertion), or one of duplicate_action/no_op_action/
+                        # orphaned_hover (flag_noise)
     "why": str,         # human-readable rationale, capped at 280 chars
 }
 ```
@@ -963,13 +968,37 @@ What each kind writes, and nothing else:
 |---|---|
 | `rename_binding` | `input_binding`, plus the matching `{{token}}` inside `value` |
 | `parameterize_literal` | `input_binding`, `value` (only on a step with no binding yet — never re-points an existing one) |
-| `label_phase` | `phase` (`login`/`navigate`/`act`/`verify`/`cleanup`; §3.4d's sibling field, nothing downstream reads it yet) |
+| `label_phase` | `phase` (`login`/`navigate`/`act`/`verify`/`cleanup`; §3.4d's sibling field; read by `runtime/app/failure_response.js`'s Tier B recovery prompt, BUILD-25 stage e) |
 | `suggest_optional` | `action.action`, `intent`, `branch`, `recovery`, clears `optional_hint` (§3.4d) |
+| `suggest_assertion` (stage d) | additively appends one `Assertion` to `validation.assertions` — always `required=False`; restricted to `text_present`/`text_absent`/`url_changed`/`url_pattern`/`state_changed`, never a selector-bearing type. A no-op if an identical `{type, target}` assertion already exists. |
+| `flag_noise` (stage d) | removes the step from `steps` (never a field-level write) — only when the recorder itself observed `post_condition.classified_effect == "none"` on a `click`/`hover`/`scroll`/`focus` step with no required assertion and no `input_binding`. See §3.9a. |
 
-`target`, `identity_bundle`, `compiled_selectors`, `validation` and the frame/tab chain are never
-touched — element identity stays fully deterministic (CLAUDE.md Key Invariants). When anything is
-applied the whole `compile_report` is rebuilt from the mutated steps, because a `suggest_optional`
-conversion changes a step's compiled shape after the first report was computed.
+`target`, `identity_bundle`, `compiled_selectors`, `wait_for`/`success_conditions`, and the
+frame/tab chain are never touched — element identity stays fully deterministic (CLAUDE.md Key
+Invariants). When anything is applied or archived the whole `compile_report` is rebuilt from the
+mutated/filtered steps, because a `suggest_optional` conversion or a `flag_noise` removal changes
+a step's compiled shape (or the step count) after the first report was computed.
+
+### 3.9a compile_report.archived_steps (BUILD-25 stage d, 2026-09-10)
+
+`flag_noise` is the second-opinion pass's one destructive kind, and the only one that changes the
+*shape* of `steps` rather than a field on one step. `compiler/second_opinion.py::archive_flagged_steps`
+removes the matched step from what compiles into the shipped skill, but never discards it — the
+full step is saved here so a person can restore one later if the compiler was wrong. Present only
+when at least one `flag_noise` finding was applied; absent otherwise. Never copied into the shipped
+pack (`skill_package_builder_saved_skill.py` only reads from the *returned*, filtered `steps`), and
+nothing in the editor consumes it yet — same "written, no reader yet" posture `label_phase` had
+before stage (e):
+
+```python
+# One entry of compile_report["archived_steps"]:
+{
+    "step_key": str,    # same identity as second_opinion entries — compiler/step_key.py
+    "step": dict,       # the removed SkillStep, in full (model_dump(mode="json"))
+    "category": str,    # "duplicate_action" | "no_op_action" | "orphaned_hover"
+    "why": str,         # human-readable rationale, capped at 280 chars
+}
+```
 
 A `parameterize_literal` needs no separate input declaration: `handlers/compile.py` already runs
 `reconcile_inputs_with_step_values(doc)` after the package is written, which auto-declares any
@@ -1052,7 +1081,7 @@ failure-silent, matching every other local cache/log in the compile pipeline.
 | `overlay_dismissed` | (EXEC-30) A `step_overrides.dismiss` pick cleared an unrecognized overlay before the resumed step's own action | `si`, `src` (`"agent"`) |
 | `overlay_dismiss_rejected` | (EXEC-30) A `dismiss` pick was refused — no match on the live page, or its label read as a commit action | `si`, `why` (`"no-match"` \| `"unsafe-label"`) |
 
-**`recovery.json` per-step field changes (2026-09).** Added: `recorded_context` — where the target sat on the page at recording time (`parent`, `siblings` capped at 8, `index_in_parent`, `form_context`), so the agent recovery tier can compare the live page against the recorded structure instead of only describing the present. Removed: `fallback.text_variants` and `selector_context.alternatives`, which fed the two Layer 2 guessing stages deleted from the runtime cascade — nothing reads them. `selector_context.primary`, `anchors` and `visual_ref` are unchanged, as is the execution step's unrelated `target.fallback_selectors` (a *primary resolution* input, despite the similar name).
+**`recovery.json` per-step field changes (2026-09).** Added: `recorded_context` — where the target sat on the page at recording time (`parent`, `siblings` capped at 8, `index_in_parent`, `form_context`), so the agent recovery tier can compare the live page against the recorded structure instead of only describing the present. Removed: `fallback.text_variants` and `selector_context.alternatives`, which fed the two Layer 2 guessing stages deleted from the runtime cascade — nothing reads them. `selector_context.primary`, `anchors` and `visual_ref` are unchanged, as is the execution step's unrelated `target.fallback_selectors` (a *primary resolution* input, despite the similar name). Added (2026-09-10, BUILD-25 stage e): `phase` — the compiler's second-opinion pass's `label_phase` finding (§3.9), present only on a step the pass labeled; read by `failure_response.js::phaseHintBlock` as a workflow-position prior for the agent tier.
 
 **Retired recovery signals (2026-09).** The fallback-selector walk and fuzzy-text match were removed from Layer 2 (see `docs/TRD.md` §10.1), so three values stop appearing on new runtimes: `rec_ok` with `sc: "text_variant"`, `repair_event` with `method: "fuzzy"` or `method: "fallback"`, and the `layer_recovered` recovery-log entry with `mode: "fuzzy"`. Nothing was renamed and no consumer breaks — the values simply go to zero. Historical rows keep them, so dashboards aggregating over past windows must still tolerate them. `recovery_tier{N}` and the `tier` field keep their 1–4 numbering; only the behavioural grouping changed.
 | `drift_detected` | Pre-execution structural drift warning (advisory; emitted at run start, never blocks) | `total` (landmarks), `missing`, `drift_ratio`, `missing_intents` (≤5), `url` |

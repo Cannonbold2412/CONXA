@@ -1279,12 +1279,12 @@ events.jsonl (raw RecordedEvents)
         ▼  compiler/build.py:compile_skill_package()
            │
            ├── LLM: llm/workflow_intent.py → WorkflowIntentGraph (ONE call, FIRST —
-           │   before the per-step loop; on failure falls back to legacy
-           │   per-step generate_intent_with_llm). Emits, per step, BOTH a
-           │   snake_case intent_token (consumed by _build_step /
-           │   _prefetch_vision_anchors in place of the old intent_generation
-           │   burst) and readable prose (becomes semantic_description and the
-           │   Workflow plan shown in Human Edit). Single source of both.
+           │   before the per-step loop; on failure every step just gets a
+           │   blank/heuristic intent, no per-step LLM fallback). Emits, per
+           │   step, BOTH a snake_case intent_token (consumed by _build_step /
+           │   _prefetch_vision_anchors) and readable prose (becomes
+           │   semantic_description and the Workflow plan shown in Human
+           │   Edit). Single source of both.
            │
            ├── For each step:
            │   ├── identity_bundle.py → IdentityBundle (deterministic, zero-LLM)
@@ -1302,11 +1302,14 @@ events.jsonl (raw RecordedEvents)
            ├── LLM: llm/workflow_semantics.py → the compiler's second opinion (ONE call,
            │   LAST — after bindings are deduplicated and the report above exists;
            │   BUILD-25). Decides rename_binding / parameterize_literal /
-           │   suggest_optional / label_phase; compiler/second_opinion.py APPLIES them
-           │   to the steps. Writes meaning only (input_binding, {{placeholder}} in
-           │   value, phase, try_dismiss branch) — never a selector, identity bundle or
-           │   assertion. Rules-only fallback on disable/failure/drained pool; the
-           │   compile_report is rebuilt when anything was applied.
+           │   suggest_optional / label_phase / suggest_assertion / flag_noise;
+           │   compiler/second_opinion.py APPLIES them to the steps. Writes meaning only
+           │   (input_binding, {{placeholder}} in value, phase, try_dismiss branch, an
+           │   advisory text/URL/state validation.assertions entry) — never a selector or
+           │   identity bundle. flag_noise removes a step but archives it in full under
+           │   compile_report["archived_steps"] rather than deleting it. Rules-only
+           │   fallback on disable/failure/drained pool; the compile_report is rebuilt
+           │   when anything was applied or archived.
            │
            └── → SkillPackage (models/skill_spec.py)
 ```
@@ -1651,14 +1654,16 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 
 | LLM Client | Call | Token cost (approx) |
 |---|---|---|
-| `intent_llm.py` | Legacy per-step intent fallback (used only for steps the workflow-intent graph left tokenless) + per-workflow intent graph via `workflow_intent.py` — one call now sources every step's token AND prose (2026-08-25) | Low–High |
+| `workflow_intent.py` | Per-workflow intent graph — one call sources every step's snake_case token AND review prose (2026-08-25). A step the graph leaves tokenless, or a call that fails outright, just compiles with a blank/heuristic intent — no per-step LLM fallback (removed 2026-09-09) | Low |
 | `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
 | `recovery_llm.py` | Not on the primary compile path (Human Edit layered check / 1-click fix) | Medium |
-| `workflow_semantics.py` | The compiler's second opinion — one whole-workflow call, sited after `_build_compile_report`, deciding `rename_binding` / `parameterize_literal` / `suggest_optional` / `label_phase` (BUILD-25). `compiler/second_opinion.py` writes them onto the steps: `input_binding`, `{{placeholder}}` tokens in `value`, `phase`, and the `try_dismiss` branch. Never a selector, identity bundle, or assertion. | Low |
+| `workflow_semantics.py` | The compiler's second opinion — one whole-workflow call, sited after `_build_compile_report`, deciding `rename_binding` / `parameterize_literal` / `suggest_optional` / `label_phase` / `suggest_assertion` / `flag_noise` (BUILD-25). `compiler/second_opinion.py` writes them onto the steps: `input_binding`, `{{placeholder}}` tokens in `value`, `phase`, the `try_dismiss` branch, an advisory text/URL/state `validation.assertions` entry, or removing (archiving) a step. Never a selector or identity bundle. | Low |
 
 `semantic_llm.py` (`semantic_enrichment`) is **not** called during normalize or compile. Missing `input_type` is inferred with policy regex only. `enrich_semantic` remains on Human Edit 1-click fix (`compiler/patch.py`).
 
-**The compiler's second opinion — what it writes, and what it never writes (BUILD-25).** `llm/workflow_semantics.py::build_second_opinion` decides; `compiler/second_opinion.py::apply_second_opinion` writes. The four kinds map onto exactly four surfaces of a compiled step: `rename_binding` sets `input_binding` and rewrites the matching `{{token}}` inside `value`; `parameterize_literal` binds a recorded literal (only on a step that has no binding yet — it never re-points an existing one); `label_phase` sets `SkillStep.phase`; `suggest_optional` converts a step the recorder already flagged stochastic into a `try_dismiss` branch via the shared `build_try_dismiss_from_hint`, clearing `optional_hint`. It never touches `target`, `identity_bundle`, `compiled_selectors`, `validation`, or the frame/tab chain — element identity stays fully deterministic (CLAUDE.md Key Invariants).
+**The compiler's second opinion — what it writes, and what it never writes (BUILD-25).** `llm/workflow_semantics.py::build_second_opinion` decides; `compiler/second_opinion.py::apply_second_opinion` writes (and, for the one destructive kind, `archive_flagged_steps` removes). Four kinds rewrite a field in place: `rename_binding` sets `input_binding` and rewrites the matching `{{token}}` inside `value`; `parameterize_literal` binds a recorded literal (only on a step that has no binding yet — it never re-points an existing one); `label_phase` sets `SkillStep.phase`; `suggest_optional` converts a step the recorder already flagged stochastic into a `try_dismiss` branch via the shared `build_try_dismiss_from_hint`, clearing `optional_hint`. Two stage-(d) kinds are narrower: `suggest_assertion` additively appends one `Assertion` to `validation.assertions` — always `required=False`, and restricted to `text_present`/`text_absent`/`url_changed`/`url_pattern`/`state_changed`, never a selector-bearing type, since that `target` is a raw Playwright selector this pass may never write; `flag_noise` removes a step the recorder itself observed to have no effect (`post_condition.classified_effect == "none"`), never the model's own opinion alone, and archives it in full under `compile_report["archived_steps"]` rather than deleting it — see "Why archive, not delete" below. The pass never touches `target`, `identity_bundle`, `compiled_selectors`, `wait_for`/`success_conditions`, or the frame/tab chain — element identity stays fully deterministic (CLAUDE.md Key Invariants).
+
+**Why archive, not delete (stage d, 2026-09-10).** `flag_noise` is the pass's only kind that changes the *shape* of `steps` rather than one field on one step, and the only one where a wrong call is not cheaply reversible in Human Edit — a deleted step's `IdentityBundle` only ever comes from a DOM snapshot at record time, so recreating it means re-recording. `archive_flagged_steps` (`compiler/second_opinion.py`) removes the step from what ships but writes its full serialized form into `compile_report["archived_steps"]` (`{step_key, step, category, why}`), which never reaches the shipped pack (`skill_package_builder_saved_skill.py` only copies from the *returned*, filtered `steps`). No restore command exists yet — the archive is written and persisted, but nothing in the editor consumes it, the same "written, no reader yet" posture `label_phase` had before stage (e).
 
 **Why applied rather than suggested.** Stage (c) of BUILD-25 was going to put accept/reject chips in Human Edit; that was dropped on 2026-09-09. A reviewer opens Human Review and sees finished work — `sender_email`, not an offer to rename `email_2` — and Human Review is itself the gate for a wrong call. Nothing in the renderer marks a second-opinion change: it is simply part of the compiled workflow, indistinguishable from what the fixed rules produced. Two consequences were accepted knowingly. First, **a compile is no longer byte-identical whether the pass ran or not** — only the routes that apply nothing (disabled, failed, empty, every finding rejected by validation) still are, and the content-hash cache keeps repeat compiles of the same recording stable. Second, `suggest_optional` retires the older *"branch steps compile only from observed states + human confirmation"* rule: the observed state is still required (the pass can only judge hints the recorder already produced — it never invents one), but the confirmation now happens after the fact in Human Review. `confirm_optional_interstitial` remains for hints the pass left alone; there is no un-confirm command, so reversing one means editing the step back by hand.
 
@@ -2078,6 +2083,7 @@ When step resolution fails to find the target (and it isn't an auth failure):
 
 - **`recorded_context`** — the target's neighbourhood at recording time: parent element, surrounding siblings, index among them, enclosing form. Compiled from signals the recorder already captured (`bridge.js::captureAncestors`'s sibling `context`, surviving into the saved skill via `build.py`'s `signals["context"]`), emitted per step into `recovery.json` by `_recorded_context_for_saved_step`, and rendered by `failure_response.js::recordedContextBlock`. A few hundred bytes; rides the existing sync; works offline. This is what turns "cannot find this button" into "it used to sit in the toolbar next to Export".
 - **`visual_ref`** — the recording-time screenshot, delivered by the artifact pass below.
+- **`phase`** (BUILD-25 stage e, 2026-09-10) — which part of the workflow this step belongs to (`login`/`navigate`/`act`/`verify`/`cleanup`), when the compiler's second-opinion pass labeled it. Carried onto `recovery.json` by `_build_saved_skill_recovery`, mapped onto the live step as `_phase` by `handlers.js::enrichStepsWithRecovery`, and rendered by `failure_response.js::phaseHintBlock` — a one-sentence prior ("this step is in the login phase") absent on any step the pass never ran on or didn't label.
 
 `failure_response.js` describes the reference image **only when it is genuinely attached**. Describing it unconditionally (which it did until 2026-09, against a file that never synced) invited the model to invent what it showed, in the one tier that decides where to click.
 
@@ -2793,7 +2799,7 @@ benched the vision-capable keys). See `TODO.md` CLOUD-11 (resolved) for the full
   distinct from a plain `None` return, which now means only a genuinely empty LLM answer. Every
   call site either lets this propagate (aborting the compile, matching existing `CloudUnreachable`
   handling) or catches it and degrades gracefully, depending on whether that call is on the
-  primary compile path — see `conxa_compile/llm/intent_llm.py`, `anchor_vision_llm.py`.
+  primary compile path — see `conxa_compile/llm/workflow_intent.py`, `anchor_vision_llm.py`.
 - Vision anchor batching (`prefetch_vision_anchors_batch` in `anchor_vision_llm.py`, wired from
   `compiler/build.py::_prefetch_vision_anchors` before the per-step loop): groups up to
   `llm_anchor_vision_batch_size` (4) steps' screenshots into one `anchor_vision_batch` call
@@ -2802,17 +2808,15 @@ benched the vision-capable keys). See `TODO.md` CLOUD-11 (resolved) for the full
   cache hit already, a batch call failure, a response the model didn't return in order) falls
   through to the unchanged single-image call. The vision proxy route's body limit was raised from
   1MB to `llm_vision_proxy_max_bytes` (8MB) to fit a batch of base64 JPEGs.
-  **Circuit breaker (2026-08-23):** `_prefetch_vision_anchors` first resolves every candidate
-  step's intent (`generate_intent_with_llm`) to build each vision prompt — and `intent_llm`'s own
-  cache only makes that resolution free while the proxy is *healthy*; a failed call caches nothing.
-  Under a degraded pool this used to serially retry every event's intent resolution before the
-  per-step loop even started — a 41-event compile against a cooled pool produced an 8-minute
-  silent stall (no `_compile_log` line) before "Compiling step 1" appeared. It now bails out of
-  prefetching entirely (falling straight through to `_build_step`'s unchanged per-step path) on
-  the **first** `CloudUnreachable`/`ProxyUnavailable`, and is separately capped by an explicit
-  60s wall-clock deadline (`_PREFETCH_VISION_ANCHORS_DEADLINE_SECS`) as a second line of defense.
-  A `_compile_log("vision_anchor_prefetch_start", ...)` line now marks the start of prefetching so
-  even a healthy-pool run (which can legitimately take tens of seconds) isn't silent.
+  **Intent resolution is now free (2026-09-09):** `_prefetch_vision_anchors` used to resolve each
+  candidate step's intent via a per-step LLM call (`generate_intent_with_llm`) to build its vision
+  prompt — a degraded provider pool made that call slow/failing per step, which is what motivated
+  the circuit-breaker design below. That per-step fallback is gone: intent now comes only from the
+  workflow-intent graph's token, or a blank string, both resolved with no network call. The
+  remaining safety net is an explicit 60s wall-clock deadline (`_PREFETCH_VISION_ANCHORS_DEADLINE_SECS`)
+  around the batch vision-anchor call itself. A `_compile_log("vision_anchor_prefetch_start", ...)`
+  line marks the start of prefetching so even a healthy-pool run (which can legitimately take tens
+  of seconds) isn't silent.
 - Compile-credit refund (`POST /api/v1/usage/compile/refund`, `entitlements.refund_compile_credit`):
   a compile aborts with the credit already committed (`handlers/compile.py` commits before any
   LLM call). An infra-class abort — `CloudUnreachable`/`ProxyUnavailable`, or a

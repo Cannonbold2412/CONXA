@@ -1214,27 +1214,43 @@ the new item below this one.
 
 ### BUILD-25 — Compile-time semantic pass: one model layer for the edge-case families hand-written rules keep losing to
 - **Category:** Builder
-- **Status (2026-09-09):** stages (a), (a2), (b), (b2) and (c) are done; (d) through (f) are open.
+- **Status (2026-09-10):** stages (a), (a2), (b), (b2), (c), (d) and (e) are done; only (f) is open.
   - **Shipped —** the reviewer edit log (`editor/edit_log.py`, one JSON line per changed field under
     `data/skills/{id}/edits.jsonl`, keyed on the new `compiler/step_key.py` identity key, never
     `step_index`); the eval harness (`conxa-cloud/scripts/eval_suggestions.py`); the second
     whole-workflow LLM call (`llm/workflow_semantics.py`, sited after `_deduplicate_input_bindings`
     and `_build_compile_report`, gated by `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED`, sharing the new
     `llm/llm_cache.py` that `workflow_intent.py` was migrated onto) deciding `rename_binding`,
-    `parameterize_literal`, `suggest_optional` and `label_phase`; the payload improvements of stage
-    (b2) — uncertainty routing off the per-step `confidence` the report already computes, plus
-    sibling-workflow binding-name context; and, in place of (c), the applier
-    (`compiler/second_opinion.py`) that **writes those findings onto the compiled steps**. Shapes
-    are documented in `docs/TRD.md` §7.1/§7.2 and `docs/Backend-Schema.md` §3.9/§3.10.
+    `parameterize_literal`, `suggest_optional`, `label_phase`, and now (stage d) `suggest_assertion`
+    and `flag_noise`; the payload improvements of stage (b2) — uncertainty routing off the per-step
+    `confidence` the report already computes, plus sibling-workflow binding-name context; and, in
+    place of (c), the applier (`compiler/second_opinion.py`) that **writes those findings onto the
+    compiled steps**. Shapes are documented in `docs/TRD.md` §7.1/§7.2 and `docs/Backend-Schema.md`
+    §3.9/§3.9a/§3.10.
   - ~~**(c) Human Edit accept/reject UI**~~ — **dropped 2026-09-09.** The pass now applies its
     findings instead of offering them, and Human Review is itself the gate: a reviewer opens the
     workflow, sees `sender_email` rather than a chip offering to rename `email_2`, and edits a wrong
     call the same way they edit any other compiler output. Nothing in the renderer marks a
     second-opinion change — no badge, no pane, no provenance. **Zero renderer files changed.** What
     this cost is written down in "Risk / the line that moved" below, because it is not free.
-  - **Open —** (d) `suggest_assertion` and `flag_noise`; (e) a reader for `label_phase` (the pass
-    writes it, nothing consumes it); (f) `group_steps`, deliberately last because it carries the
-    steps↔events alignment risk described below.
+  - ~~**(d) `suggest_assertion` and `flag_noise`**~~ — **done 2026-09-10.** `suggest_assertion`
+    additively appends one advisory (`required=False`) assertion, restricted to
+    `text_present`/`text_absent`/`url_changed`/`url_pattern`/`state_changed` (never a selector-bearing
+    type — that `target` is a raw Playwright selector this pass may never write) and grounded in text
+    that already appears somewhere in the workflow's own payload, never invented. `flag_noise`'s
+    destructive-kind question resolved as **archive, not delete**: the step is removed from what ships
+    but its full data is saved under `compile_report["archived_steps"]` (`compiler/second_opinion.py::
+    archive_flagged_steps`) so it can be restored later — never a silent, unrecoverable loss of a
+    step's IdentityBundle. Gated on the recorder's own `post_condition.classified_effect == "none"`,
+    never the model's opinion alone.
+  - ~~**(e) a reader for `label_phase`**~~ — **done 2026-09-10.** Wired into the Tier B recovery
+    prompt only (`runtime/app/failure_response.js::phaseHintBlock`, fed by `handlers.js::
+    enrichStepsWithRecovery`'s `_phase`) — the smallest real consumer, since the agent-recovery
+    payload already carries full step data. The other three listed consumers (BUILD-27 skill
+    descriptions, BUILD-26 review triage, EXEC-32 `resume_from`) remain separate, untouched backlog
+    items.
+  - **Open —** (f) `group_steps`, deliberately last because it carries the steps↔events alignment
+    risk described below.
 
 - **Description:** several compiler passes have converged on one failure shape — a hand-written rule
   with hand-tuned constants that works on the recordings it was written against, breaks on the next
@@ -1317,9 +1333,9 @@ the new item below this one.
   | `suggest_optional` | family 5 | a required step becomes a best-effort branch; no un-confirm command, so undoing means editing the step back by hand | applied (b/c) |
   | `rename_binding` | family 2 | a worse name, edited at review | applied (b/c) |
   | `parameterize_literal` | family 2 | a spurious input the shipped skill demands of the end customer, edited at review | applied (b/c) |
-  | `label_phase` | cross-cutting (see below) | none — nothing reads it | written (b/c); no reader yet (e) |
-  | `suggest_assertion` | family 6 | none — assertions only read | open (d) |
-  | `flag_noise` | families 1 and 4 | a real step deleted | open (d) |
+  | `label_phase` | cross-cutting (see below) | none — advisory only | written (b/c); read by the Tier B recovery prompt (e) |
+  | `suggest_assertion` | family 6 | none — always advisory (`required=False`), never a selector type | applied (d) |
+  | `flag_noise` | families 1 and 4 | none — archived, never a silent unrecoverable delete | applied (d), archive-not-delete |
   | `group_steps` | family 3 | **steps↔events desync** | open (f), deliberately last |
 
   Two of these need their reasoning stated rather than inferred:
@@ -1334,8 +1350,10 @@ the new item below this one.
     *login / navigate / act / verify / cleanup*, and that one annotation feeds four things already
     wanted independently: skill and input descriptions (**BUILD-27**), Human Review triage
     (**BUILD-26**), sensible resume points (`resume_from`, **EXEC-32**), and a materially better
-    recovery prompt — "this step is in the login phase" is a strong prior for the agent tier.
-    Labelling only, and deliberately distinct from `group_steps`: nothing downstream *acts* on a phase
+    recovery prompt — "this step is in the login phase" is a strong prior for the agent tier. **The
+    recovery-prompt reader shipped 2026-09-10** (stage e, `failure_response.js::phaseHintBlock`);
+    BUILD-27/BUILD-26/EXEC-32 remain separate, unimplemented consumers of the same label. Labelling
+    only, and deliberately distinct from `group_steps`: nothing downstream *acts* on a phase
     label, so it carries none of the alignment risk.
 
 - **Which kind of model — and what is explicitly not proposed:**
@@ -1463,25 +1481,25 @@ the new item below this one.
   (a2) the eval harness beside it — *done*; (b) the second LLM call into `compile_report`, dark,
   emitting `suggest_optional` first then `rename_binding` / `parameterize_literal` — *done*; (b2)
   uncertainty routing and sibling-workflow context in the payload — *done*; (c) ~~accept/reject chips
-  in Human Edit~~ — *dropped; the findings are applied and Human Review is the gate*; **(d) add
-  `suggest_assertion`, then `flag_noise` — note `flag_noise` deletes a step, so it wants its own
-  thought about whether "applied" is still the right posture for a destructive kind; (e) consume
-  `label_phase` in the UI; (f) only then consider `group_steps`.** Per-kind model routing sits after
-  (d), once the override-rate baseline is real.
+  in Human Edit~~ — *dropped; the findings are applied and Human Review is the gate*; (d)
+  `suggest_assertion` and `flag_noise` — *done, `flag_noise` resolved as archive-not-delete*; (e)
+  consume `label_phase` — *done, in the Tier B recovery prompt*; **(f) only now consider
+  `group_steps`.** Per-kind model routing sits after (f)'s eval-harness baseline is real.
 - **Complexity:** L overall, staged — (a) S, (a2) S, (b) S–M, (b2) S, (c) S as built (an applier
   plus docs; the M-sized editor UI it replaced was never written), (d) S, (e) S, (f) M–L with the
   alignment risk above. Each stage is worth doing on its own merits.
 - **Success criteria:** a workflow with two same-typed fields arrives in Human Review already
   carrying distinguishing names derived from workflow context rather than `_2` suffixes; what the
-  pass wrote is confined to `input_binding`, `value` placeholders, `phase` and the `try_dismiss`
-  branch — a diff against the same compile with the pass disabled shows no selector, identity-bundle
-  or assertion difference; a recorder-flagged stochastic step arrives as a `try_dismiss` branch, and
-  a hint the pass left alone can still be confirmed through the existing gate; every reviewer edit is
-  logged with the before/after pair, keyed on a stable identity rather than a step position that
-  renumbers; the eval harness reports an override rate so a prompt change can be shown to help or
-  hurt; a compile with the pass disabled or the provider pool drained produces a package identical to
-  one that never ran it; and the median number of manual edits per compiled workflow is measurable
-  and demonstrably lower than the pre-pass baseline.
+  pass wrote is confined to `input_binding`, `value` placeholders, `phase`, the `try_dismiss` branch,
+  an advisory text/URL/state assertion, and (archived, never deleted outright) a flagged no-op step —
+  a diff against the same compile with the pass disabled shows no selector or identity-bundle
+  difference; a recorder-flagged stochastic step arrives as a `try_dismiss` branch, and a hint the
+  pass left alone can still be confirmed through the existing gate; every reviewer edit is logged
+  with the before/after pair, keyed on a stable identity rather than a step position that renumbers;
+  the eval harness reports an override rate so a prompt change can be shown to help or hurt; a compile
+  with the pass disabled or the provider pool drained produces a package identical to one that never
+  ran it; and the median number of manual edits per compiled workflow is measurable and demonstrably
+  lower than the pre-pass baseline.
 
 ### BUILD-26 — Human Review Copilot: a conversational repair agent inside Human Edit, driving the editor commands that already exist
 - **Category:** Builder
