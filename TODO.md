@@ -43,10 +43,10 @@ Counts below are computed straight from the section headers in this file (unique
 |---|---|---|---|
 | P0 — Critical / Time-Sensitive | 11 | 21 | 10 |
 | P1 — Blocking / Foundational | 5 | 8 | 3 |
-| P2 — High Value, Do Soon (incl. Discovered Items) | 32 | 37 | 5 |
+| P2 — High Value, Do Soon (incl. Discovered Items) | 35 | 40 | 5 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
 | P4 — Low Urgency, Opportunistic | 31 | 39 | 8 |
-| **Total** | **102** | **127** | **25** |
+| **Total** | **105** | **130** | **25** |
 
 ---
 
@@ -820,7 +820,7 @@ the new item below this one.
 - **Complexity:** L — approve/reject is the small half and reuses EXEC-13's machinery almost wholesale; judgement input needs the typed input contract and schema validation; hand-over is the genuinely new part and carries the real risk (yielding and reclaiming a live page mid-run).
 - **Success criteria:** a workflow authored with each of the three review shapes compiles, publishes, and replays on a customer machine; at each review point the run pauses and the person is prompted in the browser the runtime is driving, with the page in the state the run left it; a judgement value supplied by the person is bound as a named input and demonstrably changes a later step's behaviour; a rejected approval aborts cleanly with an audit record; a hand-over returns control to the run with the page re-validated before the next step acts; a review that is never answered times out per its configured `on_failure` policy and leaks no browser; the workflow remains testable in the Build Studio sandbox; and telemetry distinguishes a planned review from a recovery-triggered handoff.
 
-## P2 — High Value, Do Soon (29 remaining / 34 total)
+## P2 — High Value, Do Soon (32 remaining / 37 total)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1212,125 +1212,572 @@ the new item below this one.
 - **Complexity:** n/a — founder/maintainer decisions, not engineering tasks. Each one should end with a written position in `docs/PRD.md` §14.5 replacing the open question.
 - **Success criteria:** each of the six questions has a recorded answer (or an explicit, dated deferral with a reason) in `docs/PRD.md` §14.5, and any backlog item gated on one names which.
 
-### BUILD-25 — Compile-time semantic pass: a learned/LLM layer for the four edge-case families that hand-written rules keep losing to
+### BUILD-25 — Compile-time semantic pass: one model layer for the edge-case families hand-written rules keep losing to
 - **Category:** Builder
-- **Description:** Four separate compiler passes have converged on the same failure shape: a
-  hand-written rule with hand-tuned constants that works on the recordings it was written against,
-  breaks on the next unfamiliar widget or page, and leaves the difference for a human to fix in
-  Human Review. Adding another constant or another branch has stopped paying — in each case the
-  rule is not too *simple*, it is looking at **too little of the recording to decide correctly**.
-  The proposal is to add one compile-time model pass that sees the whole workflow at once and
-  emits *suggestions*, leaving every existing deterministic pass in place. The four problems:
+- **Status (2026-09-09):** stages (a), (a2), (b), (b2) and (c) are done; (d) through (f) are open.
+  - **Shipped —** the reviewer edit log (`editor/edit_log.py`, one JSON line per changed field under
+    `data/skills/{id}/edits.jsonl`, keyed on the new `compiler/step_key.py` identity key, never
+    `step_index`); the eval harness (`conxa-cloud/scripts/eval_suggestions.py`); the second
+    whole-workflow LLM call (`llm/workflow_semantics.py`, sited after `_deduplicate_input_bindings`
+    and `_build_compile_report`, gated by `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED`, sharing the new
+    `llm/llm_cache.py` that `workflow_intent.py` was migrated onto) deciding `rename_binding`,
+    `parameterize_literal`, `suggest_optional` and `label_phase`; the payload improvements of stage
+    (b2) — uncertainty routing off the per-step `confidence` the report already computes, plus
+    sibling-workflow binding-name context; and, in place of (c), the applier
+    (`compiler/second_opinion.py`) that **writes those findings onto the compiled steps**. Shapes
+    are documented in `docs/TRD.md` §7.1/§7.2 and `docs/Backend-Schema.md` §3.9/§3.10.
+  - ~~**(c) Human Edit accept/reject UI**~~ — **dropped 2026-09-09.** The pass now applies its
+    findings instead of offering them, and Human Review is itself the gate: a reviewer opens the
+    workflow, sees `sender_email` rather than a chip offering to rename `email_2`, and edits a wrong
+    call the same way they edit any other compiler output. Nothing in the renderer marks a
+    second-opinion change — no badge, no pane, no provenance. **Zero renderer files changed.** What
+    this cost is written down in "Risk / the line that moved" below, because it is not free.
+  - **Open —** (d) `suggest_assertion` and `flag_noise`; (e) a reader for `label_phase` (the pass
+    writes it, nothing consumes it); (f) `group_steps`, deliberately last because it carries the
+    steps↔events alignment risk described below.
 
-  1. **De-duplication / leftover noise.** `conxa_compile/pipeline/dedupe.py` has exactly three
-     rules — drop a `focus` superseded by an action on the same element within the next
-     `_FOCUS_LOOKAHEAD = 3` events; collapse the click/type noise bracketing a `select` within
-     `_SELECT_NOISE_LOOKAROUND = 2` events either side; drop consecutive identical scrolls. Both
-     lookaround constants were derived from one react-datepicker recording (see that file's own
-     docstring). Everything outside those three shapes — a stray click that opened nothing, a
-     mis-click and correction, an accidental scroll-then-scroll-back — survives into the compiled
-     workflow for a reviewer to delete by hand. The recorder already captures the evidence needed
-     to judge this (`state_change.dom_diff`, `post_condition.classified_effect`, including the
-     literal value `"none"`), and no pass currently uses it for noise removal.
-  2. **Hardcoded values that should be variables.** `conxa_compile/compiler/input_binding.py`
-     walks a fixed ladder — `label_text` → `placeholder` → `aria_label` → value regex (email /
-     phone / URL / ISO date / digits) → `semantic.input_type`. Every signal on that ladder is
-     **local to a single field**, so at the moment it names a field it cannot see any other field
-     in the workflow. Two email inputs therefore cannot become `sender_email` / `recipient_email`;
-     they collide, and `build.py::_deduplicate_input_bindings` papers over the collision by
-     appending `_2`, `_3`. Separately, a typed value the ladder finds no name for stays frozen as
-     the literal recorded text (a customer name, an amount, a reference number) and the reviewer
-     has to notice and bind each one manually. Deciding *whether* a value should vary at all needs
-     the workflow's purpose, which no field-local signal carries. **This is the clearest case of
-     the four: no additional local rule can fix it, because the required information is
-     workflow-global.**
-  3. **Date pickers — too many of them.** `conxa_compile/compiler/date_picker.py` is 378 lines
-     handling one widget family, and its own docstring enumerates the vendors it was built
-     against (MUI, react-datepicker, flatpickr, Ant Design, jQuery UI). That enumeration is the
-     tell: widget #6 needs a code change, a release, and until then a reviewer stitching raw
-     day-cell clicks together by hand. Two live instances of exactly this are already tracked
-     below as **COMPILE-1** (an orphaned raw day-click when the same field is picked twice) and
-     **COMPILE-2** (`_findAnchoredField` misses react-datepicker's DOB field, silently degrading
-     `typed_first` to `grid_only`). Both are real bugs; neither is the last one of its kind.
-  4. **Hover-step noise.** Hover capture is already gated three ways and still over-produces:
-     `bridge.js`'s smart-hover path is opt-in per recording, waits a `hover_dwell_ms = 400`
-     dwell, and diffs a before/after actionable-element signature (limits 160 / 60 / 80) to decide
-     whether the hover revealed anything; `pipeline/run.py::_drop_non_actionable_hover_events`
-     then drops any hover whose bounding box is under 2px. What survives is still noisy, and the
-     consumer makes it worse: `compiler/action_semantics.py::detect_hover_precondition` only ever
-     inspects the **immediately preceding** event, so a mouse traverse that fires several hovers
-     before the click contributes one hover-chain hint and leaves the rest as standalone steps.
-     Related but distinct from **EXEC-29a** (hover-reveal steps failing at live replay) — that is
-     a replay problem, this is a "the recording contains steps that were never intentional" problem.
+- **Description:** several compiler passes have converged on one failure shape — a hand-written rule
+  with hand-tuned constants that works on the recordings it was written against, breaks on the next
+  unfamiliar widget or page, and leaves the difference for a human to fix in Human Review. Adding
+  another constant or another branch has stopped paying, because in every case the rule is not too
+  *simple*: it is looking at **too little of the recording to decide correctly**. The fix is one
+  compile-time model pass that sees the whole workflow at once and emits *suggestions*, leaving every
+  existing deterministic pass exactly where it is.
 
-- **What the model would actually do:** annotate, never rewrite. Concretely three outputs, emitted
-  into `compile_report` as a suggestions list (`{step_index, kind, current, proposed, why}`) that a
-  reviewer accepts or rejects in Human Edit:
-  - `rename_binding` / `parameterize_literal` — problem 2, using whole-workflow context.
-  - `flag_noise` — problem 1 and 4, using the already-recorded "did this action change anything"
-    evidence.
-  - `group_steps` — problem 3, *labelling* a run of steps as one semantic unit so the existing
-    `collapse_date_picker_runs` executor knows where to look, rather than teaching the collapse
-    pass about a sixth vendor. **Deliberately last** — grouping implies collapsing, which touches
-    the steps↔events 1:1 alignment that `date_picker.py` and `upload_binding.py` both depend on
-    and that has already produced one silent desync bug (see BUILD-22 / BUILD-23).
-- **Which kind of model — and what is NOT proposed:**
-  - **Prompted LLM pass (recommended start).** The vehicle already exists:
-    `llm/workflow_intent.py::build_workflow_intent_graph` is already one call per compile with a
+  **The six problem families.** The first four were found together; families 5 and 6 were added
+  2026-09-09 and are the same shape, so this list is explicitly not assumed complete.
+
+  1. **De-duplication and leftover noise.** `conxa_compile/pipeline/dedupe.py` has three rules — drop
+     a `focus` superseded by an action on the same element within `_FOCUS_LOOKAHEAD = 3` events;
+     collapse the click/type noise bracketing a `select` within `_SELECT_NOISE_LOOKAROUND = 2` events
+     either side; drop consecutive identical scrolls. Both lookaround constants were derived from a
+     single react-datepicker recording (that file's own docstring says so). Anything outside those
+     three shapes — a stray click that opened nothing, a mis-click and its correction, an accidental
+     scroll-then-scroll-back — survives into the compiled workflow for a reviewer to delete by hand.
+     The recorder already captures the evidence needed to judge this (`state_change.dom_diff`,
+     `post_condition.classified_effect`, including the literal value `"none"`) and no pass currently
+     reads it for noise removal.
+  2. **Hardcoded values that should be variables.** `conxa_compile/compiler/input_binding.py` walks a
+     fixed ladder — `label_text` → `placeholder` → `aria_label` → value regex (email, phone, URL, ISO
+     date, digits) → `semantic.input_type`. Every signal on that ladder is **local to a single
+     field**, so at the moment it names a field it cannot see any other field in the workflow. Two
+     email inputs therefore cannot become `sender_email` and `recipient_email`; they collide, and
+     `build.py::_deduplicate_input_bindings` papers over it with `_2`, `_3`. Separately, a typed value
+     the ladder finds no name for stays frozen as the literal recorded text — a customer name, an
+     amount, a reference number — and the reviewer must notice and bind each one by hand. Deciding
+     *whether* a value should vary at all requires the workflow's purpose, which no field-local signal
+     carries. **This is the clearest case of the six: no additional local rule can fix it, because the
+     required information is workflow-global.**
+  3. **Date pickers, and too many of them.** `conxa_compile/compiler/date_picker.py` is 378 lines
+     handling one widget family, and its docstring enumerates the vendors it was built against (MUI,
+     react-datepicker, flatpickr, Ant Design, jQuery UI). That enumeration is the tell: widget #6
+     needs a code change and a release, and until then a reviewer stitches raw day-cell clicks
+     together by hand. Two live instances are already tracked as **COMPILE-1** (an orphaned raw
+     day-click when the same field is picked twice) and **COMPILE-2** (`_findAnchoredField` misses
+     react-datepicker's DOB field, silently degrading `typed_first` to `grid_only`). Both are real
+     bugs; neither is the last of its kind.
+  4. **Hover-step noise.** Hover capture is gated three ways and still over-produces: `bridge.js`'s
+     smart-hover path is opt-in per recording, waits a `hover_dwell_ms = 400` dwell, and diffs a
+     before/after actionable-element signature (limits 160 / 60 / 80) to decide whether the hover
+     revealed anything; `pipeline/run.py::_drop_non_actionable_hover_events` then drops any hover
+     whose bounding box is under 2px. What survives is still noisy, and the consumer makes it worse —
+     `compiler/action_semantics.py::detect_hover_precondition` inspects only the **immediately
+     preceding** event, so a mouse traverse that fires several hovers before a click contributes one
+     hover-chain hint and leaves the rest as standalone steps. Related to but distinct from
+     **EXEC-29a**: that is hover-reveal steps failing at live replay, this is a recording that
+     contains steps which were never intentional.
+  5. **Optional and stochastic steps — the cheapest family, and the one shipped first.** The recorder
+     already classifies steps it saw behave non-deterministically: `build.py` (~line 1545) carries
+     `optionality == "stochastic"` and the recorder's `branch_hint` onto the step **advisory only** —
+     it changes no compiled behaviour, and only a human confirming in Human Edit
+     (`editor/workflow_mutations.py::confirm_optional_interstitial`) turns it into a real
+     `try_dismiss` branch. So a hint stream already exists with no automated judgment behind it, and
+     the human approval gate already exists too, which makes this the one suggestion kind needing no
+     new approval UI. The decision is workflow-global by nature: *"this consent banner appeared in 1
+     of your 3 recordings of this app and never after login — almost certainly optional"* is not
+     something a field-local or single-recording rule can conclude.
+  6. **Assertions whose real post-condition lives downstream.** `compiler/validation_planner.py` plans
+     a step's success condition from FINAL_INTENT plus policy plus state diff, all evaluated at that
+     step. But a step's true post-condition is frequently only visible later: if step 13 clicks
+     something that exists only after step 12 saved, then step 12's real assertion is *that element
+     appearing*. A per-step planner structurally cannot see it. Overlaps **BUILD-26**'s
+     assertion-coverage audit, which is the review-time half of the same gap; this is the
+     compile-time half, and the two must share one suggestion format.
+
+- **What the pass writes.** `llm/workflow_semantics.py` decides; `compiler/second_opinion.py`
+  applies. Each finding is `{step_key, kind, current, proposed, why}`, and the ones actually applied
+  are recorded in `compile_report["second_opinion"]` as an audit trail for the compile log — nothing
+  in Human Edit reads it. The four live kinds map onto exactly four surfaces of a compiled step:
+  `input_binding`, `{{placeholder}}` tokens inside `value`, `phase`, and the `try_dismiss`
+  `branch`/`intent`/`recovery`. Never `target`, `identity_bundle`, `compiled_selectors`,
+  `validation`, or the frame/tab chain.
+
+  | Kind | Solves | Risk if wrong | Status |
+  |---|---|---|---|
+  | `suggest_optional` | family 5 | a required step becomes a best-effort branch; no un-confirm command, so undoing means editing the step back by hand | applied (b/c) |
+  | `rename_binding` | family 2 | a worse name, edited at review | applied (b/c) |
+  | `parameterize_literal` | family 2 | a spurious input the shipped skill demands of the end customer, edited at review | applied (b/c) |
+  | `label_phase` | cross-cutting (see below) | none — nothing reads it | written (b/c); no reader yet (e) |
+  | `suggest_assertion` | family 6 | none — assertions only read | open (d) |
+  | `flag_noise` | families 1 and 4 | a real step deleted | open (d) |
+  | `group_steps` | family 3 | **steps↔events desync** | open (f), deliberately last |
+
+  Two of these need their reasoning stated rather than inferred:
+
+  - **`group_steps` is last because grouping implies collapsing.** It *labels* a run of steps as one
+    semantic unit so the existing `collapse_date_picker_runs` executor knows where to look, instead of
+    teaching the collapse pass about a sixth vendor. But collapsing touches the steps↔events 1:1
+    alignment that `date_picker.py` and `upload_binding.py` both depend on, and that has already
+    produced one silent desync bug (**BUILD-22** / **BUILD-23**).
+  - **`label_phase` is worth its own kind for what it unlocks elsewhere.** Every step in a compiled
+    package is currently equal. A model with the whole workflow in view can label runs of steps as
+    *login / navigate / act / verify / cleanup*, and that one annotation feeds four things already
+    wanted independently: skill and input descriptions (**BUILD-27**), Human Review triage
+    (**BUILD-26**), sensible resume points (`resume_from`, **EXEC-32**), and a materially better
+    recovery prompt — "this step is in the login phase" is a strong prior for the agent tier.
+    Labelling only, and deliberately distinct from `group_steps`: nothing downstream *acts* on a phase
+    label, so it carries none of the alignment risk.
+
+- **Which kind of model — and what is explicitly not proposed:**
+  - **Prompted LLM pass — the chosen vehicle, and it already existed.**
+    `llm/workflow_intent.py::build_workflow_intent_graph` was already one call per compile with a
     whole-workflow view, a compact payload (`build.py::_intent_graph_inputs` — action, target text,
     URL, heuristic hint; no DOM, no screenshots), local caching keyed on a content hash, and a
-    graceful empty-on-failure path back to the rules-only route. Bindings do not exist yet at the
-    point that call runs (it fires *before* the per-step loop), so the naming pass wants to be a
-    second call sited after `build.py::_deduplicate_input_bindings`, reusing the same payload shape.
-    No new prompt infrastructure, no new cost line, no new failure mode.
-  - **Fine-tuned model — not yet, and blocked on data we are not collecting.** The supervised pair
-    is (compiled package → the human-corrected package), and **the Human Review before/after diff
-    is not logged anywhere today**. Start logging it regardless of whether a fine-tune ever
-    happens: it is the eval set for the prompt above, and without it there is no way to tell
-    whether a prompt change made suggestions better or worse. This is the compile-time twin of
-    the runtime recovery-data capture already tracked as step 2 of **PROD-19**, and it has the
-    same property — a month not captured is a month of training data permanently lost.
-  - **Classical ML / neural net over hand-built features — not recommended.** The features that
-    would matter here are exactly the semantic ones (what is this workflow *for*, is this value a
-    constant or a parameter) that a small feature-engineered model cannot see and a language model
-    reads natively. Revisit only if the LLM pass proves too slow or too expensive per compile.
-- **Why required:** Human Review is currently the only thing standing between a compiled workflow
-  and these four defects, and it is manual, unmeasured, and repeated on every single recording. It
-  is the largest remaining per-workflow labour cost in the product, and it scales linearly with
-  customers.
+    graceful empty-on-failure path back to the rules-only route. Bindings do not exist at the point
+    that call runs (it fires *before* the per-step loop), so the semantic pass is a second call sited
+    after `build.py::_deduplicate_input_bindings`, reusing the same payload shape. No new prompt
+    infrastructure, no new cost line, no new failure mode.
+  - **Fine-tuned model — not yet, and blocked on data.** The supervised pair is (compiled package →
+    human-corrected package), and that before/after diff was logged nowhere until stage (a). Capture
+    it regardless of whether a fine-tune ever happens: it is the eval set for the prompt above, and
+    without it there is no way to tell whether a prompt change made suggestions better or worse. This
+    is the compile-time twin of the runtime recovery-data capture tracked as step 2 of **PROD-19**,
+    with the same property — a month not captured is a month of training data permanently lost.
+  - **Classical ML or a neural net over hand-built features — not recommended.** The features that
+    matter here are exactly the semantic ones (what is this workflow *for*; is this value a constant
+    or a parameter) that a feature-engineered model cannot see and a language model reads natively.
+    Revisit only if the LLM pass proves too slow or too expensive per compile.
+
+- **How the pass is fed** — two cheap changes, both shipped in (b2), both of which raise its ceiling:
+  - **Sibling-workflow context.** `_intent_graph_inputs` described one workflow. Adding a compact
+    summary of what the workspace's *other* workflows for the same domain named their bindings turns
+    family 2 from a guess into a lookup — `customer_email` because four other workflows already call
+    it that, not `email_2`. This is the compile-time twin of **BUILD-26**'s cross-workflow consistency
+    check, and the compile-time version is strictly better because it fixes the name before a reviewer
+    ever sees it.
+  - **Routing by the compiler's own uncertainty.** `confidence/uncertainty.py` already computes
+    `is_top_two_ambiguous` and `is_score_below`, so the compiler already knows which steps it was
+    least sure about. Handing the model that ranked set as "look here first", rather than an
+    undifferentiated step list, makes the call cheaper, faster and more precise — the difference
+    between a pass that scales to a 40-step workflow and one that does not.
+
+- **Multi-model routing per suggestion kind (open; sequenced after a precision baseline exists).**
+  `workflow_semantics.py`'s call is text-only — no screenshots, no DOM — which makes this a
+  cost-routing problem, not a capability problem, and the kinds do not all need the same model.
+  - **Cheap tier:** `suggest_optional` and `flag_noise` are the highest-volume, lowest-risk kinds.
+    They fire on ordinary shape (a stochastic step, a no-op action) and the cost of a wrong suggestion
+    is a reviewer clicking reject once. Route them to the cheapest text model in the pool (Groq's
+    Llama tier already in `router.py`, or a Kimi text-only call once added). This is most of the call
+    volume at compile time and the one place a cheaper model directly moves the cost-per-compile
+    number in `docs/cost_model.md`.
+  - **Strong tier:** `rename_binding`, `parameterize_literal` and `group_steps` need the harder
+    judgment — workflow-global naming, and for `group_steps` the alignment call flagged above. Keep
+    these on the strongest available text model regardless of cost. A wrong `group_steps` proposal is
+    the one that can desync steps↔events, which is exactly where "optimise for precision, not recall"
+    must not be traded away for a cheaper model.
+  - **Mechanism, not new infrastructure.** `conxa_core.llm`'s router is already keyed by task name
+    (see `llm/client.py`'s task clients); this needs only a model override per suggestion kind at the
+    call site in `workflow_semantics.py`, the same pattern `router.py` uses to pool Groq, Google AI
+    Studio and NVIDIA NIM. Adding a provider is a router registration plus a model-name string.
+  - **Sequencing.** Do this only once the eval harness has a baseline from the single-model pass.
+    Splitting models before there is a precision number to compare against makes a prompt regression
+    impossible to attribute.
+
+- **Three design requirements that are cheap now and unfixable later:**
+  - **Suggestions must be keyed on something stable, not `step_index`.** Inserting one step renumbers
+    every step after it — the positional fragility that already produced one silent desync bug
+    (**BUILD-22** / **BUILD-23**). Accept a suggestion, recompile, and a `step_index`-keyed log can no
+    longer say which step it applied to. Key on the step's identity fingerprint instead (this is what
+    `compiler/step_key.py` exists for). Getting this wrong does not break the pass; it quietly ruins
+    the dataset the pass exists to produce.
+  - **Ship the eval harness alongside the log, not after it.** The before/after log is the dataset; a
+    replayable set of N recordings with known human corrections is the *scoreboard*. Without the
+    second, "did that prompt change help?" has no answer and iteration becomes guesswork.
+  - **Failure, cost and silence behaviour must be stated, not inferred.** This is a second LLM call
+    per compile and follows `llm/workflow_intent.py`'s pattern exactly: local cache keyed on a content
+    hash, graceful empty-on-failure back to the rules-only route, compile completes byte-identically
+    when the provider pool is drained. Equally, **"no findings" must be a first-class and common
+    outcome.** A pass that always finds something to write is worse than one that usually finds
+    nothing — now literally so, since what it finds is applied rather than offered. Optimise for
+    precision, not recall; `_validate_findings`'s six gates are the trust boundary and every one is
+    load-bearing.
+
+- **Explicitly out of scope — decided, so nobody adds them by analogy:**
+  - **Waits and timing** (`compiler/intent_validation_rules.py`, `compiler/wait_for_shape.py`). These
+    look like the same shape of problem and are not. Timing is where a policy beats a guess, and a
+    model proposing wait conditions produces intermittently-failing workflows — the worst failure mode
+    available, because it presents as a flaky site rather than a bad compile.
+  - **Step reordering** (`compiler/dependencies.py`). Ordering is execution semantics, not meaning. A
+    wrong reorder also fails in a way that looks like a site problem rather than a compiler problem,
+    and the premise of this item is that the model annotates meaning and never writes the program.
+
+- **Why required:** Human Review is the only thing standing between a compiled workflow and these six
+  defects, and it is manual, unmeasured, and repeated on every single recording. It is the largest
+  remaining per-workflow labour cost in the product, and it scales linearly with customers.
 - **Business value:** the vendor's time-to-first-working-skill is the whole onboarding funnel. Every
   minute a person spends renaming `email_2` or deleting stray hover steps is a minute where the
   product looks like a recording tool with homework attached rather than a compiler. It is also the
   single most visible quality signal in a demo.
 - **Technical value:** stops the "add another constant per widget" treadmill in four places at once,
-  and — because the suggestions are a diff a human accepts or rejects — produces the labelled
-  correction data that every later version of this (including a fine-tune) needs, as a side effect
-  of normal use.
-- **Risk / the line to hold:** the model **proposes**, the reviewer **disposes**. Suggestions must
-  never silently mutate the compiled `SkillPackage`; the package must be byte-identical whether the
-  call succeeds, fails, or is disabled. That keeps the existing *"LLM does not write selector
-  strings on the primary compile path"* invariant intact in spirit rather than only in letter, and
-  it means the pass can ship dark (suggestions logged, no UI) before any editor work is done.
-  Element addresses, identity bundles, assertions and the collapse machinery all stay fully
-  deterministic — the model annotates meaning, it does not write the program.
+  and — because each suggestion is a diff a human accepts or rejects — produces the labelled
+  correction data that every later version of this (including a fine-tune) needs, as a side effect of
+  normal use.
+- **Risk / the line that moved (2026-09-09).** The original line was "the model **proposes**, the
+  reviewer **disposes**" — the package byte-identical whether the call succeeded, failed, or was
+  disabled. That line was deliberately moved: the model now writes, and **Human Review disposes**.
+  Four things this costs, stated so nobody rediscovers them as surprises:
+  1. **Two compiles of the same recording can differ.** The content-hash cache keeps repeat compiles
+     of the same recording stable, but a drained provider pool produces the rules-only package, not
+     the same one. Only the routes that apply *nothing* are still byte-identical.
+  2. **`suggest_optional` retires "branch steps compile only from observed states + human
+     confirmation."** The observed state is still required — the pass can only judge a hint the
+     recorder already produced, never invent one — but the confirmation now happens after the fact.
+     There is no un-confirm command in the editor.
+  3. **A wrong `parameterize_literal` reaches the customer** as an input the shipped skill demands.
+     Visible and fixable in Human Review, but it is real behaviour, not annotation.
+  4. **`suggest_optional` can shift `structural_fingerprint`**, since it rewrites `intent` and the
+     fingerprint covers the first ≤5 interactive steps' intents. Drift detection sees a different
+     landmark set.
+
+  What did **not** move: element addresses, identity bundles, assertions and the collapse machinery
+  all stay fully deterministic. The *"LLM does not write selector strings on the primary compile
+  path"* invariant holds literally — see CLAUDE.md, where the carve-out is now written down rather
+  than left for the letter of the rule to cover.
 - **Dependencies:** none blocking. Shares the LLM proxy and cost model with the existing compile
-  calls. Related: **COMPILE-1** / **COMPILE-2** (two live instances of problem 3), **EXEC-29a**
-  (the replay-side half of problem 4), **BUILD-22** / **BUILD-23** (the alignment fragility that
-  makes `group_steps` the risky output), **PROD-19** step 2 (the runtime-side twin of the data
-  capture above).
-- **Suggested order:** (a) log the Human Review before/after diff **now** — cheap, independent of
-  everything else, and time-sensitive; (b) ship the second LLM call emitting `rename_binding` /
-  `parameterize_literal` suggestions into `compile_report`, dark; (c) surface accept/reject chips in
-  Human Edit and measure acceptance rate against the log from (a); (d) add `flag_noise`; (e) only
-  then consider `group_steps`.
-- **Complexity:** L overall, but staged — (a) is S, (b) is S–M (one new call reusing an existing
-  payload builder and cache pattern), (c) is M (editor UI), (d) is S, (e) is M–L and carries the
-  alignment risk above. Steps (a) and (b) are each worth doing on their own merits.
-- **Success criteria:** a compile emits suggestions without ever changing the compiled package;
-  a workflow with two same-named fields yields distinguishing suggested names derived from
-  workflow context rather than `_2` suffixes; every accept/reject is logged with the before/after
-  pair; and the median number of manual edits a reviewer makes per compiled workflow is measurable
+  calls. Related: **COMPILE-1** and **COMPILE-2** (two live instances of family 3), **EXEC-29a** (the
+  replay-side half of family 4), **BUILD-22** / **BUILD-23** (the alignment fragility that makes
+  `group_steps` is the risky output), **BUILD-26** (the review-time twin — note it still proposes an
+  accept/reject diff, which is right for a conversational agent acting on a reviewer's request and
+  deliberately unlike this pass), **PROD-19** step 2 (the runtime-side twin of the data capture).
+- **Suggested order:** (a) log the Human Review before/after diff, keyed on step identity — *done*;
+  (a2) the eval harness beside it — *done*; (b) the second LLM call into `compile_report`, dark,
+  emitting `suggest_optional` first then `rename_binding` / `parameterize_literal` — *done*; (b2)
+  uncertainty routing and sibling-workflow context in the payload — *done*; (c) ~~accept/reject chips
+  in Human Edit~~ — *dropped; the findings are applied and Human Review is the gate*; **(d) add
+  `suggest_assertion`, then `flag_noise` — note `flag_noise` deletes a step, so it wants its own
+  thought about whether "applied" is still the right posture for a destructive kind; (e) consume
+  `label_phase` in the UI; (f) only then consider `group_steps`.** Per-kind model routing sits after
+  (d), once the override-rate baseline is real.
+- **Complexity:** L overall, staged — (a) S, (a2) S, (b) S–M, (b2) S, (c) S as built (an applier
+  plus docs; the M-sized editor UI it replaced was never written), (d) S, (e) S, (f) M–L with the
+  alignment risk above. Each stage is worth doing on its own merits.
+- **Success criteria:** a workflow with two same-typed fields arrives in Human Review already
+  carrying distinguishing names derived from workflow context rather than `_2` suffixes; what the
+  pass wrote is confined to `input_binding`, `value` placeholders, `phase` and the `try_dismiss`
+  branch — a diff against the same compile with the pass disabled shows no selector, identity-bundle
+  or assertion difference; a recorder-flagged stochastic step arrives as a `try_dismiss` branch, and
+  a hint the pass left alone can still be confirmed through the existing gate; every reviewer edit is
+  logged with the before/after pair, keyed on a stable identity rather than a step position that
+  renumbers; the eval harness reports an override rate so a prompt change can be shown to help or
+  hurt; a compile with the pass disabled or the provider pool drained produces a package identical to
+  one that never ran it; and the median number of manual edits per compiled workflow is measurable
   and demonstrably lower than the pre-pass baseline.
+
+### BUILD-26 — Human Review Copilot: a conversational repair agent inside Human Edit, driving the editor commands that already exist
+- **Category:** Builder
+- **Description:** a chat panel in the Human Review page (`HumanEditPage.tsx`) that a reviewer talks to
+  in plain language about the workflow currently open, and that answers by **proposing editor changes
+  as an accept/reject diff** — never by mutating the skill directly.
+
+  **Three motivating requests, all real reviewer behaviour today:**
+  1. **"This workflow failed at step 18 — fix it."** The copilot reads the failed test run's evidence,
+     diagnoses why the step could not resolve or verify, proposes a target or value change, and — once
+     accepted — re-runs the test skill to prove the fix.
+  2. **"After step 2 a popup sometimes appears; add a condition to handle it."** The copilot picks the
+     right branch primitive (`if_present` / `try_dismiss` / `wait_for_one_of`), fills it from an
+     identity bundle something actually observed, and proposes the insertion.
+  3. **"The assertion on step 12 is weak — give me a better one."** The copilot reads what actually
+     changed after that step across the runs on disk and proposes a stronger post-condition.
+
+  **The finding that makes this small: the copilot's hands already exist.** Every mutation these three
+  cases need is already an RPC command in `conxa-builder/python/handlers/workflow_editor.py`, already
+  validated by `conxa_compile/editor/patch_gate.py`, and already reversible through the editor's undo
+  stack:
+
+  | Copilot capability | Already-existing command |
+  |---|---|
+  | Change a step's target or value | `cmd_patch_step`, `cmd_retarget_preview` / `cmd_retarget_apply` |
+  | Add / delete / reorder steps | `cmd_insert_step`, `cmd_delete_step`, `cmd_reorder_steps` |
+  | Add a conditional block and its body | `cmd_insert_branch_step`, `cmd_delete_branch_step`, `cmd_reorder_branch_steps` |
+  | Parameterize a hardcoded value | `cmd_replace_literals`, `cmd_update_workflow_inputs` |
+  | Check the edit did not break the workflow | `cmd_validate_workflow`, `patch_gate.py` |
+  | Take an edit back | `cmd_undo_workflow` / `cmd_redo_workflow` |
+  | Close out the review | `cmd_sign_off_workflow` |
+
+  The branch primitives are complete end-to-end as well (**EXEC-1**, authoring shipped 2026-07-10):
+  `if_present` / `try_dismiss` / `wait_for_one_of` are in `skill_spec.py`, executable in
+  `runtime/app/run.js`, and insertable from Human Edit's Add-action menu with `BranchBodyEditor.tsx`
+  for the nested body. Case 2 is therefore **wiring an existing structure**, not designing a new one.
+
+  **So this is not "build an editor for an agent" — it is a thin agent over an editor that is already
+  complete.** Three pieces are missing, and only three:
+
+  1. **The evidence bundle** — one assembler that, given a skill and a run id, returns everything the
+     copilot may look at: the run's step log (`cmd_get_run`), the relevant slice of the runtime's
+     append-only recovery log (`runtime/app/recovery_log.js`, which already records every cascade
+     stage, what it tried and why each failed), the failure-moment HTML and screenshot, the recorded
+     `IdentityBundle` for the failing step, the compile report, and the recorded
+     `post_condition.classified_effect` / `state_change.dom_diff` for the assertion case. **Nearly all
+     of this is already written to disk and simply has no reader.**
+  2. **The proposal object** — `{command, args, why, evidence_ref}` addressed against the command
+     table above, rendered in the UI as a before/after diff with accept and reject.
+  3. **The chat surface** in the Human Review page, plus the conversation loop.
+
+- **The single shape all three cases share** — build one loop, not three features:
+  `Evidence (look) → Proposal (a diff) → Human accepts → Verify (re-run the test)`. The cases differ
+  only in which evidence goes in and which editor command comes out.
+
+- **Diagnosis is multimodal, and that is the one real capability lever here.** Case 1's diagnosis call
+  should go to a vision-capable model with the actual failure-moment screenshot attached, not a
+  text-only model fed a pre-summarized description of the image. An overlay covering the target, a
+  toast that had not cleared, a modal that moved the button are all things the DOM diff and recovery
+  log describe as "element not found" and a screenshot shows in one glance. The pattern is already
+  proven at compile time by `relational_vision_anchor.py` and `region_selector_vision.py`.
+  - **This is a call-site choice, not a new pipeline.** It changes what gets attached to the evidence
+    bundle's diagnosis call and reuses the same LLM proxy and cost model as every other call.
+  - **The cost shape differs from the compile-time vision calls, so do not copy BUILD-25's routing
+    bias.** Compile-time vision anchors run once per step across every compile; a copilot diagnosis
+    runs once per "fix it" request — rarer, and higher-value per call because it is blocking a
+    reviewer rather than batching. Paying for the stronger vision model here is easy to justify even
+    where BUILD-25's high-volume `suggest_optional` / `flag_noise` kinds should go cheap.
+  - **It falls back cleanly.** With no vision-capable provider in the pool, the copilot degrades to a
+    text-only description of the screenshot's presence plus the DOM diff and recovery log — the same
+    graceful-empty-on-failure shape `workflow_intent.py` establishes. Diagnosis quality drops; nothing
+    breaks.
+
+- **The line to hold — the copilot proposes, the reviewer disposes.** Same rule as BUILD-25, for three
+  reasons, none of them about model quality:
+  1. **The accept/reject IS the training data.** Each decision is a labelled pair (*what the system
+     produced* → *what the human wanted*). If the copilot self-applies, the diff still exists in undo
+     history but the **human judgment** — the label — is gone. **BUILD-26 and BUILD-25 must write into
+     the same log, in the same format, or the dataset is split in two.**
+  2. **The audit trail is a sold property.** "A person reviewed and signed off on what runs against
+     your production system" survives a security review; "an agent edited it and re-tested itself"
+     does not. `cmd_sign_off_workflow` exists to record exactly that.
+  3. **Undo is not a substitute for approval.** Undo means noticing after the fact; approval means it
+     never went in.
+
+  This constrains *how changes land*, not capability: the copilot may still read the whole recording,
+  run tests, reason across the entire workflow, and chain ten edits into one proposal.
+
+- **Two hard constraints found while scoping, both easy to get wrong:**
+  - **The retest loop is neither free nor always safe.** Case 1 ends in "re-run the test skill", and
+    if step 18 is a Submit then five diagnose-fix-retest cycles are five real submissions against a
+    real system. The runtime already knows which step types are dangerous to repeat (`isNonIdempotent`
+    in `runtime/app/step_utils.js`, used by EXEC-24's action guard) and that knowledge must gate the
+    copilot's auto-retest too — via a replay-to-step-N-then-stop mode, or an explicit "this run will
+    perform N non-reversible actions — proceed?" confirmation. Overlaps **PROD-3-DRYRUN**, the general
+    form of the same problem.
+  - **The copilot may never invent a selector for something never observed.** Case 2's popup needs an
+    `IdentityBundle`, and bundles come from the recorder. Three legitimate sources: the popup was
+    recorded (so this is a *conversion* of an existing step into a conditional — the easy case), the
+    popup was seen during a test run, or the reviewer records it once. **Consequence: test runs should
+    capture the identity bundle of unexpected overlays, dialogs and interstitials even on a successful
+    run**, so "add a condition for that popup" becomes "here is the one I saw on run #3 — wire it up?"
+    rather than a guess. Without this the copilot will confidently write a selector for a popup it has
+    never seen, which is precisely what the *"LLM does not write selector strings"* invariant exists to
+    prevent. **EXEC-30** (resolved 2026-09-03) already reasons about unknown popups at replay and is
+    the natural place to emit this capture.
+
+- **Relationship to the "LLM does not write selectors" invariant:** this is not the primary compile
+  path. It is a **user-initiated editor action**, the same sanctioned category as the two existing
+  exceptions in `CLAUDE.md` — the 1-click fix re-compile (`compiler/patch.py` →
+  `llm/selector_regeneration.py`) and the draw-a-region re-target wizard (`editor/retarget.py` →
+  `llm/region_selector_vision.py`). The boundary stays exactly where it is: *compiling a recording is
+  deterministic, always; a human asking the copilot to fix something may use an LLM, and its output is
+  a proposal a human accepts.* Same program, two doors — one reproducible, one smart.
+
+- **Why required:** Human Review is the largest remaining per-workflow labour cost in the product
+  (**BUILD-25**), and it is entirely manual pointing-and-clicking against a failure the reviewer must
+  diagnose unaided from a step number and an error string. A reviewer today cannot ask the system
+  *why* step 18 failed — the recovery log that knows the answer sits on disk in JSONL and is read by
+  nothing. This item turns Human Review from a form into a conversation.
+- **Business value:** time-to-first-working-skill is the whole onboarding funnel, and the demo moment
+  — "it failed, I typed *fix it*, it explained why, proposed a change, I accepted, it re-ran and
+  passed" — is the most legible proof that Conxa compiles intent rather than replaying clicks. It also
+  lowers the skill floor for who can own a workflow inside a vendor.
+- **Technical value:** produces the labelled correction stream that **BUILD-25**, **BUILD-18** (learned
+  classifier fed by human-correction telemetry) and **PROD-19** step 2 all separately need, as a
+  by-product of normal reviewer work rather than as an instrumentation project. It also forces the
+  evidence bundle into existence, which **PROD-11** (skill health dashboard / skill CI) and **EXEC-9**
+  (dataset-grade telemetry) both want anyway.
+- **Dependencies:** none blocking — the editor command surface, `patch_gate`, undo/redo, the branch
+  primitives, the recovery log and the Test Skill run all already exist. Shares the LLM proxy and cost
+  model with existing compile calls. Related: **BUILD-25** (compile-time twin; must share the
+  accept/reject log format), **EXEC-13** (`ai_review`, the runtime-side reasoning checkpoint — a
+  distinct feature, do not merge them), **PROD-3-DRYRUN** (the safe-retest problem in general form),
+  **EXEC-30** (where unexpected-popup capture should hang), **BUILD-18** / **EXEC-9** (downstream
+  consumers of the correction data), **EXEC-21** (human review points — different feature, similar
+  name; that one is about *recording* where a person is needed at runtime).
+
+- **Risk / the line to hold:** a proposal must never apply itself, and a rejected proposal must be
+  logged as loudly as an accepted one. A copilot that quietly drops rejections keeps the flattering
+  half of the dataset and trains on it.
+- **Suggested order:**
+  - **(a) The evidence bundle.** One assembler over files that already exist. Reusable by all three
+    cases and by PROD-11 later. **S–M.**
+  - **(b) A read-only copilot.** Chat panel wired to (a); its only output is words — it diagnoses and
+    explains, it cannot edit. Useful on day one, and costs nothing if diagnosis quality disappoints.
+    Route the diagnosis call through a vision-capable model with the failure screenshot attached from
+    the start; (b) is exactly where diagnosis quality either earns trust or does not. **M.**
+  - **(c) Proposals for the safe commands first** — assertion changes and `cmd_patch_step` — rendered
+    as an accept/reject diff. Assertions are the right starting point because they only read: a wrong
+    assertion proposal cannot damage anything. **M.**
+  - **(d) The accept/reject log**, in BUILD-25's format, from (c) onward. Not optional. **S.**
+  - **(e) The verified retest loop**, with the non-idempotent guard above. **M.**
+  - **(f) Unexpected-overlay identity capture during test runs**, then branch-insertion proposals
+    (case 2). **M.**
+
+  Steps (a) and (b) are worth shipping on their own merits even if the rest is never built.
+- **Complexity:** L overall, staged as above. No step is larger than M, because no step writes new
+  mutation logic — every one of them composes commands that already ship.
+- **Success criteria:** a reviewer can type "step 18 failed, fix it" against a real failed test run and
+  receive a diagnosis citing specific evidence (which cascade stages ran, what the page looked like)
+  rather than a restatement of the error; every proposal renders as a before/after diff with accept
+  and reject, and the compiled skill is byte-identical if every proposal is rejected; an accepted fix
+  triggers a retest that visibly passes, with any non-reversible action in that retest explicitly
+  confirmed first; a conditional wrapper can be added around an observed popup without a human typing
+  a selector; and every accept and reject is written to the same correction log BUILD-25 uses, with
+  the before/after pair.
+
+- **Future scope — capabilities to add once the loop above exists.** All of these ride the same
+  `Evidence → Proposal → Accept → Verify` loop and the same command table; none needs new mutation
+  logic. Two of them (**BUILD-27**, **BUILD-28**) were split out as standalone items because they are
+  worth building even if this copilot never ships.
+
+  **(i) Nearly free — the data already exists and nothing reads it:**
+  - **Explain this workflow.** `editor/describe.py` already produces deterministic step descriptions
+    and `llm/workflow_intent.py` already produces a goal statement plus per-step prose intent on every
+    compile. Nothing narrates them. "This logs into X, finds the invoice matching `{{invoice_id}}`,
+    downloads it, uploads it to Y; 3 inputs, 2 tabs" is the fastest way for a reviewer who did not
+    record the workflow to trust it.
+  - **Step provenance — "why is this step here?"** Trace a step back to its recorded event, its
+    screenshot, its intent token, and which compiler pass produced its target. Reviewers currently
+    delete steps they do not understand; provenance turns a guess into a decision.
+  - **Open the review already triaged.** Instead of a flat list of 22 steps, read the compile report
+    and `cmd_validate_workflow` warnings and lead with "3 things need you: step 7's target is
+    low-confidence, step 12 has no assertion, step 18's value looks like a real customer name that
+    should be a variable." This converts Human Review from scanning into triage, which is where the
+    labour cost actually sits — **this is the copilot's default opening turn, not a later feature.**
+  - **Cross-workflow consistency.** `cmd_list_workflows` plus `cmd_get_compiled_skill` give the copilot
+    every workflow in the workspace: "your other four workflows call this `customer_email`; this one
+    compiled it as `email_2`." That is BUILD-25's workflow-global naming problem solved at review time
+    with no compiler change.
+
+  **(ii) Proposals over commands that already ship:**
+  - **Whole-workflow batch edits.** "Make every date field use one `{{report_date}}` input" — one
+    proposal, N `cmd_patch_step` plus `cmd_update_workflow_inputs` calls, one accept. Done by hand
+    today, per field.
+  - **Assertion coverage audit.** "9 of 22 steps have no post-condition; these 5 matter most, and here
+    is what each should assert." `compiler/validation_planner.py` already knows how to build them —
+    nothing surfaces the gaps.
+  - **Pre-publish safety review.** Read `compiler/destructive_semantics.py` and
+    `compiler/entity_binding.py` out loud before publish: "step 14 deletes a record and is not
+    entity-bound, so on a different day it may delete a different row." The review that most needs
+    doing and that nobody currently does. Feeds **PROD-3-UI** / Strict Mode directly.
+  - **Input design.** "This exposes 11 inputs, but 6 held the same value across all 3 test runs —
+    those should be constants, not something the caller must supply." The difference between a skill
+    an agent invokes correctly and one it fumbles.
+
+  **(iii) Needs new plumbing, worth it:**
+  - **"Show me" mode — the escape hatch.** When the copilot lacks an identity bundle (the popup case),
+    it triggers a short scoped capture via `cmd_start_recording` instead of guessing: "I have never
+    seen that popup — record it once and I will wire it up." This is what keeps the
+    never-invent-a-selector rule from becoming a dead end, and it should ship alongside step (f).
+  - **Learn from fleet failures, at authoring time.** Telemetry already flows back
+    (`runtime/tracker.js` → `app/api/tracking_routes.py`) including recovery types: "step 9 needed
+    recovery on 40% of customer runs last week." Fixing that in the Studio before the next publish is
+    the durability flywheel with a human in the loop — fix once for everyone instead of reacting per
+    run. Overlaps **EXEC-2** (fleet durability flywheel) and **PROD-11**.
+  - **Semantic re-record diff.** After a re-record: "versus the version your customers have — 3 steps
+    unchanged, step 4's button moved into a modal, 2 new steps, and the `account_id` input is gone." A
+    JSON diff is useless here; a meaning diff is what makes publishing feel safe. Pairs with **UPD-1**
+    and the publish flow.
+  - **Per-app memory — the structural one.** If the copilot learns "on this vendor's app, Save only
+    becomes clickable after the toast clears", that must persist across every workflow for that app
+    rather than being re-derived each conversation. **PROD-1** already tracks persistent repair memory
+    for the runtime side; the authoring side should read and write the same store. Without this, every
+    session starts from zero and the feature reads as a clever chatbot rather than something that
+    knows the customer's systems.
+
+  **(iv) Deliberately out of scope — decided, not merely unscheduled:**
+  - **Authoring a workflow from a text description alone.** Tempting and wrong, for the same reason as
+    the popup selector: with no identity bundle for anything, the copilot can only produce selectors
+    from imagination. It demos beautifully and fails in production. Revisit only when there is a
+    recorded corpus for the target app to build from.
+  - **Editing an already-published package in place.** Every copilot change lands as a new version
+    through the normal publish path. The moment it can patch what customers are running, the version
+    history stops describing reality.
+
+### BUILD-27 — Nothing reviews the text that decides whether an agent calls the right skill at all
+- **Category:** Builder
+- **Description:** Skills reach the customer as MCP tools exposed by `runtime/app/server.js`
+  (`execute_skill`, `get_skill_inputs`, `list_skills`). Whether Claude picks the **right** skill out
+  of a pack of twenty, and whether it fills the inputs correctly, is decided almost entirely by three
+  pieces of prose: the skill's name, its description, and its per-input descriptions. Today those are
+  whatever the compiler happened to emit from the recording — and **no screen, pass, or check in the
+  product ever reviews them.** Human Review scrutinises selectors, assertions and step order, all of
+  which only matter *after* the right skill has already been chosen; the text that determines whether
+  it gets chosen is the one thing nobody looks at. Two skills in the same pack can end up with near
+  identical descriptions and neither the compiler nor the reviewer will notice.
+- **Scope:** surface name / description / input descriptions in Human Edit as editable, first-class
+  fields with the same weight the step list gets; add a deterministic lint (empty or default-looking
+  description, two skills in a pack whose descriptions are near-duplicates, an input whose
+  description does not say what a valid value looks like); and — once **BUILD-26** exists — let the
+  copilot draft and critique them with the whole workflow in view. Prose only: this touches no
+  selector, no assertion, and no execution path, so it is safe by construction.
+- **Why required:** a workflow that executes flawlessly and is never selected is worth exactly as
+  much as one that fails. This is the only remaining part of the skill contract with no review step.
+- **Business value:** in a demo and in production alike, "the agent picked the wrong skill" reads as
+  the product being unreliable, and it is currently the failure mode with the least instrumentation
+  behind it. Also the cheapest quality lever available: it is editing text.
+- **Technical value:** independent of every other item — no new data, no new capture, no execution
+  change. The lint is deterministic and testable.
+- **Dependencies:** none. **BUILD-26** makes it better (LLM drafting with workflow context) but is
+  not required — the fields and the lint stand alone and should ship first.
+- **Complexity:** S for the editable fields + lint; S–M for the copilot-drafted variant.
+- **Success criteria:** name, description and every input description are editable in Human Edit and
+  round-trip into the published pack; a pack containing two near-duplicate skill descriptions is
+  flagged before publish; and an input with no description of its valid values cannot be signed off
+  silently.
+
+### BUILD-28 — `drift_detected` is emitted, reaches the dashboard, and nothing ever acts on it
+- **Category:** Builder
+- **Description:** `runtime/app/drift.js` already does the hard part: before step 0 it checks the
+  compiled `structural_fingerprint`'s landmarks against the live page and, when more than half have
+  vanished, emits a `drift_detected` telemetry signal — pure resolver scoring, no LLM, advisory and
+  never blocking. The signal reaches the fleet dashboard and **stops there.** Nobody is told, and
+  there is no path from "this app was redesigned" to "here is what to do about it." The vendor finds
+  out when the failures start.
+- **Scope:** (a) route the signal to the workspace that owns the pack — a real notification, not a
+  chart; (b) show it in the Build Studio against the affected workflow, with which landmarks are
+  missing; (c) offer the two real remedies, re-record or re-target step by step, rather than leaving
+  the reviewer to work out what a drift number means. Once **BUILD-26** exists this becomes a copilot
+  turn: "6 of 9 landmarks are gone — this app was redesigned; want to walk the affected steps?"
+- **Why required:** drift is the single highest-value early warning the runtime produces, because it
+  fires *before* a run fails rather than after, and it is currently thrown away. The detection is
+  already built and paid for; only the response is missing.
+- **Business value:** "we told you your vendor's app changed before your automation broke" is a
+  qualitatively different product from "your automation broke." It is also the clearest proof that
+  the fleet telemetry is worth having.
+- **Technical value:** closes the loop on machinery that already exists and is already correct.
+  Related: **EXEC-2** (fleet durability flywheel), **PROD-11** (skill health dashboard),
+  **EXEC-33** (an adjacent case of a recovery signal the dashboard does not classify).
+- **Dependencies:** none blocking. The detector, the telemetry path and the dashboard all exist.
+- **Complexity:** M — routing and UI, no new detection logic.
+- **Success criteria:** a workspace whose target app has drifted is notified without opening a
+  dashboard; the affected workflow shows which landmarks are missing; and the notification offers a
+  concrete next action rather than a number.
 
 ## P2 Discovered Items (2 remaining / 2 total) (2026-09-02 mega-workflow dev-mode investigation)
 
