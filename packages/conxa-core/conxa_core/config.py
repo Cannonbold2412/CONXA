@@ -160,6 +160,16 @@ class Settings(BaseSettings):
     llm_pack_top_p: float | None = None
     pack_recovery_vision_enabled: bool = True
 
+    # The compiler's second opinion (BUILD-25) — a second whole-workflow LLM
+    # call, sited after the primary compile, whose findings are APPLIED to the
+    # compiled steps (binding names, {{placeholder}} values, phase, try_dismiss
+    # branches; never selectors). Off means the pass returns [] before any call
+    # is made; on failure it degrades the same way, and either path falls back
+    # to a rules-only compile that is byte-identical to one that never ran it.
+    # The env var keeps its original name (SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED)
+    # so existing .env files keep working.
+    llm_semantic_suggestions_enabled: bool = True
+
     # Selector compilation tuning (calls Text endpoint above)
     llm_selector_timeout_ms: int = 60000
     llm_selector_candidates: int = 8          # candidates to request per element

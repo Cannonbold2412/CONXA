@@ -357,7 +357,7 @@ is tagged in code and below as one of:
 | `IdentityBundle` | `fingerprint`, `stable_hash`, `destructive` | `signals`, `frame_chain`, `shadow_path`, `compat_fingerprint`, `guid_like_attrs` |
 | `HandlerHints` | — | all |
 | `EntityBinding` (PROD-3) | `identifier`, `source`, `confirmed` | `container_selector` |
-| `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `optional_hint`, `consequence` | `frame`, `tab`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
+| `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `phase`, `optional_hint`, `consequence` | `frame`, `tab`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
 | `SkillStep.branch` | — (mixed today; see below) | — |
 | `SkillStep.entity_binding` | — (mixed today; see `EntityBinding` row) | — |
 | `WorkflowIntentGraph` / `WorkflowIntentStep` | all | — |
@@ -478,10 +478,12 @@ class SkillStep(BaseModel):
     decision_policy: DecisionPolicy
     compiled_selectors: list[str]  # Ranked CSS/XPath selectors (T1 recovery)
     semantic_description: str      # "First Name input in Add Person dialog"
+    phase: str                     # login|navigate|act|verify|cleanup, or "" — written by the
+                                   # second opinion (§3.9); nothing downstream reads it yet
     snapshot_ref: str              # DOM snapshot blob reference
     snapshot_dom_hash: str         # For cross-compilation cache lookup
     branch: dict                   # Conditional/branch payload — empty for ordinary steps (§3.4c)
-    optional_hint: dict | None     # Recorder-observed "might be optional" flag, advisory only (§3.4d)
+    optional_hint: dict | None     # Recorder-observed "might be optional" flag (§3.4d)
 ```
 
 > **Single identity object (cutover):** `element_fingerprint` is no longer a top-level
@@ -663,10 +665,14 @@ UI yet — see `TODO.md` BUILD-6.
 sat inside what looked like an optional interstitial (dialog or cookie/consent banner) during
 recording — carried verbatim from the recorded event's `optionality`/`branch_hint` fields
 (`RecordedEvent`, `packages/conxa-core/conxa_core/models/events.py`; see `docs/TRD.md` §10.7 for
-the detection heuristic). It never changes compiled behavior on its own: the step still compiles and executes as a normal
-required linear step. Only a human confirming in Human Edit converts it into a real `try_dismiss`
-branch (§3.4c) — the compiler never does this automatically, honoring the invariant that branch
-steps compile only from observed states + human confirmation.
+the detection heuristic). The per-step compile loop never reads it. Two consumers convert it into
+a real `try_dismiss` branch (§3.4c), both through the same builder
+(`compiler/second_opinion.py::build_try_dismiss_from_hint`) so the two paths cannot produce
+different branch shapes: the compiler's second opinion at compile time (§3.9), and a human
+confirming in Human Edit for any hint the pass left alone. Observed state is still required in
+both cases — nothing invents a hint the recorder never produced; what changed on 2026-09-09 is
+that the human confirmation can now come *after* the conversion, in Human Review, instead of
+before it.
 
 ```python
 optional_hint: dict | None   # {"kind": "try_dismiss", "container_signal": "<selector>"} or None
@@ -676,10 +682,15 @@ optional_hint: dict | None   # {"kind": "try_dismiss", "container_signal": "<sel
   the compiled step unchanged.
 - **Surfaced by:** `StepEditorDTO.optional_hint` (same shape), read-only — Human Edit renders a
   "treat as optional?" affordance when present.
-- **Consumed by:** `POST confirm_optional_interstitial` (`skill_id`, `step_index`) — a structural
-  mutation (same shape as `insert_branch_step`, bypasses `patch_gate.py`) that rewrites the step's
-  `action` to `try_dismiss`, seeds `branch.candidates` from the step's own recorded selector plus
-  the hint's `container_signal`, and clears `optional_hint`.
+- **Consumed by (compile time):** the second opinion's `suggest_optional` kind (§3.9) — converts
+  the step and clears the hint before the package is ever written.
+- **Consumed by (review time):** `POST confirm_optional_interstitial` (`skill_id`, `step_index`),
+  for a hint the pass left alone — a structural mutation (same shape as `insert_branch_step`,
+  bypasses `patch_gate.py`) that rewrites the step's `action` to `try_dismiss`, applies the shared
+  builder's `intent`/`branch`/`recovery` (candidates seeded from the step's own recorded selector
+  plus the hint's `container_signal`), and clears `optional_hint`.
+- Either way the hint is consumed exactly once, and there is no un-confirm command: reversing a
+  conversion means editing the step back by hand.
 
 **Not to be confused with runtime-replay overlay dismissal (EXEC-30).** `optional_hint`/
 `try_dismiss` above are compile-time, human-confirmed mechanisms for an interstitial *seen during
@@ -918,6 +929,87 @@ class WorkflowIntentGraph(BaseModel):
     decision_points: list[dict]        # Points where branching may occur
     expected_end_state: dict           # What success looks like
 ```
+
+### 3.9 compile_report.second_opinion (BUILD-25)
+
+The compiler's second opinion: `llm/workflow_semantics.py::build_second_opinion` — one
+whole-workflow LLM call, run LAST in `compile_skill_package` (after bindings are deduplicated and
+`compile_report` itself exists, so the call can route by per-step confidence) — decides, and
+`compiler/second_opinion.py::apply_second_opinion` **writes the decisions onto the compiled
+steps**. This key is the audit record of what was applied, for the compile log. Nothing in Human
+Edit reads it: the changes are simply part of the compiled workflow, indistinguishable from what
+the fixed rules produced, and Human Review is the gate for a wrong call. Present only when at
+least one finding was applied — absent, not an empty list, when the pass is disabled, fails,
+returns nothing, or every finding is rejected:
+
+```python
+# One entry of compile_report["second_opinion"]:
+{
+    "step_key": str,   # compiler/step_key.py — identity_bundle.stable_hash + occurrence ordinal,
+                        # NEVER step_index (an insert/reorder renumbers every later index —
+                        # BUILD-22/BUILD-23)
+    "kind": str,        # "rename_binding" | "parameterize_literal" | "suggest_optional" | "label_phase"
+    "current": str,     # the existing binding name / literal value / "" for label_phase
+    "proposed": str,    # a valid {{placeholder}} identifier (rename_binding/parameterize_literal),
+                        # "true"/"false" (suggest_optional), or one of
+                        # login/navigate/act/verify/cleanup (label_phase)
+    "why": str,         # human-readable rationale, capped at 280 chars
+}
+```
+
+What each kind writes, and nothing else:
+
+| kind | fields written on the `SkillStep` |
+|---|---|
+| `rename_binding` | `input_binding`, plus the matching `{{token}}` inside `value` |
+| `parameterize_literal` | `input_binding`, `value` (only on a step with no binding yet — never re-points an existing one) |
+| `label_phase` | `phase` (`login`/`navigate`/`act`/`verify`/`cleanup`; §3.4d's sibling field, nothing downstream reads it yet) |
+| `suggest_optional` | `action.action`, `intent`, `branch`, `recovery`, clears `optional_hint` (§3.4d) |
+
+`target`, `identity_bundle`, `compiled_selectors`, `validation` and the frame/tab chain are never
+touched — element identity stays fully deterministic (CLAUDE.md Key Invariants). When anything is
+applied the whole `compile_report` is rebuilt from the mutated steps, because a `suggest_optional`
+conversion changes a step's compiled shape after the first report was computed.
+
+A `parameterize_literal` needs no separate input declaration: `handlers/compile.py` already runs
+`reconcile_inputs_with_step_values(doc)` after the package is written, which auto-declares any
+`{{var}}` a step references but `inputs` lacks.
+
+Cached per (steps + goal + page_urls + sibling_bindings) hash, sharing the versioned dual-write
+cache (`llm/llm_cache.py`) that `workflow_intent.py` also uses. Gated by
+`SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED` (default on). A disabled, failed, or empty pass falls
+back to the rules-only compile — byte-identical to a compile that never ran the pass; a pass that
+applies something deliberately is not. See `docs/TRD.md` §7.2 for the validation gates and the
+reasoning behind that trade.
+
+### 3.10 Reviewer Edit Log (BUILD-25 stage a, 2026-09-09)
+
+`editor/edit_log.py` appends one line per changed field to `data/skills/{skill_id}/edits.jsonl`
+(mirrors `session_events.py`'s `events.jsonl`) for every mutating Human Edit command — hooked once
+in `backend.py::Backend.dispatch`, so undo/redo are covered without a per-command call. It is the eval set for
+§3.9's pass, scored by `conxa-cloud/scripts/eval_suggestions.py` — which joins on
+`(step_key, field)` and now reports `override_rate` (a reviewer editing what the pass wrote)
+rather than a precision score — and the training pair for any future fine-tune:
+
+```python
+# One line of edits.jsonl:
+{
+    "ts": str,             # ISO-8601 UTC
+    "skill_id": str,
+    "command": str,        # the cmd_* RPC name (patch_step, reorder_steps, undo_workflow, ...)
+    "meta_version": int,   # document["meta"]["version"] after the mutation
+    "step_key": str,       # same key space as compile_report.second_opinion
+    "field": str,          # one of: input_binding, value, intent, semantic_description,
+                            #         action.action, optional_hint, branch,
+                            #         validation.assertions, or "_step" for add/remove
+    "before": Any,
+    "after": Any,
+}
+```
+
+Only this small allow-list of reviewer-editable fields is tracked — never the whole step, which
+would carry DOM snapshots and identity bundles into a log meant to stay small. Writing is
+failure-silent, matching every other local cache/log in the compile pipeline.
 
 ---
 

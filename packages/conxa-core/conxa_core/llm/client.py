@@ -217,6 +217,40 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             },
             {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},
         ]
+    if task == "workflow_semantics":
+        # Compile-time (BUILD-25): single whole-workflow call producing REVIEW
+        # SUGGESTIONS only — never selectors, never a change to compiled
+        # behavior. The model proposes, a human in Human Edit disposes.
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You review a compiled browser-automation workflow and suggest improvements a "
+                    "human reviewer can accept or reject. Return strict JSON with key: suggestions "
+                    "(array of {step_key, kind, current, proposed, why}). step_key must be copied "
+                    "EXACTLY from the input step's own \"key\" field — never invented, never a step "
+                    "number. kind must be exactly one of: rename_binding, parameterize_literal, "
+                    "suggest_optional, label_phase.\n"
+                    "- rename_binding: this step's input_binding collides with another field's "
+                    "meaning (e.g. two fields both named email_2) — proposed is a clearer "
+                    "lowercase_snake_case name, current is the existing binding.\n"
+                    "- parameterize_literal: this step's typed value is a literal that should "
+                    "probably vary per run (a customer name, amount, reference number) — proposed "
+                    "is a lowercase_snake_case name for the new input, current is the literal value.\n"
+                    "- suggest_optional: ONLY for a step whose has_optional_hint is true — proposed "
+                    "is \"true\" if this looks like a genuinely optional interstitial (cookie banner, "
+                    "occasional dialog) or \"false\" if it looks required despite the hint.\n"
+                    "- label_phase: proposed is exactly one of login, navigate, act, verify, cleanup "
+                    "describing which phase of the workflow this step belongs to.\n"
+                    "Prefer steps marked low_confidence — the compiler was least sure about those. "
+                    "Use sibling_bindings (names other workflows for the same site already use) to "
+                    "pick names, not guesses. Return an EMPTY suggestions array when nothing is "
+                    "clearly wrong — most workflows should get few or zero suggestions. No markdown, "
+                    "no extra keys, no suggestion whose step_key you are not certain about."
+                ),
+            },
+            {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},
+        ]
     if task == "anchor_vision":
         image_b64 = str(payload.get("image_base64") or "")
         mime = str(payload.get("image_mime") or "image/jpeg")

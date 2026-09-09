@@ -680,6 +680,18 @@ class Backend(
 
     # -- dispatch ------------------------------------------------------------
 
+    # Commands that mutate a skill document from Human Edit — every command
+    # here persists to a skill's steps and is worth attributing an edit-log
+    # entry to (BUILD-25 stage a). Hooked once in dispatch() rather than at
+    # each cmd_* so undo/redo (which bypass _push_undo) are covered too.
+    _EDIT_COMMANDS = frozenset({
+        "patch_step", "insert_branch_step", "delete_branch_step", "reorder_branch_steps",
+        "confirm_optional_interstitial", "reorder_steps", "insert_step", "delete_step",
+        "update_workflow_inputs", "replace_literals", "undo_workflow", "redo_workflow",
+        "retarget_apply", "sign_off_workflow", "apply_recording_visual", "apply_step_frame",
+        "clear_step_visual", "update_visual_bbox",
+    })
+
     def dispatch(self, msg: dict[str, Any]) -> None:
         rid = msg.get("id")
         cmd = str(msg.get("type") or "")
@@ -688,9 +700,24 @@ class Backend(
         if handler is None:
             _write({"id": rid, "type": "error", "code": "unknown_command", "message": cmd})
             return
+        skill_id_for_log = str(payload.get("skill_id") or "").strip() if cmd in self._EDIT_COMMANDS else ""
+        before_doc = None
+        if skill_id_for_log:
+            try:
+                from conxa_core.storage.json_store import read_skill  # noqa: PLC0415
+                before_doc = read_skill(skill_id_for_log)
+            except Exception:  # noqa: BLE001 — edit-log read must never block dispatch
+                before_doc = None
         try:
             result = handler(payload, rid)
             _write({"id": rid, "type": "result", "result": result})
+            if skill_id_for_log:
+                try:
+                    from conxa_core.storage.json_store import read_skill  # noqa: PLC0415
+                    from conxa_compile.editor.edit_log import append_edit  # noqa: PLC0415
+                    append_edit(skill_id_for_log, cmd, before_doc, read_skill(skill_id_for_log))
+                except Exception:  # noqa: BLE001 — edit-log write must never block dispatch
+                    pass
         except _CommandError as exc:
             _write({"id": rid, "type": "error", "code": exc.code, "message": exc.message})
         except Exception as exc:  # noqa: BLE001 — report any handler failure to the renderer

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from conxa_compile.compiler.action_policy import no_recovery_block
+from conxa_compile.compiler.second_opinion import build_try_dismiss_from_hint
 from conxa_compile.compiler.patch import revalidate_step
 from conxa_compile.confidence.uncertainty import audit_reference
 from conxa_compile.editor.action_registry import action_spec, default_action_value, is_supported_action
@@ -30,7 +31,13 @@ def _invalidate_compile_report(doc: dict[str, Any]) -> None:
     steps that no longer exist at those positions — Human Edit's compile-health banner pointed an
     approver at the wrong step. Clearing `steps` (rather than trying to patch indices) is the
     only way to stop misleading step-index buttons; only a real recompile can produce
-    trustworthy per-step confidence again."""
+    trustworthy per-step confidence again.
+
+    Deliberately leaves `compile_report["second_opinion"]` (BUILD-25) in place: unlike `steps`,
+    it is keyed on step_key (compiler/step_key.py), not position, so a reorder/insert/delete
+    does not invalidate it — this is the whole reason that pass keys on identity instead of
+    index. It is an audit record of what the pass already wrote, not a pending action, so it
+    stays true regardless of what happens to the step list afterwards."""
     report = doc.get("compile_report")
     if not isinstance(report, dict) or not report:
         return
@@ -189,11 +196,10 @@ def confirm_optional_interstitial(document: dict[str, Any], step_index: int) -> 
     """Human-gated conversion of a recorder-flagged optional interstitial (recording-next-steps.md
     Priority 2; SkillStep.optional_hint) into a real try_dismiss branch step.
 
-    The compiler never does this on its own — a stochastic hint compiles to a normal required
-    step until a human confirms it here (CLAUDE.md Key Invariants: "branch steps compile only
-    from observed states + human confirmation"). Seeds the branch's candidates with the step's
-    own recorded selector plus the recorder's observed container_signal, mirroring the
-    try_dismiss scaffold _new_manual_step builds for a manually-inserted branch step.
+    This is the review-time half of the conversion. The compiler's second-opinion pass
+    (compiler/second_opinion.py) converts the hints it is confident about at compile time; this
+    handles the ones it left alone, when a reviewer decides the step really is optional. Both
+    call build_try_dismiss_from_hint so the two paths cannot produce different branch shapes.
     """
     doc = dict(document)
     skills = list(doc.get("skills") or [])
@@ -209,21 +215,17 @@ def confirm_optional_interstitial(document: dict[str, Any], step_index: int) -> 
         raise ValueError("step_has_no_optional_hint")
 
     target = step.get("target") if isinstance(step.get("target"), dict) else {}
-    primary_selector = str(target.get("primary_selector") or "").strip()
-    container_signal = str(hint.get("container_signal") or "").strip()
-    seen: set[str] = set()
-    candidates: list[str] = []
-    for c in (primary_selector, container_signal):
-        if c and c not in seen:
-            seen.add(c)
-            candidates.append(c)
+    built = build_try_dismiss_from_hint(
+        str(target.get("primary_selector") or ""),
+        str(hint.get("container_signal") or ""),
+    )
 
     action = dict(step.get("action") if isinstance(step.get("action"), dict) else {})
     action["action"] = "try_dismiss"
     step["action"] = action
-    step["intent"] = "try_dismiss_interstitial"
-    step["branch"] = {"candidates": candidates, "timeout_ms": 3000, "fallback_escape": True}
-    step["recovery"] = no_recovery_block("try_dismiss_interstitial")
+    step["intent"] = built["intent"]
+    step["branch"] = built["branch"]
+    step["recovery"] = built["recovery"]
     step["optional_hint"] = None  # consumed by this confirmation
 
     steps[step_index] = step

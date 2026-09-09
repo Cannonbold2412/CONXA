@@ -40,6 +40,8 @@ from conxa_compile.compiler.selector_score import (
     score_selector_row,
 )
 from conxa_compile.compiler.stable_hash import compute_stable_hash
+from conxa_compile.compiler.second_opinion import apply_second_opinion, rewrite_placeholder
+from conxa_compile.compiler.step_key import step_keys
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
 from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to_display
 from conxa_compile.compiler.state_validation import capture_state_snapshot, compare_state, merge_dom_diff_evidence, optimize_scroll, scroll_payload, validation_from_diff
@@ -1543,10 +1545,10 @@ def _build_step(
         )
     snapshot = ev.get("snapshot") or {}
     # Conditional-state observation (Priority 2): carry the recorder's optional-interstitial hint
-    # onto the step verbatim, advisory only — it does not change compiled behavior (the step
-    # stays a normal required linear step; see _build_assertions above, which never reads this).
-    # Only a human confirming in Human Edit (workflow_mutations.confirm_optional_interstitial)
-    # turns it into an actual `branch` — see CLAUDE.md Key Invariants.
+    # onto the step verbatim. It changes nothing in this per-step loop (see _build_assertions
+    # above, which never reads it). Downstream, the second-opinion pass may convert the step into
+    # a try_dismiss branch; any hint it leaves alone stays advisory until a human confirms it in
+    # Human Edit (workflow_mutations.confirm_optional_interstitial).
     optional_hint = None
     if ev.get("optionality") == "stochastic" and isinstance(ev.get("branch_hint"), dict):
         optional_hint = ev["branch_hint"]
@@ -1707,15 +1709,9 @@ def _deduplicate_input_bindings(steps: list[SkillStep]) -> None:
         new_binding = f"{binding}_{seen_counts[binding]}"
         step.input_binding = new_binding
         # Rewrite the {{binding}} token wherever it appears in the value, not only when the
-        # value is exactly "{{binding}}". A mixed value like "prefix {{name}}" would otherwise
-        # keep {{name}} while its binding became name_2 — a value/binding mismatch (audit
-        # finding L-2). Optional inner whitespace matches the placeholder grammar.
-        if isinstance(step.value, str):
-            step.value = re.sub(
-                r"\{\{\s*" + re.escape(binding) + r"\s*\}\}",
-                f"{{{{{new_binding}}}}}",
-                step.value,
-            )
+        # value is exactly "{{binding}}" — see rewrite_placeholder, shared with the
+        # second-opinion applier so the two renaming paths cannot drift.
+        step.value = rewrite_placeholder(step.value, binding, new_binding)
 
 
 def compile_skill_package(
@@ -1861,6 +1857,36 @@ def compile_skill_package(
         },
     )
 
+    # BUILD-25: the compiler's second opinion — one whole-workflow LLM call that
+    # decides the four things no per-step rule can decide correctly, and writes
+    # them onto the steps. Sited after bindings are deduplicated (naming needs
+    # them to exist) and after the report itself (routing needs per-step
+    # confidence). Disabled/failed/empty all leave the SkillPackage below
+    # byte-identical to a compile that never ran this pass; a pass that finds
+    # something deliberately does not — Human Review is the gate.
+    visited_hosts = _extract_visited_hosts(cleaned_events)
+    _compile_log(
+        "compile_phase",
+        "Asking for a second opinion on the whole workflow.",
+        {"phase": "second_opinion_start", "step_count": len(steps)},
+    )
+    compile_report = _apply_second_opinion(
+        compile_report,
+        steps,
+        skill_id=skill_id,
+        goal=intent_graph.goal,
+        page_urls=page_urls,
+        visited_hosts=visited_hosts,
+    )
+    _compile_log(
+        "compile_phase",
+        "Second opinion finished.",
+        {
+            "phase": "second_opinion_done",
+            "applied": len(compile_report.get("second_opinion") or []),
+        },
+    )
+
     now = datetime.now(timezone.utc).isoformat()
     structural_fp = _build_structural_fingerprint(steps)
     meta = SkillMeta(
@@ -1872,7 +1898,7 @@ def compile_skill_package(
         compiler_policy_version=bundle.version,
         compiler_policy_hash=bundle.content_hash,
         structural_fingerprint=structural_fp,
-        visited_hosts=_extract_visited_hosts(cleaned_events),
+        visited_hosts=visited_hosts,
     )
     return SkillPackage(
         meta=meta,
@@ -1920,3 +1946,118 @@ def _apply_intent_graph_to_steps(steps: list[SkillStep], intent_graph: WorkflowI
             step.semantic_description = prose
         elif step.intent and not step.semantic_description:
             step.semantic_description = step.intent
+
+
+def _semantics_inputs(steps: list[SkillStep], compile_report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compact per-step payload for the semantic-suggestion LLM call (BUILD-25
+    stage b) — action, text, url, binding; no DOM, no screenshots, matching
+    _intent_graph_inputs's deliberate tininess. Keyed on step_key (never
+    step_index) so a suggestion survives the reorders/inserts that happen
+    between this compile and the reviewer opening Human Edit."""
+    keys = step_keys(steps)
+    confidence_by_index = {
+        sr.get("index"): sr.get("confidence")
+        for sr in (compile_report.get("steps") or [])
+        if isinstance(sr, dict)
+    }
+    out: list[dict[str, Any]] = []
+    for i, step in enumerate(steps):
+        action_name = step.action.get("action") if isinstance(step.action, dict) else step.action
+        confidence = confidence_by_index.get(i)
+        value = step.value if isinstance(step.value, str) else None
+        out.append({
+            "key": keys[i],
+            "action": action_name,
+            "target_text": (step.identity_bundle.fingerprint.inner_text or "")[:120],
+            "url": step.url,
+            "intent": step.intent,
+            "input_binding": step.input_binding,
+            "value": value,
+            "has_optional_hint": bool(step.optional_hint),
+            "low_confidence": bool(confidence is not None and confidence < 0.75),
+        })
+    return out
+
+
+# ponytail: full-document reads over the 20 most recent local skills, per
+# compile — fine at Build Studio's single-vendor local scale; index binding
+# names by host if this ever needs to scale past that.
+_SIBLING_LOOKUP_LIMIT = 20
+
+
+def _sibling_bindings(visited_hosts: list[str], exclude_skill_id: str) -> dict[str, list[str]]:
+    """Binding names other local workflows for the same host(s) already use —
+    turns naming from a guess into a lookup (BUILD-25 stage b2). Returns {}
+    when this workflow visits no hosts (nothing to match against)."""
+    if not visited_hosts:
+        return {}
+    from conxa_core.storage.json_store import list_skill_summaries, read_skill  # noqa: PLC0415
+
+    host_set = set(visited_hosts)
+    out: dict[str, set[str]] = {}
+    for summary in list_skill_summaries()[:_SIBLING_LOOKUP_LIMIT]:
+        sid = str(summary.get("skill_id") or "")
+        if not sid or sid == exclude_skill_id:
+            continue
+        doc = read_skill(sid)
+        if not doc:
+            continue
+        sib_hosts = set((doc.get("meta") or {}).get("visited_hosts") or []) & host_set
+        if not sib_hosts:
+            continue
+        sib_steps = ((doc.get("skills") or [{}])[0] or {}).get("steps") or []
+        names = {
+            str(s.get("input_binding") or "").strip()
+            for s in sib_steps
+            if isinstance(s, dict) and s.get("input_binding")
+        }
+        if not names:
+            continue
+        for host in sib_hosts:
+            out.setdefault(host, set()).update(names)
+    return {host: sorted(names) for host, names in out.items()}
+
+
+def _apply_second_opinion(
+    compile_report: dict[str, Any],
+    steps: list[SkillStep],
+    *,
+    skill_id: str,
+    goal: str,
+    page_urls: list[str],
+    visited_hosts: list[str],
+) -> dict[str, Any]:
+    """Run the compiler's second opinion (BUILD-25) and write what it finds onto
+    `steps`. Returns the compile_report to use — the one passed in when nothing
+    was applied, a freshly rebuilt one when something was, since a
+    suggest_optional conversion changes a step's compiled shape and the report
+    handed in here was built against the pre-application steps.
+
+    The applied findings are recorded under compile_report["second_opinion"] as
+    an audit trail for the compile log. Nothing in Human Edit reads it: the
+    changes are simply part of the compiled workflow now, indistinguishable from
+    what the fixed rules produced, and a reviewer edits a wrong one the same way
+    they edit any other compiler output.
+
+    Never raises: any exception degrades to the rules-only compile, exactly like
+    a disabled pass or a drained provider pool."""
+    from conxa_compile.llm.workflow_semantics import build_second_opinion  # noqa: PLC0415
+
+    try:
+        findings = build_second_opinion(
+            _semantics_inputs(steps, compile_report),
+            goal=goal,
+            page_urls=page_urls,
+            sibling_bindings=_sibling_bindings(visited_hosts, skill_id),
+        )
+        applied = apply_second_opinion(steps, findings)
+    except Exception:  # noqa: BLE001 — a second, non-primary LLM pass must never fail compile
+        applied = []
+    if not applied:
+        return compile_report
+    # Rebuilt, not patched: _build_compile_report is a pure local function over
+    # `steps`, so re-running it is cheaper than reasoning about which of its
+    # aggregates a conversion invalidated.
+    fresh = _build_compile_report(steps)
+    fresh["second_opinion"] = applied
+    return fresh

@@ -185,3 +185,35 @@ def infer_workflow_intent(
         "decision_points": list(data.get("decision_points") or []),
         "expected_end_state": dict(data.get("expected_end_state") or {}),
     }
+
+
+def infer_workflow_semantics(
+    *,
+    steps: list[dict[str, Any]],
+    goal: str,
+    page_urls: list[str],
+    sibling_bindings: dict[str, list[str]],
+    model: str | None = None,
+    error_detail: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Single whole-workflow LLM call producing compile-time review suggestions
+    (BUILD-25 stage b) — never selectors, never a change to compiled behavior."""
+    payload = {
+        "task": "workflow_semantics",
+        "model": model,
+        "input": {
+            "steps": steps,
+            "goal": goal,
+            "page_urls": page_urls,
+            "sibling_bindings": sibling_bindings,
+        },
+    }
+    data = _call_llm_or_none(
+        "workflow_semantics",
+        payload,
+        settings.llm_selector_timeout_ms,
+        error_detail=error_detail,
+    )
+    if data is None:
+        return None
+    return {"suggestions": list(data.get("suggestions") or [])}

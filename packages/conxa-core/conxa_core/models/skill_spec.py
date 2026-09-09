@@ -233,6 +233,11 @@ class SkillStep(BaseModel):
     # Runtime Tier 1 tries these in order; runtime never calls LLM unless all fail.
     compiled_selectors: list[str] = Field(default_factory=list)
     semantic_description: str = ""        # [contract] "First Name input in Add Person dialog"
+    # [contract] BUILD-25: which part of the workflow this step belongs to —
+    # "login" | "navigate" | "act" | "verify" | "cleanup", or "" when the second-opinion
+    # pass didn't run or didn't label this step. Written by the compiler's second-opinion
+    # pass (compiler/second_opinion.py); nothing downstream reads it yet.
+    phase: str = ""
     snapshot_ref: str = ""                # [executor] which recorded DOM blob this step compiled against
     snapshot_dom_hash: str = ""           # [executor] for cross-compilation cache lookup
 
@@ -253,11 +258,12 @@ class SkillStep(BaseModel):
     # [contract] Conditional-state observation (recording-next-steps.md Priority 2): carried
     # verbatim from the recorded event's optionality/branch_hint (see
     # conxa_core.models.events.RecordedEvent) when the step's target sat inside an optional
-    # interstitial. Advisory only — this step still compiles and executes as a normal required
-    # linear step; it exists so the editor can surface a "treat as optional?" suggestion. Never
-    # read by the compiler's own assertion/branch logic and never populates `branch` on its own
-    # — only editor/workflow_mutations.py's confirm_optional_interstitial (human-initiated)
-    # does that. None for ordinary steps.
+    # interstitial. Never read by the compiler's own assertion/branch logic. Two consumers
+    # convert it into a real try_dismiss branch, both through the same builder
+    # (compiler/second_opinion.py::build_try_dismiss_from_hint): the compiler's
+    # second-opinion pass at compile time, and editor/workflow_mutations.py's
+    # confirm_optional_interstitial when a human confirms one the pass left alone. Cleared to
+    # None by whichever one consumes it. None for ordinary steps.
     optional_hint: dict[str, Any] | None = None
 
     # [mixed] PROD-3: entity binding — see EntityBinding. None when the compiler found no

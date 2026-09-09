@@ -140,9 +140,11 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 │       ├── events.jsonl       (raw RecordedEvent stream)
 │       └── screenshots/
 ├── skills/
+│   ├── {skill_id}.json         (SkillPackage JSON — json_store.py)
 │   └── {skill_id}/
-│       ├── skill.json         (SkillPackage JSON)
-│       └── assets/            (screenshot thumbnails)
+│       ├── assets/            (screenshot thumbnails)
+│       └── edits.jsonl        (reviewer edit log, BUILD-25 stage a — editor/edit_log.py;
+│                                one JSON line per changed field, keyed on step_key)
 ├── skill-packs/
 │   └── {workspace_dir_slug}/   (filesystem-safe transform of workspace_id)
 │       ├── pack.json          (manifest with sync_endpoint, tracking, skill_groups — see §5.2a)
@@ -1295,6 +1297,17 @@ events.jsonl (raw RecordedEvents)
            │   ├── recovery_policy.py → RecoveryBlock
            │   └── confidence/layered.py → confidence score
            │
+           ├── build.py:_build_compile_report() → compile_report (status, per-step confidence)
+           │
+           ├── LLM: llm/workflow_semantics.py → the compiler's second opinion (ONE call,
+           │   LAST — after bindings are deduplicated and the report above exists;
+           │   BUILD-25). Decides rename_binding / parameterize_literal /
+           │   suggest_optional / label_phase; compiler/second_opinion.py APPLIES them
+           │   to the steps. Writes meaning only (input_binding, {{placeholder}} in
+           │   value, phase, try_dismiss branch) — never a selector, identity bundle or
+           │   assertion. Rules-only fallback on disable/failure/drained pool; the
+           │   compile_report is rebuilt when anything was applied.
+           │
            └── → SkillPackage (models/skill_spec.py)
 ```
 
@@ -1641,8 +1654,19 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 | `intent_llm.py` | Legacy per-step intent fallback (used only for steps the workflow-intent graph left tokenless) + per-workflow intent graph via `workflow_intent.py` — one call now sources every step's token AND prose (2026-08-25) | Low–High |
 | `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
 | `recovery_llm.py` | Not on the primary compile path (Human Edit layered check / 1-click fix) | Medium |
+| `workflow_semantics.py` | The compiler's second opinion — one whole-workflow call, sited after `_build_compile_report`, deciding `rename_binding` / `parameterize_literal` / `suggest_optional` / `label_phase` (BUILD-25). `compiler/second_opinion.py` writes them onto the steps: `input_binding`, `{{placeholder}}` tokens in `value`, `phase`, and the `try_dismiss` branch. Never a selector, identity bundle, or assertion. | Low |
 
 `semantic_llm.py` (`semantic_enrichment`) is **not** called during normalize or compile. Missing `input_type` is inferred with policy regex only. `enrich_semantic` remains on Human Edit 1-click fix (`compiler/patch.py`).
+
+**The compiler's second opinion — what it writes, and what it never writes (BUILD-25).** `llm/workflow_semantics.py::build_second_opinion` decides; `compiler/second_opinion.py::apply_second_opinion` writes. The four kinds map onto exactly four surfaces of a compiled step: `rename_binding` sets `input_binding` and rewrites the matching `{{token}}` inside `value`; `parameterize_literal` binds a recorded literal (only on a step that has no binding yet — it never re-points an existing one); `label_phase` sets `SkillStep.phase`; `suggest_optional` converts a step the recorder already flagged stochastic into a `try_dismiss` branch via the shared `build_try_dismiss_from_hint`, clearing `optional_hint`. It never touches `target`, `identity_bundle`, `compiled_selectors`, `validation`, or the frame/tab chain — element identity stays fully deterministic (CLAUDE.md Key Invariants).
+
+**Why applied rather than suggested.** Stage (c) of BUILD-25 was going to put accept/reject chips in Human Edit; that was dropped on 2026-09-09. A reviewer opens Human Review and sees finished work — `sender_email`, not an offer to rename `email_2` — and Human Review is itself the gate for a wrong call. Nothing in the renderer marks a second-opinion change: it is simply part of the compiled workflow, indistinguishable from what the fixed rules produced. Two consequences were accepted knowingly. First, **a compile is no longer byte-identical whether the pass ran or not** — only the routes that apply nothing (disabled, failed, empty, every finding rejected by validation) still are, and the content-hash cache keeps repeat compiles of the same recording stable. Second, `suggest_optional` retires the older *"branch steps compile only from observed states + human confirmation"* rule: the observed state is still required (the pass can only judge hints the recorder already produced — it never invents one), but the confirmation now happens after the fact in Human Review. `confirm_optional_interstitial` remains for hints the pass left alone; there is no un-confirm command, so reversing one means editing the step back by hand.
+
+**Failure / cost / silence behaviour.** Gated by `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED` (default on). Follows `workflow_intent.py`'s established pattern exactly: a local cache (shared via `llm/llm_cache.py`, which `workflow_intent.py` was also migrated onto) keyed on a content hash of the per-step payload + goal + sibling bindings; a failed or empty response is never cached, so a recompile retries; any exception degrades to the rules-only compile rather than failing it. `compile_report["second_opinion"]` records what was actually applied, as an audit trail for the compile log — nothing in Human Edit reads it — and appears only when at least one finding was applied. When anything was applied the report is **rebuilt** from the mutated steps (`_build_compile_report` is a pure local function over `steps`), because a `suggest_optional` conversion changes a step's compiled shape after the first report was computed.
+
+**Validation is the trust boundary, and it matters more now that findings are applied than it did when they were shown.** Findings are keyed on `step_key` (`compiler/step_key.py` — `identity_bundle.stable_hash` plus an occurrence ordinal, with a hashed action+url fallback for element-less steps), never `step_index`, so a reorder or insert cannot misattribute one. `workflow_semantics.py::_validate_findings` silently drops any finding with an unrecognized `step_key`, an unknown `kind`, an invalid binding name, a name colliding with one `_deduplicate_input_bindings` already assigned, a `suggest_optional` on a step with no recorder-observed `optional_hint`, an invalid `label_phase` value, or anything past a precision-first cap of ~1 finding per 2 steps. `apply_second_opinion` adds the shape guards validation cannot see (a rename on a step with no binding, a conversion on a step whose hint is already consumed). "No findings" is a first-class, expected, and common outcome — the prompt explicitly asks for an empty list when nothing is clearly wrong.
+
+**Reviewer edit log (BUILD-25 stage a, 2026-09-09).** `editor/edit_log.py` appends one JSON line per changed field to `data/skills/{skill_id}/edits.jsonl` (see §2.3) for every mutating Human Edit command, hooked once in `backend.py::Backend.dispatch` rather than per-command so undo/redo are covered too. Records are keyed on `step_key`, the same key space as `compile_report.second_opinion` above, and compare only a small allow-list of reviewer-editable fields (`input_binding`, `value`, `intent`, `semantic_description`, `action.action`, `optional_hint`, `branch`, `validation.assertions`) — never the whole step. Writing is failure-silent, matching every other local cache/log in the compile pipeline. It is the eval set for the pass above, scored by `conxa-cloud/scripts/eval_suggestions.py`, and the training pair for any future fine-tune. The join changed meaning when the pass went from suggesting to applying: an edit on a `(step_key, field)` the pass wrote is now a reviewer **overriding** it, so the harness reports `override_rate` (lower is better) rather than a precision score, alongside the unchanged `miss_rate` (edits on the same fields where the pass said nothing). Neither is a verdict on its own — a rename the reviewer preferred differently costs nothing, a reverted `parameterize_literal` would have shipped a broken input, and the log does not distinguish them.
 
 `anchor_vision_llm.py` always downscales the recorder's screenshot to JPEG bounded at 1024px
 on the longest side (`_downscale_and_encode`) before sending it to a vision provider — every
@@ -2464,17 +2488,26 @@ second consumer of the same signal) to distinguish "this banner just appeared" f
 was always on the page," but an unconfirmable check (empty buffer, e.g. first action of the
 session) still stamps — false positives are harmless. A match sets
 `RecordedEvent.optionality = "stochastic"` and `branch_hint = {kind: "try_dismiss",
-container_signal}`. `build.py` carries this onto `SkillStep.optional_hint` **verbatim, advisory
-only** — it does not change compiled behavior; the step still compiles as a normal required linear
-step, honoring the invariant that branch steps compile only from observed states + human
-confirmation. `StepEditorDTO.optional_hint` surfaces it read-only; Human Edit
-(`WorkflowStepItem.tsx`'s `StepBadges`) renders a "treat as optional?" affordance that calls
-`cmd_confirm_optional_interstitial` →
-`workflow_mutations.confirm_optional_interstitial`, which rewrites the step's `action` to
-`try_dismiss` and scaffolds `branch.candidates` from the step's own recorded selector plus the
-observed `container_signal`, then clears `optional_hint`. This is a structural mutation (same shape
-as `insert_branch_step`/`delete_branch_step`) — it bypasses `patch_gate.py` entirely rather than
-going through `cmd_patch_step`.
+container_signal}`. `build.py` carries this onto `SkillStep.optional_hint` **verbatim**; the
+per-step compile loop never reads it. Two consumers convert it into a real `try_dismiss` branch,
+and both go through the same builder (`compiler/second_opinion.py::build_try_dismiss_from_hint`)
+so the two paths cannot produce different branch shapes:
+
+1. **At compile time** — the second opinion's `suggest_optional` kind (BUILD-25, see §7.2).
+   Observed state is still required: the pass can only judge hints the recorder already produced,
+   never invent one. What changed on 2026-09-09 is *when* the human confirms — after the fact, in
+   Human Review, rather than before.
+2. **At review time** — for any hint the pass left alone. `StepEditorDTO.optional_hint` surfaces it
+   read-only; Human Edit (`WorkflowStepItem.tsx`'s `StepBadges`) renders a "treat as optional?"
+   affordance that calls `cmd_confirm_optional_interstitial` →
+   `workflow_mutations.confirm_optional_interstitial`, which rewrites the step's `action` to
+   `try_dismiss`, applies the shared builder's `intent`/`branch`/`recovery`, then clears
+   `optional_hint`. This is a structural mutation (same shape as
+   `insert_branch_step`/`delete_branch_step`) — it bypasses `patch_gate.py` entirely rather than
+   going through `cmd_patch_step`.
+
+Either way the hint is consumed exactly once, and there is no un-confirm command: reversing a
+conversion means editing the step back by hand.
 
 **Editor authoring (2026-07-10, closes the remaining EXEC-1 gap)**: `if_present`/`try_dismiss`/
 `wait_for_one_of` are now insertable from Human Edit's Add-action menu. `if_present`'s nested
