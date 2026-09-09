@@ -16,6 +16,7 @@ that must hold for that to be safe:
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -30,6 +31,7 @@ from conxa_core.config import settings
 from conxa_core.models.skill_spec import SkillStep
 from conxa_compile.compiler.second_opinion import (
     apply_second_opinion,
+    archive_flagged_steps,
     build_try_dismiss_from_hint,
     rewrite_placeholder,
 )
@@ -61,8 +63,8 @@ def _minimal_click_event() -> dict:
 
 
 _VISION_ANCHOR_OK = {
-    "primary_phrase": "Submit control in form",
-    "secondary": [{"element": "login form", "relation": "inside"}],
+    "chosen_frame": "before_near",
+    "anchor_sentence": "The submit control inside the login form",
 }
 
 
@@ -89,7 +91,6 @@ def _compile_fixture(session_id: str, events: list[dict]):
     return data_dir, (
         patch.object(settings, "data_dir", data_dir),
         patch("conxa_core.llm._router", _FakeRouter()),
-        patch("conxa_compile.llm.intent_llm.call_llm", return_value=None),
         patch("conxa_compile.llm.anchor_vision_llm.call_llm", return_value=_VISION_ANCHOR_OK),
     )
 
@@ -179,6 +180,32 @@ class SecondOpinionCompileTests(unittest.TestCase):
         for field in ("target", "identity_bundle", "compiled_selectors", "validation", "frame", "tab"):
             self.assertEqual(applied_step[field], baseline_step[field], field)
 
+    def test_flag_noise_finding_removes_step_and_archives_it(self) -> None:
+        """flag_noise (stage d) is the pass's one destructive kind: applied,
+        but as an archive rather than a silent delete — the step disappears
+        from what ships, but its full data survives under
+        compile_report["archived_steps"] so it can be restored later."""
+        baseline_steps = self._compile().skills[0].steps
+        self.assertEqual(len(baseline_steps), 2, "fixture compiles to a synthetic navigate + the click")
+        keys = step_keys(baseline_steps)
+        click_key = keys[1]
+        canned = [{
+            "step_key": click_key, "kind": "flag_noise", "current": "",
+            "proposed": "no_op_action", "why": "recorder observed no effect",
+        }]
+        pkg = self._compile(
+            semantics_patch=patch(
+                "conxa_compile.llm.workflow_semantics.build_second_opinion", return_value=canned
+            )
+        )
+        self.assertEqual(len(pkg.skills[0].steps), 1, "only the navigate step ships")
+        self.assertEqual(pkg.skills[0].steps[0].action, "navigate")
+        self.assertEqual(len(pkg.compile_report["archived_steps"]), 1)
+        archived = pkg.compile_report["archived_steps"][0]
+        self.assertEqual(archived["step_key"], click_key)
+        self.assertEqual(archived["category"], "no_op_action")
+        self.assertEqual(archived["step"]["action"], "click")
+
     def test_finding_for_an_unknown_step_applies_nothing(self) -> None:
         canned = [{"step_key": "not-a-real-key#1", "kind": "label_phase", "current": "", "proposed": "act"}]
         pkg = self._compile(
@@ -262,6 +289,78 @@ class ApplySecondOpinionTests(unittest.TestCase):
         step = _type_step(input_binding="a", value="{{a}}")
         self.assertEqual(apply_second_opinion([step], []), [])
         self.assertEqual(step.input_binding, "a")
+
+    def test_suggest_assertion_appends_advisory_assertion(self) -> None:
+        step = _type_step()
+        keys = step_keys([step])
+        proposal = json.dumps({"type": "text_present", "target": "Payment successful"})
+        applied = apply_second_opinion(
+            [step],
+            [{"step_key": keys[0], "kind": "suggest_assertion", "current": "", "proposed": proposal}],
+        )
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(len(step.validation.assertions), 1)
+        self.assertEqual(step.validation.assertions[0].type, "text_present")
+        self.assertEqual(step.validation.assertions[0].target, "Payment successful")
+        self.assertFalse(step.validation.assertions[0].required, "must always be advisory")
+
+    def test_suggest_assertion_duplicate_is_a_noop(self) -> None:
+        step = _type_step()
+        keys = step_keys([step])
+        proposal = json.dumps({"type": "text_present", "target": "Payment successful"})
+        finding = {"step_key": keys[0], "kind": "suggest_assertion", "current": "", "proposed": proposal}
+        apply_second_opinion([step], [finding])
+        self.assertEqual(apply_second_opinion([step], [finding]), [], "already have this exact check")
+        self.assertEqual(len(step.validation.assertions), 1)
+
+    def test_suggest_assertion_malformed_json_applies_nothing(self) -> None:
+        step = _type_step()
+        keys = step_keys([step])
+        self.assertEqual(
+            apply_second_opinion(
+                [step], [{"step_key": keys[0], "kind": "suggest_assertion", "proposed": "not json"}]
+            ),
+            [],
+        )
+        self.assertEqual(step.validation.assertions, [])
+
+
+class ArchiveFlaggedStepsTests(unittest.TestCase):
+    """flag_noise's own operation (stage d) — removes a step but never
+    discards it, unlike every other kind, which only ever rewrites a field."""
+
+    def test_matched_step_removed_and_archived(self) -> None:
+        keep_a, drop_b, keep_c = _type_step(), _type_step(), _type_step()
+        keys = step_keys([keep_a, drop_b, keep_c])
+        kept, archived = archive_flagged_steps(
+            [keep_a, drop_b, keep_c],
+            [{
+                "step_key": keys[1], "kind": "flag_noise",
+                "proposed": "no_op_action", "why": "no observed effect",
+            }],
+        )
+        self.assertEqual(kept, [keep_a, keep_c])
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0]["step_key"], keys[1])
+        self.assertEqual(archived[0]["category"], "no_op_action")
+        self.assertEqual(archived[0]["step"]["action"], {"action": "type"})
+
+    def test_no_flag_noise_findings_returns_steps_unchanged(self) -> None:
+        step = _type_step()
+        keys = step_keys([step])
+        kept, archived = archive_flagged_steps(
+            [step], [{"step_key": keys[0], "kind": "label_phase", "proposed": "act"}]
+        )
+        self.assertEqual(kept, [step])
+        self.assertEqual(archived, [])
+
+    def test_finding_for_an_unknown_step_key_is_ignored(self) -> None:
+        step = _type_step()
+        kept, archived = archive_flagged_steps(
+            [step], [{"step_key": "not-a-real-key#1", "kind": "flag_noise", "proposed": "no_op_action"}]
+        )
+        self.assertEqual(kept, [step])
+        self.assertEqual(archived, [])
 
 
 class RewritePlaceholderTests(unittest.TestCase):
@@ -379,3 +478,119 @@ class ValidateFindingsTests(unittest.TestCase):
 
     def test_not_a_list_returns_empty(self) -> None:
         self.assertEqual(self._validate(None), [])
+
+    def _validate_custom(self, raw: Any, steps_context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        keys = {str(s.get("key") or "") for s in steps_context}
+        return _validate_findings(raw, step_keys_in_workflow=keys, steps_context=steps_context)
+
+    def test_suggest_assertion_grounded_text_survives(self) -> None:
+        ctx = [{"key": "k1", "target_text": "Payment successful", "intent": "", "url": ""}]
+        proposal = json.dumps({"type": "text_present", "target": "Payment successful"})
+        out = self._validate_custom(
+            [{"step_key": "k1", "kind": "suggest_assertion", "proposed": proposal}], ctx
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(
+            json.loads(out[0]["proposed"]), {"type": "text_present", "target": "Payment successful"}
+        )
+
+    def test_suggest_assertion_ungrounded_target_dropped(self) -> None:
+        ctx = [{"key": "k1", "target_text": "", "intent": "", "url": ""}]
+        proposal = json.dumps({"type": "text_present", "target": "Text nowhere in this workflow"})
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "suggest_assertion", "proposed": proposal}], ctx
+            ),
+            [],
+        )
+
+    def test_suggest_assertion_selector_type_rejected(self) -> None:
+        """Never a selector-bearing type — its target is a raw Playwright
+        selector, and this pass may never write one."""
+        ctx = [{"key": "k1", "target_text": "#submit", "intent": "", "url": ""}]
+        proposal = json.dumps({"type": "selector_present", "target": "#submit"})
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "suggest_assertion", "proposed": proposal}], ctx
+            ),
+            [],
+        )
+
+    def test_suggest_assertion_state_changed_allows_empty_target(self) -> None:
+        ctx = [{"key": "k1", "target_text": "", "intent": "", "url": ""}]
+        proposal = json.dumps({"type": "state_changed", "target": ""})
+        out = self._validate_custom(
+            [{"step_key": "k1", "kind": "suggest_assertion", "proposed": proposal}], ctx
+        )
+        self.assertEqual(len(out), 1)
+
+    def test_suggest_assertion_malformed_json_dropped(self) -> None:
+        ctx = [{"key": "k1", "target_text": "x", "intent": "", "url": ""}]
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "suggest_assertion", "proposed": "not json"}], ctx
+            ),
+            [],
+        )
+
+    def _noise_step(self, **overrides: Any) -> dict[str, Any]:
+        base = {
+            "key": "k1", "action": "click", "post_condition_effect": "none",
+            "has_required_assertion": False, "input_binding": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_flag_noise_recorder_verified_case_survives(self) -> None:
+        out = self._validate_custom(
+            [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
+            [self._noise_step()],
+        )
+        self.assertEqual(len(out), 1)
+
+    def test_flag_noise_unsafe_action_dropped(self) -> None:
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
+                [self._noise_step(action="type")],
+            ),
+            [],
+        )
+
+    def test_flag_noise_real_effect_dropped(self) -> None:
+        """The model's own opinion is never enough — only the recorder's own
+        observation of no effect can trigger this."""
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
+                [self._noise_step(post_condition_effect="value_set")],
+            ),
+            [],
+        )
+
+    def test_flag_noise_required_assertion_dropped(self) -> None:
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
+                [self._noise_step(has_required_assertion=True)],
+            ),
+            [],
+        )
+
+    def test_flag_noise_input_binding_dropped(self) -> None:
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
+                [self._noise_step(input_binding="reference_number")],
+            ),
+            [],
+        )
+
+    def test_flag_noise_unknown_category_dropped(self) -> None:
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "made_up_category"}],
+                [self._noise_step()],
+            ),
+            [],
+        )

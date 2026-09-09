@@ -68,8 +68,8 @@ def _write_minimal_screenshot(session_id: str, ev: dict, *, data_dir: Path) -> N
 
 
 _VISION_ANCHOR_OK = {
-    "primary_phrase": "Submit control in form",
-    "secondary": [{"element": "login form", "relation": "inside"}],
+    "chosen_frame": "before_near",
+    "anchor_sentence": "The submit control inside the login form",
 }
 
 
@@ -102,7 +102,6 @@ def _compile_with_vision_mocks(session_id: str, events: list[dict], *, call_llm_
         data_dir,
         patch.object(settings, "data_dir", data_dir),
         patch("conxa_core.llm._router", _FakeRouter()),
-        patch("conxa_compile.llm.intent_llm.call_llm", return_value=None),
         patch("conxa_compile.llm.anchor_vision_llm.call_llm", return_value=call_llm_return),
     )
 
@@ -1063,41 +1062,6 @@ class PhaseTests(unittest.TestCase):
         out = normalize_compiler_intent(ev, "", policy)
         self.assertEqual(out, "")
 
-    def test_generate_intent_with_llm_returns_blank_when_provider_pool_exhausted(self) -> None:
-        # call_llm returning None on every attempt means the router already exhausted its own
-        # internal provider retries — a real outage. No template fallback: leave it blank.
-        from conxa_compile.llm import intent_llm
-
-        step = {
-            "action": {"action": "click"},
-            "target": {"tag": "button", "name": "unique_outage_probe_element"},
-        }
-        with patch.object(intent_llm, "_read_cache", return_value={}), \
-                patch.object(intent_llm, "_write_cache") as write_cache, \
-                patch("conxa_compile.llm.intent_llm.call_llm", return_value=None) as mock_call:
-            out = intent_llm.generate_intent_with_llm(step)
-        self.assertEqual(out, "")
-        self.assertEqual(mock_call.call_count, intent_llm.MAX_INTENT_ATTEMPTS)
-        write_cache.assert_not_called()  # an unresolved attempt must never be cached
-
-    def test_generate_intent_with_llm_retries_past_a_generic_first_answer(self) -> None:
-        # First attempt returns a generic word (present in generic_intents' default set);
-        # the corrective retry should get a second, specific answer instead of settling.
-        from conxa_compile.llm import intent_llm
-
-        step = {
-            "action": {"action": "click"},
-            "target": {"tag": "button", "name": "unique_retry_probe_element"},
-        }
-        responses = [{"intent": "interact"}, {"intent": "confirm_delete_account"}]
-        with patch.object(intent_llm, "_read_cache", return_value={}), \
-                patch.object(intent_llm, "_write_cache") as write_cache, \
-                patch("conxa_compile.llm.intent_llm.call_llm", side_effect=responses) as mock_call:
-            out = intent_llm.generate_intent_with_llm(step)
-        self.assertEqual(out, "confirm_delete_account")
-        self.assertEqual(mock_call.call_count, 2)
-        write_cache.assert_called_once()
-
     def test_static_audit_flags_weak_reference(self) -> None:
         from conxa_compile.confidence.uncertainty import audit_reference
 
@@ -1372,28 +1336,34 @@ class PhaseTests(unittest.TestCase):
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
 
-    def test_anchor_vision_prompt_defines_relation_direction_target_relative_to_anchor(self) -> None:
-        from conxa_compile.llm import anchor_vision_llm
+    def test_anchor_vision_frameset_sends_all_frames_and_returns_sentence_plus_phrases(self) -> None:
         from conxa_compile.llm.anchor_vision_llm import generate_anchors_for_step_or_raise
         from conxa_compile.policy.bundle import get_policy_bundle
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "images").mkdir()
-            Image.new("RGB", (100, 80), "white").save(root / "images" / "a.jpg")
+            for name in ("before_far", "before_near", "at", "after_near", "after_far"):
+                Image.new("RGB", (100, 80), "white").save(root / "images" / f"{name}.jpg")
             with (
                 patch.object(settings, "data_dir", root),
                 patch("conxa_core.llm._router", _FakeRouter()),
                 patch("conxa_compile.llm.anchor_vision_llm.supports_multimodal_chat", return_value=True),
                 patch(
                     "conxa_compile.llm.anchor_vision_llm.call_llm",
-                    return_value={"primary_phrase": "email field", "secondary": []},
+                    return_value={
+                        "chosen_frame": "before_near",
+                        "anchor_sentence": "The blue Sign in button below the password field",
+                    },
                 ) as call,
             ):
-                generate_anchors_for_step_or_raise(
+                result = generate_anchors_for_step_or_raise(
                     {
                         "visual": {
-                            "full_screenshot": "images/a.jpg",
+                            "frames": {
+                                l: f"images/{l}.jpg"
+                                for l in ("before_far", "before_near", "at", "after_near", "after_far")
+                            },
                             "bbox": {"x": 1, "y": 1, "w": 30, "h": 20},
                             "viewport": "100x80",
                         }
@@ -1404,23 +1374,24 @@ class PhaseTests(unittest.TestCase):
                     step_index=0,
                 )
 
+        self.assertEqual(call.call_args.args[0], "anchor_vision_frameset")
         payload = call.call_args.args[1]
-        user_text = str(payload.get("user_text") or "")
-        self.assertIn("Relation direction is TARGET relative to ANCHOR", user_text)
-        self.assertIn('"element":"email label","relation":"below"', user_text)
-        self.assertIn('"element":"password input","relation":"above"', user_text)
+        self.assertEqual(len(payload["frames"]), 5)
+        self.assertEqual([f["label"] for f in payload["frames"]],
+                          ["before_far", "before_near", "at", "after_near", "after_far"])
+        self.assertEqual(result["chosen_frame"], "before_near")
+        self.assertTrue(result["anchor_sentence"])
+        self.assertTrue(result["anchor_phrases"])
 
-    def test_vision_payload_is_always_bounded_jpeg_even_with_degenerate_bbox(self) -> None:
-        """A missing/zero-size bbox used to skip highlighting AND skip re-encoding,
-        shipping the raw full-resolution PNG video frame straight to the vision LLM.
-        Every path must now produce a bounded-resolution JPEG."""
+    def test_anchor_vision_frameset_falls_back_to_full_screenshot_when_no_frames(self) -> None:
+        """Recordings captured before 5-frame extraction shipped only have
+        full_screenshot — still compiles, as a single-frame request."""
         from conxa_compile.llm.anchor_vision_llm import generate_anchors_for_step_or_raise
         from conxa_compile.policy.bundle import get_policy_bundle
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "images").mkdir()
-            # Matches the real recorder frame format/size (1280x720 PNG, see frame_extractor.py).
             Image.new("RGB", (1280, 720), "white").save(root / "images" / "a.png", "PNG")
             with (
                 patch.object(settings, "data_dir", root),
@@ -1428,7 +1399,7 @@ class PhaseTests(unittest.TestCase):
                 patch("conxa_compile.llm.anchor_vision_llm.supports_multimodal_chat", return_value=True),
                 patch(
                     "conxa_compile.llm.anchor_vision_llm.call_llm",
-                    return_value={"primary_phrase": "email field", "secondary": []},
+                    return_value={"chosen_frame": "before_near", "anchor_sentence": "email field"},
                 ) as call,
             ):
                 generate_anchors_for_step_or_raise(
@@ -1446,22 +1417,21 @@ class PhaseTests(unittest.TestCase):
                 )
 
         payload = call.call_args.args[1]
-        self.assertEqual(payload["image_mime"], "image/jpeg")
-        image_bytes = base64.standard_b64decode(payload["image_base64"])
+        self.assertEqual(len(payload["frames"]), 1)
+        self.assertEqual(payload["frames"][0]["label"], "before_near")
+        image_bytes = base64.standard_b64decode(payload["frames"][0]["image_base64"])
         self.assertTrue(image_bytes.startswith(b"\xff\xd8"))  # JPEG magic bytes, not PNG's \x89PNG
         with Image.open(io.BytesIO(image_bytes)) as im:
             self.assertLessEqual(max(im.size), 1024)
 
-    def test_prefetch_vision_anchors_batch_populates_cache_for_the_per_step_call(self) -> None:
-        """Stage 4 (mega-workflow 502 fix): prefetch_vision_anchors_batch groups
-        several steps' vision requests into one anchor_vision_batch call and
-        writes successes into the anchor cache, so generate_anchors_for_step_or_raise's
+    def test_prefetch_vision_anchors_parallel_populates_cache_for_the_per_step_call(self) -> None:
+        """One anchor_vision_frameset call per step, fired concurrently, writes
+        successes into the anchor cache, so generate_anchors_for_step_or_raise's
         later per-step call becomes a cache hit — zero extra network calls for
         anything the prefetch already resolved."""
-        from conxa_compile.llm import anchor_vision_llm
         from conxa_compile.llm.anchor_vision_llm import (
             generate_anchors_for_step_or_raise,
-            prefetch_vision_anchors_batch,
+            prefetch_vision_anchors_parallel,
         )
         from conxa_compile.policy.bundle import get_policy_bundle
 
@@ -1486,51 +1456,92 @@ class PhaseTests(unittest.TestCase):
                     }
                 },
             ]
-            batch_response = {
-                "results": [
-                    {"primary_phrase": "email field", "secondary": []},
-                    {"primary_phrase": "password field", "secondary": []},
-                ]
-            }
+
+            def _fake_call_llm(task, payload, *args, **kwargs):
+                user_text = payload.get("user_text") or ""
+                if "enter_email" in user_text or "images/a" in str(payload):
+                    return {"chosen_frame": "before_near", "anchor_sentence": "email field"}
+                return {"chosen_frame": "before_near", "anchor_sentence": "password field"}
+
             with (
                 patch.object(settings, "data_dir", root),
                 patch("conxa_core.llm._router", _FakeRouter()),
                 patch("conxa_compile.llm.anchor_vision_llm.supports_multimodal_chat", return_value=True),
                 patch(
                     "conxa_compile.llm.anchor_vision_llm.call_llm",
-                    return_value=batch_response,
+                    side_effect=_fake_call_llm,
                 ) as call,
             ):
-                prefetch_vision_anchors_batch(
+                prefetch_vision_anchors_parallel(
                     [(0, events[0], "enter_email"), (1, events[1], "enter_password")],
                     session_root=root,
                     policy=get_policy_bundle().data,
                 )
-                self.assertEqual(call.call_args.args[0], "anchor_vision_batch")
-                self.assertEqual(len(call.call_args.args[1]["items"]), 2)
+                self.assertEqual(call.call_args.args[0], "anchor_vision_frameset")
 
                 # Both steps' anchors must now be cache hits — no further call_llm.
                 with patch(
                     "conxa_compile.llm.anchor_vision_llm.call_llm",
                     side_effect=AssertionError("should be a cache hit after prefetch"),
                 ):
-                    anchors_a = generate_anchors_for_step_or_raise(
+                    result_a = generate_anchors_for_step_or_raise(
                         events[0], session_root=root, final_intent="enter_email",
                         policy=get_policy_bundle().data, step_index=0,
                     )
-                    anchors_b = generate_anchors_for_step_or_raise(
+                    result_b = generate_anchors_for_step_or_raise(
                         events[1], session_root=root, final_intent="enter_password",
                         policy=get_policy_bundle().data, step_index=1,
                     )
-                self.assertTrue(anchors_a)
-                self.assertTrue(anchors_b)
-                self.assertEqual(anchors_a[0]["element"], "email field")
-                self.assertEqual(anchors_b[0]["element"], "password field")
+                self.assertEqual(result_a["anchor_sentence"], "email field")
+                self.assertEqual(result_b["anchor_sentence"], "password field")
 
-    def test_prefetch_vision_anchors_batch_never_raises_on_llm_failure(self) -> None:
-        """Prefetch is pure optimization — if the batch call fails entirely, the
+    def test_prefetch_vision_anchors_parallel_requeues_only_rate_limited_steps(self) -> None:
+        """A step whose call raises ProxyUnavailable gets requeued into the next
+        wave and retried; a step that succeeds on the first wave is never called
+        again."""
+        from services.llm_proxy_client import ProxyUnavailable
+        from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_parallel
+        from conxa_compile.policy.bundle import get_policy_bundle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "images").mkdir()
+            Image.new("RGB", (100, 80), "white").save(root / "images" / "a.jpg")
+            Image.new("RGB", (100, 80), "white").save(root / "images" / "b.jpg")
+            events = [
+                {"visual": {"full_screenshot": "images/a.jpg", "bbox": {"x": 1, "y": 1, "w": 30, "h": 20}, "viewport": "100x80"}},
+                {"visual": {"full_screenshot": "images/b.jpg", "bbox": {"x": 5, "y": 5, "w": 25, "h": 15}, "viewport": "100x80"}},
+            ]
+            call_counts = {"a": 0, "b": 0}
+
+            def _fake_call_llm(task, payload, *args, **kwargs):
+                key = "a" if "enter_email" in str(payload) else "b"
+                call_counts[key] += 1
+                if key == "b" and call_counts["b"] == 1:
+                    raise ProxyUnavailable("pool exhausted")
+                return {"chosen_frame": "before_near", "anchor_sentence": f"field {key}"}
+
+            with (
+                patch.object(settings, "data_dir", root),
+                patch.object(settings, "llm_anchor_vision_max_concurrent_steps", 2),
+                patch("conxa_compile.llm.anchor_vision_llm.time.sleep"),
+                patch("conxa_core.llm._router", _FakeRouter()),
+                patch("conxa_compile.llm.anchor_vision_llm.supports_multimodal_chat", return_value=True),
+                patch("conxa_compile.llm.anchor_vision_llm.call_llm", side_effect=_fake_call_llm),
+            ):
+                prefetch_vision_anchors_parallel(
+                    [(0, events[0], "enter_email"), (1, events[1], "enter_password")],
+                    session_root=root,
+                    policy=get_policy_bundle().data,
+                )
+
+        self.assertEqual(call_counts["a"], 1)  # never requeued
+        self.assertEqual(call_counts["b"], 2)  # requeued once after ProxyUnavailable
+
+    def test_prefetch_vision_anchors_parallel_never_raises_on_llm_failure(self) -> None:
+        """Prefetch is pure optimization — if every call fails entirely, the
         per-step path must still be able to run its own (unmocked-away) call."""
-        from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_batch
+        from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_parallel
         from conxa_compile.policy.bundle import get_policy_bundle
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1554,47 +1565,9 @@ class PhaseTests(unittest.TestCase):
                 ),
             ):
                 # Must not raise.
-                prefetch_vision_anchors_batch(
+                prefetch_vision_anchors_parallel(
                     [(0, ev, "enter_email")], session_root=root, policy=get_policy_bundle().data,
                 )
-
-    def test_build_prefetch_circuit_breaks_on_first_infra_failure(self) -> None:
-        """compiler.build._prefetch_vision_anchors used to resolve every event's
-        intent serially before batching (Stage 4), on the false assumption that
-        intent_llm's cache makes a second call free — false exactly when the
-        proxy is degraded, since a failed call caches nothing. 41 events at
-        ~12s/call (the observed fast-fail path) produced an 8-minute silent
-        stall before "Compiling step 1" even logged. Fixed 2026-08-23: the first
-        ProxyUnavailable/CloudUnreachable bails out of prefetching entirely for
-        this compile — no further intent calls, no batch call — instead of
-        grinding through every remaining event."""
-        import conxa_compile.compiler.build as compiler_build
-        from services.llm_proxy_client import ProxyUnavailable
-
-        calls: list[int] = []
-
-        def fake_generate_intent(ev):
-            calls.append(1)
-            if len(calls) == 1:
-                raise ProxyUnavailable("proxy down")
-            raise AssertionError("must not resolve intent for a second event after the first infra failure")
-
-        events = [_minimal_click_event(), _minimal_click_event(), _minimal_click_event()]
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with (
-                patch.object(compiler_build, "generate_intent_with_llm", fake_generate_intent),
-                patch(
-                    "conxa_compile.llm.anchor_vision_llm.prefetch_vision_anchors_batch",
-                    side_effect=AssertionError("must not batch after bailing out on the first infra failure"),
-                ),
-            ):
-                # Must not raise, and must return promptly (no per-event blocking loop).
-                compiler_build._prefetch_vision_anchors(events, session_root=root, policy={})
-
-        self.assertEqual(len(calls), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

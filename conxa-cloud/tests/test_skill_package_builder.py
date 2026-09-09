@@ -763,6 +763,42 @@ class TestSavedSkillJsonBuild:
             }
         ]
 
+    def test_saved_skill_recovery_carries_the_labeled_phase(self, tmp_path):
+        """BUILD-25 stage e: the compiler's second-opinion pass's label_phase
+        finding, read by runtime/app/failure_response.js's Tier B recovery
+        prompt. Absent on any step the pass never labeled."""
+        saved_skill = {
+            "meta": {"id": "skill_123", "title": "Delete Database"},
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {
+                            "action": "click",
+                            "intent": "sign_in",
+                            "phase": "login",
+                            "target": {"primary_selector": "#login-submit", "role": "button"},
+                        },
+                        {
+                            "action": "click",
+                            "intent": "unlabeled_step",
+                            "target": {"primary_selector": "#other", "role": "button"},
+                        },
+                    ],
+                }
+            ],
+        }
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="delete_database",
+            saved_skill=saved_skill,
+        )
+
+        recovery = json.loads((tmp_path / "skills" / "delete_database" / "recovery.json").read_text(encoding="utf-8"))
+        assert recovery["steps"][0]["phase"] == "login"
+        assert "phase" not in recovery["steps"][1]
+
     def test_saved_skill_recovery_writes_visual_refs_from_saved_step_screenshots(self, tmp_path, monkeypatch):
         import conxa_compile.skill_package_builder_saved_skill as skill_package_builder_saved_skill
 
@@ -812,6 +848,78 @@ class TestSavedSkillJsonBuild:
 
         recovery = json.loads((skill_dir / "recovery.json").read_text(encoding="utf-8"))
         assert recovery["steps"][0]["visual_ref"] == "visuals/Image_1.jpg"
+
+    def test_saved_skill_recovery_visual_ref_uses_chosen_frame_and_carries_anchor_sentence(self, tmp_path, monkeypatch):
+        """visual_ref now resolves through signals.visual.default_frame_label (the
+        vision LLM's chosen_frame) against signals.visual.frames, instead of always
+        the deterministic before_near/full_screenshot frame — and the full prose
+        anchor sentence rides alongside the short anchors as its own field."""
+        import conxa_compile.skill_package_builder_saved_skill as skill_package_builder_saved_skill
+
+        data_dir = tmp_path / "data"
+        image_dir = data_dir / "sessions" / "sess_visual" / "images"
+        image_dir.mkdir(parents=True)
+        Image.new("RGB", (120, 80), "white").save(image_dir / "before_near.jpg")
+        chosen_image = image_dir / "at.jpg"
+        Image.new("RGB", (120, 80), (10, 20, 30)).save(chosen_image)
+        monkeypatch.setattr(skill_package_builder_saved_skill, "resolve_skill_asset", lambda rel: data_dir / rel)
+
+        saved_skill = {
+            "meta": {
+                "id": "skill_456",
+                "title": "Submit Form",
+                "source_session_id": "sess_visual",
+            },
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {
+                            "action": "click",
+                            "target": {"primary_selector": 'text="Submit"'},
+                            "signals": {
+                                "visual": {
+                                    "full_screenshot": "images/before_near.jpg",
+                                    "default_frame_label": "at",
+                                    "frames": {
+                                        "before_near": "images/before_near.jpg",
+                                        "at": "images/at.jpg",
+                                    },
+                                    "bbox": {"x": 10, "y": 12, "w": 40, "h": 20},
+                                    "viewport": "120x80",
+                                },
+                                "anchors": [
+                                    {"element": "submit", "relation": "near"},
+                                    {"element": "The blue Submit button", "relation": "target_sentence"},
+                                ],
+                            },
+                            "recovery": {
+                                "anchors": [
+                                    {"element": "submit", "relation": "near"},
+                                    {"element": "The blue Submit button", "relation": "target_sentence"},
+                                ]
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="submit_form",
+            saved_skill=saved_skill,
+        )
+
+        skill_dir = tmp_path / "skills" / "submit_form"
+        visual_path = skill_dir / "visuals" / "Image_1.jpg"
+        assert visual_path.is_file()
+
+        recovery = json.loads((skill_dir / "recovery.json").read_text(encoding="utf-8"))
+        entry = recovery["steps"][0]
+        assert entry["anchor_sentence"] == "The blue Submit button"
+        # The sentence must not also show up as one of the short anchor phrases.
+        assert all(a["text"] != "The blue Submit button" for a in entry["anchors"])
 
     def test_saved_skill_recovery_carries_recorded_page_structure(self, tmp_path):
         """The agent recovery tier is handed a ranked list of what is on the page NOW. That
