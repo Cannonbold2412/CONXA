@@ -9,12 +9,17 @@ finished work rather than a list of chips to approve.
   parameterize_literal  "INV-2024-0891"      -> {{reference_number}}
   label_phase           step.phase           -> login|navigate|act|verify|cleanup
   suggest_optional      a required step      -> a try_dismiss branch
+  suggest_assertion     (nothing)            -> an advisory validation.assertions entry
+  flag_noise            a no-op step         -> removed from `steps`, archived (see below)
 
 What this module deliberately does NOT touch: selectors, identity bundles,
-compiled_selectors, assertions, frame/tab chains, or anything else describing
-*how* an element is found. CLAUDE.md's "LLM does not write selector strings on
-the primary compile path" invariant is intact — the pass writes meaning
-(binding names, placeholders, phase, optionality), never element addresses.
+compiled_selectors, wait_for/success_conditions, frame/tab chains, or anything
+else describing *how* an element is found. CLAUDE.md's "LLM does not write
+selector strings on the primary compile path" invariant is intact —
+suggest_assertion may only append a text/URL/state Assertion (never a
+selector-bearing type) and always forces required=False, so a wrong one can
+never halt a run. flag_noise is the pass's one destructive kind; see
+archive_flagged_steps below for why it archives rather than deletes.
 
 Human Review is the gate. Every field written here is one a reviewer can edit
 in Human Edit, and nothing marks it as machine-written — an applied rename is
@@ -31,10 +36,11 @@ paths cannot drift.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
-from conxa_core.models.skill_spec import RecoveryBlock, SkillStep
+from conxa_core.models.skill_spec import Assertion, RecoveryBlock, SkillStep
 
 from conxa_compile.compiler.action_policy import no_recovery_block
 from conxa_compile.compiler.step_key import step_keys
@@ -116,6 +122,28 @@ def _apply_one(step: SkillStep, kind: str, current: str, proposed: str) -> bool:
         step.optional_hint = None  # consumed by this conversion
         return True
 
+    if kind == "suggest_assertion":
+        try:
+            parsed = json.loads(proposed)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        new_assertion = Assertion(
+            type=str(parsed.get("type") or ""),
+            target=str(parsed.get("target") or ""),
+            required=False,  # advisory only — a wrong call here can never halt a run
+        )
+        if any(
+            a.type == new_assertion.type and a.target == new_assertion.target
+            for a in step.validation.assertions
+        ):
+            return False  # idempotent: already have this exact check (e.g. across recompiles)
+        step.validation = step.validation.model_copy(
+            update={"assertions": [*step.validation.assertions, new_assertion]}
+        )
+        return True
+
     return False
 
 
@@ -141,6 +169,44 @@ def apply_second_opinion(steps: list[SkillStep], findings: list[dict[str, Any]])
         ):
             applied.append(item)
     return applied
+
+
+def archive_flagged_steps(
+    steps: list[SkillStep], findings: list[dict[str, Any]]
+) -> tuple[list[SkillStep], list[dict[str, Any]]]:
+    """Remove every step a validated flag_noise finding matched, archiving each
+    one in full rather than discarding it.
+
+    This is the pass's one destructive kind, and the only BUILD-25 kind that
+    changes the *shape* of `steps` rather than a field on one step — a wrong
+    call here would otherwise permanently lose a step's IdentityBundle (only
+    ever produced from a DOM snapshot at record time). Archiving instead of
+    deleting makes it reversible: the removed step is saved in full under
+    compile_report["archived_steps"] (never shipped to the customer pack —
+    skill_package_builder_saved_skill.py only copies from the *returned*,
+    filtered `steps`), so a person can restore one later if the compiler was
+    wrong. Intentionally not folded into apply_second_opinion/_apply_one,
+    which assume a 1:1 walk over unchanged-length `steps`.
+    """
+    flagged = {
+        str(f.get("step_key") or ""): f for f in findings if f.get("kind") == "flag_noise"
+    }
+    if not flagged:
+        return steps, []
+    kept: list[SkillStep] = []
+    archived: list[dict[str, Any]] = []
+    for step, key in zip(steps, step_keys(steps)):
+        finding = flagged.get(key)
+        if finding is None:
+            kept.append(step)
+            continue
+        archived.append({
+            "step_key": key,
+            "step": step.model_dump(mode="json"),
+            "category": str(finding.get("proposed") or ""),
+            "why": str(finding.get("why") or ""),
+        })
+    return kept, archived
 
 
 if __name__ == "__main__":
@@ -192,5 +258,45 @@ if __name__ == "__main__":
         )
         == []
     )
+
+    # suggest_assertion: appends an advisory (required=False) assertion; a
+    # duplicate proposal is a no-op.
+    asserted = _step()
+    (akey,) = step_keys([asserted])
+    proposal = json.dumps({"type": "text_present", "target": "Payment successful"})
+    applied_assertion = apply_second_opinion(
+        [asserted],
+        [{"step_key": akey, "kind": "suggest_assertion", "current": "", "proposed": proposal}],
+    )
+    assert len(applied_assertion) == 1
+    assert len(asserted.validation.assertions) == 1
+    assert asserted.validation.assertions[0].type == "text_present"
+    assert asserted.validation.assertions[0].required is False
+    dup_applied = apply_second_opinion(
+        [asserted],
+        [{"step_key": akey, "kind": "suggest_assertion", "current": "", "proposed": proposal}],
+    )
+    assert dup_applied == []
+    assert len(asserted.validation.assertions) == 1
+
+    # archive_flagged_steps: removes the matched step, keeps the rest, and the
+    # archived entry round-trips the full step.
+    keep_a, drop_b, keep_c = _step(), _step(), _step()
+    kept, archived = archive_flagged_steps(
+        [keep_a, drop_b, keep_c],
+        [
+            {
+                "step_key": step_keys([keep_a, drop_b, keep_c])[1],
+                "kind": "flag_noise",
+                "current": "",
+                "proposed": "no_op_action",
+                "why": "click had no observed effect",
+            }
+        ],
+    )
+    assert kept == [keep_a, keep_c]
+    assert len(archived) == 1
+    assert archived[0]["category"] == "no_op_action"
+    assert archived[0]["step"]["action"] == {"action": "type"}
 
     print("ok")

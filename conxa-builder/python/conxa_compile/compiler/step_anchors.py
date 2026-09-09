@@ -8,6 +8,7 @@ selector/vision-anchor choices.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from conxa_compile.compiler.action_semantics import action_name, is_editable_target, looks_like_submit
@@ -554,6 +555,74 @@ def finalize_vision_anchors(
         out.append({"element": el, "relation": rel})
 
     return out[:max_total]
+
+
+_KNOWN_FRAME_LABELS = ("before_far", "before_near", "at", "after_near", "after_far")
+
+
+def finalize_vision_frameset(
+    chosen_frame: str | None,
+    anchor_sentence: str | None,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Post-process anchor_vision_frameset LLM output: validate chosen_frame,
+    scrub/cap the sentence, and derive short keyword phrases from it for
+    consumers that need short strings (recovery.json's short-anchor list).
+    No DOM imports — pure string processing.
+    """
+    pol = policy or get_policy_bundle().data
+    cfg = _vision_anchor_config(pol)
+    max_sentence_len = int(cfg.get("max_sentence_len", 220))
+    min_chars = max(1, int(cfg.get("min_primary_chars", 4)))
+
+    frame = str(chosen_frame or "").strip()
+    if frame not in _KNOWN_FRAME_LABELS:
+        frame = "before_near"  # safe default: the deterministic pre-action frame
+
+    sentence = " ".join(str(anchor_sentence or "").split()).strip()[:max_sentence_len]
+    if len(sentence) < min_chars:
+        return {"chosen_frame": frame, "anchor_sentence": "", "anchor_phrases": []}
+
+    return {"chosen_frame": frame, "anchor_sentence": sentence, "anchor_phrases": _extract_short_phrases(sentence, cfg, pol)}
+
+
+def _extract_short_phrases(sentence: str, cfg: dict[str, Any], policy: dict[str, Any]) -> list[str]:
+    """Deterministic phrase extraction: split the sentence on stopwords/punctuation,
+    keep the surviving word-runs (up to 4 words) as short candidate anchors. Reuses
+    finalize_vision_anchors's generic-term vocabulary so the two paths never drift
+    on what counts as "generic"."""
+    max_total = max(1, min(8, int(cfg.get("max_total_anchors", 4))))
+    max_len = int(cfg.get("max_phrase_len", 96))
+    generic_extra = [str(x).strip().lower() for x in (cfg.get("cleanup_generic_terms") or []) if str(x).strip()]
+    generic = _generic_anchors(policy) | set(generic_extra) | _default_phrase_stopwords()
+
+    words = re.findall(r"[a-z0-9][a-z0-9'-]*", sentence.lower())
+    runs: list[list[str]] = []
+    current: list[str] = []
+    for w in words:
+        if w in generic or len(w) < 2:
+            if current:
+                runs.append(current)
+                current = []
+            continue
+        current.append(w)
+        if len(current) == 4:  # cap run length so phrases stay short/discriminative
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for run in runs:
+        phrase = " ".join(run)[:max_len].strip()
+        if not phrase or phrase in seen:
+            continue
+        seen.add(phrase)
+        out.append(phrase)
+        if len(out) >= max_total:
+            break
+    return out
 
 
 def clean_anchors(

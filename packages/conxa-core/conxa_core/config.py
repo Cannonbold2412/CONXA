@@ -120,11 +120,16 @@ class Settings(BaseSettings):
     # LLM shared settings (no per-feature toggles; LLM is mandatory and routed via the multi-provider pool)
     llm_max_calls_per_step: int = 1
     llm_debug: bool = False
-    # Vision anchor requests batched into one anchor_vision_batch call (Stage 4,
-    # mega-workflow 502 fix): fewer round trips, fewer chances to land on a
-    # drained provider pool. 4 images @ up to ~150KB base64'd each stays well
-    # under llm_vision_proxy_max_bytes (8MB) with room to spare.
-    llm_anchor_vision_batch_size: int = 4
+    # How many per-step anchor_vision_frameset calls (each step's own 5 time-offset
+    # frames, one call) run concurrently in one wave. Capped at the cloud's own
+    # llm_proxy_max_concurrent_per_workspace below — a higher client-side value
+    # trips the server's workspace-concurrency 429 on nearly every wave instead of
+    # only during genuine provider rate-limiting.
+    llm_anchor_vision_max_concurrent_steps: int = 4
+    # Waves beyond this many retries give up prefetching the remaining steps —
+    # generate_anchors_for_step_or_raise's own per-step call (source of truth)
+    # still gets a real attempt for whatever's left uncached.
+    llm_anchor_vision_max_wave_retries: int = 3
     # When a vision anchor call exhausts every provider (after the router's cooldown wait),
     # this decides what compile does: False (default) = hard-stop the compile with
     # VisionAnchorGenerationError so a persistent provider outage is fixed, not hidden.

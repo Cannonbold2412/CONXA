@@ -11,11 +11,10 @@ the "LLM does not write selector strings" invariant; it produces intents and
 annotations, never selectors.
 
 Successful graphs are cached locally (keyed by a hash of the steps summary +
-page URLs) for the same reason intent_llm.py caches per-step intents: on a
-first compile with a drained free-provider pool this call can fail while every
-key cools down; on a recompile the warm caches let it succeed. Caching the
-graph makes a recompile backfill a previously-missing plan instead of re-paying
-for a call that already succeeded once.
+page URLs): on a first compile with a drained free-provider pool this call can
+fail while every key cools down; on a recompile the warm caches let it
+succeed. Caching the graph makes a recompile backfill a previously-missing
+plan instead of re-paying for a call that already succeeded once.
 
 Caching itself is shared with the other whole-workflow pass (workflow_semantics.py)
 via llm_cache.py — see that module for the versioned-namespace mechanics.

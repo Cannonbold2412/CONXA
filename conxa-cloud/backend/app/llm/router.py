@@ -454,7 +454,7 @@ class LLMRouter:
         now = time.monotonic()
 
         # Use provider-specific model, falling back to payload model
-        is_vision_task = task in {"anchor_vision", "anchor_vision_batch", "vision_reasoning", "region_selector"}
+        is_vision_task = task in {"anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector"}
         model = payload.get("model")
         if not model:
             primary_model = entry.vision_model if is_vision_task else entry.text_model

@@ -40,7 +40,11 @@ from conxa_compile.compiler.selector_score import (
     score_selector_row,
 )
 from conxa_compile.compiler.stable_hash import compute_stable_hash
-from conxa_compile.compiler.second_opinion import apply_second_opinion, rewrite_placeholder
+from conxa_compile.compiler.second_opinion import (
+    apply_second_opinion,
+    archive_flagged_steps,
+    rewrite_placeholder,
+)
 from conxa_compile.compiler.step_key import step_keys
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
 from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to_display
@@ -53,7 +57,6 @@ from conxa_core.config import settings
 # (which import this package for lightweight helpers, never compile) don't pay that cost.
 if TYPE_CHECKING:
     from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
-from conxa_compile.llm.intent_llm import generate_intent_with_llm
 from conxa_core.models.events import RecordedEvent
 from conxa_core.models.skill_spec import (
     Assertion,
@@ -85,7 +88,7 @@ _RECOVERABLE_VISION_ANCHOR_REASONS = frozenset({
     "llm_anchor_vision_disabled",
     "llm_endpoint_unset",
     "llm_endpoint_not_multimodal_capable",
-    "vision_llm_invalid_primary_phrase",
+    "vision_llm_invalid_anchor_sentence",
     # Frame extraction deferred to session shutdown; in-memory events won't have
     # full_screenshot set if extraction hasn't completed yet (e.g. stop() timeout).
     "full_screenshot_path_missing",
@@ -338,7 +341,10 @@ def _merge_compile_warnings(
         cw["weak_fingerprint"] = True
     unc = policy.get("uncertainty") if isinstance(policy.get("uncertainty"), dict) else {}
     min_a = int(unc.get("destructive_min_anchors_warn", 2))
-    if destructive_compiler_step(ev_with_intent, policy) and len(merged_anchors) < min_a:
+    # The full-sentence entry (relation == "target_sentence") isn't a discriminative
+    # short anchor — exclude it so it can't silently mask a genuinely low anchor count.
+    discriminative_count = sum(1 for a in merged_anchors if a.get("relation") != "target_sentence")
+    if destructive_compiler_step(ev_with_intent, policy) and discriminative_count < min_a:
         cw["destructive_low_anchor_count"] = True
     if cw:
         out["compile_warnings"] = cw
@@ -1048,6 +1054,7 @@ def _build_signals(
     policy: dict[str, Any],
     anchors_override: list[dict[str, Any]] | None = None,
     asset_session_id: str = "",
+    default_frame_label: str | None = None,
 ) -> dict[str, Any]:
     visual = ev.get("visual") or {}
     target = dict(ev.get("target") or {})
@@ -1068,8 +1075,15 @@ def _build_signals(
         target["inner_text"] = str(target.get("inner_text") or "")[:text_max]
     compact_context = dict(ev.get("context") or {})
     compact_context["siblings"] = list(compact_context.get("siblings") or [])[:sib_max]
+    post_condition = ev.get("post_condition") if isinstance(ev.get("post_condition"), dict) else {}
     signals = {
         "dom": target,
+        # BUILD-25 stage d: stashed here (compile-internal only, never copied
+        # into the shipped pack by skill_package_builder_saved_skill.py) so
+        # _semantics_inputs can read it back later, once steps no longer
+        # align 1:1 with cleaned_events. Mirrors _build_assertions's own
+        # classified_effect read from the same field.
+        "post_condition_effect": str(post_condition.get("classified_effect") or ""),
         "selectors": {
             "aria": selectors.get("aria"),
             "text_based": selectors.get("text_based"),
@@ -1109,7 +1123,7 @@ def _build_signals(
                 for label, path in (visual.get("frames") or {}).items()
                 if path and isinstance(path, str)
             },
-            "default_frame_label": "before_near",
+            "default_frame_label": default_frame_label or "before_near",
         },
     }
     if is_scroll:
@@ -1145,33 +1159,20 @@ def _prefetch_vision_anchors(
     policy: dict[str, Any],
     graph_intent_tokens: dict[int, str] | None = None,
 ) -> None:
-    """Best-effort batch prefetch of every step's vision anchor request before
-    the main per-step loop runs (Stage 4, mega-workflow 502 fix — see
-    prefetch_vision_anchors_batch's docstring). Mirrors _build_step's own
+    """Best-effort parallel prefetch of every step's vision anchor request before
+    the main per-step loop runs (see prefetch_vision_anchors_parallel's docstring).
+    Mirrors _build_step's own
     skip conditions (scroll / MARKER_ACTIONS never call vision) and intent
-    resolution (workflow-intent graph token when available, else
-    generate_intent_with_llm -> normalize_compiler_intent) exactly,
-    so the cache key this computes matches what _build_step computes later.
+    resolution (workflow-intent graph token, else blank -> normalize_compiler_intent)
+    exactly, so the cache key this computes matches what _build_step computes later.
 
-    When graph_intent_tokens carries a token for an event (the single
-    workflow-intent LLM call ran before this), no per-step intent call is made.
+    graph_intent_tokens holds the tokens the single workflow-intent LLM call
+    (run before this) produced. A step it left tokenless just gets a blank
+    intent here — no per-step LLM call, no network round trip.
 
-    intent_llm's own cache only makes the resolution call here free while the
-    proxy is HEALTHY — a failed call caches nothing (see intent_llm.py's own
-    "nothing is cached on failure" comment), so under a degraded pool every one
-    of these calls runs for real. A 41-event workflow at ~12s/call (the observed
-    fast-fail path when the router's pool is cooled) is an 8-minute silent stall
-    before "Compiling step 1" even logs — found and fixed 2026-08-23. So this
-    circuit-breaks on the first infra failure instead of grinding through every
-    remaining event: one slow/failed call is a strong signal the pool is
-    currently degraded, and _build_step's own unchanged per-step path handles
-    every step correctly (just without the batching speedup) regardless.
-
-    Never raises: prefetch bailing out (circuit breaker or deadline) or failing
-    outright just means _build_step's per-step vision call does the normal
-    single-image work it always has."""
-    from services.llm_proxy_client import CloudUnreachable
-    from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_batch
+    Never raises: prefetch failing outright just means _build_step's per-step
+    vision call does the normal single-image work it always has."""
+    from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_parallel
 
     candidates: list[tuple[int, dict[str, Any]]] = []
     for i, ev in enumerate(cleaned_events):
@@ -1204,27 +1205,13 @@ def _prefetch_vision_anchors(
                     {"phase": "vision_anchor_prefetch_deadline", "level": "warn"},
                 )
                 return
-            pre_token = (graph_intent_tokens or {}).get(i)
-            if pre_token:
-                # The workflow-intent graph call already resolved this step's
-                # intent token — no per-step intent_generation call needed.
-                llm_raw = pre_token
-            else:
-                try:
-                    llm_raw = generate_intent_with_llm(ev)
-                except CloudUnreachable:
-                    # First infra failure — the pool is degraded right now. Bail out
-                    # of prefetching entirely rather than grinding through the rest
-                    # of the events one slow/failing call at a time.
-                    _compile_log(
-                        "compile_phase",
-                        "Vision anchor prefetch hit a cloud/proxy failure — continuing without it.",
-                        {"phase": "vision_anchor_prefetch_unavailable", "level": "warn"},
-                    )
-                    return
+            # The workflow-intent graph call already resolved this step's intent
+            # token when it could. A step it left tokenless just gets a blank
+            # intent — no per-step LLM call.
+            llm_raw = (graph_intent_tokens or {}).get(i) or ""
             intent = normalize_compiler_intent(ev, llm_raw, policy)
             items.append((i, ev, intent))
-        prefetch_vision_anchors_batch(items, session_root=session_root, policy=policy)
+        prefetch_vision_anchors_parallel(items, session_root=session_root, policy=policy)
     except Exception:  # noqa: BLE001 — prefetch is pure optimization, never fatal
         pass
 
@@ -1405,13 +1392,10 @@ def _build_step(
             },
         )
         return step
-    if graph_intent_token:
-        # Single-source intent: resolved by the one workflow-intent LLM call that
-        # ran before the step loop. No per-step intent_generation call here —
-        # normalize_compiler_intent still validates/normalizes the token below.
-        llm_raw = graph_intent_token
-    else:
-        llm_raw = generate_intent_with_llm(ev)
+    # Single-source intent: resolved by the one workflow-intent LLM call that ran
+    # before the step loop. A step it left tokenless gets a blank intent — no
+    # per-step LLM call. normalize_compiler_intent still validates/normalizes below.
+    llm_raw = graph_intent_token or ""
     intent = normalize_compiler_intent(ev, llm_raw, policy)
     state_before = capture_state_snapshot(ev, before=True)
     state_after = capture_state_snapshot(ev, before=False)
@@ -1429,19 +1413,37 @@ def _build_step(
     from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError, generate_anchors_for_step_or_raise
 
     vision_anchor_warning: dict[str, Any] | None = None
+    chosen_frame: str | None = None
     try:
         _compile_log(
             "compile_step",
             f"Generating vision anchors for step {step_index + 1}.",
             {"phase": "vision_anchor_start", "step_index": step_index, "intent": intent},
         )
-        merged_anchors = generate_anchors_for_step_or_raise(
+        vision_result = generate_anchors_for_step_or_raise(
             ev_with_intent,
             session_root=session_root,
             final_intent=intent,
             policy=policy,
             step_index=step_index,
         )
+        chosen_frame = str(vision_result.get("chosen_frame") or "") or None
+        # anchor_phrases: short strings extracted from the vision LLM's sentence, for the
+        # existing anchor-consuming paths (recovery.json's short-anchor list). One extra
+        # entry carries the FULL sentence, tagged so it's never mistaken for a short
+        # phrase downstream — see skill_package_builder_saved_skill.py::
+        # _saved_recovery_anchor_sentence, the only reader of this tag.
+        # The first extracted phrase is the primary/most-discriminative one (the sentence's
+        # own leading noun phrase) — tagged "target" so priority-aware consumers (e.g.
+        # _saved_recovery_anchors) keep treating it as the best anchor, matching the old
+        # primary_phrase convention.
+        phrases = list(vision_result.get("anchor_phrases") or [])
+        merged_anchors: list[dict[str, Any]] = [
+            {"element": p, "relation": "target" if i == 0 else "near"} for i, p in enumerate(phrases)
+        ]
+        anchor_sentence = str(vision_result.get("anchor_sentence") or "")
+        if anchor_sentence:
+            merged_anchors.append({"element": anchor_sentence, "relation": "target_sentence"})
         _compile_log(
             "compile_step",
             f"Vision anchors generated for step {step_index + 1}.",
@@ -1489,6 +1491,7 @@ def _build_step(
         policy=policy,
         anchors_override=merged_anchors,
         asset_session_id=session_root.name,
+        default_frame_label=chosen_frame,
     )
     value, input_binding = _derive_input_binding(ev, policy)
     # Multiple-choice controls (radio/select/ARIA radiogroup/listbox -- checkbox groups are
@@ -1751,11 +1754,10 @@ def compile_skill_package(
     )
     # Phase 3, moved ahead of the step loop: ONE workflow-intent LLM call produces
     # the goal/review plan AND every step's snake_case intent token. Tokens feed
-    # _build_step / _prefetch_vision_anchors directly (replacing the old per-step
-    # intent_generation burst); prose becomes each step's semantic_description.
-    # On failure the legacy per-step path below runs exactly as before — a
-    # degraded provider pool changes cost, never behavior. Selector generation
-    # stays fully deterministic; this call writes no selectors.
+    # _build_step / _prefetch_vision_anchors directly. A step this leaves
+    # tokenless, or a call that fails outright, just gets a blank intent — no
+    # per-step LLM fallback. Selector generation stays fully deterministic;
+    # this call writes no selectors.
     from conxa_compile.llm.workflow_intent import build_workflow_intent_graph  # noqa: PLC0415
 
     steps_summary, page_urls = _intent_graph_inputs(cleaned_events)
@@ -1774,7 +1776,7 @@ def compile_skill_package(
         _compile_log(
             "compile_phase",
             f"Workflow intent graph generation failed ({'; '.join(workflow_intent_errors[:3])}); "
-            "falling back to per-step intent resolution. Recompiling later usually fills the plan in.",
+            "steps will compile with blank/heuristic intents. Recompiling later usually fills the plan in.",
             {"phase": "workflow_intent_failed", "level": "warn"},
         )
     _compile_log(
@@ -1870,7 +1872,7 @@ def compile_skill_package(
         "Asking for a second opinion on the whole workflow.",
         {"phase": "second_opinion_start", "step_count": len(steps)},
     )
-    compile_report = _apply_second_opinion(
+    steps, compile_report = _apply_second_opinion(
         compile_report,
         steps,
         skill_id=skill_id,
@@ -1975,6 +1977,11 @@ def _semantics_inputs(steps: list[SkillStep], compile_report: dict[str, Any]) ->
             "value": value,
             "has_optional_hint": bool(step.optional_hint),
             "low_confidence": bool(confidence is not None and confidence < 0.75),
+            # BUILD-25 stage d — recorder-observed evidence for flag_noise, and
+            # a required-assertion check so it never flags a step something
+            # downstream already relies on.
+            "post_condition_effect": str(step.signals.get("post_condition_effect") or ""),
+            "has_required_assertion": any(a.required for a in step.validation.assertions),
         })
     return out
 
@@ -2026,18 +2033,22 @@ def _apply_second_opinion(
     goal: str,
     page_urls: list[str],
     visited_hosts: list[str],
-) -> dict[str, Any]:
+) -> tuple[list[SkillStep], dict[str, Any]]:
     """Run the compiler's second opinion (BUILD-25) and write what it finds onto
-    `steps`. Returns the compile_report to use — the one passed in when nothing
-    was applied, a freshly rebuilt one when something was, since a
-    suggest_optional conversion changes a step's compiled shape and the report
-    handed in here was built against the pre-application steps.
+    `steps`. Returns (steps, compile_report) to use — the ones passed in when
+    nothing was applied or archived, freshly rebuilt/filtered ones when
+    something was, since a suggest_optional conversion or a flag_noise archive
+    changes the compiled shape and the report handed in here was built against
+    the pre-application steps.
 
-    The applied findings are recorded under compile_report["second_opinion"] as
-    an audit trail for the compile log. Nothing in Human Edit reads it: the
-    changes are simply part of the compiled workflow now, indistinguishable from
-    what the fixed rules produced, and a reviewer edits a wrong one the same way
-    they edit any other compiler output.
+    Applied field-rewrites are recorded under compile_report["second_opinion"];
+    archived (flag_noise) steps are recorded in full under
+    compile_report["archived_steps"] and removed from the returned `steps` —
+    see compiler/second_opinion.py::archive_flagged_steps for why that's an
+    archive, not a delete. Nothing in Human Edit reads either key yet: the
+    field-rewrites are simply part of the compiled workflow now,
+    indistinguishable from what the fixed rules produced, and a reviewer edits
+    a wrong one the same way they edit any other compiler output.
 
     Never raises: any exception degrades to the rules-only compile, exactly like
     a disabled pass or a drained provider pool."""
@@ -2050,14 +2061,20 @@ def _apply_second_opinion(
             page_urls=page_urls,
             sibling_bindings=_sibling_bindings(visited_hosts, skill_id),
         )
-        applied = apply_second_opinion(steps, findings)
+        noise_findings = [f for f in findings if f.get("kind") == "flag_noise"]
+        rewrite_findings = [f for f in findings if f.get("kind") != "flag_noise"]
+        applied = apply_second_opinion(steps, rewrite_findings)
+        steps, archived = archive_flagged_steps(steps, noise_findings)
     except Exception:  # noqa: BLE001 — a second, non-primary LLM pass must never fail compile
-        applied = []
-    if not applied:
-        return compile_report
+        applied, archived = [], []
+    if not applied and not archived:
+        return steps, compile_report
     # Rebuilt, not patched: _build_compile_report is a pure local function over
     # `steps`, so re-running it is cheaper than reasoning about which of its
-    # aggregates a conversion invalidated.
+    # aggregates a conversion/archive invalidated.
     fresh = _build_compile_report(steps)
-    fresh["second_opinion"] = applied
-    return fresh
+    if applied:
+        fresh["second_opinion"] = applied
+    if archived:
+        fresh["archived_steps"] = archived
+    return steps, fresh

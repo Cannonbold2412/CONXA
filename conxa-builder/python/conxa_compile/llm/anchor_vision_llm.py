@@ -8,12 +8,15 @@ import io
 import json
 import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw
 
-from conxa_compile.compiler.step_anchors import finalize_vision_anchors
+from conxa_compile.compiler.step_anchors import finalize_vision_anchors, finalize_vision_frameset
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 # supports_multimodal_chat is re-exported here as part of this module's patchable
@@ -177,8 +180,9 @@ def resolve_screenshot_path(session_root: Path, rel: str) -> Path:
 
 
 class _PreparedVisionRequest:
-    """A cache-miss vision-anchor request, ready to send — either as one
-    anchor_vision call or grouped into a batched anchor_vision_batch call."""
+    """A cache-miss single-image vision-anchor request (legacy structured-anchor
+    path — used only by generate_anchors_from_image_bytes, which has no
+    session_root/frames to build a frameset from)."""
 
     __slots__ = ("cache_key", "user_text", "image_b64")
 
@@ -188,50 +192,79 @@ class _PreparedVisionRequest:
         self.image_b64 = image_b64
 
 
-def _prepare_vision_request(
+_FRAME_LABELS_ORDER = ("before_far", "before_near", "at", "after_near", "after_far")
+
+
+class _PreparedFramesetRequest:
+    """A cache-miss anchor_vision_frameset request, ready to send: one step's
+    (up to) 5 time-offset frames, each already highlighted/downscaled/encoded."""
+
+    __slots__ = ("cache_key", "user_text", "frames")
+
+    def __init__(self, cache_key: str, user_text: str, frames: list[tuple[str, str]]) -> None:
+        self.cache_key = cache_key
+        self.user_text = user_text
+        self.frames = frames  # [(label, base64), ...] in _FRAME_LABELS_ORDER
+
+
+def _prepare_frameset_vision_request(
     ev: dict[str, Any],
     *,
     session_root: Path,
     final_intent: str,
     policy: dict[str, Any],
     step_index: int,
-) -> list[dict[str, Any]] | _PreparedVisionRequest:
-    """Shared prep for both the single-step and batched paths: resolve the
-    screenshot, apply the highlight, compute the cache key, and check the
-    cache. Returns cached anchors directly on a hit, or a _PreparedVisionRequest
-    to actually send on a miss. Raises VisionAnchorGenerationError for anything
-    that can't be prepared at all (missing/unreadable screenshot, disabled)."""
+) -> dict[str, Any] | _PreparedFramesetRequest:
+    """Resolve a step's frames (all 5, or a 1-frame fallback for legacy recordings),
+    apply the highlight to each, compute the cache key, and check the cache.
+    Returns the cached finalized dict directly on a hit, or a
+    _PreparedFramesetRequest to actually send on a miss. Raises
+    VisionAnchorGenerationError for anything that can't be prepared at all
+    (missing/unreadable screenshots, disabled)."""
     if os.environ.get("CONXA_DISABLE_VISION_ANCHORS", "").strip().lower() in ("1", "true", "yes"):
         raise VisionAnchorGenerationError("llm_anchor_vision_disabled", step_index=step_index)
     if not bool(_vision_cfg(policy).get("enabled", True)):
         raise VisionAnchorGenerationError("vision_anchors_disabled_in_policy", step_index=step_index)
 
     visual = ev.get("visual") if isinstance(ev.get("visual"), dict) else {}
-    rel_path = str(visual.get("full_screenshot") or "").strip()
-    if not rel_path:
+    frames_map = visual.get("frames") if isinstance(visual.get("frames"), dict) else {}
+    if not frames_map:
+        # Recordings captured before 5-frame extraction shipped: fall back to the
+        # single full_screenshot frame, labeled as before_near.
+        fallback_rel = str(visual.get("full_screenshot") or "").strip()
+        frames_map = {"before_near": fallback_rel} if fallback_rel else {}
+    if not frames_map:
         raise VisionAnchorGenerationError("full_screenshot_path_missing", step_index=step_index)
 
-    abs_path = resolve_screenshot_path(session_root, rel_path)
-    if not abs_path.is_file():
-        raise VisionAnchorGenerationError(f"screenshot_file_missing:{rel_path}", step_index=step_index)
-
-    raw_bytes = abs_path.read_bytes()
     bbox = visual.get("bbox") if isinstance(visual.get("bbox"), dict) else {}
     viewport = str(visual.get("viewport") or "")
     vcfg = _vision_cfg(policy)
     hi = float(vcfg.get("highlight_alpha", 0.35))
-    image_bytes = _apply_bbox_highlight(raw_bytes, bbox, viewport, highlight_alpha=hi)
-    image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+
+    frame_hashes: list[str] = []
+    frames: list[tuple[str, str]] = []
+    for label in _FRAME_LABELS_ORDER:
+        rel_path = str(frames_map.get(label) or "").strip()
+        if not rel_path:
+            continue
+        try:
+            abs_path = resolve_screenshot_path(session_root, rel_path)
+        except VisionAnchorGenerationError:
+            continue
+        if not abs_path.is_file():
+            continue
+        raw_bytes = abs_path.read_bytes()
+        image_bytes = _apply_bbox_highlight(raw_bytes, bbox, viewport, highlight_alpha=hi)
+        frame_hashes.append(hashlib.sha256(image_bytes).hexdigest())
+        frames.append((label, base64.standard_b64encode(image_bytes).decode("ascii")))
+
+    if not frames:
+        raise VisionAnchorGenerationError("screenshot_file_missing:all_frames", step_index=step_index)
 
     prompt_ver = str(vcfg.get("prompt_version", "1"))
     cache_key = hashlib.sha256(
         json.dumps(
-            {
-                "h": hashlib.sha256(image_bytes).hexdigest(),
-                "bbox": bbox,
-                "intent": final_intent,
-                "pv": prompt_ver,
-            },
+            {"h": frame_hashes, "bbox": bbox, "intent": final_intent, "pv": prompt_ver},
             sort_keys=True,
             ensure_ascii=False,
         ).encode("utf-8")
@@ -240,111 +273,115 @@ def _prepare_vision_request(
     cache = _read_cache()
     if cache_key in cache:
         entry = cache[cache_key]
-        if isinstance(entry, dict) and entry.get("anchors"):
-            return [dict(a) for a in entry["anchors"]]
+        if isinstance(entry, dict) and entry.get("anchor_sentence"):
+            return dict(entry)
 
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as _im_sz:
-            bw, bh = int(_im_sz.size[0]), int(_im_sz.size[1])
-    except Exception:
-        raise VisionAnchorGenerationError("screenshot_unreadable", step_index=step_index) from None
-
+    labels_present = ", ".join(l for l, _ in frames)
     user_text = (
-        "Look at this UI screenshot. The highlighted region is the target element.\n\n"
-        f"Image size (pixels): {bw}x{bh}. Viewport (CSS px): {viewport or 'unknown'}.\n"
-        f"Target bounding box (CSS px): x={bbox.get('x')}, y={bbox.get('y')}, "
-        f"w={bbox.get('w')}, h={bbox.get('h')}.\n"
-        f"User intent hint (snake_case): {final_intent or 'unknown'}\n\n"
-        "Describe what the target is in one short, human-friendly phrase (primary_phrase). "
-        "Add up to three secondary anchors: section, parent, or nearby labeled controls — "
-        "each with relation inside, above, below, or near.\n"
-        "Relation direction is TARGET relative to ANCHOR:\n"
-        "- above means the highlighted target is above the anchor text/control.\n"
-        "- below means the highlighted target is below the anchor text/control.\n"
-        "- inside means the highlighted target is inside the named section/parent.\n"
-        "- near means close by without a clear vertical relation.\n"
-        "Examples: if the highlighted target is below an Email label, return "
-        '{"element":"email label","relation":"below"}. '
-        "If the highlighted target is above a Password input or Sign in button, return "
-        '{"element":"password input","relation":"above"} or '
-        '{"element":"sign in button","relation":"above"}.\n'
-        "Avoid DOM jargon (no div/container/element-only). Return JSON only."
+        "Image size and target bounding box (CSS px): "
+        f"x={bbox.get('x')}, y={bbox.get('y')}, w={bbox.get('w')}, h={bbox.get('h')}. "
+        f"Viewport (CSS px): {viewport or 'unknown'}.\n"
+        f"Frames present: {labels_present}.\n"
+        f"User intent hint (snake_case): {final_intent or 'unknown'}"
     )
 
-    return _PreparedVisionRequest(cache_key=cache_key, user_text=user_text, image_b64=image_b64)
+    return _PreparedFramesetRequest(cache_key=cache_key, user_text=user_text, frames=frames)
 
 
-def prefetch_vision_anchors_batch(
+_WAVE_BACKOFFS_S = (1.0, 4.0, 4.0)  # mirrors services/llm_proxy_client.py's _RETRY_BACKOFFS_S shape
+
+
+def prefetch_vision_anchors_parallel(
     items: list[tuple[int, dict[str, Any], str]],
     *,
     session_root: Path,
     policy: dict[str, Any],
 ) -> None:
-    """Best-effort batch prefetch for a compile's whole set of upcoming vision-
-    anchor requests — several images per anchor_vision_batch call instead of one
-    request per step, so a large workflow doesn't fire 40+ serial vision calls
-    (fewer round trips, fewer chances to land on a drained provider pool).
+    """Best-effort parallel prefetch for a compile's whole set of upcoming vision-
+    anchor requests — one anchor_vision_frameset call per step (5 frames each),
+    up to llm_anchor_vision_max_concurrent_steps in flight at once, instead of
+    firing them one at a time. A step whose call raises ProxyUnavailable (pool
+    exhausted/rate-limited) is requeued into the next wave after a short backoff;
+    a step failing for any other reason is dropped (never retried).
 
     ``items`` is (step_index, event, final_intent) for every step that will need
     a vision anchor. Cache hits and preparation failures are skipped here —
     generate_anchors_for_step_or_raise's own per-step call remains the source of
-    truth and handles both cases (and any group this function couldn't batch)
+    truth and handles both cases (and any step this function couldn't prefetch)
     exactly as it always has. This function never raises: any failure here just
     means less of the per-step work got prefetched, not that the compile breaks.
     """
-    prepared: list[_PreparedVisionRequest] = []
+    prepared: dict[int, _PreparedFramesetRequest] = {}
     for step_index, ev, final_intent in items:
         try:
-            result = _prepare_vision_request(
+            result = _prepare_frameset_vision_request(
                 ev, session_root=session_root, final_intent=final_intent, policy=policy, step_index=step_index
             )
         except VisionAnchorGenerationError:
             continue
-        if isinstance(result, _PreparedVisionRequest):
-            prepared.append(result)
+        if isinstance(result, _PreparedFramesetRequest):
+            prepared[step_index] = result
 
     if not prepared:
         return
 
-    batch_size = max(1, int(settings.llm_anchor_vision_batch_size))
     cache = _read_cache()
-    cache_dirty = False
-    for i in range(0, len(prepared), batch_size):
-        group = prepared[i : i + batch_size]
-        payload = {
-            "items": [
-                {"image_base64": p.image_b64, "image_mime": "image/jpeg", "user_text": p.user_text}
-                for p in group
-            ]
-        }
-        try:
-            data = call_llm("anchor_vision_batch", payload, settings.llm_vision_timeout_ms)
-        except Exception:  # noqa: BLE001 — best-effort prefetch (incl. ProxyUnavailable), never fatal
-            continue
-        if not isinstance(data, dict):
-            continue
-        results = data.get("results")
-        if not isinstance(results, list):
-            continue
-        # Ordering isn't contractually guaranteed by the model — a misaligned
-        # response just means those entries stay uncached and fall through to
-        # the normal single-image call later, not a correctness problem.
-        for prepared_item, item_result in zip(group, results):
-            if not isinstance(item_result, dict):
-                continue
-            primary = str(item_result.get("primary_phrase") or item_result.get("primary") or "").strip()
-            sec_raw = item_result.get("secondary")
-            if not isinstance(sec_raw, list):
-                sec_raw = []
-            finalized = finalize_vision_anchors(primary, sec_raw, policy)
-            if not finalized or str(finalized[0].get("relation") or "") != "target" or not str(
-                finalized[0].get("element") or ""
-            ).strip():
-                continue
-            cache[prepared_item.cache_key] = {"anchors": finalized}
-            cache_dirty = True
-    if cache_dirty:
-        _write_cache(cache)
+    cache_lock = threading.Lock()
+    max_workers = max(1, int(settings.llm_anchor_vision_max_concurrent_steps))
+    max_retries = max(0, int(settings.llm_anchor_vision_max_wave_retries))
+
+    pending: dict[int, _PreparedFramesetRequest] = dict(prepared)
+    wave = 0
+    while pending and wave <= max_retries:
+        if wave > 0:
+            time.sleep(_WAVE_BACKOFFS_S[min(wave - 1, len(_WAVE_BACKOFFS_S) - 1)])
+        wave += 1
+        requeue: dict[int, _PreparedFramesetRequest] = {}
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(pending))) as ex:
+            futs = {ex.submit(_prefetch_one_step, req, policy): step_index for step_index, req in pending.items()}
+            done, _pending_futs = wait(set(futs), timeout=settings.llm_vision_timeout_ms / 1000.0 + 30.0)
+            for fut in done:
+                step_index = futs[fut]
+                try:
+                    outcome = fut.result()
+                except Exception:  # noqa: BLE001 — never let one worker kill the wave
+                    continue
+                if outcome.get("requeue"):
+                    requeue[step_index] = pending[step_index]
+                elif outcome.get("finalized"):
+                    with cache_lock:
+                        cache[pending[step_index].cache_key] = outcome["finalized"]
+            # Futures that never showed up in `done` (deadline hit) are dropped, not
+            # requeued — a wave-level timeout means the pool is likely unhealthy; let
+            # the retry ceiling (and the eventual per-step raise at build time) handle
+            # it, not an unbounded number of extra waves.
+        pending = requeue
+
+    _write_cache(cache)
+
+
+def _prefetch_one_step(req: "_PreparedFramesetRequest", policy: dict[str, Any]) -> dict[str, Any]:
+    """Worker: run one step's frameset call. Returns {"finalized": dict} on success,
+    {"requeue": True} on a transient (ProxyUnavailable) failure — the signal that the
+    provider pool was exhausted/rate-limited, see services/llm_proxy_client.py — or {}
+    to drop the step from prefetch entirely (any other error: quota, malformed
+    response, etc. — never retried)."""
+    payload = {
+        "frames": [{"label": l, "image_base64": b, "image_mime": "image/jpeg"} for l, b in req.frames],
+        "user_text": req.user_text,
+    }
+    try:
+        data = call_llm("anchor_vision_frameset", payload, settings.llm_vision_timeout_ms)
+    except ProxyUnavailable:
+        return {"requeue": True}
+    except Exception:  # noqa: BLE001 — non-transient, drop from prefetch
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    finalized = finalize_vision_frameset(data.get("chosen_frame"), data.get("anchor_sentence"), policy)
+    if not finalized.get("anchor_sentence"):
+        return {}
+    return {"finalized": finalized}
 
 
 def generate_anchors_for_step_or_raise(
@@ -354,24 +391,24 @@ def generate_anchors_for_step_or_raise(
     final_intent: str,
     policy: dict[str, Any],
     step_index: int,
-) -> list[dict[str, Any]]:
-    """Return vision-only anchors or raise VisionAnchorGenerationError."""
-    prepared = _prepare_vision_request(
+) -> dict[str, Any]:
+    """Return {"chosen_frame", "anchor_sentence", "anchor_phrases"} or raise
+    VisionAnchorGenerationError."""
+    prepared = _prepare_frameset_vision_request(
         ev, session_root=session_root, final_intent=final_intent, policy=policy, step_index=step_index
     )
-    if isinstance(prepared, list):
+    if isinstance(prepared, dict):
         return prepared
     cache_key = prepared.cache_key
 
     payload = {
+        "frames": [{"label": l, "image_base64": b, "image_mime": "image/jpeg"} for l, b in prepared.frames],
         "user_text": prepared.user_text,
-        "image_base64": prepared.image_b64,
-        "image_mime": "image/jpeg",
     }
     err_lines: list[str] = []
     try:
         data = call_llm(
-            "anchor_vision",
+            "anchor_vision_frameset",
             payload,
             settings.llm_vision_timeout_ms,
             error_detail=err_lines,
@@ -397,19 +434,12 @@ def generate_anchors_for_step_or_raise(
             )
         raise VisionAnchorGenerationError("vision_llm_empty_response", step_index=step_index)
 
-    primary = str(data.get("primary_phrase") or data.get("primary") or "").strip()
-    sec_raw = data.get("secondary")
-    if not isinstance(sec_raw, list):
-        sec_raw = []
-
-    finalized = finalize_vision_anchors(primary, sec_raw, policy)
-    if not finalized or str(finalized[0].get("relation") or "") != "target" or not str(
-        finalized[0].get("element") or ""
-    ).strip():
-        raise VisionAnchorGenerationError("vision_llm_invalid_primary_phrase", step_index=step_index)
+    finalized = finalize_vision_frameset(data.get("chosen_frame"), data.get("anchor_sentence"), policy)
+    if not finalized.get("anchor_sentence"):
+        raise VisionAnchorGenerationError("vision_llm_invalid_anchor_sentence", step_index=step_index)
 
     cache = _read_cache()
-    cache[cache_key] = {"anchors": finalized}
+    cache[cache_key] = finalized
     _write_cache(cache)
     return finalized
 

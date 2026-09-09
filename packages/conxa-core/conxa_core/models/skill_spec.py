@@ -236,7 +236,8 @@ class SkillStep(BaseModel):
     # [contract] BUILD-25: which part of the workflow this step belongs to —
     # "login" | "navigate" | "act" | "verify" | "cleanup", or "" when the second-opinion
     # pass didn't run or didn't label this step. Written by the compiler's second-opinion
-    # pass (compiler/second_opinion.py); nothing downstream reads it yet.
+    # pass (compiler/second_opinion.py); read by runtime/app/failure_response.js's Tier B
+    # recovery prompt (stage e) as a workflow-position prior for the agent tier.
     phase: str = ""
     snapshot_ref: str = ""                # [executor] which recorded DOM blob this step compiled against
     snapshot_dom_hash: str = ""           # [executor] for cross-compilation cache lookup

@@ -34,7 +34,7 @@ def _debug_log(message: str) -> None:
 
 def _is_vision_task(task: str) -> bool:
     """True for multimodal vision tasks."""
-    return task in {"anchor_vision", "anchor_vision_batch", "vision_reasoning", "region_selector"}
+    return task in {"anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector"}
 
 
 def _safe_error_snippet(text: str, limit: int = 280) -> str:
@@ -218,19 +218,22 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},
         ]
     if task == "workflow_semantics":
-        # Compile-time (BUILD-25): single whole-workflow call producing REVIEW
-        # SUGGESTIONS only — never selectors, never a change to compiled
-        # behavior. The model proposes, a human in Human Edit disposes.
+        # Compile-time (BUILD-25): single whole-workflow call producing findings
+        # that compiler/second_opinion.py applies directly onto the compiled
+        # steps — never selectors, never a change to *how* an element is
+        # found. Human Review is the gate: a wrong finding is edited there
+        # like any other compiler output.
         return [
             {
                 "role": "system",
                 "content": (
-                    "You review a compiled browser-automation workflow and suggest improvements a "
-                    "human reviewer can accept or reject. Return strict JSON with key: suggestions "
-                    "(array of {step_key, kind, current, proposed, why}). step_key must be copied "
-                    "EXACTLY from the input step's own \"key\" field — never invented, never a step "
-                    "number. kind must be exactly one of: rename_binding, parameterize_literal, "
-                    "suggest_optional, label_phase.\n"
+                    "You review a compiled browser-automation workflow and find improvements that "
+                    "will be applied automatically, so only report ones you are confident about. "
+                    "Return strict JSON with key: suggestions (array of {step_key, kind, current, "
+                    "proposed, why}). step_key must be copied EXACTLY from the input step's own "
+                    "\"key\" field — never invented, never a step number. kind must be exactly one "
+                    "of: rename_binding, parameterize_literal, suggest_optional, label_phase, "
+                    "suggest_assertion, flag_noise.\n"
                     "- rename_binding: this step's input_binding collides with another field's "
                     "meaning (e.g. two fields both named email_2) — proposed is a clearer "
                     "lowercase_snake_case name, current is the existing binding.\n"
@@ -242,6 +245,21 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
                     "occasional dialog) or \"false\" if it looks required despite the hint.\n"
                     "- label_phase: proposed is exactly one of login, navigate, act, verify, cleanup "
                     "describing which phase of the workflow this step belongs to.\n"
+                    "- suggest_assertion: a LATER step's outcome is the real proof an EARLIER step "
+                    "worked (e.g. a confirmation page's text is the true sign a submit succeeded). "
+                    "step_key is the EARLIER step. proposed is a JSON string "
+                    "{\"type\": ..., \"target\": ...} where type is exactly one of text_present, "
+                    "text_absent, url_changed, url_pattern, state_changed. target must be text or a "
+                    "URL fragment that ALREADY APPEARS in this workflow's own target_text/intent/url "
+                    "fields (never invent text) — empty target for state_changed, non-empty "
+                    "otherwise. Never selector_present/selector_absent/value_equals — you must never "
+                    "write a page selector.\n"
+                    "- flag_noise: ONLY for a step whose post_condition_effect is exactly \"none\" "
+                    "(the recorder itself observed no effect) AND whose action is click, hover, "
+                    "scroll, or focus AND which has no input_binding and no required assertion — "
+                    "never flag a step from your own judgment alone. proposed is exactly one of "
+                    "duplicate_action, no_op_action, orphaned_hover. This step will be removed from "
+                    "the shipped skill (archived, not deleted), so only propose it when you are sure.\n"
                     "Prefer steps marked low_confidence — the compiler was least sure about those. "
                     "Use sibling_bindings (names other workflows for the same site already use) to "
                     "pick names, not guesses. Return an EMPTY suggestions array when nothing is "
@@ -279,42 +297,55 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
                 ],
             },
         ]
-    if task == "anchor_vision_batch":
-        # Compile-time batching (Stage 4, mega-workflow 502 fix): several steps'
-        # vision-anchor requests in one call instead of one request per step —
-        # fewer round trips, fewer chances to land on a drained provider pool.
-        # items: [{"image_base64", "image_mime", "user_text"}, ...], up to a
-        # handful (see settings.llm_anchor_vision_batch_size) — the caller
-        # (anchor_vision_llm.py) is responsible for keeping groups small enough
-        # to stay well under the vision proxy's body-size ceiling.
-        items = payload.get("items")
-        items = items if isinstance(items, list) else []
+    if task == "anchor_vision_frameset":
+        # Compile-time, one step per call: 5 time-offset frames of the SAME moment
+        # (T-500/-250/0/+250/+500ms around the recorded action), each with the same
+        # highlight box drawn on it (the box's presence/absence/occlusion across frames
+        # IS the signal). The model picks which frame best shows pre-action state and
+        # writes one descriptive sentence — one call, since it has to look at all 5
+        # frames to do either job. Replaces the old anchor_vision_batch (N steps, 1
+        # image each, structured primary/secondary JSON) — the new unit of batching is
+        # concurrency across steps (anchor_vision_llm.py), not images packed per call.
+        frames = payload.get("frames")
+        frames = frames if isinstance(frames, list) else []  # [{"label","image_base64","image_mime"}]
         content: list[dict[str, Any]] = []
-        for idx, item in enumerate(items):
+        for item in frames:
             if not isinstance(item, dict):
                 continue
-            image_b64 = str(item.get("image_base64") or "")
+            label = str(item.get("label") or "")
             mime = str(item.get("image_mime") or "image/jpeg")
-            user_text = str(item.get("user_text") or "")
-            content.append({"type": "text", "text": f"--- Image {idx} ---\n{user_text}"})
+            image_b64 = str(item.get("image_base64") or "")
+            content.append({"type": "text", "text": f"--- Frame: {label} ---"})
             content.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:{mime};base64,{image_b64}"},
             })
+        user_text = str(payload.get("user_text") or "")
+        content.append({"type": "text", "text": user_text})
         return [
             {
                 "role": "system",
                 "content": (
-                    "You will see several UI screenshots in this message, each preceded by a "
-                    "'--- Image N ---' label and its own instructions. Return strict JSON with "
-                    "one key: results (array, same length and order as the images). Each entry: "
-                    "primary_phrase (short string describing that image's highlighted control), "
-                    "secondary (array of objects with keys element and relation only). "
-                    "relation must be one of: inside, above, below, near. "
-                    "For above/below, relation is the highlighted target's position relative to "
-                    "the anchor. If an image is unreadable or has no clear target, still emit an "
-                    "entry for it with primary_phrase set to an empty string. No markdown, no "
-                    "extra keys, no commentary outside the JSON object."
+                    "You will see 5 screenshots of the SAME UI moment, taken at different times "
+                    "relative to a user action: before_far (0.5s before), before_near (0.25s "
+                    "before), at (the instant of the action), after_near (0.25s after), after_far "
+                    "(0.5s after). Each has a red highlighted box marking the target element's "
+                    "recorded screen position — on early or late frames the box may fall on empty "
+                    "space, a different element, or be partly covered (e.g. before the page "
+                    "rendered it, or after a modal opened over it); that is expected and useful "
+                    "signal, not an error.\n\n"
+                    "Return strict JSON with exactly two keys:\n"
+                    "chosen_frame: which label (before_far|before_near|at|after_near|after_far) "
+                    "best shows the page's state right BEFORE the action was taken — the target "
+                    "clearly visible, not yet clicked/opened/covered, closest available to the "
+                    "action without being contaminated by its effect. Prefer before_near unless "
+                    "another frame is clearly better (e.g. before_near is mid-animation or the "
+                    "target has not rendered yet).\n"
+                    "anchor_sentence: one plain-English sentence (max ~200 characters) describing "
+                    "the highlighted target and where it sits on the page, written for someone who "
+                    "cannot see the screenshot — e.g. \"The blue Save button in the top-right "
+                    "toolbar, next to the Cancel button.\" No DOM jargon (no div/container/element). "
+                    "No markdown, no extra keys, no commentary outside the JSON object."
                 ),
             },
             {"role": "user", "content": content},
@@ -380,11 +411,10 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
     if task == "anchor_vision":
         # Short JSON anchors; VLMs often expect an explicit ceiling (see NVIDIA Gemma chat examples).
         body["max_tokens"] = 1024
-    if task == "anchor_vision_batch":
-        # One anchor_vision-sized entry per image in the batch.
-        items = payload.get("items")
-        n = len(items) if isinstance(items, list) else 1
-        body["max_tokens"] = 1024 * max(1, n)
+    if task == "anchor_vision_frameset":
+        # One label + one short sentence, not primary+secondary JSON — smaller than
+        # the 1024 budgeted for the old structured single-image task.
+        body["max_tokens"] = 300
     if task == "region_selector":
         # A handful of selector candidates with rationale — a bit more room than anchor_vision.
         body["max_tokens"] = 1536

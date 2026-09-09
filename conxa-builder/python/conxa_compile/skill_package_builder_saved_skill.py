@@ -804,18 +804,38 @@ def _saved_recovery_anchors(step: dict[str, Any], target_text: str) -> list[dict
     for raw in raw_anchors:
         if not isinstance(raw, dict):
             continue
+        relation = str(raw.get("relation") or "").strip().lower()
+        if relation == "target_sentence":
+            # The full vision-anchor sentence — surfaced separately via
+            # _saved_recovery_anchor_sentence's dedicated field, not as one of
+            # these short anchor phrases.
+            continue
         text = str(raw.get("text") or raw.get("element") or "").strip()
         if "{{" in target_text and "{{" not in text:
             continue
         if not text or text in seen:
             continue
-        relation = str(raw.get("relation") or "").strip().lower()
         priority = 2 if relation == "target" or text == target_text else 1
         out.append({"text": text, "priority": priority})
         seen.add(text)
     if target_text and target_text not in seen:
         out.append({"text": target_text, "priority": 2})
     return out[:4]
+
+
+def _saved_recovery_anchor_sentence(step: dict[str, Any]) -> str:
+    """The single vision-chosen prose description of the target — a plain-English
+    caption for Tier B recovery, separate from the short-phrase anchors list."""
+    recovery = step.get("recovery") if isinstance(step.get("recovery"), dict) else {}
+    raw_anchors = recovery.get("anchors") if isinstance(recovery.get("anchors"), list) else []
+    for raw in raw_anchors:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("relation") or "").strip().lower() == "target_sentence":
+            text = str(raw.get("element") or raw.get("text") or "").strip()
+            if text:
+                return text
+    return ""
 
 
 # How many sibling summaries to carry into recovery.json. The recorder already caps each one's
@@ -876,9 +896,23 @@ def _saved_step_visual_ref(step_id: int, visuals_dir: Path | None) -> str | None
 
 
 def _saved_visual_asset_path(step: dict[str, Any], source_session_id: str) -> str:
+    """The frame used for this step's recovery reference image (visual_ref).
+
+    Prefers the vision LLM's chosen_frame (signals.visual.default_frame_label,
+    resolved against signals.visual.frames) — the frame it judged best shows the
+    page's state right before the action — falling back to full_screenshot
+    (before_near) when no chosen frame is recorded or the labeled file is
+    missing (legacy recordings, or the per-step vision call never ran).
+    """
     signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
     visual = signals.get("visual") if isinstance(signals.get("visual"), dict) else {}
-    rel = str(visual.get("full_screenshot") or "").strip().replace("\\", "/")
+    frames = visual.get("frames") if isinstance(visual.get("frames"), dict) else {}
+    label = str(visual.get("default_frame_label") or "").strip()
+    rel = ""
+    if label and label in frames:
+        rel = str(frames.get(label) or "").strip().replace("\\", "/")
+    if not rel:
+        rel = str(visual.get("full_screenshot") or "").strip().replace("\\", "/")
     if not rel or ".." in rel:
         return ""
     if rel.startswith("sessions/"):
@@ -972,6 +1006,16 @@ def _build_saved_skill_recovery(
         visual_ref = _saved_step_visual_ref(step_id, visuals_dir)
         if visual_ref:
             entry["visual_ref"] = visual_ref
+        anchor_sentence = _saved_recovery_anchor_sentence(step)
+        if anchor_sentence:
+            entry["anchor_sentence"] = anchor_sentence
+        # BUILD-25 stage e: the compiler's second-opinion pass's label_phase
+        # finding. Read by runtime/app/failure_response.js's Tier B recovery
+        # prompt as a workflow-position prior. Absent on any step the pass
+        # never ran on or didn't label.
+        phase = str(step.get("phase") or "").strip()
+        if phase:
+            entry["phase"] = phase
         entries.append(entry)
     return {"steps": entries}
 
