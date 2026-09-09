@@ -36,9 +36,8 @@ export function RecordWorkflowDialog({
 }) {
   const [step, setStep] = useState<1 | 2>(1)
   const [urlVariables, setUrlVariables] = useState<Record<string, string>>({})
-  // Off by default — hover capture is noisy (fake signals needing heavy human review), so
-  // only workflows that actually rely on a hover-triggered menu should turn it on.
-  const [captureHover, setCaptureHover] = useState(false)
+  // Hover capture is in beta and disabled in the UI — always off until it's ready.
+  const captureHover = false
   const [activeSession, setActiveSession] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [siblingWarnings, setSiblingWarnings] = useState<string[]>([])
@@ -213,7 +212,7 @@ export function RecordWorkflowDialog({
               <p className="text-xs font-semibold text-zinc-300">How it works</p>
               {[
                 'Click "Start Recording" on the next screen.',
-                'Do the steps in the browser like normal. Clicks, typing, and page changes are recorded. If a menu only shows up on hover, check "This workflow uses hover menus" on the next screen first.',
+                'Do the steps in the browser like normal. Clicks, typing, and page changes are recorded.',
                 'When done, close the browser, then click "Save Workflow Now".',
               ].map((text, i) => (
                 <div key={i} className="flex items-start gap-3">
@@ -230,6 +229,21 @@ export function RecordWorkflowDialog({
                 'Passwords are removed automatically — you don\'t need to do anything.',
                 'Go slow. Let each page finish loading before you click or type the next thing.',
                 'Do it in one clean pass — don\'t go back and redo steps.',
+              ].map((tip, i) => (
+                <p key={i} className="text-xs leading-5 text-zinc-500"><span className="mr-1.5 text-zinc-600">·</span>{tip}</p>
+              ))}
+            </div>
+            <div className="border-t border-white/8" />
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Limitations</p>
+              {[
+                'Can\'t get past CAPTCHAs or other bot-check screens.',
+                'Sites with bot detection, IP allowlisting, or similar anti-automation protection will block it, same as they\'d block any script.',
+                'Can\'t automate logins that require a brand-new one-time code every single time.',
+                'If a session expires partway through a run, it pauses and waits for someone to log back in — it won\'t force its way past a login screen.',
+                'Drag-and-drop actions (like reordering items on a board) can be recorded, but may need extra review before they replay reliably.',
+                'Canvas-drawn interfaces (like design tools or custom charts, where nothing is a real clickable element) aren\'t supported yet.',
+                'Hover-revealed menus are in beta and not fully reliable yet.',
               ].map((tip, i) => (
                 <p key={i} className="text-xs leading-5 text-zinc-500"><span className="mr-1.5 text-zinc-600">·</span>{tip}</p>
               ))}
@@ -258,17 +272,17 @@ export function RecordWorkflowDialog({
                   : workflowStartUrl}
               </span>.
             </p>
-            <label className="flex items-start gap-2 text-xs text-zinc-400">
-              <Checkbox
-                checked={captureHover}
-                onCheckedChange={(checked) => setCaptureHover(Boolean(checked))}
-                className="mt-0.5"
-              />
+            <label className="flex items-start gap-2 text-xs text-zinc-400 opacity-50">
+              <Checkbox checked={false} disabled className="mt-0.5" />
               <span>
-                This workflow uses hover menus
+                <span className="inline-flex items-center gap-1.5">
+                  This workflow uses hover menus
+                  <span className="rounded-sm border border-zinc-600 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                    Beta
+                  </span>
+                </span>
                 <span className="block text-zinc-500">
-                  Only turn this on if a menu or tooltip appears just from hovering — it needs
-                  more review afterward.
+                  Hover-menu capture is in beta and turned off for now.
                 </span>
               </span>
             </label>
