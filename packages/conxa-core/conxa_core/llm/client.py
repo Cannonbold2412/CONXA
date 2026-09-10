@@ -46,6 +46,18 @@ def _is_vision_task(task: str) -> bool:
     }
 
 
+def _copilot_modality(task: str, payload: dict[str, Any]) -> str | None:
+    """"text"/"multimodal" for copilot_diagnose/copilot_reply, based on whether this turn
+    carries a screenshot — None for every other task (caller falls back to the flat
+    _is_vision_task set as today). Unlike every other vision task, Copilot's modality isn't
+    fixed by its task name: the same task sends text-only turns and screenshot-bearing turns
+    (see conxa_compile/llm/copilot.py's optional image_base64), so it needs its own model slot
+    per turn rather than always burning the shared vision model."""
+    if task not in ("copilot_diagnose", "copilot_reply"):
+        return None
+    return "multimodal" if payload.get("image_base64") else "text"
+
+
 def _safe_error_snippet(text: str, limit: int = 280) -> str:
     t = " ".join(str(text).split())
     if len(t) > limit:
@@ -105,6 +117,13 @@ def _legacy_payload(task: str, payload: dict[str, Any]) -> bytes:
 
 
 def _resolved_model(task: str, payload: dict[str, Any]) -> Any:
+    modality = _copilot_modality(task, payload)
+    if modality is not None:
+        # No standalone multimodal singleton exists (only per-provider PoolEntry.multimodal_model
+        # in the router) — degrade to the vision singleton here too, same as the router falling
+        # back to vision_model when multimodal_model is unset.
+        default = settings.llm_text_model if modality == "text" else settings.llm_vision_model
+        return payload.get("model") or default
     if _is_vision_task(task):
         return payload.get("model") or settings.llm_vision_model
     return payload.get("model") or settings.llm_text_model
@@ -455,21 +474,34 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             "reviewer (Human Review). You are shown evidence about one compiled workflow and, "
             "when relevant, why one of its steps failed a test run: the compiler's own "
             "confidence and identity signals, the recorded page's before/after DOM diff, the "
-            "deterministic recovery cascade's trail, a live element inventory, and — when "
-            "attached — a screenshot taken at the moment of failure. Diagnose from this "
-            "evidence: cite the actual cascade stage or page state involved, never a generic "
-            "restatement of the error message. Answer the reviewer's question directly.\n"
+            "deterministic recovery cascade's trail, a live element inventory, any overlays "
+            "(popups/banners) the runtime observed during test runs, and — when attached — a "
+            "screenshot taken at the moment of failure. Diagnose from this evidence: cite the "
+            "actual cascade stage or page state involved, never a generic restatement of the "
+            "error message. Answer the reviewer's question directly.\n"
             "Return strict JSON with keys: reply (a short, specific plain-English answer), and "
-            "proposals (array, usually empty — most turns propose nothing). Each proposal is "
-            "{step_key, field, patch, why}: step_key copied EXACTLY from a step's own \"step_key\" "
-            "field in the evidence — never invented, never a step number; field is exactly one "
-            "of input_binding, value, intent, semantic_description, validation.assertions; patch "
-            "is the new value for that field. why is one sentence citing the evidence. You must "
-            "NEVER propose target, identity_bundle, compiled_selectors, primary_selector, or "
-            "fallback_selectors — you never write or change a page selector, only a human "
-            "re-targeting a step in the editor does that. Only propose a change you are "
-            "confident about and can justify from evidence actually shown to you — never invent "
-            "text, a selector, or a DOM fact not present above. No markdown, no extra keys."
+            "proposals (array, usually empty — most turns propose nothing). Two kinds of proposal "
+            "exist:\n"
+            "1. A field edit: {step_key, field, patch, why}. step_key copied EXACTLY from a "
+            "step's own \"step_key\" field in the evidence — never invented, never a step number; "
+            "field is exactly one of input_binding, value, intent, semantic_description, "
+            "validation.assertions; patch is the new value for that field.\n"
+            "2. A conditional-branch insertion, ONLY when the reviewer asks about a popup/overlay "
+            "and the evidence's observed_overlays lists one: {overlay_id, control_index, "
+            "primitive, after_step_key, why}. overlay_id copied EXACTLY from "
+            "observed_overlays[].overlay_id — never invented, and never reference an overlay not "
+            "listed there. control_index is the index into that overlay's own \"controls\" array "
+            "(the button/link to act on, e.g. \"Accept\"). primitive is \"try_dismiss\" (dismiss "
+            "the overlay before the next step) or \"if_present\" (only act when the overlay is "
+            "present). after_step_key is the step_key to insert after, or omit to insert at the "
+            "end.\n"
+            "why is one sentence citing the evidence, for either kind. You must NEVER propose "
+            "target, identity_bundle, compiled_selectors, primary_selector, or fallback_selectors "
+            "— you never write or change a page selector, only a human re-targeting a step in the "
+            "editor does that, and a branch insertion's own selectors are built deterministically "
+            "from the overlay you referenced, not by you. Only propose a change you are confident "
+            "about and can justify from evidence actually shown to you — never invent text, a "
+            "selector, or a DOM fact not present above. No markdown, no extra keys."
         )
         user_content: list[dict[str, Any]] | str
         if image_b64:

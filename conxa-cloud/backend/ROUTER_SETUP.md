@@ -89,6 +89,23 @@ FREELLMAPI_VISION_MODEL=                       # pin a vision-capable model, e.g
 Caution: upstream free tiers carry experimentation-only ToS — keep at least one
 direct provider in the pool as fallback for real customer traffic.
 
+### Copilot's multimodal model (optional)
+
+The Human Review Copilot's turns (`copilot_diagnose`/`copilot_reply`) route to `text_model`
+when the turn has no screenshot, and to a separate `*_MULTIMODAL_MODEL` slot — not
+`*_VISION_MODEL` — when it does, so Copilot's screenshot+conversation turns can use a different
+model than the compiler's other vision tasks (`anchor_vision`, `region_selector`, ...) on the
+same provider. Every provider that has a `*_VISION_MODEL` also has a `*_MULTIMODAL_MODEL`
+(and Starter/Pro tiers have `LLM_STARTER_MULTIMODAL_MODEL`/`LLM_PRO_MULTIMODAL_MODEL`), e.g.:
+
+```env
+OPENROUTER_MULTIMODAL_MODEL=          # optional — falls back to OPENROUTER_VISION_MODEL when unset
+LLM_STARTER_MULTIMODAL_MODEL=
+LLM_PRO_MULTIMODAL_MODEL=
+```
+
+Leave it unset to keep using `vision_model` for Copilot's screenshot turns as before — it never
+errors, it just degrades to the shared vision model.
 
 ### 3. Router Behavior (Optional Tuning)
 
