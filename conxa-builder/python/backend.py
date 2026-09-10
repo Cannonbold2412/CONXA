@@ -61,6 +61,7 @@ from handlers.visual import VisualMixin  # noqa: E402
 from handlers.skill_packages import SkillPackagesMixin  # noqa: E402
 from handlers.runs import RunsMixin  # noqa: E402
 from handlers.legal import LegalMixin  # noqa: E402
+from handlers.copilot import CopilotMixin  # noqa: E402
 from conxa_core.progress import set_event_sink  # noqa: E402
 
 # Compile-time sub-step logging (conxa_compile/compiler/build.py's
@@ -137,6 +138,7 @@ class Backend(
     SkillPackagesMixin,
     RunsMixin,
     LegalMixin,
+    CopilotMixin,
 ):
     """JSON-RPC dispatcher. Command handlers (cmd_*) live in the handlers/
     package, grouped by domain and mixed in here; this class owns shared
@@ -690,6 +692,10 @@ class Backend(
         "update_workflow_inputs", "replace_literals", "undo_workflow", "redo_workflow",
         "retarget_apply", "sign_off_workflow", "apply_recording_visual", "apply_step_frame",
         "clear_step_visual", "update_visual_bbox",
+        # BUILD-26 stage (d): logged with source="copilot" below, not "patch_step" — the command
+        # this delegates to internally is a plain method call, not a re-entrant dispatch(), so it
+        # never trips this hook a second time under the wrong name.
+        "accept_copilot_proposal",
     })
 
     def dispatch(self, msg: dict[str, Any]) -> None:
@@ -715,7 +721,16 @@ class Backend(
                 try:
                     from conxa_core.storage.json_store import read_skill  # noqa: PLC0415
                     from conxa_compile.editor.edit_log import append_edit  # noqa: PLC0415
-                    append_edit(skill_id_for_log, cmd, before_doc, read_skill(skill_id_for_log))
+                    # BUILD-26 stage (d): an accepted copilot proposal is attributed here, not
+                    # inside cmd_accept_copilot_proposal — that handler delegates to cmd_patch_step
+                    # via a plain method call (never re-entering dispatch()), so this is the one
+                    # place that ever sees the true top-level command name for this request.
+                    source = "copilot" if cmd == "accept_copilot_proposal" else "human"
+                    proposal_id = str(payload.get("proposal_id") or "").strip() or None
+                    append_edit(
+                        skill_id_for_log, cmd, before_doc, read_skill(skill_id_for_log),
+                        source=source, proposal_id=proposal_id,
+                    )
                 except Exception:  # noqa: BLE001 — edit-log write must never block dispatch
                     pass
         except _CommandError as exc:

@@ -76,6 +76,28 @@ def eval_skill(skill_id: str) -> dict[str, Any] | None:
     }
 
 
+def copilot_accept_rate(skill_id: str) -> dict[str, Any] | None:
+    """BUILD-26: the Human Review Copilot's own accept/reject rate, straight from
+    edits.jsonl's `source`/`decision` fields (edit_log.py, stage d) — independent of the
+    second-opinion join above, since a copilot proposal is reviewer-initiated per-turn, not a
+    compile-time pass judged against edits made after the fact."""
+    from conxa_compile.editor.edit_log import read_edits
+
+    edits = read_edits(skill_id)
+    copilot_edits = [e for e in edits if e.get("source") == "copilot"]
+    if not copilot_edits:
+        return None
+    accepted = sum(1 for e in copilot_edits if e.get("decision") == "accepted")
+    rejected = sum(1 for e in copilot_edits if e.get("decision") == "rejected")
+    total = accepted + rejected
+    return {
+        "skill_id": skill_id,
+        "accepted": accepted,
+        "rejected": rejected,
+        "accept_rate": round(accepted / total, 3) if total else None,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skill", default=None)
@@ -86,18 +108,26 @@ def main() -> int:
 
     if not results:
         print("No skill has both an applied second opinion and a non-empty edit log yet.")
-        return 0
+    else:
+        for r in results:
+            print(
+                f"{r['skill_id']}: applied={r['applied_total']} "
+                f"(joinable={r['applied_joinable']}) "
+                f"override_rate={r['override_rate']} miss_rate={r['miss_rate']}"
+            )
 
-    for r in results:
-        print(
-            f"{r['skill_id']}: applied={r['applied_total']} "
-            f"(joinable={r['applied_joinable']}) "
-            f"override_rate={r['override_rate']} miss_rate={r['miss_rate']}"
-        )
+        rates = [r["override_rate"] for r in results if r["override_rate"] is not None]
+        if rates:
+            print(f"\nOverall override rate: {round(sum(rates) / len(rates), 3)} across {len(rates)} workflow(s)")
 
-    rates = [r["override_rate"] for r in results if r["override_rate"] is not None]
-    if rates:
-        print(f"\nOverall override rate: {round(sum(rates) / len(rates), 3)} across {len(rates)} workflow(s)")
+    copilot_results = [r for sid in skill_ids if (r := copilot_accept_rate(sid)) is not None]
+    if copilot_results:
+        print("\nCopilot proposal accept rate (BUILD-26):")
+        for r in copilot_results:
+            print(f"{r['skill_id']}: accepted={r['accepted']} rejected={r['rejected']} accept_rate={r['accept_rate']}")
+        overall = [r["accept_rate"] for r in copilot_results if r["accept_rate"] is not None]
+        if overall:
+            print(f"Overall copilot accept rate: {round(sum(overall) / len(overall), 3)} across {len(copilot_results)} workflow(s)")
     return 0
 
 

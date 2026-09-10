@@ -91,10 +91,21 @@ def append_edit(
     command: str,
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
+    *,
+    source: str = "human",
+    proposal_id: str | None = None,
 ) -> None:
     """Record every tracked-field change between before/after documents for one
     editor command. Never raises — an edit must never fail because its log
-    entry couldn't be written."""
+    entry couldn't be written.
+
+    `source`/`proposal_id` (BUILD-26 stage d): an accepted Human Review Copilot proposal is
+    otherwise indistinguishable from a manual edit in this log — `source="copilot"` plus the
+    proposal's own id is what lets `eval_suggestions.py` measure the copilot's accept rate
+    separately from a reviewer's own edits, and what `read_edits()` filters on for step-level
+    "prior edits" evidence (see `editor/evidence.py`). Defaults to "human"/None so every existing
+    caller (BUILD-25) is unaffected.
+    """
     if not isinstance(before, dict) or not isinstance(after, dict):
         return
     try:
@@ -108,7 +119,11 @@ def append_edit(
     try:
         lines = [
             json.dumps(
-                {"ts": ts, "skill_id": skill_id, "command": command, "meta_version": meta_version, **change},
+                {
+                    "ts": ts, "skill_id": skill_id, "command": command, "meta_version": meta_version,
+                    "source": source, "proposal_id": proposal_id, "decision": "accepted",
+                    **change,
+                },
                 ensure_ascii=False,
                 default=str,
             )
@@ -116,6 +131,40 @@ def append_edit(
         ]
         with edits_path(skill_id).open("a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def append_decision(
+    skill_id: str,
+    *,
+    proposal_id: str,
+    decision: str,
+    command: str,
+    field: str,
+    why: str = "",
+    step_key: str,
+) -> None:
+    """Log a copilot proposal decision that changed no document — a rejection, chiefly (BUILD-26
+    stage d). `append_edit` above only fires on an actual before/after diff, so a rejected
+    proposal would otherwise leave no trace at all: a copilot that quietly dropped rejections
+    keeps the flattering half of the dataset and trains on it. Writes into the SAME edits.jsonl
+    BUILD-25 already reads, in the same per-line shape (`step_key`, `field`), so one file stays
+    the single source of truth for both accepted and rejected copilot output. Never raises, same
+    contract as append_edit."""
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        line = json.dumps(
+            {
+                "ts": ts, "skill_id": skill_id, "command": command, "meta_version": None,
+                "source": "copilot", "proposal_id": proposal_id, "decision": decision,
+                "step_key": step_key, "field": field, "before": None, "after": None, "why": why,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        with edits_path(skill_id).open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
     except OSError:
         pass
 
