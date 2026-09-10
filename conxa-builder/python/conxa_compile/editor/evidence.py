@@ -24,6 +24,7 @@ Returns a size-bounded dict: this goes straight into a paid LLM payload (llm/cop
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from conxa_core.storage.json_store import read_skill
@@ -40,6 +41,7 @@ from conxa_compile.editor.retarget import find_source_event
 _INVENTORY_CAP = 40
 _RECOVERY_TRAIL_CAP = 60
 _EDIT_HISTORY_CAP = 20
+_OVERLAY_CAP = 20
 
 
 class EvidenceError(Exception):
@@ -56,21 +58,18 @@ def _steps_of(doc: dict[str, Any]) -> list[dict[str, Any]]:
     return steps if isinstance(steps, list) else []
 
 
-def _find_workflow_for_skill(skill_id: str) -> Any | None:
+def find_workflow_for_skill(skill_id: str) -> Any | None:
+    """Public (BUILD-26 stage e): cmd_copilot_verify needs the same lookup this module already
+    does for the last_test_run_id fallback, below."""
     for wf in list_workflows():
         if wf.skill_id == skill_id:
             return wf
     return None
 
 
-def _read_runtime_evidence(run_id: str | None) -> dict[str, Any]:
-    """Read runs/{run_id}/_evidence/ from the Studio's own test sandbox — sandbox/data/ is the
-    CONXA_DATA_DIR the runtime is given for every Test Skill run (conxa_runtime.ensure_test_sandbox).
-    Missing/unreadable degrades to {}, never an error: the compile-side evidence below still
-    stands on its own, and a run older than CONXA_RUN_RETENTION_DAYS is swept by the runtime."""
-    if not run_id:
-        return {}
-    evidence_dir = resolve_test_sandbox_dir() / "data" / "runs" / run_id / "_evidence"
+def _read_failure_evidence(evidence_dir: Path) -> dict[str, Any]:
+    """The runtime's failure.json (failure_response.js::_writeStudioEvidence) — written only when
+    a Studio test ultimately fails. Missing/unreadable degrades to {}."""
     evidence_path = evidence_dir / "evidence.json"
     if not evidence_path.is_file():
         return {}
@@ -88,6 +87,53 @@ def _read_runtime_evidence(run_id: str | None) -> dict[str, Any]:
     pre_step_jpg = evidence_dir / "pre_step.jpg"
     data["failure_screenshot_path"] = str(failure_jpg) if failure_jpg.is_file() else None
     data["pre_step_screenshot_path"] = str(pre_step_jpg) if pre_step_jpg.is_file() else None
+    return data
+
+
+def _read_observed_overlays(evidence_dir: Path) -> list[dict[str, Any]]:
+    """BUILD-26 stage f: runtime/app/overlay_capture.js's overlays.jsonl — written by
+    cascade.js's dismiss-overlay remedy on ANY run that hit an intercepted target, including one
+    that recovered and passed. `overlay_id` is what a copilot proposal references; never invented
+    here, only read back. Missing/unreadable degrades to []."""
+    overlays_path = evidence_dir / "overlays.jsonl"
+    if not overlays_path.is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        for line in overlays_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and rec.get("overlay_id"):
+                out.append(rec)
+    except OSError:
+        return []
+    return out[-_OVERLAY_CAP:]
+
+
+def _read_runtime_evidence(run_id: str | None) -> dict[str, Any]:
+    """Read runs/{run_id}/_evidence/ from the Studio's own test sandbox — sandbox/data/ is the
+    CONXA_DATA_DIR the runtime is given for every Test Skill run (conxa_runtime.ensure_test_sandbox).
+    Missing/unreadable degrades to {}, never an error: the compile-side evidence below still
+    stands on its own, and a run older than CONXA_RUN_RETENTION_DAYS is swept by the runtime.
+
+    evidence.json and overlays.jsonl are read INDEPENDENTLY (BUILD-26 stage f) — evidence.json is
+    failure-only, overlays.jsonl is written on a passing run too, so a missing evidence.json must
+    not also hide a passing run's overlay captures."""
+    if not run_id:
+        return {}
+    evidence_dir = resolve_test_sandbox_dir() / "data" / "runs" / run_id / "_evidence"
+    data = _read_failure_evidence(evidence_dir)
+    overlays = _read_observed_overlays(evidence_dir)
+    if not data and not overlays:
+        return {}
+    data.setdefault("failure_screenshot_path", None)
+    data.setdefault("pre_step_screenshot_path", None)
+    data["observed_overlays"] = overlays
     return data
 
 
@@ -141,13 +187,21 @@ def build_evidence_bundle(skill_id: str, *, run_id: str | None = None) -> dict[s
     steps = _steps_of(doc)
     keys = step_keys(steps)
 
-    workflow = _find_workflow_for_skill(skill_id)
+    workflow = find_workflow_for_skill(skill_id)
     if run_id is None and workflow is not None:
         run_id = workflow.last_test_run_id
 
     runtime_evidence = _read_runtime_evidence(run_id)
     failed_at = runtime_evidence.get("failed_at")
     failed_step_key = keys[failed_at] if isinstance(failed_at, int) and 0 <= failed_at < len(keys) else None
+
+    # BUILD-26 stage f: the runtime only knows step_index (it has no concept of the compiler's
+    # step_key), so resolve it here the same way failed_step_key is resolved above — this is
+    # what lets a copilot proposal address an overlay by the SAME step_key gate_proposals already
+    # re-resolves everything else against.
+    for overlay in runtime_evidence.get("observed_overlays") or []:
+        idx = overlay.get("step_index")
+        overlay["step_key"] = keys[idx] if isinstance(idx, int) and 0 <= idx < len(keys) else None
 
     compile_report = doc.get("compile_report") if isinstance(doc.get("compile_report"), dict) else {}
 

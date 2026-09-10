@@ -144,6 +144,38 @@ def test_bundle_falls_back_to_workflow_last_test_run_id_when_run_id_omitted(tmp_
     assert bundle["failed_step_key"] == "h1#1"
 
 
+def test_overlays_jsonl_read_even_when_evidence_json_is_missing(tmp_path, monkeypatch):
+    """BUILD-26 stage f: overlays.jsonl is written on a PASSING run — evidence.json (failure-only)
+    must never gate it out."""
+    from conxa_core.config import settings
+    from conxa_core.storage.json_store import write_skill
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setenv("CONXA_STUDIO_HOME", str(tmp_path / "studio_home"))
+
+    skill_id = "skill_evidence_overlay"
+    write_skill(skill_id, _doc([_click("h1"), _click("h2")]))
+
+    run_id = "run_overlay1"
+    evidence_dir = tmp_path / "studio_home" / "sandbox" / "data" / "runs" / run_id / "_evidence"
+    evidence_dir.mkdir(parents=True)
+    # No evidence.json written — this run passed.
+    (evidence_dir / "overlays.jsonl").write_text(
+        json.dumps({
+            "overlay_id": "ov1", "run_id": run_id, "slug": skill_id, "step_index": 1,
+            "dismissed": True, "container": {"tag": "div", "signal": "#cookie-banner"},
+            "controls": [{"tag": "button", "name": "Accept", "role": "button"}],
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_evidence_bundle(skill_id, run_id=run_id)
+    overlays = bundle["runtime_evidence"]["observed_overlays"]
+    assert len(overlays) == 1
+    assert overlays[0]["overlay_id"] == "ov1"
+    assert overlays[0]["step_key"] == "h2#1"  # step_index=1 resolves against this doc's steps
+
+
 def test_no_run_id_and_no_workflow_gives_compile_side_only_bundle(tmp_path, monkeypatch):
     from conxa_core.config import settings
     from conxa_core.storage.json_store import write_skill

@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from conxa_core.config import settings
-from conxa_core.llm.client import _is_openai_compatible_endpoint, _is_vision_task
+from conxa_core.llm.client import _copilot_modality, _is_openai_compatible_endpoint, _is_vision_task
 
 
 def _selected_endpoint_and_keys(task: str) -> tuple[str, list[str]]:
@@ -59,10 +59,11 @@ def call_llm(
     router = get_router()
     # Kept in sync with conxa_core.llm.client._is_vision_task and the cloud router's copy —
     # see that function's docstring for why this triplication exists and its BUILD-26 note.
-    is_vision = task in {
-        "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
-        "copilot_diagnose", "copilot_reply",
-    }
+    # Copilot's own two tasks are payload-conditional (text vs. multimodal per turn, depending
+    # on whether a screenshot is attached) rather than fixed by task name — see
+    # _copilot_modality's docstring.
+    modality = _copilot_modality(task, payload)
+    is_vision = (modality == "multimodal") if modality is not None else _is_vision_task(task)
     if is_vision:
         return router.route_vision(task, payload, timeout_ms, error_detail=error_detail)
     return router.route_text(task, payload, timeout_ms, error_detail=error_detail)
@@ -81,10 +82,8 @@ def stream_llm(
     `copilot_reply` uses this today; every other task keeps the blocking call_llm() path."""
     from conxa_core.llm import get_router
     router = get_router()
-    is_vision = task in {
-        "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
-        "copilot_diagnose", "copilot_reply",
-    }
+    modality = _copilot_modality(task, payload)
+    is_vision = (modality == "multimodal") if modality is not None else _is_vision_task(task)
     if is_vision:
         return router.route_vision(task, payload, timeout_ms, error_detail=error_detail, on_delta=on_delta)
     return router.route_text(task, payload, timeout_ms, error_detail=error_detail, on_delta=on_delta)

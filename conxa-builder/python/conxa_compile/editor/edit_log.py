@@ -169,6 +169,39 @@ def append_decision(
         pass
 
 
+def append_verification(
+    skill_id: str,
+    *,
+    proposal_id: str,
+    step_key: str,
+    verdict: str,
+    run_id: str,
+    message: str = "",
+) -> None:
+    """Record the outcome of a Human Review Copilot "Verify fix" retest (BUILD-26 stage e) —
+    `verdict` is one of "fixed" / "still_failing" / "progressed". This is the third writer into
+    the same edits.jsonl, alongside append_edit's "accepted" and append_decision's "rejected":
+    without it, the correction log says a human accepted a proposal but never whether it actually
+    worked, which is the most valuable label of the three. Never raises, same contract as the
+    other two writers."""
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        line = json.dumps(
+            {
+                "ts": ts, "skill_id": skill_id, "command": "copilot_verify", "meta_version": None,
+                "source": "copilot", "proposal_id": proposal_id, "decision": verdict,
+                "step_key": step_key, "field": None, "before": None, "after": None,
+                "run_id": run_id, "why": message,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        with edits_path(skill_id).open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
 def read_edits(skill_id: str) -> list[dict[str, Any]]:
     path = edits_path(skill_id)
     if not path.is_file():

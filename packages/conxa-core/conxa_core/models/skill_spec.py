@@ -102,7 +102,11 @@ class IdentitySignal(BaseModel):
     durability: float                # 0.0–1.0 from durability_score()
     orthogonality_class: str         # test-contract | named-attr | semantic-aria | visible-text | spatial-anchor | structural
     unique_at_compile: bool = False  # matched exactly 1 node in recorded DOM
-    source: str = "compiler"         # compiler | llm | input_bound | user (manually edited in editor)
+    # compiler | llm | input_bound | user (manually edited in editor) | runtime (BUILD-26 stage
+    # f: synthesized from a runtime-observed overlay's descriptor, editor/overlay_identity.py —
+    # deterministic, not LLM-authored; distinct from "compiler" because it was never seen at
+    # compile time and carries no DOM-snapshot uniqueness verification)
+    source: str = "compiler"
 
 
 class ElementFingerprint(BaseModel):

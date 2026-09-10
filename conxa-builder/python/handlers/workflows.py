@@ -636,7 +636,7 @@ class WorkflowsMixin:
                 inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
                 run_id=_test_run_id,
             )
-            raise _CommandError("workflow_test_failed", message) from exc
+            raise _CommandError("workflow_test_failed", message, run_id=_test_run_id) from exc
         finally:
             with _test_run_lock:
                 tracked = _active_test_runs.pop(workflow_id, None)
@@ -650,13 +650,16 @@ class WorkflowsMixin:
             # pass/fail signal — don't clobber the last real test result with it.
             if failure.startswith("Execution cancelled"):
                 sink({"kind": "workflow_test", "message": failure})
-                return {"status": "cancelled", "message": failure, "company": company, "skill": workflow.slug}
+                return {
+                    "status": "cancelled", "message": failure, "company": company,
+                    "skill": workflow.slug, "run_id": _test_run_id,
+                }
             set_workflow_test_error(
                 workflow_id, failure,
                 inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
                 run_id=_test_run_id,
             )
-            raise _CommandError("workflow_test_failed", failure)
+            raise _CommandError("workflow_test_failed", failure, run_id=_test_run_id)
 
         set_workflow_test_result(
             workflow_id, status="passed",
@@ -664,7 +667,10 @@ class WorkflowsMixin:
             run_id=_test_run_id,
         )
         sink({"kind": "workflow_test", "message": message})
-        return {"status": "passed", "message": message, "company": company, "skill": workflow.slug}
+        return {
+            "status": "passed", "message": message, "company": company,
+            "skill": workflow.slug, "run_id": _test_run_id,
+        }
 
     def cmd_cancel_test_workflow(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         """Cancel an in-progress Run Test (EXEC-35). A workflow with no active test is a

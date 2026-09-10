@@ -20,8 +20,11 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from conxa_compile.compiler.second_opinion import build_try_dismiss_from_hint
 from conxa_compile.compiler.step_key import step_keys
+from conxa_compile.editor.overlay_identity import bundle_from_descriptor
 from conxa_compile.editor.patch_gate import validate_editor_patch
+from conxa_compile.editor.workflow_mutations import _new_manual_step
 from conxa_compile.policy.bundle import get_policy_bundle
 
 _ALLOWED_FIELDS = frozenset({
@@ -104,6 +107,106 @@ def gate_proposals(doc: dict[str, Any], raw_proposals: list[Any]) -> list[dict[s
             "patch": patch,
             "why": str(raw.get("why") or "").strip(),
             "preview": {"before": _current_value(step, field), "after": value},
+        })
+    return out
+
+
+def gate_overlay_proposals(
+    doc: dict[str, Any], observed_overlays: list[dict[str, Any]], raw_proposals: list[Any]
+) -> list[dict[str, Any]]:
+    """BUILD-26 stage f: gates a SECOND proposal kind — inserting an if_present/try_dismiss
+    branch built from an overlay the runtime actually observed (`overlays.jsonl` via
+    `editor/evidence.py`'s `observed_overlays`), never a selector the model invented.
+
+    The raw shape is `{overlay_id, control_index, primitive, after_step_key, why}` — an index
+    into the run's captured overlay set plus a choice of primitive, NOT a target or selector
+    field. `overlay_id` must name something this evidence bundle actually observed; a proposal
+    referencing an unknown overlay is dropped, the same as an unresolvable step_key above.
+    Every selector is built by `editor/overlay_identity.py::bundle_from_descriptor`
+    (deterministic) or `compiler/second_opinion.py::build_try_dismiss_from_hint` (the ONE
+    sanctioned try_dismiss builder — this is its third caller) — the model never writes one.
+    """
+    keys = step_keys(_steps_of(doc))
+    overlays_by_id = {
+        str(o.get("overlay_id")): o for o in (observed_overlays or [])
+        if isinstance(o, dict) and o.get("overlay_id")
+    }
+    policy = get_policy_bundle().data
+    out: list[dict[str, Any]] = []
+    for raw in raw_proposals:
+        if not isinstance(raw, dict):
+            continue
+        overlay_id = str(raw.get("overlay_id") or "").strip()
+        overlay = overlays_by_id.get(overlay_id)
+        if overlay is None:
+            continue  # the model cannot reference an overlay nobody observed
+        primitive = str(raw.get("primitive") or "").strip()
+        if primitive not in ("try_dismiss", "if_present"):
+            continue
+        after_step_key = str(raw.get("after_step_key") or "").strip() or None
+        if after_step_key is not None and after_step_key not in keys:
+            continue
+
+        container_signal = str((overlay.get("container") or {}).get("signal") or "").strip()
+        controls = overlay.get("controls") or []
+        control_index = raw.get("control_index")
+        control = controls[control_index] if isinstance(control_index, int) and 0 <= control_index < len(controls) else None
+        control_bundle = bundle_from_descriptor(control) if control else None
+        control_selector = control_bundle.signals[0].selector if control_bundle and control_bundle.signals else ""
+
+        if primitive == "if_present" and not (control_bundle and container_signal):
+            # No synthesizable nested click target — fall back to the primitive that needs no
+            # bundle at all, rather than dropping the proposal outright.
+            primitive = "try_dismiss"
+
+        if primitive == "try_dismiss":
+            if not container_signal and not control_selector:
+                continue
+            built = build_try_dismiss_from_hint(control_selector, container_signal)
+            scaffold = _new_manual_step("try_dismiss", "")
+            merged_patch = {"intent": built["intent"], "branch": built["branch"], "recovery": built["recovery"]}
+            nested_step = None
+        else:  # if_present
+            scaffold = _new_manual_step("if_present", "")
+            merged_patch = {
+                "intent": "dismiss_if_present",
+                "target": {"primary_selector": container_signal, "fallback_selectors": []},
+            }
+            nested_step = {
+                "target": {"primary_selector": control_selector, "fallback_selectors": []},
+                "identity_bundle": control_bundle.model_dump(mode="json") if control_bundle else None,
+                "intent": "click_target",
+                "semantic_description": (
+                    f"Dismiss the observed overlay ({control.get('name') or control.get('text') or 'control'})"
+                    if control else "Dismiss the observed overlay"
+                ),
+            }
+
+        try:
+            validate_editor_patch(scaffold, merged_patch, policy)
+            if nested_step is not None:
+                # Best-effort pre-check of the nested step's own patchability — the definitive
+                # check still re-runs at accept time against the real inserted scaffold, exactly
+                # as resolve_step_index/cmd_patch_step already do for the patch_step kind above.
+                nested_scaffold = _new_manual_step("click", "")
+                validate_editor_patch(nested_scaffold, nested_step, policy, in_branch_body=True)
+        except ValueError:
+            continue
+
+        out.append({
+            "id": str(uuid.uuid4()),
+            "step_key": None,
+            "command": "insert_overlay_branch",
+            "primitive": primitive,
+            "overlay_id": overlay_id,
+            "after_step_key": after_step_key,
+            "patch": merged_patch,
+            "nested_step": nested_step,
+            "why": str(raw.get("why") or "").strip(),
+            "preview": {
+                "before": None,
+                "after": f"Insert {primitive} after {'step ' + after_step_key if after_step_key else 'the last step'}",
+            },
         })
     return out
 
