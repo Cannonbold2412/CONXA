@@ -1503,6 +1503,67 @@ the new item below this one.
 
 ### BUILD-26 — Human Review Copilot: a conversational repair agent inside Human Edit, driving the editor commands that already exist
 - **Category:** Builder
+- **Status (2026-09-10):** stages (a)-(d) done — evidence bundle, read-only diagnosis, gated
+  proposals over `patch_step`, the accept/reject decision log. (e) verified retest and (f) overlay
+  identity capture stay open (see the reasons below, still current).
+  - **~~(c) UI polish~~ done (2026-09-10):** renamed the panel "Conxa Copilot" throughout its
+    display strings (code identifiers unchanged); replies now stream token-by-token instead of
+    appearing as one block (a new `copilot_reply` streaming task, kept separate from
+    `copilot_diagnose`'s JSON-mode proposals call — see `docs/TRD.md` §7.2a for the two-call
+    design and the SSE plumbing threaded through `conxa_core.llm.client` → the cloud LLM
+    proxy/router → `LLMProxyClient` → `handlers/copilot.py`'s `copilot_delta` events); a real
+    "thinking" indicator shows from send until the first token, driven by the `sending` state
+    (there is no earlier "call started" backend event on this path — `LLMProxyClient`'s
+    `on_api_call` sink only fires on completion, not dispatch); and a reviewer can now edit a
+    prior question and resend it, which truncates the transcript from that point instead of
+    appending a correction on top of an unrelated tangent.
+  - **Root-cause note on a reported "no failure evidence" bug (2026-09-10):** verified this was
+    not a code defect — `failure_response.js::_writeStudioEvidence` (the (a1) fix noted below) is
+    correct and fully covered by its unit tests. The actual cause was a stale local build: the
+    Studio test sandbox's `conxa-app` layer is a separately-built, disk-resident bundle
+    (`scripts\build-app-local.ps1`) that does not auto-rebuild from source on every "Run Test"
+    click, so a test run against an unrebuilt sandbox executes code older than this fix. No
+    action item here beyond the existing developer-setup docs; flagged in case it recurs.
+  - **Corrections found while building (a):** the spec's own claim that the evidence "is already
+    written to disk and simply has no reader" was wrong in three places, now fixed as part of (a)
+    rather than left as a surprise for whoever built it next. `cmd_get_run`/`cmd_list_runs`
+    (`handlers/runs.py`) read `data/runs/*.jsonl` — nothing ever wrote it; **deleted**, along with
+    the renderer's dead `fetchRuns`/`fetchRun`. The rich failure payload (screenshot, live
+    inventory, overlay probe) never ran in the Studio — `failure_response.js`'s ceiling-2 branch
+    returned four lines of text and discarded everything computed below it; now it writes
+    `runs/{run_id}/_evidence/{evidence.json,failure.jpg}` before returning, reusing the same
+    helpers the armed-agent branch already had. And `write_skill`'s `invalidate_workflow_test_by_skill`
+    clears `last_test_error` on every edit, so evidence had to be snapshotted per run on disk, not
+    read live off the `Workflow` record — `Workflow.last_test_run_id` is the new stable pointer.
+  - **(a) Evidence bundle** — `conxa_compile/editor/evidence.py::build_evidence_bundle`. Merges
+    the runtime evidence file above with the compiled skill document, `compile_report` (degrading
+    explicitly to "confidence unavailable" when `_invalidate_compile_report` has staled it — never
+    a misleading 0%), the recorded event's `post_condition`/`state_change.dom_diff` (via
+    `editor/retarget.py::find_source_event`, keyed on `snapshot_ref`), step prose
+    (`editor/describe.py`), and prior edits on the step (`edit_log.read_edits`). Keyed on
+    `step_key` throughout.
+  - **(b) Read-only copilot** — `copilot_diagnose`, a new LLM task registered in
+    `conxa_core/llm/client.py` (prompt + vision-task set, mirrored in the two other copies of that
+    set in `conxa_compile/llm/client.py` and the cloud router) and called from
+    `conxa_compile/llm/copilot.py::copilot_turn`. No multi-turn support exists on this call path —
+    the Studio flattens the whole conversation into one payload per turn; the backend stays
+    stateless. `usage_class="human_edit"` end-to-end, same metering bucket the re-target wizard
+    already uses. Renders as a floating launcher + chat card (bottom-right/left, persisted),
+    `components/copilot/`, deliberately not a Tools-rail tab — that rail is a shared modal and
+    would hide the step list mid-conversation.
+  - **(c) Proposals over `patch_step`** — `conxa_compile/editor/copilot_proposals.py::gate_proposals`
+    pre-validates every raw `{step_key, field, patch, why}` object through the SAME
+    `patch_gate.py::validate_editor_patch` a manual edit clears, restricted to
+    `value`/`input_binding`/`intent`/`semantic_description`/`validation.assertions` — never a
+    selector-bearing field. A proposal stores `step_key`, never a baked `step_index`;
+    `resolve_step_index` re-resolves it at accept time and refuses cleanly if an insert/delete/
+    reorder happened in between (the BUILD-22/23 lesson `edit_log.py` already learned once).
+    Accept delegates to `cmd_patch_step` itself — one RPC, one undo entry, no new mutation logic.
+  - **(d) Decision log** — `edit_log.py::append_edit` gained `source`/`proposal_id` (default
+    `"human"`/`None`, every BUILD-25 caller unaffected); a new `append_decision` logs a rejection
+    (which changes no document, so the diff-based hook writes nothing on its own) into the SAME
+    `edits.jsonl`. `eval_suggestions.py` gained a copilot accept-rate readout alongside BUILD-25's
+    override rate.
 - **Description:** a chat panel in the Human Review page (`HumanEditPage.tsx`) that a reviewer talks to
   in plain language about the workflow currently open, and that answers by **proposing editor changes
   as an accept/reject diff** — never by mutating the skill directly.
@@ -1560,7 +1621,7 @@ the new item below this one.
   text-only model fed a pre-summarized description of the image. An overlay covering the target, a
   toast that had not cleared, a modal that moved the button are all things the DOM diff and recovery
   log describe as "element not found" and a screenshot shows in one glance. The pattern is already
-  proven at compile time by `relational_vision_anchor.py` and `region_selector_vision.py`.
+  proven at compile time by `anchor_vision_llm.py` and `region_selector_vision.py`.
   - **This is a call-site choice, not a new pipeline.** It changes what gets attached to the evidence
     bundle's diagnosis call and reuses the same LLM proxy and cost model as every other call.
   - **The cost shape differs from the compile-time vision calls, so do not copy BUILD-25's routing
@@ -1642,16 +1703,22 @@ the new item below this one.
   logged as loudly as an accepted one. A copilot that quietly drops rejections keeps the flattering
   half of the dataset and trains on it.
 - **Suggested order:**
-  - **(a) The evidence bundle.** One assembler over files that already exist. Reusable by all three
-    cases and by PROD-11 later. **S–M.**
-  - **(b) A read-only copilot.** Chat panel wired to (a); its only output is words — it diagnoses and
-    explains, it cannot edit. Useful on day one, and costs nothing if diagnosis quality disappoints.
-    Route the diagnosis call through a vision-capable model with the failure screenshot attached from
-    the start; (b) is exactly where diagnosis quality either earns trust or does not. **M.**
-  - **(c) Proposals for the safe commands first** — assertion changes and `cmd_patch_step` — rendered
-    as an accept/reject diff. Assertions are the right starting point because they only read: a wrong
-    assertion proposal cannot damage anything. **M.**
-  - **(d) The accept/reject log**, in BUILD-25's format, from (c) onward. Not optional. **S.**
+  - ~~**(a) The evidence bundle.**~~ **Done 2026-09-10.** `conxa_compile/editor/evidence.py`. Also
+    fixed on the way: a real `data/runs/*.jsonl` writer never existed (the reader in
+    `handlers/runs.py` was deleted along with it) and the Studio's failure branch discarded its
+    own screenshot/inventory/overlay-probe work instead of writing it anywhere — see the Status
+    note above.
+  - ~~**(b) A read-only copilot.**~~ **Done 2026-09-10.** `copilot_diagnose` task
+    (`conxa_core/llm/client.py`), `conxa_compile/llm/copilot.py::copilot_turn`, floating
+    launcher + panel in `components/copilot/`. Vision-routed from the start, screenshot attached
+    when the runtime evidence has one.
+  - ~~**(c) Proposals for the safe commands first**~~ **Done 2026-09-10**, though the initial cut
+    covers `value`/`input_binding`/`intent`/`semantic_description`/`validation.assertions` rather
+    than assertions alone — `conxa_compile/editor/copilot_proposals.py::gate_proposals` pre-runs
+    the exact same `patch_gate.py` a manual edit clears, so a wider allow-list costs nothing extra
+    in safety. Still never a selector field.
+  - ~~**(d) The accept/reject log**~~, **Done 2026-09-10**, in the format `edit_log.py` already
+    used — `source`/`proposal_id` on `append_edit`, a new `append_decision` for rejections.
   - **(e) The verified retest loop**, with the non-idempotent guard above. **M.**
   - **(f) Unexpected-overlay identity capture during test runs**, then branch-insertion proposals
     (case 2). **M.**

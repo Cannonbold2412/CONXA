@@ -123,8 +123,10 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 | `validate_workflow` / `sign_off_workflow` | Quality gate |
 | `list_skills` / `get_skill_document` / `delete_skill` / `rename_skill` | Skill library |
 | `list_skill_packages` / `list_skill_package_files` | Skill pack browser |
-| `list_runs` / `get_run` / `get_metrics` | Run history |
+| `get_metrics` | Backend metrics |
 | `get_usage` | LLM proxy quota |
+| `get_failure_evidence` | Human Review Copilot's evidence bundle for a skill's failing step (BUILD-26, §7.2a) |
+| `copilot_turn` / `accept_copilot_proposal` / `reject_copilot_proposal` | Human Review Copilot conversation + proposal accept/reject (BUILD-26, §7.2a) |
 
 ### 2.3 Data Directory Layout (Build Studio)
 
@@ -144,7 +146,9 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 │   └── {skill_id}/
 │       ├── assets/            (screenshot thumbnails)
 │       └── edits.jsonl        (reviewer edit log, BUILD-25 stage a — editor/edit_log.py;
-│                                one JSON line per changed field, keyed on step_key)
+│                                one JSON line per changed field, keyed on step_key; carries
+│                                source/proposal_id/decision for a copilot-attributed line
+│                                since BUILD-26 stage d)
 ├── skill-packs/
 │   └── {workspace_dir_slug}/   (filesystem-safe transform of workspace_id)
 │       ├── pack.json          (manifest with sync_endpoint, tracking, skill_groups — see §5.2a)
@@ -1783,6 +1787,148 @@ candidate exposes no neighbour text — absence of agreement is not contradictio
 margin gate is untouched.
 
 On the primary compile path itself, `identity_bundle.py:generate_deterministic_signals()` reads the recorded DOM at compile time and emits Playwright-native-grammar signals ranked by durability. No LLM call is made to produce or score selector strings (SeeAct Finding 3: ~30% hallucination rate for LLM-written selectors). `llm_selector_generator_v2.to_playwright_grammar()` is still used as a pure string-formatting utility by `identity_bundle.py`.
+
+### 7.2a Human Review Conxa Copilot (BUILD-26)
+
+Displayed to reviewers as "Conxa Copilot" (`components/copilot/CopilotPanel.tsx`,
+`CopilotLauncher.tsx`); code identifiers (RPC command names, module names) are unchanged.
+
+A chat panel in Human Edit — floating launcher + card (`components/copilot/`), not a Tools-rail
+tab (that rail is a shared modal dialog and would hide the step list mid-conversation) — that
+diagnoses a workflow's most recent test failure and proposes editor changes as accept/reject
+diffs. **The copilot proposes, the reviewer disposes**: a proposal never applies itself, and a
+rejection is logged as loudly as an acceptance (§ below). This is a user-initiated editor action,
+the same sanctioned category as the two existing "LLM does not write selector strings" exceptions
+in `CLAUDE.md` — and deliberately narrower, since it never touches an element address at all.
+
+**Evidence bundle** (`conxa_compile/editor/evidence.py::build_evidence_bundle`). Merges, all keyed
+on `step_key` (never `step_index`, which renumbers on any edit):
+- the runtime's own failure capture, written by `failure_response.js` on a Studio test failure
+  (see below) — `runs/{run_id}/_evidence/{evidence.json, failure.jpg, pre_step.jpg?}` under the
+  Studio's test sandbox `data/` dir;
+- the compiled skill document's per-step `identity_bundle`, `compiled_selectors`,
+  `validation.assertions`, `target`, `intent`, `semantic_description`, `phase`, `consequence`;
+- `compile_report`'s per-step confidence/warnings and BUILD-25's `second_opinion`/`archived_steps`
+  — degraded explicitly to `{"available": false, "reason": "workflow edited since last compile"}`
+  when `editor/workflow_mutations.py::_invalidate_compile_report` has staled the report (an
+  insert/delete/reorder since the last compile empties its `steps`), never a misleading 0%;
+  - the original recorded event's `post_condition.classified_effect` / `state_change.dom_diff` —
+    these live on the recording, not the compiled `SkillStep` — via
+    `editor/retarget.py::find_source_event`, the same `snapshot_ref` lookup the 1-click-fix path
+    already uses;
+  - deterministic step prose (`editor/describe.py::describe_step`) and prior reviewer edits on the
+    step (`edit_log.read_edits`, filtered by `step_key`).
+
+`Workflow.last_test_run_id` (set by `cmd_test_workflow` from the run's own `test_phase` log line,
+regardless of pass/fail/error) is the fallback when no `run_id` is given — stable across a Studio
+restart, unlike the in-memory `_active_test_runs` map.
+
+**Runtime failure evidence — a gap this closed.** `failure_response.js::buildFailureResponse`'s
+`!agentRecoveryEnabled` branch (the one every Studio test failure takes — Studio forces
+`CONXA_MAX_RECOVERY_TIER=2`) used to return four lines of text and discard everything the function
+computes below that point: the live element inventory, the overlay probe, a failure screenshot.
+It now calls `_writeStudioEvidence` first, reusing those same helpers to persist
+`evidence.json` + `failure.jpg` (a live capture at the failure moment — not `err.preShot`, which
+is pre-action and null for non-interactive step types) into
+`${CONXA_DATA_DIR}/runs/{run_id}/_evidence/`, a subdirectory of the run workspace
+`sweepOldRuns()` already reaps after `CONXA_RUN_RETENTION_DAYS` (default 7). Never throws — a
+logging failure must not turn a clean failure into a worse one, same contract as
+`recovery_log.js`. The recovery-log tail included is filtered by `slug` + a `ts` floor (most
+`appendRecoveryEvent` call sites carry no `run_id`), not threaded through ~25 call sites for one
+reader.
+
+**`copilot_diagnose` — the LLM task** (`conxa_core/llm/client.py::_openai_messages_for_task`,
+executed cloud-side, same as `workflow_semantics`). Registered in the vision-task literal set —
+triplicated across `conxa_core/llm/client.py`, `conxa_compile/llm/client.py`, and the cloud
+router's `_route` (a task missing from any one silently routes as text instead of failing loudly;
+worth collapsing to one shared constant next time any of the three is touched). Image-then-text
+user content when a failure screenshot is attached (mirrors `region_selector`'s ordering), plain
+text otherwise — no vision provider or no screenshot on disk both degrade gracefully, never an
+error. Returns strict JSON `{reply, proposals}`; the system prompt forbids `target`,
+`identity_bundle`, `compiled_selectors`, `primary_selector`, `fallback_selectors` in any proposal.
+`usage_class="human_edit"` — the same metering bucket the re-target wizard's regenerate path uses.
+
+**No multi-turn *session* on this call path.** `ProxyBody` carries no `messages` field; every task
+builds a fresh `[system, user]` pair per call. `conxa_compile/llm/copilot.py::copilot_turn`
+flattens the whole conversation (evidence + transcript + the reviewer's latest message) into one
+`user_text` payload each turn — the backend stays stateless, the renderer's `copilotStore.ts`
+holds the conversation.
+
+**Streaming (BUILD-26 stage c).** One turn now makes two LLM calls instead of one:
+
+1. A streamed `copilot_reply` call — the prose the reviewer reads live. Plain text, no
+   `response_format: json_object`, because streaming a JSON-object response would show the
+   reviewer a raw `{"reply": "..."` scrolling past. Runs through a parallel `on_delta` path
+   threaded end-to-end: `conxa_compile/llm/client.py::stream_llm` →
+   `LLMProxyClient.route_text/route_vision(..., on_delta=...)` → the cloud's
+   `POST /api/v1/llm/proxy/{text,vision}/stream` (`llm_proxy_routes.py`, `StreamingResponse`,
+   `text/event-stream`) → `LLMRouter._call_provider(..., on_delta=...)`, which sets
+   `"stream": true` on the provider request and reads the response as SSE
+   (`conxa_core/llm/client.py::_iter_sse_text_deltas`) instead of one blocking `.read()`.
+   Cross-provider failover between *attempts* is unchanged (still goes through `_route`'s
+   existing pool/cooldown/quarantine logic); a failure mid-stream, after some text already
+   reached the reviewer, is not retried — the caller keeps whatever text arrived.
+2. The existing `copilot_diagnose` call, unchanged, still runs for proposals. Its own `reply`
+   field is now a fallback only, used when streaming produced nothing (see `copilot_turn`).
+
+The cloud's own SSE-ish framing to Build Studio is `data: {"delta": "..."}` per chunk and a
+final `data: {"done": true, "text": "..."}` — a proxy-internal contract, not raw provider SSE.
+Usage metering (`_meter_and_stream` in `llm_proxy_routes.py`) happens once, after the stream
+completes and the full text is known, exactly like the blocking path — never per chunk. One
+consequence of streaming that the blocking path didn't have: `record_llm_usage`'s entitlement
+bookkeeping can no longer turn a failure into an HTTP error once the reply has already streamed
+to the client (headers are long committed) — a recording failure here is only logged, not
+surfaced. BYOK has no streaming call path (`call_entry_directly` takes no `on_delta`); a BYOK
+tenant gets the streamed endpoint's shape back, but as one immediate chunk rather than
+incremental delivery.
+
+`handlers/copilot.py::cmd_copilot_turn` relays each delta over the existing generic
+`{"type": "event", "id": rid, ...}` channel (`handlers/protocol.py::_event_sink`) as
+`{"phase": "copilot_delta", "text": chunk}` — the same transport `build_skill_pack_stream`'s
+`pack_log` events and compile's `compile_log` events already use, no new IPC primitive. The
+final `result` frame still carries the complete `{reply, proposals}`, so a caller that ignores
+events entirely still works. `workflowApi.ts::copilotTurn` takes an optional `onDelta` callback
+that subscribes to this phase for the duration of the call; `copilotStore.ts` holds the
+in-progress reply as `streamingText`, cleared once the turn resolves and the complete reply
+lands in `messages`.
+
+**Thinking indicator.** There is no "call started" event on this path — `LLMProxyClient`'s
+`on_api_call` sink (the `{"phase": "api_call", ...}` events `_install_proxy_router` wires) fires
+only after a call *completes*, not when it's dispatched — so the panel shows a thinking
+indicator from the moment `sending` goes true (client-side, immediate) and swaps to the
+streaming text bubble the moment the first `copilot_delta` chunk arrives.
+
+**Edit and re-send a prior turn.** Client-only (`copilotStore.ts::editFromIndex`): editing an
+earlier user message truncates `messages` to before it (and clears any pending proposal, since
+it would otherwise reference a turn no longer in the transcript) and re-seeds the composer with
+its text. Re-sending is an ordinary `copilotTurn` call against the now-shorter history — the
+backend needs no changes since it was already stateless per call.
+
+**Proposal gating** (`conxa_compile/editor/copilot_proposals.py::gate_proposals`). Every raw
+`{step_key, field, patch, why}` object from the model is pre-validated through the SAME
+`patch_gate.py::validate_editor_patch` a manual `cmd_patch_step` call clears, restricted to
+`value` / `input_binding` / `intent` / `semantic_description` / `validation.assertions` — a
+proposal that fails any check is dropped silently, never shown broken. At accept time,
+`resolve_step_index` re-resolves the proposal's `step_key` against the CURRENT document and
+refuses (`proposal_stale`) if it is gone — an insert/delete/reorder between proposal and accept
+must never land the patch on the wrong step. Accept then delegates to the existing
+`cmd_patch_step` handler itself (one RPC call, `handlers/copilot.py::cmd_accept_copilot_proposal`)
+rather than duplicating mutation logic — same undo entry, same `patch_gate` re-run, same
+`edits.jsonl` line a manual edit produces.
+
+**Decision log — shares BUILD-25's `edits.jsonl`, not a second file.** `edit_log.py::append_edit`
+gained `source` (`"human"` default, `"copilot"` when `backend.py::dispatch()` sees the top-level
+command `accept_copilot_proposal`) and `proposal_id`. A **rejection** changes no document, so the
+diff-based `dispatch()` hook writes nothing on its own — `append_decision` logs it directly into
+the same file (`decision: "rejected"`, `step_key`, `field`, `why`, no `before`/`after`), so the
+correction dataset never keeps only the flattering half. `conxa-cloud/scripts/eval_suggestions.py`
+reports the copilot's own accept rate from these lines, alongside BUILD-25's override rate.
+
+**Deleted as part of building this:** `cmd_list_runs`/`cmd_get_run` (`handlers/runs.py`) read
+`data/runs/*.jsonl`, a file nothing in the codebase ever wrote — confirmed by repo-wide search
+while scoping this feature. Removed along with the renderer's dead `fetchRuns`/`fetchRun`, rather
+than left beside the new `cmd_get_failure_evidence` reader, which is exactly what led this
+feature's own spec to believe a run log already existed.
 
 ### 7.3 SkillPackage Output Schema
 

@@ -159,6 +159,14 @@ Token costs at Groq (text) + Google AI Studio (vision) — **actually billed to 
 
 These are compilation/recompilation costs, not execution costs, because customer-side workflow execution still runs locally. The pool is tracked as a visible monthly customer meter but should not become surprise per-token billing.
 
+**Human Review Conxa Copilot turns cost two `human_edit` LLM calls, not one (BUILD-26 stage c):**
+a streamed `copilot_reply` call for the prose the reviewer reads live, plus the existing
+`copilot_diagnose` call for gated proposals — added so the reply can stream without showing raw
+JSON mid-generation (see `docs/TRD.md` §7.2a). Both draw from the same Human Edit pool above;
+this roughly doubles the token cost of asking the copilot a question compared to before
+streaming shipped. No pooling/caching applies across turns — each turn's evidence bundle is
+rebuilt fresh and both calls fire every time, same as the single call did previously.
+
 **Example — Company on Starter (paid plan), 1 plugin, 50 workflows:**
 - Initial build: 50 × $0.21 = **$10.50 one-time** (50 compile credits spent)
 - Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.042 = **$1.26/month** (30 more compile credits spent — recompiles meter the same as first compiles)

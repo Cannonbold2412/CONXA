@@ -327,6 +327,22 @@ than silently accepted.
 
 Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, sign-off, and reviewing a step's already-compiled selectors in the re-target wizard (continuing without re-picking the element). LLM-assisted actions such as selector regeneration (including the re-target wizard's Phase 2 candidate generation **when the element is re-picked**), visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
 
+**Human Review Copilot (BUILD-26, 2026-09-10):** Human Edit gains a conversation. A floating
+launcher (bottom-right by default, movable to bottom-left, corner persisted) opens a chat card
+without leaving the step list — deliberately not the Tools rail, which opens as a shared modal
+and would hide the step being discussed. A reviewer types a question ("why did step 3 fail?",
+"give me a better assertion for step 5") and the copilot answers grounded in real evidence: the
+compile report, the recovery cascade's own log of what it tried, a live element inventory, and —
+when the most recent Studio test run failed — the screenshot taken at that moment. It may propose
+a change as an accept/reject diff (never applying anything itself), restricted to a step's
+`value`/`input_binding`/`intent`/`semantic_description`/`validation.assertions` — never a
+selector, same boundary as every other LLM path in this product. Accepting one runs through the
+exact same `cmd_patch_step` a manual edit uses (its own undo entry, its own quota draw from the
+Human Edit pool); rejecting logs the decision without touching the compiled skill. Switching to a
+different step while a proposal is pending prompts the same "you'll lose this" confirmation the
+re-target wizard already shows for an unsaved edit — discarding one this way still counts as a
+rejection, not a silent drop. See `docs/UI-UX-Brief.md` §2.7 and `docs/TRD.md` §7.2a.
+
 ---
 
 ## 7. Build Skill Package

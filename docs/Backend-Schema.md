@@ -68,7 +68,8 @@ Large or time-series data lives in flat files, not the KV store:
 | Compiled skills | `data/skills/{id}/skill.json` | JSON (SkillPackage) |
 | Skill screenshots | `data/sessions/{id}/screenshots/` | PNG |
 | Step thumbnails | `data/skills/{id}/assets/` | PNG |
-| Run logs (local) | `data/runs/{workflow_id}.jsonl` | JSONL |
+| Reviewer edit log | `data/skills/{id}/edits.jsonl` | JSONL (§3.10) |
+| Human Review Copilot failure evidence (BUILD-26) | `{CONXA_DATA_DIR}/runs/{run_id}/_evidence/{evidence.json, failure.jpg, pre_step.jpg?}` — the Studio test sandbox's own data dir, not `data/` above | JSON + JPEG |
 | Published skill packs | `data/skill-packs/{co}/` | Directory tree |
 | Installer binaries | `data/installers/{co}/installer.exe` | Binary |
 | Installer metadata | `data/installers/{co}/meta.json` | JSON |
@@ -146,6 +147,9 @@ class Workflow(BaseModel):
     last_test_at: float | None
     last_test_status: Literal["passed", "failed", "never"]
     last_test_error: str | None
+    last_test_run_id: str | None  # BUILD-26 (a2) — points the Copilot's evidence bundle at
+                                   # runs/{run_id}/_evidence/; set regardless of pass/fail/error,
+                                   # not cleared by an edit (unlike last_test_status/error above)
     last_test_inputs: dict     # Inputs used in last test
     signed_off: bool           # Human review complete
     compile_status: Literal["ok", "review_needed", "failed"] | None
@@ -1025,20 +1029,37 @@ rather than a precision score — and the training pair for any future fine-tune
 {
     "ts": str,             # ISO-8601 UTC
     "skill_id": str,
-    "command": str,        # the cmd_* RPC name (patch_step, reorder_steps, undo_workflow, ...)
-    "meta_version": int,   # document["meta"]["version"] after the mutation
+    "command": str,        # the cmd_* RPC name (patch_step, reorder_steps, undo_workflow,
+                            #         accept_copilot_proposal, ...)
+    "meta_version": int | None,  # document["meta"]["version"] after the mutation; None on a
+                            #         decision-only line (append_decision — see below)
+    "source": str,         # "human" (default) | "copilot" (BUILD-26 stage d)
+    "proposal_id": str | None,  # the copilot proposal's id, when source == "copilot"
+    "decision": str,       # "accepted" (every append_edit line) | "rejected" (append_decision only)
     "step_key": str,       # same key space as compile_report.second_opinion
     "field": str,          # one of: input_binding, value, intent, semantic_description,
                             #         action.action, optional_hint, branch,
                             #         validation.assertions, or "_step" for add/remove
     "before": Any,
     "after": Any,
+    "why": str | None,     # present only on a rejection — the copilot's stated reason
 }
 ```
 
 Only this small allow-list of reviewer-editable fields is tracked — never the whole step, which
 would carry DOM snapshots and identity bundles into a log meant to stay small. Writing is
 failure-silent, matching every other local cache/log in the compile pipeline.
+
+**`source` / `proposal_id` / `decision` (BUILD-26 stage d, 2026-09-10).** An accepted Human Review
+Copilot proposal is otherwise indistinguishable from a manual edit in this log —
+`backend.py::dispatch()` sets `source="copilot"` when the top-level command is
+`accept_copilot_proposal` (which itself delegates to `cmd_patch_step`, so the mutation logic is
+unduplicated) and threads the proposal's own id through. A **rejected** proposal changes no
+document, so the diff-based `append_edit` hook above writes nothing on its own — `append_decision`
+logs it directly into the SAME file (`decision="rejected"`, `before`/`after` both `None`, `why`
+carrying the copilot's stated reason) rather than a second file, so the correction dataset never
+splits into an accepted-only and a rejected-only half. `eval_suggestions.py` reports the copilot's
+own accept rate from these lines (`source == "copilot"`), alongside §3.9's `override_rate`.
 
 ---
 
@@ -1737,6 +1758,15 @@ Cashfree webhook endpoint. When `cashfree_webhook_secret` is configured, the sig
 
 Allowed `usage_class` values are `compile` and `human_edit`. Missing `usage_class` defaults to `compile`.
 
+**`POST /api/v1/llm/proxy/text/stream` and `/vision/stream`** (BUILD-26 stage c) — same request
+body as above, for a task that wants its reply streamed (currently only `copilot_reply`). Response
+is `text/event-stream`: zero or more `data: {"delta": "..."}` lines as text arrives, then either
+`data: {"done": true, "text": "<full text>"}` or `data: {"error": "<message>"}` if every provider
+failed before producing any text. Usage is metered once, after the stream ends, from the full
+accumulated text — never per chunk. Entitlement/quota/workspace-concurrency checks happen before
+the stream opens, same as the blocking endpoints; once streaming has started, a downstream
+entitlement-recording failure can only be logged (the reply has already reached the client).
+
 Response when up-to-date:
 ```json
 {
@@ -2058,6 +2088,50 @@ Streaming event:
 ```json
 {"type": "event", "id": "req_abc", "phase": "compile_step", "step": "selectors", "status": "running"}
 ```
+
+---
+
+### 5.10a Human Review Copilot RPCs (BUILD-26)
+
+Four new `cmd_*` commands on the protocol above, all Build-Studio-local (§5.10) — none of them
+routes are added under `/api/v1`, this is stdio JSON-RPC only.
+
+**`get_failure_evidence`** — `{"skill_id": "skill_...", "run_id": "run_abc123"}` (run_id optional;
+falls back to `Workflow.last_test_run_id`) →
+```json
+{"evidence": {
+  "skill_id": "skill_...", "run_id": "run_abc123", "failed_step_key": "h2#1",
+  "compile_status": "ok", "second_opinion": [...], "archived_steps": [...],
+  "runtime_evidence": {"message": "...", "failed_at": 1, "inventory": [...], "recovery_trail": [...],
+                        "failure_screenshot_path": "C:\\...\\failure.jpg", "pre_step_screenshot_path": null},
+  "steps": [{"step_key": "h1#1", "step_index": 0, "description": "...", "intent": "...",
+             "compile_report": {"available": true, "confidence": 0.9, "warnings": []},
+             "recorded_event": {"post_condition": {...}, "state_change": {...}},
+             "edit_history": [...]}, ...]
+}}
+```
+
+**`copilot_turn`** — `{"skill_id": "skill_...", "message": "why did step 2 fail?", "transcript": [{"role": "user"|"assistant", "text": "..."}]}` →
+```json
+{"reply": "Step 2 failed because an overlay covered the Submit button...",
+ "proposals": [{"id": "6f1e...", "step_key": "h2#1", "command": "patch_step",
+                "field": "validation.assertions", "patch": {"validation": {"assertions": [...]}},
+                "why": "...", "preview": {"before": [...], "after": [...]}}]}
+```
+Errors: `invalid_input` (empty message), `skill_not_found`, `human_edit_pool_exceeded` /
+`quota_exceeded` / `cloud_unreachable` (same codes `retarget_preview` uses for the same reasons).
+
+**Streaming (BUILD-26 stage c).** While `copilot_turn` is in flight, the connection also carries
+zero or more `event` frames ahead of the final `result` — `{"type": "event", "id": "<rid>", "phase": "copilot_delta", "text": "Step 2 "}` — one per chunk of the reply as the model generates it
+(see §7.2a of the TRD for the two-call streaming design behind this). A caller that ignores
+`event` frames entirely is unaffected: the final `result` frame still carries the complete
+`{reply, proposals}` shown above.
+
+**`accept_copilot_proposal`** — `{"skill_id": "skill_...", "step_key": "h2#1", "patch": {...}, "proposal_id": "6f1e..."}`
+→ the exact `WorkflowRevalidationResponse` shape `patch_step` returns (§5.10, `{skill_id, meta, workflow, revalidation, can_undo, can_redo}`), since this command delegates to `cmd_patch_step` internally after resolving `step_key` to the current `step_index`. Error `proposal_stale` if the step no longer exists.
+
+**`reject_copilot_proposal`** — `{"skill_id": "skill_...", "step_key": "h2#1", "proposal_id": "6f1e...", "field": "validation.assertions", "why": "..."}`
+→ `{"ok": true}`. Changes no document; only appends a rejection line to `edits.jsonl` (§3.10).
 
 ---
 
