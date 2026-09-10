@@ -228,9 +228,14 @@ Section "MCPRegistration" SEC_MCP
   ; to processes whose exe path actually looks like the Desktop app install
   ; (ponytail: path-substring heuristic, not a signed/publisher check — revisit
   ; if Desktop's install layout changes or this starts missing real instances).
+  ; Three known install layouts: legacy AppData installer (...\AnthropicClaude\...),
+  ; a bare ...\Claude\Claude.exe layout, and the Microsoft Store package
+  ; (...\WindowsApps\Claude_<ver>_...\app\Claude.exe) — missing the Store case
+  ; left Desktop alive through the whole install, silently discarding the new
+  ; MCP entry no matter how many times the user relaunched it afterward.
   FileOpen $0 "${RUNTIME_DIR}\conxa_kill_desktop.ps1" w
   FileWrite $0 "Get-Process claude -EA SilentlyContinue | Where-Object {$\r$\n"
-  FileWrite $0 "  $$_.Path -and ($$_.Path -match 'AnthropicClaude' -or $$_.Path -match '\\Claude\\Claude\.exe$$')$\r$\n"
+  FileWrite $0 "  $$_.Path -and ($$_.Path -match 'AnthropicClaude' -or $$_.Path -match '\\Claude\\Claude\.exe$$' -or $$_.Path -match '\\WindowsApps\\Claude_')$\r$\n"
   FileWrite $0 "} | Stop-Process -Force -EA SilentlyContinue$\r$\n"
   FileClose $0
   nsExec::ExecToLog "powershell -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"${RUNTIME_DIR}\conxa_kill_desktop.ps1$\""
