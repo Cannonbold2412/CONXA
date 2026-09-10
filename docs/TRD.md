@@ -126,7 +126,7 @@ The backend dispatches on `type` field. All commands are in `backend.py`:
 | `get_metrics` | Backend metrics |
 | `get_usage` | LLM proxy quota |
 | `get_failure_evidence` | Human Review Copilot's evidence bundle for a skill's failing step (BUILD-26, §7.2a) |
-| `copilot_turn` / `accept_copilot_proposal` / `reject_copilot_proposal` | Human Review Copilot conversation + proposal accept/reject (BUILD-26, §7.2a) |
+| `copilot_turn` / `accept_copilot_proposal` / `reject_copilot_proposal` / `copilot_save_session` | Human Review Copilot conversation, proposal accept/reject, and session archive (BUILD-26, §7.2a) |
 
 ### 2.3 Data Directory Layout (Build Studio)
 
@@ -1838,15 +1838,31 @@ logging failure must not turn a clean failure into a worse one, same contract as
 reader.
 
 **`copilot_diagnose` — the LLM task** (`conxa_core/llm/client.py::_openai_messages_for_task`,
-executed cloud-side, same as `workflow_semantics`). Registered in the vision-task literal set —
-triplicated across `conxa_core/llm/client.py`, `conxa_compile/llm/client.py`, and the cloud
-router's `_route` (a task missing from any one silently routes as text instead of failing loudly;
-worth collapsing to one shared constant next time any of the three is touched). Image-then-text
-user content when a failure screenshot is attached (mirrors `region_selector`'s ordering), plain
-text otherwise — no vision provider or no screenshot on disk both degrade gracefully, never an
-error. Returns strict JSON `{reply, proposals}`; the system prompt forbids `target`,
-`identity_bundle`, `compiled_selectors`, `primary_selector`, `fallback_selectors` in any proposal.
-`usage_class="human_edit"` — the same metering bucket the re-target wizard's regenerate path uses.
+executed cloud-side, same as `workflow_semantics`). Image-then-text user content when a failure
+screenshot is attached (mirrors `region_selector`'s ordering), plain text otherwise — no vision
+provider or no screenshot on disk both degrade gracefully, never an error. Returns strict JSON
+`{reply, proposals}`; the system prompt forbids `target`, `identity_bundle`, `compiled_selectors`,
+`primary_selector`, `fallback_selectors` in any proposal. `usage_class="human_edit"` — the same
+metering bucket the re-target wizard's regenerate path uses.
+
+**Modality routing is payload-conditional, not task-name-fixed (added 2026-09-10).** Unlike every
+other vision task (`anchor_vision`, `region_selector`, ...), `copilot_diagnose`/`copilot_reply`
+don't carry a fixed modality — the same task sends a plain-text turn when no screenshot is
+attached and a screenshot-bearing turn when one is, since both calls in one Copilot turn (see
+Streaming below) share the same payload. `conxa_core/llm/client.py::_copilot_modality(task,
+payload)` classifies each call as `"text"`/`"multimodal"`/`None` (the last meaning "not a Copilot
+task, use the flat vision-task set as before") from `payload["image_base64"]`'s presence — text
+turns now route through `route_text` (previously *every* Copilot turn was hardcoded into the
+vision-task set and burned the shared vision model even with no screenshot). A screenshot-bearing
+turn routes through `route_vision`, but resolves to its own `multimodal_model` `PoolEntry` field —
+separate from `vision_model` and from `cooled_until_vision` — so a dedicated model can be
+configured for Copilot's screenshot+conversation turns without affecting the compiler's other
+vision tasks on the same provider, and a rate-limited vision model never falsely cools down the
+multimodal slot (or vice versa). Falls back to `vision_model` when `multimodal_model` is unset —
+never an error. Config: `*_MULTIMODAL_MODEL` per provider + `LLM_STARTER_MULTIMODAL_MODEL`/
+`LLM_PRO_MULTIMODAL_MODEL` tier overrides (`conxa-cloud/backend/ROUTER_SETUP.md`). The
+"registered in the vision-task literal set" triplication note still applies to every *other* task
+in that set — `_copilot_modality` is new code layered on top, not a collapse of it.
 
 **No multi-turn *session* on this call path.** `ProxyBody` carries no `messages` field; every task
 builds a fresh `[system, user]` pair per call. `conxa_compile/llm/copilot.py::copilot_turn`
@@ -1924,11 +1940,132 @@ the same file (`decision: "rejected"`, `step_key`, `field`, `why`, no `before`/`
 correction dataset never keeps only the flattering half. `conxa-cloud/scripts/eval_suggestions.py`
 reports the copilot's own accept rate from these lines, alongside BUILD-25's override rate.
 
+**Session archive, not a decision log (added 2026-09-10).** `copilot_save_session`
+(`conxa_compile/editor/copilot_sessions.py`) is a separate, simpler append-only file —
+`{CONXA_DATA_DIR}/skills/{skill_id}/copilot_sessions.jsonl`, one `{ts, skill_id, messages}` line
+per archived conversation — not another line in `edits.jsonl`, since it captures the whole prose
+transcript rather than a field-level diff. The renderer calls it from the panel's "new session"
+button right before clearing the in-memory conversation (Zustand `reset()`), so switching topics
+never silently drops the prior thread; a no-op for an empty transcript, and fails silently on a
+disk error like every other append log in this pipeline (never blocks starting the fresh
+session). Known, accepted gap: an undecided pending proposal at the moment of "new session" is
+dropped with no `append_decision` line — the archive captures the prose, not the proposal state.
+
 **Deleted as part of building this:** `cmd_list_runs`/`cmd_get_run` (`handlers/runs.py`) read
 `data/runs/*.jsonl`, a file nothing in the codebase ever wrote — confirmed by repo-wide search
 while scoping this feature. Removed along with the renderer's dead `fetchRuns`/`fetchRun`, rather
 than left beside the new `cmd_get_failure_evidence` reader, which is exactly what led this
 feature's own spec to believe a run log already existed.
+
+**Verified retest loop (stage e).** `handlers/copilot.py::cmd_copilot_verify` is the one new RPC.
+Two-phase: `confirmed=false` (default) only counts the workflow's steps whose compiled
+`consequence == "irreversible"` (PROD-3's own classification, already on every step and already
+in the evidence bundle) and returns `{status: "confirm_required", irreversible_count,
+irreversible_steps}` — no build, no browser. `confirmed=true` runs
+`self.cmd_build_skill_package` then `self.cmd_test_workflow` as plain method calls (accepting a
+proposal always makes the workflow stale — `workflow_stale` — so the rebuild is not optional),
+relaying both commands' own progress events plus a `copilot_verify` phase into the panel. The
+verdict compares the new run's `failed_step_key` (a fresh `build_evidence_bundle(skill_id,
+run_id=<the new run's id>)`, never the workflow's stale `last_test_run_id` fallback) against the
+step under verification: `fixed` (passed), `still_failing` (same step), `progressed` (a
+different step now fails). A `status: "cancelled"` result (EXEC-35) writes no verdict at all —
+recording one would poison the correction dataset with a false label. `cmd_test_workflow` now
+returns its run's `run_id` directly (`_active_test_runs[workflow_id]["run_id"]`) rather than
+being inferred from the workflow record, and `_CommandError("workflow_test_failed", ...)` now
+carries `run_id` too (`protocol.py::_CommandError`'s new optional field), so the failure path has
+it without re-deriving it.
+
+Known ceiling on the pre-flight count, deliberate: `classify_consequence` only marks a
+destructive/commit **click** irreversible, while the runtime's `isNonIdempotent`
+(`runtime/app/step_utils.js`) also treats `upload`/`keyboard_shortcut`/`drag_drop`/
+`set_checkbox`/`set_radio` as non-reversible. The two are not mirrored into one table — the
+Studio-side pre-flight runs before a browser exists (it can't call runtime JS), so it reads the
+one source already compiled into the step. The confirm copy names what it actually counted
+("N steps that commit or destroy data") and always states the run acts against the real system,
+rather than implying a full audit.
+
+`evidence.json` gained four fields from the halt flags already computed on `err` at
+`_writeStudioEvidence`'s call site but never persisted before now: `action_may_have_taken_effect`,
+`recovery_halt_reason`, `destructive_halt`, `verify_fail` — without them the copilot could not
+tell "the click may already have fired" from "the element was never found."
+
+The verdict is written by a third `edit_log.py` function, `append_verification` — alongside
+`append_edit`'s "accepted" and `append_decision`'s "rejected", into the same `edits.jsonl`, one
+line: `{command: "copilot_verify", source: "copilot", proposal_id, decision: <verdict>, step_key,
+run_id, why: <message>}`. `conxa-cloud/scripts/eval_suggestions.py::copilot_verified_fix_rate`
+reports it.
+
+**Overlay identity capture and branch-insertion proposals (stage f).** Case 2 of the spec ("a
+popup sometimes appears — add a condition") needed an `IdentityBundle` for an overlay the
+compiler never recorded. Writing one from the model would break the "LLM does not write selector
+strings" invariant, so the shape is a **second proposal kind**, not a wider `gate_proposals` field
+allow-list: the model emits `{overlay_id, control_index, primitive, after_step_key, why}` — an
+index into the run's captured overlay set plus a choice of primitive (`try_dismiss` /
+`if_present`) — and every selector is materialized by deterministic Python. The model never
+writes one.
+
+*Capture.* `runtime/app/cascade.js`'s `dismiss-overlay` remedy — the one point the runtime already
+knows something is covering the target (an `INTERCEPTED` classification) — probes the page
+(`page_scripts.js::overlayProbe`, enriched: `controls` now carry the same six fields
+`resolver.js::scoreCandidate` reads — role/name/text/testid/anchorNeighbors — via a
+`controlDescriptor` helper duplicated from `extractDescriptor` rather than calling it, since
+`page.evaluate()` re-parses `overlayProbe`'s source standalone and cannot close over a sibling
+function; `container` gained a `signal`, built by the same id > role > css-path ladder
+`recorder/bridge.js::buildDialogSignal` uses) and writes it via new `runtime/app/
+overlay_capture.js::recordOverlayObservation` — regardless of whether the dismissal attempt
+succeeded, and regardless of whether the step ultimately passes. This is deliberately the ONE
+place a passing run's overlay is ever captured: `_writeStudioEvidence` only runs on failure.
+Writes `runs/{run_id}/_evidence/overlays.jsonl` (creating the `_evidence/` directory itself,
+since a passing run never creates it otherwise), deduped on container signal within a run. `runId`
+threads down as an explicit parameter (`server.js` → `run.js::runPlan`'s options →
+`cascade.js::recoverStep`/`layer1Ladder`) rather than a module-level var, because several runs can
+be active concurrently (RT-3) and a shared mutable "current run" would race between them.
+
+*Reading.* `editor/evidence.py::_read_runtime_evidence` now reads `evidence.json` and
+`overlays.jsonl` **independently** — a missing `evidence.json` (the passing-run case) must not
+also hide the overlay captures. Exposes `runtime_evidence.observed_overlays`, each entry's
+`step_index` resolved to a `step_key` the same way `failed_step_key` already is.
+
+*Synthesis.* New `editor/overlay_identity.py::bundle_from_descriptor` — pure, no LLM. Builds
+`testid` / `css-id` / `role`+`name` / `text_based` candidates from one control descriptor via the
+SAME durability table and orthogonality classes the primary compiler uses
+(`compiler/selector_score.py::rank_by_durability`, `compiler/selector_grammar.py`), filtered
+through the same `selector_filters.selector_passes_filters` gate a compile-time signal clears.
+Signals carry `source="runtime"` — a new value alongside `IdentitySignal.source`'s documented
+`compiler | llm | input_bound | user`. `unique_at_compile` is always `False` (no DOM snapshot to
+verify against). `stable_hash` is computed directly via `compiler/stable_hash.py::
+compute_stable_hash`, not matched byte-for-byte against the runtime's own live computation —
+`resolver.js` only uses `stable_hash` as a scoring tie-breaker (`resolver.js:201`), never a gate,
+so an internally-consistent Python-side hash is sufficient. Returns `None` when nothing survives
+filtering, and the caller then only offers `try_dismiss` (which needs no bundle at all).
+
+*Gating.* `editor/copilot_proposals.py::gate_overlay_proposals`. Drops a proposal whose
+`overlay_id` names nothing this evidence bundle observed. `try_dismiss` routes through
+`compiler/second_opinion.py::build_try_dismiss_from_hint` — its **third caller**, alongside the
+compiler's second opinion and the editor's `confirm_optional_interstitial`, so all three ways a
+try_dismiss branch gets built stay one shared shape. `if_present` sets the scaffold's
+`target.primary_selector` to the overlay's container signal plus one nested `click` step whose
+`identity_bundle` comes from `bundle_from_descriptor`; if the container has no signal at all, the
+proposal silently downgrades to `try_dismiss` rather than ever emitting an `if_present` with an
+empty `target` — `skill_package_builder_saved_skill.py::_saved_branch_step` returns `None` (the
+step silently vanishes from `execution.json`) when `_step_selector(step)` is empty, so this is a
+gate-time defense against that trap, not just a code comment. Every resulting patch is run through
+`patch_gate.py::validate_editor_patch` before the proposal is ever shown — the nested step's
+patch with `in_branch_body=True`, matching `cmd_patch_step`'s own `path`-addressed validation.
+
+*Accept.* `handlers/copilot.py::cmd_accept_copilot_proposal` branches on the proposal's `command`.
+`insert_overlay_branch` composes three existing, already-gate-validated RPCs as plain method
+calls — `cmd_insert_step` (scaffold), `cmd_patch_step` (top-level fields), and for `if_present`
+only `cmd_insert_branch_step` + a second `cmd_patch_step` with `path="branch.steps[0]"` for the
+nested click — no new mutation logic. `after_step_key` is re-resolved against the current
+document at accept time exactly like `resolve_step_index` does for `patch_step` proposals,
+refusing `proposal_stale` if it's gone. All three (or four) internal calls land inside ONE
+`cmd_accept_copilot_proposal` dispatch, so `edit_log.py::append_edit`'s before/after document diff
+(computed once by `backend.py::dispatch()`, wrapping the whole handler call) captures the entire
+insertion as one attributed batch — known ceiling: several internal undo pushes means several
+undo presses to fully undo one accept, not a single compound entry. `cmd_reject_copilot_proposal`
+accepts a missing `step_key` for this proposal kind (it inserts rather than edits) and logs
+against `f"overlay:{overlay_id}"` instead, keeping `edits.jsonl` one shape.
 
 ### 7.3 SkillPackage Output Schema
 

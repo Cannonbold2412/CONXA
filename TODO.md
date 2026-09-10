@@ -1501,9 +1501,22 @@ the new item below this one.
   ran it; and the median number of manual edits per compiled workflow is measurable and demonstrably
   lower than the pre-pass baseline.
 
-### BUILD-26 — Human Review Copilot: a conversational repair agent inside Human Edit, driving the editor commands that already exist
+### ~~BUILD-26~~ — Human Review Copilot: a conversational repair agent inside Human Edit, driving the editor commands that already exist — **Resolved 2026-09-10**
 - **Category:** Builder
-- **Status (2026-09-10):** stages (a)-(d) done — evidence bundle, read-only diagnosis, gated
+- **Resolution:** all six stages shipped. (a)-(d): evidence bundle, read-only diagnosis, gated
+  proposals over `patch_step`, the accept/reject decision log. (e) the verified retest loop —
+  `cmd_copilot_verify` (`handlers/copilot.py`), a count-then-confirm guard over PROD-3's own
+  `consequence` classification, rebuild+retest composed from existing RPCs, a
+  fixed/still_failing/progressed verdict via a new `edit_log.py::append_verification`. (f) overlay
+  identity capture and branch-insertion proposals — `runtime/app/overlay_capture.js` captures
+  what `cascade.js`'s dismiss-overlay remedy observed (on any intercepted run, including a passing
+  one), `editor/overlay_identity.py::bundle_from_descriptor` deterministically synthesizes an
+  `IdentityBundle` from it (reusing the compiler's own durability table, never an LLM), and a
+  second proposal kind (`insert_overlay_branch`, `copilot_proposals.py::gate_overlay_proposals`)
+  lets the copilot propose a try_dismiss/if_present branch from an overlay it actually saw — the
+  model picks the overlay and primitive, never a selector. See `docs/TRD.md` §7.2a for the full
+  mechanism and `FIX.md` (2026-09-10) for the plain-language summary.
+- **Status (2026-09-10, historical):** stages (a)-(d) done — evidence bundle, read-only diagnosis, gated
   proposals over `patch_step`, the accept/reject decision log. (e) verified retest and (f) overlay
   identity capture stay open (see the reasons below, still current).
   - **~~(c) UI polish~~ done (2026-09-10):** renamed the panel "Conxa Copilot" throughout its
@@ -1719,9 +1732,23 @@ the new item below this one.
     in safety. Still never a selector field.
   - ~~**(d) The accept/reject log**~~, **Done 2026-09-10**, in the format `edit_log.py` already
     used — `source`/`proposal_id` on `append_edit`, a new `append_decision` for rejections.
-  - **(e) The verified retest loop**, with the non-idempotent guard above. **M.**
-  - **(f) Unexpected-overlay identity capture during test runs**, then branch-insertion proposals
-    (case 2). **M.**
+  - ~~**(e) The verified retest loop**~~, **Done 2026-09-10** — `cmd_copilot_verify`
+    (`handlers/copilot.py`): a count-then-confirm guard reading PROD-3's own `consequence`
+    classification (not a re-typed copy of the runtime's `isNonIdempotent` table), then rebuild +
+    retest composed from the existing `cmd_build_skill_package`/`cmd_test_workflow` RPCs, a
+    fixed/still_failing/progressed verdict written by a new `edit_log.py::append_verification`
+    into the same `edits.jsonl`. A cancelled retest writes no verdict. See `docs/TRD.md` §7.2a.
+  - ~~**(f) Unexpected-overlay identity capture during test runs**~~, **Done 2026-09-10** —
+    `runtime/app/overlay_capture.js` (new) captures what `cascade.js`'s dismiss-overlay remedy
+    observed into `overlays.jsonl`, on ANY run that hit an interception, including one that
+    recovered and passed (unlike the failure-only `evidence.json`). New
+    `editor/overlay_identity.py::bundle_from_descriptor` synthesizes a deterministic
+    `IdentityBundle` from a captured control (reusing the compiler's own durability table, never
+    an LLM). A second proposal kind, `insert_overlay_branch`
+    (`copilot_proposals.py::gate_overlay_proposals`), lets the copilot propose a
+    try_dismiss/if_present branch built from an observed overlay — the model picks the overlay
+    and primitive, never a selector; try_dismiss routes through
+    `second_opinion.py::build_try_dismiss_from_hint` (its third caller). See `docs/TRD.md` §7.2a.
 
   Steps (a) and (b) are worth shipping on their own merits even if the rest is never built.
 - **Complexity:** L overall, staged as above. No step is larger than M, because no step writes new

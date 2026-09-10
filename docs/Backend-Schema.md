@@ -70,6 +70,7 @@ Large or time-series data lives in flat files, not the KV store:
 | Step thumbnails | `data/skills/{id}/assets/` | PNG |
 | Reviewer edit log | `data/skills/{id}/edits.jsonl` | JSONL (§3.10) |
 | Human Review Copilot failure evidence (BUILD-26) | `{CONXA_DATA_DIR}/runs/{run_id}/_evidence/{evidence.json, failure.jpg, pre_step.jpg?}` — the Studio test sandbox's own data dir, not `data/` above | JSON + JPEG |
+| Human Review Copilot observed overlays (BUILD-26 stage f) | `{CONXA_DATA_DIR}/runs/{run_id}/_evidence/overlays.jsonl` — written by `runtime/app/overlay_capture.js` on ANY run that intercepted a target, including one that recovered and passed (unlike `evidence.json` above, which is failure-only) | JSONL |
 | Published skill packs | `data/skill-packs/{co}/` | Directory tree |
 | Installer binaries | `data/installers/{co}/installer.exe` | Binary |
 | Installer metadata | `data/installers/{co}/meta.json` | JSON |
@@ -1035,14 +1036,20 @@ rather than a precision score — and the training pair for any future fine-tune
                             #         decision-only line (append_decision — see below)
     "source": str,         # "human" (default) | "copilot" (BUILD-26 stage d)
     "proposal_id": str | None,  # the copilot proposal's id, when source == "copilot"
-    "decision": str,       # "accepted" (every append_edit line) | "rejected" (append_decision only)
-    "step_key": str,       # same key space as compile_report.second_opinion
-    "field": str,          # one of: input_binding, value, intent, semantic_description,
+    "decision": str,       # "accepted" (append_edit) | "rejected" (append_decision) |
+                            #         "fixed" | "still_failing" | "progressed" (append_verification, stage e)
+    "step_key": str,       # same key space as compile_report.second_opinion; "overlay:<overlay_id>"
+                            #         for a rejected insert_overlay_branch proposal (stage f), which
+                            #         has no step_key of its own
+    "field": str | None,   # one of: input_binding, value, intent, semantic_description,
                             #         action.action, optional_hint, branch,
-                            #         validation.assertions, or "_step" for add/remove
+                            #         validation.assertions, "_step" (add/remove), or None
+                            #         (append_decision / append_verification lines)
     "before": Any,
     "after": Any,
-    "why": str | None,     # present only on a rejection — the copilot's stated reason
+    "why": str | None,     # present on a rejection (the copilot's stated reason) or a verify
+                            #         line (the retest's pass/fail message)
+    "run_id": str | None,  # present only on a copilot_verify line (stage e) — the retest's run id
 }
 ```
 
@@ -1060,6 +1067,13 @@ logs it directly into the SAME file (`decision="rejected"`, `before`/`after` bot
 carrying the copilot's stated reason) rather than a second file, so the correction dataset never
 splits into an accepted-only and a rejected-only half. `eval_suggestions.py` reports the copilot's
 own accept rate from these lines (`source == "copilot"`), alongside §3.9's `override_rate`.
+
+**`append_verification` (BUILD-26 stage e, 2026-09-10).** A THIRD writer into the same file — the
+verified-retest loop's `decision` is `fixed`/`still_failing`/`progressed` (never `accepted`/
+`rejected`), `field`/`before`/`after` are all `None` (this line records an outcome, not a field
+diff), and `run_id` names the retest run the verdict was measured against. This is the label that
+says whether an accepted proposal actually worked, not just that a reviewer liked it —
+`eval_suggestions.py::copilot_verified_fix_rate` reports it separately from `accept_rate`.
 
 ---
 
@@ -2093,7 +2107,7 @@ Streaming event:
 
 ### 5.10a Human Review Copilot RPCs (BUILD-26)
 
-Four new `cmd_*` commands on the protocol above, all Build-Studio-local (§5.10) — none of them
+Six `cmd_*` commands on the protocol above, all Build-Studio-local (§5.10) — none of them
 routes are added under `/api/v1`, this is stdio JSON-RPC only.
 
 **`get_failure_evidence`** — `{"skill_id": "skill_...", "run_id": "run_abc123"}` (run_id optional;
@@ -2103,7 +2117,10 @@ falls back to `Workflow.last_test_run_id`) →
   "skill_id": "skill_...", "run_id": "run_abc123", "failed_step_key": "h2#1",
   "compile_status": "ok", "second_opinion": [...], "archived_steps": [...],
   "runtime_evidence": {"message": "...", "failed_at": 1, "inventory": [...], "recovery_trail": [...],
-                        "failure_screenshot_path": "C:\\...\\failure.jpg", "pre_step_screenshot_path": null},
+                        "failure_screenshot_path": "C:\\...\\failure.jpg", "pre_step_screenshot_path": null,
+                        "observed_overlays": [{"overlay_id": "a1b2c3d4e5f6", "step_index": 1, "step_key": "h2#1",
+                                                "dismissed": true, "container": {"tag": "div", "signal": "#cookie-banner"},
+                                                "controls": [{"tag": "button", "role": "button", "name": "Accept", "testid": "accept-btn"}]}]},
   "steps": [{"step_key": "h1#1", "step_index": 0, "description": "...", "intent": "...",
              "compile_report": {"available": true, "confidence": 0.9, "warnings": []},
              "recorded_event": {"post_condition": {...}, "state_change": {...}},
@@ -2121,6 +2138,25 @@ falls back to `Workflow.last_test_run_id`) →
 Errors: `invalid_input` (empty message), `skill_not_found`, `human_edit_pool_exceeded` /
 `quota_exceeded` / `cloud_unreachable` (same codes `retarget_preview` uses for the same reasons).
 
+**A second proposal kind (BUILD-26 stage f)** may appear in the same `proposals` array —
+`command: "insert_overlay_branch"`, built from an overlay the runtime actually observed during a
+test run (`overlays.jsonl`, below), never a selector the model invented:
+```json
+{"id": "9a2c...", "step_key": null, "command": "insert_overlay_branch",
+ "primitive": "try_dismiss", "overlay_id": "a1b2c3d4e5f6", "after_step_key": "h1#1",
+ "patch": {"intent": "try_dismiss_interstitial",
+           "branch": {"candidates": ["internal:testid=[data-testid=\"accept-btn\"]", "#cookie-banner"],
+                       "timeout_ms": 3000, "fallback_escape": true},
+           "recovery": {...}},
+ "nested_step": null,
+ "why": "seen dismissing a step on run r_abc123", "preview": {"before": null, "after": "Insert try_dismiss after step h1#1"}}
+```
+For `primitive: "if_present"`, `patch` carries `{intent: "dismiss_if_present", target: {primary_selector: <overlay container signal>, fallback_selectors: []}}` and `nested_step` carries the one
+click step's `{target, identity_bundle, intent, semantic_description}` to insert into its branch
+body. `identity_bundle` in `nested_step` is built by `editor/overlay_identity.py::
+bundle_from_descriptor` — see TRD §7.2a for the durability/orthogonality reuse and why
+`source: "runtime"` is a new `IdentitySignal.source` value.
+
 **Streaming (BUILD-26 stage c).** While `copilot_turn` is in flight, the connection also carries
 zero or more `event` frames ahead of the final `result` — `{"type": "event", "id": "<rid>", "phase": "copilot_delta", "text": "Step 2 "}` — one per chunk of the reply as the model generates it
 (see §7.2a of the TRD for the two-call streaming design behind this). A caller that ignores
@@ -2130,8 +2166,42 @@ zero or more `event` frames ahead of the final `result` — `{"type": "event", "
 **`accept_copilot_proposal`** — `{"skill_id": "skill_...", "step_key": "h2#1", "patch": {...}, "proposal_id": "6f1e..."}`
 → the exact `WorkflowRevalidationResponse` shape `patch_step` returns (§5.10, `{skill_id, meta, workflow, revalidation, can_undo, can_redo}`), since this command delegates to `cmd_patch_step` internally after resolving `step_key` to the current `step_index`. Error `proposal_stale` if the step no longer exists.
 
+**`accept_copilot_proposal` for an `insert_overlay_branch` proposal (stage f)** — same command
+name, payload shaped like the proposal object above (`command: "insert_overlay_branch"`,
+`primitive`, `overlay_id`, `after_step_key`, `patch`, `nested_step?`, `proposal_id`) instead of
+`{step_key, patch}`. Composes `cmd_insert_step` + `cmd_patch_step` (+ `cmd_insert_branch_step` and
+a second `cmd_patch_step` for `if_present`'s nested click) internally — same
+`WorkflowRevalidationResponse` return shape. Error `proposal_stale` if `after_step_key` no longer
+resolves.
+
 **`reject_copilot_proposal`** — `{"skill_id": "skill_...", "step_key": "h2#1", "proposal_id": "6f1e...", "field": "validation.assertions", "why": "..."}`
-→ `{"ok": true}`. Changes no document; only appends a rejection line to `edits.jsonl` (§3.10).
+→ `{"ok": true}`. Changes no document; only appends a rejection line to `edits.jsonl` (§3.10). For
+an `insert_overlay_branch` proposal, `step_key` is omitted and `overlay_id` is sent instead — the
+rejection is logged against `"overlay:<overlay_id>"`.
+
+**`copilot_verify`** (stage e) — `{"skill_id": "skill_...", "step_key": "h2#1", "proposal_id":
+"6f1e...", "confirmed": false}` →
+```json
+{"status": "confirm_required", "irreversible_count": 1,
+ "irreversible_steps": [{"step_key": "h5#1", "description": "Click \"Submit payment\""}]}
+```
+No build, no browser on this branch. Call again with `confirmed: true` to actually rebuild
+(`cmd_build_skill_package`) and retest (`cmd_test_workflow`) the workflow, streaming both
+commands' own progress plus a `{"phase": "copilot_verify", "text": "..."}` event on the same `rid`
+channel, then →
+```json
+{"status": "verified", "verdict": "fixed" | "still_failing" | "progressed", "run_id": "run_...", "message": "Done. URL: ..."}
+```
+or `{"status": "cancelled", "run_id": "run_..."}` if the reviewer cancelled mid-run — no verdict is
+written for a cancel. Every non-cancelled verdict appends one line to `edits.jsonl` via
+`edit_log.py::append_verification` (§3.10).
+
+**`copilot_save_session`** — `{"skill_id": "skill_...", "transcript": [{"role": "user"|"assistant", "text": "..."}]}`
+→ `{"ok": true}`. Called by the renderer's "new session" button before it clears the conversation
+in-memory — appends one line (`{ts, skill_id, messages}`) to `{CONXA_DATA_DIR}/skills/{skill_id}/copilot_sessions.jsonl`
+(mirrors `edits.jsonl`'s append-only shape, §3.10) so the outgoing conversation isn't silently
+lost. A no-op for an empty transcript; fails silently on a disk error (never blocks starting a
+fresh session) — see `conxa_compile/editor/copilot_sessions.py`.
 
 ---
 

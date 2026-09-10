@@ -2,6 +2,18 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The Human Review chat assistant can now prove a fix actually worked, and handle popups it's seen before — 2026-09-10
+Two more pieces of the Human Review chat assistant are finished. First: after you accept one of its suggested fixes, a new "Verify fix" button appears. Click it and it tells you first how many risky, hard-to-undo actions the test will perform (so you're never surprised), then — only once you say go — it rebuilds and re-runs the test for real and tells you plainly whether the fix actually worked, is still broken the same way, or broke somewhere new. Before this, "Applied" just meant the assistant wrote the change; now it can also prove the change fixed the problem. Second: if a workflow test runs into a popup or banner it wasn't expecting, the system now remembers exactly what that popup looked like — even on a test that ultimately succeeded, not just a failed one. A reviewer can then say "add a condition for that popup" and the assistant proposes handling it using what it actually saw, the same way a person would point at a screenshot and say "click that one" — it's never allowed to guess a button that was never observed.
+
+## You can now drag the Conxa Copilot button anywhere on screen — 2026-09-10
+The little chat button on the Human Review screen used to only jump between two fixed corners, bottom-left or bottom-right, using a toggle button. Now you can just grab it and drag it wherever you want on the page, and it remembers where you left it the next time you open Human Review. The old toggle button is gone since dragging replaces it.
+
+## Starting a new Conxa Copilot conversation no longer throws away the old one — 2026-09-10
+There was no way to start a fresh conversation with the Human Review chat assistant without losing whatever you'd already discussed. There's now a "new session" button that saves the old conversation to disk first, then clears the chat for a fresh start — like filing a finished notebook away instead of erasing it.
+
+## Conxa Copilot's text-only questions no longer waste the picture-reading model — 2026-09-10
+The chat assistant on the Human Review screen was always using its most expensive "can look at a picture" model to answer questions, even for a plain text question with no screenshot involved — like hiring a translator for a conversation that's already in your own language. Text-only questions now use a plain text model instead, saving the picture-reading model for turns that actually include a screenshot. We also added a separate, dedicated model slot just for those screenshot-plus-conversation questions, so it can be tuned independently from the picture-reading model used elsewhere in the system, without affecting anything else.
+
 ## Conxa Copilot was answering, then throwing the answer away — 2026-09-10
 You could ask the Human Review chat a question, the models would write a real answer, and the chat window still looked empty — like someone talking on the other end of a phone that never rings on your side. The reply was being treated as missing unless it arrived in one very specific shape, so a perfectly good answer got discarded the moment the wait ended. The chat now keeps whatever the models actually said, so the bubble stays on screen.
 

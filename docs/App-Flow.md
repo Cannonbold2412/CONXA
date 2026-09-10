@@ -328,9 +328,12 @@ than silently accepted.
 Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, sign-off, and reviewing a step's already-compiled selectors in the re-target wizard (continuing without re-picking the element). LLM-assisted actions such as selector regeneration (including the re-target wizard's Phase 2 candidate generation **when the element is re-picked**), visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
 
 **Human Review Copilot (BUILD-26, 2026-09-10):** Human Edit gains a conversation. A floating
-launcher (bottom-right by default, movable to bottom-left, corner persisted) opens a chat card
-without leaving the step list — deliberately not the Tools rail, which opens as a shared modal
-and would hide the step being discussed. A reviewer types a question ("why did step 3 fail?",
+launcher (bottom-right by default, freely draggable anywhere on screen, position persisted)
+opens a chat card without leaving the step list — deliberately not the Tools rail, which opens
+as a shared modal and would hide the step being discussed. A "new session" button archives the
+outgoing conversation to disk (`copilot_sessions.jsonl`, §5.10a of `docs/Backend-Schema.md`)
+before clearing it, so switching topics never silently loses the prior thread. A reviewer types
+a question ("why did step 3 fail?",
 "give me a better assertion for step 5") and the copilot answers grounded in real evidence: the
 compile report, the recovery cascade's own log of what it tried, a live element inventory, and —
 when the most recent Studio test run failed — the screenshot taken at that moment. It may propose
@@ -342,6 +345,22 @@ Human Edit pool); rejecting logs the decision without touching the compiled skil
 different step while a proposal is pending prompts the same "you'll lose this" confirmation the
 re-target wizard already shows for an unsaved edit — discarding one this way still counts as a
 rejection, not a silent drop. See `docs/UI-UX-Brief.md` §2.7 and `docs/TRD.md` §7.2a.
+
+**Verify fix (BUILD-26 stage e, 2026-09-10):** after accepting a proposal, a **Verify fix** button
+appears — clicking it first shows a count of the workflow's non-reversible steps ("this run
+performs N steps that commit or destroy data") with **Run anyway** / **Cancel**; nothing runs
+against the real system until the reviewer clicks through that confirmation. Confirming rebuilds
+the skill package and retests the workflow, streaming the same progress lines a manual Run Test
+does into the chat, then shows a verdict: **Fixed** (the retest passed), **Still failing** (the
+same step still fails), or **Progressed** (a different step now fails). A reviewer-initiated
+cancel mid-retest shows no verdict at all — it is neither a pass nor a failure worth recording.
+
+**Overlay-aware proposals (BUILD-26 stage f, 2026-09-10):** when a Studio test run hits an
+unexpected overlay (a popup, a banner) that blocks a step — whether or not it ultimately recovers
+— the runtime remembers what it saw. A reviewer can then ask "add a condition for that popup" and
+the copilot proposes inserting a conditional branch (dismiss it, or check for it before a step)
+built from that actual observation — never a guessed selector. The proposal renders the same
+accept/reject diff as any other, just describing an inserted step instead of a field change.
 
 ---
 

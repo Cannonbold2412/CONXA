@@ -98,6 +98,30 @@ def copilot_accept_rate(skill_id: str) -> dict[str, Any] | None:
     }
 
 
+def copilot_verified_fix_rate(skill_id: str) -> dict[str, Any] | None:
+    """BUILD-26 stage e: of the copilot proposals a reviewer actually verified with a retest, how
+    many verdicts were "fixed" — independent of accept_rate above, which only measures whether a
+    human liked the diff, not whether the fix actually worked. A proposal accepted but never
+    verified contributes nothing here (verification is opt-in per accepted proposal)."""
+    from conxa_compile.editor.edit_log import read_edits
+
+    edits = read_edits(skill_id)
+    verifications = [e for e in edits if e.get("command") == "copilot_verify"]
+    if not verifications:
+        return None
+    fixed = sum(1 for e in verifications if e.get("decision") == "fixed")
+    still_failing = sum(1 for e in verifications if e.get("decision") == "still_failing")
+    progressed = sum(1 for e in verifications if e.get("decision") == "progressed")
+    total = len(verifications)
+    return {
+        "skill_id": skill_id,
+        "fixed": fixed,
+        "still_failing": still_failing,
+        "progressed": progressed,
+        "verified_fix_rate": round(fixed / total, 3) if total else None,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skill", default=None)
@@ -128,6 +152,18 @@ def main() -> int:
         overall = [r["accept_rate"] for r in copilot_results if r["accept_rate"] is not None]
         if overall:
             print(f"Overall copilot accept rate: {round(sum(overall) / len(overall), 3)} across {len(copilot_results)} workflow(s)")
+
+    verify_results = [r for sid in skill_ids if (r := copilot_verified_fix_rate(sid)) is not None]
+    if verify_results:
+        print("\nCopilot verified-fix rate (BUILD-26 stage e):")
+        for r in verify_results:
+            print(
+                f"{r['skill_id']}: fixed={r['fixed']} still_failing={r['still_failing']} "
+                f"progressed={r['progressed']} verified_fix_rate={r['verified_fix_rate']}"
+            )
+        overall_fix = [r["verified_fix_rate"] for r in verify_results if r["verified_fix_rate"] is not None]
+        if overall_fix:
+            print(f"Overall verified-fix rate: {round(sum(overall_fix) / len(overall_fix), 3)} across {len(verify_results)} workflow(s)")
     return 0
 
 
