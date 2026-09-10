@@ -516,6 +516,11 @@ async function _buildFailureResponse(page, errObj, resolvedEntry, runTracker, st
       appendRecoveryEvent,
       stepAssertions,
       frameScopedInventory,
+      // BUILD-26 stage (a1): lets the Studio-ceiling branch file failure evidence under this
+      // run's own workspace — `exec` already carries both, no new plumbing.
+      dataDir: CONXA_DATA_DIR,
+      runId: exec && exec.runId,
+      runStartTs: exec && exec.startedAt,
     }
   );
 }

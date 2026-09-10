@@ -292,6 +292,7 @@ def set_workflow_test_result(
     *,
     status: str,
     inputs: dict,
+    run_id: str | None = None,
 ) -> Workflow | None:
     """Persist test outcome onto the workflow (called after test/stream completes)."""
     workflow = get_workflow(workflow_id)
@@ -301,10 +302,16 @@ def set_workflow_test_result(
     workflow.last_test_at = time.time()
     workflow.last_test_inputs = dict(inputs)
     workflow.last_test_error = None
+    # BUILD-26 (a2): a pass doesn't clear the previous run's evidence pointer on its own — a
+    # caller with no run_id (e.g. an older code path) leaves whatever was there.
+    if run_id:
+        workflow.last_test_run_id = run_id
     return save_workflow(workflow)
 
 
-def set_workflow_test_error(workflow_id: str, error: str, *, inputs: dict | None = None) -> Workflow | None:
+def set_workflow_test_error(
+    workflow_id: str, error: str, *, inputs: dict | None = None, run_id: str | None = None
+) -> Workflow | None:
     """Persist a test failure error message, keeping the inputs the user entered."""
     workflow = get_workflow(workflow_id)
     if workflow is None:
@@ -314,4 +321,10 @@ def set_workflow_test_error(workflow_id: str, error: str, *, inputs: dict | None
     if inputs is not None:
         workflow.last_test_inputs = dict(inputs)
     workflow.last_test_error = error[:2000]
+    # BUILD-26 (a2): the pointer the copilot's evidence bundle resolves
+    # runs/{run_id}/_evidence/ under (handlers/workflows.py learns run_id from the run's own
+    # test_phase log lines). Not cleared by invalidate_workflow_test_by_skill below — a reviewer
+    # mid-fix-cycle should still be able to ask about the run that just failed.
+    if run_id:
+        workflow.last_test_run_id = run_id
     return save_workflow(workflow)

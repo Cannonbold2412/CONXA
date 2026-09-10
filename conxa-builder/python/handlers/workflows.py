@@ -537,6 +537,13 @@ class WorkflowsMixin:
 
         _mark(f"Preparing test for {workflow.name!r}…")
 
+        # BUILD-26 (a2): captured from _phase_sink as soon as the run's own test_phase log line
+        # reports it — the same run_id the runtime files failure evidence under
+        # (runs/{run_id}/_evidence/, see failure_response.js) and conxa_compile/editor/evidence.py
+        # resolves. Persisted below regardless of pass/fail/error so a re-opened Human Edit page
+        # can still point the copilot at the run that just happened.
+        _test_run_id: str | None = None
+
         is_frozen = getattr(sys, "frozen", False)
 
         runtime_dir = resolve_runtime_dir()
@@ -619,15 +626,22 @@ class WorkflowsMixin:
             )
             _mark("Runtime call finished")
         except (RuntimeToolError, RuntimeError) as exc:
+            # Read before `finally` pops the tracked entry below.
+            with _test_run_lock:
+                tracked = _active_test_runs.get(workflow_id)
+                _test_run_id = tracked.get("run_id") if tracked else None
             message = str(exc)
             set_workflow_test_error(
                 workflow_id, message,
                 inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
+                run_id=_test_run_id,
             )
             raise _CommandError("workflow_test_failed", message) from exc
         finally:
             with _test_run_lock:
-                _active_test_runs.pop(workflow_id, None)
+                tracked = _active_test_runs.pop(workflow_id, None)
+                if _test_run_id is None and tracked is not None:
+                    _test_run_id = tracked.get("run_id")
 
         message = _runtime_result_text(result)
         if not message.startswith("Done."):
@@ -640,12 +654,14 @@ class WorkflowsMixin:
             set_workflow_test_error(
                 workflow_id, failure,
                 inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
+                run_id=_test_run_id,
             )
             raise _CommandError("workflow_test_failed", failure)
 
         set_workflow_test_result(
             workflow_id, status="passed",
             inputs=_redact_sensitive_test_inputs(workflow.skill_id, inputs),
+            run_id=_test_run_id,
         )
         sink({"kind": "workflow_test", "message": message})
         return {"status": "passed", "message": message, "company": company, "skill": workflow.slug}

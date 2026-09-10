@@ -19,4 +19,27 @@ function appendRecoveryEvent(event) {
   } catch (_) {}
 }
 
-module.exports = { CONXA_DIR, RECOVERY_LOG, RECOVERY_LOG_MAX, appendRecoveryEvent };
+// BUILD-26 stage (a1) — the copilot's recovery-trail evidence. Events carry no run_id (most
+// cascade call sites only know slug/step_index), so this filters by slug plus a ts floor instead
+// of threading run_id through ~25 call sites for one reader. Caps at 200 matches, newest last.
+function readRecentEvents(slug, sinceTs) {
+  try {
+    if (!fs.existsSync(RECOVERY_LOG)) return [];
+    const floor = typeof sinceTs === "number" ? sinceTs : Date.parse(sinceTs || "") || 0;
+    const out = [];
+    for (const line of fs.readFileSync(RECOVERY_LOG, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let rec;
+      try { rec = JSON.parse(line); } catch (_) { continue; }
+      if (slug && rec.slug !== slug) continue;
+      const t = Date.parse(rec.ts || "");
+      if (Number.isFinite(t) && t < floor) continue;
+      out.push(rec);
+    }
+    return out.slice(-200);
+  } catch (_) {
+    return [];
+  }
+}
+
+module.exports = { CONXA_DIR, RECOVERY_LOG, RECOVERY_LOG_MAX, appendRecoveryEvent, readRecentEvents };

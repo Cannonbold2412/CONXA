@@ -33,6 +33,7 @@ const { capturePageFingerprint, parkKey } = require("./recovery_park");
 const recoveryStage = require("./recovery_stage");
 const { buildIndexedDigest } = require("./candidate_digest");
 const artifactStore = require("./artifact_store");
+const recoveryLog = require("./recovery_log");
 
 // Compact, recovery-relevant description of the step the cascade could not resolve.
 // Drives semantic matching: the agent matches THIS intent against the live DOM.
@@ -367,6 +368,61 @@ function _resolveVisualRef(err, resolvedEntry, failedAt, deps) {
   return null;
 }
 
+// BUILD-26 stage (a1) — the Build Studio ceiling branch below returns four lines of text and
+// discards everything else this module already knows how to compute: the live inventory, the
+// overlay probe, the recovery trail, the anchor sentence. Human Review's copilot never runs
+// above ceiling 2 (Studio forces CONXA_MAX_RECOVERY_TIER=2), so without this write there is
+// nothing on disk for it to diagnose from. Relocates existing data; captures nothing new.
+// Never throws — evidence capture must not turn a clean failure into a worse one.
+async function _writeStudioEvidence(page, err, resolvedEntry, steps, failedAt, stepNo, deps) {
+  const dataDir = deps && deps.dataDir;
+  const runId = deps && deps.runId;
+  if (!dataDir || !runId) return; // no run workspace to file this under
+
+  try {
+    const dir = path.join(dataDir, "runs", runId, "_evidence");
+    fs.mkdirSync(dir, { recursive: true });
+
+    // Live capture at the failure moment — NOT err.preShot, which is captured BEFORE the action
+    // (run.js) and is null outright for non-interactive step types (navigate/wait/verify), where
+    // the page-after-the-fact is exactly the evidence a verify failure needs.
+    const failShot = await page.screenshot({ type: "jpeg", quality: 80 }).catch(() => null);
+    if (failShot) fs.writeFileSync(path.join(dir, "failure.jpg"), failShot);
+    if (err.preShot) fs.writeFileSync(path.join(dir, "pre_step.jpg"), err.preShot);
+
+    const viewport = (() => { try { return page.viewportSize(); } catch (_) { return null; } })();
+    let scrollY = null;
+    try { scrollY = await page.evaluate(pageScripts.getScrollY); } catch (_) {}
+
+    const { inventory, overlay } = await gatherInventory(page, err, deps);
+    const slug = resolvedEntry && resolvedEntry.slug;
+
+    const evidence = {
+      run_id: runId,
+      slug,
+      ts: new Date().toISOString(),
+      failed_at: failedAt,
+      step_no: stepNo,
+      message: err.message,
+      page_url: page.url(),
+      viewport,
+      scroll_y: scrollY,
+      step_context: stepRecoveryContext(err),
+      recorded_context: err.failedStep ? err.failedStep._recorded_context || null : null,
+      anchor_sentence: err.failedStep ? err.failedStep._anchor_sentence || null : null,
+      phase: err.failedStep ? err.failedStep._phase || null : null,
+      expected_state: expectedStateBlock(err, deps.stepAssertions),
+      breadcrumb: executedStepsBreadcrumb(steps, failedAt),
+      inventory,
+      overlay,
+      recovery_trail: recoveryLog.readRecentEvents(slug, deps.runStartTs),
+    };
+    fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(evidence));
+  } catch (_) {
+    // Same contract as recovery_log.js: a logging failure must never break the response.
+  }
+}
+
 function buildContextSections(err, steps, failedAt, viewport, scrollY, stepAssertions) {
   const out = [];
   const intent = stepRecoveryContext(err);
@@ -406,6 +462,7 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
   if (!agentRecoveryEnabled) {
     appendRecoveryEvent({ event: "recovery_ceiling_reached", tier: maxRecoveryTier,
       slug: resolvedEntry && resolvedEntry.slug, step_index: failedAt });
+    await _writeStudioEvidence(page, err, resolvedEntry, steps, failedAt, stepNo, deps);
     const intent = stepRecoveryContext(err);
     const detail = intent ? `\nStep intent: ${JSON.stringify(intent)}` : "";
     return { content: [{ type: "text", text:
@@ -568,4 +625,5 @@ module.exports = {
   gatherInventory,
   overlayNoteText,
   dismissRejectedNoteText,
+  _writeStudioEvidence,
 };

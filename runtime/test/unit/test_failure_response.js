@@ -107,7 +107,11 @@ test("executedStepsBreadcrumb: null for step 0 / non-array steps", () => {
   assert.strictEqual(executedStepsBreadcrumb([{ type: "navigate" }], 0), null);
 });
 
-test("ceiling 2 (Build Studio): deterministic text-only failure, no screenshots", async () => {
+test("ceiling 2 (Build Studio), no run workspace configured: deterministic text-only failure, no screenshots", async () => {
+  // BUILD-26 stage (a1): the ceiling branch now DOES capture a screenshot when deps.dataDir +
+  // deps.runId are present (see the next test) — this test covers the case with neither set
+  // (no test-run context, e.g. a unit-test caller), where _writeStudioEvidence must no-op before
+  // ever touching page.screenshot().
   let screenshotCalls = 0;
   const page = { url: () => "https://x.example/", screenshot: async () => { screenshotCalls++; return Buffer.from("x"); } };
   const events = [];
@@ -119,12 +123,59 @@ test("ceiling 2 (Build Studio): deterministic text-only failure, no screenshots"
     null,
     { ...BASE_DEPS, agentRecoveryEnabled: false, maxRecoveryTier: 2, appendRecoveryEvent: (e) => events.push(e) }
   );
-  assert.strictEqual(screenshotCalls, 0, "T1/T2 ceiling must never capture a screenshot");
+  assert.strictEqual(screenshotCalls, 0, "no dataDir/runId → evidence write no-ops before any screenshot");
   assert.strictEqual(resp.content.length, 1);
   assert.match(resp.content[0].text, /Execution failed at step 4/);
   assert.match(resp.content[0].text, /Recovery ceiling Tier 2/);
   assert.ok(!/step_overrides/.test(resp.content[0].text), "no agent handoff protocol at ceiling 2");
   assert.ok(events.some(e => e.event === "recovery_ceiling_reached"));
+});
+
+test("ceiling 2 with a run workspace configured: writes evidence.json + failure.jpg, response text unchanged", async () => {
+  const dataDir = tmpSkillDir();
+  const page = mockPage({ inventory: [{ tag: "button", text: "Submit" }] });
+  const resp = await buildFailureResponse(
+    page,
+    { message: "element not found", failedAt: 3, failedStep: { type: "click", _phase: "act" } },
+    entry("studio-evidence"),
+    null,
+    null,
+    {
+      ...BASE_DEPS, agentRecoveryEnabled: false, maxRecoveryTier: 2,
+      dataDir, runId: "run_test1", runStartTs: new Date(0).toISOString(),
+    }
+  );
+  // The reviewer-facing response is untouched by evidence capture — still the terse 4-line shape.
+  assert.strictEqual(resp.content.length, 1);
+  assert.match(resp.content[0].text, /Recovery ceiling Tier 2/);
+
+  const evidenceDir = path.join(dataDir, "runs", "run_test1", "_evidence");
+  const evidence = JSON.parse(fs.readFileSync(path.join(evidenceDir, "evidence.json"), "utf8"));
+  assert.strictEqual(evidence.run_id, "run_test1");
+  assert.strictEqual(evidence.slug, "studio-evidence");
+  assert.strictEqual(evidence.phase, "act");
+  assert.ok(Array.isArray(evidence.inventory) && evidence.inventory.length >= 1);
+  assert.ok(fs.existsSync(path.join(evidenceDir, "failure.jpg")), "live failure screenshot written");
+  assert.ok(!fs.existsSync(path.join(evidenceDir, "pre_step.jpg")), "no err.preShot on this failure → not written");
+});
+
+test("evidence write never breaks the failure response when the page.screenshot() call throws", async () => {
+  const dataDir = tmpSkillDir();
+  const page = {
+    url: () => "https://x.example/",
+    screenshot: async () => { throw new Error("boom"); },
+    evaluate: async () => null,
+    viewportSize: () => null,
+  };
+  const resp = await buildFailureResponse(
+    page,
+    { message: "element not found", failedAt: 0 },
+    entry("studio-evidence-fail"),
+    null,
+    null,
+    { ...BASE_DEPS, agentRecoveryEnabled: false, maxRecoveryTier: 2, dataDir, runId: "run_test2" }
+  );
+  assert.match(resp.content[0].text, /Recovery ceiling Tier 2/, "a failed capture still returns the normal response");
 });
 
 test("first agent round: indexed digest, candidate_index protocol, screenshots included", async () => {
