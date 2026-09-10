@@ -1410,6 +1410,8 @@ async function _handleTool(name, args, extra) {
             dialogQueue: _dialogQueue,
             structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
             watch,
+            runId: _runId,
+            dataDir: CONXA_DATA_DIR,
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
           // Times the LAST step, which onStep's start-only markers can never do on their own —

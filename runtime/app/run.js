@@ -150,7 +150,12 @@ function stepFailure(step, stepIndex, cause, preShot) {
   return err;
 }
 
-async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, watch } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, watch, runId, dataDir } = {}) {
+  // BUILD-26 stage (f): threaded into recoverStep -> cascade.js's dismiss-overlay remedy, which
+  // is the one place the runtime captures an unexpected overlay's identity even on a run that
+  // ultimately passes. Optional — omitted (e.g. a Studio caller that predates this) simply
+  // means no capture happens, same as today.
+  const runCtx = (runId && dataDir) ? { runId, dataDir } : null;
   const t = tracker || { emit: () => {} };
   // Every invocation starts with a fresh budget. The success path also clears it, but a
   // *failed* run used to leave its attempt counts behind in this long-lived process, so the
@@ -377,7 +382,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
       signature: stateBaseline,
     });
 
-    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline, guard, dialogQueue);
+    const recovered = await recoverStep(page, step, inputs, slug, i, primarySelector, t, primaryErr, cancelCheck, stateBaseline, guard, dialogQueue, runCtx);
     if (!recovered) {
       if (guard.blocked) {
         primaryErr.recoveryHaltReason = guard.blocked;

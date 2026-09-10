@@ -416,6 +416,13 @@ async function _writeStudioEvidence(page, err, resolvedEntry, steps, failedAt, s
       inventory,
       overlay,
       recovery_trail: recoveryLog.readRecentEvents(slug, deps.runStartTs),
+      // BUILD-26 stage (e): the EXEC-24 guard flags on `err` — without these the copilot cannot
+      // tell "the click may already have fired" from "the element was never found", which is the
+      // single most important thing to know before proposing a retest.
+      action_may_have_taken_effect: !!err.actionMayHaveTakenEffect,
+      recovery_halt_reason: err.recoveryHaltReason || null,
+      destructive_halt: !!err.destructiveHalt,
+      verify_fail: !!err.verifyFail,
     };
     fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(evidence));
   } catch (_) {

@@ -237,18 +237,61 @@ function overlayProbe() {
   const coverage = (Math.max(0, rect.width) * Math.max(0, rect.height)) / (vw * vh);
   if (coverage < 0.05) return null; // a slim sticky header is not "the story"
 
+  // BUILD-26 stage (f): a duplicate of extractDescriptor's field shape, not a call to it —
+  // page.evaluate() re-parses overlayProbe's source standalone in the page realm (see this
+  // file's header comment), so it cannot close over or call the sibling extractDescriptor
+  // function above. Same six fields resolver.js::scoreCandidate reads (role/name/text/testid/
+  // anchorNeighbors/_hashPayload), without extractDescriptor's dynamic-class-token filtering —
+  // unnecessary here since only role/name/text/testid ever become a selector, filtered again
+  // server-side by selector_filters.py::selector_passes_filters before anything is proposed.
+  function controlDescriptor(el) {
+    const tag = el.tagName.toLowerCase();
+    const ariaLabel = el.getAttribute("aria-label") || "";
+    const text = (el.innerText || el.value || el.getAttribute("placeholder") || "").trim().slice(0, 80);
+    const name = (ariaLabel || text || el.getAttribute("placeholder") || "").slice(0, 120);
+    const testid = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-test-id") || "";
+    const role = el.getAttribute("role") || (tag === "button" ? "button" : tag === "a" && el.hasAttribute("href") ? "link" : "");
+    if (!name && !text && !testid && !el.id) return null;
+    const neighbors = [];
+    const pushText = (n) => {
+      const t = (n && n.textContent || "").trim();
+      if (t && t.length < 60) neighbors.push(t);
+    };
+    pushText(el.parentElement);
+    return {
+      tag, role: role || undefined, name, text: text || undefined,
+      testid: testid || undefined, id: el.id || undefined,
+      anchorNeighbors: neighbors,
+      _hashPayload: `${tag}|id=${el.id || ""}|${name}`,
+    };
+  }
+
   const controls = Array.from(container.querySelectorAll(
     'button, a[href], input, [role="button"], [role="link"]'
-  )).slice(0, 15).map(el => {
-    const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
-    const tag  = el.tagName.toLowerCase();
-    const type = el.getAttribute("type")        || "";
-    const role = el.getAttribute("role")        || "";
-    const id   = el.id                          || undefined;
-    const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
-    if (!text && !type && !id && !dt) return null;
-    return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
-  }).filter(Boolean);
+  )).slice(0, 15).map(controlDescriptor).filter(Boolean);
+
+  // Container selector ladder (id > role > bounded css path) — the same priority order
+  // recorder/bridge.js::buildDialogSignal uses for an observed dialog, duplicated rather than
+  // shared for the same standalone-reparse reason as controlDescriptor above.
+  function containerSignal(el) {
+    if (el.id) return "#" + (window.CSS && CSS.escape ? CSS.escape(el.id) : el.id.replace(/[^a-zA-Z0-9_-]/g, c => "\\" + c));
+    const role = el.getAttribute("role") || (el.getAttribute("aria-modal") === "true" ? "dialog" : "");
+    if (role) return `[role="${role}"]`;
+    const parts = [];
+    let cur = el, depth = 0;
+    while (cur && cur.nodeType === 1 && depth < 6) {
+      let part = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(n => n.tagName === cur.tagName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(cur) + 1})`;
+      }
+      parts.unshift(part);
+      cur = parent;
+      depth++;
+    }
+    return parts.join(" > ") || null;
+  }
 
   return {
     container: {
@@ -257,6 +300,7 @@ function overlayProbe() {
       class: container.className && typeof container.className === "string" ? container.className.slice(0, 120) : undefined,
       role: container.getAttribute("role") || undefined,
       text: (container.innerText || "").trim().slice(0, 120),
+      signal: containerSignal(container),
     },
     controls,
   };
