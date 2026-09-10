@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { HumanEditPoolBadge } from '@/components/EntitlementMeters'
-import type { WorkflowResponse } from '@/types/workflow'
+import type { WorkflowResponse, WorkflowRevalidationResponse } from '@/types/workflow'
 import {
   confirmOptionalInterstitial,
   deleteStep,
@@ -22,6 +22,7 @@ import {
   redoWorkflow,
   undoWorkflow,
 } from '@/api/workflowApi'
+import { CopilotLauncher } from '@/components/copilot/CopilotLauncher'
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
 import { WorkflowPlanPanel } from '@/components/WorkflowPlanPanel'
 import { CompileHealthBanner } from '@/components/CompileHealthBanner'
@@ -228,6 +229,16 @@ export function HumanEditPage() {
       toast.error(errorMessage(err, 'Could not undo'))
     }
   }, [skillId, canUndo, onWorkflowUpdated, setHistoryState])
+
+  // BUILD-26: accept delegates server-side to cmd_patch_step, so its response is shaped exactly
+  // like a manual StepConfigForm save — same onWorkflowUpdated/setHistoryState pair.
+  const onCopilotProposalAccepted = useCallback(
+    (result: WorkflowRevalidationResponse) => {
+      onWorkflowUpdated(result.workflow)
+      if (result.can_undo !== undefined) setHistoryState(result.can_undo, result.can_redo ?? false)
+    },
+    [onWorkflowUpdated, setHistoryState],
+  )
 
   const handleRedo = useCallback(async () => {
     if (!skillId || !canRedo) return
@@ -951,6 +962,7 @@ export function HumanEditPage() {
         style={splitPaneStyle}
       >
         <WorkflowViewer
+          skillId={skillId}
           steps={wf.steps}
           onReorder={onReorder}
           onDelete={onDelete}
@@ -1078,6 +1090,7 @@ export function HumanEditPage() {
         )}
       </DialogContent>
     </Dialog>
+    <CopilotLauncher skillId={skillId} onProposalAccepted={onCopilotProposalAccepted} />
     </TooltipProvider>
   )
 }

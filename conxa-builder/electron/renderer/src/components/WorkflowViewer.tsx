@@ -4,6 +4,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import type { StepEditorDTO } from '../types/workflow'
 import { useEditorStore } from '../store/editorStore'
 import { useRetargetStore } from '@/store/retargetStore'
+import { useCopilotStore } from '@/store/copilotStore'
+import { rejectCopilotProposal } from '@/api/workflowApi'
 import { ListPlus, Plus } from 'lucide-react'
 import type { AddActionKind } from '@/lib/workflowViewerHelpers'
 import { WorkflowHeader } from '@/components/workflowViewer/WorkflowHeader'
@@ -23,6 +25,9 @@ import {
 } from '@/components/ui/alert-dialog'
 
 type Props = {
+  /** BUILD-26: only needed to log a rejection if a step-switch discards a pending copilot
+   *  proposal — see the dirty guard below. */
+  skillId: string
   steps: StepEditorDTO[]
   onReorder: (newOrder: number[]) => void
   onDelete: (index: number) => void
@@ -38,6 +43,7 @@ type Props = {
 }
 
 export function WorkflowViewer({
+  skillId,
   steps,
   onReorder,
   onDelete,
@@ -53,14 +59,27 @@ export function WorkflowViewer({
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
   const [pendingSelect, setPendingSelect] = useState<number | null>(null)
+  // Which unsaved-state kind is blocking the switch — decides the dialog copy/action below.
+  const [pendingKind, setPendingKind] = useState<'retarget' | 'copilot' | null>(null)
 
   // The re-target wizard stages selector/validation edits in useRetargetStore until Apply
   // (see InlineRetargetFlow) — switching steps before Apply would silently drop them, so confirm
   // first instead. `dirty` only ever gets set once a phase-2/3 edit actually happens.
+  //
+  // BUILD-26: a pending copilot proposal is the same kind of "you're about to lose this" state —
+  // reuses the same dialog rather than a second one, but discarding it must still COUNT as a
+  // rejection (stage d: a proposal a reviewer walks away from is logged as loudly as one they
+  // accept), not a silent drop.
   const handleSelect = (index: number) => {
     if (index === selected) return
     const rt = useRetargetStore.getState()
     if (rt.dirty) {
+      setPendingKind('retarget')
+      setPendingSelect(index)
+      return
+    }
+    if (useCopilotStore.getState().pendingProposal) {
+      setPendingKind('copilot')
       setPendingSelect(index)
       return
     }
@@ -149,26 +168,50 @@ export function WorkflowViewer({
         }}
       />
 
-      <AlertDialog open={pendingSelect !== null} onOpenChange={(open) => !open && setPendingSelect(null)}>
+      <AlertDialog
+        open={pendingSelect !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingSelect(null)
+            setPendingKind(null)
+          }
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Discard your unsaved re-target edits?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {pendingKind === 'copilot'
+                ? 'Reject the copilot’s pending proposal?'
+                : 'Discard your unsaved re-target edits?'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              You've changed selectors or outcome checks on the current step that haven't been
-              applied yet. Switching steps now will lose those changes.
+              {pendingKind === 'copilot'
+                ? "The copilot proposed a change on the current step that you haven't accepted or rejected. Switching steps now will reject it."
+                : "You've changed selectors or outcome checks on the current step that haven't been applied yet. Switching steps now will lose those changes."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setPendingSelect(null)}>Keep editing</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => { setPendingSelect(null); setPendingKind(null) }}>
+              Keep editing
+            </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
-                useRetargetStore.getState().reset()
+                if (pendingKind === 'copilot') {
+                  const proposal = useCopilotStore.getState().pendingProposal
+                  useCopilotStore.getState().setPendingProposal(null)
+                  // Fire-and-forget, same as every other reject path — a logging failure must
+                  // never block the step switch the reviewer already confirmed.
+                  if (proposal) void rejectCopilotProposal(skillId, proposal)
+                } else {
+                  useRetargetStore.getState().reset()
+                }
                 if (pendingSelect !== null) setSel(pendingSelect)
                 setPendingSelect(null)
+                setPendingKind(null)
               }}
             >
-              Discard edits
+              {pendingKind === 'copilot' ? 'Reject and switch' : 'Discard edits'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

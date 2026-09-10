@@ -514,3 +514,72 @@ export function postAppendSkillPack(
 export function patchSkillPackBundleRoot(bundleRoot: string): Promise<{ bundle_root: string }> {
   return cmd<{ bundle_root: string }>('set_skill_pack_bundle_root', { bundle_root: bundleRoot })
 }
+
+// ── Human Review Copilot (BUILD-26) ──────────────────────────────────────────────────────────
+// A chat turn diagnoses from the server-assembled evidence bundle (conxa_compile/editor/
+// evidence.py — the copilot backend resolves the workflow's most recent test run on its own, no
+// run_id needed from here) and may return pre-gated proposals; the renderer never applies one
+// itself — accept delegates server-side to the exact patch_step path a manual edit takes, reject
+// only logs. See conxa_compile/editor/copilot_proposals.py for what "pre-gated" means.
+
+export type CopilotTurnMessage = { role: 'user' | 'assistant'; text: string }
+
+export type CopilotProposal = {
+  id: string
+  step_key: string
+  command: string
+  field: string
+  patch: Record<string, unknown>
+  why: string
+  preview: { before: unknown; after: unknown }
+}
+
+export type CopilotTurnResult = {
+  reply: string
+  proposals: CopilotProposal[]
+}
+
+/** `onDelta`, when given, is called with each piece of the reply's text as the model generates
+ *  it (relayed from the backend's `copilot_delta` events — see cmd_copilot_turn) — the same
+ *  `onEvent` mechanism runSkillPackStream uses, just without a terminal event to watch for
+ *  since the final `{reply, proposals}` already arrives via this call's own resolution. */
+export function copilotTurn(
+  skillId: string,
+  message: string,
+  transcript: CopilotTurnMessage[],
+  onDelta?: (text: string) => void,
+): Promise<CopilotTurnResult> {
+  if (!onDelta) return cmd('copilot_turn', { skill_id: skillId, message, transcript })
+  const unsub = window.conxa.onEvent((ev: BackendEvent) => {
+    if (ev.phase === 'copilot_delta' && typeof ev.text === 'string') onDelta(ev.text)
+  })
+  return cmd<CopilotTurnResult>('copilot_turn', { skill_id: skillId, message, transcript }).finally(unsub)
+}
+
+/** Resolves the proposal's step_key to the CURRENT step_index server-side, then patches through
+ *  cmd_patch_step — same undo entry, same edits.jsonl trail (attributed source="copilot") a
+ *  manual edit gets. Refuses with `proposal_stale` if the workflow changed since this was shown. */
+export function acceptCopilotProposal(
+  skillId: string,
+  proposal: CopilotProposal,
+): Promise<WorkflowRevalidationResponse> {
+  return cmd('accept_copilot_proposal', {
+    skill_id: skillId,
+    step_key: proposal.step_key,
+    patch: proposal.patch,
+    proposal_id: proposal.id,
+  })
+}
+
+/** Changes nothing in the compiled skill — logs the rejection so the correction dataset never
+ *  keeps only the flattering half. */
+export function rejectCopilotProposal(skillId: string, proposal: CopilotProposal): Promise<{ ok: boolean }> {
+  return cmd('reject_copilot_proposal', {
+    skill_id: skillId,
+    step_key: proposal.step_key,
+    proposal_id: proposal.id,
+    field: proposal.field,
+    why: proposal.why,
+    command: proposal.command,
+  })
+}
