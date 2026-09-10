@@ -1,38 +1,46 @@
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeftRight, Send, X } from 'lucide-react'
+import { Send, SquarePen, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Textarea } from '@/components/ui/textarea'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { copilotTurn, errorMessage } from '@/api/workflowApi'
+import { copilotTurn, errorMessage, saveCopilotSession } from '@/api/workflowApi'
 import type { WorkflowRevalidationResponse } from '@/types/workflow'
+import { useDraggable } from '@/hooks/useDraggable'
 import { useCopilotStore } from '@/store/copilotStore'
 import { ProposalCard } from './ProposalCard'
+import { VerifyCard } from './VerifyCard'
 import { CopilotMessage, CopilotThinkingBubble } from './CopilotMessage'
 
 type Props = {
   skillId: string
-  corner: 'right' | 'left'
   onClose: () => void
   onProposalAccepted: (result: WorkflowRevalidationResponse) => void
 }
 
-export function CopilotPanel({ skillId, corner, onClose, onProposalAccepted }: Props) {
+export function CopilotPanel({ skillId, onClose, onProposalAccepted }: Props) {
   const messages = useCopilotStore((s) => s.messages)
   const pendingProposal = useCopilotStore((s) => s.pendingProposal)
   const sending = useCopilotStore((s) => s.sending)
   const streamingText = useCopilotStore((s) => s.streamingText)
+  const position = useCopilotStore((s) => s.position)
   const addMessage = useCopilotStore((s) => s.addMessage)
   const editFromIndex = useCopilotStore((s) => s.editFromIndex)
   const setPendingProposal = useCopilotStore((s) => s.setPendingProposal)
   const setSending = useCopilotStore((s) => s.setSending)
   const appendStreamingDelta = useCopilotStore((s) => s.appendStreamingDelta)
   const clearStreamingText = useCopilotStore((s) => s.clearStreamingText)
-  const toggleCorner = useCopilotStore((s) => s.toggleCorner)
+  const setPosition = useCopilotStore((s) => s.setPosition)
+  const commitPosition = useCopilotStore((s) => s.commitPosition)
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  const { onPointerDown, onPointerMove, onPointerUp } = useDraggable(position, {
+    onDrag: setPosition,
+    onDragEnd: commitPosition,
+  })
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -65,6 +73,20 @@ export function CopilotPanel({ skillId, corner, onClose, onProposalAccepted }: P
     }
   }
 
+  const newSession = async () => {
+    if (sending) return
+    const { messages: outgoing } = useCopilotStore.getState()
+    if (outgoing.length > 0) {
+      try {
+        await saveCopilotSession(skillId, outgoing)
+      } catch (err) {
+        toast.error(errorMessage(err, 'Could not save the previous conversation'))
+        // Fall through — never block starting a fresh session on a save failure.
+      }
+    }
+    useCopilotStore.getState().reset()
+  }
+
   return (
     <div
       className={cn(
@@ -74,7 +96,12 @@ export function CopilotPanel({ skillId, corner, onClose, onProposalAccepted }: P
       aria-label="Human Review Conxa Copilot"
     >
       <div className="flex items-center justify-between gap-2 border-b border-white/8 px-3.5 py-3">
-        <div className="min-w-0">
+        <div
+          className="min-w-0 touch-none select-none"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+        >
           <p className="text-sm font-medium text-white">Conxa Copilot</p>
           <p className="truncate text-xs text-zinc-500">Ask about a failed step, or a step to improve</p>
         </div>
@@ -86,12 +113,13 @@ export function CopilotPanel({ skillId, corner, onClose, onProposalAccepted }: P
                 variant="ghost"
                 size="icon"
                 className="size-7 text-zinc-400 hover:text-white"
-                onClick={toggleCorner}
+                onClick={() => void newSession()}
+                aria-label="Start a new Conxa Copilot session"
               >
-                <ArrowLeftRight className="size-3.5" />
+                <SquarePen className="size-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">Move to {corner === 'right' ? 'left' : 'right'}</TooltipContent>
+            <TooltipContent side="top">New session</TooltipContent>
           </Tooltip>
           <Button
             type="button"
@@ -132,7 +160,9 @@ export function CopilotPanel({ skillId, corner, onClose, onProposalAccepted }: P
           ) : null}
           {pendingProposal ? (
             <ProposalCard skillId={skillId} proposal={pendingProposal} onAccepted={onProposalAccepted} />
-          ) : null}
+          ) : (
+            <VerifyCard skillId={skillId} />
+          )}
           <div ref={scrollRef} />
         </div>
       </ScrollArea>

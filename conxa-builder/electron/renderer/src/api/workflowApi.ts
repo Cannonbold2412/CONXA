@@ -526,12 +526,19 @@ export type CopilotTurnMessage = { role: 'user' | 'assistant'; text: string }
 
 export type CopilotProposal = {
   id: string
-  step_key: string
   command: string
-  field: string
   patch: Record<string, unknown>
   why: string
   preview: { before: unknown; after: unknown }
+  // `patch_step` proposals only:
+  step_key?: string | null
+  field?: string
+  // `insert_overlay_branch` proposals only (BUILD-26 stage f) — an inserted step, not an edited
+  // field, so it carries no step_key/field of its own.
+  primitive?: 'try_dismiss' | 'if_present'
+  overlay_id?: string
+  after_step_key?: string | null
+  nested_step?: Record<string, unknown> | null
 }
 
 export type CopilotTurnResult = {
@@ -558,28 +565,88 @@ export function copilotTurn(
 
 /** Resolves the proposal's step_key to the CURRENT step_index server-side, then patches through
  *  cmd_patch_step — same undo entry, same edits.jsonl trail (attributed source="copilot") a
- *  manual edit gets. Refuses with `proposal_stale` if the workflow changed since this was shown. */
+ *  manual edit gets. Refuses with `proposal_stale` if the workflow changed since this was shown.
+ *
+ *  An `insert_overlay_branch` proposal (BUILD-26 stage f) carries no step_key — the same command
+ *  name routes server-side to a different accept path (cmd_insert_step + cmd_patch_step, +
+ *  cmd_insert_branch_step for if_present) based on `command`/`primitive` in the payload. */
 export function acceptCopilotProposal(
   skillId: string,
   proposal: CopilotProposal,
 ): Promise<WorkflowRevalidationResponse> {
   return cmd('accept_copilot_proposal', {
     skill_id: skillId,
-    step_key: proposal.step_key,
+    step_key: proposal.step_key ?? null,
     patch: proposal.patch,
     proposal_id: proposal.id,
+    command: proposal.command,
+    primitive: proposal.primitive,
+    overlay_id: proposal.overlay_id,
+    after_step_key: proposal.after_step_key ?? null,
+    nested_step: proposal.nested_step ?? null,
   })
 }
 
 /** Changes nothing in the compiled skill — logs the rejection so the correction dataset never
- *  keeps only the flattering half. */
+ *  keeps only the flattering half. An insert_overlay_branch rejection sends overlay_id instead of
+ *  step_key — the backend logs it against "overlay:<overlay_id>" since there is no step to name. */
 export function rejectCopilotProposal(skillId: string, proposal: CopilotProposal): Promise<{ ok: boolean }> {
   return cmd('reject_copilot_proposal', {
     skill_id: skillId,
-    step_key: proposal.step_key,
+    step_key: proposal.step_key ?? null,
+    overlay_id: proposal.overlay_id,
     proposal_id: proposal.id,
     field: proposal.field,
     why: proposal.why,
     command: proposal.command,
   })
+}
+
+/** Archives the outgoing conversation to disk before "New session" clears it in-memory —
+ *  never blocks starting a fresh conversation; a save failure is surfaced but not fatal. */
+export function saveCopilotSession(skillId: string, transcript: CopilotTurnMessage[]): Promise<{ ok: boolean }> {
+  return cmd('copilot_save_session', { skill_id: skillId, transcript })
+}
+
+// ── Verified retest (BUILD-26 stage e) ───────────────────────────────────────────────────────
+// Two-phase: call with confirmed=false first to get the irreversible-step count for a confirm
+// prompt (no build, no browser); confirmed=true actually rebuilds + retests. cmd_copilot_verify
+// delegates to cmd_build_skill_package / cmd_test_workflow server-side, so their own progress
+// events (kind: 'skill_package_build' / 'workflow_test') arrive on the same channel alongside the
+// verify command's own 'copilot_verify' phase — onLog is handed all three.
+
+export type CopilotVerifyPreflight = {
+  status: 'confirm_required'
+  irreversible_count: number
+  irreversible_steps: { step_key: string; description: string }[]
+}
+
+export type CopilotVerifyOutcome = {
+  status: 'verified' | 'cancelled'
+  verdict?: 'fixed' | 'still_failing' | 'progressed'
+  run_id: string | null
+  message?: string
+}
+
+export type CopilotVerifyResponse = CopilotVerifyPreflight | CopilotVerifyOutcome
+
+export function copilotVerify(
+  skillId: string,
+  args: { stepKey: string; proposalId?: string; confirmed: boolean },
+  onLog?: (message: string) => void,
+): Promise<CopilotVerifyResponse> {
+  const payload = {
+    skill_id: skillId,
+    step_key: args.stepKey,
+    proposal_id: args.proposalId ?? null,
+    confirmed: args.confirmed,
+  }
+  if (!onLog) return cmd('copilot_verify', payload)
+  const unsub = window.conxa.onEvent((ev: BackendEvent) => {
+    if (ev.phase === 'copilot_verify' && typeof ev.text === 'string') onLog(ev.text)
+    else if ((ev.kind === 'workflow_test' || ev.kind === 'skill_package_build') && ev.message) {
+      onLog(String(ev.message))
+    }
+  })
+  return cmd<CopilotVerifyResponse>('copilot_verify', payload).finally(unsub)
 }
