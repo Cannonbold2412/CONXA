@@ -7,14 +7,16 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib import error, request
 
 from conxa_core.config import settings
+
 from conxa_core.llm.client import (
     _chat_completions_url,
     _debug_log,
     _is_openai_compatible_endpoint,
+    _iter_sse_text_deltas,
     _normalize_openai_response,
     _openai_body_dict,
     _provider_top_level_error,
@@ -299,6 +301,7 @@ class LLMRouter:
         for_vision: bool,
         error_detail: list[str] | None,
         pool: str | None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
         """Shared route_text/route_vision body: pick an entry, fall back across pools,
         and wait for cooled-down keys to clear (bounded by a total ``wait_ceiling_secs``
@@ -357,6 +360,7 @@ class LLMRouter:
                     min(timeout_ms, int(remaining * 1000)),
                     error_detail=error_detail,
                     attempt=attempt,
+                    on_delta=on_delta,
                 )
             except _DeterministicRejection:
                 # Every provider will reject this exact payload the same way — stop
@@ -380,18 +384,28 @@ class LLMRouter:
         *,
         error_detail: list[str] | None = None,
         pool: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
         """Route a text-only LLM call to an available provider.
 
         ``pool`` restricts to "free", "starter", or "pro" providers; if the
         requested pool has no available entry, falls back to any pool rather
-        than failing a paying customer's compile over a provider misconfiguration."""
+        than failing a paying customer's compile over a provider misconfiguration.
+
+        ``on_delta``, when given, streams the reply: the provider request sets
+        ``stream: true`` and drops JSON-object mode (see `_call_provider`), and `on_delta` fires
+        with each text chunk as it arrives. Cross-provider failover still applies between
+        attempts, but a failure mid-stream (after some chunks already reached `on_delta`) is not
+        retried — the caller sees whatever text arrived. Today only `copilot_reply` uses this."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
                 "*_ENABLED=true in .env (e.g. GROQ_API_KEYS=gsk_... + GROQ_ENABLED=true)."
             )
-        return self._route(task, payload, timeout_ms, for_vision=False, error_detail=error_detail, pool=pool)
+        return self._route(
+            task, payload, timeout_ms, for_vision=False, error_detail=error_detail, pool=pool,
+            on_delta=on_delta,
+        )
 
     def route_vision(
         self,
@@ -401,15 +415,19 @@ class LLMRouter:
         *,
         error_detail: list[str] | None = None,
         pool: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
         """Route a vision-capable LLM call to an available provider. See
-        route_text for the ``pool`` fallback behavior."""
+        route_text for the ``pool`` fallback behavior and the ``on_delta`` streaming contract."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
                 "*_ENABLED=true in .env. Note: vision tasks require providers with a vision_model."
             )
-        return self._route(task, payload, timeout_ms, for_vision=True, error_detail=error_detail, pool=pool)
+        return self._route(
+            task, payload, timeout_ms, for_vision=True, error_detail=error_detail, pool=pool,
+            on_delta=on_delta,
+        )
 
     def call_entry_directly(
         self,
@@ -447,14 +465,20 @@ class LLMRouter:
         *,
         error_detail: list[str] | None = None,
         attempt: int = 0,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
         """Make a single HTTP request to a provider."""
         self._request_counter += 1
         req_id = self._request_counter
         now = time.monotonic()
 
-        # Use provider-specific model, falling back to payload model
-        is_vision_task = task in {"anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector"}
+        # Use provider-specific model, falling back to payload model. Kept in sync with the two
+        # other copies of this literal set — conxa_core.llm.client._is_vision_task's docstring
+        # has the BUILD-26 note on why this is triplicated instead of shared.
+        is_vision_task = task in {
+            "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
+            "copilot_diagnose", "copilot_reply",
+        }
         model = payload.get("model")
         if not model:
             primary_model = entry.vision_model if is_vision_task else entry.text_model
@@ -495,7 +519,11 @@ class LLMRouter:
         started = time.perf_counter()
 
         try:
-            body_dict = _openai_body_dict(task, payload_with_model, json_mode=True)
+            # Streaming never uses json_object mode — the model would produce raw JSON text one
+            # token at a time, which reads as garbage mid-stream (see route_text's docstring).
+            body_dict = _openai_body_dict(task, payload_with_model, json_mode=on_delta is None)
+            if on_delta is not None:
+                body_dict["stream"] = True
             raw_body = json.dumps(body_dict).encode("utf-8")
             # Guarded on has_active_job_sink() — the proxy path never opens a job
             # scope, so this used to build a full redacted preview (including a
@@ -519,6 +547,48 @@ class LLMRouter:
                     },
                 )
             req = request.Request(ep, data=raw_body, headers=headers, method="POST")
+
+            if on_delta is not None:
+                # Streaming: read the provider's own SSE stream and forward each text delta as
+                # it arrives. No JSON envelope to inspect for a provider-level error here — an
+                # error surfaces as an HTTPError before any body streams (handled below), or as
+                # an empty stream, which the caller (route_text/route_vision) treats as failure.
+                full_text_parts: list[str] = []
+                with request.urlopen(req, timeout=timeout_s) as res:
+                    status_code = getattr(res, "status", None) or getattr(res, "code", None)
+                    for chunk in _iter_sse_text_deltas(res):
+                        full_text_parts.append(chunk)
+                        on_delta(chunk)
+
+                entry.requests_sent += 1
+                entry.last_used_at = now
+                entry.consecutive_transient_failures = 0
+                duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                full_text = "".join(full_text_parts)
+                _debug_log(f"router: response_ok(stream) req_id={req_id} provider={entry.provider}")
+                if has_active_job_sink():
+                    append_current_job_event(
+                        "api_call",
+                        f"LLM request completed: {task}.",
+                        {
+                            "phase": "llm_request_done",
+                            "request_id": req_id,
+                            "provider": entry.provider,
+                            "endpoint": _redact_url(ep),
+                            "model": model,
+                            "task": task,
+                            "attempt": attempt,
+                            "status_code": status_code,
+                            "duration_ms": duration_ms,
+                            "request_bytes": len(raw_body),
+                            "response_bytes": len(full_text.encode("utf-8")),
+                        },
+                    )
+                if not full_text:
+                    if error_detail is not None:
+                        error_detail.append("stream produced no content")
+                    return None
+                return {"text": full_text, "output": full_text}
 
             with request.urlopen(req, timeout=timeout_s) as res:
                 status_code = getattr(res, "status", None) or getattr(res, "code", None)

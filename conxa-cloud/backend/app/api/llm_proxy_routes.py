@@ -12,10 +12,14 @@ rather than CORS.
 
 from __future__ import annotations
 
+import json
+import logging
+import queue
 import threading
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from conxa_core.config import settings
@@ -35,6 +39,9 @@ from app.services.entitlements import (
 )
 
 router = APIRouter(prefix="/llm/proxy", tags=["llm-proxy"], include_in_schema=False)
+logger = logging.getLogger(__name__)
+
+_STREAM_DONE = object()
 
 # One workspace's compile burst used to be able to drain the shared provider pool
 # (every entry cooled/quarantined) into 502s for every other tenant. Caps
@@ -169,6 +176,133 @@ def proxy_text(body: ProxyBody, request: Request) -> dict[str, Any]:
 @router.post("/vision")
 def proxy_vision(body: ProxyBody, request: Request) -> dict[str, Any]:
     return _meter_and_call(request, body, vision=True)
+
+
+def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> StreamingResponse:
+    """Streaming sibling of _meter_and_call (BUILD-26 stage c) — same entitlement/quota/
+    concurrency gates up front, but the actual LLM call runs on a background thread so its
+    `on_delta` callback can push chunks into a queue this function drains into an SSE-ish
+    response (`data: {"delta": ...}` per chunk, `data: {"done": true, "text": ...}` at the end).
+    Usage is metered once, after the full text is known — never per chunk. Only text/vision
+    tasks that ask for `on_delta` (currently just `copilot_reply`) should hit this path; every
+    other task keeps using the blocking endpoints above."""
+    _require_studio_client(request)
+    principal = current_principal(request)
+    org_id = principal.workspace_id
+    usage_class = str(body.usage_class or "compile").strip()
+    if usage_class not in ALLOWED_USAGE_CLASSES:
+        raise HTTPException(status_code=400, detail="invalid_usage_class")
+
+    try:
+        ensure_trial_active(principal)
+        register_request_machine(request, principal)
+    except EntitlementError as exc:
+        raise entitlement_http_error(exc) from exc
+
+    if usage_class == "compile" and llm_metering.quota_exceeded(org_id, settings.llm_proxy_monthly_token_quota):
+        raise HTTPException(status_code=429, detail="quota_exceeded")
+
+    input_tokens = llm_metering.estimate_request_tokens(body.payload)
+    if usage_class == "human_edit":
+        try:
+            ensure_human_edit_available(principal, estimated_tokens=input_tokens)
+        except EntitlementError as exc:
+            raise entitlement_http_error(exc) from exc
+
+    try:
+        _acquire_workspace_slot(org_id)
+    except _TooManyInFlight:
+        raise HTTPException(
+            status_code=429,
+            detail="workspace_concurrency_limit",
+            headers={"Retry-After": "3"},
+        ) from None
+
+    router_impl = get_router()
+    error_detail: list[str] = []
+    chunks: "queue.Queue[Any]" = queue.Queue()
+
+    def _worker() -> None:
+        try:
+            byok_entry = byok_pool_entry_for(principal)
+            if byok_entry is not None:
+                # BYOK has no streaming call path (call_entry_directly has no on_delta) — fall
+                # back to one blocking call and deliver it as a single chunk, so a BYOK tenant
+                # still gets a valid (if non-incremental) reply instead of an error.
+                result = router_impl.call_entry_directly(
+                    byok_entry, body.task, body.payload, body.timeout_ms, error_detail=error_detail
+                )
+                text = str(
+                    (result or {}).get("text")
+                    or (result or {}).get("output")
+                    or (result or {}).get("reply")
+                    or ""
+                )
+                if text:
+                    chunks.put(text)
+            elif vision:
+                router_impl.route_vision(
+                    body.task, body.payload, body.timeout_ms,
+                    error_detail=error_detail, pool=compile_pool_for(principal), on_delta=chunks.put,
+                )
+            else:
+                router_impl.route_text(
+                    body.task, body.payload, body.timeout_ms,
+                    error_detail=error_detail, pool=compile_pool_for(principal), on_delta=chunks.put,
+                )
+        except Exception as exc:  # noqa: BLE001 — surfaced to the generator below, never crashes silently
+            chunks.put(exc)
+        finally:
+            chunks.put(_STREAM_DONE)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    def _generate():
+        full_text_parts: list[str] = []
+        worker_error: Exception | None = None
+        try:
+            while True:
+                item = chunks.get()
+                if item is _STREAM_DONE:
+                    break
+                if isinstance(item, Exception):
+                    worker_error = item
+                    break
+                full_text_parts.append(item)
+                yield f"data: {json.dumps({'delta': item})}\n\n"
+
+            full_text = "".join(full_text_parts)
+            if not full_text:
+                message = str(worker_error) if worker_error else "llm_all_providers_failed"
+                yield f"data: {json.dumps({'error': message})}\n\n"
+                return
+
+            output_tokens = llm_metering.estimate_response_tokens({"text": full_text})
+            llm_metering.record_usage(org_id, input_tokens=input_tokens, output_tokens=output_tokens)
+            try:
+                record_llm_usage(
+                    principal, usage_class=usage_class,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                )
+            except Exception:  # noqa: BLE001 — the reply already streamed to the client; headers
+                # are long committed by this point, so an entitlement-recording failure here can
+                # only be logged, never turned into an HTTP error the way _meter_and_call does.
+                logger.exception("record_llm_usage failed after a streamed copilot reply (org=%s)", org_id)
+            yield f"data: {json.dumps({'done': True, 'text': full_text})}\n\n"
+        finally:
+            _release_workspace_slot(org_id)
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.post("/text/stream")
+def proxy_text_stream(body: ProxyBody, request: Request) -> StreamingResponse:
+    return _meter_and_stream(request, body, vision=False)
+
+
+@router.post("/vision/stream")
+def proxy_vision_stream(body: ProxyBody, request: Request) -> StreamingResponse:
+    return _meter_and_stream(request, body, vision=True)
 
 
 @router.get("/usage")

@@ -57,7 +57,34 @@ def call_llm(
     """
     from conxa_core.llm import get_router
     router = get_router()
-    is_vision = task in {"anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector"}
+    # Kept in sync with conxa_core.llm.client._is_vision_task and the cloud router's copy —
+    # see that function's docstring for why this triplication exists and its BUILD-26 note.
+    is_vision = task in {
+        "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
+        "copilot_diagnose", "copilot_reply",
+    }
     if is_vision:
         return router.route_vision(task, payload, timeout_ms, error_detail=error_detail)
     return router.route_text(task, payload, timeout_ms, error_detail=error_detail)
+
+
+def stream_llm(
+    task: str,
+    payload: dict[str, Any],
+    timeout_ms: int,
+    *,
+    on_delta: Any,
+    error_detail: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Same routing as call_llm(), but for a task whose reply should stream to the caller as it
+    generates — `on_delta(text_chunk)` fires for each piece of text as it arrives. Only
+    `copilot_reply` uses this today; every other task keeps the blocking call_llm() path."""
+    from conxa_core.llm import get_router
+    router = get_router()
+    is_vision = task in {
+        "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
+        "copilot_diagnose", "copilot_reply",
+    }
+    if is_vision:
+        return router.route_vision(task, payload, timeout_ms, error_detail=error_detail, on_delta=on_delta)
+    return router.route_text(task, payload, timeout_ms, error_detail=error_detail, on_delta=on_delta)

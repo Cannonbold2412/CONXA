@@ -33,8 +33,17 @@ def _debug_log(message: str) -> None:
 
 
 def _is_vision_task(task: str) -> bool:
-    """True for multimodal vision tasks."""
-    return task in {"anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector"}
+    """True for multimodal vision tasks.
+
+    Kept in sync with two other copies of this same literal set — conxa_compile/llm/client.py
+    and conxa-cloud/backend/app/llm/router.py — because a task missing from any one of the three
+    silently routes as text instead of failing loudly. (BUILD-26: a good candidate to collapse
+    into one shared constant next time any of the three is touched.)
+    """
+    return task in {
+        "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
+        "copilot_diagnose", "copilot_reply",
+    }
 
 
 def _safe_error_snippet(text: str, limit: int = 280) -> str:
@@ -397,6 +406,83 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
                 ],
             },
         ]
+    if task == "copilot_reply":
+        # Streamed sibling of copilot_diagnose (BUILD-26 stage c): same evidence/transcript
+        # framing, but asks for prose only — no JSON contract — because a streamed JSON object
+        # would show the reviewer a raw `{"reply": "...` scrolling past. copilot_turn() still
+        # runs the existing copilot_diagnose call afterward for proposals; this call never
+        # proposes anything itself.
+        image_b64 = str(payload.get("image_base64") or "")
+        mime = str(payload.get("image_mime") or "image/jpeg")
+        user_text = str(payload.get("user_text") or "")
+        system = (
+            "You are a diagnosis-and-repair copilot inside a browser-automation workflow "
+            "reviewer (Human Review). You are shown evidence about one compiled workflow and, "
+            "when relevant, why one of its steps failed a test run: the compiler's own "
+            "confidence and identity signals, the recorded page's before/after DOM diff, the "
+            "deterministic recovery cascade's trail, a live element inventory, and — when "
+            "attached — a screenshot taken at the moment of failure. Diagnose from this "
+            "evidence: cite the actual cascade stage or page state involved, never a generic "
+            "restatement of the error message. Answer the reviewer's question directly, in "
+            "plain English, as a short, specific paragraph. Do not return JSON, markdown, or "
+            "any wrapper — plain prose only."
+        )
+        user_content: list[dict[str, Any]] | str
+        if image_b64:
+            user_content = [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                {"type": "text", "text": user_text},
+            ]
+        else:
+            user_content = user_text
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+    if task == "copilot_diagnose":
+        # BUILD-26 stage (b): Human Review's copilot. One call per turn — there is no multi-turn
+        # session on this path, so the Studio flattens the whole conversation (evidence bundle +
+        # transcript + the reviewer's latest message) into user_text each time; this function
+        # stays stateless either way. The screenshot is optional: a text-only turn (no vision
+        # provider in the pool, or no failure screenshot on disk) is still a valid call — just
+        # without the image content block, per the graceful-degrade contract in
+        # conxa_compile/llm/copilot.py.
+        image_b64 = str(payload.get("image_base64") or "")
+        mime = str(payload.get("image_mime") or "image/jpeg")
+        user_text = str(payload.get("user_text") or "")
+        system = (
+            "You are a diagnosis-and-repair copilot inside a browser-automation workflow "
+            "reviewer (Human Review). You are shown evidence about one compiled workflow and, "
+            "when relevant, why one of its steps failed a test run: the compiler's own "
+            "confidence and identity signals, the recorded page's before/after DOM diff, the "
+            "deterministic recovery cascade's trail, a live element inventory, and — when "
+            "attached — a screenshot taken at the moment of failure. Diagnose from this "
+            "evidence: cite the actual cascade stage or page state involved, never a generic "
+            "restatement of the error message. Answer the reviewer's question directly.\n"
+            "Return strict JSON with keys: reply (a short, specific plain-English answer), and "
+            "proposals (array, usually empty — most turns propose nothing). Each proposal is "
+            "{step_key, field, patch, why}: step_key copied EXACTLY from a step's own \"step_key\" "
+            "field in the evidence — never invented, never a step number; field is exactly one "
+            "of input_binding, value, intent, semantic_description, validation.assertions; patch "
+            "is the new value for that field. why is one sentence citing the evidence. You must "
+            "NEVER propose target, identity_bundle, compiled_selectors, primary_selector, or "
+            "fallback_selectors — you never write or change a page selector, only a human "
+            "re-targeting a step in the editor does that. Only propose a change you are "
+            "confident about and can justify from evidence actually shown to you — never invent "
+            "text, a selector, or a DOM fact not present above. No markdown, no extra keys."
+        )
+        user_content: list[dict[str, Any]] | str
+        if image_b64:
+            user_content = [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                {"type": "text", "text": user_text},
+            ]
+        else:
+            user_content = user_text
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
     return [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
 
@@ -418,6 +504,13 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
     if task == "region_selector":
         # A handful of selector candidates with rationale — a bit more room than anchor_vision.
         body["max_tokens"] = 1536
+    if task == "copilot_diagnose":
+        # A conversational reply plus at most a few small proposals — more room than a selector
+        # list, less than a whole-workflow pass.
+        body["max_tokens"] = 900
+    if task == "copilot_reply":
+        # Prose only, no proposals JSON riding along — smaller budget than copilot_diagnose.
+        body["max_tokens"] = 500
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     return body
@@ -513,6 +606,60 @@ def _normalize_openai_response(data: dict[str, Any]) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
     return {"text": content, "output": content}
+
+
+def _sse_content_to_text(raw: Any) -> str:
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for part in raw:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                parts.append(str(part.get("text") or ""))
+        return "".join(parts)
+    return ""
+
+
+def _sse_choice_text(first: Any) -> str:
+    if not isinstance(first, dict):
+        return ""
+    delta = first.get("delta")
+    raw = None
+    if isinstance(delta, dict):
+        raw = delta.get("content")
+        if raw is None:
+            raw = delta.get("text")
+    if not raw:
+        message = first.get("message")
+        if isinstance(message, dict):
+            raw = message.get("content")
+    return _sse_content_to_text(raw)
+
+
+def _iter_sse_text_deltas(response: Any) -> Any:
+    """Parse an OpenAI-compatible ``stream: true`` response, yielding each content delta as it
+    arrives. `response` is the file-like object returned by ``urlopen`` — iterating it yields
+    one raw HTTP chunk-line at a time. Skips non-``data:`` lines (SSE comments/blank keep-alives)
+    and non-content deltas (role markers, finish_reason); never raises on a malformed line."""
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == "[DONE]":
+            return
+        try:
+            obj = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        choices = obj.get("choices") if isinstance(obj, dict) else None
+        if not isinstance(choices, list) or not choices:
+            continue
+        text = _sse_choice_text(choices[0])
+        if text:
+            yield text
 
 
 def _next_api_key(keys: list[str]) -> tuple[str, int, int]:

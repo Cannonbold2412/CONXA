@@ -106,8 +106,9 @@ class LLMProxyClient:
         timeout_ms: int,
         *,
         error_detail: list[str] | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
-        return self._post("text", task, payload, timeout_ms, error_detail=error_detail)
+        return self._post("text", task, payload, timeout_ms, error_detail=error_detail, on_delta=on_delta)
 
     def route_vision(
         self,
@@ -116,8 +117,9 @@ class LLMProxyClient:
         timeout_ms: int,
         *,
         error_detail: list[str] | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
-        return self._post("vision", task, payload, timeout_ms, error_detail=error_detail)
+        return self._post("vision", task, payload, timeout_ms, error_detail=error_detail, on_delta=on_delta)
 
     # -- internals -----------------------------------------------------------
 
@@ -131,8 +133,10 @@ class LLMProxyClient:
         error_detail: list[str] | None,
         _retried: bool = False,
         _retry_count: int = 0,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
-        url = f"{self._cloud_api}/api/v1/llm/proxy/{kind}"
+        streaming = on_delta is not None
+        url = f"{self._cloud_api}/api/v1/llm/proxy/{kind}{'/stream' if streaming else ''}"
         body = json.dumps(
             {
                 "task": task,
@@ -155,11 +159,54 @@ class LLMProxyClient:
         t0 = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=http_timeout_s) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            duration_ms = int((time.monotonic() - t0) * 1000)
-            if self._on_api_call is not None:
-                self._on_api_call({"task": task, "kind": kind, "duration_ms": duration_ms, "status": "ok"})
-            return data if isinstance(data, dict) else None
+                if not streaming:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    duration_ms = int((time.monotonic() - t0) * 1000)
+                    if self._on_api_call is not None:
+                        self._on_api_call({"task": task, "kind": kind, "duration_ms": duration_ms, "status": "ok"})
+                    return data if isinstance(data, dict) else None
+
+                # Streaming: consume the proxy's own `data: {...}` delta framing (llm_proxy_routes.py's
+                # /stream endpoints) — not raw provider SSE, which the cloud already normalized away.
+                full_text_parts: list[str] = []
+                saw_error: str | None = None
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        frame = json.loads(line[len("data:") :].strip())
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(frame, dict):
+                        continue
+                    if "delta" in frame:
+                        chunk = str(frame["delta"])
+                        full_text_parts.append(chunk)
+                        on_delta(chunk)
+                    elif frame.get("done"):
+                        text = str(frame.get("text") or "".join(full_text_parts))
+                        duration_ms = int((time.monotonic() - t0) * 1000)
+                        if self._on_api_call is not None:
+                            self._on_api_call({"task": task, "kind": kind, "duration_ms": duration_ms, "status": "ok"})
+                        return {"text": text, "output": text}
+                    elif frame.get("error"):
+                        saw_error = str(frame["error"])
+
+                # Stream ended without a "done" frame — still show whatever text arrived rather
+                # than discard it, since the reviewer may already be reading it as it streamed.
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                full_text = "".join(full_text_parts)
+                if full_text:
+                    if self._on_api_call is not None:
+                        self._on_api_call({"task": task, "kind": kind, "duration_ms": duration_ms, "status": "ok"})
+                    return {"text": full_text, "output": full_text}
+                if self._on_api_call is not None:
+                    self._on_api_call({"task": task, "kind": kind, "duration_ms": duration_ms, "status": "error"})
+                raise ProxyUnavailable(
+                    f"Cloud LLM proxy stream ended without a result ({saw_error or 'no provider produced output'})",
+                    error_detail=[saw_error] if saw_error else [],
+                )
         except urllib.error.HTTPError as exc:
             duration_ms = int((time.monotonic() - t0) * 1000)
             if self._on_api_call is not None:
@@ -168,7 +215,7 @@ class LLMProxyClient:
                 # Token likely expired — let the auth layer refresh, then retry once.
                 return self._post(
                     kind, task, payload, timeout_ms,
-                    error_detail=error_detail, _retried=True,
+                    error_detail=error_detail, _retried=True, on_delta=on_delta,
                 )
             detail: Any = ""
             try:
@@ -190,6 +237,7 @@ class LLMProxyClient:
                     return self._post(
                         kind, task, payload, timeout_ms,
                         error_detail=error_detail, _retried=_retried, _retry_count=_retry_count + 1,
+                        on_delta=on_delta,
                     )
                 raise ProxyUnavailable(
                     "Cloud LLM proxy workspace concurrency limit exceeded after retries",
@@ -233,6 +281,7 @@ class LLMProxyClient:
                 return self._post(
                     kind, task, payload, timeout_ms,
                     error_detail=error_detail, _retried=_retried, _retry_count=_retry_count + 1,
+                    on_delta=on_delta,
                 )
 
             if exc.code in _RETRYABLE_HTTP_CODES:
