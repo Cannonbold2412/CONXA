@@ -1,4 +1,5 @@
 "use strict";
+const { evalOn, countOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 // Known-pattern overlay dismissal — EXEC-5's "dismiss-known-pattern library", Tier 1 slice.
 //
@@ -70,7 +71,8 @@ async function dismissKnownOverlay(page, { learned = [], timeoutMs = DISMISS_PRO
   for (const selector of queue) {
     try {
       const locator = page.locator(selector);
-      if ((await locator.count()) < 1) continue;
+      const n = await countOn(locator, DISMISS_PROBE_TIMEOUT_MS);
+      if (n === EVAL_TIMED_OUT || n < 1) continue;
       await locator.first().click({ timeout: timeoutMs });
       clicked.push(selector);
       if (learned.includes(selector)) sawLearned = true;
@@ -114,20 +116,22 @@ const DIALOG_CHROME_SEL = '[role="dialog"], [role="alertdialog"], [aria-modal="t
 async function dismissAgentNominated(page, selector, { timeoutMs = DISMISS_PROBE_TIMEOUT_MS } = {}) {
   if (!selector) return { ok: false, reason: "no-match" };
   const locator = page.locator(selector);
-  if ((await locator.count()) < 1) return { ok: false, reason: "no-match" };
+  const n = await countOn(locator, timeoutMs);
+  if (n === EVAL_TIMED_OUT || n < 1) return { ok: false, reason: "no-match" };
   const first = locator.first();
 
-  const info = await first.evaluate((el, dialogSel) => ({
+  const info = await evalOn(first, (el, dialogSel) => ({
     label: (el.getAttribute("aria-label") || el.innerText || el.getAttribute("title") || "").trim().slice(0, 120),
     inDialogChrome: !!el.closest(dialogSel),
-  }), DIALOG_CHROME_SEL).catch(() => ({ label: "", inDialogChrome: false }));
+  }), DIALOG_CHROME_SEL, timeoutMs).catch(() => ({ label: "", inDialogChrome: false }));
+  const safeInfo = info === EVAL_TIMED_OUT ? { label: "", inDialogChrome: false } : info;
 
-  if (!isSafeDismissLabel(info.label, { inDialogChrome: info.inDialogChrome })) {
-    return { ok: false, reason: "unsafe-label", label: info.label };
+  if (!isSafeDismissLabel(safeInfo.label, { inDialogChrome: safeInfo.inDialogChrome })) {
+    return { ok: false, reason: "unsafe-label", label: safeInfo.label };
   }
 
   await first.click({ timeout: timeoutMs });
-  return { ok: true, selector, label: info.label };
+  return { ok: true, selector, label: safeInfo.label };
 }
 
 module.exports = {

@@ -16,6 +16,7 @@
  */
 const crypto = require("crypto");
 const pageScripts = require("./page_scripts");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 // Small headroom so incidental noise (a live clock, an ad slot) doesn't false-flag divergence.
 const PARK_DIVERGENCE_TOLERANCE = 3;
@@ -43,7 +44,9 @@ function setParked(key, park) {
 async function capturePageFingerprint(page) {
   try {
     const url = page.url();
-    const { interactiveCount, text } = await page.evaluate(pageScripts.pageFingerprint);
+    const fp = await evalOn(page, pageScripts.pageFingerprint);
+    if (fp === EVAL_TIMED_OUT) return null;
+    const { interactiveCount, text } = fp;
     return { url, interactiveCount, domHash: crypto.createHash("sha256").update(text).digest("hex") };
   } catch (_) {
     return null;

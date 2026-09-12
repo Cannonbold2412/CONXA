@@ -8,6 +8,7 @@ const {
   ACTION_TIMEOUT_MS,
   SECONDARY_ACTION_TIMEOUT_MS,
   RECOVERY_LOCATOR_TIMEOUT_MS,
+  VIRTUAL_SCROLL_BUDGET_MS,
 } = require("./run_config");
 const { asObject, asArray, unique, isNonIdempotent } = require("./step_utils");
 const {
@@ -48,11 +49,17 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
   // scored multi-signal path, the auto-wait that string selectors get via waitFor. (Fixes the
   // Tier-1 timing race where step N+1 fired before step N's menu had finished opening.)
   if (selector === PRIMARY && !step._explicit_selector) {
-    const deadline = Date.now() + (timeout || ACTION_TIMEOUT_MS);
+    let deadline = Date.now() + (timeout || ACTION_TIMEOUT_MS);
+    // BUILD-30: one plain object per attempt (not module-level state), threaded into
+    // resolveStep so a miss can try a bounded scroll pass before giving up — see
+    // resolution.js::maybeScrollForVirtualization. `attemptedScroll` only becomes true when
+    // that scroll was grounded in real compiled evidence (a virtualized_container hint or an
+    // entity binding), which is what the one-time deadline extension below is gated on.
+    const scrollState = { passes: 0, extended: false, attemptedScroll: false };
     let lastErr = null;
     for (;;) {
       try {
-        const locator = await resolveStep(page, step, inputs);   // one attempt; loop owns the wait
+        const locator = await resolveStep(page, step, inputs, scrollState);   // one attempt; loop owns the wait
         await gateLocator(locator.first(), step);
         return await actAndMark(fn, locator);
       } catch (err) {
@@ -65,6 +72,18 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
         // Ambiguity / recompile-required / bad input cannot be fixed by waiting — surface
         // immediately rather than re-resolving until the action deadline.
         if (err && (err.ambiguous || err.recompileRequired || err.badInput)) throw err;
+        // BUILD-30: extend the wait once a scroll pass grounded in real evidence has actually
+        // run, and only for a miss where no locator was ever produced (mayHaveActed unset) —
+        // nothing was acted on, so a longer wait cannot turn a clean failure into a repeated
+        // action. A plain broken selector (no virtualization evidence) gets none of this;
+        // its timing is exactly what it was before this feature existed.
+        if (
+          !scrollState.extended && scrollState.attemptedScroll &&
+          err && (err.entityNotFound || err.resolveMiss) && !err.mayHaveActed
+        ) {
+          scrollState.extended = true;
+          deadline = Date.now() + VIRTUAL_SCROLL_BUDGET_MS;
+        }
         if (Date.now() >= deadline) throw err;
         await page.waitForTimeout(120);
       }

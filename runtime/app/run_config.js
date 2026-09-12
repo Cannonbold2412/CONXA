@@ -30,6 +30,33 @@ const SETTLE_TIMEOUT_MS            = envNumber("CONXA_SETTLE_TIMEOUT_MS", 60000)
 // (same pattern as run.js's networkidle cap below).
 const NAV_SETTLE_CAP_MS            = envNumber("CONXA_NAV_SETTLE_CAP_MS", 10000);
 
+// BUILD-30: a virtualized grid's target row isn't in the DOM until scrolled into range —
+// resolution.js scrolls-and-re-gathers on a miss when the step carries real evidence of
+// virtualization (a compiled handler_hints.virtualized_container hint, or an entity binding).
+// Kill switch first: CONXA_VIRTUAL_SCROLL=0 disables the whole feature and restores today's
+// behavior exactly (a virtualized row fails like any other miss, no cascade for entity_not_found).
+const VIRTUAL_SCROLL_ENABLED       = process.env.CONXA_VIRTUAL_SCROLL !== "0";
+// One-time extension of withLocator's PRIMARY deadline, applied only once a scroll pass backed
+// by real evidence has actually run — an ordinary step's timing (ACTION_TIMEOUT_MS, 2500ms
+// default) is unaffected. 15s at ~120ms per retry-and-scroll cycle covers a long grid.
+const VIRTUAL_SCROLL_BUDGET_MS     = envNumber("CONXA_VIRTUAL_SCROLL_BUDGET_MS", 15000);
+// Hard cap on scroll passes for one step, independent of the deadline above — belt-and-braces
+// against a pathological container that never reports reaching bottom/top.
+const VIRTUAL_SCROLL_MAX_PASSES    = envNumber("CONXA_VIRTUAL_SCROLL_MAX_PASSES", 40);
+
+// EXEC-37: settle-detection fallback on the FAILURE path only (an ordinary resolution/verify
+// miss, before recovery) — a currently-passing run never calls this, so its timing is unaffected.
+// Kill switch first: CONXA_SETTLE_RETRY=0 disables the whole feature and restores today's
+// behavior exactly (a miss goes straight to recovery, no settle-and-retry attempt).
+const SETTLE_RETRY_ENABLED         = process.env.CONXA_SETTLE_RETRY !== "0";
+const SETTLE_BUDGET_MS             = envNumber("CONXA_SETTLE_BUDGET_MS", 8000);
+const SETTLE_POLL_MS               = envNumber("CONXA_SETTLE_POLL_MS", 250);
+
+// EXEC-38: hard ceiling on a for_each loop's row count, independent of (and always <=) the
+// step's own compiled max_iterations — belt-and-braces against a hand-edited/malformed pack
+// shipping an unreasonably large cap. A loop step with no max_iterations at all refuses to run.
+const MAX_LOOP_ITERATIONS          = envNumber("CONXA_MAX_LOOP_ITERATIONS", 100);
+
 module.exports = {
   envNumber,
   CAPTURE_PRESTEP,
@@ -42,4 +69,11 @@ module.exports = {
   RUN_RETENTION_MS,
   SETTLE_TIMEOUT_MS,
   NAV_SETTLE_CAP_MS,
+  VIRTUAL_SCROLL_ENABLED,
+  VIRTUAL_SCROLL_BUDGET_MS,
+  VIRTUAL_SCROLL_MAX_PASSES,
+  SETTLE_RETRY_ENABLED,
+  SETTLE_BUDGET_MS,
+  SETTLE_POLL_MS,
+  MAX_LOOP_ITERATIONS,
 };

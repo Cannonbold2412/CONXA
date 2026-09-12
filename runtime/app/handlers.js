@@ -4,6 +4,7 @@
 // executeStep, recovery embedding, and agent-override injection.
 const pageScripts = require("./page_scripts");
 const { interpolate } = require("./interpolate");
+const { evalOn, countOn, EVAL_TIMED_OUT } = require("./page_eval");
 const {
   PAGE_LOAD_TIMEOUT_MS,
   ACTION_TIMEOUT_MS,
@@ -87,7 +88,8 @@ async function probePresent(page, probeSpec, inputs, timeoutMs) {
   return pollPositive(async () => {
     for (const locator of candidates) {
       try {
-        if ((await locator.count()) > 0) return true;
+        const n = await countOn(locator);
+        if (n !== EVAL_TIMED_OUT && n > 0) return true;
       } catch (_) {}
     }
     return false;
@@ -133,7 +135,8 @@ async function _ensureChoiceMenuOpen(page, choice, option) {
   const opener = String((choice && choice.opener_selector) || "").trim();
   if (!opener || !option || !option.selector) return;
   try {
-    if (await page.locator(option.selector).count()) return; // already open
+    const n = await countOn(page.locator(option.selector));
+    if (n !== EVAL_TIMED_OUT && n > 0) return; // already open
     await page.locator(opener).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
     await page.locator(option.selector).first()
       .waitFor({ state: "attached", timeout: CHOICE_MENU_OPEN_TIMEOUT_MS });
@@ -350,7 +353,7 @@ const HANDLERS = {
     } else {
       const deltaX = Number(step.delta_x) || 0;
       const deltaY = Number(step.delta_y) || 0;
-      await page.evaluate(pageScripts.scrollBy, [deltaX, deltaY]);
+      await evalOn(page, pageScripts.scrollBy, [deltaX, deltaY]);
     }
   },
 
@@ -658,7 +661,8 @@ const HANDLERS = {
       if (filePaths.length > 1) {
         // Unknown (detached, cross-origin, evaluate blocked) stays permissive: let
         // setInputFiles have its say rather than blocking an upload on a failed probe.
-        const acceptsMultiple = await locator.evaluate(el => el.multiple === true).catch(() => true);
+        const _acceptsResult = await evalOn(locator, el => el.multiple === true).catch(() => true);
+        const acceptsMultiple = _acceptsResult === EVAL_TIMED_OUT ? true : _acceptsResult;
         if (!acceptsMultiple) {
           throw Object.assign(new Error(
             `this upload control accepts only one file, but ${filePaths.length} files were given ` +

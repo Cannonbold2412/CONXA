@@ -732,7 +732,7 @@ async function _handleTool(name, args, extra) {
     const trigger = args._trigger === "scheduled" ? "scheduled" : "chat";
     const runs = name === "execute_sequence"
       ? (Array.isArray(args.skills) ? args.skills : [])
-      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides, review_results: args.review_results }];
+      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides, review_results: args.review_results, dry_run: args.dry_run }];
 
     if (runs.length === 0) return err("No skills provided.");
 
@@ -844,6 +844,7 @@ async function _handleTool(name, args, extra) {
         // never run through applyStepOverrides — an ai_review step carries no selector for
         // applyStepOverrides to inject, only a structured answer bound into `inputs`.
         reviewResults: (run.review_results && typeof run.review_results === "object") ? run.review_results : {},
+        dryRun: run.dry_run === true,
       });
     }
 
@@ -962,6 +963,14 @@ async function _handleTool(name, args, extra) {
     const _runTracker = _tracker.forRun(_runId, { uid: INSTALL_ID, wid: "" });
     const _wfStartAt  = Date.now();
     let   _totalRecovered = 0;
+    // EXEC-36/BUILD-28(a): drift/environment-mismatch warnings collected across every skill in
+    // this run (execute_sequence can chain several), surfaced on both the success and failure
+    // paths below — deduped so a warning that would repeat identically per-skill (a shared
+    // pack-level environment mismatch) only appears once.
+    const _allWarnings = [];
+    // PROD-3-DRYRUN: every destructive step skipped (resolved but never acted on) across every
+    // skill in this run, so a dry-run's response can name exactly what it withheld.
+    const _dryRunSkipped = [];
     if (_overrideAppliedCount) _runTracker.emit("override_applied", { n: _overrideAppliedCount });
 
     // Signal agent-mediated recovery retry (Tier 3/4) when resuming mid-plan.
@@ -1392,7 +1401,7 @@ async function _handleTool(name, args, extra) {
       // (_detachContextListeners itself is declared above, outside the try block — see comment there.)
 
       for (let si = 0; si < resolved.length; si++) {
-        const { entry, steps, inputs, resumeFrom } = resolved[si];
+        const { entry, steps, inputs, resumeFrom, dryRun } = resolved[si];
         const startAt = si === 0 ? resumeFrom : 0;
         // Backs a compiled bulk-upload step's {{downloaded_files_dir}} placeholder (see
         // conxa_compile/compiler/upload_binding.py's _BindingState) — resolveUploadPaths already
@@ -1409,11 +1418,19 @@ async function _handleTool(name, args, extra) {
             downloadQueue: _downloadQueue,
             dialogQueue: _dialogQueue,
             structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
+            environmentFingerprint: entry.manifest && entry.manifest.environment,
             watch,
             runId: _runId,
             dataDir: CONXA_DATA_DIR,
+            dryRun,
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
+          if (result && Array.isArray(result.warnings)) {
+            for (const w of result.warnings) if (!_allWarnings.includes(w)) _allWarnings.push(w);
+          }
+          if (result && Array.isArray(result.dryRunSkipped) && result.dryRunSkipped.length) {
+            _dryRunSkipped.push(...result.dryRunSkipped.map(s => ({ ...s, slug: entry.slug })));
+          }
           // Times the LAST step, which onStep's start-only markers can never do on their own —
           // and localizes where post-loop teardown (below) begins.
           _phase(`steps_complete:${steps.length}`);
@@ -1515,7 +1532,15 @@ async function _handleTool(name, args, extra) {
       const downloadNote = _downloads.length
         ? `\nDownloaded files:\n${_downloads.map(p => `  ${p}`).join("\n")}`
         : "";
-      const content = [{ type: "text", text: `Done. URL: ${url}${downloadNote}\n(run_id: ${_runId})` }];
+      const warningNote = _allWarnings.length
+        ? `\n\nWarning:\n${_allWarnings.map(w => `  ${w}`).join("\n")}`
+        : "";
+      const dryRunNote = _dryRunSkipped.length
+        ? `\n\nDry run: ${_dryRunSkipped.length} committing step(s) skipped (resolved but never acted on):\n` +
+          _dryRunSkipped.map(s => `  - ${s.intent || `step ${s.index + 1}`}`).join("\n")
+        : "";
+      const doneVerb = _dryRunSkipped.length ? "Dry run complete" : "Done";
+      const content = [{ type: "text", text: `${doneVerb}. URL: ${url}${downloadNote}${warningNote}${dryRunNote}\n(run_id: ${_runId})` }];
       if (shot) content.push({ type: "image", data: shot.toString("base64"), mimeType: "image/png" });
       return { content };
 
@@ -1640,6 +1665,29 @@ async function _handleTool(name, args, extra) {
         ? await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null, exec)
         : err(runErr.message);
       if (failResp && Array.isArray(failResp.content)) {
+        // EXEC-36/BUILD-28(a) — same warnings a passing run would have surfaced, so a run that
+        // failed BECAUSE of a drift/environment mismatch says so instead of reading like an
+        // ordinary selector/timing failure. _allWarnings covers earlier skills in a sequence;
+        // runErr.warnings (set by stepFailure) covers this skill's own run up to the failure.
+        const _runWarnings = _allWarnings.slice();
+        if (Array.isArray(runErr.warnings)) {
+          for (const w of runErr.warnings) if (!_runWarnings.includes(w)) _runWarnings.push(w);
+        }
+        if (_runWarnings.length) {
+          failResp.content.push({ type: "text", text: `Warning:\n${_runWarnings.map(w => `  ${w}`).join("\n")}` });
+        }
+        // PROD-3-DRYRUN layer 5 — a destructive step may already have landed
+        // (actionMayHaveTakenEffect, EXEC-24's signal) before this run died. OFFER the linked
+        // compensation skill as a next step; never run it automatically — an unattended
+        // compensating write after an unknown failure is a second uncontrolled action.
+        const _compEntry = runErr.fromEntry || primary.entry;
+        const _compSlug = runErr.actionMayHaveTakenEffect && _compEntry && _compEntry.manifest
+          ? String(_compEntry.manifest.compensation_skill || "").trim() : "";
+        if (_compSlug) {
+          failResp.content.push({ type: "text", text:
+            `This may have already taken effect before the failure. A cleanup workflow is available: ` +
+            `call execute_skill with skill: "${_compSlug}" to undo it.` });
+        }
         failResp.content.push({ type: "text", text: `(run_id: ${_runId})` });
       }
 
