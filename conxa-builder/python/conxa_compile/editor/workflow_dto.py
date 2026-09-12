@@ -486,6 +486,47 @@ def _branch_info(
     return summary, []
 
 
+def _for_each_info(
+    skill_id: str,
+    step: dict[str, Any],
+    step_index: int,
+    policy: dict[str, Any],
+    asset_base_url: str,
+    source_session_id: str,
+) -> tuple[dict[str, Any] | None, list[StepEditorDTO]]:
+    """Read-only projection of step["for_each"] (EXEC-38 iteration primitive). Same
+    path-addressed-nested-body pattern as _branch_info's if_present case — the body is
+    editable only through structural RPCs / path-addressed patches, never through this
+    summary. No dedicated editor control exists yet (see TODO.md); this is visibility only,
+    same as every other field the 2026-08 audit flagged as hidden."""
+    kind = normalize_action_kind(action_name(step))
+    if kind != "for_each":
+        return None, []
+    for_each = step.get("for_each") if isinstance(step.get("for_each"), dict) else {}
+    rows = for_each.get("rows") if isinstance(for_each.get("rows"), dict) else {}
+    nested_raw = [s for s in (for_each.get("steps") or []) if isinstance(s, dict)]
+    for_each_steps = [
+        step_to_dto(
+            skill_id,
+            dict(nested),
+            j,
+            policy,
+            asset_base_url,
+            source_session_id,
+            dto_id=f"{skill_id}:{step_index}.for_each.steps[{j}]",
+        )
+        for j, nested in enumerate(nested_raw)
+    ]
+    summary = {
+        "container_selector": str(rows.get("container_selector") or "").strip(),
+        "as": str(for_each.get("as") or "row").strip() or "row",
+        "max_iterations": for_each.get("max_iterations"),
+        "on_row_error": str(for_each.get("on_row_error") or "stop").strip() or "stop",
+        "step_count": len(for_each_steps),
+    }
+    return summary, for_each_steps
+
+
 def step_to_dto(
     skill_id: str,
     step: dict[str, Any],
@@ -555,6 +596,9 @@ def step_to_dto(
     branch_summary, branch_steps = _branch_info(
         skill_id, step, step_index, policy, asset_base_url, source_session_id
     )
+    for_each_summary, for_each_steps = _for_each_info(
+        skill_id, step, step_index, policy, asset_base_url, source_session_id
+    )
 
     return StepEditorDTO(
         id=dto_id or f"{skill_id}:{step_index}",
@@ -606,6 +650,8 @@ def step_to_dto(
         entity_binding=_entity_binding_view(step),
         branch_summary=branch_summary,
         branch_steps=branch_steps,
+        for_each_summary=for_each_summary,
+        for_each_steps=for_each_steps,
         optional_hint=step.get("optional_hint") if isinstance(step.get("optional_hint"), dict) else None,
     )
 

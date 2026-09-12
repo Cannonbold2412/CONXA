@@ -65,6 +65,11 @@ ACTION_KIND_ORDER = (
     "if_present",
     "try_dismiss",
     "wait_for_one_of",
+    # EXEC-38: iteration primitive — "for each row matching X, do steps A-C." Not a marker
+    # (carries a real rows/as/max_iterations/steps body, same "real probe, not a bookkeeping
+    # event" reasoning as the branch primitives above). Authored the same way branch bodies are
+    # — wrap N existing steps into a body — one level deep only.
+    "for_each",
 )
 
 MARKER_ACTIONS = frozenset(
@@ -111,6 +116,7 @@ INSERTABLE_ACTIONS = frozenset(
         "if_present",
         "try_dismiss",
         "wait_for_one_of",
+        "for_each",
     }
 )
 
@@ -196,6 +202,7 @@ ACTION_LABELS = {
     "if_present": "If present",
     "try_dismiss": "Try dismiss",
     "wait_for_one_of": "Wait for one of",
+    "for_each": "For each row",
 }
 
 CATEGORIES = {
@@ -227,6 +234,7 @@ CATEGORIES = {
     "if_present": "conditional",
     "try_dismiss": "conditional",
     "wait_for_one_of": "conditional",
+    "for_each": "iteration",
 }
 
 VALUE_LABELS = {

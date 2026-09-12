@@ -44,6 +44,13 @@ class SkillMeta(BaseModel):
     # the recording page never finished loading — the runtime treats an empty dict as "unknown,"
     # never as a mismatch. Browser-DOM specific, not part of the executor-independent contract.
     environment: dict[str, Any] = Field(default_factory=dict)
+    # [contract] PROD-3-DRYRUN layer 5: the slug of a sibling skill in the same pack the runtime
+    # should OFFER (never auto-run) after a mid-run failure that happened after a destructive
+    # step already executed — e.g. "cancel the draft invoice" as the companion to "create
+    # invoice." Empty when no compensation workflow is linked. Set in the Human Edit editor;
+    # surfaced by failure_response.js as a named next step, never executed automatically — an
+    # unattended compensating write after an unknown failure is a second uncontrolled action.
+    compensation_skill: str = ""
     # [contract] Every hostname the recording actually navigated to (main frame + any tab
     # opened during the recording), lowercase, deduped. Used to compute a workflow's
     # required_apps (conxa_core.storage.group_store.apps_for_workflow) from everywhere the
@@ -284,6 +291,20 @@ class SkillStep(BaseModel):
     # [mixed] PROD-3: entity binding — see EntityBinding. None when the compiler found no
     # repeating ancestor container for this step's target (nothing to bind against).
     entity_binding: EntityBinding | None = None
+
+    # [mixed] EXEC-38: the "for each row, do steps A-C" iteration primitive. Empty for ordinary
+    # steps. Holds `rows` ({container_selector} — the [executor] half: every sibling row
+    # matching this selector is a candidate iteration), `as` (the {{name}} body steps read the
+    # current row's identifier/index under — {{as}}_id / {{as}}_index), `max_iterations`
+    # (REQUIRED at runtime — see runtime/app/run.js; a loop with no cap refuses to load),
+    # `on_row_error` ("stop" default | "continue"), and `steps` (the loop body, same nested
+    # saved-step-dict shape `branch` uses; skill_package_builder_saved_skill.py serializes it the
+    # same way). Author-first, not inferred from a recording: authored in the Human Edit editor
+    # by wrapping N existing steps into a body, one level deep only (same constraint as
+    # `branch`). Entity-bound to `{{<as>_id}}` inside the body is what gives recovery the same
+    # "never substitute a different row" guarantee entity_binding already provides elsewhere —
+    # see EntityBinding and runtime/app/resolution.js::entityRoots.
+    for_each: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowIntentStep(BaseModel):

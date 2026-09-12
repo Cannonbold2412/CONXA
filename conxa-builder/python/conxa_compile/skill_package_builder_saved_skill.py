@@ -441,6 +441,38 @@ def _saved_branch_step(step: dict[str, Any], action: str) -> dict[str, Any] | No
     return None
 
 
+def _saved_for_each_step(step: dict[str, Any]) -> dict[str, Any] | None:
+    """EXEC-38 iteration primitive — reads SkillStep.for_each (rows/as/max_iterations/
+    on_row_error/steps) and recursively serializes the body the same way
+    _saved_branch_step does, into the flat top-level shape run.js's for_each handler
+    consumes. `max_iterations` is REQUIRED — the runtime refuses an uncapped loop at
+    execute time, but there's no reason to ship a pack that can't possibly run; drop the
+    step here instead (same "return None => step vanishes from execution.json" contract
+    every other action uses for an unfillable step)."""
+    for_each = step.get("for_each") if isinstance(step.get("for_each"), dict) else {}
+    rows = for_each.get("rows") if isinstance(for_each.get("rows"), dict) else {}
+    container_selector = str(rows.get("container_selector") or "").strip()
+    nested = _saved_branch_steps_list(for_each.get("steps"))
+    if not container_selector or not nested:
+        return None
+    try:
+        max_iterations = int(for_each.get("max_iterations"))
+    except (TypeError, ValueError):
+        max_iterations = 0
+    if max_iterations <= 0:
+        return None
+    out: dict[str, Any] = {
+        "type": "for_each",
+        "rows": {"container_selector": container_selector},
+        "as": str(for_each.get("as") or "row").strip() or "row",
+        "max_iterations": max_iterations,
+        "steps": nested,
+    }
+    if for_each.get("on_row_error") == "continue":
+        out["on_row_error"] = "continue"
+    return _copy_saved_common(step, out)
+
+
 def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None:
     action = normalize_action_kind(_step_action_name(step))
     if not is_supported_action(action):
@@ -581,6 +613,9 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
 
     if action in {"if_present", "try_dismiss", "wait_for_one_of"}:
         return _saved_branch_step(step, action)
+
+    if action == "for_each":
+        return _saved_for_each_step(step)
 
     return None
 
@@ -1095,6 +1130,23 @@ def _build_workflow_from_saved_skill(
     if isinstance(structural_fp, dict) and structural_fp.get("landmarks"):
         (skill_dir / "structural_fingerprint.json").write_text(
             dumps_safe(structural_fp, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    # EXEC-36: same carry-through pattern as structural_fingerprint above — the recording
+    # environment rides on SkillMeta and would otherwise be dropped by _write_skill_packs_format.
+    environment = meta.get("environment")
+    if isinstance(environment, dict) and environment:
+        (skill_dir / "environment.json").write_text(
+            dumps_safe(environment, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    # PROD-3-DRYRUN layer 5: same carry-through pattern — the compensation-workflow link (set in
+    # the Human Edit editor) rides on SkillMeta and would otherwise be dropped.
+    compensation_skill = str(meta.get("compensation_skill") or "").strip()
+    if compensation_skill:
+        (skill_dir / "compensation_skill.json").write_text(
+            dumps_safe({"compensation_skill": compensation_skill}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
         )
 
 

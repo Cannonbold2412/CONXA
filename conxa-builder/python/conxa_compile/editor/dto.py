@@ -125,6 +125,14 @@ class StepEditorDTO(BaseModel):
     # Nested body steps projected the same way as top-level steps, addressed by a path-based id
     # (e.g. "{skill_id}:{step_index}.branch.steps[1]") for patch_gate path-addressed edits.
     branch_steps: list["StepEditorDTO"] = Field(default_factory=list)
+    # EXEC-38: {rows, as, max_iterations, on_row_error, step_count} when this step is a
+    # for_each iteration primitive; None for ordinary steps. Read-only visibility only — no
+    # dedicated editor control exists yet (see TODO.md's for_each editor-UI follow-up); a
+    # vendor edits these fields via the generic patch mechanism, same as Strict Mode.
+    for_each_summary: dict[str, Any] | None = None
+    # Nested body steps, same path-addressed projection as branch_steps
+    # ("{skill_id}:{step_index}.for_each.steps[1]").
+    for_each_steps: list["StepEditorDTO"] = Field(default_factory=list)
 
 
 class SuggestionItem(BaseModel):

@@ -172,6 +172,29 @@ def _write_skill_packs_format(
             except (OSError, json.JSONDecodeError):
                 structural_fp = {}
 
+        # EXEC-36 (optional) — recording environment for the runtime's replay-time environment
+        # mismatch warning. Same read-from-disk pattern as structural_fingerprint above.
+        environment: dict[str, Any] = {}
+        env_src = src_dir / "environment.json"
+        if env_src.is_file():
+            try:
+                loaded_env = json.loads(env_src.read_text(encoding="utf-8"))
+                if isinstance(loaded_env, dict):
+                    environment = loaded_env
+            except (OSError, json.JSONDecodeError):
+                environment = {}
+
+        # PROD-3-DRYRUN layer 5 (optional) — compensation-workflow link.
+        compensation_skill = ""
+        comp_src = src_dir / "compensation_skill.json"
+        if comp_src.is_file():
+            try:
+                loaded_comp = json.loads(comp_src.read_text(encoding="utf-8"))
+                if isinstance(loaded_comp, dict):
+                    compensation_skill = str(loaded_comp.get("compensation_skill") or "").strip()
+            except (OSError, json.JSONDecodeError):
+                compensation_skill = ""
+
         manifest = {
             "slug":             slug,
             "name":             skill_name,
@@ -219,6 +242,8 @@ def _write_skill_packs_format(
             "required_apps":    (skill_required_apps or {}).get(slug, []),
             "inputs_required":  inputs_required,
             "structural_fingerprint": structural_fp,
+            "environment":      environment,
+            "compensation_skill": compensation_skill,
             "checksum":         checksums,
         }
         # PROD-3 "Strict Mode": a per-skill recovery-tier ceiling, honoured by the runtime as

@@ -65,3 +65,50 @@ def test_non_destructive_step_is_never_gated():
 
 def test_missing_skill_is_a_no_op():
     _call(None)  # nothing compiled yet — cmd_publish_skill_pack's own earlier check handles this
+
+
+# ─── EXEC-38: for_each loop bodies must be recursed into, not just top-level steps ────────────
+
+def _for_each_step(body_steps: list[dict]) -> dict:
+    return {
+        "action": {"action": "wait"},
+        "for_each": {
+            "rows": {"container_selector": "table#invoices tr"},
+            "as": "row",
+            "max_iterations": 50,
+            "steps": body_steps,
+        },
+    }
+
+
+def test_unconfirmed_binding_on_a_destructive_step_inside_a_loop_body_blocks_publish():
+    skill = _skill([_for_each_step([_delete_step({
+        "container_selector": "table#invoices tr", "identifier": "{{row_id}}",
+        "source": "input", "confirmed": False,
+    })])])
+    with pytest.raises(_CommandError) as exc_info:
+        _call(skill)
+    assert exc_info.value.code == "irreversible_step_requires_confirmed_entity_binding"
+    assert "loop body" in exc_info.value.message
+
+
+def test_confirmed_binding_on_a_destructive_step_inside_a_loop_body_allows_publish():
+    skill = _skill([_for_each_step([_delete_step({
+        "container_selector": "table#invoices tr", "identifier": "{{row_id}}",
+        "source": "input", "confirmed": True,
+    })])])
+    _call(skill)  # must not raise
+
+
+def test_non_destructive_step_inside_a_loop_body_is_never_gated():
+    skill = _skill([_for_each_step([{
+        "action": {"action": "click"},
+        "semantic": {"final_intent": "expand_row"},
+        "entity_binding": {"container_selector": "table#invoices tr", "identifier": "{{row_id}}", "source": "input", "confirmed": False},
+    }])])
+    _call(skill)  # not destructive — irrelevant even with an unconfirmed binding present
+
+
+def test_a_for_each_step_with_no_body_is_a_no_op():
+    skill = _skill([_for_each_step([])])
+    _call(skill)

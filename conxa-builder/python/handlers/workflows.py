@@ -185,9 +185,20 @@ class WorkflowsMixin:
             return
         steps = (skill.get("skills") or [{}])[0].get("steps") or []
         policy = get_policy_bundle().data
+        # EXEC-38: recurse into for_each loop bodies — a destructive step buried inside a loop
+        # is exactly the case this gate exists to catch (the row it targets changes every
+        # iteration), so a top-level-only walk would let it reach a customer install unconfirmed.
+        flat: list[tuple[str, dict]] = []
         for i, step in enumerate(steps):
             if not isinstance(step, dict):
                 continue
+            flat.append((f"step {i + 1}", step))
+            body = ((step.get("for_each") or {}).get("steps")) if isinstance(step.get("for_each"), dict) else None
+            if isinstance(body, list):
+                for j, sub in enumerate(body):
+                    if isinstance(sub, dict):
+                        flat.append((f"step {i + 1}'s loop body, step {j + 1}", sub))
+        for label, step in flat:
             view = skill_step_for_destructive_check(step)
             if not destructive_compiler_step(view, policy):
                 continue
@@ -195,7 +206,7 @@ class WorkflowsMixin:
             if eb.get("container_selector") and not eb.get("confirmed"):
                 raise _CommandError(
                     "irreversible_step_requires_confirmed_entity_binding",
-                    f"Skill {skill_slug!r} step {i + 1} is a destructive action inside a "
+                    f"Skill {skill_slug!r} {label} is a destructive action inside a "
                     "repeating row/list, but its entity binding was never confirmed in the "
                     "editor. Confirm the binding before publishing.",
                 )

@@ -183,6 +183,42 @@ def _validate_branch_patch(kind: str, raw: Any) -> None:
             raise ValueError("branch_required_must_be_boolean")
 
 
+def _validate_for_each_patch(raw: Any) -> None:
+    """Validate a patch to step["for_each"] (EXEC-38). Nested body steps are NOT edited through
+    this key — same reasoning as `_validate_branch_patch`'s if_present case — so a `steps`
+    key here is rejected to avoid a blind deep-merge clobbering edits made through the
+    path-addressed flow (`for_each.steps[j]`)."""
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise ValueError("for_each_must_be_object")
+    if "steps" in raw:
+        raise ValueError("for_each_steps_not_patchable_here")
+    rows = raw.get("rows")
+    if rows is not None:
+        if not isinstance(rows, dict):
+            raise ValueError("for_each_rows_must_be_object")
+        selector = str(rows.get("container_selector") or "").strip()
+        if selector and not selector_passes_filters(selector):
+            raise ValueError("for_each_rows_container_selector_failed_quality_gates")
+    as_name = raw.get("as")
+    if as_name is not None and not str(as_name).strip():
+        raise ValueError("for_each_as_must_be_non_empty_string")
+    if "max_iterations" in raw:
+        try:
+            max_iterations = int(raw.get("max_iterations"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("for_each_max_iterations_must_be_integer") from exc
+        # A generous sanity ceiling, not the enforced cap — the runtime's own
+        # CONXA_MAX_LOOP_ITERATIONS (default 100) is what actually bounds a run; this just
+        # rejects an obviously-wrong value (0, negative, or absurdly large) at edit time.
+        if max_iterations <= 0 or max_iterations > 1000:
+            raise ValueError("for_each_max_iterations_out_of_range")
+    on_row_error = raw.get("on_row_error")
+    if on_row_error is not None and on_row_error not in ("stop", "continue"):
+        raise ValueError("for_each_on_row_error_invalid")
+
+
 def validate_editor_patch(
     step: dict[str, Any],
     patch: dict[str, Any],
@@ -337,6 +373,14 @@ def validate_editor_patch(
             raise ValueError("branch_step_allows_only_target_branch_intent_validation_recovery_frame")
         if "branch" in patch:
             _validate_branch_patch(act, patch.get("branch"))
+    if act == "for_each":
+        invalid_keys = sorted(
+            set(patch) - {"intent", "semantic_description", "action", "frame", "for_each"}
+        )
+        if invalid_keys:
+            raise ValueError("for_each_step_allows_only_intent_for_each_frame")
+        if "for_each" in patch:
+            _validate_for_each_patch(patch.get("for_each"))
     if act != "scroll":
         eff = get_effective_intent_from_skill_step(merged) or str(merged.get("intent") or "").strip()
         if not eff.strip():

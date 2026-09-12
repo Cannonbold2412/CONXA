@@ -284,6 +284,7 @@ def _new_manual_step(action_kind: str, page_url: str) -> dict[str, Any]:
         "if_present": "dismiss_if_present",
         "try_dismiss": "try_dismiss_interstitial",
         "wait_for_one_of": "wait_for_one_of_states",
+        "for_each": "process_each_row",
     }.get(kind, f"{kind}_target")
     url = page_url if page_url.startswith(("http://", "https://")) else ""
     action: dict[str, Any] = {"action": kind}
@@ -344,6 +345,18 @@ def _new_manual_step(action_kind: str, page_url: str) -> dict[str, Any]:
             step["branch"] = {"candidates": [], "timeout_ms": 3000, "fallback_escape": True}
         else:  # wait_for_one_of
             step["branch"] = {"options": [], "timeout_ms": 5000, "required": True}
+    if kind == "for_each":
+        # EXEC-38: same best-effort-scaffold pattern as the branch primitives above, but
+        # max_iterations is REQUIRED (the runtime refuses to run an uncapped loop) — scaffold a
+        # conservative default rather than leaving it unset, so a freshly-inserted step is at
+        # least loadable while the author fills in rows.container_selector and a body.
+        step["for_each"] = {
+            "rows": {"container_selector": ""},
+            "as": "row",
+            "max_iterations": 50,
+            "on_row_error": "stop",
+            "steps": [],
+        }
     return step
 
 
