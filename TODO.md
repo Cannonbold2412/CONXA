@@ -43,16 +43,70 @@ Counts below are computed straight from the section headers in this file (unique
 |---|---|---|---|
 | P0 — Critical / Time-Sensitive | 11 | 21 | 10 |
 | P1 — Blocking / Foundational | 5 | 8 | 3 |
-| P2 — High Value, Do Soon (incl. Discovered Items) | 35 | 40 | 5 |
+| P2 — High Value, Do Soon (incl. Discovered Items) | 39 | 44 | 5 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 23 | 23 | 0 |
 | P4 — Low Urgency, Opportunistic | 31 | 39 | 8 |
-| **Total** | **105** | **130** | **25** |
+| **Total** | **109** | **134** | **25** |
 
 ---
 
 ## P0 — Critical / Time-Sensitive (10 remaining / 20 total)
 
 **Added 2026-08-09, direct from the founders — supersedes every previously-tracked priority in this file.** The four items below are the reason the rest of this backlog shifted down one tier (old P0 → P1, old P1 → P2, old P2 → P3, old P3 → P4); no other item content changed, only the section labels. See the "Fourth pass" note at the bottom of this file.
+
+### ~~BUILD-29~~ — `workflow_review` has no prompt and isn't registered as a vision task: every compile silently degrades to rules-only — **Resolved 2026-09-12**
+
+Found 2026-09-12 while reviewing the compiler end to end. BUILD-26 merged `workflow_intent` +
+`workflow_semantics` into one multimodal `workflow_review` call, but the merge stopped at the
+caller: `conxa_core/llm/client.py::_openai_messages_for_task` had no branch for the task at all
+(fell through to a promptless default that serialized every step's `image_base64` as raw text),
+and the task was missing from the vision-task set, so it routed to the text model.
+
+**Correction to the original write-up:** there were **two** copies of the vision-task set, not
+three — `conxa_compile/llm/client.py` imports `_is_vision_task` from `conxa_core` rather than
+keeping its own copy.
+
+- **Resolution:** added the `workflow_review` branch to `_openai_messages_for_task` (merged
+  system prompt covering both the intent-graph and second-opinion contracts; per-step
+  `image_url` content blocks, not inlined base64), a `max_tokens` budget, and collapsed the two
+  vision-task sets into one shared `VISION_TASKS` constant in `conxa_core.llm.client`, imported
+  by the router as `_VISION_TASK_NAMES`. Added an image byte-budget trim in
+  `compiler/build.py::_trim_review_images` (drops highest-confidence steps' images first) and
+  excluded images from the response cache key so a differently-trimmed request can't collide
+  with another's cached answer. New test:
+  `conxa-cloud/tests/test_workflow_review_llm_task.py` (9 cases, all failing before the fix).
+  Full compile suite (`test_second_opinion.py`, `test_llm_router_modality.py`, and the rest of
+  `conxa-cloud/tests`) passes unchanged.
+
+### ~~BUILD-30~~ — `handler_hints.virtualized_container` is declared, never populated, never read — **Resolved 2026-09-12**
+
+Found 2026-09-12. The field existed in `conxa_core/models/skill_spec.py:181` and was copied
+through `compiler/date_picker.py` and surfaced in the editor DTO, but no compiler pass ever set
+it and no runtime module ever read it — so a virtualized grid's off-screen row failed
+identically to genuine breakage, and (when an entity binding was present) skipped the recovery
+cascade entirely.
+
+**Correction to the original write-up:** the fix text claimed "the recorder's ancestor chain
+already carries the scrollable ancestor's overflow/height" — it does not.
+`bridge.js::captureAncestors` records only `{tag, id, classes, outer_html}`; detection had to be
+inferred from `outer_html`, not read directly.
+
+- **Resolution:** `compiler/virtualized.py::detect_virtualized_container` (new, sibling of
+  `entity_binding.py`) walks the recorded ancestor chain for a known virtualization-library
+  class marker, an inline overflow+fixed-height scroll style, or (corroborating only, never
+  sufficient alone — `outer_html` is truncated at 2000 chars, undercounting rendered rows) an
+  `aria-rowcount`/`aria-setsize` overcount; wired into `compiler/build.py::_build_step`. At
+  runtime, `resolution.js::maybeScrollForVirtualization` scrolls the container (compiled hint →
+  entity-binding container → dominant scrollable element for a compiled choice/dropdown control
+  only, never for an ordinary miss with no evidence) and re-gathers before either
+  `entity_not_found` or `resolve_miss` becomes terminal — no second retry loop, it re-enters
+  `locators.js::withLocator`'s existing PRIMARY loop, whose deadline is extended once (bounded,
+  env-tunable, `CONXA_VIRTUAL_SCROLL=0` disables it) only when a scroll grounded in real
+  evidence ran and nothing was ever acted on. New tests: 10 runtime unit tests
+  (`test_virtual_scroll.js`) plus 6 Python detection tests
+  (`test_virtualized_container.py`), all passing; the full 658-test runtime suite and full
+  `conxa-cloud` suite pass unchanged. The CI execution gate (`gate_replay.js`) needs a packed
+  host exe and runs in CI, not locally verified in this pass.
 
 ### RECOV-2 — Deliver recovery artifacts to customer machines (phases 4–6 of the recovery redesign)
 
@@ -362,12 +416,12 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Description:** WF-1 Leg F (`the-internet.herokuapp.com/javascript_alerts`: Alert/Confirm/Prompt accept, prompt text echoed) recorded cleanly but hung on replay in Studio Run Test — the browser sat on an open native alert for over two minutes before the run finally errored with a confusing "Target page, context or browser has been closed" (the user had closed the window manually) rather than anything naming a dialog.
 - **Found via:** live repro against session `7fb53d62` / run `r_mtm1ttc8_ilx68` in `~/.conxa-build-studio-dev`, 2026-09-04.
 
-### EXEC-34 — Route every remaining `runtime/app/` `.evaluate()`/`.count()` call through the page_eval.js deadline seam, add a CI guard
+### ~~EXEC-34~~ — Route every remaining `runtime/app/` `.evaluate()`/`.count()` call through the page_eval.js deadline seam, add a CI guard — **Resolved 2026-09-12**
 - **Category:** Execution & Recovery
 - **Description:** EXEC-29's fix converted the two highest-risk unbounded `page.evaluate()` call sites (the primary-resolution gate check that runs on every action, and the failure-response inventory/overlay probes) to route through the new `runtime/app/page_eval.js` deadline seam. The remaining raw `.evaluate()`/`.count()` sites in `runtime/app/` (`drift.js`, `dismiss_patterns.js`, `recovery_park.js`, `handlers.js`'s scroll/multiple-select checks, `resolve_adapter.js`, and a couple more in `resolution.js`) are lower-traffic but share the same theoretical hazard — a blocked renderer (a `beforeunload` prompt, a throttled background tab) leaves the call hanging with no way for the run's own watchdog to interrupt it.
 - **Why required:** consistency — a partial conversion means the hazard this fix exists to close can still be hit through an unconverted path, and a future contributor adding a new `.evaluate()` call has no signal telling them to use the seam instead of a bare call.
+- **Resolution:** added `countOn()` to `page_eval.js` (mirrors `evalOn`, same deadline/`EVAL_TIMED_OUT` sentinel, for Locator `.count()`). Converted every remaining bare call site: `dismiss_patterns.js`, `drift.js`, `failure_response.js` (both `getScrollY` sites), `handlers.js` (menu-open probe, scroll, upload-multiple probe), `recovery_park.js`, `resolution.js` (frame-existence check, entity-binding row count, descriptor gathering, DOM inventory), `assertions.js` (`anyRootHasMatch`, the hot VERIFY presence check). Every caller checks `=== EVAL_TIMED_OUT` explicitly and fails closed (a timed-out entity-binding count is treated as 0 matches, never as 1 — PROD-3's uniqueness gate must never guess on a hung call). New guard `runtime/app/check_page_eval_seam.js` (source scan, same shape as `check_recovery_purity.js`) fails the build if a bare `.evaluate(`/`.count(` appears in `runtime/app/*.js` outside `page_eval.js`/`page_scripts.js`, with a narrow allow-list for the two non-Playwright name collisions (`runRegistry.count()`, `policyGate.evaluate()`). Wired into `build-runtime-app.yml` alongside the existing guards; both files added to `check_app_layer_files.js`'s `EXCLUDE` set (CI-tool-only, like `check_recovery_purity.js`). Tests: `runtime/test/unit/test_page_eval_seam.js`.
 - **Dependencies:** `runtime/app/page_eval.js` (EXEC-29).
-- **Suggested order:** low priority — the two highest-value sites are already fixed; this is completeness + guard-rail work.
 - **Complexity:** S–M: mechanical for the call-site conversions, plus a small guard test (in the style of the existing recovery-purity/`app-layer-files.json` guards) asserting no bare `.evaluate(` appears in `runtime/app/` outside `page_eval.js`.
 - **Success criteria:** every `.evaluate()`/`.count()` call in `runtime/app/` routes through `evalOn`; a guard test fails if a new bare call is added.
 
@@ -759,20 +813,21 @@ the new item below this one.
 - **Complexity:** L — the individual mechanisms (danger labeling, entity binding, dry-run, compensation workflows) are each moderate, but the combination touches the compiler, the recorder, and the runtime.
 - **Success criteria:** a skill with a destructive final step cannot act on the wrong record even when recovery is invoked; a per-skill safety score is tracked and shown; a dry-run mode exists that never performs the final irreversible action.
 
-### PROD-3-DRYRUN — Stage-then-commit ordering + true dry-run mode
+### ~~PROD-3-DRYRUN~~ — Stage-then-commit ordering + true dry-run mode — **Resolved 2026-09-12**
 - **Category:** Product Strategy & Business-Risk Mitigation
 - **Description:** PROD-3 layers 4–5, deferred from the 2026-08-29 safety-core pass. (4) The compiler warns when an irreversible step sits before the last step of a workflow ("stage-then-commit" — record so the one irreversible action is last, and earlier failures leave only harmless drafts); a true dry-run mode runs every step except the final committing action. (5) Compensation ("cleanup") workflows — a small companion recording (e.g. "cancel the draft invoice") the runtime can offer when a run dies mid-way, since true undo is impossible across systems.
+- **Resolution:** all three mechanisms shipped. **(4a) Dry-run:** `execute_skill`/`execute_sequence` gained `dry_run: boolean`; `run.js`'s step loop resolves a `destructive === true` step (proving the target is findable) but never dispatches or verifies it — recorded in a returned `dryRunSkipped` list, named in the response text. Non-destructive steps run normally; only the one committing action is withheld. **(4b) Stage-then-commit lint:** new `compiler/commit_ordering.py::lint_commit_ordering()` — warns when an irreversible step is followed by another writing step (skipping trailing markers and read-only observation steps), stored under `compile_report["commit_ordering_warnings"]`. Advisory only, matching every other compiler lint — never blocks save/publish. **(5) Compensation workflows:** `SkillMeta.compensation_skill: str` links a sibling skill slug, carried through to `manifest.json`. On a failure where `actionMayHaveTakenEffect` is set, `server.js` names the linked skill as an available next step — offered, never auto-run. Tests: `runtime/test/unit/test_dry_run.js`, `conxa-cloud/tests/test_commit_ordering_lint.py`.
+- **Not built — no dedicated editor UI:** `compensation_skill` is settable today only via the generic step-patch/raw-JSON mechanism, the same gap `PROD-3-UI` already tracks for Strict Mode and entity-binding confirmation. A vendor cannot yet link a compensation workflow from the Human Edit or Publish pages. Also not built: before/after screenshots and the published per-skill safety score (both already tracked under `PROD-3-UI`).
 - **Why required:** Answer 12 (`research-analysis/conxa-critical-analysis.md`) names both as part of the same five-layer system; dry-run is also PROD-1's prerequisite for side-effect-free first-run calibration.
 - **Business value:** same as PROD-3 — completes the "provably safer than a human operator" pitch for finance/HR/payroll.
 - **Technical value:** dry-run needs a clean way to skip the final action (EXEC-1's conditional steps, already shipped, is the mechanism); compensation flows are "just another recording," reusing existing record/compile/publish machinery.
 - **Dependencies:** PROD-3's safety core (consequence classification, entity binding) — done; EXEC-1 (conditional steps) — done.
-- **Suggested order:** next after the safety core, before claiming the full Answer 12 pitch to finance/HR/payroll prospects.
 - **Complexity:** M — dry-run is a runtime execution-mode flag plus a compiler ordering lint; compensation flows are compiler/UI work (an explicit "this workflow has a cleanup companion" link), no new core algorithms.
-- **Success criteria:** a dry-run mode exists that never performs the final irreversible action; the compiler warns on an irreversible step that isn't last; a workflow can be linked to a compensation workflow and the runtime offers it after a mid-run failure.
+- **Success criteria:** a dry-run mode exists that never performs the final irreversible action (done); the compiler warns on an irreversible step that isn't last (done); a workflow can be linked to a compensation workflow and the runtime offers it after a mid-run failure (done — via raw meta edit; a dedicated editor control is `PROD-3-UI`'s remaining gap).
 
 ### PROD-3-UI — Studio UI for entity-binding confirmation, Strict Mode, and the safety score
 - **Category:** Product Strategy & Business-Risk Mitigation / Builder
-- **Description:** The safety-core mechanisms shipped 2026-08-29 have no dedicated editor UI yet: confirming a detected entity binding, or setting a workflow's Strict Mode ceiling, both work only through the generic step-patch mechanism / a `CONXA_STRICT_MODE_MAX_TIER` build-time env var — not a purpose-built control. Also open: publishing a measured per-skill safety score ("0 wrong actions in 12,400 runs") and before/after screenshots on every consequential step (Answer 12's evidence layer).
+- **Description:** The safety-core mechanisms shipped 2026-08-29 have no dedicated editor UI yet: confirming a detected entity binding, or setting a workflow's Strict Mode ceiling, both work only through the generic step-patch mechanism / a `CONXA_STRICT_MODE_MAX_TIER` build-time env var — not a purpose-built control. Also open: publishing a measured per-skill safety score ("0 wrong actions in 12,400 runs") and before/after screenshots on every consequential step (Answer 12's evidence layer). **Update (2026-09-12, PROD-3-DRYRUN):** same gap now also applies to `SkillMeta.compensation_skill` — the backend/runtime half (linking + offering it after a failure) is done, but linking one is patch-only, no editor control. **Update (2026-09-12, EXEC-38):** and to `for_each` loop bodies — tracked separately as `EXEC-38-UI` since it's a distinct, larger control (a `BranchBodyEditor.tsx` variant) rather than a form field, but the same underlying gap.
 - **Why required:** the backend/runtime guarantee already exists and is tested; without an editor surface a vendor cannot practically use it at scale (confirming bindings one JSON patch at a time), and without a published score the safety claim stays a marketing line rather than "measured and published."
 - **Business value:** makes the safety mechanism actually usable day-to-day, and the published score is described as a sales weapon in its own right ("measured safety is a sales weapon; claimed safety is just marketing").
 - **Technical value:** the data already exists on `StepEditorDTO.entity_binding` and per-skill telemetry (`rec_halt`, the new `entity_binding_not_found` recovery-log event) — this is UI + aggregation, not new core logic. `conxa-cloud/backend/app/services/tracking_analytics.py`'s `health_score` (line ~294) is the natural home for the score, alongside its existing weighted-factor pattern.
@@ -820,7 +875,7 @@ the new item below this one.
 - **Complexity:** L — approve/reject is the small half and reuses EXEC-13's machinery almost wholesale; judgement input needs the typed input contract and schema validation; hand-over is the genuinely new part and carries the real risk (yielding and reclaiming a live page mid-run).
 - **Success criteria:** a workflow authored with each of the three review shapes compiles, publishes, and replays on a customer machine; at each review point the run pauses and the person is prompted in the browser the runtime is driving, with the page in the state the run left it; a judgement value supplied by the person is bound as a named input and demonstrably changes a later step's behaviour; a rejected approval aborts cleanly with an audit record; a hand-over returns control to the run with the page re-validated before the next step acts; a review that is never answered times out per its configured `on_failure` policy and leaks no browser; the workflow remains testable in the Build Studio sandbox; and telemetry distinguishes a planned review from a recovery-triggered handoff.
 
-## P2 — High Value, Do Soon (32 remaining / 37 total)
+## P2 — High Value, Do Soon (36 remaining / 41 total)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -969,6 +1024,18 @@ the new item below this one.
 - **Success criteria:** with two workflows checked back-to-back, both checks run to completion concurrently (or the second visibly queues with status, never cancelling the first); results for each check stay correctly attributed to their own workflow.
 - **Found via:** direct user report (2026-08-23).
 
+### BUILD-31 — Durability scores are hand-set priors, never measured against real page mutations
+- **Category:** Builder / Build Studio
+- **Description:** `selector_score.py::durability_score` is a hardcoded table (testid=0.99, role+name=0.95, text=0.85, ...) multiplied by whether the signal was unique on the one page the recorder saw. The compiler never sees the page twice, so every number is a guess about websites in general — it can't tell a stable `data-testid` a vendor's test suite depends on from one a developer will delete next week, or a role+name that's uniquely stable from one that's unique only because today's list has three rows. Fix: mutate the recorded DOM snapshot the way a real redesign would (strip all `data-testid`, rename every CSS class, wrap the target in a new `<div>`, reorder/shift siblings, drop the `id` attribute, translate/reword visible text and `aria-label`) and re-resolve each `IdentityBundle` signal against each mutant using Playwright's real engine (`page.setContent(mutated_html)` in headless Chromium, ~50–200ms per mutation per step, fully parallelizable on the existing vision-prefetch thread pool). A signal surviving 7 of 8 mutations is durable; one surviving 2 of 8 is a liability regardless of what the static table says.
+- **Why required:** the whole recovery/durability story rests on these numbers meaning something. Right now `0.95` means "role selectors are usually fine," not "this specific selector survives realistic page changes" — and the orthogonality classing (independent signal groups so one change can't kill all of them) is itself an unverified assumption; two "independent" signals often secretly share the same underlying attribute, and mutation testing is the only way to catch that per element.
+- **Business value:** turns an opaque confidence number into an actionable human-review signal ("this step has one way to find its button and dies the moment anyone renames a CSS class") instead of a score nobody can act on; also makes **BUILD-18**'s learned classifier and **PROD-1**'s repair memory train against ground truth instead of the same hardcoded priors they're trying to improve on.
+- **Technical value:** replaces a guess with a measurement using tooling the compiler already has (Playwright, the thread pool, the recorded DOM snapshot) — no new infrastructure, no LLM tokens, fully offline and deterministic.
+- **Dependencies:** none blocking. Longer-term the mutation set itself should be learned from field drift rather than hand-written — natural pairing with **EXEC-9** (dataset-grade telemetry) once that data exists.
+- **Suggested order:** before leaning further on `durability_score` for anything user-facing (recovery ranking, publish-time warnings) — the measurement should exist before more decisions are built on top of the guess.
+- **Complexity:** L — a mutation harness (8+ mutation kinds × every step's DOM snapshot), integrating it into the compile pipeline without materially slowing compiles, and reworking `durability_score`'s output shape to carry per-mutation survival instead of a single static multiplier.
+- **Success criteria:** each compiled step's identity signals carry a measured survival rate against the mutation suite instead of (or alongside) the static table value; Human Review surfaces "single point of failure" steps whose only signal dies under a realistic mutation.
+- **Found via:** advisor review of the reliability architecture (2026-09-12).
+
 ### CLOUD-1 — RBAC / SSO / tenant isolation (enterprise plumbing)
 - **Category:** Cloud
 - **Description:** Extend the current partial RBAC (`require_admin` enforced only on publish, plugin create/delete, and bundle-release routes) to per-skill ACLs and a read-only analyst role; add SSO/SAML (currently unbuilt — Clerk JWT only); replace `workspace_id` string-filtering in shared KV namespaces with real tenant isolation (Postgres row-level security or equivalent). This is the item that carries Conxa's enterprise-readiness work more broadly, alongside PROD-9/PROD-10.
@@ -1060,6 +1127,52 @@ the new item below this one.
 - **Suggested order:** early — ideally before meaningful customer run volume accumulates; sequence alongside or immediately after EXEC-1, since the new branch primitives will also need outcome events.
 - **Complexity:** M — event schema design, `tracker.js` emission points at the resolver/recovery seams, ingest-side validation, and doc updates; no new learning code.
 - **Success criteria:** every resolution outcome event carries winning signal engine, orthogonality class, fallback depth, stable-hash match, and compat fingerprint; a sample export can answer "which signal classes survived last month's drift events, per app" with a query rather than a code change; `docs/Backend-Schema.md` documents the new event codes.
+
+### ~~EXEC-36~~ — No environment fingerprint: a different locale/timezone/viewport/role fails like a broken selector — **Resolved 2026-09-12**
+- **Category:** Execution & Recovery
+- **Description:** `drift.js` checks whether the page's structural landmarks are still there before step 0 — good instinct, but nothing captures the *environment* at record time (locale, timezone, viewport size, currency/date format, the recording user's role/permissions) to compare against the replay environment. A workflow recorded by an admin in en-US at 1920×1080 replayed by a viewer in de-DE at 1366×768 can hit a button now hidden behind a hamburger menu, a date field expecting `TT.MM.JJJJ`, or a Delete button that doesn't exist for that role — none of which is a broken selector, but all of which fail exactly like one, burning the same recovery ladder and Tier B tokens as genuine drift.
+- **Why required:** this failure mode is indistinguishable from drift/breakage in today's telemetry, so it's misdiagnosed and mis-triaged every time it happens; a real multi-account or multi-locale customer will hit it repeatedly.
+- **Resolution:** capture, compile, and replay-comparison, plus the notification channel this item's success criterion needed and `drift_detected` never had. **Capture:** `recorder/session.py::_write_environment_sync` writes `environment.json` once at session start (locale, timezone + UTC offset, viewport, device pixel ratio, a locale-formatted date sample, platform) — best-effort, swallowed on failure. Role is deliberately NOT captured (no reliable generic way to read it from a page; left to PROD-1's first-run calibration). **Compile:** new `SkillMeta.environment` field; `build.py::_read_environment_sidecar` reads the sidecar; carried through to `manifest.json` via the same two-hop pattern as `structural_fingerprint`. **Compare:** new pure `runtime/app/env_match.js::compareEnvironment()` — deliberately narrow (primary language subtag only, UTC offset only, viewport >25% or crossing a responsive breakpoint) so a noisy warning never drowns out a real one. **Notification:** discovered `drift_detected` was telemetry-only and never reached the user — built a shared `warnings: string[]` channel in `run.js` (returned on success, attached to the thrown error via `stepFailure` on failure) that both the environment check and `drift_detected` now feed, surfaced by `server.js` in `execute_skill`'s response text on both paths. This is a NEW, narrower notification path than BUILD-28's leg (a) specifies — BUILD-28 asks for the workspace/vendor to be notified (a dashboard/cloud-side alert); what shipped here tells the END USER running the skill, in the moment, via the chat response. Genuinely useful (the person hitting the failure sees an explanation instead of a bare selector error) but does not close BUILD-28 — see the note added there. New telemetry: `env_mismatch`. Tests: `runtime/test/unit/test_env_match.js`, `conxa-cloud/tests/test_environment_fingerprint.py`.
+- **Business value:** a warning that says "this was recorded in a different language/screen size than yours" turns a baffling mid-run failure into an obvious, self-explanatory one — directly reduces support load for the cross-account risk **PROD-1** already flags as the #1 priority test.
+- **Technical value:** small, additive extension of code that already exists — capture the environment during recording, compare at replay, warn-not-block in exactly `drift.js`'s existing shape. No new detection architecture.
+- **Dependencies:** none blocking; natural pairing with **PROD-1**'s first-run calibration pass, which is the other place a permission/locale mismatch would otherwise surface as a mid-run failure instead of a pre-flight warning.
+- **Complexity:** S–M — capture is a few fields at record time; comparison and warning reuse `drift.js`'s existing advisory, never-blocking pattern.
+- **Success criteria:** a replay in a materially different locale, timezone, or viewport than the recording surfaces a specific, plain-language warning before or alongside the first failure it causes, rather than reporting an ordinary selector/drift failure. (Role comparison is out of scope — see Resolution.)
+- **Found via:** advisor review of the reliability architecture (2026-09-12).
+
+### ~~EXEC-37~~ — Waits are inferred from one observed page load, not settle detection — **Resolved 2026-09-12**
+- **Category:** Execution & Recovery
+- **Description:** `infer_wait_for_shape` watches one page load, on one network, once, and bakes in what it saw as the compiled `wait_for` shape. The durable fix isn't a longer static timeout — it's settle detection at replay time: wait until the DOM stops mutating, no network requests are in flight, and no spinner elements are visible, bounded by a deadline. `page_eval.js`'s existing deadline seam is the natural home for this.
+- **Why required:** a single-observation wait is calibrated to whatever network/server conditions happened to exist during that one recording — it silently under- or over-waits on a slow morning, a cold cache, or a server under load, and there's no way to distinguish that from genuine breakage without a settle-based fallback.
+- **Resolution:** discovered mid-implementation that `wait_for` never actually reaches the runtime — it's lowered into `validation.assertions` at compile time (`build.py::_build_assertions`) and the only replay-time wait is `run.js`'s blanket `waitForPageLoad()`. So "fall back to settle after the compiled wait" became: settle detection as a **failure-path-only** fallback, before recovery, never a new inter-step wait — a currently-passing run's timing is completely unaffected. New `runtime/app/settle.js::waitForSettle()` polls a page-shape signature (`page_scripts.js::settleSignature`: text length, interactive-element count, node count, visible busy-indicator count — `[aria-busy="true"]`/`[role="progressbar"]`/spinner classes) through the `page_eval.js` seam until two consecutive samples match with no busy indicator, or a budget expires (`CONXA_SETTLE_BUDGET_MS`, default 8000ms). Wired into `run.js` right before the recovery cascade: if the page actually had to wait, retry once. Two shapes matching what already happened — a step whose action never dispatched gets the whole action+verify retried; a step whose action may already have landed (`verifyFail`, or `mayHaveActed` — the same signal `cascade.js`'s own guard uses) only gets re-verified, never re-acted, so the retry itself can never double-submit a non-idempotent step. Kill switch: `CONXA_SETTLE_RETRY=0`. New telemetry: `settle_retry`. No MutationObserver/network-request tracking — a two-sample counter poll (`ponytail:` comment in `settle.js` names the ceiling and the upgrade path). Tests: `runtime/test/unit/test_settle.js`.
+- **Business value:** fewer false-positive failures on ordinary "the site was just slow today" runs, which otherwise read as reliability problems to a customer.
+- **Technical value:** adapts automatically to load conditions instead of requiring the compiled wait shape to be re-tuned per site/session; reuses the deadline-seam infrastructure **EXEC-34** already built out for `.evaluate()`/`.count()` calls.
+- **Dependencies:** **EXEC-34** (resolved in the same pass, same seam).
+- **Complexity:** M — settle-detection logic (DOM shape + busy-indicator polling, not full mutation/network tracking) plus wiring it as a failure-path fallback ahead of the existing compiled `wait_for`.
+- **Success criteria:** a step whose page loads slower than it did at record time still passes without a compile-time timeout bump, and settle detection never adds meaningful latency on a normally-fast page (a passing run never calls it at all).
+- **Found via:** advisor review of the reliability architecture (2026-09-12).
+
+### ~~EXEC-38~~ — No iteration primitive: workflows can branch but can't loop over a list — **Resolved 2026-09-12**
+- **Category:** Execution & Recovery
+- **Description:** The step format has `branch` (**EXEC-1**, done) but no "for each" — no way to say "do this for every invoice in this list." Nearly every real back-office task is a loop (process each pending order, update every customer matching a filter, download all of last month's statements), and today a user either records the loop body once and hopes, or records N near-identical steps. `entity_binding.py` already solves the hard half — given a container selector and identifying text, find *this* row — a loop primitive is that plus a termination condition and a per-row sub-workflow.
+- **Resolution:** shipped as `SkillStep.for_each` (`rows.container_selector`, `as`, `max_iterations` — required, `on_row_error`, `steps`). New `resolution.js::enumerateRows` (the inverse of `entityRoots`) snapshots the row list once, using each row's own trimmed text as its identifier; body steps carry `entity_binding.identifier: "{{<as>_id}}"` so the existing `entityRoots` narrowing does all per-row scoping — no new resolution logic. **The one real refactor**: `run.js`'s flat step loop was extracted into `executeOneStep(ctx, state, steps, i)` so a loop body runs through the exact same tab-resolution/GATE/VERIFY/settle-retry/recovery-cascade/dry-run-skip path every top-level step gets, not the best-effort no-recovery path the other branch primitives use — verified safe by the full 687-test runtime suite passing unchanged before and after the extraction. Compiler: `entity_binding` detection now runs for every step (not just irreversible ones, since a loop's ordinary body steps need row scoping too); `_saved_for_each_step` drops a step with no `max_iterations`. Safety, landed together per the dependency below: `handlers/workflows.py::_require_confirmed_entity_bindings` now recurses into `for_each.steps` so a destructive body step's binding can't reach a customer install unconfirmed; `CONXA_MAX_LOOP_ITERATIONS` (default 100) clamps the declared cap at runtime; `dry_run: true` (PROD-3-DRYRUN) visits every row and resolves every body step but dispatches none of the destructive ones, for free, since it's the same `executeOneStep` logic. Editor: insertable, scaffolded, `patch_gate.py`-validated, and read-only projected (`StepEditorDTO.for_each_summary`/`.for_each_steps`) — no dedicated nested-body authoring UI yet (see the new follow-up item below). Tests: `runtime/test/unit/test_for_each.js` (10 cases: snapshot-once, cap enforcement, missing-cap refusal, `on_row_error` both ways, per-row entity-bind correctness, input restoration, dry-run integration, empty-row no-op); `conxa-cloud/tests/test_for_each_compile.py`, `test_for_each_patch_gate.py`, `test_for_each_dto.py`, `test_for_each_mutations.py`, and new cases in `test_publish_entity_binding_gate.py` for the nested confirmation-gate recursion.
+- **Why required:** this is the ceiling on "complex workflows" as a category; without it, workflows over variable-length lists simply can't be authored durably.
+- **Business value:** unlocks a whole class of back-office automation (bulk order processing, batch customer updates, statement downloads) that today requires either manual re-recording per batch size or isn't automatable at all.
+- **Technical value:** builds directly on `entity_binding.py` (row identification) and the existing `branch`/`consequence` step classification (read-only / reversible / irreversible) rather than inventing new machinery.
+- **Dependencies:** **hard dependency, not a sibling: PROD-3-DRYRUN must land first or alongside.** A loop over an unbounded or large list combined with an irreversible action is exactly how automation software damages a customer's database — an iteration cap and true dry-run are non-negotiable parts of the same change, not a follow-up. (Landed in the same pass, immediately before this item.)
+- **Complexity:** L — new step-format primitive (termination condition, per-row sub-workflow, iteration cap), compiler support, runtime executor changes, and mandatory dry-run/cap enforcement shipped together.
+- **Success criteria:** a workflow can express "for each row matching X, do steps A–C," runs to completion over a variable-length list bounded by a hard iteration cap, and an irreversible action inside the loop body cannot execute without passing dry-run/confirmation first.
+- **Found via:** advisor review of the reliability architecture (2026-09-12).
+
+### EXEC-38-UI — Studio UI for authoring a for_each loop body
+- **Category:** Execution & Recovery / Builder
+- **Description:** EXEC-38 shipped the `for_each` iteration primitive fully in the compiler and runtime, with read-only visibility in Human Edit (`StepEditorDTO.for_each_summary`/`.for_each_steps`), but no dedicated authoring control — a vendor can insert a `for_each` step and see its body, but can only edit `rows.container_selector`/`as`/`max_iterations`/`on_row_error` and the nested body through the generic patch mechanism, not a purpose-built UI. This is the same "backend done, editor control pending" gap `PROD-3-UI` already tracks for Strict Mode, entity-binding confirmation, and `compensation_skill`.
+- **Why required:** without an editor surface, a vendor cannot practically build or adjust a loop body (wrap N steps, set the row selector, confirm the destructive body step's entity binding) without hand-crafting patches — the primitive is correct but not usable at scale.
+- **Business value:** makes the shipped loop mechanism actually usable day-to-day for the bulk-processing workflows EXEC-38's business case targets.
+- **Technical value:** `BranchBodyEditor.tsx` already solves most of this shape for `if_present` — a `for_each` variant needs a row-selector field, `max_iterations`/`on_row_error` controls, and the same nested-step insert/delete/reorder UX, reusing `insert_branch_step`/`delete_branch_step`/`reorder_branch_steps`'s pattern (parallel `for_each` RPCs, not yet built) rather than inventing new interaction design.
+- **Dependencies:** EXEC-38 (done).
+- **Complexity:** M — a for_each variant of `BranchBodyEditor.tsx`, matching structural-mutation RPCs (`insert_for_each_step`/`delete_for_each_step`/`reorder_for_each_step` in `workflow_mutations.py` + `handlers/workflow_editor.py`), and a row-selector/cap/on-row-error control panel.
+- **Success criteria:** a vendor can build and edit a `for_each` loop — row selector, cap, on-row-error, and its nested body — from the Human Edit page without hand-crafting a patch.
 
 ### UPD-1 — True skill-pack cryptographic signing
 - **Category:** Auto Updates
@@ -1890,6 +2003,11 @@ the new item below this one.
 - **Success criteria:** a workspace whose target app has drifted is notified without opening a
   dashboard; the affected workflow shows which landmarks are missing; and the notification offers a
   concrete next action rather than a number.
+- **Update (2026-09-12, EXEC-36):** `drift_detected` now also reaches the END USER running the
+  skill — `run.js` surfaces it as a plain-language warning in `execute_skill`'s response text
+  (the same channel EXEC-36 built for its own environment-mismatch check). This is orthogonal to
+  scope (a) above, which is about notifying the *workspace/vendor* — still open. Scopes (b) and
+  (c) are also still open.
 
 ## P2 Discovered Items (2 remaining / 2 total) (2026-09-02 mega-workflow dev-mode investigation)
 
