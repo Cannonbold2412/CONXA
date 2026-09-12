@@ -125,6 +125,45 @@ function scrollBy([x, y]) {
   window.scrollBy(x, y);
 }
 
+// BUILD-30: advance a virtualized container's scroll position by roughly one screenful, or
+// reset to the top once the bottom is reached (so a recorded row above the current position is
+// still reachable on a later pass). Called via Locator.evaluate(), so `el` is the container
+// element Playwright already resolved — self-contained, no closure over module scope (see the
+// file-header note: these functions are re-serialized and run standalone in the page realm).
+function scrollVirtualContainerStep(el) {
+  if (!el) return { advanced: false };
+  const before = el.scrollTop;
+  const step = Math.max(el.clientHeight || 300, 100);
+  const atBottom = before + el.clientHeight >= el.scrollHeight - 2;
+  el.scrollTop = atBottom ? 0 : before + step;
+  return { advanced: el.scrollTop !== before };
+}
+
+// BUILD-30: no compiled virtualized_container hint and no entity binding to key a selector
+// off — find the page's (or frame's) own dominant scrollable element (largest
+// scrollHeight - clientHeight among auto/scroll-overflow elements) and scroll it the same way.
+// For a virtualized listbox or long dropdown with nothing else to go on. Runs via Page/Frame
+// .evaluate() (no element argument), so it reads `document` directly.
+function scrollDominantScrollableElement() {
+  let best = null;
+  let bestRange = 0;
+  const all = document.querySelectorAll("*");
+  for (const el of all) {
+    const range = el.scrollHeight - el.clientHeight;
+    if (range <= 40 || range <= bestRange) continue;
+    const style = getComputedStyle(el);
+    if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
+    best = el;
+    bestRange = range;
+  }
+  if (!best) return { advanced: false };
+  const before = best.scrollTop;
+  const step = Math.max(best.clientHeight || 300, 100);
+  const atBottom = before + best.clientHeight >= best.scrollHeight - 2;
+  best.scrollTop = atBottom ? 0 : before + step;
+  return { advanced: best.scrollTop !== before };
+}
+
 function getScrollY() {
   return window.scrollY;
 }
@@ -135,6 +174,51 @@ function preStepSignature(sel) {
   return {
     textLen: (document.body && document.body.innerText || "").length,
     interactiveCount: document.querySelectorAll(sel).length,
+  };
+}
+
+// EXEC-37: settle-detection signature, extending preStepSignature with a total node count (a
+// coarser churn signal than interactiveCount alone) and a busy-indicator count. Self-contained —
+// no reference to any outer module scope — because this runs serialized into the page realm
+// (see this file's "in-page" obfuscation-profile note at the top: no module-scope decoder var
+// survives re-parsing there). Zero-arg by design so settle.js never needs to thread a selector
+// arg through evalOn.
+function settleSignature() {
+  var interactiveSel = 'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]';
+  var busySel = '[aria-busy="true"], [role="progressbar"], .spinner, .loading, .loader, [class*="spinner" i]';
+  function isVisible(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    var cs = window.getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none";
+  }
+  var busyCount = 0;
+  var busyEls = document.querySelectorAll(busySel);
+  for (var i = 0; i < busyEls.length; i++) {
+    if (isVisible(busyEls[i])) busyCount++;
+  }
+  return {
+    textLen: (document.body && document.body.innerText || "").length,
+    interactiveCount: document.querySelectorAll(interactiveSel).length,
+    nodeCount: document.querySelectorAll("*").length,
+    busyCount: busyCount,
+  };
+}
+
+// EXEC-36: replay-side counterpart to recorder/session.py::_write_environment_sync's capture
+// script — same field shape, evaluated against the LIVE page instead of the recording page, so
+// env_match.js can compare the two. Self-contained for the same "in-page" reason as
+// settleSignature above.
+function environmentSignature() {
+  var d = new Intl.DateTimeFormat().resolvedOptions();
+  return {
+    locale: navigator.language || "",
+    timezone: d.timeZone || "",
+    utc_offset_minutes: -new Date().getTimezoneOffset(),
+    viewport: { w: window.innerWidth, h: window.innerHeight },
+    device_pixel_ratio: window.devicePixelRatio || 1,
+    date_format_sample: new Date(2026, 0, 31).toLocaleDateString(),
+    platform: navigator.platform || "",
   };
 }
 
@@ -313,9 +397,13 @@ module.exports = {
   scrollBy,
   getScrollY,
   preStepSignature,
+  settleSignature,
+  environmentSignature,
   pageFingerprint,
   domInventory,
   inventoryEntryForElement,
   overlayProbe,
   INVENTORY_SELECTOR,
+  scrollVirtualContainerStep,
+  scrollDominantScrollableElement,
 };

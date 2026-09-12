@@ -28,7 +28,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from conxa_core.config import settings
-from conxa_core.models.skill_spec import SkillStep
+from conxa_core.models.skill_spec import SkillStep, WorkflowIntentGraph
 from conxa_compile.compiler.second_opinion import (
     apply_second_opinion,
     archive_flagged_steps,
@@ -132,14 +132,17 @@ class SecondOpinionCompileTests(unittest.TestCase):
 
     def test_pass_failure_degrades_without_raising(self) -> None:
         boom = patch(
-            "conxa_compile.llm.workflow_semantics.build_second_opinion",
+            "conxa_compile.llm.workflow_review.build_workflow_review",
             side_effect=RuntimeError("provider pool drained"),
         )
         pkg = self._compile(semantics_patch=boom)
         self._assert_rules_only(pkg)
 
     def test_empty_response_falls_back_to_rules_only(self) -> None:
-        empty = patch("conxa_compile.llm.workflow_semantics.build_second_opinion", return_value=[])
+        empty = patch(
+            "conxa_compile.llm.workflow_review.build_workflow_review",
+            return_value=(WorkflowIntentGraph(), []),
+        )
         pkg = self._compile(semantics_patch=empty)
         self._assert_rules_only(pkg)
 
@@ -150,7 +153,7 @@ class SecondOpinionCompileTests(unittest.TestCase):
             disabled = self._compile()
         failed = self._compile(
             semantics_patch=patch(
-                "conxa_compile.llm.workflow_semantics.build_second_opinion",
+                "conxa_compile.llm.workflow_review.build_workflow_review",
                 side_effect=RuntimeError("provider pool drained"),
             )
         )
@@ -167,7 +170,8 @@ class SecondOpinionCompileTests(unittest.TestCase):
         canned = [{"step_key": key, "kind": "label_phase", "current": "", "proposed": "act", "why": "x"}]
         pkg = self._compile(
             semantics_patch=patch(
-                "conxa_compile.llm.workflow_semantics.build_second_opinion", return_value=canned
+                "conxa_compile.llm.workflow_review.build_workflow_review",
+                return_value=(WorkflowIntentGraph(), canned),
             )
         )
 
@@ -195,7 +199,8 @@ class SecondOpinionCompileTests(unittest.TestCase):
         }]
         pkg = self._compile(
             semantics_patch=patch(
-                "conxa_compile.llm.workflow_semantics.build_second_opinion", return_value=canned
+                "conxa_compile.llm.workflow_review.build_workflow_review",
+                return_value=(WorkflowIntentGraph(), canned),
             )
         )
         self.assertEqual(len(pkg.skills[0].steps), 1, "only the navigate step ships")
@@ -210,7 +215,8 @@ class SecondOpinionCompileTests(unittest.TestCase):
         canned = [{"step_key": "not-a-real-key#1", "kind": "label_phase", "current": "", "proposed": "act"}]
         pkg = self._compile(
             semantics_patch=patch(
-                "conxa_compile.llm.workflow_semantics.build_second_opinion", return_value=canned
+                "conxa_compile.llm.workflow_review.build_workflow_review",
+                return_value=(WorkflowIntentGraph(), canned),
             )
         )
         self._assert_rules_only(pkg)

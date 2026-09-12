@@ -444,6 +444,57 @@ def generate_anchors_for_step_or_raise(
     return finalized
 
 
+def get_chosen_frame_image(
+    ev: dict[str, Any],
+    *,
+    session_root: Path,
+    final_intent: str,
+    policy: dict[str, Any],
+    step_index: int,
+) -> tuple[str, str] | None:
+    """Re-derive and encode ONLY the frame the vision-anchor stage already
+    chose for this step (for the workflow-review multimodal call) — never all
+    5. `final_intent` must match what generate_anchors_for_step_or_raise used
+    for this step so the cache lookup hits and no LLM call happens here.
+
+    Returns (image_base64, image_mime) or None when there's no cached choice
+    (vision anchors disabled/failed for this step, or its frame file is
+    missing) — the review call just sends text for it, same treatment as any
+    step with no anchor."""
+    try:
+        prepared = _prepare_frameset_vision_request(
+            ev, session_root=session_root, final_intent=final_intent, policy=policy, step_index=step_index
+        )
+    except VisionAnchorGenerationError:
+        return None
+    if not isinstance(prepared, dict):
+        return None  # cache miss: the anchor call never completed for this step
+    chosen_label = str(prepared.get("chosen_frame") or "")
+    if not chosen_label:
+        return None
+
+    visual = ev.get("visual") if isinstance(ev.get("visual"), dict) else {}
+    frames_map = visual.get("frames") if isinstance(visual.get("frames"), dict) else {}
+    if not frames_map:
+        fallback_rel = str(visual.get("full_screenshot") or "").strip()
+        frames_map = {"before_near": fallback_rel} if fallback_rel else {}
+    rel_path = str(frames_map.get(chosen_label) or "").strip()
+    if not rel_path:
+        return None
+    try:
+        abs_path = resolve_screenshot_path(session_root, rel_path)
+    except VisionAnchorGenerationError:
+        return None
+    if not abs_path.is_file():
+        return None
+
+    bbox = visual.get("bbox") if isinstance(visual.get("bbox"), dict) else {}
+    viewport = str(visual.get("viewport") or "")
+    hi = float(_vision_cfg(policy).get("highlight_alpha", 0.35))
+    image_bytes = _apply_bbox_highlight(abs_path.read_bytes(), bbox, viewport, highlight_alpha=hi)
+    return base64.standard_b64encode(image_bytes).decode("ascii"), "image/jpeg"
+
+
 def generate_anchors_from_image_bytes(
     image_bytes: bytes,
     intent: str,

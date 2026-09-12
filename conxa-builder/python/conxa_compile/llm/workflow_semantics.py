@@ -1,6 +1,11 @@
-"""The compiler's second opinion (BUILD-25): one whole-workflow LLM call that
-decides the four things no per-step rule can decide correctly, because the
-information they need is workflow-global.
+"""Validation for the second-opinion section of the merged workflow-review
+call (BUILD-25): decides the four things no per-step rule can decide
+correctly, because the information they need is workflow-global.
+
+`_validate_findings` here used to gate a standalone workflow_semantics LLM
+call. It's now reused by workflow_review.py, which merges that call with the
+workflow-intent call into one whole-workflow multimodal call — see
+workflow_review.py's module docstring.
 
 This module only DECIDES. compiler/second_opinion.py writes the decisions onto
 the compiled steps, so a reviewer opening Human Review sees finished work
@@ -19,11 +24,11 @@ invariant holds: nothing here or in the applier touches a selector, an identity
 signal, or an element address. It writes meaning only — binding names, value
 placeholders, phase, optionality.
 
-Mirrors workflow_intent.py's shape exactly: cache lookup -> LLM call ->
-validate -> cache on success only (never on empty, so a drained provider pool
-retries next compile) -> return. Never raises. A failed or disabled call falls
-back to the rules-only compile, which is a different (rules-only) package, not
-the same one — see TODO.md BUILD-25 for why that trade was taken.
+workflow_review.py mirrors the old cache-lookup -> LLM call -> validate ->
+cache-on-success-only shape (never on empty, so a drained provider pool
+retries next compile). Never raises. A failed or disabled call falls back to
+the rules-only compile, which is a different (rules-only) package, not the
+same one — see TODO.md BUILD-25 for why that trade was taken.
 
 Six kinds (BUILD-25's six problem families):
   - rename_binding / parameterize_literal — naming is workflow-global; two
@@ -55,14 +60,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from conxa_core.config import settings
-
 from conxa_compile.editor.placeholder_grammar import is_valid_placeholder_id
-from conxa_compile.llm.llm_cache import cache_key, read_cached, write_cached
-from conxa_compile.llm.openapi_client import infer_workflow_semantics
-
-_NAMESPACE = "workflow_semantics"
-_CACHE_VERSION = 1
 
 _VALID_KINDS = frozenset({
     "rename_binding", "parameterize_literal", "suggest_optional", "label_phase",
@@ -205,53 +203,3 @@ def _validate_findings(
 
     cap = max(1, round(len(steps_context) * _MAX_FINDINGS_PER_STEP_RATIO))
     return out[:cap]
-
-
-def build_second_opinion(
-    steps_context: list[dict[str, Any]],
-    *,
-    goal: str,
-    page_urls: list[str],
-    sibling_bindings: dict[str, list[str]] | None = None,
-    model: str | None = None,
-    error_detail: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Single LLM call producing workflow-global findings for
-    compiler/second_opinion.py to apply. Returns [] on any failure, on an empty
-    response, or when the pass is disabled — never raises, and [] means the
-    compile falls back to its rules-only result."""
-    if not settings.llm_semantic_suggestions_enabled:
-        return []
-    if not steps_context:
-        return []
-
-    step_keys_in_workflow = {str(s.get("key") or "") for s in steps_context}
-    key = cache_key(
-        _CACHE_VERSION,
-        steps=steps_context,
-        goal=goal,
-        page_urls=page_urls,
-        sibling_bindings=sibling_bindings or {},
-    )
-    cached = read_cached(_NAMESPACE, key, _CACHE_VERSION)
-    if cached is not None:
-        return _validate_findings(cached.get("suggestions"), step_keys_in_workflow=step_keys_in_workflow, steps_context=steps_context)
-
-    raw = infer_workflow_semantics(
-        steps=steps_context,
-        goal=goal,
-        page_urls=page_urls,
-        sibling_bindings=sibling_bindings or {},
-        model=model,
-        error_detail=error_detail,
-    )
-    if not raw or not raw.get("suggestions"):
-        # Empty/failed response — do NOT cache, so the next compile retries.
-        # "No findings" is itself a first-class, expected outcome, but only
-        # a real (even if empty) response is worth caching — a failed call
-        # should retry on recompile, not freeze into a permanent "nothing
-        # found".
-        return []
-
-    write_cached(_NAMESPACE, key, raw, _CACHE_VERSION)
-    return _validate_findings(raw.get("suggestions"), step_keys_in_workflow=step_keys_in_workflow, steps_context=steps_context)

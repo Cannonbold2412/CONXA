@@ -1,0 +1,111 @@
+"""Merged workflow-intent + second-opinion LLM call (BUILD-26).
+
+Used to be two whole-workflow text-only calls: workflow_intent.py (goal +
+per-step intent, ran before the per-step compile loop) and
+workflow_semantics.py (BUILD-25's second opinion, ran after every step was
+compiled). Both were deliberately fed tiny payloads — no DOM, no screenshots,
+truncated text — a cost/latency choice, not a quality one.
+
+This module merges them into one multimodal call that runs where the old
+second-opinion call did (after every step, including its vision anchor, is
+compiled), so it can see the full compiled context AND, per step, the
+screenshot the vision-anchor stage already chose as the click target —
+compiler/build.py builds that image side-map while step/event alignment still
+holds and threads it in by step_key. See compiler/build.py's
+`_review_inputs`/`_apply_workflow_review_to_steps` for how the request is
+built and the response applied.
+
+Consequence of merging: the intent graph (goal, per-step semantic_description,
+SkillPackage.intent_graph) is no longer available before the per-step build
+loop runs. Vision-anchor selection and each step's `intent` field fall back to
+the recorder's own heuristic (normalize_compiler_intent's content-derived
+path) instead of an LLM-resolved token — build.py backfills `step.intent` from
+this call's result afterward where the heuristic left it blank/generic, but
+the anchor-selection prompt has already run by then; that quality loss is real
+and not recovered.
+
+Both original modules' parsing/validation are reused unchanged:
+workflow_intent.py's `_graph_from_raw` for the goal/steps/decision_points
+section, workflow_semantics.py's `_validate_findings` for the suggestions
+section — only the orchestration (one call instead of two) is new.
+
+llm_semantic_suggestions_enabled gates only the `suggestions` section, exactly
+as it gated the old standalone second-opinion call — the intent graph still
+generates unconditionally, matching its old ungated behavior. A failure/empty
+response degrades the whole thing to (WorkflowIntentGraph(), []) — the
+rules-only compile — never raises.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from conxa_core.config import settings
+from conxa_core.models.skill_spec import WorkflowIntentGraph
+
+from conxa_compile.llm.llm_cache import cache_key, read_cached, write_cached
+from conxa_compile.llm.openapi_client import infer_workflow_review
+from conxa_compile.llm.workflow_intent import _graph_from_raw
+from conxa_compile.llm.workflow_semantics import _validate_findings
+
+_NAMESPACE = "workflow_review"
+_CACHE_VERSION = 1
+
+
+def build_workflow_review(
+    steps_context: list[dict[str, Any]],
+    *,
+    page_urls: list[str],
+    sibling_bindings: dict[str, list[str]] | None = None,
+    model: str | None = None,
+    error_detail: list[str] | None = None,
+) -> tuple[WorkflowIntentGraph, list[dict[str, Any]]]:
+    """One multimodal LLM call producing (workflow intent graph, BUILD-25
+    findings). Returns (WorkflowIntentGraph(), []) on any failure or an empty
+    response — never raises. `suggestions` is additionally forced to [] when
+    llm_semantic_suggestions_enabled is False, even on a successful call."""
+    if not steps_context:
+        return WorkflowIntentGraph(), []
+
+    step_keys_in_workflow = {str(s.get("key") or "") for s in steps_context}
+    # BUILD-29: hash the text fields only — steps_context may carry a base64 image per step
+    # (megabytes, hashed for no discriminating power beyond what the rest of this same step
+    # dict already captures) and, more importantly, _review_inputs's image-budget trim can
+    # drop a subset of images without changing anything else about a step. Keying on the
+    # untrimmed images would let two differently-trimmed requests collide on one cache entry.
+    steps_for_key = [
+        {k: v for k, v in s.items() if k not in ("image_base64", "image_mime")}
+        for s in steps_context
+    ]
+    key = cache_key(
+        _CACHE_VERSION,
+        steps=steps_for_key,
+        page_urls=page_urls,
+        sibling_bindings=sibling_bindings or {},
+    )
+    cached = read_cached(_NAMESPACE, key, _CACHE_VERSION)
+    raw = cached
+    if raw is None:
+        raw = infer_workflow_review(
+            steps=steps_context,
+            page_urls=page_urls,
+            sibling_bindings=sibling_bindings or {},
+            model=model,
+            error_detail=error_detail,
+        )
+        if not raw or (
+            not str(raw.get("goal") or "").strip()
+            and not (raw.get("steps") or [])
+            and not (raw.get("suggestions") or [])
+        ):
+            # Empty/failed response — do NOT cache, so the next compile retries.
+            return WorkflowIntentGraph(), []
+        write_cached(_NAMESPACE, key, raw, _CACHE_VERSION)
+
+    graph = _graph_from_raw(raw)
+    if not settings.llm_semantic_suggestions_enabled:
+        return graph, []
+    findings = _validate_findings(
+        raw.get("suggestions"), step_keys_in_workflow=step_keys_in_workflow, steps_context=steps_context
+    )
+    return graph, findings
