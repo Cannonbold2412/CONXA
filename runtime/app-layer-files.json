@@ -81,6 +81,8 @@
       "_note": "run.js seam: step assertion verification." },
     { "name": "settle.js",            "profile": "default",
       "_note": "EXEC-37: run.js failure-path settle-detection fallback before recovery." },
+    { "name": "env_match.js",         "profile": "default",
+      "_note": "EXEC-36: pure recorded-vs-live environment comparison used by run.js's pre-execution warning gate." },
     { "name": "locators.js",          "profile": "default",
       "_note": "run.js seam: locator strategy construction." },
     { "name": "handlers.js",          "profile": "default",

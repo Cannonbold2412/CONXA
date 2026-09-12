@@ -392,7 +392,7 @@ async function _writeStudioEvidence(page, err, resolvedEntry, steps, failedAt, s
 
     const viewport = (() => { try { return page.viewportSize(); } catch (_) { return null; } })();
     let scrollY = null;
-    try { scrollY = await page.evaluate(pageScripts.getScrollY); } catch (_) {}
+    try { const sy = await evalOn(page, pageScripts.getScrollY); scrollY = sy === EVAL_TIMED_OUT ? null : sy; } catch (_) {}
 
     const { inventory, overlay } = await gatherInventory(page, err, deps);
     const slug = resolvedEntry && resolvedEntry.slug;
@@ -541,7 +541,7 @@ async function buildFailureResponse(page, err, resolvedEntry, runTracker, steps,
 
   const viewport = (() => { try { return page.viewportSize(); } catch (_) { return null; } })();
   let scrollY = null;
-  try { scrollY = await page.evaluate(pageScripts.getScrollY); } catch (_) {}
+  try { const sy = await evalOn(page, pageScripts.getScrollY); scrollY = sy === EVAL_TIMED_OUT ? null : sy; } catch (_) {}
 
   const contextSections = buildContextSections(err, steps, failedAt, viewport, scrollY, stepAssertions);
   const notes = `${frameNotFoundNoteText(err)}${overrideNoteText(err)}` +

@@ -34,6 +34,16 @@ class SkillMeta(BaseModel):
     # [executor] Structural fingerprint of the first 3 steps' landmark selectors — used by
     # drift detection to detect site redesigns before execution begins. Browser-DOM specific.
     structural_fingerprint: dict[str, Any] = Field(default_factory=dict)
+    # [executor] EXEC-36: the recording browser's environment (locale, timezone, viewport,
+    # device_pixel_ratio, date_format_sample, platform), captured once at session start
+    # (recorder/session.py::_write_environment_sync). Compared against the replay browser's own
+    # environment at run start (runtime/app/env_match.js) to WARN — never block — when a
+    # workflow is replayed in a materially different locale/timezone/viewport than it was
+    # recorded in, a failure mode that otherwise burns the recovery ladder and Tier B tokens
+    # looking exactly like drift. Empty on skills compiled before this field existed, or when
+    # the recording page never finished loading — the runtime treats an empty dict as "unknown,"
+    # never as a mismatch. Browser-DOM specific, not part of the executor-independent contract.
+    environment: dict[str, Any] = Field(default_factory=dict)
     # [contract] Every hostname the recording actually navigated to (main frame + any tab
     # opened during the recording), lowercase, deduped. Used to compute a workflow's
     # required_apps (conxa_core.storage.group_store.apps_for_workflow) from everywhere the

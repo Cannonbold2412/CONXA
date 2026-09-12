@@ -1082,6 +1082,42 @@ class RecordingSession:
         except Exception:  # noqa: BLE001
             pass
 
+    def _write_environment_sync(self, session_dir: Path, page: Any) -> None:
+        """EXEC-36: capture the recording environment (locale, timezone, viewport, device pixel
+        ratio, a locale-formatted date sample, platform) once, at session start, so the runtime
+        can WARN — never block — when a replay happens in a materially different environment
+        (docs/TRD.md §10.6a). Best-effort and swallowed on failure, same discipline as
+        _write_diagnostics_sync; a missing sidecar (old session, or a page that never finished
+        loading) compiles cleanly — build.py treats an absent environment.json as "unknown."
+        Role/permissions are deliberately NOT captured here: there is no generic, reliable way to
+        read the recording user's permissions from a page, and guessing would produce false
+        warnings — left to PROD-1's first-run calibration instead.
+        """
+        try:
+            env = page.evaluate(
+                "() => {"
+                "  const d = new Intl.DateTimeFormat().resolvedOptions();"
+                "  return {"
+                "    locale: navigator.language || '',"
+                "    timezone: d.timeZone || '',"
+                "    utc_offset_minutes: -new Date().getTimezoneOffset(),"
+                "    viewport: { w: window.innerWidth, h: window.innerHeight },"
+                "    device_pixel_ratio: window.devicePixelRatio || 1,"
+                "    date_format_sample: new Date(2026, 0, 31).toLocaleDateString(),"
+                "    platform: navigator.platform || '',"
+                "  };"
+                "}"
+            )
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(env, dict):
+            return
+        out = session_dir / "environment.json"
+        try:
+            out.write_text(json.dumps(env, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _rewrite_events_jsonl(self, session_dir: Path) -> None:
         out = session_dir / "events.jsonl"
         with out.open("w", encoding="utf-8") as f:
@@ -1933,6 +1969,10 @@ class RecordingSession:
                         self.binding_errors.append("bridge_not_loaded_on_start_page")
                     if not binding_ok:
                         self.binding_errors.append("binding_not_available_on_start_page")
+                    # Recomputed rather than reusing the `session_dir` local from the context-setup
+                    # block above (same value; avoids depending on both `if not self.auth_mode:`
+                    # blocks staying in lockstep across a method this long).
+                    self._write_environment_sync(self.data_root / "sessions" / self.session_id, page)
                 else:
                     self.binding_errors.append("start_page_closed")
             self._startup_done.set()
