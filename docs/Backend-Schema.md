@@ -349,7 +349,7 @@ is tagged in code and below as one of:
 
 | Class | Contract fields | Executor fields |
 |---|---|---|
-| `SkillMeta` | `id`, `version`, `title`, `created_at`, `source_session_id`, `compiler_policy_version`, `compiler_policy_hash`, `visited_hosts` | `required_runtime`, `structural_fingerprint` |
+| `SkillMeta` | `id`, `version`, `title`, `created_at`, `source_session_id`, `compiler_policy_version`, `compiler_policy_hash`, `visited_hosts`, `compensation_skill` (PROD-3-DRYRUN) | `required_runtime`, `structural_fingerprint`, `environment` (EXEC-36) |
 | `SkillPolicies` | all | — |
 | `RecoveryBlock` | `intent`, `final_intent`, `strategies`, `confidence_threshold`, `max_attempts`, `require_diverse_attempts` | `anchors` |
 | `Assertion` | all | — |
@@ -365,6 +365,7 @@ is tagged in code and below as one of:
 | `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `phase`, `optional_hint`, `consequence` | `frame`, `tab`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
 | `SkillStep.branch` | — (mixed today; see below) | — |
 | `SkillStep.entity_binding` | — (mixed today; see `EntityBinding` row) | — |
+| `SkillStep.for_each` (EXEC-38) | `as`, `max_iterations`, `on_row_error` | `rows.container_selector` |
 | `WorkflowIntentGraph` / `WorkflowIntentStep` | all | — |
 | `SkillPackage` | `meta`, `inputs`, `policies`, `llm`, `intent_graph`, `compile_report` | — |
 
@@ -451,6 +452,16 @@ class SkillMeta(BaseModel):
     compiler_policy_hash: str
     structural_fingerprint: dict  # Hash of first 3 steps' landmark selectors
                                   # Used for drift detection
+    environment: dict             # EXEC-36: recording browser's locale, timezone, viewport,
+                                  # device_pixel_ratio, date_format_sample, platform — captured
+                                  # once at session start (recorder/session.py). Compared
+                                  # against the replay environment at run start
+                                  # (runtime/app/env_match.js) to WARN, never block, on a
+                                  # material mismatch. Empty dict = unknown, never a mismatch.
+    compensation_skill: str        # PROD-3-DRYRUN layer 5: sibling skill slug the runtime
+                                  # OFFERS (never auto-runs) after a mid-run failure that
+                                  # happened after a destructive step already executed. Empty
+                                  # when no compensation workflow is linked.
     visited_hosts: list[str]      # Every hostname the recording actually navigated to
                                   # (main frame + any tab opened during recording), lowercase,
                                   # deduped. Feeds required_apps (§2.2) so a workflow that
@@ -489,6 +500,7 @@ class SkillStep(BaseModel):
     snapshot_dom_hash: str         # For cross-compilation cache lookup
     branch: dict                   # Conditional/branch payload — empty for ordinary steps (§3.4c)
     optional_hint: dict | None     # Recorder-observed "might be optional" flag (§3.4d)
+    for_each: dict                 # EXEC-38 iteration payload — empty for ordinary steps (§3.4i)
 ```
 
 > **Single identity object (cutover):** `element_fingerprint` is no longer a top-level
@@ -571,7 +583,21 @@ class IdentityBundle(BaseModel):
 ```python
 class HandlerHints(BaseModel):
     hover_chain: list[IdentitySignal]    # elements to hover before acting (menu reveals)
-    virtualized_container: str           # scroll container selector for virtualized rows
+    virtualized_container: str           # scroll container selector for virtualized rows —
+                                          # "" is the common case. Populated at compile time
+                                          # (2026-09-12, BUILD-30) by
+                                          # compiler/virtualized.py::detect_virtualized_container
+                                          # from the recorded ancestor chain: a known
+                                          # virtualization-library class marker, an inline
+                                          # overflow+fixed-height scroll style, or (corroborating
+                                          # only) an aria-rowcount/aria-setsize overcount.
+                                          # Read at runtime by
+                                          # resolution.js::maybeScrollForVirtualization, which
+                                          # also falls back to entity_binding.container_selector
+                                          # for a skill compiled before this field existed, and
+                                          # to the page's dominant scrollable element for a
+                                          # compiled choice/dropdown-kind control with neither —
+                                          # see TRD.md §10.2c.
     allow_forced_action: bool
     control_kind: str = ""               # "" = dispatch by action type alone (every action but
                                           # the two below); "date_picker" was the first populated
@@ -843,6 +869,48 @@ pending dialog.
   `editor/describe.py` also surfaces the recorded message and typed answer in the step list).
 - **Not covered:** `beforeunload` confirmations (unhandled on both record and replay) and
   dialogs shown inside the auth-capture browser — see `TODO.md` EXEC-25/EXEC-26.
+
+### 3.4i Iteration: `for_each` (EXEC-38)
+
+`SkillStep.for_each` (`dict`) is the "for each row matching X, do steps A-C" iteration payload —
+empty for ordinary steps. Built on the entity-binding machinery (§EntityBinding) already
+shipped, not new resolution logic; see `docs/TRD.md` §10.8 for the full mechanism (the
+`executeOneStep` extraction that lets a loop body reuse the exact recovery/GATE/VERIFY/dry-run
+path every top-level step gets) and its sibling **PROD-3-DRYRUN** section (§10.6a) for the
+required dry-run/cap/entity-binding safety mechanisms it depends on.
+
+```python
+for_each: dict   # {rows: {container_selector}, as, max_iterations, on_row_error, steps}
+```
+
+- **`rows.container_selector`** `str` — `[executor]`, a plain CSS selector matching every
+  candidate row. Enumerated once, up front, by `runtime/app/resolution.js::enumerateRows` — each
+  row's own full trimmed text becomes its identifier.
+- **`as`** `str`, default `"row"` — `[contract]`, the name body steps read the current
+  iteration's identifier/index under: `{{<as>_id}}` / `{{<as>_index}}`.
+- **`max_iterations`** `int` — `[contract]`, **required**. `_saved_for_each_step`
+  (`skill_package_builder_saved_skill.py`) drops the step entirely if absent or ≤ 0 — same
+  "unfillable step vanishes from execution.json" contract every action uses. Clamped again at
+  runtime by `CONXA_MAX_LOOP_ITERATIONS` (default 100).
+- **`on_row_error`** `"stop" | "continue"`, default `"stop"` — `[contract]`. `"stop"` propagates a
+  row failure as a normal run failure; `"continue"` skips the failing row and proceeds (never
+  applies to a cancellation or an `ai_review` pause inside the body — those always propagate).
+- **`steps`** — nested body, same shape as `branch.steps`. Each body step's own
+  `entity_binding.identifier` is author-set to `{{<as>_id}}`, so `resolution.js::entityRoots`'s
+  existing narrowing does all per-row scoping — recovery still cannot substitute a different row.
+
+**Compile.** `entity_binding` detection now runs for every step, not only irreversible ones (a
+loop body's ordinary steps need row scoping too) — the confirmation *requirement* stays
+irreversible-only, but `handlers/workflows.py::_require_confirmed_entity_bindings` recurses into
+`for_each.steps` so a destructive body step's binding can't reach a customer install unconfirmed.
+
+**Editor.** Insertable (`action_registry.py`, category `"iteration"`), scaffolded
+(`workflow_mutations.py::_new_manual_step`), validated (`patch_gate.py::_validate_for_each_patch`
+— `steps` rejected on the parent patch, same reasoning as `if_present`'s nested body), and
+surfaced read-only via `StepEditorDTO.for_each_summary`/`.for_each_steps` (same path-addressed
+projection pattern as `branch_summary`/`branch_steps`, IDs like
+`"{skill_id}:{step_index}.for_each.steps[{j}]"`). **No dedicated nested-body editor UI yet** — see
+`TODO.md`.
 
 ### 3.5 RecoveryBlock
 
@@ -1120,6 +1188,12 @@ says whether an accepted proposal actually worked, not just that a reviewer like
 
 **Retired recovery signals (2026-09).** The fallback-selector walk and fuzzy-text match were removed from Layer 2 (see `docs/TRD.md` §10.1), so three values stop appearing on new runtimes: `rec_ok` with `sc: "text_variant"`, `repair_event` with `method: "fuzzy"` or `method: "fallback"`, and the `layer_recovered` recovery-log entry with `mode: "fuzzy"`. Nothing was renamed and no consumer breaks — the values simply go to zero. Historical rows keep them, so dashboards aggregating over past windows must still tolerate them. `recovery_tier{N}` and the `tier` field keep their 1–4 numbering; only the behavioural grouping changed.
 | `drift_detected` | Pre-execution structural drift warning (advisory; emitted at run start, never blocks) | `total` (landmarks), `missing`, `drift_ratio`, `missing_intents` (≤5), `url` |
+| `settle_retry` | (EXEC-37) A step failed, the page had visibly not finished changing, and a settle-then-retry was attempted before the recovery cascade | `si`, `waited` (ms), `phase` (`"action"` \| `"verify"`), `ok` (whether the page actually reached a stable shape, independent of whether the retry itself passed) |
+| `env_mismatch` | (EXEC-36) Pre-execution environment warning: the live browser's locale/timezone/viewport differs materially from the environment the skill was recorded in (advisory; emitted at run start, never blocks) | `fields` (which of `locale`/`timezone`/`viewport` differed), `locale_rec`, `locale_live`, `vw_rec`, `vw_live` (recorded/live viewport width), `tz_delta_min` |
+| `dry_run_skip` | (PROD-3-DRYRUN) A destructive step resolved but was never dispatched — `dry_run: true` withheld the committing action | `si` |
+| `for_each_start` | (EXEC-38) A for_each loop began — row enumeration finished | `si`, `total` (rows found), `cap` (effective max_iterations after clamping) |
+| `for_each_row_fail` | (EXEC-38) One row's loop body failed | `si`, `row_index`, `continued` (whether `on_row_error: "continue"` let the loop proceed) |
+| `for_each_done` | (EXEC-38) A for_each loop finished (success or a `stop`-mode failure that halted it) | `si`, `processed`, `failed`, `total` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
 | `wf_fail` | Workflow failed | `dur`, `fsi` (failed step index), `fc` (failure code) |
 

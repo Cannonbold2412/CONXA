@@ -621,6 +621,13 @@ non-blocking pattern: `isAuthFailure()` detects it, a login window opens in the 
 `execute_skill` returns immediately telling Claude to resume with `resume_from` once the user has
 signed in — see `docs/Auth-and-Updater.md` §1.3.
 
+**Dry-run (PROD-3-DRYRUN).** When a skill's last step is a hard-to-undo action (delete a record,
+send a payment), the user can ask to preview it first: `execute_skill(..., dry_run: true)` runs
+every ordinary step normally but, on reaching the destructive one, only confirms its target is
+still findable — it never clicks/submits it. The response names exactly what it held back
+("Dry run: 1 committing step skipped — Click 'Delete invoice'"), and the user decides whether to
+re-run for real. See `docs/TRD.md` §10.6a.
+
 ---
 
 ## 12. Execution with Recovery

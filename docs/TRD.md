@@ -372,6 +372,10 @@ Defined in `server.js` `_toolDefinitions()`:
 | `list_schedules` | List local schedules with next run + last result (metadata only — input values never returned) |
 | `delete_schedule` | Permanently remove one local schedule |
 
+**PROD-3-DRYRUN**: `execute_skill`/`execute_sequence` accept `dry_run: true` — every step runs
+normally except a `destructive === true` one, which is resolved (proving its target is findable)
+but never dispatched or verified. See §10.6a's sibling section for the full mechanism.
+
 There is no `refresh_skills` tool — skill pack sync runs automatically on startup
 (`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails a
 real on-disk checksum mismatch. Before that gate, `ensureSkillIntegrity` re-reads the
@@ -1081,6 +1085,10 @@ sequenceDiagram
 5b. **A `dialog` listener is attached** (`session.py::_attach_page_listeners` → `_on_dialog`) for native `alert`/`confirm`/`prompt` boxes. Registering the listener stops Playwright's own default auto-dismiss, but **Chromium still visually renders the native dialog** (registering the listener does not suppress it — confirmed against real behavior, correcting an earlier assumption in this doc) — so the recorder used to `accept()` it synchronously and immediately, which raced the human and usually closed it before they could see or answer it, and a `prompt` always submitted empty text regardless. It now holds the dialog open, asks the Studio (`js_dialog_request` event → `RecordWorkflowDialog.tsx` modal, pinned `alwaysOnTop` via `window:raise` so it's never hidden behind the recording browser → `cmd_resolve_js_dialog` → `resolve_js_dialog()`), and resolves it from the pump loop (`_drain_js_dialog_sync`) with the human's real choice and, for a prompt, their typed text — recorded as `dialog_accept`/`dialog_dismiss` with value `{"type","message","value"}`. Because the native dialog closes while its window is in the background (behind the pinned Studio modal), Windows can leave its now-dead pixels on screen until that window repaints; `_drain_js_dialog_sync` calls `page.bring_to_front()` immediately after `accept()`/`dismiss()` to force that repaint — no minimizing, the human lands back in the same browser window. A dialog left unanswered past `_JS_DIALOG_TIMEOUT_S` (120s) auto-accepts (also followed by `bring_to_front()`) so it can never wedge the recording. In `auth_mode` (the separate login-capture browser) this still auto-accepts immediately, unchanged — that browser's pump loop never drains a pending dialog. `beforeunload` confirmations are unhandled on both record and replay (`TODO.md`).
 6. Events stream to `session_events.py` which appends to `events.jsonl`.
 7. On stop, `session.py` closes the Playwright context and renames each tab's raw `.webm` to a stable name (§6.3). It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
+7a. **Environment capture (EXEC-36).** Once, right after the start page loads,
+`_write_environment_sync` writes `session_dir/environment.json` (locale, timezone, viewport,
+device pixel ratio, a locale-formatted date sample, platform) — see §10.6a for the full capture →
+compile → replay-comparison path.
 
 #### 6.1a Browser Back/Forward capture (2026-08-25)
 
@@ -1282,15 +1290,9 @@ events.jsonl (raw RecordedEvents)
         │
         ▼  compiler/build.py:compile_skill_package()
            │
-           ├── LLM: llm/workflow_intent.py → WorkflowIntentGraph (ONE call, FIRST —
-           │   before the per-step loop; on failure every step just gets a
-           │   blank/heuristic intent, no per-step LLM fallback). Emits, per
-           │   step, BOTH a snake_case intent_token (consumed by _build_step /
-           │   _prefetch_vision_anchors) and readable prose (becomes
-           │   semantic_description and the Workflow plan shown in Human
-           │   Edit). Single source of both.
-           │
-           ├── For each step:
+           ├── For each step (no per-step LLM intent token — every step compiles
+           │   with the recorder's own heuristic intent from
+           │   normalize_compiler_intent; see the merged call below for why):
            │   ├── identity_bundle.py → IdentityBundle (deterministic, zero-LLM)
            │   │   generate_deterministic_signals() produces Playwright-native signals
            │   │   ranked by durability. LLM is never asked to write a selector string.
@@ -1301,19 +1303,32 @@ events.jsonl (raw RecordedEvents)
            │   ├── recovery_policy.py → RecoveryBlock
            │   └── confidence/layered.py → confidence score
            │
+           ├── build.py:_build_image_by_step_key() → re-derives, per step, the frame
+           │   anchor_vision_llm.py already chose (a cache hit, no new LLM call), keyed
+           │   by step_key while steps[i] still maps 1:1 onto cleaned_events[i]
+           │
            ├── build.py:_build_compile_report() → compile_report (status, per-step confidence)
            │
-           ├── LLM: llm/workflow_semantics.py → the compiler's second opinion (ONE call,
-           │   LAST — after bindings are deduplicated and the report above exists;
-           │   BUILD-25). Decides rename_binding / parameterize_literal /
-           │   suggest_optional / label_phase / suggest_assertion / flag_noise;
-           │   compiler/second_opinion.py APPLIES them to the steps. Writes meaning only
-           │   (input_binding, {{placeholder}} in value, phase, try_dismiss branch, an
-           │   advisory text/URL/state validation.assertions entry) — never a selector or
-           │   identity bundle. flag_noise removes a step but archives it in full under
-           │   compile_report["archived_steps"] rather than deleting it. Rules-only
-           │   fallback on disable/failure/drained pool; the compile_report is rebuilt
-           │   when anything was applied or archived.
+           ├── LLM: llm/workflow_review.py → build_workflow_review() (ONE multimodal
+           │   call, LAST — after bindings are deduplicated and the report above
+           │   exists; BUILD-25 merged with BUILD-26, 2026-09-11). Merges what used to
+           │   be two text-only calls (workflow_intent.py before the step loop,
+           │   workflow_semantics.py after) into one call that also sees each step's
+           │   chosen anchor screenshot. Produces BOTH the WorkflowIntentGraph (goal +
+           │   per-step intent_token/prose — build.py:_apply_workflow_review_to_steps
+           │   backfills semantic_description always, and intent only where the
+           │   heuristic above left it blank) AND BUILD-25's second-opinion findings
+           │   (rename_binding / parameterize_literal / suggest_optional / label_phase /
+           │   suggest_assertion / flag_noise), which compiler/second_opinion.py APPLIES
+           │   to the steps. Writes meaning only (input_binding, {{placeholder}} in
+           │   value, phase, intent, semantic_description, try_dismiss branch, an
+           │   advisory text/URL/state validation.assertions entry) — never a selector
+           │   or identity bundle. flag_noise removes a step but archives it in full
+           │   under compile_report["archived_steps"] rather than deleting it.
+           │   Rules-only fallback on disable/failure/drained pool (the graph backfill
+           │   still runs against an empty WorkflowIntentGraph so a failed call is
+           │   byte-identical to a disabled one); the compile_report is rebuilt when
+           │   anything was applied, archived, or backfilled.
            │
            └── → SkillPackage (models/skill_spec.py)
 ```
@@ -1658,22 +1673,23 @@ All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the 
 
 | LLM Client | Call | Token cost (approx) |
 |---|---|---|
-| `workflow_intent.py` | Per-workflow intent graph — one call sources every step's snake_case token AND review prose (2026-08-25). A step the graph leaves tokenless, or a call that fails outright, just compiles with a blank/heuristic intent — no per-step LLM fallback (removed 2026-09-09) | Low |
 | `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
 | `recovery_llm.py` | Not on the primary compile path (Human Edit layered check / 1-click fix) | Medium |
-| `workflow_semantics.py` | The compiler's second opinion — one whole-workflow call, sited after `_build_compile_report`, deciding `rename_binding` / `parameterize_literal` / `suggest_optional` / `label_phase` / `suggest_assertion` / `flag_noise` (BUILD-25). `compiler/second_opinion.py` writes them onto the steps: `input_binding`, `{{placeholder}}` tokens in `value`, `phase`, the `try_dismiss` branch, an advisory text/URL/state `validation.assertions` entry, or removing (archiving) a step. Never a selector or identity bundle. | Low |
+| `workflow_review.py` | One whole-workflow multimodal call, sited after `_build_compile_report` (BUILD-25 merged with BUILD-26, 2026-09-11; wiring fixed BUILD-29, 2026-09-12 — the merge was un-registered as a vision task and had no prompt branch at all, so it silently ran as a promptless text request and every compile went rules-only with no error). Merges the old separate `workflow_intent.py` call (per-workflow intent graph — every step's snake_case token AND review prose) and `workflow_semantics.py`'s second opinion (`rename_binding` / `parameterize_literal` / `suggest_optional` / `label_phase` / `suggest_assertion` / `flag_noise`) into one call that also sees each step's already-chosen anchor screenshot, sent as `image_url` content blocks keyed by `step_key` (never inlined into the JSON text). A step's images are trimmed to a byte budget before the request is built (`compiler/build.py::_trim_review_images` — highest-confidence steps' images drop first) and excluded from the local response cache key, so a differently-trimmed request can't collide with another's cached answer. A step the graph leaves tokenless just keeps its heuristic intent — no per-step LLM fallback. `compiler/second_opinion.py` writes the findings onto the steps: `input_binding`, `{{placeholder}}` tokens in `value`, `phase`, the `try_dismiss` branch, an advisory text/URL/state `validation.assertions` entry, or removing (archiving) a step; `build.py:_apply_workflow_review_to_steps` writes the graph's `intent`/`semantic_description`. Never a selector or identity bundle. | Medium (screenshot) |
 
 `semantic_llm.py` (`semantic_enrichment`) is **not** called during normalize or compile. Missing `input_type` is inferred with policy regex only. `enrich_semantic` remains on Human Edit 1-click fix (`compiler/patch.py`).
 
-**The compiler's second opinion — what it writes, and what it never writes (BUILD-25).** `llm/workflow_semantics.py::build_second_opinion` decides; `compiler/second_opinion.py::apply_second_opinion` writes (and, for the one destructive kind, `archive_flagged_steps` removes). Four kinds rewrite a field in place: `rename_binding` sets `input_binding` and rewrites the matching `{{token}}` inside `value`; `parameterize_literal` binds a recorded literal (only on a step that has no binding yet — it never re-points an existing one); `label_phase` sets `SkillStep.phase`; `suggest_optional` converts a step the recorder already flagged stochastic into a `try_dismiss` branch via the shared `build_try_dismiss_from_hint`, clearing `optional_hint`. Two stage-(d) kinds are narrower: `suggest_assertion` additively appends one `Assertion` to `validation.assertions` — always `required=False`, and restricted to `text_present`/`text_absent`/`url_changed`/`url_pattern`/`state_changed`, never a selector-bearing type, since that `target` is a raw Playwright selector this pass may never write; `flag_noise` removes a step the recorder itself observed to have no effect (`post_condition.classified_effect == "none"`), never the model's own opinion alone, and archives it in full under `compile_report["archived_steps"]` rather than deleting it — see "Why archive, not delete" below. The pass never touches `target`, `identity_bundle`, `compiled_selectors`, `wait_for`/`success_conditions`, or the frame/tab chain — element identity stays fully deterministic (CLAUDE.md Key Invariants).
+**Merged into one multimodal call (BUILD-26, 2026-09-11).** `llm/workflow_review.py::build_workflow_review` is now the single call that decides both the workflow-intent graph and the second-opinion findings below — see the `workflow_review.py` row above and its own module docstring for the merge's shape and consequences (chiefly: intent-token resolution moves from before the per-step compile loop to after it, so vision-anchor selection and each step's initial `intent` fall back to the recorder's own heuristic instead of an LLM token). `workflow_intent.py::_graph_from_raw` and `workflow_semantics.py::_validate_findings` still do the parsing/validation, unchanged; only the orchestration (one call instead of two) moved.
+
+**The compiler's second opinion — what it writes, and what it never writes (BUILD-25).** `llm/workflow_review.py::build_workflow_review` decides; `compiler/second_opinion.py::apply_second_opinion` writes (and, for the one destructive kind, `archive_flagged_steps` removes). Four kinds rewrite a field in place: `rename_binding` sets `input_binding` and rewrites the matching `{{token}}` inside `value`; `parameterize_literal` binds a recorded literal (only on a step that has no binding yet — it never re-points an existing one); `label_phase` sets `SkillStep.phase`; `suggest_optional` converts a step the recorder already flagged stochastic into a `try_dismiss` branch via the shared `build_try_dismiss_from_hint`, clearing `optional_hint`. Two stage-(d) kinds are narrower: `suggest_assertion` additively appends one `Assertion` to `validation.assertions` — always `required=False`, and restricted to `text_present`/`text_absent`/`url_changed`/`url_pattern`/`state_changed`, never a selector-bearing type, since that `target` is a raw Playwright selector this pass may never write; `flag_noise` removes a step the recorder itself observed to have no effect (`post_condition.classified_effect == "none"`), never the model's own opinion alone, and archives it in full under `compile_report["archived_steps"]` rather than deleting it — see "Why archive, not delete" below. The pass never touches `target`, `identity_bundle`, `compiled_selectors`, `wait_for`/`success_conditions`, or the frame/tab chain — element identity stays fully deterministic (CLAUDE.md Key Invariants).
 
 **Why archive, not delete (stage d, 2026-09-10).** `flag_noise` is the pass's only kind that changes the *shape* of `steps` rather than one field on one step, and the only one where a wrong call is not cheaply reversible in Human Edit — a deleted step's `IdentityBundle` only ever comes from a DOM snapshot at record time, so recreating it means re-recording. `archive_flagged_steps` (`compiler/second_opinion.py`) removes the step from what ships but writes its full serialized form into `compile_report["archived_steps"]` (`{step_key, step, category, why}`), which never reaches the shipped pack (`skill_package_builder_saved_skill.py` only copies from the *returned*, filtered `steps`). No restore command exists yet — the archive is written and persisted, but nothing in the editor consumes it, the same "written, no reader yet" posture `label_phase` had before stage (e).
 
 **Why applied rather than suggested.** Stage (c) of BUILD-25 was going to put accept/reject chips in Human Edit; that was dropped on 2026-09-09. A reviewer opens Human Review and sees finished work — `sender_email`, not an offer to rename `email_2` — and Human Review is itself the gate for a wrong call. Nothing in the renderer marks a second-opinion change: it is simply part of the compiled workflow, indistinguishable from what the fixed rules produced. Two consequences were accepted knowingly. First, **a compile is no longer byte-identical whether the pass ran or not** — only the routes that apply nothing (disabled, failed, empty, every finding rejected by validation) still are, and the content-hash cache keeps repeat compiles of the same recording stable. Second, `suggest_optional` retires the older *"branch steps compile only from observed states + human confirmation"* rule: the observed state is still required (the pass can only judge hints the recorder already produced — it never invents one), but the confirmation now happens after the fact in Human Review. `confirm_optional_interstitial` remains for hints the pass left alone; there is no un-confirm command, so reversing one means editing the step back by hand.
 
-**Failure / cost / silence behaviour.** Gated by `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED` (default on). Follows `workflow_intent.py`'s established pattern exactly: a local cache (shared via `llm/llm_cache.py`, which `workflow_intent.py` was also migrated onto) keyed on a content hash of the per-step payload + goal + sibling bindings; a failed or empty response is never cached, so a recompile retries; any exception degrades to the rules-only compile rather than failing it. `compile_report["second_opinion"]` records what was actually applied, as an audit trail for the compile log — nothing in Human Edit reads it — and appears only when at least one finding was applied. When anything was applied the report is **rebuilt** from the mutated steps (`_build_compile_report` is a pure local function over `steps`), because a `suggest_optional` conversion changes a step's compiled shape after the first report was computed.
+**Failure / cost / silence behaviour.** The `suggestions` half is gated by `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED` (default on); the intent-graph half generates unconditionally, matching its old ungated behavior. A local cache (`llm/llm_cache.py`) keyed on a content hash of the per-step payload + page URLs + sibling bindings; a failed or empty response is never cached, so a recompile retries; any exception degrades to `(WorkflowIntentGraph(), [])` — the rules-only compile — rather than failing it. `build.py:_apply_workflow_review_to_steps` runs unconditionally against whatever graph resulted (empty on failure), outside the try/except guarding the findings application, so a disabled and a failed call stay byte-identical instead of one applying the semantic_description fallback and the other skipping it. `compile_report["second_opinion"]` records what was actually applied, as an audit trail for the compile log — nothing in Human Edit reads it — and appears only when at least one finding was applied. When anything was applied or backfilled the report is **rebuilt** from the mutated steps (`_build_compile_report` is a pure local function over `steps`), because a `suggest_optional` conversion or an intent backfill changes what the first report was computed against.
 
-**Validation is the trust boundary, and it matters more now that findings are applied than it did when they were shown.** Findings are keyed on `step_key` (`compiler/step_key.py` — `identity_bundle.stable_hash` plus an occurrence ordinal, with a hashed action+url fallback for element-less steps), never `step_index`, so a reorder or insert cannot misattribute one. `workflow_semantics.py::_validate_findings` silently drops any finding with an unrecognized `step_key`, an unknown `kind`, an invalid binding name, a name colliding with one `_deduplicate_input_bindings` already assigned, a `suggest_optional` on a step with no recorder-observed `optional_hint`, an invalid `label_phase` value, or anything past a precision-first cap of ~1 finding per 2 steps. `apply_second_opinion` adds the shape guards validation cannot see (a rename on a step with no binding, a conversion on a step whose hint is already consumed). "No findings" is a first-class, expected, and common outcome — the prompt explicitly asks for an empty list when nothing is clearly wrong.
+**Validation is the trust boundary, and it matters more now that findings are applied than it did when they were shown.** Findings are keyed on `step_key` (`compiler/step_key.py` — `identity_bundle.stable_hash` plus an occurrence ordinal, with a hashed action+url fallback for element-less steps), never `step_index`, so a reorder or insert cannot misattribute one. `workflow_semantics.py::_validate_findings` (still the validator, now called from `workflow_review.py`) silently drops any finding with an unrecognized `step_key`, an unknown `kind`, an invalid binding name, a name colliding with one `_deduplicate_input_bindings` already assigned, a `suggest_optional` on a step with no recorder-observed `optional_hint`, an invalid `label_phase` value, or anything past a precision-first cap of ~1 finding per 2 steps. `apply_second_opinion` adds the shape guards validation cannot see (a rename on a step with no binding, a conversion on a step whose hint is already consumed). "No findings" is a first-class, expected, and common outcome — the prompt explicitly asks for an empty list when nothing is clearly wrong.
 
 **Reviewer edit log (BUILD-25 stage a, 2026-09-09).** `editor/edit_log.py` appends one JSON line per changed field to `data/skills/{skill_id}/edits.jsonl` (see §2.3) for every mutating Human Edit command, hooked once in `backend.py::Backend.dispatch` rather than per-command so undo/redo are covered too. Records are keyed on `step_key`, the same key space as `compile_report.second_opinion` above, and compare only a small allow-list of reviewer-editable fields (`input_binding`, `value`, `intent`, `semantic_description`, `action.action`, `optional_hint`, `branch`, `validation.assertions`) — never the whole step. Writing is failure-silent, matching every other local cache/log in the compile pipeline. It is the eval set for the pass above, scored by `conxa-cloud/scripts/eval_suggestions.py`, and the training pair for any future fine-tune. The join changed meaning when the pass went from suggesting to applying: an edit on a `(step_key, field)` the pass wrote is now a reviewer **overriding** it, so the harness reports `override_rate` (lower is better) rather than a precision score, alongside the unchanged `miss_rate` (edits on the same fields where the pass said nothing). Neither is a verdict on its own — a rename the reviewer preferred differently costs nothing, a reverted `parameterize_literal` would have shipped a broken input, and the log does not distinguish them.
 
@@ -1863,6 +1879,17 @@ never an error. Config: `*_MULTIMODAL_MODEL` per provider + `LLM_STARTER_MULTIMO
 `LLM_PRO_MULTIMODAL_MODEL` tier overrides (`conxa-cloud/backend/ROUTER_SETUP.md`). The
 "registered in the vision-task literal set" triplication note still applies to every *other* task
 in that set — `_copilot_modality` is new code layered on top, not a collapse of it.
+
+**Dev-mode override (added 2026-09-10).** When `settings.environment == "dev"` (the default —
+`CONXA_ENV` unset or `"dev"`, see `conxa_core/config.py::active_environment`),
+`_copilot_modality` always returns `"text"`, so routing picks `text_model` regardless of
+`payload["image_base64"]`. This only changes which `PoolEntry` model slot is picked — the
+screenshot itself, when attached, is still included in the request body exactly as in prod (see
+`_openai_body_dict`'s `copilot_diagnose`/`copilot_reply` branches), so it reaches whatever model
+`text_model` names. Point dev's `text_model` at a multimodal-capable model to keep screenshots
+readable without configuring a separate `multimodal_model`/`vision_model` for local iteration.
+The payload-conditional split above (routing to the dedicated `multimodal_model` slot) only
+takes effect in prod.
 
 **No multi-turn *session* on this call path.** `ProxyBody` carries no `messages` field; every task
 builds a fresh `[system, user]` pair per call. `conxa_compile/llm/copilot.py::copilot_turn`
@@ -2158,7 +2185,12 @@ The installer (`installer_builder.py`) wraps this with NSIS to produce a per-use
 
 ### 9.1 Step Execution Loop
 
-For each step in `execution.json`:
+**`runPlan`'s top-level loop is a thin `for` over `executeOneStep(ctx, state, steps, i)`** — the
+per-step body below, extracted (EXEC-38) so `for_each`'s loop body can call the exact same
+function per row instead of the best-effort, no-recovery path other branch primitives use (§10.7,
+§10.8). `ctx` is run-constant config (tabs, watch, dryRun, slug, the tracker/cancelCheck/onStep
+callbacks); `state` is what steps mutate across the run (recoveredSteps, prevPage/prevStepType,
+warnings, dryRunSkipped, and the flat `inputs` namespace). For each step in `execution.json`:
 
 ```
 1. Poll pause signal (control file: allow pause/resume via API)
@@ -2305,6 +2337,26 @@ next step resolves against the new page. Non-navigation steps have no inter-step
 "observer pause" after navigation, gated by `CONXA_HUMAN_PACING` and a per-company
 `pack.pacing.observer_ms` — both were removed to make execution as fast as the page allows.)
 
+**Settle-detection fallback (EXEC-37).** The compiled `wait_for` shape is inferred from ONE
+observed page load at record time (`validation_planner.py::infer_wait_for_shape`) and never
+reaches the runtime directly — it is lowered into `validation.assertions` at compile time
+(`build.py::_build_assertions`). A single observation is calibrated to whatever network/server
+conditions happened to exist during that one recording, so it silently under- or over-waits on a
+slow morning, a cold cache, or a server under load. `runtime/app/settle.js` adds settle detection
+as a **failure-path fallback only** — after an ordinary resolution/verify miss, before the
+recovery cascade — never as a new inter-step wait, so a currently-passing run's timing is
+unaffected. It polls a page-shape signature (`page_scripts.js::settleSignature`: text length,
+interactive-element count, total node count, visible busy-indicator count) through the
+`page_eval.js` deadline seam until two consecutive samples match with no busy indicator, or a
+budget (`CONXA_SETTLE_BUDGET_MS`, default 8000ms, poll `CONXA_SETTLE_POLL_MS`, default 250ms)
+expires. If the page actually had to wait (more than one poll interval), `run.js` retries once:
+a step whose action never dispatched gets the whole action + verify retried; a step whose action
+may already have landed (`verifyFail`, or `mayHaveActed` — the same signal `cascade.js`'s own
+guard uses at EXEC-24) only gets re-verified, never re-acted, so a non-idempotent step
+(`step_utils.js::isNonIdempotent`) can never be double-submitted by the retry itself. Kill switch:
+`CONXA_SETTLE_RETRY=0` restores today's behavior exactly. Emits `settle_retry` telemetry
+(§12.1) on every attempt, `tier_ok` with `tier: "tier1_compiled_settled"` on a successful retry.
+
 ### 9.3 File Upload Steps
 
 A browser never exposes a picked file's full path — only `File.name` — so **nothing captured
@@ -2399,7 +2451,13 @@ Code files are what execution needs; artifacts are what *recovery* needs, and on
 - `destructiveHalt` is now set by `run.js` from `step.destructive` directly whenever recovery fails to heal the step, rather than being inferred from the guard's `destructive-no-guess` reason — with the same-element Layer 2 stages running for destructive steps, the cascade no longer stops at a single predictable point, but the agent-park exclusion must hold on every path.
 - Both halts (`destructiveHalt`, `entityNotFound`) are deliberate stops, not exhausted recovery: `server.js`'s `parkable` predicate excludes them (no agent-mediated resume is ever offered), and `failure_response.js` returns a plain terminal message instead of a Tier B candidate digest — offering a ranked "pick a different element" list here would invite exactly the wrong-row guess the halt exists to prevent.
 - **Publish gate.** An irreversible step whose compiler-detected entity binding was never confirmed by the vendor in the editor cannot be saved (`editor/patch_gate.py::irreversible_step_requires_confirmed_entity_binding`) or published (`handlers/workflows.py::_require_confirmed_entity_bindings`, since patch_gate only fires on an edit). A step with no detected repeating container has nothing to confirm and is unaffected.
-- Scope note: this is the *safety-core* slice of PROD-3 (danger classification, entity binding, fail-closed recovery, Strict Mode). Dry-run/stage-then-commit, compensation workflows, before/after screenshots, and a published per-skill safety score remain open — see `TODO.md` PROD-3.
+- Scope note: this is the *safety-core* slice of PROD-3 (danger classification, entity binding, fail-closed recovery, Strict Mode). Layers 4–5 (dry-run, stage-then-commit lint, compensation workflows) are covered next, under **PROD-3-DRYRUN**. Before/after screenshots and a published per-skill safety score remain open (`PROD-3-UI`) — see `TODO.md`.
+
+**Dry-run, stage-then-commit lint, and compensation workflows (PROD-3-DRYRUN).** Layers 4–5 of the safe-action system, deferred from the 2026-08-29 safety-core pass:
+- **Dry-run mode.** `execute_skill`/`execute_sequence` accept `dry_run: true`. In `run.js`'s step loop, a step with `step.destructive === true` still **resolves** (`resolution.js::resolveStep` — proves the target is actually findable, the same signal a real run would need) but never reaches `executeStep`/`verifyStep`. Kept as an in-loop interception rather than threaded through every handler — the smallest diff that can never half-execute an action by accident. A resolution failure is a real failure (fail closed): a dry run that can't even find its committing step's target is not a clean preview. Every skipped step is recorded (`{index, intent}`) and returned as `dryRunSkipped`; `server.js` names each one in `execute_skill`'s response text ("Dry run: N committing step(s) skipped..."). Non-destructive steps run exactly as normal — dry-run skips only the one committing action, not the whole workflow.
+- **Stage-then-commit lint.** `conxa_compile/compiler/commit_ordering.py::lint_commit_ordering(steps)` — advisory, computed at compile time and stored under `compile_report["commit_ordering_warnings"]` (never blocks compile/save/publish). Warns when a step classified `consequence == "irreversible"` is followed by another step that writes anything (`consequence` in `{"reversible", "irreversible"}`) — skipping non-substantive trailing markers (`editor.action_registry.MARKER_ACTIONS`: tab/frame/dialog/clipboard bookkeeping) and purely read-only observation steps (a final assertion/screenshot is harmless by definition). Only the nearest offending step after each irreversible one is reported, since fixing the ordering means moving the irreversible step, not chasing every downstream write.
+- **Compensation workflows.** `SkillMeta.compensation_skill: str` — the slug of a sibling skill in the same pack, set in the Human Edit editor, carried into `manifest.json` via the same two-hop sidecar pattern as `structural_fingerprint`/`environment` (`compensation_skill.json`). On a mid-run failure where `err.actionMayHaveTakenEffect` is set (EXEC-24's "the action may have already landed" signal) and a compensation skill is linked, `server.js` appends one line naming it as an available next step. The runtime **offers** it and never runs it automatically — an unattended compensating write after an unknown failure would be a second uncontrolled action.
+- Tests: `runtime/test/unit/test_dry_run.js`; `conxa-cloud/tests/test_commit_ordering_lint.py`.
 
 **Recovery request payload — current-state grounding.** `server.js:_buildFailureResponse` always captures the interactive-element inventory *live, after* the Tier A cascade has run — this is the state the agent's corrected selector will actually act on, since in-process remedies (dismiss-overlay, scroll, re-hover) can themselves change the page. The pre-cascade inventory (`run.js:captureEarlyDomSnapshot`, taken at the exact moment of failure) is included as a clearly-labeled secondary block only when it differs from the current one — e.g. a dropdown that was open at failure time but has since closed. The payload also carries: the step's expected post-condition (compiled assertions plus, when the failure was a verify-fail rather than a resolution miss, which assertion actually failed), a compact trace of already-executed steps, and explicit grounding instructions telling the agent that the current screenshot/inventory are ground truth and the recording-time reference image may be outdated.
 
@@ -2658,6 +2716,59 @@ score/margin, `stable_hash`, app-version fingerprint, drift hint). This is **eph
 telemetry** — the signed local pack is never mutated; a durable fix is only ever an
 admin-reviewed, manually published re-sign (see §10.5).
 
+### 10.2c Scroll-Until-Found for Virtualized Lists (BUILD-30)
+
+A virtualized grid (AG Grid, react-window, TanStack Virtual, Angular CDK) renders only the rows
+currently in the scrolled viewport — a target row recorded further down the list is not in the
+DOM at all until scrolled into range. Before this, that produced `entity_not_found` (when the
+step has an entity binding — which **skips the recovery cascade entirely**, see §9.1) or a plain
+`resolve_miss`, indistinguishable from genuine page breakage.
+
+**Detection (compile-time, advisory).** `compiler/virtualized.py::detect_virtualized_container`
+walks the recorded ancestor chain (the same `{tag, id, classes, outer_html}` shape and event key
+`entity_binding.py` already reads) looking for a known virtualization-library class marker, an
+inline `overflow` + fixed-height scroll-viewport style, or (corroborating only, never sufficient
+alone — `captureAncestors` truncates `outer_html` at 2000 chars, which undercounts rendered rows
+on a real grid) an `aria-rowcount`/`aria-setsize` materially exceeding what's actually rendered.
+A hit populates `SkillStep.handler_hints.virtualized_container` with the container's selector;
+the common case (no match) leaves it `""`. Deterministic, no LLM — same primary-compile-path
+invariant as every other selector-adjacent decision.
+
+**Resolution (runtime).** `runtime/app/resolution.js::maybeScrollForVirtualization` runs
+*before* either miss becomes terminal, inside `resolveStep` — one bounded scroll pass, then the
+caller re-runs its own lookup (`entityRoots` or `gatherCandidates`+`resolveSignals`) and only
+fails for real if that also comes up empty. Container resolution order: (1) the compiled
+`virtualized_container` hint; (2) `entity_binding.container_selector` (rescues a skill compiled
+before this shipped — no recompile required); (3) the page's dominant scrollable element, but
+**only** for a compiled choice/dropdown-kind control (`handler_hints.control_kind === "choice"`)
+— an ordinary step with no virtualization evidence at all never scrolls, so unrelated broken
+selectors are untouched. Scrolling itself is two self-contained page-realm functions in
+`page_scripts.js` (`scrollVirtualContainerStep`, `scrollDominantScrollableElement`) invoked via
+the `page_eval.js` deadline seam, never a bare `.evaluate()`.
+
+There is deliberately **no second retry loop**: `locators.js::withLocator`'s existing PRIMARY
+retry loop (which already re-resolves every ~120ms within one action budget) owns the iteration
+— each retry re-enters `resolveStep`, the container stays scrolled from the previous pass (live
+page state, not JS module state), and the search sweeps the list. On reaching the bottom, one
+reset-to-top keeps a row above the starting scroll position reachable. Re-query after every
+scroll is by the compiled identity signals / `entity_binding.identifier` — stable identity,
+never DOM index — because it falls out of re-entering the unchanged resolution code, not a
+separate mechanism.
+
+`withLocator`'s deadline is extended once (`CONXA_VIRTUAL_SCROLL_BUDGET_MS`, default 15000ms)
+but **only** when a scroll pass grounded in real compiled evidence (hint or entity binding, not
+the dominant-scrollable guess) actually ran, and only for a miss where `mayHaveActed` is unset —
+i.e. no locator was ever produced, so nothing was acted on and a longer wait cannot turn a clean
+failure into a repeated action. `CONXA_VIRTUAL_SCROLL_MAX_PASSES` (default 40) is a belt-and-
+braces cap independent of the deadline. `CONXA_VIRTUAL_SCROLL=0` disables the feature entirely,
+restoring pre-BUILD-30 behavior exactly.
+
+This is Tier A / zero-token: the scroll-and-re-gather happens *before* the recovery cascade is
+ever reached, using only the pure resolver and deterministic page scripts — no LLM, matching the
+Key Invariant that Tier A costs zero tokens. A step that only resolved after scrolling emits
+`tier_ok` with `virtualScroll: true` (`run.js`) rather than a generic drift signal, so §10.5's
+fleet dashboard doesn't classify a scroll position as a page redesign.
+
 ### 10.5 Drift Flywheel (admin-gated)
 
 `repair_event`s ingest via `POST /tracking/{company}/events` and aggregate into an admin review
@@ -2677,6 +2788,59 @@ missing (default: ≥50% below a 0.5 agreement threshold) it emits a **`drift_de
 This is **warn-not-block** — execution always proceeds and per-step recovery still applies (consistent
 with the zero-token Tier A rule). The cloud aggregates these per (workflow, version) via
 `_pre_exec_drift_queue` and returns them under `pre_exec` in the `/drift` response.
+
+**Warnings channel (BUILD-28a).** Before EXEC-36, `drift_detected` reached the fleet dashboard and
+stopped there — the runtime never told the user running the skill. `run.js` now accumulates every
+advisory warning (drift + environment mismatch, below) into a `warnings: string[]` it returns
+alongside `recoveredSteps`. `server.js` appends them to `execute_skill`'s response text on both the
+success path and the failure path (a run that fails *because of* the mismatch says so, via
+`stepFailure`'s `err.warnings`, instead of reading like an ordinary selector/timing failure) —
+deduped across every skill in an `execute_sequence` chain.
+
+### 10.6a Pre-Execution Environment-Mismatch Warning (EXEC-36)
+
+A skill recorded by an admin in `en-US` at 1920×1080 replayed by a viewer in `de-DE` at 1366×768
+can hit a button now hidden behind a hamburger menu, a date field expecting `TT.MM.JJJJ`, or a
+control that doesn't exist for that role — none of which is a broken selector, but all of which
+fail exactly like one, burning the same recovery ladder and Tier B tokens as genuine drift. The
+drift gate above checks structural landmarks; this checks the **environment** they were recorded
+in.
+
+**Capture (record time).** `recorder/session.py::_write_environment_sync` evaluates once, right
+after the start page loads (best-effort, swallowed on failure — same discipline as
+`_write_diagnostics_sync`), and writes `session_dir/environment.json`: `locale`
+(`navigator.language`), `timezone` + `utc_offset_minutes` (`Intl.DateTimeFormat().resolvedOptions()`
++ `Date.getTimezoneOffset()`), `viewport` (`{w, h}`), `device_pixel_ratio`, `date_format_sample`
+(a fixed date formatted by the browser's default locale), `platform`. **Role is deliberately not
+captured** — there is no generic, reliable way to read the recording user's permissions from a
+page, and guessing would produce false warnings; left to PROD-1's first-run calibration instead.
+
+**Compile.** `SkillMeta.environment: dict[str, Any]` (`skill_spec.py`, `[executor]`-tagged, empty
+dict = unknown). `build.py::_read_environment_sidecar` reads the sidecar into `SkillMeta`, same
+read-from-disk pattern as `_build_structural_fingerprint`. Carry-through mirrors
+`structural_fingerprint` exactly: `skill_package_builder_saved_skill.py` writes
+`environment.json` into the skill dir; `skill_package_builder_output.py` reads it back into
+`manifest.json`'s `environment` key.
+
+**Compare (replay).** `runtime/app/env_match.js::compareEnvironment(recorded, live)` is pure (no
+Playwright) and deliberately narrow — a noisy warning is worse than none:
+- **locale**: primary language subtag differs (`en` vs `de`). Region-only (`en-US` vs `en-GB`)
+  does not warn.
+- **timezone**: UTC *offset* differs, not the zone name.
+- **viewport**: width differs by more than 25%, or the two widths sit on opposite sides of a
+  common responsive breakpoint (1024px, 768px).
+
+`run.js` reads the live environment via `evalOn(startPage, pageScripts.environmentSignature)`
+(the replay-side counterpart to the recorder's capture script — same field shape) at the same
+point as the drift gate above, under the same swallow-everything try/catch. Advisory, never
+blocking. Emits `env_mismatch` telemetry (§12.1) and pushes each mismatch's plain-language
+`message` into the shared `warnings` channel described above.
+
+**Deliberately not changed:** `browser.js::_buildExecContext` (the actual execution context) sets
+no `locale`/`timezoneId`/`viewport` — replay inherits the machine's own environment. The only
+place these are pinned (`STEALTH_CONTEXT_OPTIONS`, `en-US`/`America/New_York`) is the *auth*
+window, never the exec context. Forcing the exec context to the recorded environment would change
+behavior for every existing skill; this item only warns, it does not normalize.
 
 ### 10.3 Dialog-Scoped Recovery
 
@@ -2815,6 +2979,98 @@ quality-gated the same way as `target.primary_selector`) but have no dedicated a
 `BranchBodyEditor.tsx` only covers `if_present`; see `TODO.md` BUILD-6. Human Edit's DTO
 (`StepEditorDTO.branch_summary`/`.branch_steps`) surfaces the same data read-only for review — see
 `research-analysis/Human-Edit-vs-Skill-Package.md` and `docs/Implementation-Plan.md` §1.11.
+
+### 10.8 Iteration: `for_each` (EXEC-38)
+
+The step format could branch but not loop: "process each pending order" required recording N
+near-identical steps or hoping. `for_each` closes that — "for each row matching X, do steps A-C" —
+built directly on the entity-binding machinery §10.2a already shipped, not new resolution logic.
+
+**Shape** (runtime execution-step form, top-level fields — same flattening `if_present` etc. use):
+
+```jsonc
+{ "type": "for_each",
+  "rows": { "container_selector": "table#invoices tr" },
+  "as": "row",                    // body reads {{row_id}}, {{row_index}}
+  "max_iterations": 50,           // REQUIRED — the runtime refuses an uncapped loop
+  "on_row_error": "stop",         // "stop" (default) | "continue"
+  "steps": [ … ] }
+```
+
+**The one real refactor this required.** `run.js`'s step loop used to be a flat `for` with the
+per-step body inlined — every branch primitive before this one runs its nested body through
+`handlers.js::runBranchBody`, a best-effort dispatcher that swallows every error and bypasses tab
+resolution, GATE/VERIFY, the recovery cascade, cancellation, and dry-run's destructive-skip
+(§10.7 above). A loop body doing real work — the kind `for_each` exists for — needs the real
+thing, not that. The per-step body was extracted into `executeOneStep(ctx, state, steps, i)`: `ctx`
+carries everything constant for the whole run (tabs, watch, dryRun, slug, the tracker/cancelCheck/
+onStep/onPhase callbacks), `state` carries everything mutated across steps (recoveredSteps,
+hasExecutedStep/prevStepType/prevPage for tab-inheritance and settle continuity, warnings,
+dryRunSkipped, and the flat `inputs` namespace). The top-level loop is now
+`for (i) await executeOneStep(ctx, state, steps, i)`; `for_each` is intercepted inside
+`executeOneStep` itself (same shape as the existing `ai_review`/dry-run interceptions) and calls
+`executeOneStep(ctx, state, bodySteps, j)` per body step per row — so a loop body gets tab
+resolution, GATE/VERIFY, settle-retry, the full recovery cascade, and PROD-3-DRYRUN's
+destructive-skip **for free**: dry-run mode already resolves-but-never-dispatches a
+`destructive === true` step wherever `executeOneStep` runs it, loop body included, with no
+loop-specific dry-run code needed at all.
+
+**Enumeration** (`resolution.js::enumerateRows(page, spec, cap)`) — the inverse of `entityRoots`:
+lists every row matching `rows.container_selector` and uses each row's own full trimmed text as
+its identifier. Self-consistent by construction — `entityRoots` later re-locates that exact row
+with `.filter({ hasText: identifier })`, so a row's own text always matches itself; if two rows
+happen to share identical text, `entityRoots`'s existing "exactly one match or fail closed" gate
+refuses that iteration rather than guessing, which is correct, not a bug to design around.
+**Snapshot semantics**: called exactly ONCE, before the loop starts — re-enumerating mid-loop over
+a list that mutates as you act on it (a processed row disappearing from a queue view) is how a
+batch silently skips or double-processes rows.
+
+**Per-row scoping is entity binding, unchanged.** Body steps carry `entity_binding.identifier:
+"{{row_id}}"` (author-set); `run.js` sets `inputs.row_id`/`inputs.row_index` before each
+iteration's body runs (restored — or deleted, if they didn't exist before — once the whole loop
+finishes, not per-iteration) and the existing `entityRoots` narrowing does all the work, including
+its PROD-3 guarantee that recovery can never substitute a different row.
+
+**Safety, shipped together with the primitive, not after** — this is why **PROD-3-DRYRUN** (dry-run
+mode, the stage-then-commit lint, compensation workflows — §10.6a's sibling, documented just above
+this section) landed first in the same pass:
+- `max_iterations` is required at compile time (`_saved_for_each_step` drops a step that lacks
+  one — same "return None ⇒ vanishes from execution.json" contract every action uses for an
+  unfillable step) and clamped again at runtime by `CONXA_MAX_LOOP_ITERATIONS` (default 100,
+  `run_config.js`) — belt-and-braces against a hand-edited pack.
+- Entity binding is detected for **every** step now, not only irreversible ones (`build.py`) — a
+  loop body's ordinary steps need row scoping too, not just its destructive one. The **publish-gate
+  confirmation requirement** stays irreversible-only (`patch_gate.py`), but
+  `handlers/workflows.py::_require_confirmed_entity_bindings` now recurses into `for_each.steps`,
+  so a destructive step buried inside a loop body cannot reach a customer install with an
+  unconfirmed binding — the exact case this gate exists to catch, since the row it targets changes
+  every iteration.
+- `on_row_error` defaults to `"stop"` — deliberately unlike `runBranchBody`'s swallow-everything,
+  because a silently skipped row in a batch is a partial write nobody notices. `"continue"` is
+  opt-in. Cancellation and an `ai_review` pause inside a loop body always propagate immediately
+  regardless of `on_row_error` — neither is a row-level failure.
+
+**Editor.** `for_each` is insertable (`action_registry.py`, category `"iteration"`) with a scaffold
+(`workflow_mutations.py::_new_manual_step`) and full `patch_gate.py` validation
+(`_validate_for_each_patch`: rows/as/max_iterations/on_row_error, `steps` rejected on the parent
+patch — nested body edits are path-addressed, same reasoning as `if_present`). `StepEditorDTO`
+gained `for_each_summary`/`for_each_steps` — the same read-only, path-addressed
+(`"{skill_id}:{i}.for_each.steps[j]"`) projection `branch_summary`/`branch_steps` uses. **Not yet
+built**: a dedicated nested-body authoring UI (a `BranchBodyEditor.tsx` variant) — today a loop
+body is only editable via the generic patch mechanism, the same "backend done, editor control
+pending" gap `PROD-3-UI` already tracks for Strict Mode and entity-binding confirmation; see
+`TODO.md`.
+
+**Version gate.** Same manual-coordination caveat as the branch primitives above: an older
+runtime silently no-ops an unrecognized `type`, which for a loop means skipping the entire batch
+— the `CONXA_REQUIRED_RUNTIME` floor must be bumped only once the app-layer version carrying the
+`for_each` handler is actually tagged, not as part of this change.
+
+Tests: `runtime/test/unit/test_for_each.js` (enumeration snapshot-once, cap enforcement, missing
+cap fails at load, `on_row_error` both ways, `{{row_id}}` reaching `entityRoots`, `inputs`
+restored, dry-run visiting every row without dispatching); `conxa-cloud/tests/test_for_each_compile.py`,
+`test_for_each_patch_gate.py`, `test_for_each_dto.py`, `test_for_each_mutations.py`,
+`test_publish_entity_binding_gate.py` (nested confirmation-gate recursion).
 
 ---
 
@@ -2987,6 +3243,21 @@ Enabled providers (current defaults):
 - **NVIDIA NIM** — `llama-4-maverick-17b` (text), `llama-3.2-90b-vision` (vision)
 
 Disabled by default (toggle via env): Cerebras, Together, OpenRouter, Mistral.
+
+**Which tasks need a vision-capable model (BUILD-29).** `conxa_core.llm.client.VISION_TASKS` is
+the single set governing this — the router imports it directly as `_VISION_TASK_NAMES` rather
+than keeping its own copy (it used to; the second copy, and a third in Build Studio's own
+`conxa_compile/llm/client.py`, silently dropped `workflow_review` and every compile went
+rules-only with no error until it was found). The two consumers matter for different paths:
+`conxa_compile/llm/client.py::call_llm` calls `_is_vision_task` to decide which Build Studio
+proxy endpoint to hit (`/api/v1/llm/proxy/vision` vs `/text`) — decisive for every pooled
+request, since the cloud endpoint that receives the call fixes `for_vision` from *which URL was
+hit* and never re-derives it from the task name. The router's own `_VISION_TASK_NAMES` is
+consulted only when `for_vision is None`, i.e. only on the BYOK path (`call_entry_directly`),
+where it picks the model within an already-selected provider entry. A task present in the set
+but reachable only via BYOK would route correctly but be served the wrong model; a task missing
+from the set entirely mis-routes the pooled path outright — both failure modes now point at one
+constant instead of three independently-maintained literals.
 
 ### 13.1a Tiered Compile Pool
 
