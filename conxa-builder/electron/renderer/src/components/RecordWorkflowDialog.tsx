@@ -201,7 +201,7 @@ export function RecordWorkflowDialog({
         onOpenChange(nextOpen)
       }}
     >
-      <DialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100">
+      <DialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100 sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="text-white">Record Workflow</DialogTitle>
         </DialogHeader>

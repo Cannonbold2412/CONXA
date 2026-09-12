@@ -32,18 +32,25 @@ def _debug_log(message: str) -> None:
     print(f"[LLM DEBUG] {ts} | {message}")
 
 
-def _is_vision_task(task: str) -> bool:
-    """True for multimodal vision tasks.
+# The single source of truth for "this task needs a vision-capable model." conxa_compile's own
+# call_llm() imports _is_vision_task (below) directly rather than keeping a copy, so this set is
+# decisive for the normal pooled request path (which proxy endpoint Build Studio hits). The
+# cloud router (conxa-cloud/backend/app/llm/router.py) imports THIS SAME set object as
+# _VISION_TASK_NAMES — it is consulted only on the BYOK path (for_vision is None), where it
+# picks the model within an already-selected provider entry. Both matter: a task missing here
+# mis-routes the pooled path to /llm/proxy/text; present here but absent from the router's own
+# usage would leave a BYOK call correctly routed but served by the wrong model. (BUILD-29: this
+# used to be three separately hand-maintained copies — collapsed to one after the third copy
+# silently dropped workflow_review and every compile went rules-only with no error.)
+VISION_TASKS = frozenset({
+    "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
+    "copilot_diagnose", "copilot_reply", "workflow_review",
+})
 
-    Kept in sync with two other copies of this same literal set — conxa_compile/llm/client.py
-    and conxa-cloud/backend/app/llm/router.py — because a task missing from any one of the three
-    silently routes as text instead of failing loudly. (BUILD-26: a good candidate to collapse
-    into one shared constant next time any of the three is touched.)
-    """
-    return task in {
-        "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
-        "copilot_diagnose", "copilot_reply",
-    }
+
+def _is_vision_task(task: str) -> bool:
+    """True for multimodal vision tasks. See VISION_TASKS above."""
+    return task in VISION_TASKS
 
 
 def _copilot_modality(task: str, payload: dict[str, Any]) -> str | None:
@@ -52,9 +59,15 @@ def _copilot_modality(task: str, payload: dict[str, Any]) -> str | None:
     _is_vision_task set as today). Unlike every other vision task, Copilot's modality isn't
     fixed by its task name: the same task sends text-only turns and screenshot-bearing turns
     (see conxa_compile/llm/copilot.py's optional image_base64), so it needs its own model slot
-    per turn rather than always burning the shared vision model."""
+    per turn rather than always burning the shared vision model. In dev (settings.environment
+    == "dev"), always resolves to the text_model slot — the screenshot, if any, is still
+    attached to the request body (see _openai_body_dict's copilot_diagnose/copilot_reply
+    branches), so the configured dev text_model must itself be multimodal-capable if screenshots
+    are expected to be read."""
     if task not in ("copilot_diagnose", "copilot_reply"):
         return None
+    if settings.environment == "dev":
+        return "text"
     return "multimodal" if payload.get("image_base64") else "text"
 
 
@@ -297,6 +310,104 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             },
             {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},
         ]
+    # BUILD-29: workflow_intent and workflow_semantics above are retained-for-reference only —
+    # their two calls were merged into the one multimodal call below (BUILD-26), and neither
+    # task name is sent by any caller any more. Their text is the source the merged prompt was
+    # built from, and their modules (workflow_intent.py::_graph_from_raw,
+    # workflow_semantics.py::_validate_findings) still own response parsing/validation.
+    if task == "workflow_review":
+        # Compile-time: one multimodal call that replaces the two calls above — same contracts,
+        # merged into one response object, plus (new) each step may carry the screenshot the
+        # vision-anchor stage already chose for it. Image trimming/budgeting happens upstream
+        # in compiler/build.py::_review_inputs, before this payload is built — this branch only
+        # renders whatever images survive that trim; it does not decide which ones to drop.
+        steps_in = list((data or {}).get("steps") or [])
+        page_urls = (data or {}).get("page_urls")
+        sibling_bindings = (data or {}).get("sibling_bindings")
+        # Strip images out of the JSON text block — they ride along as separate image_url
+        # blocks below instead. Sending them both ways would double the payload for nothing
+        # and (before this branch existed at all) was silently serializing raw base64 as text.
+        text_steps = [
+            {k: v for k, v in s.items() if k not in ("image_base64", "image_mime")}
+            for s in steps_in
+            if isinstance(s, dict)
+        ]
+        text_payload = {"steps": text_steps, "page_urls": page_urls, "sibling_bindings": sibling_bindings}
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": json.dumps(text_payload, ensure_ascii=False)},
+        ]
+        for s in steps_in:
+            if not isinstance(s, dict):
+                continue
+            image_b64 = str(s.get("image_base64") or "")
+            if not image_b64:
+                continue
+            mime = str(s.get("image_mime") or "image/jpeg")
+            content.append({"type": "text", "text": f"--- Step: {s.get('key')} ---"})
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{image_b64}"},
+            })
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You build a workflow intent graph from a sequence of recorded actions AND "
+                    "review the same workflow for improvements that will be applied "
+                    "automatically, so only report ones you are confident about. Some steps are "
+                    "followed by a labelled screenshot (\"--- Step: <key> ---\") showing the "
+                    "target at the moment it was recorded — use it as extra context, never as "
+                    "the only evidence for a finding.\n\n"
+                    "Return strict JSON with keys:\n"
+                    "goal (one sentence), steps (array of {index, intent_token, intent, "
+                    "verification_anchor}), decision_points (array of {step_index, "
+                    "description}), expected_end_state (object with brief description). For "
+                    "each step: intent_token must be one specific snake_case action token "
+                    "describing the user goal for that control (verb + object, lowercase, "
+                    "underscores only — e.g. click_sign_in_button, enter_email_value, "
+                    "navigate_to_dashboard); intent is a short readable sentence describing "
+                    "what that step does.\n\n"
+                    "suggestions (array of {step_key, kind, current, proposed, why}). step_key "
+                    "must be copied EXACTLY from the input step's own \"key\" field — never "
+                    "invented, never a step number. kind must be exactly one of: "
+                    "rename_binding, parameterize_literal, suggest_optional, label_phase, "
+                    "suggest_assertion, flag_noise.\n"
+                    "- rename_binding: this step's input_binding collides with another field's "
+                    "meaning (e.g. two fields both named email_2) — proposed is a clearer "
+                    "lowercase_snake_case name, current is the existing binding.\n"
+                    "- parameterize_literal: this step's typed value is a literal that should "
+                    "probably vary per run (a customer name, amount, reference number) — proposed "
+                    "is a lowercase_snake_case name for the new input, current is the literal value.\n"
+                    "- suggest_optional: ONLY for a step whose has_optional_hint is true — proposed "
+                    "is \"true\" if this looks like a genuinely optional interstitial (cookie banner, "
+                    "occasional dialog) or \"false\" if it looks required despite the hint.\n"
+                    "- label_phase: proposed is exactly one of login, navigate, act, verify, cleanup "
+                    "describing which phase of the workflow this step belongs to.\n"
+                    "- suggest_assertion: a LATER step's outcome is the real proof an EARLIER step "
+                    "worked (e.g. a confirmation page's text is the true sign a submit succeeded). "
+                    "step_key is the EARLIER step. proposed is a JSON string "
+                    "{\"type\": ..., \"target\": ...} where type is exactly one of text_present, "
+                    "text_absent, url_changed, url_pattern, state_changed. target must be text or a "
+                    "URL fragment that ALREADY APPEARS in this workflow's own target_text/intent/url "
+                    "fields (never invent text) — empty target for state_changed, non-empty "
+                    "otherwise. Never selector_present/selector_absent/value_equals — you must never "
+                    "write a page selector.\n"
+                    "- flag_noise: ONLY for a step whose post_condition_effect is exactly \"none\" "
+                    "(the recorder itself observed no effect) AND whose action is click, hover, "
+                    "scroll, or focus AND which has no input_binding and no required assertion — "
+                    "never flag a step from your own judgment alone. proposed is exactly one of "
+                    "duplicate_action, no_op_action, orphaned_hover. This step will be removed from "
+                    "the shipped skill (archived, not deleted), so only propose it when you are sure.\n"
+                    "Prefer steps marked low_confidence — the compiler was least sure about those. "
+                    "Use sibling_bindings (names other workflows for the same site already use) to "
+                    "pick names, not guesses. Return an EMPTY suggestions array when nothing is "
+                    "clearly wrong — most workflows should get few or zero suggestions. Never write "
+                    "or invent a page selector anywhere in this response. No markdown, no extra "
+                    "keys, no suggestion whose step_key you are not certain about."
+                ),
+            },
+            {"role": "user", "content": content},
+        ]
     if task == "anchor_vision":
         image_b64 = str(payload.get("image_base64") or "")
         mime = str(payload.get("image_mime") or "image/jpeg")
@@ -536,6 +647,11 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
     if task == "region_selector":
         # A handful of selector candidates with rationale — a bit more room than anchor_vision.
         body["max_tokens"] = 1536
+    if task == "workflow_review":
+        # A whole-workflow intent graph AND a suggestions array in one response — the largest
+        # structured JSON any task here returns, well above region_selector's handful of
+        # candidates.
+        body["max_tokens"] = 4096
     if task == "copilot_diagnose":
         # A conversational reply plus at most a few small proposals — more room than a selector
         # list, less than a whole-workflow pass.

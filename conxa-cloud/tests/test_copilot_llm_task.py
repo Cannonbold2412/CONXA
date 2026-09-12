@@ -1,9 +1,11 @@
 """copilot_diagnose (BUILD-26 stage b1) — the Human Review copilot's LLM task.
 
-Registered as a vision task in three places (conxa_core.llm.client, conxa_compile.llm.client,
-the cloud router) — a task missing from any one silently falls back to the no-system-prompt
-default instead of failing loudly, so this asserts the registration directly rather than only
-its behavior.
+Registered as a vision task in conxa_core.llm.client.VISION_TASKS, the single shared set the
+cloud router imports directly (see that constant's docstring — BUILD-29 collapsed what used to
+be three separately hand-maintained copies after the third one silently dropped a task and
+degraded every compile with no error) — a task missing from it falls back to the
+no-system-prompt default instead of failing loudly, so this asserts the registration directly
+rather than only its behavior.
 """
 
 from __future__ import annotations

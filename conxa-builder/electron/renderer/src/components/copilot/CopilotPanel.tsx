@@ -61,10 +61,22 @@ export function CopilotPanel({ skillId, onClose, onProposalAccepted }: Props) {
     try {
       const result = await copilotTurn(skillId, text, [...messages, { role: 'user', text }], appendStreamingDelta)
       const reply = (result.reply || '').trim() || useCopilotStore.getState().streamingText
-      if (reply) addMessage({ role: 'assistant', text: reply })
+      const proposal = result.proposals?.[0] ?? null
+      if (reply) {
+        addMessage({ role: 'assistant', text: reply })
+      } else if (!proposal) {
+        // Both LLM calls can come back with an empty reply (e.g. an out-of-scope ask like
+        // "remove these steps" — Copilot only proposes field edits/overlay dismissals, never
+        // step deletion). Without this, the turn resolves with zero UI feedback and no error,
+        // leaving the reviewer thinking the app is broken.
+        addMessage({
+          role: 'assistant',
+          text: "Copilot didn't have a response for that. Try rephrasing, or ask about a specific step — it can suggest field edits or dismiss a known popup, but it can't remove or reorder steps directly.",
+        })
+      }
       // Only ever one proposal on screen at a time — a second turn while one is pending would
       // otherwise silently orphan the first (BUILD-26: the copilot proposes one diff at a time).
-      setPendingProposal(result.proposals?.[0] ?? null)
+      setPendingProposal(proposal)
     } catch (err) {
       toast.error(errorMessage(err, 'Conxa Copilot could not respond'))
     } finally {

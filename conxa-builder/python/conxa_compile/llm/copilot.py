@@ -13,6 +13,7 @@ JSON-object contract can't be streamed cleanly (see `conxa_core.llm.client`'s `c
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, Callable
 
 from conxa_core.config import settings
@@ -128,8 +129,14 @@ def copilot_turn(
             )
         except (QuotaExceeded, EntitlementBlocked, CloudUnreachable):
             raise
-        except Exception:  # noqa: BLE001 — streaming failure falls back to the non-streamed reply below
+        except Exception as exc:  # noqa: BLE001 — streaming failure falls back to the non-streamed reply below
+            print(f"[copilot debug] copilot_reply raised: {exc!r}", file=sys.stderr)
             stream_result = None
+        print(
+            f"[copilot debug] copilot_reply streamed_parts={streamed_parts!r} "
+            f"stream_result={stream_result!r} stream_err_lines={stream_err_lines!r}",
+            file=sys.stderr,
+        )
         streamed_reply = "".join(streamed_parts).strip() or _llm_reply_text(
             stream_result if isinstance(stream_result, dict) else None
         )
@@ -143,8 +150,10 @@ def copilot_turn(
         )
     except (QuotaExceeded, EntitlementBlocked, CloudUnreachable):
         raise
-    except Exception:  # noqa: BLE001 — any other failure degrades to an empty turn, never a crash
+    except Exception as exc:  # noqa: BLE001 — any other failure degrades to an empty turn, never a crash
+        print(f"[copilot debug] copilot_diagnose raised: {exc!r}", file=sys.stderr)
         data = None
+    print(f"[copilot debug] copilot_diagnose data={data!r} err_lines={err_lines!r}", file=sys.stderr)
 
     if not isinstance(data, dict):
         return {"reply": streamed_reply, "proposals": []}
@@ -152,4 +161,5 @@ def copilot_turn(
     reply = streamed_reply or _llm_reply_text(data)
     raw_proposals = data.get("proposals")
     proposals = [p for p in raw_proposals if isinstance(p, dict)] if isinstance(raw_proposals, list) else []
+    print(f"[copilot debug] final reply={reply!r} proposals={proposals!r}", file=sys.stderr)
     return {"reply": reply, "proposals": proposals}

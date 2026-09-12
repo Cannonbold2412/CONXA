@@ -13,6 +13,7 @@ from urllib import error, request
 from conxa_core.config import settings
 
 from conxa_core.llm.client import (
+    VISION_TASKS,
     _chat_completions_url,
     _copilot_modality,
     _debug_log,
@@ -26,12 +27,10 @@ from conxa_core.llm.client import (
 from conxa_core.progress import append_current_job_event, has_active_job_sink
 
 
-# Kept in sync with two other copies of this same literal set — conxa_core.llm.client's own
-# _is_vision_task and conxa_compile/llm/client.py's — see that function's docstring for why.
-_VISION_TASK_NAMES = frozenset({
-    "anchor_vision", "anchor_vision_frameset", "vision_reasoning", "region_selector",
-    "copilot_diagnose", "copilot_reply",
-})
+# The BYOK-path (for_vision is None) alias for conxa_core.llm.client.VISION_TASKS — see that
+# constant's docstring. Not a separate literal set; kept as a local name only so call sites in
+# this file don't need to say the fully-qualified conxa_core name everywhere.
+_VISION_TASK_NAMES = VISION_TASKS
 
 
 @dataclass

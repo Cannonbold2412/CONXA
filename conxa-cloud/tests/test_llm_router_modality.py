@@ -59,6 +59,7 @@ def test_copilot_screenshot_turn_cools_multimodal_not_vision(monkeypatch):
         raise _http_429()
 
     monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.router.settings.environment", "prod")
 
     router.route_vision("copilot_diagnose", {"image_base64": "abc"}, 5_000)
 

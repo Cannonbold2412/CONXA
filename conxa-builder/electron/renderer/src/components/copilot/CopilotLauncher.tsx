@@ -34,6 +34,10 @@ export function CopilotLauncher({ skillId, onProposalAccepted }: Props) {
     onDragEnd: commitPosition,
   })
 
+  // Opens away from whichever screen edge the button is nearer, so the panel never gets
+  // clipped: button on the right half of the viewport → panel grows leftward, and vice versa.
+  const openLeft = position.x > window.innerWidth / 2
+
   return (
     <div
       className="pointer-events-none fixed z-40"
@@ -44,7 +48,7 @@ export function CopilotLauncher({ skillId, onProposalAccepted }: Props) {
        *  without any viewport-flip logic. */}
       <div className="pointer-events-auto relative">
         {open ? (
-          <div className="absolute bottom-full left-0 mb-3">
+          <div className={`absolute bottom-full mb-3 ${openLeft ? 'right-0' : 'left-0'}`}>
             <CopilotPanel
               skillId={skillId}
               onClose={() => setOpen(false)}
