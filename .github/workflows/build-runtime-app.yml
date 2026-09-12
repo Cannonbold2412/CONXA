@@ -99,6 +99,13 @@ jobs:
         working-directory: runtime
         run: node app/check_recovery_purity.js
 
+      - name: Guard — every .evaluate()/.count() routes through the page_eval.js deadline seam
+        # EXEC-34: a bare .evaluate()/.count() has no timeout of its own and can hang past the
+        # run's own EXECUTION_DEADLINE_MS watchdog. Machine-checks that every such call in
+        # runtime/app/ goes through page_eval.js's evalOn/countOn instead.
+        working-directory: runtime
+        run: node app/check_page_eval_seam.js
+
       - name: Install obfuscation tools
         run: npm install -g javascript-obfuscator
 

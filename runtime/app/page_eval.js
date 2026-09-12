@@ -42,9 +42,17 @@ async function evalOn(target, script, arg, ms = DEFAULT_EVAL_DEADLINE_MS) {
   );
 }
 
+// EXEC-34: `.count()` is the same CDP round-trip hazard as `.evaluate()` — a Locator method,
+// not a page-realm script, so it takes no `arg`/script param. Mirrors evalOn exactly otherwise.
+async function countOn(locator, ms = DEFAULT_EVAL_DEADLINE_MS) {
+  const deadline = Date.now() + ms;
+  return withDeadline(() => locator.count(), deadline, EVAL_TIMED_OUT);
+}
+
 module.exports = {
   DEFAULT_EVAL_DEADLINE_MS,
   withDeadline,
   evalOn,
+  countOn,
   EVAL_TIMED_OUT,
 };
