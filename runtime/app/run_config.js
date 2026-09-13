@@ -16,6 +16,12 @@ const SECONDARY_ACTION_TIMEOUT_MS  = envNumber("CONXA_SECONDARY_ACTION_TIMEOUT_M
 const RECOVERY_LOCATOR_TIMEOUT_MS  = envNumber("CONXA_RECOVERY_LOCATOR_TIMEOUT_MS", 3000);
 const PAGE_LOAD_TIMEOUT_MS         = envNumber("CONXA_PAGE_LOAD_TIMEOUT_MS", 60000);
 const DOWNLOAD_WAIT_TIMEOUT_MS     = envNumber("CONXA_DOWNLOAD_WAIT_MS", 120000);
+// An upload step's setInputFiles() only resolves once the browser has attached the file to the
+// input — it says nothing about whether the page's own upload request (XHR/fetch to a server)
+// has finished. There's no native Playwright "upload complete" event to queue on (unlike
+// download_observed's real page.on("download", ...)), so networkidle after attaching the file
+// is the best available proxy: best-effort, catches its own timeout, never fails the step.
+const UPLOAD_SETTLE_TIMEOUT_MS     = envNumber("CONXA_UPLOAD_SETTLE_MS", 20000);
 // A dialog_accept/dialog_dismiss step isn't guaranteed to find its dialog already queued the
 // instant it runs, same reasoning as DOWNLOAD_WAIT_TIMEOUT_MS above — was ACTION_TIMEOUT_MS
 // (2500ms) until a dialog arriving even slightly late made HANDLERS["dialog_accept"] silently
@@ -65,6 +71,7 @@ module.exports = {
   RECOVERY_LOCATOR_TIMEOUT_MS,
   PAGE_LOAD_TIMEOUT_MS,
   DOWNLOAD_WAIT_TIMEOUT_MS,
+  UPLOAD_SETTLE_TIMEOUT_MS,
   DIALOG_WAIT_TIMEOUT_MS,
   RUN_RETENTION_MS,
   SETTLE_TIMEOUT_MS,

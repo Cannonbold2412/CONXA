@@ -10,6 +10,7 @@ const {
   ACTION_TIMEOUT_MS,
   SECONDARY_ACTION_TIMEOUT_MS,
   DOWNLOAD_WAIT_TIMEOUT_MS,
+  UPLOAD_SETTLE_TIMEOUT_MS,
   DIALOG_WAIT_TIMEOUT_MS,
 } = require("./run_config");
 const { asObject, asArray, unique } = require("./step_utils");
@@ -672,6 +673,13 @@ const HANDLERS = {
       }
       return locator.setInputFiles(filePaths, { timeout: ACTION_TIMEOUT_MS });
     });
+
+    // Wait for the page's own upload request(s) to settle before this step (and the run, if
+    // this is the last step) is considered done — setInputFiles above only confirms the file
+    // was attached, not that any upload to a server finished. Best-effort: some pages never go
+    // fully network-idle (websockets, polling, analytics beacons), so this must not fail an
+    // upload that otherwise succeeded.
+    await page.waitForLoadState?.("networkidle", { timeout: UPLOAD_SETTLE_TIMEOUT_MS }).catch(() => {});
 
     // EXEC-19: the compiler already guarantees a downloaded file is bound to at most one upload
     // step (FIFO consumption in upload_binding.py), but nothing removed the file from the shared
