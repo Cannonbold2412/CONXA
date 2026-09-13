@@ -256,6 +256,35 @@ class ApplySecondOpinionTests(unittest.TestCase):
         )
         self.assertEqual(step.input_binding, "already_bound")
 
+    def test_parameterize_literal_never_repoints_a_download_upload_binding(self) -> None:
+        # Regression: upload_binding.py deliberately writes {{downloaded_file}} into `value`
+        # while setting input_binding to None (a download-populated placeholder must never
+        # become a user-facing input) — the old `step.input_binding or ...` guard read that as
+        # "unbound" and clobbered it into a hand-typed input, which is why a generalized
+        # download->upload skill used to ask the operator for a file path at all.
+        step = _type_step(input_binding=None, value="{{downloaded_file}}")
+        keys = step_keys([step])
+        self.assertEqual(
+            apply_second_opinion(
+                [step],
+                [{"step_key": keys[0], "kind": "parameterize_literal", "current": "{{downloaded_file}}", "proposed": "uploaded_file_path"}],
+            ),
+            [],
+        )
+        self.assertIsNone(step.input_binding)
+        self.assertEqual(step.value, "{{downloaded_file}}")
+
+    def test_parameterize_literal_still_binds_a_genuine_recorded_literal(self) -> None:
+        step = _type_step(input_binding=None, value="INV-2024-0891")
+        keys = step_keys([step])
+        applied = apply_second_opinion(
+            [step],
+            [{"step_key": keys[0], "kind": "parameterize_literal", "current": "INV-2024-0891", "proposed": "reference_number"}],
+        )
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(step.input_binding, "reference_number")
+        self.assertEqual(step.value, "{{reference_number}}")
+
     def test_label_phase_sets_phase(self) -> None:
         step = _type_step()
         keys = step_keys([step])
@@ -366,6 +395,67 @@ class ArchiveFlaggedStepsTests(unittest.TestCase):
             [step], [{"step_key": "not-a-real-key#1", "kind": "flag_noise", "proposed": "no_op_action"}]
         )
         self.assertEqual(kept, [step])
+        self.assertEqual(archived, [])
+
+    def test_refuses_to_archive_a_click_that_triggers_a_download(self) -> None:
+        # This is the exact real-world shape that shipped broken: a "no visible page change"
+        # click whose entire job is to start a download the very next step waits for.
+        click = SkillStep(action={"action": "click"})
+        download = SkillStep(action={"action": "download_observed"}, value="{}")
+        keys = step_keys([click, download])
+        kept, archived = archive_flagged_steps(
+            [click, download],
+            [{"step_key": keys[0], "kind": "flag_noise", "proposed": "no_op_action"}],
+        )
+        self.assertEqual(kept, [click, download])
+        self.assertEqual(archived, [])
+
+    def test_refuses_to_archive_a_click_that_opens_a_file_chooser(self) -> None:
+        click = SkillStep(action={"action": "click"})
+        upload = SkillStep(action={"action": "upload_intent"}, value="{{downloaded_file}}")
+        keys = step_keys([click, upload])
+        kept, archived = archive_flagged_steps(
+            [click, upload],
+            [{"step_key": keys[0], "kind": "flag_noise", "proposed": "no_op_action"}],
+        )
+        self.assertEqual(kept, [click, upload])
+        self.assertEqual(archived, [])
+
+    def test_still_archives_an_isolated_click_with_no_side_effect_after_it(self) -> None:
+        click = SkillStep(action={"action": "click"})
+        harmless = SkillStep(action={"action": "click"})
+        keys = step_keys([click, harmless])
+        kept, archived = archive_flagged_steps(
+            [click, harmless],
+            [{"step_key": keys[0], "kind": "flag_noise", "proposed": "no_op_action"}],
+        )
+        self.assertEqual(kept, [harmless])
+        self.assertEqual(len(archived), 1)
+
+    def test_still_archives_when_a_real_action_sits_between_click_and_marker(self) -> None:
+        # The download's real trigger is the click right before it — a flagged click two
+        # steps earlier, separated by a genuine action, is not that trigger.
+        click = SkillStep(action={"action": "click"})
+        other = SkillStep(action={"action": "click"})
+        download = SkillStep(action={"action": "download_observed"}, value="{}")
+        keys = step_keys([click, other, download])
+        kept, archived = archive_flagged_steps(
+            [click, other, download],
+            [{"step_key": keys[0], "kind": "flag_noise", "proposed": "no_op_action"}],
+        )
+        self.assertEqual(kept, [other, download])
+        self.assertEqual(len(archived), 1)
+
+    def test_lookahead_skips_tab_and_frame_markers(self) -> None:
+        click = SkillStep(action={"action": "click"})
+        tab_switch = SkillStep(action={"action": "tab_switch"})
+        download = SkillStep(action={"action": "download_observed"}, value="{}")
+        keys = step_keys([click, tab_switch, download])
+        kept, archived = archive_flagged_steps(
+            [click, tab_switch, download],
+            [{"step_key": keys[0], "kind": "flag_noise", "proposed": "no_op_action"}],
+        )
+        self.assertEqual(kept, [click, tab_switch, download])
         self.assertEqual(archived, [])
 
 
@@ -588,6 +678,26 @@ class ValidateFindingsTests(unittest.TestCase):
             self._validate_custom(
                 [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
                 [self._noise_step(input_binding="reference_number")],
+            ),
+            [],
+        )
+
+    def test_flag_noise_causes_download_dropped(self) -> None:
+        """build.py::_next_effect_cause marks a click whose only job is to start a
+        download — the model must never get to flag it as a no-op even if it tries."""
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
+                [self._noise_step(causes="file_download")],
+            ),
+            [],
+        )
+
+    def test_flag_noise_causes_file_chooser_dropped(self) -> None:
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "no_op_action"}],
+                [self._noise_step(causes="file_chooser")],
             ),
             [],
         )

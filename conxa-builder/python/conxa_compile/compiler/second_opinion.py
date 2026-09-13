@@ -44,6 +44,8 @@ from conxa_core.models.skill_spec import Assertion, RecoveryBlock, SkillStep
 
 from conxa_compile.compiler.action_policy import no_recovery_block
 from conxa_compile.compiler.step_key import step_keys
+from conxa_compile.editor.action_registry import is_marker_action
+from conxa_compile.editor.placeholder_grammar import PLACEHOLDER_RE
 
 TRY_DISMISS_INTENT = "try_dismiss_interstitial"
 
@@ -93,9 +95,18 @@ def _apply_one(step: SkillStep, kind: str, current: str, proposed: str) -> bool:
         return True
 
     if kind == "parameterize_literal":
-        # Only ever freezes a recorded literal into a variable — never re-points
-        # a value that is already bound to something else.
-        if step.input_binding or not isinstance(step.value, str) or not step.value:
+        # Only ever freezes a recorded LITERAL into a variable — never re-points a value that
+        # already holds a placeholder. `input_binding` alone doesn't catch every such case:
+        # upload_binding.py deliberately writes {{downloaded_file}} into `value` while setting
+        # input_binding to None (a download-populated placeholder must never become a
+        # user-facing input), which the old `step.input_binding or ...` guard read as "unbound"
+        # and clobbered — the exact bug this comment used to describe without enforcing.
+        if (
+            step.input_binding
+            or not isinstance(step.value, str)
+            or not step.value
+            or PLACEHOLDER_RE.search(step.value)
+        ):
             return False
         step.input_binding = proposed
         step.value = f"{{{{{proposed}}}}}"
@@ -171,6 +182,24 @@ def apply_second_opinion(steps: list[SkillStep], findings: list[dict[str, Any]])
     return applied
 
 
+def _step_causes_observed_effect(steps: list[SkillStep], i: int) -> bool:
+    """True when the step at index i is immediately followed (past pure
+    navigation markers) by a download or a file-chooser upload — the two
+    shapes where a click's job is to trigger something invisible on the page
+    itself. This mirrors build.py::_next_effect_cause exactly, but is
+    recomputed here from the real `steps` list rather than trusted from the
+    review payload's "causes" field: this is the pass's one destructive kind,
+    so the invariant belongs where it cannot be bypassed by a stale/absent
+    context field or a model that ignored the prompt. The compiler must never
+    delete the step that causes an observed side effect."""
+    for j in range(i + 1, len(steps)):
+        name = steps[j].action.get("action") if isinstance(steps[j].action, dict) else steps[j].action
+        if is_marker_action(name) and name in {"tab_switch", "frame_enter", "frame_exit"}:
+            continue
+        return name == "download_observed" or name in {"upload", "upload_intent"}
+    return False
+
+
 def archive_flagged_steps(
     steps: list[SkillStep], findings: list[dict[str, Any]]
 ) -> tuple[list[SkillStep], list[dict[str, Any]]]:
@@ -187,6 +216,12 @@ def archive_flagged_steps(
     filtered `steps`), so a person can restore one later if the compiler was
     wrong. Intentionally not folded into apply_second_opinion/_apply_one,
     which assume a 1:1 walk over unchanged-length `steps`.
+
+    Refuses any finding whose step triggers an observed download or opens a
+    file-chooser upload (_step_causes_observed_effect): such a click leaves
+    post_condition_effect at "none" by design (the page itself doesn't
+    visibly react), which is exactly the evidence flag_noise otherwise reads
+    as "did nothing" — a real bug this caught (see TODO.md).
     """
     flagged = {
         str(f.get("step_key") or ""): f for f in findings if f.get("kind") == "flag_noise"
@@ -195,9 +230,10 @@ def archive_flagged_steps(
         return steps, []
     kept: list[SkillStep] = []
     archived: list[dict[str, Any]] = []
-    for step, key in zip(steps, step_keys(steps)):
+    keys = step_keys(steps)
+    for i, (step, key) in enumerate(zip(steps, keys)):
         finding = flagged.get(key)
-        if finding is None:
+        if finding is None or _step_causes_observed_effect(steps, i):
             kept.append(step)
             continue
         archived.append({

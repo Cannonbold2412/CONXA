@@ -193,6 +193,12 @@ def _validate_findings(
                 continue
             if step_ctx.get("has_required_assertion") or step_ctx.get("input_binding"):
                 continue
+            # A click whose only job is to start a download or open a file picker is
+            # SUPPOSED to leave post_condition_effect at "none" — the page itself doesn't
+            # visibly react. build.py::_review_inputs sets "causes" for exactly these
+            # steps; never let a noise flag land on one no matter what the model said.
+            if step_ctx.get("causes"):
+                continue
         out.append({
             "step_key": step_key,
             "kind": kind,
