@@ -696,6 +696,10 @@ class Backend(
         # this delegates to internally is a plain method call, not a re-entrant dispatch(), so it
         # never trips this hook a second time under the wrong name.
         "accept_copilot_proposal",
+        # One-click "generalize this to a loop" suggestion — deterministic, no LLM, but shares
+        # the accept/undo/edit-log machinery above; logged with its own honestly-labeled source
+        # below rather than "copilot" since no model produced this finding.
+        "accept_for_each_suggestion",
     })
 
     def dispatch(self, msg: dict[str, Any]) -> None:
@@ -725,8 +729,21 @@ class Backend(
                     # inside cmd_accept_copilot_proposal — that handler delegates to cmd_patch_step
                     # via a plain method call (never re-entering dispatch()), so this is the one
                     # place that ever sees the true top-level command name for this request.
-                    source = "copilot" if cmd == "accept_copilot_proposal" else "human"
-                    proposal_id = str(payload.get("proposal_id") or "").strip() or None
+                    if cmd == "accept_copilot_proposal":
+                        source = "copilot"
+                    elif cmd == "accept_for_each_suggestion":
+                        source = "for_each_suggestion"
+                    else:
+                        source = "human"
+                    # accept_for_each_suggestion carries its proposal id nested under
+                    # payload["suggestion"]["id"] rather than a top-level proposal_id (its
+                    # payload shape is {skill_id, suggestion}, not {skill_id, proposal_id, patch}
+                    # like the copilot proposal commands) — check both.
+                    proposal_id = str(
+                        payload.get("proposal_id")
+                        or (payload.get("suggestion") or {}).get("id")
+                        or ""
+                    ).strip() or None
                     append_edit(
                         skill_id_for_log, cmd, before_doc, read_skill(skill_id_for_log),
                         source=source, proposal_id=proposal_id,

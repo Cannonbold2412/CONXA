@@ -7,11 +7,18 @@ structural mutations. Calls into workflow_dto.py for revalidation
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from conxa_compile.compiler.action_policy import no_recovery_block
 from conxa_compile.compiler.second_opinion import build_try_dismiss_from_hint
 from conxa_compile.compiler.patch import revalidate_step
+from conxa_compile.compiler.loop_suggestion import replace_url_literal, url_contains_literal
+from conxa_compile.compiler.step_key import step_keys
+from conxa_compile.compiler.upload_binding import (
+    _RUNTIME_ONLY_PLACEHOLDER_RE,
+    for_each_loop_variable_names,
+)
 from conxa_compile.confidence.uncertainty import audit_reference
 from conxa_compile.editor.action_registry import action_spec, default_action_value, is_supported_action
 from conxa_compile.editor.dto import SkillInputVariable
@@ -390,6 +397,172 @@ def insert_step_after(document: dict[str, Any], action_kind: str, insert_after: 
     return doc
 
 
+def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[str, Any]) -> dict[str, Any]:
+    """Apply a `compiler/loop_suggestion.py` finding: wrap the steps between (and including) a
+    navigate whose URL names one recorded file and its matching `download_observed` into a new
+    `for_each` step driven by a runtime input, then rebind the later upload step to the whole
+    run's download folder.
+
+    One atomic document write, not insert-then-patch: `patch_gate.py::_validate_for_each_patch`
+    rejects a `steps` key in a `for_each` patch (`for_each_steps_not_patchable_here`), and there
+    is no `for_each.steps[N]` path-addressed patch route today (`_BRANCH_STEP_PATH_RE` is
+    `branch`-only) — an empty-bodied `for_each` also silently vanishes from `execution.json` at
+    package time (`_saved_for_each_step` returns None for an empty body). So the wrap, the body
+    rewrite, the upload rebind, and the new input all land in this one document transformation.
+
+    Re-resolves every step_key at apply time (never trusts a stale index) — the same staleness
+    discipline `copilot_proposals.py::resolve_step_index` established for chat-driven proposals.
+    """
+    doc = dict(document)
+    skills = list(doc.get("skills") or [])
+    if not skills:
+        raise ValueError("no_skills_block")
+    block = dict(skills[0])
+    steps = list(block.get("steps") or [])
+    keys = step_keys(steps)
+    key_to_index = {k: i for i, k in enumerate(keys)}
+
+    start = key_to_index.get(str(suggestion.get("wrap_start_key") or ""))
+    end = key_to_index.get(str(suggestion.get("wrap_end_key") or ""))
+    upload_index = key_to_index.get(str(suggestion.get("upload_step_key") or ""))
+    if start is None or end is None or upload_index is None or start > end or upload_index <= end:
+        raise ValueError("suggestion_stale")
+
+    # A hardcoded click on the one recorded file, right before the per-item navigate, is
+    # redundant once the loop navigates straight to each item's URL — the detector
+    # (compiler/loop_suggestion.py) already folded it into wrap_start_key when present. Split
+    # it back out here: it gets archived, not wrapped into the loop body, since wrapping it
+    # would click one fixed filename on every iteration only to have the navigate override it.
+    redundant_click_key = suggestion.get("redundant_click_key")
+    redundant_index: int | None = None
+    if redundant_click_key:
+        redundant_index = key_to_index.get(str(redundant_click_key))
+        if redundant_index is None or redundant_index != start or start == end:
+            raise ValueError("suggestion_stale")
+    body_start = start + 1 if redundant_index is not None else start
+
+    template_literal = str(suggestion.get("template_literal") or "")
+    as_name = str(suggestion.get("as_name") or "row").strip() or "row"
+    input_name = str(suggestion.get("suggested_input_name") or "files").strip() or "files"
+    if not template_literal:
+        raise ValueError("suggestion_missing_template_literal")
+
+    # Defensive re-check: an intervening manual edit may have changed the very URL this
+    # suggestion is about to template — refuse rather than substitute blindly. Decodes
+    # percent-encoding before checking (url_contains_literal) — a raw substring check here
+    # would wrongly refuse every filename containing a URL-reserved character, since the
+    # recorded literal is decoded but the step's own url field is not (see that function's
+    # docstring — this is the same bug that had to be fixed in the detector itself).
+    if not any(
+        url_contains_literal(str(steps[i].get("url") or ""), template_literal)
+        for i in range(body_start, end + 1)
+    ):
+        raise ValueError("suggestion_stale")
+
+    archived_click: dict[str, Any] | None = None
+    if redundant_index is not None:
+        archived_click = {
+            "step_key": str(redundant_click_key),
+            "step": copy.deepcopy(steps[redundant_index]),
+            "category": "superseded_by_loop_navigate",
+            "why": (
+                "This click picked one fixed file by name; the new loop navigates straight to "
+                "each item's URL, so the click is redundant and was removed."
+            ),
+        }
+
+    body = []
+    for i in range(body_start, end + 1):
+        wrapped = copy.deepcopy(steps[i])
+        url = str(wrapped.get("url") or "")
+        # replace_url_literal decodes percent-encoding before matching/replacing — a raw
+        # `url.replace(template_literal, ...)` would silently no-op whenever the literal
+        # contains a URL-reserved character (the recorded filename is decoded, the step's own
+        # url field is not), leaving the loop hardcoded to one file with no error. The returned
+        # URL is the decoded form, which page.goto() (runtime/app/handlers.js) accepts fine.
+        templated = replace_url_literal(url, template_literal, f"{{{{{as_name}_id}}}}")
+        if templated is not None:
+            wrapped["url"] = templated
+        body.append(wrapped)
+
+    wrapper = _new_manual_step("for_each", "")
+    wrapper["intent"] = "download_each_selected_file"
+    wrapper["for_each"] = {
+        "items": input_name,
+        "as": as_name,
+        "max_iterations": 50,
+        "on_row_error": "stop",
+        "steps": body,
+    }
+
+    original_len = len(steps)
+    new_steps = steps[:start] + [wrapper] + steps[end + 1:]
+    block["steps"] = new_steps
+    skills[0] = block
+    doc["skills"] = skills
+
+    # The upload step's own content is unchanged by the splice, so its step_key is stable —
+    # re-resolve its new position rather than doing splice-index arithmetic by hand.
+    new_keys = step_keys(new_steps)
+    new_upload_index = new_keys.index(keys[upload_index])
+    upload_step = dict(new_steps[new_upload_index])
+    upload_step["value"] = "{{downloaded_files_dir}}"
+    upload_step["input_binding"] = None
+    new_steps[new_upload_index] = upload_step
+    block["steps"] = new_steps
+    skills[0] = block
+    doc["skills"] = skills
+
+    inputs = list(doc.get("inputs") or [])
+    if not any(str(i.get("id") or "").strip().lower() == input_name.lower() for i in inputs if isinstance(i, dict)):
+        inputs.append({
+            "id": input_name, "type": "text", "default": None, "options": [],
+            "description": "Filenames to download, comma-separated.",
+        })
+    doc["inputs"] = inputs
+
+    # Old index `start` becomes the new for_each step; start+1..end are merged into it (no
+    # single new index to point at — dropped, same as a delete); everything after `end` shifts
+    # down by the number of steps the wrap collapsed away. Advisory-only per-step data, same
+    # "gone is honest, misattributed is not" reasoning as delete_step_at above.
+    old_to_new = {}
+    for i in range(original_len):
+        if i < start:
+            old_to_new[i] = i
+        elif i == start:
+            old_to_new[i] = start
+        elif i <= end:
+            old_to_new[i] = None
+        else:
+            old_to_new[i] = i - (end - start)
+    doc = _remap_intent_graph_indices(doc, old_to_new)
+    _invalidate_compile_report(doc)
+
+    # Clear ALL pending suggestions, not just the applied one: `download_observed`'s fallback
+    # step_key (compiler/step_key.py) hashes on action+url alone, which is identical across
+    # every download_observed step in a workflow — moving one occurrence out of the top-level
+    # list (into this wrap's nested body) shifts the OCCURRENCE ORDINAL of every remaining
+    # sibling download_observed still at top level, invalidating any other pending suggestion's
+    # step_key silently. Matches `_invalidate_compile_report`'s own philosophy just above: wipe
+    # derived data that can no longer be trusted rather than risk it pointing at the wrong step
+    # — a recompile regenerates whatever is still genuinely there.
+    report = doc.get("compile_report")
+    if isinstance(report, dict) and report.get("for_each_suggestions"):
+        report = dict(report)
+        report["for_each_suggestions"] = []
+        doc["compile_report"] = report
+
+    if archived_click is not None:
+        report = dict(doc.get("compile_report") or {})
+        report["archived_steps"] = list(report.get("archived_steps") or []) + [archived_click]
+        doc["compile_report"] = report
+
+    meta = dict(doc.get("meta") or {})
+    meta["version"] = int(meta.get("version", 1)) + 1
+    doc["meta"] = meta
+    return doc
+
+
 def _input_error_code(input_id: str, exc: PydanticValidationError) -> str:
     """Collapse a Pydantic ValidationError into the compact `code:detail` string the RPC layer
     surfaces. `cmd_update_workflow_inputs` uses str(exc) as the machine-readable error code, so
@@ -524,10 +697,24 @@ def reconcile_inputs_with_step_values(document: dict[str, Any]) -> tuple[dict[st
         return document, False
     date_defaults = _date_pick_defaults(steps)
     choice_specs = _choice_specs(steps)
+    # Two families of {{placeholder}} are populated automatically at replay time and must never
+    # become a user-facing input: a for_each loop's own {{<as>_id}}/{{<as>_index}} (run.js sets
+    # them from the loop's row/items list) and the {{downloaded_file*}}/{{downloaded_files_dir}}
+    # family (run.js's download_observed handler binds them from an earlier download in the same
+    # run — see upload_binding.py). The compile handler used to rely on a SEPARATE downstream
+    # filter_runtime_only_inputs() call to strip the latter after this function ran, but two
+    # editor RPCs (handlers/workflow_editor.py's patch-value and replace-literal paths) call this
+    # function directly with no such follow-up — a step whose value already held
+    # {{downloaded_file}} (e.g. via upload_binding's own rewrite) would have that surfaced as a
+    # real "supply a value" input the moment either RPC ran. Excluding both families right here
+    # is the fix that covers every caller, not just the compile handler's.
+    loop_vars = for_each_loop_variable_names(steps)
     inputs = list(document.get("inputs") or [])
     declared = {str(i.get("id") or "").strip().lower() for i in inputs if isinstance(i, dict)}
     added = False
     for sid in sorted(spotted):
+        if sid in loop_vars or _RUNTIME_ONLY_PLACEHOLDER_RE.match(sid):
+            continue
         if sid.lower() not in declared:
             spec = choice_specs.get(sid)
             if spec is not None:

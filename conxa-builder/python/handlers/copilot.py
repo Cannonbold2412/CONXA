@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from handlers.protocol import _CommandError, _event_sink, _safe_id
+from handlers.protocol import _CommandError, _event_sink, _safe_id, _skill_response
 
 
 class CopilotMixin:
@@ -292,5 +292,63 @@ class CopilotMixin:
             field=str(payload.get("field") or ""),
             why=str(payload.get("why") or ""),
             step_key=step_key,
+        )
+        return {"ok": True}
+
+    def cmd_accept_for_each_suggestion(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Accept a `compiler/loop_suggestion.py` finding (a one-click "generalize this to a
+        loop" suggestion — no LLM involved in producing it, unlike the copilot proposals above,
+        but sharing their accept/reject/undo/edit-log machinery since the governance story is
+        the same: a compiler-computed change never applies itself).
+
+        One atomic mutation (`apply_for_each_loop_suggestion`), not a composition of several
+        cmd_* calls like `_accept_overlay_branch_proposal` — the wrap, the body rewrite, the
+        upload rebind, and the new input all land in a single document write, so this is one
+        undo entry, not several."""
+        import copy
+        from conxa_core.storage.json_store import read_skill, write_skill
+        from conxa_compile.editor.workflow_mutations import apply_for_each_loop_suggestion
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        suggestion = payload.get("suggestion")
+        if not isinstance(suggestion, dict):
+            raise _CommandError("invalid_input", "suggestion is required")
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        self._push_undo(skill_id, copy.deepcopy(doc))
+        try:
+            doc = apply_for_each_loop_suggestion(doc, suggestion)
+        except ValueError as exc:
+            raise _CommandError(str(exc), f"Could not apply this suggestion: {exc}") from exc
+        write_skill(skill_id, doc)
+        result = _skill_response(skill_id, doc)
+        result.update(self._history_flags(skill_id))
+        return result
+
+    def cmd_reject_for_each_suggestion(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """Log the dismissal so `loop_suggestion.py::filter_rejected` (via
+        `handlers/compile.py`) excludes this exact suggestion from the next compile's findings —
+        writes into the SAME edits.jsonl every other proposal decision uses, so this feature's
+        accept/reject rate is visible in the same place, not a second log."""
+        from conxa_compile.editor.edit_log import append_decision
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        suggestion = payload.get("suggestion")
+        if not isinstance(suggestion, dict):
+            raise _CommandError("invalid_input", "suggestion is required")
+        upload_step_key = str(suggestion.get("upload_step_key") or "").strip()
+        suggestion_id = str(suggestion.get("id") or "").strip()
+        if not upload_step_key or not suggestion_id:
+            raise _CommandError("invalid_input", "suggestion.upload_step_key and suggestion.id are required")
+
+        append_decision(
+            skill_id,
+            proposal_id=suggestion_id,
+            decision="rejected",
+            command="reject_for_each_suggestion",
+            field="for_each_suggestion",
+            why=str(suggestion.get("why") or ""),
+            step_key=upload_step_key,
         )
         return {"ok": True}
