@@ -181,6 +181,29 @@ export type CompileHealth = {
   structural_fingerprint_present?: boolean
   /** Diagnostics-tier only — provider/router telemetry from compile time. */
   llm_router_stats?: Record<string, unknown>
+  /** One-click "generalize this to a loop" suggestion(s) — compiler/loop_suggestion.py.
+   *  Deterministic (no LLM); already excludes anything this skill's reviewer previously
+   *  rejected. See ForEachSuggestionBanner.tsx. */
+  for_each_suggestions?: ForEachSuggestion[]
+}
+
+/** A `compiler/loop_suggestion.py::detect_download_upload_loop_candidates` finding — accept via
+ *  `acceptForEachSuggestion`, reject via `rejectForEachSuggestion` (api/workflowApi.ts). */
+export type ForEachSuggestion = {
+  id: string
+  kind: string
+  wrap_start_key: string
+  wrap_end_key: string
+  upload_step_key: string
+  template_literal: string
+  suggested_input_name: string
+  as_name: string
+  why: string
+  preview: { before: string; after: string }
+  /** Set when a hardcoded click on the recorded file (immediately before the loop's per-item
+   *  navigate) is being removed as part of this suggestion, not wrapped into the loop body —
+   *  the navigate already overrides whatever it picked. See workflow_mutations.py. */
+  redundant_click_key?: string
 }
 
 export type WorkflowResponse = {

@@ -2,6 +2,7 @@ import { cmd, CmdError } from '@/lib/ipc'
 import type { BackendEvent } from '@/lib/ipc'
 import { errorMessages } from '@/lib/errorMessages'
 import type {
+  ForEachSuggestion,
   WorkflowResponse,
   WorkflowRevalidationResponse,
   WorkflowStepMutationResponse,
@@ -606,6 +607,24 @@ export function rejectCopilotProposal(skillId: string, proposal: CopilotProposal
  *  never blocks starting a fresh conversation; a save failure is surfaced but not fatal. */
 export function saveCopilotSession(skillId: string, transcript: CopilotTurnMessage[]): Promise<{ ok: boolean }> {
   return cmd('copilot_save_session', { skill_id: skillId, transcript })
+}
+
+/** Applies a `compiler/loop_suggestion.py` finding — a one-click "generalize this to a loop"
+ *  suggestion (deterministic, no LLM). One atomic document write server-side
+ *  (`apply_for_each_loop_suggestion`), one undo entry, logged with source="for_each_suggestion"
+ *  in the same edits.jsonl every other proposal decision uses. Refuses with `suggestion_stale`
+ *  if the workflow changed since this was shown. */
+export function acceptForEachSuggestion(
+  skillId: string,
+  suggestion: ForEachSuggestion,
+): Promise<WorkflowRevalidationResponse> {
+  return cmd('accept_for_each_suggestion', { skill_id: skillId, suggestion })
+}
+
+/** Changes nothing in the compiled skill — logs the dismissal so this exact suggestion is
+ *  excluded from the next compile's findings (`loop_suggestion.py::filter_rejected`). */
+export function rejectForEachSuggestion(skillId: string, suggestion: ForEachSuggestion): Promise<{ ok: boolean }> {
+  return cmd('reject_for_each_suggestion', { skill_id: skillId, suggestion })
 }
 
 // ── Verified retest (BUILD-26 stage e) ───────────────────────────────────────────────────────

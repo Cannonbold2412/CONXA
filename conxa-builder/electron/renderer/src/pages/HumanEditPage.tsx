@@ -23,9 +23,13 @@ import {
   undoWorkflow,
 } from '@/api/workflowApi'
 import { CopilotLauncher } from '@/components/copilot/CopilotLauncher'
+
+// ponytail: hidden for the 2026-09-16 pilot, flip back to true once ready
+const COPILOT_ENABLED = false
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
 import { WorkflowPlanPanel } from '@/components/WorkflowPlanPanel'
 import { CompileHealthBanner } from '@/components/CompileHealthBanner'
+import { ForEachSuggestionBanner } from '@/components/ForEachSuggestionBanner'
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel'
 import { WorkflowViewer } from '@/components/WorkflowViewer'
 import { InlineRetargetFlow, type InlineRetargetFlowHandle } from '@/components/retarget/InlineRetargetFlow'
@@ -956,6 +960,13 @@ export function HumanEditPage() {
       className="py-3.5"
     />
     <CompileHealthBanner compileHealth={wf.compile_health} onOpenDiagnostics={() => setOpenTool('diagnostics')} />
+    {skillId && wf.compile_health.for_each_suggestions?.length ? (
+      <ForEachSuggestionBanner
+        skillId={skillId}
+        suggestions={wf.compile_health.for_each_suggestions}
+        onAccepted={onCopilotProposalAccepted}
+      />
+    ) : null}
     <div
       ref={splitPaneRef}
         className="relative grid flex-1 min-h-0 w-full min-w-0 grid-cols-1 overflow-hidden border-t border-white/8 md:min-h-0 md:[grid-template-columns:var(--workflow-pane-width)_minmax(0,1fr)] md:items-stretch"
@@ -1090,7 +1101,7 @@ export function HumanEditPage() {
         )}
       </DialogContent>
     </Dialog>
-    <CopilotLauncher skillId={skillId} onProposalAccepted={onCopilotProposalAccepted} />
+    {COPILOT_ENABLED && <CopilotLauncher skillId={skillId} onProposalAccepted={onCopilotProposalAccepted} />}
     </TooltipProvider>
   )
 }
