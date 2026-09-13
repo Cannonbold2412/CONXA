@@ -204,6 +204,17 @@ def extract_frames_for_session(
                 f"event index {i} has no visual.timestamp_ms; non-auth events must have one"
             )
 
+        # upload_intent fires on a hidden <input type=file>'s change event, right after the OS
+        # file picker (which nothing on the page's own timeline shows) closes — the click that
+        # opened that picker, immediately prior in the same recording, already has real frames
+        # of the moment. Extracting a second set here would just show the same UI a beat later
+        # with no picker visible either way, so this event stays frame-less by design, not failure.
+        action_name = str((ev.get("action") or {}).get("action") or "")
+        if action_name == "upload_intent":
+            if on_progress is not None:
+                on_progress(i + 1, len(events))
+            continue
+
         # Cut this event's frames from its own tab's video — a cross-tab timestamp cut from
         # the wrong tab's video is worse than no frames at all, so a missing/unreadable tab
         # video is this event's own failure, not a session-wide one (other tabs' events are

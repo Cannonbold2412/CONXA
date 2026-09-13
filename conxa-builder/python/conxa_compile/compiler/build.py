@@ -810,6 +810,11 @@ def _build_assertions(
         and not is_editable_field_click(ev)
         and (commit_intent_hit(ev, policy) or destructive_compiler_step(ev, policy))
     )
+    # Uploads never get a wait_for/success_conditions match above (a file input rarely moves the
+    # URL or visible DOM on its own — most sites don't react until a later, separate submit), so
+    # without this they'd compile with zero assertions. Folded into the same evidence-less-commit
+    # fallback below rather than its own branch.
+    is_upload_action = action in {"upload", "upload_intent"}
 
     # success_conditions evidence: for a consequential click, the first required_element is
     # promoted to the enforced post-condition if nothing has claimed that slot yet; everything
@@ -837,11 +842,12 @@ def _build_assertions(
             required=False,
         ))
 
-    # Consequential clicks that still have no enforced signal (no URL change, no DOM evidence
-    # recorded) get a synthesized state_changed check: confirms the click produced SOME
-    # observable effect instead of silently no-oping. Deliberately stricter than leaving these
-    # advisory — accepted tradeoff for evidence-less commits (see plan).
-    if not required_assigned and is_consequential_click:
+    # Consequential clicks (and uploads — see is_upload_action above) that still have no enforced
+    # signal (no URL change, no DOM evidence recorded) get a synthesized state_changed check:
+    # confirms the action produced SOME observable effect instead of silently no-oping.
+    # Deliberately stricter than leaving these advisory — accepted tradeoff for evidence-less
+    # commits (see plan).
+    if not required_assigned and (is_consequential_click or is_upload_action):
         assertions.append(Assertion(
             type="state_changed",
             timeout_ms=wf_timeout,
