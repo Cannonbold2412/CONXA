@@ -88,6 +88,54 @@ def test_reconcile_noop_when_all_declared() -> None:
     assert out is doc
 
 
+# --- for_each loop variables and the downloaded_file* family never leak into declared inputs --
+# (EXEC-38 items source generalization). Two runtime-populated placeholder families must never
+# surface as a "please supply a value" input: a for_each loop's own {{<as>_id}}/{{<as>_index}}
+# (run.js sets them from the loop's row/items list) and {{downloaded_file*}}/
+# {{downloaded_files_dir}} (run.js's download_observed handler binds them from an earlier
+# download in the same run). Two editor RPCs (handlers/workflow_editor.py's patch-value and
+# replace-literal paths) call reconcile_inputs_with_step_values directly with no downstream
+# filter_runtime_only_inputs() call, so the exclusion has to live here, not only in the compile
+# handler.
+
+def test_reconcile_excludes_for_each_loop_variables() -> None:
+    # {{other_var}}, unrelated to the loop, must still auto-declare alongside the exclusion —
+    # this isn't a blanket "spotted nothing" outcome, only the loop's own {{<as>_id}}/
+    # {{<as>_index}} names are held back.
+    doc = {
+        "skills": [{"steps": [
+            {
+                "action": {"action": "for_each"},
+                "for_each": {
+                    "items": "files",
+                    "as": "file",
+                    "max_iterations": 50,
+                    "steps": [{"value": "{{file_id}}"}],
+                },
+            },
+            {"value": "{{other_var}}"},
+        ]}],
+        "inputs": [],
+    }
+    out, added = reconcile_inputs_with_step_values(doc)
+    ids = {i["id"] for i in out["inputs"]}
+    assert added is True
+    assert "other_var" in ids  # an unrelated placeholder still auto-declares
+    assert "file_id" not in ids
+    assert "file_index" not in ids
+
+
+def test_reconcile_excludes_downloaded_file_family() -> None:
+    doc = {
+        "skills": [{"steps": [{"value": "{{downloaded_file}}"}, {"value": "{{downloaded_files_dir}}"}]}],
+        "inputs": [],
+    }
+    out, added = reconcile_inputs_with_step_values(doc)
+    assert added is False
+    assert out is doc
+    assert out["inputs"] == []
+
+
 # --- L-1: intent_graph indices track structural edits -------------------------------------
 
 def _doc_with_graph() -> dict:

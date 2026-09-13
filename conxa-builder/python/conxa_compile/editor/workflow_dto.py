@@ -519,6 +519,7 @@ def _for_each_info(
     ]
     summary = {
         "container_selector": str(rows.get("container_selector") or "").strip(),
+        "items": str(for_each.get("items") or "").strip(),
         "as": str(for_each.get("as") or "row").strip() or "row",
         "max_iterations": for_each.get("max_iterations"),
         "on_row_error": str(for_each.get("on_row_error") or "stop").strip() or "stop",
@@ -656,7 +657,7 @@ def step_to_dto(
     )
 
 
-def _compile_health(document: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+def _compile_health(document: dict[str, Any], meta: dict[str, Any], skill_id: str = "") -> dict[str, Any]:
     """Workflow-level compile-health summary — derived from compile_report + meta, both computed
     at compile time (compiler/build.py::_build_compile_report) but never surfaced to Human Edit
     before this redesign."""
@@ -680,7 +681,27 @@ def _compile_health(document: dict[str, Any], meta: dict[str, Any]) -> dict[str,
         # Diagnostics-tier only — provider/router telemetry from compile time, not a
         # Review-tier concern. See DiagnosticsPanel.tsx.
         "llm_router_stats": report.get("llm_router_stats") or {},
+        # One-click "generalize this to a loop" suggestion(s) — compiler/loop_suggestion.py.
+        # Filtered HERE (read time), not only at compile time: a reviewer's "Dismiss" only logs
+        # a decision (edit_log.py), it never edits compile_report on disk, so a plain page
+        # reload with no recompile in between would otherwise show the same dismissed
+        # suggestion again. Filtering on every read is the one place that covers a fresh
+        # compile, a page reload, and a post-accept refresh uniformly.
+        "for_each_suggestions": _for_each_suggestions(report, skill_id),
     }
+
+
+def _for_each_suggestions(report: dict[str, Any], skill_id: str) -> list[dict[str, Any]]:
+    suggestions = report.get("for_each_suggestions") or []
+    if not suggestions or not skill_id:
+        return suggestions
+    from conxa_compile.compiler.loop_suggestion import filter_rejected
+    from conxa_compile.editor.edit_log import read_edits
+
+    try:
+        return filter_rejected(suggestions, read_edits(skill_id))
+    except Exception:  # noqa: BLE001 — a suggestion display glitch must never break Human Edit
+        return suggestions
 
 
 def build_workflow_response(skill_id: str, document: dict[str, Any], *, asset_base_url: str) -> WorkflowResponse:
@@ -704,7 +725,7 @@ def build_workflow_response(skill_id: str, document: dict[str, Any], *, asset_ba
         suggestions=suggestions,
         asset_base_url=asset_base_url,
         intent_graph=intent_graph,
-        compile_health=_compile_health(document, meta),
+        compile_health=_compile_health(document, meta, skill_id),
     )
 
 

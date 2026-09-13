@@ -32,6 +32,7 @@ def test_for_each_projects_a_summary_and_nested_body_with_path_addressed_ids():
     dto = step_to_dto("skill_1", _for_each_step(), 3, {}, "")
     assert dto.for_each_summary == {
         "container_selector": "table#invoices tr",
+        "items": "",
         "as": "row",
         "max_iterations": 50,
         "on_row_error": "stop",
@@ -58,3 +59,16 @@ def test_for_each_with_empty_body_projects_zero_steps():
     dto = step_to_dto("skill_1", _for_each_step(body=[]), 0, {}, "")
     assert dto.for_each_summary["step_count"] == 0
     assert dto.for_each_steps == []
+
+
+def test_for_each_items_source_surfaced_in_summary():
+    for_each = {
+        "items": "files",
+        "as": "file",
+        "max_iterations": 50,
+        "steps": [_click_step("download_file")],
+    }
+    step = {"action": {"action": "for_each"}, "intent": "download_each_file", "for_each": for_each}
+    dto = step_to_dto("skill_1", step, 0, {}, "")
+    assert dto.for_each_summary["items"] == "files"
+    assert dto.for_each_summary["container_selector"] == ""

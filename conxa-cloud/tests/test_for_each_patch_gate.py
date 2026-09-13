@@ -88,3 +88,53 @@ class TestForEachStepPatches:
         step = _for_each_step()
         with pytest.raises(ValueError, match="for_each_must_be_object"):
             validate_editor_patch(step, {"for_each": "not an object"}, {})
+
+
+class TestForEachRowSource:
+    """EXEC-38 items source: exactly one of `rows.container_selector` / `items`, checked
+    against the EFFECTIVE for_each (existing step merged with the patch), not the raw patch
+    alone — see _validate_for_each_source."""
+
+    def _items_step(self, *, for_each=None) -> dict:
+        return {
+            "action": {"action": "for_each"},
+            "intent": "download_each_file",
+            "for_each": for_each if for_each is not None else {
+                "items": "files",
+                "as": "file",
+                "max_iterations": 50,
+                "steps": [],
+            },
+        }
+
+    def test_valid_items_patch_is_allowed(self):
+        step = self._items_step()
+        validate_editor_patch(step, {"for_each": {"max_iterations": 10}}, {})
+
+    def test_invalid_items_id_raises(self):
+        step = self._items_step()
+        with pytest.raises(ValueError, match="for_each_items_must_be_valid_input_id"):
+            validate_editor_patch(step, {"for_each": {"items": "not a valid id!"}}, {})
+
+    def test_both_sources_in_one_patch_raises(self):
+        step = _for_each_step()  # rows-based
+        with pytest.raises(ValueError, match="for_each_requires_exactly_one_row_source"):
+            validate_editor_patch(step, {"for_each": {"items": "files"}}, {})
+
+    def test_neither_source_raises(self):
+        step = self._items_step()
+        with pytest.raises(ValueError, match="for_each_items_must_be_valid_input_id"):
+            validate_editor_patch(step, {"for_each": {"items": ""}}, {})
+
+    def test_switching_items_to_rows_without_clearing_items_raises(self):
+        step = self._items_step()
+        with pytest.raises(ValueError, match="for_each_requires_exactly_one_row_source"):
+            validate_editor_patch(step, {"for_each": {"rows": {"container_selector": "table tr"}}}, {})
+
+    def test_proper_switch_from_rows_to_items_is_allowed(self):
+        step = _for_each_step()  # rows-based
+        validate_editor_patch(
+            step,
+            {"for_each": {"rows": {"container_selector": ""}, "items": "files"}},
+            {},
+        )

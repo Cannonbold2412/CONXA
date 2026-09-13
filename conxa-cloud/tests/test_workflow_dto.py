@@ -321,3 +321,39 @@ def test_build_workflow_response_empty_intent_graph_and_compile_health_when_abse
     wf = build_workflow_response("skill_1", doc, asset_base_url="file:///tmp")
     assert wf.intent_graph == {}
     assert wf.compile_health == {}
+
+
+def _document_with_for_each_suggestions(suggestions: list[dict]) -> dict:
+    doc = _document_with_intent_graph_and_compile_report()
+    doc["compile_report"]["for_each_suggestions"] = suggestions
+    return doc
+
+
+def test_build_workflow_response_surfaces_for_each_suggestions():
+    suggestion = {"id": "s1", "upload_step_key": "u1", "why": "generalize?"}
+    doc = _document_with_for_each_suggestions([suggestion])
+    wf = build_workflow_response("skill_no_edits", doc, asset_base_url="file:///tmp")
+    assert wf.compile_health["for_each_suggestions"] == [suggestion]
+
+
+def test_build_workflow_response_filters_a_previously_rejected_suggestion(tmp_path, monkeypatch):
+    # A "Dismiss" click only logs a decision (edit_log.py) — it never edits compile_report on
+    # disk — so filtering has to happen at READ time (here) to cover a plain page reload with no
+    # recompile in between, not just the next compile.
+    from conxa_core.config import settings
+    from conxa_compile.editor.edit_log import append_decision
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    skill_id = "skill_rejected_suggestion"
+    append_decision(
+        skill_id, proposal_id="s1", decision="rejected", command="reject_for_each_suggestion",
+        field="for_each_suggestion", step_key="u1",
+    )
+
+    kept = {"id": "s2", "upload_step_key": "u2", "why": "generalize?"}
+    doc = _document_with_for_each_suggestions([
+        {"id": "s1", "upload_step_key": "u1", "why": "generalize?"},
+        kept,
+    ])
+    wf = build_workflow_response(skill_id, doc, asset_base_url="file:///tmp")
+    assert wf.compile_health["for_each_suggestions"] == [kept]

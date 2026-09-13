@@ -12,7 +12,11 @@ from conxa_compile.compiler.patch import deep_merge
 from conxa_compile.compiler.selector_filters import selector_passes_filters
 from conxa_compile.compiler.wait_for_shape import destructive_wait_for_is_non_none
 from conxa_compile.editor.action_registry import action_spec, is_supported_action
-from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE, LOOSE_BRACE_RE
+from conxa_compile.editor.placeholder_grammar import (
+    FULL_PLACEHOLDER_RE,
+    LOOSE_BRACE_RE,
+    is_valid_placeholder_id,
+)
 from conxa_compile.editor.step_view import skill_step_for_destructive_check
 from conxa_compile.policy.intent_ontology import sanitize_intent_token
 
@@ -201,6 +205,9 @@ def _validate_for_each_patch(raw: Any) -> None:
         selector = str(rows.get("container_selector") or "").strip()
         if selector and not selector_passes_filters(selector):
             raise ValueError("for_each_rows_container_selector_failed_quality_gates")
+    items = raw.get("items")
+    if items is not None and not is_valid_placeholder_id(str(items).strip()):
+        raise ValueError("for_each_items_must_be_valid_input_id")
     as_name = raw.get("as")
     if as_name is not None and not str(as_name).strip():
         raise ValueError("for_each_as_must_be_non_empty_string")
@@ -217,6 +224,25 @@ def _validate_for_each_patch(raw: Any) -> None:
     on_row_error = raw.get("on_row_error")
     if on_row_error is not None and on_row_error not in ("stop", "continue"):
         raise ValueError("for_each_on_row_error_invalid")
+
+
+def _validate_for_each_source(step: dict[str, Any], raw_patch: Any) -> None:
+    """Exactly one row source — `rows.container_selector` (a DOM scan) or `items` (a named
+    runtime input, comma-split at execution) — same rule `_saved_for_each_step` enforces at
+    package time, checked here against the EFFECTIVE for_each (existing step merged with this
+    patch) rather than the raw patch alone: a patch touching only `items` must still be
+    rejected if the step's existing `rows.container_selector` would be left in place, and vice
+    versa. Shallow merge is enough — `items`/`rows` are the only keys this check reads, and a
+    patch that sets `rows` always means "replace the row spec", never "merge into it"."""
+    if not isinstance(raw_patch, dict):
+        return
+    existing = step.get("for_each") if isinstance(step.get("for_each"), dict) else {}
+    effective = {**existing, **raw_patch}
+    eff_rows = effective.get("rows") if isinstance(effective.get("rows"), dict) else {}
+    has_selector = bool(str(eff_rows.get("container_selector") or "").strip())
+    has_items = bool(str(effective.get("items") or "").strip())
+    if has_selector == has_items:
+        raise ValueError("for_each_requires_exactly_one_row_source")
 
 
 def validate_editor_patch(
@@ -381,6 +407,7 @@ def validate_editor_patch(
             raise ValueError("for_each_step_allows_only_intent_for_each_frame")
         if "for_each" in patch:
             _validate_for_each_patch(patch.get("for_each"))
+            _validate_for_each_source(step, patch.get("for_each"))
     if act != "scroll":
         eff = get_effective_intent_from_skill_step(merged) or str(merged.get("intent") or "").strip()
         if not eff.strip():
