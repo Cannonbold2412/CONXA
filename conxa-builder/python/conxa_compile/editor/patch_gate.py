@@ -261,6 +261,13 @@ def validate_editor_patch(
     Invariants), so a nested step's `recovery`/`validation` blocks are meaningless there and any
     attempt to patch them is rejected rather than silently accepted.
 
+    A for_each loop body step (`for_each.steps[j]`) is deliberately NOT covered by this flag —
+    the opposite case from branch: EXEC-38 runs a loop body through `executeOneStep`, the exact
+    same tab-resolution/GATE/VERIFY/recovery-cascade path every top-level step gets (see
+    runtime/app/run.js), so `recovery`/`validation` are meaningful there and must stay patchable —
+    the re-target wizard's Validation phase is exactly this. Callers patching a for_each nested
+    step pass `in_branch_body=False` (the default), same as an ordinary top-level step.
+
     `previous_step`, when given, is the step immediately before this one in the same step list
     (top-level only — EXEC-13's destructive-after-ai_review lint below only makes sense there;
     branch bodies never enter recovery and don't carry ai_review either). Omitted by callers that

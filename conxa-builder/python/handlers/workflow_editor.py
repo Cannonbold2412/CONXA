@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from handlers.protocol import _CommandError, _deep_merge, _event_sink, _safe_id, _skill_response
-
-# Matches the only nested-step path this pass supports: an if_present step's own body
-# (`branch.steps[N]`) — see conxa_compile/editor/patch_gate.py::_validate_branch_patch and
-# workflow_mutations.py::_branch_body_steps for why try_dismiss/wait_for_one_of have no
-# editable nested body yet.
-_BRANCH_STEP_PATH_RE = re.compile(r"^branch\.steps\[(\d+)\]$")
+from conxa_compile.editor.step_path import (
+    StepPathError,
+    get_nested_step,
+    parse_nested_step_path,
+    with_nested_step,
+)
 
 
 class WorkflowEditorMixin:
@@ -95,9 +94,14 @@ class WorkflowEditorMixin:
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
         patch = dict(payload.get("patch") or {})
-        # Optional path addressing a nested branch-body step (e.g. "branch.steps[1]") — see
-        # _BRANCH_STEP_PATH_RE. Absent for ordinary top-level step patches (unchanged behavior).
+        # Optional path addressing a nested body step — "branch.steps[N]" (if_present, EXEC-1) or
+        # "for_each.steps[N]" (EXEC-38). Absent for ordinary top-level step patches (unchanged
+        # behavior). See conxa_compile/editor/step_path.py.
         path = payload.get("path")
+        try:
+            nested_path = parse_nested_step_path(path)
+        except StepPathError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
@@ -112,21 +116,19 @@ class WorkflowEditorMixin:
             raise _CommandError("step_not_found", f"Step {step_index} out of range")
         parent_step = dict(steps[step_index])
 
-        if path:
-            match = _BRANCH_STEP_PATH_RE.match(str(path))
-            if not match:
-                raise _CommandError("invalid_step_path", f"Unsupported step path: {path!r}")
-            nested_index = int(match.group(1))
-            branch = dict(parent_step.get("branch") or {})
-            nested_steps = list(branch.get("steps") or [])
-            if nested_index < 0 or nested_index >= len(nested_steps):
-                raise _CommandError("step_not_found", f"Branch step {nested_index} out of range")
-            nested_step = dict(nested_steps[nested_index])
-            merged_nested = self._apply_step_patch(nested_step, patch, in_branch_body=True)
-            nested_steps[nested_index] = merged_nested
-            branch["steps"] = nested_steps
-            parent_step["branch"] = branch
-            step = parent_step
+        if nested_path is not None:
+            try:
+                nested_step = get_nested_step(parent_step, nested_path)
+            except StepPathError as exc:
+                raise _CommandError(exc.code, exc.message) from exc
+            # A for_each loop body runs through the real recovery cascade (unlike a branch body —
+            # see validate_editor_patch's docstring), so it must NOT set in_branch_body=True: that
+            # would wrongly reject the Validation phase's own recovery/validation patches.
+            merged_nested = self._apply_step_patch(nested_step, patch, in_branch_body=nested_path[0] == "branch")
+            try:
+                step = with_nested_step(parent_step, nested_path, merged_nested)
+            except StepPathError as exc:
+                raise _CommandError(exc.code, exc.message) from exc
             revalidation_target = merged_nested
         else:
             previous_step = steps[step_index - 1] if step_index > 0 else None
@@ -405,13 +407,20 @@ class WorkflowEditorMixin:
         # regenerate=False means the user is only reviewing an unchanged element, so the
         # already-compiled selectors are read back — no LLM call, no router needed.
         regenerate = bool(payload.get("regenerate", True))
+        # Optional path addressing a for_each loop-body step ("for_each.steps[N]") — lets the
+        # same 3-phase wizard a top-level step gets run against a nested step instead. Branch
+        # bodies don't use this: they keep their own simpler BranchBodyEditor, never the wizard.
+        try:
+            nested_path = parse_nested_step_path(payload.get("path"))
+        except StepPathError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         if regenerate:
             self._install_proxy_router(usage_class="human_edit")
         try:
-            return preview_retarget(doc, step_index, bbox, regenerate=regenerate)
+            return preview_retarget(doc, step_index, bbox, regenerate=regenerate, nested_path=nested_path)
         except RetargetError as exc:
             raise _CommandError(exc.code, exc.message) from exc
         except EntitlementBlocked as exc:
@@ -436,13 +445,17 @@ class WorkflowEditorMixin:
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
+        try:
+            nested_path = parse_nested_step_path(payload.get("path"))
+        except StepPathError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         snapshot = copy.deepcopy(doc)
         self._install_proxy_router(usage_class="human_edit")
         try:
-            doc = apply_retarget(doc, step_index, payload)
+            doc = apply_retarget(doc, step_index, payload, nested_path=nested_path)
         except RetargetError as exc:
             raise _CommandError(exc.code, exc.message) from exc
         except VisionAnchorGenerationError as exc:
@@ -459,7 +472,14 @@ class WorkflowEditorMixin:
 
         skills = doc.get("skills") or [{}]
         steps = (skills[0] or {}).get("steps") or []
-        step = steps[step_index] if step_index < len(steps) else {}
+        parent_step = steps[step_index] if step_index < len(steps) else {}
+        if nested_path is not None:
+            try:
+                step = get_nested_step(parent_step, nested_path)
+            except StepPathError as exc:
+                raise _CommandError(exc.code, exc.message) from exc
+        else:
+            step = parent_step
         revalidation = revalidate_step(step)
         self._push_undo(skill_id, snapshot)
         write_skill(skill_id, doc)

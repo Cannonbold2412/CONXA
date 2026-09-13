@@ -178,6 +178,18 @@ export const editorHelp = {
       </p>
     ),
   },
+  forEachBody: {
+    label: "Loop body",
+    summary:
+      "The steps that run once for every item in the loop's list — e.g. download one file, repeated for each filename the caller supplied.",
+    details: (
+      <p>
+        Runs through the same recovery and verification path as a normal top-level step, once per
+        item. View-only for now: reordering, adding, and removing steps here isn't supported yet —
+        edit the recording and recompile if the body itself needs to change.
+      </p>
+    ),
+  },
   toolDiagnostics: {
     label: "Diagnostics",
     summary:

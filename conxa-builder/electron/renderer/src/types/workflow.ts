@@ -150,6 +150,21 @@ export type StepEditorDTO = {
    * hasn't confirmed it yet — drives the "treat as optional?" suggestion. null once confirmed
    * (confirmOptionalInterstitial clears it) or for ordinary steps. */
   optional_hint: { kind: 'try_dismiss'; container_signal: string } | null
+  /** Set only for a `for_each` step (EXEC-38); null otherwise. Read-only visibility — same
+   * "no dedicated authoring UI yet" caveat as branch_summary (see TODO.md EXEC-38-UI). Without
+   * this a loop's wrapped body (e.g. from accepting a ForEachSuggestionBanner suggestion)
+   * disappears from the step list entirely, looking exactly like the wrapped steps were deleted. */
+  for_each_summary: {
+    container_selector: string
+    items: string
+    as: string
+    max_iterations: number | null
+    on_row_error: string
+    step_count: number
+  } | null
+  /** Nested body steps for a `for_each` step, same path-addressed `id` shape as branch_steps
+   * (`{skill_id}:{step_index}.for_each.steps[{j}]`). Read-only. */
+  for_each_steps: StepEditorDTO[]
 }
 
 export type SuggestionItem = {

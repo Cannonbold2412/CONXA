@@ -17,6 +17,7 @@ import { Trash2 } from 'lucide-react'
 import { AssertionEditorRows, describeWaitFor, hasInvalidAssertions, type AssertionDraft } from '@/components/validation/AssertionEditor'
 import { ElementFingerprintCard } from '@/components/ElementFingerprintCard'
 import { anchorRowsFromObjects, parseAnchorRows } from '@/lib/anchors'
+import { findUpdatedStep } from '@/lib/workflowViewerHelpers'
 
 // Same gradient-fill + ring depth treatment as PanelChrome (components/ui/panel-chrome.tsx),
 // layered onto Card's className rather than swapping the component itself — Card's
@@ -134,6 +135,15 @@ type Props = {
    *  `submitIfDirty()` itself (e.g. the re-target wizard's Continue button), so a second,
    *  redundant manual save action isn't shown alongside it. */
   hideSubmitButton?: boolean
+  /** Set when `step` is a nested for_each loop-body step instead of a top-level one — addresses
+   *  the patch as `patchStep(skillId, parentStepIndex, patch, false, path)` (see
+   *  `cmd_patch_step`'s `path` parameter) rather than by `step.step_index`, which for a nested
+   *  step is only its LOCAL ordinal within the loop, not a position in the top-level step list.
+   *  Omit for an ordinary top-level step (unchanged behavior). */
+  path?: string
+  /** The top-level step's real index — required alongside `path`, ignored otherwise (defaults
+   *  to `step.step_index`, correct for a top-level step). */
+  parentStepIndex?: number
 }
 
 export type StepConfigFormHandle = {
@@ -209,7 +219,14 @@ function StepValidationPanel({ step, assertions, onChange }: StepValidationPanel
 // Review Selectors phase — memo stops this form (react-hook-form + several child cards) from
 // re-rendering on candidate changes that don't touch any of its own props.
 export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
-  function StepConfigForm({ step, skillId, onWorkflowUpdated, onHistoryUpdate, hideSelectorTools, hideSubmitButton }, ref) {
+  function StepConfigForm(
+    { step, skillId, onWorkflowUpdated, onHistoryUpdate, hideSelectorTools, hideSubmitButton, path, parentStepIndex },
+    ref,
+  ) {
+  // The index/path pair every patchStep call below addresses — step.step_index directly for an
+  // ordinary top-level step, or the caller-supplied parent + path for a nested for_each step
+  // (see this file's Props.path doc comment).
+  const patchIndex = parentStepIndex ?? step?.step_index ?? 0
   const methods = useForm<FormValues>({ defaultValues: step ? defaultsFromStep(step) : emptyForm })
 
   // Re-sync from the server whenever `step` gets a new reference — but only when the form has
@@ -264,10 +281,10 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
           patch.validation = { ...(patch.validation as Record<string, unknown>), assertions: values.assertions }
         }
         try {
-          const res = await patchStep(skillId, step.step_index, patch, false)
+          const res = await patchStep(skillId, patchIndex, patch, false, path)
           onWorkflowUpdated(res.workflow)
           if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-          const next = res.workflow.steps.find((s) => s.step_index === step.step_index)
+          const next = findUpdatedStep(res.workflow, step.id)
           if (next) methods.reset(defaultsFromStep(next))
           if (!silent) toast.success('Step saved')
           return
@@ -298,10 +315,10 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
         }
         if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
-          const res = await patchStep(skillId, step.step_index, patch, false)
+          const res = await patchStep(skillId, patchIndex, patch, false, path)
           onWorkflowUpdated(res.workflow)
           if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-          const next = res.workflow.steps.find((s) => s.step_index === step.step_index)
+          const next = findUpdatedStep(res.workflow, step.id)
           if (next) methods.reset(defaultsFromStep(next))
           if (!silent) toast.success('Step saved')
           return
@@ -321,10 +338,10 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
         }
         if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
-          const res = await patchStep(skillId, step.step_index, patch, false)
+          const res = await patchStep(skillId, patchIndex, patch, false, path)
           onWorkflowUpdated(res.workflow)
           if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-          const next = res.workflow.steps.find((s) => s.step_index === step.step_index)
+          const next = findUpdatedStep(res.workflow, step.id)
           if (next) methods.reset(defaultsFromStep(next))
           if (!silent) toast.success('Step saved')
           return
@@ -353,10 +370,10 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
         else if (values.check_kind === 'text') patch.check_text = values.check_text
         if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
-          const res = await patchStep(skillId, step.step_index, patch, false)
+          const res = await patchStep(skillId, patchIndex, patch, false, path)
           onWorkflowUpdated(res.workflow)
           if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-          const next = res.workflow.steps.find((s) => s.step_index === step.step_index)
+          const next = findUpdatedStep(res.workflow, step.id)
           if (next) methods.reset(defaultsFromStep(next))
           if (!silent) toast.success('Step saved')
           return
@@ -395,10 +412,10 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
         }
         if (canEditField('validation')) patch.validation = { assertions: values.assertions }
         try {
-          const res = await patchStep(skillId, step.step_index, patch, false)
+          const res = await patchStep(skillId, patchIndex, patch, false, path)
           onWorkflowUpdated(res.workflow)
           if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-          const next = res.workflow.steps.find((s) => s.step_index === step.step_index)
+          const next = findUpdatedStep(res.workflow, step.id)
           if (next) methods.reset(defaultsFromStep(next))
           if (!silent) toast.success('Step saved')
           return
@@ -443,10 +460,10 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       }
       if (canEditField('validation')) patch.validation = { assertions: values.assertions }
       try {
-        const res = await patchStep(skillId, step.step_index, patch, false)
+        const res = await patchStep(skillId, patchIndex, patch, false, path)
         onWorkflowUpdated(res.workflow)
         if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
-        const next = res.workflow.steps.find((s) => s.step_index === step.step_index)
+        const next = findUpdatedStep(res.workflow, step.id)
         if (next) methods.reset(defaultsFromStep(next))
         if (!silent) toast.success('Step saved')
       } catch (e) {
@@ -456,7 +473,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
         throw e
       }
     },
-    [methods, onHistoryUpdate, onWorkflowUpdated, skillId, step],
+    [methods, onHistoryUpdate, onWorkflowUpdated, skillId, step, patchIndex, path],
   )
 
   useImperativeHandle(
@@ -524,7 +541,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
 
   return (
     <FormProvider {...methods}>
-      <DirtySync stepIndex={step.step_index} />
+      <DirtySync stepIndex={patchIndex} />
       <form onSubmit={onSubmit} className="space-y-2">
       <Card className={cn('gap-2 py-3', PANEL_CARD_CLASS)}>
         <CardHeader className="p-2.5 pb-1">

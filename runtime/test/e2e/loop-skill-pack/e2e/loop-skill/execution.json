@@ -1,0 +1,27 @@
+[
+  {
+    "type": "for_each",
+    "as": "file",
+    "items": "files",
+    "max_iterations": 50,
+    "steps": [
+      { "type": "navigate", "url": "{{fixture_dir}}/file.html?name={{file_id}}" },
+      { "type": "click", "selector": "[data-testid=\"download-btn\"]", "_explicit_selector": "[data-testid=\"download-btn\"]" },
+      { "type": "download_observed" }
+    ]
+  },
+  { "type": "navigate", "url": "{{fixture_dir}}/drive.html" },
+  {
+    "type": "upload",
+    "selector": "[data-testid=\"drive-upload\"]",
+    "_explicit_selector": "[data-testid=\"drive-upload\"]",
+    "value": "{{downloaded_files_dir}}"
+  },
+  {
+    "type": "assert",
+    "assert_kind": "text",
+    "selector": "#status",
+    "_explicit_selector": "#status",
+    "value": "{{expected_status}}"
+  }
+]

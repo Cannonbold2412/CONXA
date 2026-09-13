@@ -243,13 +243,17 @@ export type RetargetPreviewResponse = {
 
 // regenerate=false reviews the already-compiled selectors (no LLM); pass true only when the
 // user re-picked the element and the selectors must be regenerated for the new target.
+// `path` addresses a nested for_each loop-body step ("for_each.steps[N]") instead of the
+// top-level step at stepIndex — see cmd_retarget_preview's `path` parameter
+// (handlers/workflow_editor.py). Omit for an ordinary top-level step.
 export function retargetPreview(
   skillId: string,
   stepIndex: number,
   bbox: Bbox,
   regenerate = true,
+  path?: string,
 ): Promise<RetargetPreviewResponse> {
-  return cmd('retarget_preview', { skill_id: skillId, step_index: stepIndex, ...bbox, regenerate })
+  return cmd('retarget_preview', { skill_id: skillId, step_index: stepIndex, ...bbox, regenerate, path })
 }
 
 export function retargetApply(
@@ -269,8 +273,11 @@ export function retargetApply(
      *  vision LLM again. Omitted/undefined on the position-only/no-preview fallback paths. */
     visual_anchors?: VisualAnchors | null
   },
+  /** Addresses a nested for_each loop-body step ("for_each.steps[N]") — see retargetPreview's
+   *  `path` doc comment. Omit for an ordinary top-level step. */
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('retarget_apply', { skill_id: skillId, step_index: stepIndex, ...body })
+  return cmd('retarget_apply', { skill_id: skillId, step_index: stepIndex, ...body, path })
 }
 
 export function patchStep(

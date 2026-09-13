@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture: GitHub file page</title></head>
+<body>
+  <!-- Stands in for a GitHub blob page: the URL names one file (?name=...), same shape
+       loop_suggestion.py detects (a navigate URL containing the recorded filename verbatim).
+       Clicking Download triggers a REAL browser download (Blob + <a download>), the same
+       mechanism a real GitHub raw-file download uses, so runtime/app/handlers.js's
+       download_observed step (backed by Playwright's page.on("download")) exercises the exact
+       code path it would against the real site. -->
+  <h1 id="filename"></h1>
+  <button data-testid="download-btn">Download</button>
+  <script>
+    const name = new URLSearchParams(location.search).get('name') || 'file.txt';
+    document.getElementById('filename').textContent = name;
+    document.querySelector('[data-testid="download-btn"]').addEventListener('click', () => {
+      const blob = new Blob(['contents of ' + name], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+    });
+  </script>
+</body>
+</html>

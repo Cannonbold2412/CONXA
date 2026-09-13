@@ -10,6 +10,7 @@ from conxa_compile.compiler.decision_layer import rank_merged_anchors
 from conxa_compile.compiler.recovery_policy import merge_recovery_strategies_for_wait_shape
 from conxa_core.config import settings
 from conxa_compile.editor.assets import asset_url, resolve_skill_asset
+from conxa_compile.editor.step_path import NestedPath, StepPathError, get_nested_step, with_nested_step
 from conxa_compile.editor.step_view import skill_step_for_destructive_check
 from conxa_compile.llm import anchor_vision_llm
 from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
@@ -270,10 +271,13 @@ def apply_recording_event_visual_to_step_or_raise(
 
 
 def _resolve_step_for_visual_update(
-    document: dict[str, Any], step_index: int, bbox: dict[str, Any]
+    document: dict[str, Any], step_index: int, bbox: dict[str, Any], nested_path: NestedPath | None = None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Normalize the drawn bbox and look up the target step. Shared by the preview (Continue) and
-    apply-time entry points below so both validate identically."""
+    apply-time entry points below so both validate identically.
+
+    ``nested_path`` addresses a for_each loop-body step (``for_each.steps[N]``) instead of the
+    top-level step at ``step_index`` — see retarget.py::preview_retarget's docstring."""
     try:
         next_bbox = {
             "x": int(round(float(bbox.get("x") or 0))),
@@ -297,7 +301,14 @@ def _resolve_step_for_visual_update(
     if step_index < 0 or step_index >= len(steps):
         raise ValueError("step_index_out_of_range")
 
-    step = dict(steps[step_index])
+    parent_step = dict(steps[step_index])
+    if nested_path is None:
+        step = parent_step
+    else:
+        try:
+            step = get_nested_step(parent_step, nested_path)
+        except StepPathError as exc:
+            raise ValueError(exc.code) from exc
     if action_name(step).lower() == "scroll":
         raise ValueError("cannot_update_visual_bbox_on_scroll_step")
     return next_bbox, step
@@ -338,6 +349,7 @@ def preview_visual_anchors_for_bbox_or_raise(
     bbox: dict[str, Any],
     *,
     policy_bundle: PolicyBundle | None = None,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
     """Compute (without persisting) the vision anchors a redrawn region would produce.
 
@@ -346,7 +358,7 @@ def preview_visual_anchors_for_bbox_or_raise(
     ``precomputed_anchors`` param.
     """
     bundle = policy_bundle or get_policy_bundle()
-    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox)
+    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox, nested_path)
     meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
     session_id = str(meta.get("source_session_id") or "").strip()
     anchors, intent = _generate_anchors_for_bbox(step, next_bbox, session_id, bundle.data, step_index)
@@ -360,15 +372,17 @@ def update_step_visual_bbox_and_regenerate_anchors_or_raise(
     *,
     policy_bundle: PolicyBundle | None = None,
     precomputed_anchors: dict[str, Any] | None = None,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
     """Update ``signals.visual.bbox`` and apply vision-backed anchors for the current screenshot.
 
     Pass ``precomputed_anchors`` (from ``preview_visual_anchors_for_bbox_or_raise``) to reuse
-    anchors already generated at Continue instead of calling the LLM again here.
+    anchors already generated at Continue instead of calling the LLM again here. ``nested_path``
+    addresses a for_each loop-body step — see retarget.py::preview_retarget's docstring.
     """
     bundle = policy_bundle or get_policy_bundle()
     policy = bundle.data
-    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox)
+    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox, nested_path)
     meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
     session_id = str(meta.get("source_session_id") or "").strip()
 
@@ -421,7 +435,11 @@ def update_step_visual_bbox_and_regenerate_anchors_or_raise(
         policy,
     )
 
-    steps[step_index] = step
+    if nested_path is None:
+        steps[step_index] = step
+    else:
+        parent_step = dict(steps[step_index])
+        steps[step_index] = with_nested_step(parent_step, nested_path, step)
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills
