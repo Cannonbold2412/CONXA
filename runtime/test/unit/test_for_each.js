@@ -125,6 +125,17 @@ test("for_each with on_row_error: continue skips a failing row and finishes the 
   assert.strictEqual(result.dryRunSkipped.length, 2);
 });
 
+// Regression: on_row_error: "continue" tracked processed/failed as tracker-only telemetry that
+// never reached the run's own result — a loop could finish with rows silently skipped and report
+// plain success. It must now surface in the run's warnings, the same channel a passing run's
+// other advisory issues already use.
+test("for_each with on_row_error: continue surfaces a warning naming how many rows failed", async () => {
+  const page = mockRowsPage(["A", "B", "C"], { missingButtonAt: 1 });
+  const result = await runPlan(page, [forEachStep({ onRowError: "continue" })], {}, 0, "for-each-continue-warns", { dryRun: true });
+  assert.strictEqual(result.warnings.length, 1);
+  assert.match(result.warnings[0], /1 of 3 item\(s\) failed/);
+});
+
 const NOOP_BODY = [{ type: "frame_enter", intent: "noop" }];
 
 test("for_each restores inputs after the loop — no {{row_id}}/{{row_index}} leak to later steps", async () => {
@@ -156,4 +167,108 @@ test("for_each with zero matching rows is a no-op, not an error", async () => {
   const page = mockRowsPage([]);
   const result = await runPlan(page, [forEachStep()], {}, 0, "for-each-empty", { dryRun: true });
   assert.deepStrictEqual(result.dryRunSkipped, []);
+  // Regression: zero rows used to be an entirely silent no-op — a run could report plain
+  // success having processed nothing, with no signal anywhere that the loop found no work.
+  assert.strictEqual(result.warnings.length, 1);
+  assert.match(result.warnings[0], /found no items to process/);
+});
+
+// EXEC-38 items source (Github->Drive Files Handoff generalization) — a loop driven by a named
+// runtime input (comma-separated text) instead of a DOM row scan. No container to query, so
+// these reuse test_dry_run.js's plain resolvable-page shape rather than mockRowsPage's
+// container/entityRoots machinery — an items-loop body ordinarily carries no entity_binding at
+// all (there is no live row to re-locate). Mirrors the rows-source tests above one-for-one;
+// the only thing under test is splitListInput's enumeration, everything past it is identical.
+function mockItemsPage() {
+  const item = { evaluate: async () => ({ testid: "submit", role: "button", name: "Submit", text: "Submit" }) };
+  return {
+    waitForLoadState: async () => {},
+    context: () => idleContext,
+    url: () => "https://x.test",
+    locator: (sel) => ({ all: async () => (sel === '[data-testid="submit"]' ? [item] : []) }),
+  };
+}
+
+const DESTRUCTIVE_ITEM_STEP = {
+  type: "click",
+  intent: "download_file",
+  destructive: true,
+  identity_bundle: {
+    signals: [{ engine: "testid", selector: 'internal:testid=[data-testid="submit"]', durability: 0.99, orthogonality_class: "test-contract" }],
+    fingerprint: { data_testid: "submit", role: "button", aria_label: "Submit" },
+    stable_hash: "",
+    frame_chain: [],
+  },
+};
+
+function itemsForEachStep({ maxIterations = 10, noCap = false, steps } = {}) {
+  const step = {
+    type: "for_each",
+    items: "files",
+    as: "file",
+    steps: steps || [DESTRUCTIVE_ITEM_STEP],
+  };
+  if (!noCap) step.max_iterations = maxIterations;
+  return step;
+}
+
+test("for_each items source: comma-separated input drives one iteration per value", async () => {
+  const page = mockItemsPage();
+  const result = await runPlan(page, [itemsForEachStep()], { files: "a.txt, b.txt, c.txt" }, 0, "for-each-items-basic", { dryRun: true });
+  assert.strictEqual(result.dryRunSkipped.length, 3);
+});
+
+test("for_each items source: a single value with no comma is a one-iteration loop, not a second code path", async () => {
+  const page = mockItemsPage();
+  const result = await runPlan(page, [itemsForEachStep()], { files: "a.txt" }, 0, "for-each-items-single", { dryRun: true });
+  assert.strictEqual(result.dryRunSkipped.length, 1);
+});
+
+test("for_each items source: surrounding whitespace around each value is trimmed", async () => {
+  const page = mockItemsPage();
+  const result = await runPlan(page, [itemsForEachStep()], { files: "  a.txt ,  b.txt  " }, 0, "for-each-items-trim", { dryRun: true });
+  assert.strictEqual(result.dryRunSkipped.length, 2);
+});
+
+test("for_each items source: an empty/absent input is a clean no-op, not an error", async () => {
+  const page = mockItemsPage();
+  const result = await runPlan(page, [itemsForEachStep()], {}, 0, "for-each-items-empty", { dryRun: true });
+  assert.deepStrictEqual(result.dryRunSkipped, []);
+  // Same regression as the rows-source test above: an empty "files" input (the caller never
+  // supplied one, or supplied a blank string) should be visible, not indistinguishable from a
+  // fully successful run that genuinely had nothing to do.
+  assert.strictEqual(result.warnings.length, 1);
+  assert.match(result.warnings[0], /found no items to process/);
+});
+
+test("for_each items source: duplicate values collapse to one iteration", async () => {
+  const page = mockItemsPage();
+  const result = await runPlan(page, [itemsForEachStep()], { files: "a.txt, a.txt, b.txt" }, 0, "for-each-items-dedup", { dryRun: true });
+  assert.strictEqual(result.dryRunSkipped.length, 2);
+});
+
+test("for_each items source: caps at max_iterations even when more values exist", async () => {
+  const page = mockItemsPage();
+  const result = await runPlan(page, [itemsForEachStep({ maxIterations: 2 })], { files: "a,b,c,d,e" }, 0, "for-each-items-cap", { dryRun: true });
+  assert.strictEqual(result.dryRunSkipped.length, 2);
+});
+
+test("for_each items source with no max_iterations refuses to run at all", async () => {
+  const page = mockItemsPage();
+  await assert.rejects(
+    () => runPlan(page, [itemsForEachStep({ noCap: true })], { files: "a,b" }, 0, "for-each-items-nocap", { dryRun: true }),
+    (err) => {
+      assert.strictEqual(err.failedAt, 0);
+      assert.match(err.message, /max_iterations/);
+      return true;
+    }
+  );
+});
+
+test("for_each items source restores inputs after the loop — no {{file_id}}/{{file_index}} leak to later steps", async () => {
+  const page = mockItemsPage();
+  const inputs = { files: "a,b" };
+  await runPlan(page, [itemsForEachStep({ steps: NOOP_BODY })], inputs, 0, "for-each-items-restore");
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(inputs, "file_id"), false);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(inputs, "file_index"), false);
 });

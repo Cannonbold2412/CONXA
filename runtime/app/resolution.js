@@ -140,6 +140,32 @@ async function enumerateRows(page, spec, cap) {
   return out;
 }
 
+// EXEC-38 items-source sibling to enumerateRows: a for_each driven by a runtime input
+// (`items: "<input_name>"`) instead of a DOM container. `raw` is the named input's current
+// value — a comma-separated string (the only shape a plain `text` input can carry) or, for a
+// caller that already has one, an array. Trim/drop-empty/de-dup/cap mirror enumerateRows
+// exactly, so both sources behave identically to the loop executor and its telemetry.
+function splitListInput(raw, cap) {
+  let items;
+  if (Array.isArray(raw)) {
+    items = raw.map((v) => String(v));
+  } else if (typeof raw === "string") {
+    items = raw.split(",");
+  } else {
+    return [];
+  }
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    if (out.length >= cap) break;
+    const text = item.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+
 // BUILD-30: a virtualized grid (AG Grid, react-window, TanStack Virtual, ...) only renders the
 // rows currently in the scrolled viewport, so a step's target/row can be entirely absent from
 // the DOM until scrolled into range — indistinguishable, before this, from genuine breakage.
@@ -435,6 +461,7 @@ module.exports = {
   entityRoots,
   isEntityNotFound,
   enumerateRows,
+  splitListInput,
   maybeScrollForVirtualization,
   locatorCandidates,
   resolveStep,

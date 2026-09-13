@@ -43,6 +43,7 @@ const {
   validateOverrideSelector,
   resolveStep,
   enumerateRows,
+  splitListInput,
 } = require("./resolution");
 const {
   stepAssertions,
@@ -500,6 +501,12 @@ async function executeOneStep(ctx, state, steps, i) {
 // narrowing — "exactly one match or fail closed" — does all the per-row scoping; there is no new
 // resolution logic here beyond the enumeration itself.
 //
+// Two mutually exclusive row sources: `rows.container_selector` (a live DOM scan via
+// enumerateRows) or `items` (a named runtime input, split on commas via splitListInput) — a
+// loop over "the rows on this page" vs. a loop over "the files/values the caller named". The
+// compiler/patch_gate enforce exactly one is set; everything past enumeration (cap, save/
+// restore, on_row_error, dry-run, recovery, telemetry) is identical for both.
+//
 // ponytail: onStep/telemetry `si` values inside the loop body are body-LOCAL indices (0..N),
 // not composite paths into the outer step list — a body step's progress/telemetry can collide
 // in number with a top-level step's. Upgrade to composite indices ("5.2.1") only if a real
@@ -524,7 +531,12 @@ async function runForEachStep(ctx, state, step, page, i) {
   const cap = Math.min(declaredCap, MAX_LOOP_ITERATIONS);
   const onRowError = step.on_row_error === "continue" ? "continue" : "stop";
 
-  const rowIds = await enumerateRows(page, spec, cap);
+  // EXEC-38 items source: a loop driven by a named runtime input (comma-separated text) instead
+  // of a DOM row scan — no live page to enumerate, so no container/entity-binding scoping
+  // applies to the body (entityRoots already no-ops when a body step carries none).
+  const rowIds = step.items
+    ? splitListInput(state.inputs[step.items], cap)
+    : await enumerateRows(page, spec, cap);
   ctx.tracker.emit("for_each_start", { si: i, total: rowIds.length, cap });
 
   // Save/restore around the WHOLE loop, not per-iteration — every iteration sets these fresh
@@ -560,6 +572,19 @@ async function runForEachStep(ctx, state, step, page, i) {
   } finally {
     if (hadId) state.inputs[idKey] = prevId; else delete state.inputs[idKey];
     if (hadIdx) state.inputs[idxKey] = prevIdx; else delete state.inputs[idxKey];
+  }
+
+  // Reached only when the loop did NOT throw out of the try above — either every row succeeded,
+  // or on_row_error absorbed some failures ("stop" mode already exited via the propagated throw
+  // before this line runs). `processed`/`failed` were already tracker-only telemetry
+  // (for_each_done below) that never reached the run's own result — a "continue" loop with rows
+  // skipped, or an empty items list, could complete and report plain success with nothing (or
+  // less than everything) actually done. Pushing into state.warnings surfaces it in the same
+  // "Warning:\n..." block the final result text already appends (server.js's _allWarnings).
+  if (rowIds.length === 0) {
+    state.warnings.push(`Loop at step ${i + 1} found no items to process — "${step.items || "rows"}" was empty.`);
+  } else if (failed > 0) {
+    state.warnings.push(`Loop at step ${i + 1}: ${failed} of ${rowIds.length} item(s) failed and were skipped (on_row_error: continue).`);
   }
 
   ctx.tracker.emit("for_each_done", { si: i, processed, failed, total: rowIds.length });
