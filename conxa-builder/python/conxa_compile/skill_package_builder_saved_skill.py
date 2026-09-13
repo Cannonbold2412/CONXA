@@ -448,12 +448,20 @@ def _saved_for_each_step(step: dict[str, Any]) -> dict[str, Any] | None:
     consumes. `max_iterations` is REQUIRED — the runtime refuses an uncapped loop at
     execute time, but there's no reason to ship a pack that can't possibly run; drop the
     step here instead (same "return None => step vanishes from execution.json" contract
-    every other action uses for an unfillable step)."""
+    every other action uses for an unfillable step).
+
+    Two mutually exclusive row sources: `rows.container_selector` (a live DOM scan) or
+    `items` (a named runtime input the runtime splits on commas — see resolution.js's
+    splitListInput). Exactly one must be set; patch_gate.py enforces this at edit time,
+    this is just the same rule applied to whatever the document actually holds."""
     for_each = step.get("for_each") if isinstance(step.get("for_each"), dict) else {}
     rows = for_each.get("rows") if isinstance(for_each.get("rows"), dict) else {}
     container_selector = str(rows.get("container_selector") or "").strip()
+    items = str(for_each.get("items") or "").strip()
+    if bool(container_selector) == bool(items):
+        return None  # neither source, or both — not a runnable loop
     nested = _saved_branch_steps_list(for_each.get("steps"))
-    if not container_selector or not nested:
+    if not nested:
         return None
     try:
         max_iterations = int(for_each.get("max_iterations"))
@@ -463,11 +471,14 @@ def _saved_for_each_step(step: dict[str, Any]) -> dict[str, Any] | None:
         return None
     out: dict[str, Any] = {
         "type": "for_each",
-        "rows": {"container_selector": container_selector},
         "as": str(for_each.get("as") or "row").strip() or "row",
         "max_iterations": max_iterations,
         "steps": nested,
     }
+    if items:
+        out["items"] = items
+    else:
+        out["rows"] = {"container_selector": container_selector}
     if for_each.get("on_row_error") == "continue":
         out["on_row_error"] = "continue"
     return _copy_saved_common(step, out)
@@ -752,11 +763,17 @@ def _merge_saved_inputs_with_execution_placeholders(
     execution_steps: list[dict[str, Any]],
     descriptions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    from conxa_compile.compiler.upload_binding import _RUNTIME_ONLY_PLACEHOLDER_RE
+    from conxa_compile.compiler.upload_binding import (
+        _RUNTIME_ONLY_PLACEHOLDER_RE,
+        for_each_loop_variable_names,
+    )
 
     inputs = _normalize_saved_skill_inputs(declared_inputs)
     seen = {str(item.get("name") or "") for item in inputs}
     overrides = descriptions or {}
+    # A for_each loop's own {{<as>_id}}/{{<as>_index}} are populated by run.js at replay time,
+    # never something a user/agent supplies — same reason downloaded_file* is excluded below.
+    loop_vars = for_each_loop_variable_names(execution_steps)
     # The primary record->compile path (compiler/build.py) already declares file_path with a
     # generic humanized label ("File Path") before this function ever sees it, so the "not yet
     # seen" branch below never fires for it. Overwrite it here too, since the upload-derived
@@ -772,6 +789,8 @@ def _merge_saved_inputs_with_execution_placeholders(
             # downloaded_file / downloaded_file_N — populated automatically at replay time by
             # run.js's download_observed handler from an earlier download in the same run
             # (see _bind_downloads_to_uploads), never something a user/agent supplies.
+            continue
+        if name in loop_vars:
             continue
         seen.add(name)
         inputs.append(

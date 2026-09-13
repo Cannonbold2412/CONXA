@@ -122,6 +122,18 @@ def classify_file_pick(
     }
 
 
+def parse_download_suggested_filename(raw_value: str) -> str:
+    """Extract ``suggested_filename`` from a ``download_observed`` step's raw JSON value
+    (``{"url": ..., "suggested_filename": ...}``) — the same shape ``_BindingState.add_download``
+    parses. Pulled out standalone so `compiler/loop_suggestion.py`'s detector can identify a
+    download's filename without duplicating this parsing."""
+    try:
+        payload = json.loads(raw_value) if raw_value else {}
+    except (TypeError, ValueError):
+        return ""
+    return str((payload or {}).get("suggested_filename") or "").strip()
+
+
 class _BindingState:
     def __init__(self) -> None:
         self.total_downloads = 0
@@ -141,7 +153,7 @@ class _BindingState:
             payload = json.loads(raw_value) if raw_value else {}
         except (TypeError, ValueError):
             payload = {}
-        name = str((payload or {}).get("suggested_filename") or "").strip()
+        name = parse_download_suggested_filename(raw_value)
         if name:
             self.pending_by_name.setdefault(name, []).append(order)
             members = payload.get("zip_members") if isinstance(payload, dict) else None
@@ -316,6 +328,44 @@ def apply_bindings_to_compiled_steps(steps: list[Any], events: list[dict[str, An
             ):
                 step.value = patch["value"]
                 step.input_binding = patch["input_binding"]
+
+
+def for_each_loop_variable_names(payload: Any) -> set[str]:
+    """Every ``{{<as>_id}}``/``{{<as>_index}}`` name a `for_each` loop injects at replay time
+    (EXEC-38), walking both step shapes a caller might hand in: the editor/document shape
+    (``step["for_each"] = {"as": ..., "steps": [...]}``) and the flat execution/export shape
+    (``{"type": "for_each", "as": ..., "steps": [...]}``). These names are populated by
+    `run.js::runForEachStep` from the loop's own row/items list, never something a user/agent
+    supplies — the same reason `downloaded_file*` is excluded from auto-declared inputs above —
+    so both `reconcile_inputs_with_step_values` and
+    `_merge_saved_inputs_with_execution_placeholders` exclude whatever this returns.
+
+    Recurses through the whole structure rather than only known loop-body keys, so a `for_each`
+    nested inside another primitive's body (a branch, another loop) is still found.
+    """
+    names: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for_each = value.get("for_each")
+            as_name: Any = None
+            if isinstance(for_each, dict):
+                as_name = for_each.get("as")
+            elif value.get("type") == "for_each":
+                as_name = value.get("as")
+            if as_name:
+                as_name = str(as_name).strip()
+                if as_name:
+                    names.add(f"{as_name}_id")
+                    names.add(f"{as_name}_index")
+            for v in value.values():
+                visit(v)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(payload)
+    return names
 
 
 def filter_runtime_only_inputs(inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:

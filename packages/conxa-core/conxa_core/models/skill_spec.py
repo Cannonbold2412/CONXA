@@ -293,17 +293,26 @@ class SkillStep(BaseModel):
     entity_binding: EntityBinding | None = None
 
     # [mixed] EXEC-38: the "for each row, do steps A-C" iteration primitive. Empty for ordinary
-    # steps. Holds `rows` ({container_selector} — the [executor] half: every sibling row
-    # matching this selector is a candidate iteration), `as` (the {{name}} body steps read the
-    # current row's identifier/index under — {{as}}_id / {{as}}_index), `max_iterations`
+    # steps. Holds a row source (see below), `as` (the {{name}} body steps read the current
+    # row's identifier/index under — {{as}}_id / {{as}}_index), `max_iterations`
     # (REQUIRED at runtime — see runtime/app/run.js; a loop with no cap refuses to load),
     # `on_row_error` ("stop" default | "continue"), and `steps` (the loop body, same nested
     # saved-step-dict shape `branch` uses; skill_package_builder_saved_skill.py serializes it the
     # same way). Author-first, not inferred from a recording: authored in the Human Edit editor
     # by wrapping N existing steps into a body, one level deep only (same constraint as
-    # `branch`). Entity-bound to `{{<as>_id}}` inside the body is what gives recovery the same
-    # "never substitute a different row" guarantee entity_binding already provides elsewhere —
-    # see EntityBinding and runtime/app/resolution.js::entityRoots.
+    # `branch`).
+    #
+    # Exactly one row source, never both, never neither (enforced by
+    # skill_package_builder_saved_skill.py::_saved_for_each_step at package time and
+    # editor/patch_gate.py::_validate_for_each_source at edit time):
+    #   `rows` ({container_selector} — the [executor] half: a live DOM scan, every sibling row
+    #   matching this selector is a candidate iteration). Entity-bound to `{{<as>_id}}` inside
+    #   the body is what gives recovery the same "never substitute a different row" guarantee
+    #   entity_binding already provides elsewhere — see EntityBinding and
+    #   runtime/app/resolution.js::entityRoots.
+    #   `items` (a named runtime input — e.g. a plain `text` input the caller filled with a
+    #   comma-separated list — split via runtime/app/resolution.js::splitListInput; no DOM scan,
+    #   no entity_binding, since there is no live row to re-locate).
     for_each: dict[str, Any] = Field(default_factory=dict)
 
 

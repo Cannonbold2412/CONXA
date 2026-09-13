@@ -24,6 +24,7 @@ from conxa_compile.compiler.input_binding import derive_input_binding
 from conxa_compile.compiler.choice import collapse_choice_group_runs, derive_choice
 from conxa_compile.compiler.date_picker import collapse_date_picker_runs
 from conxa_compile.compiler.upload_binding import apply_bindings_to_compiled_steps
+from conxa_compile.compiler.loop_suggestion import detect_download_upload_loop_candidates
 from conxa_compile.compiler.virtualized import detect_virtualized_container
 from conxa_compile.compiler.recovery_policy import (
     default_recovery_block,
@@ -1890,6 +1891,14 @@ def compile_skill_package(
     if commit_ordering_warnings:
         compile_report["commit_ordering_warnings"] = commit_ordering_warnings
 
+    # A one-click "generalize this to a loop" suggestion for a single-file download->upload
+    # workflow — a pure pattern match over facts already computed above (no LLM), run against
+    # the FINAL steps (second opinion above may have renamed bindings or archived steps, both of
+    # which would shift step_keys). Advisory only; a reviewer already-rejected suggestion is
+    # filtered out later by skill_id-aware code in handlers/compile.py, same layering
+    # filter_runtime_only_inputs already uses there.
+    compile_report["for_each_suggestions"] = detect_download_upload_loop_candidates(steps)
+
     now = datetime.now(timezone.utc).isoformat()
     structural_fp = _build_structural_fingerprint(steps)
     environment = _read_environment_sidecar(session_root)
@@ -2013,6 +2022,33 @@ def _trim_review_images(items: list[dict[str, Any]]) -> None:
         it.pop("image_mime", None)
 
 
+def _step_action_name(step: SkillStep) -> str | None:
+    action = step.action
+    return action.get("action") if isinstance(action, dict) else action
+
+
+def _next_effect_cause(steps: list[SkillStep], i: int) -> str | None:
+    """What the step at index i's click sets in motion, looking past pure
+    navigation markers (tab_switch, frame_enter/exit) to the first real thing
+    that follows it — a download, or a file-chooser upload. A click that only
+    starts one of these is EXPECTED to leave post_condition_effect at "none"
+    (the page itself doesn't change), which is exactly the signal flag_noise
+    otherwise reads as "did nothing" — see compiler/second_opinion.py and
+    llm/workflow_semantics.py, which both refuse to flag a step this
+    identifies. Purely structural: no LLM, no new per-step signal, just a scan
+    over the step list this function already has."""
+    for j in range(i + 1, len(steps)):
+        name = _step_action_name(steps[j])
+        if name in {"tab_switch", "frame_enter", "frame_exit"}:
+            continue
+        if name == "download_observed":
+            return "file_download"
+        if name in {"upload", "upload_intent"}:
+            return "file_chooser"
+        return None
+    return None
+
+
 def _review_inputs(
     steps: list[SkillStep],
     compile_report: dict[str, Any],
@@ -2032,7 +2068,7 @@ def _review_inputs(
     }
     out: list[dict[str, Any]] = []
     for i, step in enumerate(steps):
-        action_name = step.action.get("action") if isinstance(step.action, dict) else step.action
+        action_name = _step_action_name(step)
         confidence = confidence_by_index.get(i)
         value = step.value if isinstance(step.value, str) else None
         item: dict[str, Any] = {
@@ -2051,6 +2087,9 @@ def _review_inputs(
             "post_condition_effect": str(step.signals.get("post_condition_effect") or ""),
             "has_required_assertion": any(a.required for a in step.validation.assertions),
         }
+        causes = _next_effect_cause(steps, i)
+        if causes:
+            item["causes"] = causes
         image = image_by_step_key.get(keys[i])
         if image:
             item["image_base64"], item["image_mime"] = image

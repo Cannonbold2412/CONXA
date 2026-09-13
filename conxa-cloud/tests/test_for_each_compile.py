@@ -105,3 +105,50 @@ def test_dispatches_through_the_generic_saved_step_serializer():
     out = _saved_step_to_execution_step(_for_each_source_step())
     assert out is not None
     assert out["type"] == "for_each"
+
+
+def _items_body_step() -> dict:
+    return {
+        "action": {"action": "click"},
+        "target": {"primary_selector": '[data-testid="download-btn"]'},
+        "identity_bundle": {
+            "signals": [{"engine": "testid", "selector": 'internal:testid=[data-testid="download-btn"]', "durability": 0.99}],
+            "fingerprint": {"data_testid": "download-btn"},
+        },
+    }
+
+
+def _for_each_items_step(*, max_iterations=50, items="files", body=None) -> dict:
+    for_each: dict = {
+        "items": items,
+        "as": "file",
+        "max_iterations": max_iterations,
+        "steps": body if body is not None else [_items_body_step()],
+    }
+    return {"action": {"action": "for_each"}, "for_each": for_each}
+
+
+def test_serializes_a_well_formed_items_source_for_each_step():
+    out = _saved_for_each_step(_for_each_items_step())
+    assert out["type"] == "for_each"
+    assert out["items"] == "files"
+    assert "rows" not in out
+    assert out["as"] == "file"
+    assert len(out["steps"]) == 1
+
+
+def test_items_source_with_no_container_selector_still_serializes():
+    # The whole point of the items source: no DOM row to scan at all.
+    out = _saved_for_each_step(_for_each_items_step())
+    assert out is not None
+
+
+def test_neither_source_drops_the_step():
+    step = _for_each_items_step(items="")
+    assert _saved_for_each_step(step) is None
+
+
+def test_both_sources_drops_the_step():
+    step = _for_each_items_step()
+    step["for_each"]["rows"] = {"container_selector": "table#invoices tr"}
+    assert _saved_for_each_step(step) is None
