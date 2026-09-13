@@ -31,10 +31,50 @@ test("download_observed waits for a download that hasn't been queued yet", async
   assert.strictEqual(inputs.downloaded_file_dir, "/runs/r1/archive");
 });
 
-test("download_observed still leaves inputs unset if nothing is ever queued", async () => {
+// Regression: this step used to silently `return` on every no-download path instead of throwing
+// — a for_each loop over download_observed could complete every iteration "successfully" while
+// downloading some, one, or zero of the files a customer asked for, and nothing downstream ever
+// checked. It must now fail loudly and immediately, the same way any other step with a bad
+// outcome does, so a for_each's on_row_error: "stop" (the default this shape uses) halts the run
+// right there instead of shipping a silently incomplete result.
+test("download_observed throws if nothing is ever queued", async () => {
   const inputs = {};
   const queue = [];
-  await executeStep(null, { type: "download_observed" }, inputs, { downloadQueue: queue });
+  await assert.rejects(
+    () => executeStep(null, { type: "download_observed" }, inputs, { downloadQueue: queue }),
+    /Expected a file download/,
+  );
   assert.strictEqual(inputs.downloaded_file, undefined);
-  assert.strictEqual(inputs.downloaded_file_dir, undefined);
+});
+
+test("download_observed throws when the download entry never resolves in time", async () => {
+  const inputs = {};
+  // A promise that never settles — simulates server.js's save still being in flight when the
+  // race's own timeout (the same DOWNLOAD_WAIT_TIMEOUT_MS budget) elapses.
+  const queue = [new Promise(() => {})];
+  await assert.rejects(
+    () => executeStep(null, { type: "download_observed" }, inputs, { downloadQueue: queue }),
+    /Expected a file download/,
+  );
+  assert.strictEqual(inputs.downloaded_file, undefined);
+});
+
+test("download_observed throws when the save itself failed (entry resolves null)", async () => {
+  const inputs = {};
+  // server.js's download listener resolves null (never rejects) when saveAs() itself throws —
+  // this is the shape that reaches the handler.
+  const queue = [Promise.resolve(null)];
+  await assert.rejects(
+    () => executeStep(null, { type: "download_observed" }, inputs, { downloadQueue: queue }),
+    /Expected a file download/,
+  );
+  assert.strictEqual(inputs.downloaded_file, undefined);
+});
+
+test("download_observed throws when downloadQueue itself is missing", async () => {
+  const inputs = {};
+  await assert.rejects(
+    () => executeStep(null, { type: "download_observed" }, inputs, {}),
+    /Expected a file download/,
+  );
 });

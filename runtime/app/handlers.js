@@ -752,7 +752,23 @@ HANDLERS["popup"] = async () => {};
 
 HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   const queue = ctx && ctx.downloadQueue;
-  if (!queue) return;
+  // Used to silently `return` on every one of these three paths — this step "succeeded" having
+  // downloaded nothing, and nothing downstream ever checked. Inside a for_each loop that meant
+  // every iteration could report success while quietly downloading some, one, or zero of the
+  // files the customer asked for; the final bulk upload only failed if the shared downloads
+  // folder ended up COMPLETELY empty, so even a partial miss uploaded happily. `badInput: true`
+  // is the same short-circuit for_each's own max_iterations check uses (run.js) — it routes
+  // straight to stepFailure, skipping the Tier 1-4 recovery cascade entirely, because no amount
+  // of re-finding a selector can produce a download that never fired; there is no selector here
+  // to re-find (download_observed compiles with recovery.max_attempts=0, same as every other
+  // marker action — action_policy.py's NO_RECOVERY_ACTION_TYPES).
+  const noDownload = (why) => {
+    throw Object.assign(
+      new Error(`Expected a file download at this step, but ${why}.`),
+      { badInput: true },
+    );
+  };
+  if (!queue) noDownload("no download tracking was set up for this run");
   // server.js's `page.on("download", ...)` listener only pushes onto this queue once Playwright's
   // download event actually fires — which can trail the triggering click by real wall-clock time
   // (server round-trip, header negotiation). Checking the queue once and bailing when it's still
@@ -763,30 +779,35 @@ HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   if (!queue.length) {
     await pollPositive(() => queue.length > 0, DOWNLOAD_WAIT_TIMEOUT_MS);
   }
-  if (!queue.length) return;
+  if (!queue.length) {
+    noDownload(`none arrived within ${DOWNLOAD_WAIT_TIMEOUT_MS}ms — the click before this step may not have triggered one`);
+  }
   const pending = queue.shift();
   const entry = await Promise.race([
     pending,
     new Promise(resolve => setTimeout(resolve, DOWNLOAD_WAIT_TIMEOUT_MS)),
   ]);
+  // entry is null when server.js's save itself failed, or undefined when the race above timed
+  // out before `pending` resolved either way — both mean no real file exists to bind.
+  if (!entry || !entry.path) {
+    noDownload("it did not finish saving in time");
+  }
   // Bind the saved path into `inputs` so a later `upload` step in this same run can reference
   // it — `downloaded_file` always holds the latest download, `downloaded_file_N` (1-indexed,
   // in download order) disambiguates when several downloads happen in one run. See
   // conxa_compile/compiler/upload_binding.py's _BindingState for how the compiler decides which
   // one an upload step's value points at (EXEC-10/W-2 — previously a compiled skill had no way
   // to hand a file from one tab to another without an LLM round-trip per file).
-  if (entry && entry.path) {
-    inputs.downloaded_file = entry.path;
-    const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
-    inputs[`downloaded_file_${n}`] = entry.path;
-    // A zip is always extracted at download time (server.js) — bind its sibling extraction
-    // folder too, so an upload step the compiler matched against specific files inside that
-    // zip (upload_binding.py's _BindingState) has somewhere to resolve `{{downloaded_file_dir}}`
-    // / `{{downloaded_file_N_dir}}` against. Absent entirely for a non-zip download.
-    if (entry.extractedDir) {
-      inputs.downloaded_file_dir = entry.extractedDir;
-      inputs[`downloaded_file_${n}_dir`] = entry.extractedDir;
-    }
+  inputs.downloaded_file = entry.path;
+  const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
+  inputs[`downloaded_file_${n}`] = entry.path;
+  // A zip is always extracted at download time (server.js) — bind its sibling extraction
+  // folder too, so an upload step the compiler matched against specific files inside that
+  // zip (upload_binding.py's _BindingState) has somewhere to resolve `{{downloaded_file_dir}}`
+  // / `{{downloaded_file_N_dir}}` against. Absent entirely for a non-zip download.
+  if (entry.extractedDir) {
+    inputs.downloaded_file_dir = entry.extractedDir;
+    inputs[`downloaded_file_${n}_dir`] = entry.extractedDir;
   }
 };
 
