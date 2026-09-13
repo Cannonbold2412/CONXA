@@ -365,7 +365,7 @@ is tagged in code and below as one of:
 | `SkillStep` | `action`, `intent`, `url`, `value`, `input_binding`, `validation`, `recovery`, `confidence_protocol`, `decision_policy`, `semantic_description`, `phase`, `optional_hint`, `consequence` | `frame`, `tab`, `target`, `identity_bundle`\*, `handler_hints`, `signals`, `state`, `compiled_selectors`, `snapshot_ref`, `snapshot_dom_hash` |
 | `SkillStep.branch` | — (mixed today; see below) | — |
 | `SkillStep.entity_binding` | — (mixed today; see `EntityBinding` row) | — |
-| `SkillStep.for_each` (EXEC-38) | `as`, `max_iterations`, `on_row_error` | `rows.container_selector` |
+| `SkillStep.for_each` (EXEC-38) | `as`, `max_iterations`, `on_row_error` | `rows.container_selector` XOR `items` |
 | `WorkflowIntentGraph` / `WorkflowIntentStep` | all | — |
 | `SkillPackage` | `meta`, `inputs`, `policies`, `llm`, `intent_graph`, `compile_report` | — |
 
@@ -880,12 +880,20 @@ path every top-level step gets) and its sibling **PROD-3-DRYRUN** section (§10.
 required dry-run/cap/entity-binding safety mechanisms it depends on.
 
 ```python
-for_each: dict   # {rows: {container_selector}, as, max_iterations, on_row_error, steps}
+for_each: dict   # {rows: {container_selector}} XOR {items}, plus as, max_iterations, on_row_error, steps
 ```
 
 - **`rows.container_selector`** `str` — `[executor]`, a plain CSS selector matching every
   candidate row. Enumerated once, up front, by `runtime/app/resolution.js::enumerateRows` — each
-  row's own full trimmed text becomes its identifier.
+  row's own full trimmed text becomes its identifier. Mutually exclusive with `items` below —
+  exactly one row source, never both, never neither, enforced by `_saved_for_each_step` (compiler)
+  and `patch_gate.py::_validate_for_each_source` (editor, against the step's effective `for_each`).
+- **`items`** `str` — `[contract]`, the name of a runtime input (typically `type: "text"`) whose
+  current value drives the loop instead of a DOM scan — e.g. `items: "files"` for a caller-supplied
+  comma-separated file list. `runtime/app/resolution.js::splitListInput(raw, cap)` splits on
+  commas (or takes an array), trimming/dropping-empty/de-duplicating/capping the same way
+  `enumerateRows` does. A body step under this source ordinarily carries no `entity_binding` —
+  there is no live row to re-locate.
 - **`as`** `str`, default `"row"` — `[contract]`, the name body steps read the current
   iteration's identifier/index under: `{{<as>_id}}` / `{{<as>_index}}`.
 - **`max_iterations`** `int` — `[contract]`, **required**. `_saved_for_each_step`
@@ -895,6 +903,12 @@ for_each: dict   # {rows: {container_selector}, as, max_iterations, on_row_error
 - **`on_row_error`** `"stop" | "continue"`, default `"stop"` — `[contract]`. `"stop"` propagates a
   row failure as a normal run failure; `"continue"` skips the failing row and proceeds (never
   applies to a cancellation or an `ai_review` pause inside the body — those always propagate).
+  **EXEC-40 (2026-09-13):** a `"continue"` loop that finishes with any row failed, or a loop of
+  either mode that finds zero rows/items to process, now pushes a message into the run's own
+  `warnings` array (`runtime/app/run.js::runForEachStep`) — previously only tracker-only telemetry
+  (`for_each_done`), so a `"continue"` loop could complete and report plain success having silently
+  skipped work. Surfaces in the runtime's final result text under the same `"Warning:\n..."` block
+  every other advisory issue already uses (`server.js`'s `_allWarnings`).
 - **`steps`** — nested body, same shape as `branch.steps`. Each body step's own
   `entity_binding.identifier` is author-set to `{{<as>_id}}`, so `resolution.js::entityRoots`'s
   existing narrowing does all per-row scoping — recovery still cannot substitute a different row.
@@ -906,11 +920,72 @@ irreversible-only, but `handlers/workflows.py::_require_confirmed_entity_binding
 
 **Editor.** Insertable (`action_registry.py`, category `"iteration"`), scaffolded
 (`workflow_mutations.py::_new_manual_step`), validated (`patch_gate.py::_validate_for_each_patch`
-— `steps` rejected on the parent patch, same reasoning as `if_present`'s nested body), and
-surfaced read-only via `StepEditorDTO.for_each_summary`/`.for_each_steps` (same path-addressed
-projection pattern as `branch_summary`/`branch_steps`, IDs like
-`"{skill_id}:{step_index}.for_each.steps[{j}]"`). **No dedicated nested-body editor UI yet** — see
-`TODO.md`.
+— `steps` rejected on the parent patch, same reasoning as `if_present`'s nested body — plus
+`_validate_for_each_source` enforcing exactly one row source), and surfaced read-only via
+`StepEditorDTO.for_each_summary`/`.for_each_steps` (same path-addressed projection pattern as
+`branch_summary`/`branch_steps`, IDs like `"{skill_id}:{step_index}.for_each.steps[{j}]"`; the
+summary carries `items` alongside `container_selector`). **No dedicated nested-body editor UI
+yet** — see `TODO.md`.
+
+**Two compile-time input-declaration defects fixed alongside the `items` source (2026-09-13):**
+a for_each loop's own `{{<as>_id}}`/`{{<as>_index}}` used to auto-declare as user-facing inputs
+the same as any other `{{var}}` a step references — `upload_binding.py::for_each_loop_variable_names`
+now excludes them at every auto-declare site
+(`workflow_mutations.py::reconcile_inputs_with_step_values`,
+`skill_package_builder_saved_skill.py::_merge_saved_inputs_with_execution_placeholders`), the
+same way the `downloaded_file*` family is already excluded. And the BUILD-25 second-opinion pass's
+`parameterize_literal` finding could clobber an upload step already auto-bound to
+`{{downloaded_file}}`/`{{downloaded_files_dir}}` (`docs/TRD.md`'s "A downloaded file can bind to
+a later upload" section) into a hand-typed input instead —
+`second_opinion.py::_apply_one` now refuses whenever the step's value already contains any
+`{{placeholder}}`, not just when `input_binding` is set. See `docs/TRD.md` §10.8 for the full
+account of both.
+
+**One-click "generalize this to a loop" suggestion (EXEC-39, 2026-09-13).**
+`compile_report["for_each_suggestions"]` — a new key alongside `second_opinion`/`archived_steps`
+— holds `compiler/loop_suggestion.py`'s findings: a fully deterministic (no LLM) proposal to wrap
+a single-file download→upload pair into a `for_each` loop, computed after the second-opinion pass
+settles. Each entry: `id`, `wrap_start_key`/`wrap_end_key`/`upload_step_key` (step-key addressed,
+never index), `template_literal` (the recorded filename), `suggested_input_name`, `as_name`,
+`why`, `preview`. Surfaced in `WorkflowResponse.compile_health.for_each_suggestions` (read-time
+filtered against a reviewer's prior rejection — see below), so `ForEachSuggestionBanner.tsx` can
+show it the moment Human Edit loads. New RPCs (`handlers/copilot.py`):
+- **`accept_for_each_suggestion`** `{skill_id, suggestion}` → applies
+  `editor/workflow_mutations.py::apply_for_each_loop_suggestion` (one atomic document write: the
+  step-range splice into a new `for_each`'s body, the literal→`{{<as>_id}}` templating, the
+  upload step's rebind to `{{downloaded_files_dir}}`, the new declared input) and returns the
+  same `_skill_response` shape every structural mutation RPC does.
+- **`reject_for_each_suggestion`** `{skill_id, suggestion}` → logs a rejection via
+  `edit_log.py::append_decision` (`field="for_each_suggestion"`, keyed on `upload_step_key`) —
+  changes nothing in the document. `workflow_dto.py::_compile_health` reads this log on every
+  request and filters out anything already rejected, not just at the next compile — a "Dismiss"
+  must not reappear on a plain page reload.
+
+See `docs/TRD.md` §10.8 for the full mechanism, including a `step_key`-ordinal subtlety
+(`download_observed`'s fallback key hashes identically across a workflow, disambiguated only by
+occurrence position) that made "clear the whole suggestion list on any apply" the correct choice
+over "remove just the applied one."
+
+**BUILD-33 (2026-09-13): `redundant_click_key` (optional).** A suggestion entry may additionally
+carry `redundant_click_key` — set when the step immediately before `wrap_start_key`'s original
+navigate is a hardcoded click on the recorded filename (same tab, its own recorded fingerprint
+text containing the filename verbatim), made redundant once the loop navigates straight to each
+item's URL. When present, `wrap_start_key` already points at that click (the detector folds it
+into the wrap range), and `accept_for_each_suggestion` removes it from `steps` entirely rather
+than wrapping it into the loop body, archiving it into `compile_report["archived_steps"]` under
+category `superseded_by_loop_navigate` — same archive shape `flag_noise` uses, so it stays
+reversible. This ships alongside a structural fix to `archive_flagged_steps` itself: it now
+refuses to archive any step that triggers an observed download or opens a file-chooser upload,
+independent of what a `flag_noise` finding said — see `docs/TRD.md` §10.8's BUILD-33 writeup.
+
+**BUILD-34 (2026-09-13): `template_literal` matching is percent-encoding-aware.** Every
+comparison of `template_literal` against a step's `url` field — the detector's navigate match, the
+apply mutation's defensive re-check, and its actual `{{<as>_id}}` templating — goes through
+`compiler/loop_suggestion.py::url_contains_literal`/`replace_url_literal`, which decode the URL's
+percent-encoding before matching rather than re-encoding the filename (encoding is ambiguous,
+decoding isn't). A raw substring check previously missed any filename containing a URL-reserved
+character (`+`, space, non-ASCII, ...) entirely, with no error — the suggestion simply never
+appeared. See `docs/TRD.md` §10.8's BUILD-34 writeup.
 
 ### 3.5 RecoveryBlock
 

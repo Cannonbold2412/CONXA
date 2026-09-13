@@ -2986,16 +2986,41 @@ The step format could branch but not loop: "process each pending order" required
 near-identical steps or hoping. `for_each` closes that — "for each row matching X, do steps A-C" —
 built directly on the entity-binding machinery §10.2a already shipped, not new resolution logic.
 
-**Shape** (runtime execution-step form, top-level fields — same flattening `if_present` etc. use):
+**Shape** (runtime execution-step form, top-level fields — same flattening `if_present` etc. use).
+Exactly one row source, `rows` or `items`, never both, never neither:
 
 ```jsonc
 { "type": "for_each",
-  "rows": { "container_selector": "table#invoices tr" },
+  "rows": { "container_selector": "table#invoices tr" },   // a live DOM scan …
+  // "items": "files",                                     // … OR a named runtime input
   "as": "row",                    // body reads {{row_id}}, {{row_index}}
   "max_iterations": 50,           // REQUIRED — the runtime refuses an uncapped loop
   "on_row_error": "stop",         // "stop" (default) | "continue"
   "steps": [ … ] }
 ```
+
+**Row source #2: `items` (a named runtime input), not a DOM scan.** The original shape only
+ever enumerated a live page — "for each row matching this selector." A workflow whose loop
+variable is the caller's own input (e.g. "download each of these files," where the file list is
+a runtime `text` input the MCP client fills in) has no DOM to scan at all. `items: "<input_name>"`
+names that input directly; `resolution.js::splitListInput(raw, cap)` — `enumerateRows`'s sibling —
+splits the input's current value on commas (or takes an array, for a caller that already has
+one), trimming, dropping empties, de-duplicating and capping exactly the way `enumerateRows`
+does, so both sources behave identically to the loop executor and its telemetry. `run.js`'s only
+change is the one branch that picks the source:
+```js
+const rowIds = step.items
+  ? splitListInput(state.inputs[step.items], cap)
+  : await enumerateRows(page, spec, cap);
+```
+Everything past that line — the cap, `{{<as>_id}}`/`{{<as>_index}}` injection and save/restore,
+`on_row_error`, dry-run, the full recovery cascade, telemetry — is unchanged and source-agnostic.
+An `items` loop's body ordinarily carries no `entity_binding` at all (there is no live row to
+re-locate); `entityRoots` already no-ops when a body step declares none, so no new guard was
+needed. Enforced everywhere a `for_each` is written: `_saved_for_each_step` (compiler, drops a
+step with both or neither source), `patch_gate.py::_validate_for_each_source` (editor, checked
+against the step's EFFECTIVE `for_each` — existing merged with the patch — not the raw patch
+alone, so a patch touching only `items` still catches a leftover `rows.container_selector`).
 
 **The one real refactor this required.** `run.js`'s step loop used to be a flat `for` with the
 per-step body inlined — every branch primitive before this one runs its nested body through
@@ -3052,25 +3077,230 @@ this section) landed first in the same pass:
 
 **Editor.** `for_each` is insertable (`action_registry.py`, category `"iteration"`) with a scaffold
 (`workflow_mutations.py::_new_manual_step`) and full `patch_gate.py` validation
-(`_validate_for_each_patch`: rows/as/max_iterations/on_row_error, `steps` rejected on the parent
-patch — nested body edits are path-addressed, same reasoning as `if_present`). `StepEditorDTO`
-gained `for_each_summary`/`for_each_steps` — the same read-only, path-addressed
-(`"{skill_id}:{i}.for_each.steps[j]"`) projection `branch_summary`/`branch_steps` uses. **Not yet
-built**: a dedicated nested-body authoring UI (a `BranchBodyEditor.tsx` variant) — today a loop
-body is only editable via the generic patch mechanism, the same "backend done, editor control
-pending" gap `PROD-3-UI` already tracks for Strict Mode and entity-binding confirmation; see
-`TODO.md`.
+(`_validate_for_each_patch`: rows/items/as/max_iterations/on_row_error, `steps` rejected on the
+parent patch — nested body edits are path-addressed, same reasoning as `if_present`;
+`_validate_for_each_source` separately enforces the exactly-one-row-source rule above).
+`StepEditorDTO` gained `for_each_summary`/`for_each_steps` — the same read-only, path-addressed
+(`"{skill_id}:{i}.for_each.steps[j]"`) projection `branch_summary`/`branch_steps` uses (the summary
+carries `items` alongside `container_selector`, whichever is set). **Not yet built**: a dedicated
+nested-body authoring UI (a `BranchBodyEditor.tsx` variant) — today a loop body is only editable
+via the generic patch mechanism, the same "backend done, editor control pending" gap `PROD-3-UI`
+already tracks for Strict Mode and entity-binding confirmation; see `TODO.md`.
+
+**Two compile-time defects fixed alongside the `items` source (2026-09-13), both found while
+generalizing a recorded download→upload workflow into a `for_each` loop:**
+- **The BUILD-25 second-opinion pass could clobber an auto-bound download placeholder.**
+  `upload_binding.py::bind_upload_step_value` deliberately writes `{{downloaded_file}}` (or
+  `{{downloaded_files_dir}}` for a bulk upload) into a step's `value` while setting
+  `input_binding` to `None` — a download-populated placeholder must never become a user-facing
+  input (§ above, "A downloaded file can bind to a later upload"). `second_opinion.py::_apply_one`'s
+  `parameterize_literal` branch guarded only on `step.input_binding` being falsy, which is exactly
+  what an auto-bound download placeholder looks like — the pass would "parameterize" it into a
+  brand-new hand-typed input (e.g. `{{uploaded_file_path}}`), silently destroying the binding. Fixed
+  by refusing whenever `step.value` already contains *any* `{{placeholder}}` (via the shared
+  `PLACEHOLDER_RE`), not just when `input_binding` is set — a value that already holds a
+  placeholder was never a "recorded literal" to freeze in the first place, which is what the
+  docstring always claimed the guard did.
+- **A `for_each` loop's own `{{<as>_id}}`/`{{<as>_index}}` could leak into declared inputs.**
+  `workflow_mutations.py::reconcile_inputs_with_step_values` and
+  `skill_package_builder_saved_skill.py::_merge_saved_inputs_with_execution_placeholders` both
+  auto-declare every `{{var}}` a step references — recursing into `for_each.steps` bodies same as
+  everything else — with no exclusion for a loop's own injected variables, so e.g. `{{file_id}}`
+  would surface as a "please supply a value" input an agent would then be asked to fill in.
+  `upload_binding.py::for_each_loop_variable_names(payload)` walks either step shape (editor
+  document or flat execution/export) and returns every `{{<as>_id}}`/`{{<as>_index}}` name in it;
+  both auto-declare sites exclude it, the same way `_RUNTIME_ONLY_PLACEHOLDER_RE` already excludes
+  `downloaded_file*`. The reconciler now excludes both families directly (previously only the
+  compile handler's separate downstream `filter_runtime_only_inputs()` call stripped the
+  `downloaded_file*` family after the fact) — closing the same gap for two editor RPCs
+  (`handlers/workflow_editor.py`'s patch-value and replace-literal paths) that call the reconciler
+  directly with no such follow-up.
+
+**One-click "generalize this to a loop" suggestion (EXEC-39, 2026-09-13).** A recording that
+downloads exactly one named file and uploads it elsewhere always compiled to a single-file
+skill. `compiler/loop_suggestion.py::detect_download_upload_loop_candidates` proposes
+generalizing it — fully deterministically, **no LLM call anywhere in this decision**, a narrower
+guarantee than BUILD-26's own rule ("never invent a selector for something never observed")
+below, since this feature never touches a selector at all. It fires only when both hold: (1) an
+upload step is bound to the exact `{{downloaded_file}}` placeholder (`upload_binding.py`'s
+single-download binding — the `_N`/bulk variants are excluded, that already means "more than one
+download," a different shape); (2) the matching `download_observed`'s recorded filename appears
+verbatim inside an earlier `navigate` step's URL. **v1 is deliberately URL-based only** — it does
+not fire when a file is picked by a plain click with no URL change (a future `items`-source
+variant using the click's own `entity_binding.identifier` is the natural next step, not yet
+built). It does **not** depend on `entity_binding` at all — verified directly against the real
+`Github to Drive Files Handoff` recording (2026-09-13): once the second-opinion clobber fix below
+is applied, the upload step correctly stays bound to `{{downloaded_file}}` and this detector
+fires on that exact recording, no re-recording needed. Findings are computed in `build.py` after
+the second-opinion pass settles (so
+`step_key`s are final) and stored under `compile_report["for_each_suggestions"]` — the same
+advisory-findings slot `second_opinion`/`archived_steps` use.
+
+Applying one — `editor/workflow_mutations.py::apply_for_each_loop_suggestion` — is one atomic
+document write, not insert-then-patch: `patch_gate.py` already refuses a `steps` key in a
+`for_each` patch, there is no `for_each.steps[N]` path-addressed route, and an empty-bodied
+`for_each` silently vanishes from `execution.json` at package time — so the wrap (splicing the
+matched step range into the new step's nested body), the literal→`{{<as>_id}}` templating inside
+the wrapped body's URL, the upload's rebind to `{{downloaded_files_dir}}`, and the new declared
+input all land in one write. Every `step_key` is re-resolved at apply time, never trusted from a
+stale index — the same staleness discipline `copilot_proposals.py::resolve_step_index`
+established. New RPCs `cmd_accept_for_each_suggestion`/`cmd_reject_for_each_suggestion`
+(`handlers/copilot.py`, co-located with the Copilot proposals for shared governance and log
+format even though no model is involved) — accept is one call, one undo entry, cleaner than
+`_accept_overlay_branch_proposal`'s multi-RPC composition since nothing here needs pre-existing
+insert/patch RPCs; reject logs into the same `edits.jsonl` every other proposal decision uses,
+`source="for_each_suggestion"` — distinct from `"copilot"` since no model produced this finding.
+
+**A real subtlety, found and fixed during implementation:** `download_observed`'s fallback
+`step_key` hashes on action+url alone — identical across every `download_observed` step in a
+workflow, disambiguated only by occurrence ordinal. Moving one occurrence out of the top-level
+step list (into a wrap's nested body) shifts the ordinal of every sibling `download_observed`
+still at top level, silently invalidating any OTHER pending suggestion's `step_key`. Fixed by
+clearing the whole `for_each_suggestions` list on any apply, not just the applied entry —
+matching `_invalidate_compile_report`'s own philosophy of wiping derived data that can no longer
+be trusted rather than risking a misattributed step; a recompile regenerates whatever is still
+genuinely there.
+
+**Dismiss needed read-time filtering, not just compile-time.** A "Dismiss" click only logs a
+decision (`edit_log.py::append_decision`) — it never edits the persisted `compile_report` — so a
+plain Human Edit page reload with no recompile in between would otherwise show the same
+dismissed suggestion again. `editor/workflow_dto.py::_compile_health` filters
+`for_each_suggestions` against `edit_log.read_edits(skill_id)` on every read (a fresh compile, a
+page reload, or a post-accept refresh alike) via `loop_suggestion.py::filter_rejected` — one
+enforcement point rather than a compile-time-only one that would miss the reload case.
+
+**Human Edit surface:** a new always-visible `ForEachSuggestionBanner.tsx`, mounted beside
+`CompileHealthBanner` — visible the moment the page loads, no need to open the Copilot chat panel
+first. Deliberately does not reuse `ProposalCard.tsx`'s single-slot `pendingProposal` store,
+since that is chat-turn-triggered and this is not.
+
+**BUILD-33 (2026-09-13, same day): the second opinion could delete the click that starts the
+download itself.** Using EXEC-39 end to end on the real recording surfaced a second, more serious
+bug than the clobber fixed above: `flag_noise` had archived the click that triggers the file's
+download (`[data-testid="download-raw-button"]`), because that click's `post_condition_effect` is
+`"none"` — starting a download doesn't visibly change the page, which is exactly the shape
+`flag_noise` reads as "did nothing." The accepted loop's body was left as `navigate →
+download_observed` with nothing to trigger the download the marker waits for; every iteration
+timed out, and the final bulk upload failed with an unrelated-looking "no files in it" error. The
+same rule had already deleted the click that opens Drive's file-upload picker in the earlier
+hand-generalized recording — different victim, identical blindness, not a one-off bad call.
+
+Fixed at two layers. `_review_inputs` (`compiler/build.py`) now computes a `causes` field per step
+(`"file_download"` / `"file_chooser"`) by looking past pure navigation markers to the next real
+step — structural, no LLM, no new signal — and both the `workflow_review` prompt
+(`packages/conxa-core/conxa_core/llm/client.py`) and the finding validator
+(`llm/workflow_semantics.py::_validate_findings`) refuse a `flag_noise` finding on a step with
+`causes` set. The real fix is structural rather than advisory, though:
+`compiler/second_opinion.py::archive_flagged_steps` independently recomputes the same lookahead
+from the actual step list and refuses to archive a step that triggers an observed download or
+file-chooser upload — this is the pass's one destructive kind, so the guarantee belongs where a
+stale context field or a model ignoring the prompt can't bypass it. Verified directly against the
+real broken document: reconstructed the pre-archive step list from the shipped skill's own
+`compile_report["archived_steps"]` entry and re-ran the fixed `archive_flagged_steps` — the
+download-trigger click survives.
+
+A second defect in the same recompile: a hardcoded click on the one recorded filename survived
+*outside* the new loop, left behind because the detector's wrap range starts at the `navigate`.
+Redundant once the loop navigates straight to each file's URL, and pinned to a single file with a
+fragile selector. `loop_suggestion.py` now looks one step further back: if that preceding step is
+a click/dblclick on the same tab whose own recorded fingerprint text (`inner_text`/`aria_label`/
+`label_text`/`title`) contains the filename verbatim — never a selector — it's folded into the
+suggestion as `redundant_click_key` and the wrap range is extended to include it.
+`apply_for_each_loop_suggestion` removes that step on Accept rather than wrapping it (wrapping
+would click one hardcoded filename every iteration only to have the following `navigate`
+override it), archiving it into `compile_report["archived_steps"]` under category
+`superseded_by_loop_navigate` so it stays reversible, matching `flag_noise`'s own archive
+philosophy. Verified the same way: reconstructed the pre-accept step list and confirmed the fixed
+detector folds the redundant `Android.gitignore` click into the suggestion.
+
+**BUILD-34 (2026-09-13, same day): the detector's URL match never decoded percent-encoding.** A
+second real recording (`C++.gitignore`) surfaced this immediately after BUILD-33 shipped: no
+download click was lost this time, but the Accept banner never appeared at all.
+`detect_download_upload_loop_candidates` compared the recorded (decoded) filename against the
+navigate step's URL with a raw substring check, but a browser percent-encodes URL-reserved
+characters in a path segment — the actual recorded URL was `.../C%2B%2B.gitignore`, and
+`"C++.gitignore"` is never a substring of that string. `Android.gitignore` and
+`Actionscript.gitignore` happened to contain no character requiring encoding, so this was
+invisible until a filename with a `+` was actually recorded.
+
+Fixed with two shared helpers in `loop_suggestion.py` — `url_contains_literal(url, literal)` and
+`replace_url_literal(url, literal, replacement)` — both decoding the URL (`urllib.parse.unquote`)
+before matching, rather than re-encoding the filename: encoding is ambiguous (a space can become
+`%20` or `+` depending on the site), decoding is not. Three call sites needed this, and fixing only
+the detector would have left a second, latent bug: the detector's own navigate-URL match; the
+defensive re-check in `apply_for_each_loop_suggestion` (an intervening manual edit may have changed
+the URL — must not falsely refuse a still-valid suggestion); and the actual templating step that
+writes `.../{{file_id}}` into the loop body — a raw `url.replace(literal, ...)` there would have
+silently no-op'd, correctly detecting the suggestion but then shipping a loop still hardcoded to
+one file. `replace_url_literal` returns the DECODED URL with the placeholder substituted;
+`page.goto()` (`runtime/app/handlers.js`) accepts unencoded reserved characters and the browser
+re-encodes them on navigation, so nothing is lost at replay. Verified directly against the real
+`C++.gitignore` document: the fixed detector now fires (`template_literal: "C++.gitignore"`), and
+applying it end to end produces a correctly-templated loop body, a rebound bulk upload, and the
+redundant click archived — all against the actual compiled steps, not a synthetic fixture.
 
 **Version gate.** Same manual-coordination caveat as the branch primitives above: an older
 runtime silently no-ops an unrecognized `type`, which for a loop means skipping the entire batch
 — the `CONXA_REQUIRED_RUNTIME` floor must be bumped only once the app-layer version carrying the
 `for_each` handler is actually tagged, not as part of this change.
 
+**EXEC-40 (2026-09-13, same day): a download-loop could report success having downloaded nothing.**
+A third real-world use of EXEC-39 (recompile → Accept → run with real filenames) produced a run
+with zero files downloaded and no error naming why. `download_observed`
+(`runtime/app/handlers.js`) — a passive marker that only waits for a Playwright download event some
+earlier click must have triggered — had three paths that returned successfully having downloaded
+nothing: the wait timing out with the queue still empty, the entry-vs-timeout race resolving
+nothing, and an entry resolving with no `.path` (server.js's download listener resolves `null` when
+`saveAs()` itself fails). None of these threw, and nothing downstream ever checked "did every
+requested item actually produce a file" — a `for_each` loop over this step could complete every
+iteration "successfully" while downloading some, one, or zero of the files asked for; the final
+bulk upload only failed if the shared downloads folder ended up *completely* empty, so a partial
+miss uploaded happily. An existing unit test (`test_download_race.js`) had asserted this silent
+behavior as correct.
+
+Fixed by making `download_observed` throw on all three paths, with `{ badInput: true }` — the same
+short-circuit `for_each`'s own `max_iterations` check already uses in the same file: no amount of
+re-finding a selector can produce a download that never fired (there is no selector to re-find here
+— `download_observed` compiles with `recovery.max_attempts = 0`, same as every marker action in
+`action_policy.py`'s `NO_RECOVERY_ACTION_TYPES`), so this routes straight to `stepFailure`, skipping
+the Tier 1-4 cascade entirely. With zero new loop-specific code, this makes `runForEachStep`'s
+existing `on_row_error: "stop"` (the default this feature's loops use) halt the whole run
+immediately on the first missing download, naming the failing step — instead of completing and
+shipping a partial or empty result. Separately, `on_row_error: "continue"` already tracked
+`processed`/`failed` but only as tracker-only telemetry (`for_each_done`) that never reached the
+run's own result; `runForEachStep` now also pushes into `state.warnings` when the loop finishes
+with zero items to process or `failed > 0` under `continue` — verified this reaches the runtime's
+own final result text (`server.js`'s `_allWarnings` → the `"Warning:\n..."` block every result
+already appends).
+
 Tests: `runtime/test/unit/test_for_each.js` (enumeration snapshot-once, cap enforcement, missing
 cap fails at load, `on_row_error` both ways, `{{row_id}}` reaching `entityRoots`, `inputs`
-restored, dry-run visiting every row without dispatching); `conxa-cloud/tests/test_for_each_compile.py`,
-`test_for_each_patch_gate.py`, `test_for_each_dto.py`, `test_for_each_mutations.py`,
-`test_publish_entity_binding_gate.py` (nested confirmation-gate recursion).
+restored, dry-run visiting every row without dispatching, plus the `items` source mirrored
+one-for-one: comma-split, single value, whitespace trim, empty/absent input, de-dup, cap, missing
+`max_iterations`, no `{{file_id}}`/`{{file_index}}` leak; EXEC-40's own additions — a warning on
+zero rows/items for both sources, a warning naming how many rows failed under `on_row_error:
+continue`), `test_download_race.js` (rewritten: `download_observed` now throws — on nothing ever
+queued, on the entry-vs-timeout race resolving nothing, on a null entry, on a missing queue
+entirely — alongside the unchanged happy-path wait-then-bind case); `conxa-cloud/tests/test_for_each_compile.py`
+(now also `items`-source serialization and the exactly-one-source drop rule),
+`test_for_each_patch_gate.py` (now also `_validate_for_each_source`'s both/neither/switch cases),
+`test_for_each_dto.py` (now also `items` in the projected summary), `test_for_each_mutations.py`,
+`test_publish_entity_binding_gate.py` (nested confirmation-gate recursion),
+`test_second_opinion.py` (the download-placeholder clobber regression; BUILD-33's
+`archive_flagged_steps` refusals — a click before `download_observed`, before an upload, an
+isolated click still archived normally, a real action between click and marker still archives the
+click, tab/frame markers skipped in the lookahead — plus `_validate_findings`'s `causes` gate),
+`test_editor_derived_sync.py` (loop-variable and `downloaded_file*` exclusion from
+`reconcile_inputs_with_step_values`); EXEC-39's own `test_loop_suggestion.py` (detection
+conditions, both directions of the rejection filter, BUILD-33's `redundant_click_key` absorption —
+fingerprint match, tab mismatch, non-click predecessor — and BUILD-34's `url_contains_literal`/
+`replace_url_literal` — percent-encoding seen through on both sides, a plain URL still matches, a
+real regression fixture with an actual `+` in the filename), `test_apply_for_each_loop_suggestion.py`
+(the splice, the templating, the upload rebind, the new input, staleness refusals, BUILD-33's
+redundant-click drop-and-archive, BUILD-34's percent-encoded-filename templating, and a full export
+round-trip through `_build_workflow_from_saved_skill`), and two new cases in `test_workflow_dto.py`
+(a fresh suggestion surfaces; a previously-rejected one is filtered at read time, not just at
+compile time).
 
 ---
 
