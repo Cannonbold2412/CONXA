@@ -145,6 +145,9 @@ def assist_recovery(inp: RecoveryLLMInput, *, call_count: int = 0) -> RecoveryLL
         except Exception:
             pass
     out = _call_provider(inp) or _fallback(inp)
-    cache[k] = out.model_dump(mode="json")
-    _write_cache(cache)
+    # Never cache a rule-based fallback as if it were a real model answer — a transient
+    # provider outage would otherwise poison this key forever.
+    if out.source != "rule_fallback":
+        cache[k] = out.model_dump(mode="json")
+        _write_cache(cache)
     return out

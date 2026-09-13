@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -42,8 +43,12 @@ def _read_raw(workspace_id: str) -> dict[str, Any] | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        # One workspace has exactly one skill pack, forever (Key Invariant). Silently
+        # returning None here would make get_or_create_skill_pack fabricate a brand new,
+        # empty one — discarding this workspace's real build/installer history instead
+        # of surfacing that its record is corrupted.
+        raise RuntimeError(f"skill_pack_meta for workspace {workspace_id!r} at {path} is corrupted: {exc}") from exc
 
 
 def _write_raw(pack: SkillPack) -> None:
@@ -62,13 +67,19 @@ def list_skill_packs(workspace_id: str = "") -> list[SkillPack]:
         for raw in db_items:
             try:
                 out.append(SkillPack.model_validate(raw))
-            except Exception:
+            except Exception as exc:
+                warnings.warn(
+                    f"Dropping corrupt skill_pack_meta record "
+                    f"{raw.get('workspace_id') if isinstance(raw, dict) else '?'!r} from list_skill_packs: {exc}",
+                    stacklevel=2,
+                )
                 continue
     else:
         for path in _dir().glob("*.json"):
             try:
                 out.append(SkillPack.model_validate(json.loads(path.read_text(encoding="utf-8"))))
-            except Exception:
+            except Exception as exc:
+                warnings.warn(f"Dropping corrupt skill_pack_meta file {path} from list_skill_packs: {exc}", stacklevel=2)
                 continue
     if workspace_id:
         out = [p for p in out if p.workspace_id == workspace_id]
@@ -87,8 +98,11 @@ def get_skill_pack(workspace_id: str) -> SkillPack | None:
         return None
     try:
         return SkillPack.model_validate(raw)
-    except Exception:
-        return None
+    except Exception as exc:
+        # Same reasoning as _read_raw above: this workspace's one-and-only skill pack
+        # record exists but won't validate — don't let get_or_create_skill_pack treat
+        # that as "never created" and silently replace it with an empty one.
+        raise RuntimeError(f"skill_pack_meta for workspace {workspace_id!r} failed to validate: {exc}") from exc
 
 
 def get_or_create_skill_pack(workspace_id: str, display_name: str | None = None) -> SkillPack:

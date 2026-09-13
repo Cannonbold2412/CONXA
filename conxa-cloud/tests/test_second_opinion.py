@@ -10,8 +10,14 @@ that must hold for that to be safe:
      placeholders, phase, optionality. Never a selector, an identity bundle, or
      an assertion (CLAUDE.md: "LLM does not write selector strings on the
      primary compile path").
-  2. Disabled / failed / empty all fall back to the rules-only compile, which
-     must be byte-identical to a compile that never ran the pass at all.
+  2. Disabled / failed / empty all fall back to the rules-only compile: the
+     COMPILED STEPS must be byte-identical to a compile that never ran the pass
+     at all (same guarantee as always). The compile_report is no longer
+     required to match between disabled and failed — a genuine failure now
+     bumps `status` to at least "review_needed" and adds a `degraded` entry, so
+     a reviewer can tell "this pass never ran" apart from "this pass tried and
+     the provider pool was down." Nothing about the executable package changes
+     either way.
 """
 
 from __future__ import annotations
@@ -137,6 +143,10 @@ class SecondOpinionCompileTests(unittest.TestCase):
         )
         pkg = self._compile(semantics_patch=boom)
         self._assert_rules_only(pkg)
+        # A genuine failure — unlike a disabled pass — is now visible in the report.
+        self.assertEqual(pkg.compile_report.get("status"), "review_needed")
+        degraded = pkg.compile_report.get("degraded") or []
+        self.assertTrue(any(d.get("pass") == "second_opinion" for d in degraded), degraded)
 
     def test_empty_response_falls_back_to_rules_only(self) -> None:
         empty = patch(
@@ -146,9 +156,11 @@ class SecondOpinionCompileTests(unittest.TestCase):
         pkg = self._compile(semantics_patch=empty)
         self._assert_rules_only(pkg)
 
-    def test_disabled_and_failed_compiles_are_byte_identical(self) -> None:
-        """The one byte-identity claim that survives this feature: every route
-        that does NOT apply anything must produce the same package."""
+    def test_disabled_and_failed_compiles_keep_identical_steps_but_differ_in_report(self) -> None:
+        """The compiled STEPS stay byte-identical whether the pass was disabled or it
+        genuinely failed — the Key Invariant this whole feature is scoped by. The
+        compile_report is deliberately NOT required to match: a real failure must be
+        visible to a reviewer, not indistinguishable from the pass simply being off."""
         with patch.object(settings, "llm_semantic_suggestions_enabled", False):
             disabled = self._compile()
         failed = self._compile(
@@ -157,11 +169,14 @@ class SecondOpinionCompileTests(unittest.TestCase):
                 side_effect=RuntimeError("provider pool drained"),
             )
         )
-        self.assertEqual(disabled.compile_report, failed.compile_report)
         self.assertEqual(
             [s.model_dump() for s in disabled.skills[0].steps],
             [s.model_dump() for s in failed.skills[0].steps],
         )
+        self.assertEqual(disabled.compile_report.get("status"), "ok")
+        self.assertNotIn("degraded", disabled.compile_report)
+        self.assertEqual(failed.compile_report.get("status"), "review_needed")
+        self.assertTrue(failed.compile_report.get("degraded"))
 
     def test_applied_finding_reaches_the_compiled_step(self) -> None:
         with patch.object(settings, "llm_semantic_suggestions_enabled", False):

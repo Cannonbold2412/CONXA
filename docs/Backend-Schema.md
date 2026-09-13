@@ -394,7 +394,14 @@ class SkillPackage(BaseModel):
     llm: dict                  # LLM config hints
     intent_graph: WorkflowIntentGraph
     compile_report: dict       # Required: {status, steps_total, min_confidence, 
-                               #            llm_router_stats, steps}
+                               #            llm_router_stats, steps, degraded?}
+                               # `degraded` (2026-09-14): list of {pass, reason, detail} —
+                               # present only when an optional pass (second opinion, vision-
+                               # anchor prefetch) genuinely failed rather than being cleanly
+                               # disabled or finding nothing. Its presence forces `status` to
+                               # at least "review_needed", even when every step's own
+                               # selector confidence would otherwise read "ok". See
+                               # compiler/build.py::_build_compile_report.
 ```
 
 Each entry in `inputs` is validated against `SkillInputVariable` (`conxa-builder/python/conxa_compile/editor/dto.py`):
@@ -1089,7 +1096,13 @@ steps**. This key is the audit record of what was applied, for the compile log. 
 Edit reads it: the changes are simply part of the compiled workflow, indistinguishable from what
 the fixed rules produced, and Human Review is the gate for a wrong call. Present only when at
 least one finding was applied — absent, not an empty list, when the pass is disabled, fails,
-returns nothing, or every finding is rejected:
+returns nothing, or every finding is rejected. **`second_opinion` absent no longer means
+"disabled and failed compiled identically" (2026-09-14):** the compiled steps are still
+byte-identical between a disabled pass and a genuinely failed one (this key's own absence, and
+every other step field, are unaffected), but a real failure — an exception, or an empty result
+paired with a populated LLM `error_detail` — now adds a `second_opinion`/`llm_call_failed` entry
+to `compile_report["degraded"]` (§ above) and bumps `status` to at least `"review_needed"`. A
+cleanly disabled pass or one that legitimately found nothing leaves `degraded` absent too.
 
 ```python
 # One entry of compile_report["second_opinion"]:

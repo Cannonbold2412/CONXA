@@ -17,6 +17,7 @@ import re
 import shutil
 import time
 import uuid
+import warnings
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -94,7 +95,8 @@ def _read_raw(group_id: str) -> dict[str, Any] | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        warnings.warn(f"Corrupt group file {path}: {exc}", stacklevel=2)
         return None
 
 
@@ -146,7 +148,14 @@ def list_groups(workspace_id: str = "") -> list[WorkflowGroup]:
                 if workspace_id and group.workspace_id != workspace_id:
                     continue
                 out.append(group)
-            except Exception:
+            except Exception as exc:
+                # A corrupt/unvalidatable record silently excluded here is
+                # indistinguishable from the group having been deleted — warn.
+                warnings.warn(
+                    f"Dropping corrupt group record {raw.get('id') if isinstance(raw, dict) else '?'!r} "
+                    f"from list_groups: {type(exc).__name__}: {exc}",
+                    stacklevel=2,
+                )
                 continue
         return sorted(out, key=lambda g: g.created_at)
     out = []
@@ -157,7 +166,8 @@ def list_groups(workspace_id: str = "") -> list[WorkflowGroup]:
             if workspace_id and group.workspace_id != workspace_id:
                 continue
             out.append(group)
-        except Exception:
+        except Exception as exc:
+            warnings.warn(f"Dropping corrupt group file {path} from list_groups: {exc}", stacklevel=2)
             continue
     return out
 

@@ -495,7 +495,11 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
         try:
             ms = int(raw_ms)
         except (TypeError, ValueError):
-            ms = 1000
+            # An unparseable duration means this step has no real wait time to run — drop
+            # it (same "return None => step vanishes from execution.json" contract as
+            # every other unfillable step, e.g. keyboard_shortcut below) rather than
+            # inventing an arbitrary 1000ms that silently changes the automation's timing.
+            return None
         return _copy_saved_common(step, {"type": "wait", "ms": max(ms, 0)})
 
     if action == "screenshot":

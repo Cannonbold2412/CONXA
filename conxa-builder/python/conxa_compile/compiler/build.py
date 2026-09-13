@@ -1175,7 +1175,7 @@ def _prefetch_vision_anchors(
     session_root: Path,
     policy: dict[str, Any],
     graph_intent_tokens: dict[int, str] | None = None,
-) -> None:
+) -> list[dict[str, Any]]:
     """Best-effort parallel prefetch of every step's vision anchor request before
     the main per-step loop runs (see prefetch_vision_anchors_parallel's docstring).
     Mirrors _build_step's own
@@ -1187,8 +1187,12 @@ def _prefetch_vision_anchors(
     (run before this) produced. A step it left tokenless just gets a blank
     intent here — no per-step LLM call, no network round trip.
 
-    Never raises: prefetch failing outright just means _build_step's per-step
-    vision call does the normal single-image work it always has."""
+    Never raises: prefetch failing outright just means _build_step's per-step vision
+    call does the normal single-image work it always has — a step that needs vision
+    still gets its anchor, just without the parallel speedup. Returns a list (usually
+    empty) of degradation entries for the compile report's `degraded` channel, so a
+    systematic prefetch failure is visible to a reviewer instead of only showing up as
+    "this compile took longer than usual" with no explanation."""
     from conxa_compile.llm.anchor_vision_llm import prefetch_vision_anchors_parallel
 
     candidates: list[tuple[int, dict[str, Any]]] = []
@@ -1203,7 +1207,7 @@ def _prefetch_vision_anchors(
             continue
         candidates.append((i, ev))
     if not candidates:
-        return
+        return []
 
     _compile_log(
         "compile_phase",
@@ -1221,7 +1225,13 @@ def _prefetch_vision_anchors(
                     "Vision anchor prefetch deadline reached — continuing without it.",
                     {"phase": "vision_anchor_prefetch_deadline", "level": "warn"},
                 )
-                return
+                return [{
+                    "pass": "vision_anchor_prefetch",
+                    "reason": "deadline_reached",
+                    "detail": f"Prefetch exceeded {_PREFETCH_VISION_ANCHORS_DEADLINE_SECS:.0f}s "
+                              f"with {len(candidates) - len(items)} of {len(candidates)} step(s) "
+                              "still unqueued; each falls back to its own per-step vision call.",
+                }]
             # The workflow-intent graph call already resolved this step's intent
             # token when it could. A step it left tokenless just gets a blank
             # intent — no per-step LLM call.
@@ -1229,8 +1239,13 @@ def _prefetch_vision_anchors(
             intent = normalize_compiler_intent(ev, llm_raw, policy)
             items.append((i, ev, intent))
         prefetch_vision_anchors_parallel(items, session_root=session_root, policy=policy)
-    except Exception:  # noqa: BLE001 — prefetch is pure optimization, never fatal
-        pass
+    except Exception as exc:  # noqa: BLE001 — prefetch is pure optimization, never fatal
+        return [{
+            "pass": "vision_anchor_prefetch",
+            "reason": "exception",
+            "detail": f"{type(exc).__name__}: {exc}",
+        }]
+    return []
 
 
 def _build_step(
@@ -1625,13 +1640,24 @@ def _build_step(
     return step
 
 
-def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
+def _build_compile_report(
+    steps: list[SkillStep], *, degraded: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Aggregate per-step selector confidence + LLM router stats into a single report.
 
     Status:
-    - "ok" if all confidence >= 0.90 and no warnings
-    - "review_needed" if any confidence 0.75–0.89
+    - "ok" if all confidence >= 0.90 and no warnings, and nothing degraded
+    - "review_needed" if any confidence 0.75–0.89, or an optional pass genuinely failed
+      (see `degraded`) — a reviewer should look, but nothing here blocks the compile
     - "failed" if any confidence < 0.75
+
+    `degraded`: entries for an optional, non-primary pass (second opinion, vision-anchor
+    prefetch, …) that failed outright rather than being cleanly disabled or finding
+    nothing — each `{"pass": str, "reason": str, "detail": str}`. This is metadata about
+    the report only; it never changes a compiled step's target/selectors/identity_bundle,
+    so the Key Invariant that the LLM never writes selector strings on the primary path is
+    unaffected. Its only effect is that a genuine failure is no longer indistinguishable
+    from a disabled pass in the report a reviewer sees.
     """
     step_reports: list[dict[str, Any]] = []
     min_confidence = 1.0
@@ -1692,7 +1718,9 @@ def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
             "warnings": warnings,
         })
 
-    if min_confidence >= 0.90 and not has_warnings:
+    degraded_list = list(degraded or [])
+
+    if min_confidence >= 0.90 and not has_warnings and not degraded_list:
         status = "ok"
     elif min_confidence >= 0.75:
         status = "review_needed"
@@ -1713,7 +1741,7 @@ def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
         # Proxy client (Build Studio) — no local provider pool; stats not applicable.
         router_stats = {"provider": "cloud_proxy"}
 
-    return {
+    report: dict[str, Any] = {
         "status": status,
         "steps_total": len(steps),
         "steps_with_warnings": sum(1 for sr in step_reports if sr["warnings"]),
@@ -1721,6 +1749,9 @@ def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
         "steps": step_reports,
         "llm_router_stats": router_stats,
     }
+    if degraded_list:
+        report["degraded"] = degraded_list
+    return report
 
 
 def _deduplicate_input_bindings(steps: list[SkillStep]) -> None:
@@ -1791,7 +1822,7 @@ def compile_skill_package(
     # content-derived path) instead of an LLM token — see workflow_review.py's
     # module docstring for the quality trade this accepts.
     page_urls = sorted({(ev.get("page") or {}).get("url") or "" for ev in cleaned_events} - {""})
-    _prefetch_vision_anchors(cleaned_events, session_root=session_root, policy=pol)
+    prefetch_degraded = _prefetch_vision_anchors(cleaned_events, session_root=session_root, policy=pol)
     steps = [
         _build_step(e, bundle, session_root=session_root, step_index=i)
         for i, e in enumerate(cleaned_events)
@@ -1842,7 +1873,7 @@ def compile_skill_package(
         "Building compile confidence report.",
         {"phase": "compile_report_start", "step_count": len(steps)},
     )
-    compile_report = _build_compile_report(steps)
+    compile_report = _build_compile_report(steps, degraded=prefetch_degraded)
     _compile_log(
         "compile_phase",
         "Compile confidence report finished.",
@@ -2164,26 +2195,45 @@ def _apply_second_opinion(
     indistinguishable from what the fixed rules produced, and a reviewer edits
     a wrong one the same way they edit any other compiler output.
 
-    Never raises: any exception degrades to the rules-only compile, exactly like
-    a disabled pass or a drained provider pool."""
+    Never raises: any exception degrades the STEPS to the rules-only compile,
+    exactly like a disabled pass or a drained provider pool — the Key Invariant
+    that the LLM never writes selector strings on the primary path holds either
+    way. What differs now: a genuine failure (an exception here, or an empty
+    result with a populated error_detail — build_workflow_review's own contract
+    is to never raise, so this is the signal a real call failed rather than
+    finding nothing to say) is recorded into compile_report["degraded"], which
+    _build_compile_report folds into `status`. A disabled pass or one that
+    legitimately found nothing still reports clean."""
     from conxa_compile.llm.workflow_review import build_workflow_review  # noqa: PLC0415
 
+    error_detail: list[str] = []
     try:
         graph, findings = build_workflow_review(
             _review_inputs(steps, compile_report, image_by_step_key),
             page_urls=page_urls,
             sibling_bindings=_sibling_bindings(visited_hosts, skill_id),
+            error_detail=error_detail,
         )
-    except Exception:  # noqa: BLE001 — a second, non-primary LLM pass must never fail compile
+    except Exception as exc:  # noqa: BLE001 — a second, non-primary LLM pass must never fail compile
         graph, findings = WorkflowIntentGraph(), []
+        error_detail.append(f"{type(exc).__name__}: {exc}")
+
+    degraded = list(compile_report.get("degraded") or [])
+    if error_detail and not findings and not graph.goal:
+        degraded.append({
+            "pass": "second_opinion",
+            "reason": "llm_call_failed",
+            "detail": "; ".join(error_detail),
+        })
 
     # Always applied, even when the call above failed — mirrors the old
     # pre-loop intent graph, which called _apply_intent_graph_to_steps
     # unconditionally, outside whatever try/except guarded its own LLM call.
     # Keeping this outside the try below (unlike the findings application,
     # which depends on `findings` existing) is what keeps a disabled and a
-    # failed compile byte-identical: both end up applying an equally-empty
-    # graph instead of one applying it and the other skipping it.
+    # failed compile's STEPS byte-identical: both end up applying an equally-
+    # empty graph instead of one applying it and the other skipping it. Only
+    # the report's `degraded`/`status` fields now tell the two apart.
     backfilled = _apply_workflow_review_to_steps(steps, graph)
 
     try:
@@ -2191,14 +2241,19 @@ def _apply_second_opinion(
         rewrite_findings = [f for f in findings if f.get("kind") != "flag_noise"]
         applied = apply_second_opinion(steps, rewrite_findings)
         steps, archived = archive_flagged_steps(steps, noise_findings)
-    except Exception:  # noqa: BLE001 — a second, non-primary LLM pass must never fail compile
+    except Exception as exc:  # noqa: BLE001 — a second, non-primary LLM pass must never fail compile
         applied, archived = [], []
-    if not applied and not archived and not backfilled:
+        degraded.append({
+            "pass": "second_opinion_apply",
+            "reason": "exception",
+            "detail": f"{type(exc).__name__}: {exc}",
+        })
+    if not applied and not archived and not backfilled and not degraded:
         return steps, compile_report, graph
     # Rebuilt, not patched: _build_compile_report is a pure local function over
     # `steps`, so re-running it is cheaper than reasoning about which of its
     # aggregates a conversion/archive/backfill invalidated.
-    fresh = _build_compile_report(steps)
+    fresh = _build_compile_report(steps, degraded=degraded)
     if applied:
         fresh["second_opinion"] = applied
     if archived:

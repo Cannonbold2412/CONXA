@@ -10,6 +10,7 @@ import json
 import shutil
 import time
 import uuid
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,8 @@ def _read_raw(workflow_id: str) -> dict[str, Any] | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        warnings.warn(f"Corrupt workflow file {path}: {exc}", stacklevel=2)
         return None
 
 
@@ -182,7 +184,16 @@ def list_workflows(workspace_id: str = "") -> list[Workflow]:
                 if workspace_id and workflow.workspace_id != workspace_id:
                     continue
                 out.append(_heal_workflow_slug(workflow))
-            except Exception:
+            except Exception as exc:
+                # A corrupt/unvalidatable record can't be returned as a Workflow, but
+                # silently excluding it from the list is indistinguishable from the
+                # workflow having been deleted — warn so it's diagnosable rather than
+                # just vanishing.
+                warnings.warn(
+                    f"Dropping corrupt workflow record {raw.get('id') if isinstance(raw, dict) else '?'!r} "
+                    f"from list_workflows: {type(exc).__name__}: {exc}",
+                    stacklevel=2,
+                )
                 continue
         return sorted(out, key=lambda w: w.updated_at, reverse=True)
     # File fallback for local dev
@@ -197,7 +208,8 @@ def list_workflows(workspace_id: str = "") -> list[Workflow]:
             if workspace_id and workflow.workspace_id != workspace_id:
                 continue
             out.append(_heal_workflow_slug(workflow))
-        except Exception:
+        except Exception as exc:
+            warnings.warn(f"Dropping corrupt workflow file {path} from list_workflows: {exc}", stacklevel=2)
             continue
     return out
 

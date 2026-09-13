@@ -21,6 +21,7 @@ from typing import Any
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
+from conxa_core.progress import append_current_job_event
 
 
 def _cache_path(namespace: str) -> Path:
@@ -53,14 +54,27 @@ def _read_all(namespace: str, version: int) -> dict[str, dict[str, Any]]:
 
 
 def _write_all(namespace: str, cache: dict[str, dict[str, Any]]) -> None:
+    # Neither store persisting is a performance-only degradation, not a correctness one —
+    # every task client's own cache-key/value contract is unaffected, the next call for the
+    # same key just re-pays for an LLM call it should have gotten for free. Logged (not
+    # silently swallowed) so a persistently broken cache backend is visible in the compile
+    # job's own event stream rather than only showing up as "compiles got slower."
     try:
         db_set("llm_cache", namespace, cache)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — see comment above
+        append_current_job_event(
+            "compile_phase",
+            f"LLM cache DB write failed for {namespace!r} — this call's result will be re-fetched next time.",
+            {"phase": "llm_cache_write_failed", "namespace": namespace, "store": "db", "reason": str(exc)},
+        )
     try:
         _cache_path(namespace).write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as exc:
+        append_current_job_event(
+            "compile_phase",
+            f"LLM cache file write failed for {namespace!r} — this call's result will be re-fetched next time.",
+            {"phase": "llm_cache_write_failed", "namespace": namespace, "store": "file", "reason": str(exc)},
+        )
 
 
 def cache_key(version: int, **fields: Any) -> str:

@@ -79,9 +79,12 @@ def _fallback(inp: VisionLLMInput) -> VisionLLMOutput:
             best_score = score
             best = c
     return VisionLLMOutput(
+        # 0.8 for a genuine text/intent-token overlap; 0.3 when there was none at all
+        # (picking candidates[0] blind) — previously both cases fabricated the same 0.65,
+        # claiming near-equal confidence for "found a real match" and "found nothing."
         best_candidate=best.element_id,
-        confidence=0.65 if best_score <= 0 else 0.8,
-        reason=f"matched candidate text under intent: {best.text}",
+        confidence=0.3 if best_score <= 0 else 0.8,
+        reason=f"matched candidate text under intent: {best.text}" if best_score > 0 else "no candidate matched the intent tokens",
     )
 
 
@@ -119,6 +122,9 @@ def assist_vision(inp: VisionLLMInput, *, call_count: int = 0, recovery_phase: b
         except Exception:
             pass
     out = _call_provider(inp) or _fallback(inp)
-    cache[k] = out.model_dump(mode="json")
-    _write_cache(cache)
+    # Never cache a rule-based fallback as if it were a real model answer — a transient
+    # provider outage would otherwise poison this key forever.
+    if out.source != "rule_fallback":
+        cache[k] = out.model_dump(mode="json")
+        _write_cache(cache)
     return out

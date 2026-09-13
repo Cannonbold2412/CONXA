@@ -103,6 +103,10 @@ def enrich_semantic(inp: SemanticLLMInput) -> SemanticLLMOutput:
         out = _call_provider(inp) or _fallback(inp)
     except Exception:
         out = _fallback(inp)
-    cache[k] = out.model_dump(mode="json")
-    _write_cache(cache)
+    # Never cache a rule-based fallback as if it were a real model answer — a transient
+    # provider outage would otherwise poison this key forever, since a cache hit is
+    # checked before _call_provider ever runs again.
+    if out.source != "rule_fallback":
+        cache[k] = out.model_dump(mode="json")
+        _write_cache(cache)
     return out
