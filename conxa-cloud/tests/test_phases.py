@@ -45,6 +45,15 @@ def _minimal_click_event() -> dict:
         "visual": {
             "full_screenshot": "images/evt_0001_full.jpg",
             "element_snapshot": "images/evt_0001_element.jpg",
+            # Current recorder always emits all 5 offsets (frame_extractor.py); every label
+            # points at the same test JPEG since these tests mock the LLM call itself.
+            "frames": {
+                "before_far": "images/evt_0001_full.jpg",
+                "before_near": "images/evt_0001_full.jpg",
+                "at": "images/evt_0001_full.jpg",
+                "after_near": "images/evt_0001_full.jpg",
+                "after_far": "images/evt_0001_full.jpg",
+            },
             "bbox": {"x": 10, "y": 20, "w": 80, "h": 32},
             "viewport": "800x600",
             "scroll_position": "0,0",
@@ -392,7 +401,7 @@ class PhaseTests(unittest.TestCase):
             "validation": {
                 "default_timeout_ms": 5000,
                 "submit_min_timeout_ms": 8000,
-                "commit_no_evidence_wait": "dom_change",
+                "commit_no_evidence_wait": "intent_outcome",
             },
         }
         step = {
@@ -429,7 +438,7 @@ class PhaseTests(unittest.TestCase):
 
         policy = {
             "workflow": {"commit_intent_substrings": ["submit"]},
-            "validation": {"default_timeout_ms": 5000, "submit_min_timeout_ms": 8000, "commit_no_evidence_wait": "dom_change"},
+            "validation": {"default_timeout_ms": 5000, "submit_min_timeout_ms": 8000, "commit_no_evidence_wait": "intent_outcome"},
             "decision_layer": {
                 "intent_primary_validation": True,
                 "commit_intent_prefer_url_substrings": ["checkout", "payment"],
@@ -1183,7 +1192,7 @@ class PhaseTests(unittest.TestCase):
             "validation": {
                 "default_timeout_ms": 5000,
                 "submit_min_timeout_ms": 8000,
-                "commit_no_evidence_wait": "dom_change",
+                "commit_no_evidence_wait": "intent_outcome",
                 "commit_no_evidence_intent_first": True,
             },
             "decision_layer": {
@@ -1200,6 +1209,29 @@ class PhaseTests(unittest.TestCase):
         state_diff = {"url_changed": False, "dom_changed": False}
         wf = infer_wait_for_shape(step, state_diff, policy)
         self.assertEqual(wf.get("type"), "url_change")
+
+    def test_commit_no_evidence_wait_rejects_retired_dom_change(self) -> None:
+        """dom_change was retired in favor of intent_outcome — a policy file still specifying
+        it must fail the compile loudly, not silently translate (see validation_planner.py)."""
+        from conxa_compile.compiler.validation_planner import infer_wait_for_shape
+
+        policy = {
+            "workflow": {"commit_intent_substrings": ["submit"]},
+            "validation": {
+                "default_timeout_ms": 5000,
+                "submit_min_timeout_ms": 8000,
+                "commit_no_evidence_wait": "dom_change",
+            },
+        }
+        step = {
+            "action": {"action": "click"},
+            "semantic": {"llm_intent": "submit_form"},
+            "target": {"tag": "button", "type": "submit", "inner_text": "OK"},
+            "timing": {"timeout": 5000},
+        }
+        state_diff = {"url_changed": False, "dom_changed": False}
+        with self.assertRaises(ValueError):
+            infer_wait_for_shape(step, state_diff, policy)
 
     def test_normalize_upgrades_click_button_with_visible_text(self) -> None:
         from conxa_compile.policy.bundle import get_policy_bundle
@@ -1383,10 +1415,13 @@ class PhaseTests(unittest.TestCase):
         self.assertTrue(result["anchor_sentence"])
         self.assertTrue(result["anchor_phrases"])
 
-    def test_anchor_vision_frameset_falls_back_to_full_screenshot_when_no_frames(self) -> None:
-        """Recordings captured before 5-frame extraction shipped only have
-        full_screenshot — still compiles, as a single-frame request."""
-        from conxa_compile.llm.anchor_vision_llm import generate_anchors_for_step_or_raise
+    def test_anchor_vision_frameset_rejects_recordings_with_no_frames(self) -> None:
+        """A recording missing the 5-frame set (predates current extraction, or extraction
+        failed for this step) must fail the compile loudly — no silent 1-frame degrade."""
+        from conxa_compile.llm.anchor_vision_llm import (
+            VisionAnchorGenerationError,
+            generate_anchors_for_step_or_raise,
+        )
         from conxa_compile.policy.bundle import get_policy_bundle
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1397,32 +1432,22 @@ class PhaseTests(unittest.TestCase):
                 patch.object(settings, "data_dir", root),
                 patch("conxa_core.llm._router", _FakeRouter()),
                 patch("conxa_compile.llm.anchor_vision_llm.supports_multimodal_chat", return_value=True),
-                patch(
-                    "conxa_compile.llm.anchor_vision_llm.call_llm",
-                    return_value={"chosen_frame": "before_near", "anchor_sentence": "email field"},
-                ) as call,
             ):
-                generate_anchors_for_step_or_raise(
-                    {
-                        "visual": {
-                            "full_screenshot": "images/a.png",
-                            "bbox": {"x": 0, "y": 0, "w": 0, "h": 0},  # degenerate: skips highlighting
-                            "viewport": "1280x720",
-                        }
-                    },
-                    session_root=root,
-                    final_intent="enter_email",
-                    policy=get_policy_bundle().data,
-                    step_index=0,
-                )
-
-        payload = call.call_args.args[1]
-        self.assertEqual(len(payload["frames"]), 1)
-        self.assertEqual(payload["frames"][0]["label"], "before_near")
-        image_bytes = base64.standard_b64decode(payload["frames"][0]["image_base64"])
-        self.assertTrue(image_bytes.startswith(b"\xff\xd8"))  # JPEG magic bytes, not PNG's \x89PNG
-        with Image.open(io.BytesIO(image_bytes)) as im:
-            self.assertLessEqual(max(im.size), 1024)
+                with self.assertRaises(VisionAnchorGenerationError) as ctx:
+                    generate_anchors_for_step_or_raise(
+                        {
+                            "visual": {
+                                "full_screenshot": "images/a.png",
+                                "bbox": {"x": 0, "y": 0, "w": 0, "h": 0},
+                                "viewport": "1280x720",
+                            }
+                        },
+                        session_root=root,
+                        final_intent="enter_email",
+                        policy=get_policy_bundle().data,
+                        step_index=0,
+                    )
+        self.assertEqual(ctx.exception.reason, "full_screenshot_path_missing")
 
     def test_prefetch_vision_anchors_parallel_populates_cache_for_the_per_step_call(self) -> None:
         """One anchor_vision_frameset call per step, fired concurrently, writes
@@ -1444,6 +1469,7 @@ class PhaseTests(unittest.TestCase):
                 {
                     "visual": {
                         "full_screenshot": "images/a.jpg",
+                        "frames": {"before_near": "images/a.jpg"},
                         "bbox": {"x": 1, "y": 1, "w": 30, "h": 20},
                         "viewport": "100x80",
                     }
@@ -1451,6 +1477,7 @@ class PhaseTests(unittest.TestCase):
                 {
                     "visual": {
                         "full_screenshot": "images/b.jpg",
+                        "frames": {"before_near": "images/b.jpg"},
                         "bbox": {"x": 5, "y": 5, "w": 25, "h": 15},
                         "viewport": "100x80",
                     }
@@ -1509,8 +1536,8 @@ class PhaseTests(unittest.TestCase):
             Image.new("RGB", (100, 80), "white").save(root / "images" / "a.jpg")
             Image.new("RGB", (100, 80), "white").save(root / "images" / "b.jpg")
             events = [
-                {"visual": {"full_screenshot": "images/a.jpg", "bbox": {"x": 1, "y": 1, "w": 30, "h": 20}, "viewport": "100x80"}},
-                {"visual": {"full_screenshot": "images/b.jpg", "bbox": {"x": 5, "y": 5, "w": 25, "h": 15}, "viewport": "100x80"}},
+                {"visual": {"full_screenshot": "images/a.jpg", "frames": {"before_near": "images/a.jpg"}, "bbox": {"x": 1, "y": 1, "w": 30, "h": 20}, "viewport": "100x80"}},
+                {"visual": {"full_screenshot": "images/b.jpg", "frames": {"before_near": "images/b.jpg"}, "bbox": {"x": 5, "y": 5, "w": 25, "h": 15}, "viewport": "100x80"}},
             ]
             call_counts = {"a": 0, "b": 0}
 
@@ -1551,6 +1578,7 @@ class PhaseTests(unittest.TestCase):
             ev = {
                 "visual": {
                     "full_screenshot": "images/a.jpg",
+                    "frames": {"before_near": "images/a.jpg"},
                     "bbox": {"x": 1, "y": 1, "w": 30, "h": 20},
                     "viewport": "100x80",
                 }

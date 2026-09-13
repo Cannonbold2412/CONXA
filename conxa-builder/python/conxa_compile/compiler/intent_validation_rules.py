@@ -15,13 +15,6 @@ Step = dict[str, Any]
 VALID_WAIT_TYPES = frozenset({"url_change", "intent_outcome", "element_appear", "element_disappear", "none"})
 
 
-def _normalize_facet_wait_type(wt: str) -> str:
-    """Legacy policies used dom_change; runtime validation uses intent_outcome + mapped selectors."""
-    w = str(wt or "").strip().lower()
-    if w == "dom_change":
-        return "intent_outcome"
-    return w
-
 
 def selector_wait_target_from_step(step: Step) -> str:
     """First passing selector string for element_appear / element_disappear (deterministic order)."""
@@ -68,7 +61,7 @@ def try_intent_validation_facets(
             continue
         if bool(facet.get("skip_when_commit", False)) and is_commit:
             continue
-        wt = _normalize_facet_wait_type(str(facet.get("wait_for_type") or "").strip().lower())
+        wt = str(facet.get("wait_for_type") or "").strip().lower()
         if wt not in VALID_WAIT_TYPES:
             continue
         extra_ms = int(facet.get("min_timeout_ms") or 0)
@@ -146,7 +139,7 @@ def try_destructive_confirmation_wait(
     if is_commit or not destructive_compiler_step(step, policy):
         return None
     tgt = selector_wait_target_from_step(step)
-    wt = _normalize_facet_wait_type(str(val.get("destructive_wait_for_type") or "element_appear").strip().lower())
+    wt = str(val.get("destructive_wait_for_type") or "element_appear").strip().lower()
     if wt not in VALID_WAIT_TYPES:
         wt = "element_appear"
     extra_ms = int(val.get("destructive_min_timeout_ms") or 0)

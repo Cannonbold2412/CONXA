@@ -1,4 +1,5 @@
-"""validation.wait_for: legacy leaf, top-level {op, conditions}, or nested groups (recursive AND/OR)."""
+"""validation.wait_for: a single leaf dict, a top-level {op, conditions} group, or nested groups
+(recursive AND/OR) — all three are shapes the current compiler emits, not a retired format."""
 
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ def leaf_wait_for_conditions(wf: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def wait_for_combinator(wf: dict[str, Any] | None) -> WaitOp | None:
-    """Top-level combinator when root is a group; ``None`` for a legacy leaf dict."""
+    """Top-level combinator when root is a group; ``None`` for a single leaf dict."""
     if is_wait_group(wf):
         return str(wf.get("op") or "or").strip().lower()  # type: ignore[return-value]
     return None

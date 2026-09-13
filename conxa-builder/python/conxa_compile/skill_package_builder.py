@@ -235,23 +235,23 @@ def build_skill_package(
             a.id for a in apps_for_workflow(group.apps, wf.target_url, wf.protected_url, *visited_hosts)
         ]
 
-    try:
-        _write_skill_packs_format(
-            bundle_root=bundle_root,
-            workspace_id=workspace_id,
-            display_name=pack.display_name,
-            target_url=primary.target_url,
-            protected_url=primary.protected_url,
-            skill_slugs=skill_slugs,
-            skill_target_urls=skill_target_urls,
-            skill_group_ids=skill_group_ids,
-            skill_required_apps=skill_required_apps,
-            groups=groups_payload,
-            version=version,
-        )
-        _log("Written skill-packs format", company=bundle_slug, skills=skill_slugs)
-    except Exception as exc:
-        _log(f"Warning: skill-packs format write failed — {exc}", warning=True)
+    # skill-packs/ is the ONLY layout publish, the installer, and the runtime read — a failed
+    # write here means the build produced nothing usable and must not be reported as a
+    # success (previously logged as a warning while still recording/returning success below).
+    _write_skill_packs_format(
+        bundle_root=bundle_root,
+        workspace_id=workspace_id,
+        display_name=pack.display_name,
+        target_url=primary.target_url,
+        protected_url=primary.protected_url,
+        skill_slugs=skill_slugs,
+        skill_target_urls=skill_target_urls,
+        skill_group_ids=skill_group_ids,
+        skill_required_apps=skill_required_apps,
+        groups=groups_payload,
+        version=version,
+    )
+    _log("Written skill-packs format", company=bundle_slug, skills=skill_slugs)
 
     # ── 6. Persist build record ────────────────────────────────────────────
     set_build(workspace_id, output_path=str(bundle_root), version=version)

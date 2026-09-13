@@ -215,9 +215,8 @@ def _prepare_frameset_vision_request(
     policy: dict[str, Any],
     step_index: int,
 ) -> dict[str, Any] | _PreparedFramesetRequest:
-    """Resolve a step's frames (all 5, or a 1-frame fallback for legacy recordings),
-    apply the highlight to each, compute the cache key, and check the cache.
-    Returns the cached finalized dict directly on a hit, or a
+    """Resolve a step's 5 frames, apply the highlight to each, compute the cache key,
+    and check the cache. Returns the cached finalized dict directly on a hit, or a
     _PreparedFramesetRequest to actually send on a miss. Raises
     VisionAnchorGenerationError for anything that can't be prepared at all
     (missing/unreadable screenshots, disabled)."""
@@ -228,11 +227,6 @@ def _prepare_frameset_vision_request(
 
     visual = ev.get("visual") if isinstance(ev.get("visual"), dict) else {}
     frames_map = visual.get("frames") if isinstance(visual.get("frames"), dict) else {}
-    if not frames_map:
-        # Recordings captured before 5-frame extraction shipped: fall back to the
-        # single full_screenshot frame, labeled as before_near.
-        fallback_rel = str(visual.get("full_screenshot") or "").strip()
-        frames_map = {"before_near": fallback_rel} if fallback_rel else {}
     if not frames_map:
         raise VisionAnchorGenerationError("full_screenshot_path_missing", step_index=step_index)
 

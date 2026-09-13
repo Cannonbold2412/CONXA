@@ -1,4 +1,5 @@
-"""Shared step action / commit / editable-target semantics (single source for v3 + validation_planner)."""
+"""Shared step action / commit / editable-target semantics (single source for step_anchors,
+state_validation + validation_planner)."""
 
 from __future__ import annotations
 

@@ -917,7 +917,7 @@ def _confidence_from_identity_bundle(bundle: Any) -> float:
 def _build_target(
     ev: dict[str, Any],
     policy: dict[str, Any],
-    identity_bundle: Any = None,
+    identity_bundle: IdentityBundle,
     dom_html: str | None = None,
 ) -> dict[str, Any]:
     if str((ev.get("action") or {}).get("action") or "").lower() in MARKER_ACTIONS:
@@ -978,34 +978,34 @@ def _build_target(
             )
             selector_confidence = 0.0
 
-    confidence_breakdown: dict[str, float] | None = None
-    selector_rationale = ""
-    selector_source = "deterministic"
-
     # Selector generation is fully deterministic — the LLM is never asked to write a selector
     # (SeeAct Finding 3: ~30% hallucination). `target.primary_selector`/`fallback_selectors` are
     # used only by the recovery cascade (layer 2+); the runtime hot path resolves off
     # `identity_bundle.signals`. Confidence therefore reflects the IdentityBundle's strength.
-    if identity_bundle is not None:
-        selector_confidence = _confidence_from_identity_bundle(identity_bundle)
+    selector_confidence = _confidence_from_identity_bundle(identity_bundle)
 
     # Promote the IdentityBundle's top signal as the authoritative primary selector so
     # skill_package_builder._step_selector writes the same durable selector the editor displays.
-    # The legacy `score_selector_row`-elected primary is demoted into the fallback pool so
-    # it remains available to the recovery cascade but does not pollute execution.json.
-    # Never promote relational or xpath signals as primary — they are recovery-tier only.
-    if identity_bundle is not None:
-        _bundle_signals = getattr(identity_bundle, "signals", None) or []
-        if _bundle_signals:
-            _top = _bundle_signals[0]
-            _top_engine = str(getattr(_top, "engine", "") or "")
-            if _top_engine not in ("relational", "xpath"):
-                _top_display = signal_to_display(_top_engine, str(getattr(_top, "selector", "") or ""))
-                if _top_display:
-                    # Demote the legacy-elected primary into the fallback pool (if distinct).
-                    if primary and primary != _top_display and primary not in fallback_raw:
-                        fallback_raw = [primary] + list(fallback_raw)
-                    primary = _top_display
+    # The rank_selectors_scored/stable-selector election above is demoted into the fallback
+    # pool so it remains available to the recovery cascade but does not pollute execution.json.
+    # Never promote relational or xpath signals as primary — they are recovery-tier only. When
+    # the bundle has no promotable top signal (an element with only a relational/xpath
+    # identity, or none at all), the election above stands as `primary` unchanged — tagged
+    # "legacy_fallback" below so a reviewer can tell this step skipped IdentityBundle promotion
+    # instead of reading a hardcoded "deterministic" that claims otherwise (REFACTOR-AUDIT H-4).
+    selector_source = "legacy_fallback"
+    _bundle_signals = identity_bundle.signals or []
+    if _bundle_signals:
+        _top = _bundle_signals[0]
+        _top_engine = str(getattr(_top, "engine", "") or "")
+        if _top_engine not in ("relational", "xpath"):
+            _top_display = signal_to_display(_top_engine, str(getattr(_top, "selector", "") or ""))
+            if _top_display:
+                # Demote the elected primary into the fallback pool (if distinct).
+                if primary and primary != _top_display and primary not in fallback_raw:
+                    fallback_raw = [primary] + list(fallback_raw)
+                primary = _top_display
+                selector_source = "deterministic"
 
     # Re-rank the merged fallback pool: durability-descending → xpath always last.
     # Keep all admissible candidates (no over-aggressive orthogonality collapse against the
@@ -1053,7 +1053,7 @@ def _build_target(
     css_for_recovery = str(selectors.get("css") or "").strip()
     if not css_for_recovery or not selector_passes_filters(css_for_recovery):
         css_for_recovery = primary
-    result = {
+    return {
         "primary_selector": primary,
         "fallback_selectors": fallback,
         "css": css_for_recovery,
@@ -1062,11 +1062,6 @@ def _build_target(
         "selector_confidence": selector_confidence,
         "selector_source": selector_source,
     }
-    if confidence_breakdown:
-        result["confidence_breakdown"] = confidence_breakdown
-    if selector_rationale:
-        result["selector_rationale"] = selector_rationale
-    return result
 
 
 def _build_signals(
@@ -1657,7 +1652,6 @@ def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
                 "intent": step.intent,
                 "selector": selector,
                 "confidence": None,
-                "confidence_breakdown": {},
                 "source": str(target.get("selector_source") or "heuristic"),
                 "reasoning": "",
                 "input_binding": step.input_binding,
@@ -1666,7 +1660,6 @@ def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
             continue
 
         confidence = float(target.get("selector_confidence") or 0.0)
-        breakdown = target.get("confidence_breakdown") or {}
         source = str(target.get("selector_source") or "heuristic")
         rationale = str(target.get("selector_rationale") or "")
 
@@ -1693,7 +1686,6 @@ def _build_compile_report(steps: list[SkillStep]) -> dict[str, Any]:
             "intent": step.intent,
             "selector": selector,
             "confidence": round(confidence, 3),
-            "confidence_breakdown": breakdown,
             "source": source,
             "reasoning": rationale,
             "input_binding": step.input_binding,

@@ -242,13 +242,12 @@ def _parse_soup(html: str) -> Any:
 
 
 def _count_css(html: str, css_selector: str) -> int:
-    try:
-        soup = _parse_soup(html)
-    except ImportError:
-        return 1  # can't verify without bs4 — allow through
+    soup = _parse_soup(html)  # bs4/lxml are hard dependencies — ImportError propagates
     try:
         return len(soup.select(css_selector))
-    except Exception:  # noqa: BLE001 — selector grammar bs4 can't parse
+    except Exception:  # noqa: BLE001 — Playwright-only CSS extensions (e.g. :has-text()) that
+        # a real element's structural selector can legitimately carry; soupsieve can't evaluate
+        # them, so "can't verify statically" correctly allows the selector through.
         return 1
 
 
@@ -256,10 +255,7 @@ def _count_text(html: str, text: str) -> int:
     target = text.strip().lower()
     if not target:
         return 1
-    try:
-        soup = _parse_soup(html)
-    except ImportError:
-        return 1
+    soup = _parse_soup(html)  # bs4/lxml are hard dependencies — ImportError propagates
     return sum(
         1 for el in soup.find_all(True)
         if not el.find(True) and el.get_text(strip=True).lower() == target
@@ -273,45 +269,30 @@ def _count_role(a11y_tree: dict[str, Any], role: str, name: str | None) -> int:
     """Count nodes in the Playwright accessibility snapshot matching role (+ name).
 
     ARIA role isn't derivable from raw HTML alone, so this walks the recorded
-    a11y evidence (the browser's own computed roles) rather than the HTML.
-
-    Two shapes: `{"aria_snapshot": "<yaml>"}` (current — `Locator.aria_snapshot()`,
-    one `- role "name":` line per node) and a legacy `{"role": ..., "children": [...]}`
-    tree dict (sessions recorded before Playwright dropped `Page.accessibility`).
+    a11y evidence (the browser's own computed roles) rather than the HTML. The
+    recorder captures `{"aria_snapshot": "<yaml>"}` — `Locator.aria_snapshot()`,
+    one `- role "name":` line per node.
     """
     wanted_role = role.strip().lower()
     wanted_name = (name or "").strip().lower()
     count = 0
 
     yaml_text = a11y_tree.get("aria_snapshot") if isinstance(a11y_tree, dict) else None
-    if isinstance(yaml_text, str):
-        for line in yaml_text.splitlines():
-            m = _ARIA_SNAPSHOT_LINE_RE.match(line)
-            if not m:
-                continue
-            if m.group(1).strip().lower() != wanted_role:
-                continue
-            node_name = (m.group(2) or "").strip().lower()
-            # Playwright getByRole({name}) is a case-insensitive substring of the
-            # accessible name, not an exact string. Exact equality here dropped a
-            # real menuitem whose recorded name still had a keyboard-shortcut tail
-            # ("File upload Alt+C then U") while the snapshot said "File upload".
-            if not wanted_name or wanted_name in node_name:
-                count += 1
+    if not isinstance(yaml_text, str):
         return count
-
-    def walk(node: Any) -> None:
-        nonlocal count
-        if not isinstance(node, dict):
-            return
-        if str(node.get("role") or "").strip().lower() == wanted_role:
-            node_name = str(node.get("name") or "").strip().lower()
-            if not wanted_name or wanted_name in node_name:
-                count += 1
-        for child in node.get("children") or []:
-            walk(child)
-
-    walk(a11y_tree)
+    for line in yaml_text.splitlines():
+        m = _ARIA_SNAPSHOT_LINE_RE.match(line)
+        if not m:
+            continue
+        if m.group(1).strip().lower() != wanted_role:
+            continue
+        node_name = (m.group(2) or "").strip().lower()
+        # Playwright getByRole({name}) is a case-insensitive substring of the
+        # accessible name, not an exact string. Exact equality here dropped a
+        # real menuitem whose recorded name still had a keyboard-shortcut tail
+        # ("File upload Alt+C then U") while the snapshot said "File upload".
+        if not wanted_name or wanted_name in node_name:
+            count += 1
     return count
 
 

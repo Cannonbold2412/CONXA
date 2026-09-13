@@ -129,64 +129,6 @@ def _step_url(step: dict[str, Any]) -> str:
     return str(context.get("page_url") or "").strip()
 
 
-def _saved_step_intents(step: dict[str, Any]) -> set[str]:
-    intents = {str(step.get("intent") or "").strip().lower()}
-    signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
-    semantic = signals.get("semantic") if isinstance(signals.get("semantic"), dict) else {}
-    intents.add(str(semantic.get("final_intent") or "").strip().lower())
-    intents.add(str(semantic.get("llm_intent") or "").strip().lower())
-    recovery = step.get("recovery") if isinstance(step.get("recovery"), dict) else {}
-    intents.add(str(recovery.get("final_intent") or "").strip().lower())
-    return {intent for intent in intents if intent}
-
-
-def _has_meaningful_export_payload(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set)):
-        return any(_has_meaningful_export_payload(item) for item in value)
-    if isinstance(value, dict):
-        return any(_has_meaningful_export_payload(item) for item in value.values())
-    return bool(value)
-
-
-def _has_user_interaction_payload(step: dict[str, Any]) -> bool:
-    if _step_selector(step):
-        return True
-
-    target = step.get("target")
-    if isinstance(target, dict) and _has_meaningful_export_payload(target):
-        return True
-
-    signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
-    selectors = signals.get("selectors") if isinstance(signals.get("selectors"), dict) else {}
-    if _has_meaningful_export_payload(selectors):
-        return True
-
-    action = step.get("action") if isinstance(step.get("action"), dict) else {}
-    if isinstance(action, dict):
-        for key, value in action.items():
-            if key in {"action", "url"}:
-                continue
-            if _has_meaningful_export_payload(value):
-                return True
-
-    for key in ("value", "input_binding", "frame", "check_kind", "check_pattern", "check_selector", "check_text"):
-        if _has_meaningful_export_payload(step.get(key)):
-            return True
-    return False
-
-
-def _is_legacy_synthetic_start_navigation_step(step: dict[str, Any]) -> bool:
-    if normalize_action_kind(_step_action_name(step)) != "navigate":
-        return False
-    if "navigate_to_start_url" not in _saved_step_intents(step):
-        return False
-    return not _has_user_interaction_payload(step)
-
-
 def _sanitize_runtime_frame(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -1090,15 +1032,7 @@ def _build_workflow_from_saved_skill(
     execution_steps: list[dict[str, Any]] = []
     source_steps: list[dict[str, Any]] = []
     step_ids: list[int] = []
-    export_steps = [
-        raw
-        for raw_index, raw in enumerate(raw_steps)
-        if not (
-            raw_index == 0
-            and isinstance(raw, dict)
-            and _is_legacy_synthetic_start_navigation_step(raw)
-        )
-    ]
+    export_steps = raw_steps
     # Wire a same-run download -> upload handoff before conversion (EXEC-10/W-2), so a matched
     # upload step's value becomes {{downloaded_file...}} instead of the generic {{file_path}}
     # _saved_step_to_execution_step would otherwise fall back to.

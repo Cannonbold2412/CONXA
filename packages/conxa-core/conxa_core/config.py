@@ -52,10 +52,9 @@ def _load_env_files_into_process() -> None:
     env var always wins over the file, matching every other explicit-override rule
     in this codebase.
     """
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
+    from dotenv import load_dotenv  # hard pinned dependency (pyproject.toml) — ImportError
+    # propagates rather than silently skipping .env loading, which would leave every setting
+    # on its hardcoded default with no visible sign why (e.g. missing API keys/DB URL).
     for _f in env_files():
         load_dotenv(_f, override=False)
 

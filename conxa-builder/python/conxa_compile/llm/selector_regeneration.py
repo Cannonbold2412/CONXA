@@ -65,12 +65,11 @@ def _count_matches_in_html(selector: str, html: str) -> int:
     """Best-effort match count via parsing the recorded snapshot.
 
     Uses lxml parser to support modern CSS selectors (:has, :is, etc).
-    Returns -1 if the parser can't evaluate the selector.
+    Returns -1 if the selector uses a Playwright-only extension bs4/soupsieve can't
+    evaluate statically (e.g. :has-text()) — a real, expected case, not a bug.
+    bs4/lxml themselves are hard pinned dependencies; a missing install raises.
     """
-    try:
-        from bs4 import BeautifulSoup  # type: ignore
-    except ImportError:
-        return -1
+    from bs4 import BeautifulSoup  # type: ignore
     try:
         soup = BeautifulSoup(html or "", "lxml")
         matches = soup.select(selector)
@@ -149,11 +148,9 @@ def _extract_a11y_node(
     the target's aria_label or inner_text (first 50 chars). Returns None if the
     tree is absent or no match is found — caller falls back to CSS-only path.
 
-    Two shapes, mirroring selector_filters.py::_count_role: `{"aria_snapshot": "<yaml>"}`
-    (current — Locator.aria_snapshot(), one `- role "name":` line per node, matched
-    top-to-bottom since document order is as good a tie-break as depth-first tree order)
-    and a legacy `{"role": ..., "children": [...]}` tree dict (sessions recorded before
-    Playwright dropped Page.accessibility).
+    Mirrors selector_filters.py::_count_role: the recorder captures `{"aria_snapshot":
+    "<yaml>"}` — Locator.aria_snapshot(), one `- role "name":` line per node, matched
+    top-to-bottom since document order is as good a tie-break as depth-first tree order.
     """
     if not tree or not target:
         return None
@@ -161,32 +158,17 @@ def _extract_a11y_node(
     t_name = (target.get("aria_label") or target.get("inner_text") or "").strip().lower()[:50]
 
     yaml_text = tree.get("aria_snapshot") if isinstance(tree, dict) else None
-    if isinstance(yaml_text, str):
-        for line in yaml_text.splitlines():
-            m = _ARIA_SNAPSHOT_LINE_RE.match(line)
-            if not m:
-                continue
-            n_role = m.group(1).strip().lower()
-            n_name = (m.group(2) or "").strip().lower()
-            if t_role and n_role == t_role and (not t_name or t_name in n_name):
-                return {"role": m.group(1), "name": m.group(2) or ""}
+    if not isinstance(yaml_text, str):
         return None
-
-    def _walk(node: dict[str, Any]) -> dict[str, Any] | None:
-        if not isinstance(node, dict):
-            return None
-        n_role = (node.get("role") or "").lower().strip()
-        n_name = (node.get("name") or "").strip().lower()
-        if t_role and n_role == t_role:
-            if not t_name or t_name in n_name:
-                return node
-        for child in node.get("children") or []:
-            found = _walk(child)
-            if found is not None:
-                return found
-        return None
-
-    return _walk(tree)
+    for line in yaml_text.splitlines():
+        m = _ARIA_SNAPSHOT_LINE_RE.match(line)
+        if not m:
+            continue
+        n_role = m.group(1).strip().lower()
+        n_name = (m.group(2) or "").strip().lower()
+        if t_role and n_role == t_role and (not t_name or t_name in n_name):
+            return {"role": m.group(1), "name": m.group(2) or ""}
+    return None
 
 
 def compile_selectors_for_task(

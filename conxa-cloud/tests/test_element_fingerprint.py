@@ -563,11 +563,7 @@ def test_uniqueness_gate_role_with_a11y_tree_multi_match():
 def test_uniqueness_gate_role_with_a11y_tree_single_match():
     html = "<button>Edit</button><button>Delete</button>"
     a11y_tree = {
-        "role": "WebArea",
-        "children": [
-            {"role": "button", "name": "Edit"},
-            {"role": "button", "name": "Delete"},
-        ],
+        "aria_snapshot": '- WebArea:\n  - button "Edit"\n  - button "Delete"',
     }
     assert uniqueness_gate('internal:role=button[name="Edit"]', html, a11y_tree) is True
 

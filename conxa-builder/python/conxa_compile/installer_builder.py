@@ -311,7 +311,11 @@ def build_installer(
         size_kb = dest.stat().st_size // 1024
         _log(f"Installer saved ({size_kb} KB): {dest}")
 
-    # Persist installer record
+    # Persist installer record. The .exe above is already built and copied — a failure here
+    # only desyncs the Studio's own "latest installer" record from what's really on disk
+    # (REFACTOR-AUDIT H-... finding), so it must not be silent, but it also must not discard
+    # a build that actually succeeded.
+    install_record_warning: str | None = None
     try:
         set_installer(
             workspace_id,
@@ -321,10 +325,11 @@ def build_installer(
             runtime_version=runtime_version,
             release_notes=release_notes,
         )
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — recorded below, not swallowed
+        install_record_warning = f"Installer built at {dest}, but its build record failed to save: {exc}"
+        _log(f"Warning: {install_record_warning}", warning=True)
 
-    return {
+    result = {
         "installer_path": str(dest),
         "filename":       installer_filename,
         "workspace_id":   workspace_id,
@@ -332,6 +337,9 @@ def build_installer(
         "runtime_version": runtime_version,
         "release_notes":   release_notes,
     }
+    if install_record_warning:
+        result["warning"] = install_record_warning
+    return result
 
 
 _STUDIO_RUNTIME_MISSING = (

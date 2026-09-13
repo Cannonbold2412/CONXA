@@ -459,7 +459,12 @@ class TestSkillPackageConfigStructure:
 # ─────────────────────────────────────────────────
 
 class TestSavedSkillJsonBuild:
-    def test_saved_skill_export_strips_legacy_synthetic_start_navigation(self, tmp_path):
+    def test_saved_skill_export_keeps_the_compiler_synthesized_start_navigation(self, tmp_path):
+        """The current compiler's own synthesized leading navigate step (intent
+        navigate_to_page, see build.py::_insert_start_navigate_step) is exported like any
+        other step — no special-casing strips it. (An older compiler's synthetic first step,
+        tagged navigate_to_start_url, no longer gets any special treatment either: recompiling
+        that old data was dropped in favor of a clear re-record message.)"""
         saved_skill = {
             "meta": {"id": "skill_123", "title": "Delete Database"},
             "inputs": [{"id": "service_name", "label": "Service Name", "type": "text"}],
@@ -469,12 +474,12 @@ class TestSavedSkillJsonBuild:
                     "steps": [
                         {
                             "action": {"action": "navigate", "url": "https://dashboard.render.com/"},
-                            "intent": "navigate_to_start_url",
+                            "intent": "navigate_to_page",
                             "target": {},
                             "signals": {
                                 "semantic": {
-                                    "final_intent": "navigate_to_start_url",
-                                    "llm_intent": "navigate_to_start_url",
+                                    "final_intent": "navigate_to_page",
+                                    "llm_intent": "navigate_to_page",
                                 },
                                 "selectors": {},
                                 "anchors": [],
@@ -503,11 +508,12 @@ class TestSavedSkillJsonBuild:
 
         skill_dir = tmp_path / "skills" / "delete_database"
         execution = json.loads((skill_dir / "execution.json").read_text(encoding="utf-8"))
-        assert [step["type"] for step in execution] == ["type", "click"]
-        assert all(step["type"] != "navigate" for step in execution)
+        assert [step["type"] for step in execution] == ["navigate", "type", "click"]
 
+        # navigate has no recovery block (Key Invariant: navigation markers are never
+        # retried) — only the type/click steps (2, 3) appear in recovery.json.
         recovery = json.loads((skill_dir / "recovery.json").read_text(encoding="utf-8"))
-        assert [step["step_id"] for step in recovery["steps"]] == [1, 2]
+        assert [step["step_id"] for step in recovery["steps"]] == [2, 3]
         assert recovery["steps"][0]["selector_context"]["primary"] == 'input[placeholder="Search"]'
         assert recovery["steps"][1]["selector_context"]["primary"] == "text={{service_name}}"
 

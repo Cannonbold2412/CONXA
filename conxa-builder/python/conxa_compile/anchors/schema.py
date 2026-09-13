@@ -13,19 +13,11 @@ def normalize_anchor(raw: Any, *, default_relation: str = "near") -> dict[str, s
 
     relation = str(raw.get("relation") or "").strip().lower()
     element = str(raw.get("element") or "").strip()
-    if element:
-        return {
-            "element": element,
-            "relation": relation if relation in _ALLOWED_RELATIONS else default_relation,
-        }
-
-    legacy_kind = str(raw.get("kind") or raw.get("type") or "").strip().lower()
-    legacy_value = str(raw.get("value") or raw.get("text") or "").strip()
-    if not legacy_value:
+    if not element:
         return None
     return {
-        "element": legacy_value,
-        "relation": legacy_kind if legacy_kind in _ALLOWED_RELATIONS else default_relation,
+        "element": element,
+        "relation": relation if relation in _ALLOWED_RELATIONS else default_relation,
     }
 
 

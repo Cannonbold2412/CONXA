@@ -23,9 +23,6 @@ from conxa_compile.skill_pack_build_log import (
 from conxa_compile.storage.skill_package_formatters import (
     format_auth_json_text as _format_auth_json_text,
     format_credentials_example_json_text as _format_credentials_example_json_text,
-    format_skill_package_claude_md_text as _format_plugin_claude_md_text,
-    format_skill_package_index_json as _format_plugin_index_json,
-    format_skill_package_readme_text as _format_plugin_readme_text,
     format_test_cases_stub_json_text as _format_test_cases_stub_json_text,
     infer_auth_config as _infer_auth_config,
 )
@@ -58,9 +55,6 @@ OBSOLETE_WORKFLOW_FILENAMES = (
 )
 
 RESERVED_WORKFLOW_FOLDER_NAMES = frozenset({"packages", SKILLS_SUBDIR, WORKFLOWS_SUBDIR})
-RESERVED_PACKAGE_BUNDLE_ROOTS = frozenset({"packages"})
-BUNDLE_ROOT_STATE_FILENAME = ".skill_bundle_root"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BUNDLE_RUNTIME_DIRS = ("auth", "execution")
 BUNDLE_RUNTIME_FILES = (
     "execution/executor.js",
@@ -70,43 +64,6 @@ BUNDLE_RUNTIME_FILES = (
     "execution/validator.js",
 )
 STALE_BUNDLE_DIRS = ("engine", "bridge", "claude", ".opencode", ".codex", "orchestration")
-
-_CAMEL_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
-_NON_WORD = re.compile(r"[^a-zA-Z0-9]+")
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Package bundle root (legacy persisted-slug mechanism; root is now fixed)
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _slugify_package_bundle_root_segment(raw: str) -> str:
-    text = _CAMEL_BOUNDARY.sub(r"\1_\2", str(raw or "").strip())
-    text = _NON_WORD.sub("_", text).strip("_").lower()
-    if not text:
-        return "skill_package"
-    if text[0].isdigit():
-        text = f"bundle_{text}"
-    if text in RESERVED_PACKAGE_BUNDLE_ROOTS:
-        return "skill_package"
-    return text
-
-
-def validate_package_bundle_root_slug(name: str) -> bool:
-    if not name or Path(name).name != name:
-        return False
-    if name in RESERVED_PACKAGE_BUNDLE_ROOTS:
-        return False
-    return bool(re.fullmatch(r"[a-z][a-z0-9_]*", name))
-
-
-def _persisted_package_bundle_root_slug() -> str | None:
-    path = PROJECT_ROOT / BUNDLE_ROOT_STATE_FILENAME
-    if not path.is_file():
-        return None
-    raw = path.read_text(encoding="utf-8").strip()
-    if validate_package_bundle_root_slug(raw):
-        return raw
-    return None
 
 
 def package_bundle_root_name() -> str:
@@ -151,14 +108,6 @@ def ensure_bundle_scaffold(bundle_slug: str) -> Path:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def format_plugin_index_json(bundle_slug: str, skills: list[dict[str, str]]) -> str:
-    return _format_plugin_index_json(_sanitize_segment(bundle_slug), skills)
-
-
-def format_plugin_readme_text(bundle_slug: str, skills: list[dict[str, str]]) -> str:
-    return _format_plugin_readme_text(_sanitize_segment(bundle_slug), skills)
-
-
 def infer_auth_config(all_inputs: list[dict[str, str]]) -> dict[str, object]:
     return _infer_auth_config(all_inputs)
 
@@ -178,23 +127,6 @@ def format_test_cases_stub_json_text(inputs: list[dict[str, str]]) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # Internal skill discovery helpers
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-def _workflow_summaries(bundle_root: Path) -> list[dict[str, str]]:
-    return [summary for _path, summary in _workflow_package_entries(bundle_root)]
-
-
-def _write_bundle_index(bundle_root: Path, bundle_slug: str) -> None:
-    skills = _workflow_summaries(bundle_root)
-    (bundle_root / f"{bundle_slug}.json").write_text(
-        _format_plugin_index_json(bundle_slug, skills), encoding="utf-8"
-    )
-    (bundle_root / "README.md").write_text(
-        format_plugin_readme_text(bundle_slug, skills), encoding="utf-8"
-    )
-    (bundle_root / "CLAUDE.md").write_text(
-        _format_plugin_claude_md_text(bundle_slug, skills), encoding="utf-8"
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -361,22 +293,6 @@ def _write_extra_bundle_files(
         _log_written_text_file(f"{log_prefix}/{safe_relative_path}", content, started_at)
 
 
-def _refresh_bundle_artifacts(bundle_slug: str, bundle_root: Path, bundle_posix: str) -> None:
-    started_at = time.perf_counter()
-    _write_bundle_index(bundle_root, bundle_slug)
-    skill_pack_log_append(
-        {
-            "kind": "bundle_artifact_updated",
-            "path": f"{bundle_posix}/README.md",
-            "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
-        }
-    )
-
-
-def _refresh_bundle_artifacts_for_slug(bundle_slug: str, bundle_root: Path) -> None:
-    _refresh_bundle_artifacts(bundle_slug, bundle_root, skill_package_root_posix(bundle_slug))
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Write lock
 # ──────────────────────────────────────────────────────────────────────────────
@@ -427,7 +343,6 @@ def _write_skill_package_files_core(
     _write_workflow_text_files(workflow_dir, files, log_prefix=workflow_log_prefix)
     _write_workflow_visual_assets(visuals_dir, visual_assets, log_prefix=workflow_log_prefix)
     _write_extra_bundle_files(bundle_root, extra_bundle_files, log_prefix=bundle_posix)
-    _refresh_bundle_artifacts_for_slug(bundle_slug, bundle_root)
     return workflow_dir
 
 
@@ -559,8 +474,6 @@ def rename_skill_package_bundle(old_slug: str, new_slug: str) -> None:
         raise ValueError(f'A skill package named "{new}" already exists.')
     old_root.rename(new_root)
     _remove_file_if_present(new_root / f"{old}.json")
-    with _bundle_write_lock(new):
-        _refresh_bundle_artifacts_for_slug(new, new_root)
 
 
 def delete_skill_package_workflow(bundle_slug: str, workflow_slug: str) -> bool:
@@ -568,10 +481,6 @@ def delete_skill_package_workflow(bundle_slug: str, workflow_slug: str) -> bool:
     if path is None or not path.is_dir():
         return False
     shutil.rmtree(path)
-    root = bundle_root_dir(bundle_slug)
-    if root and root.is_dir():
-        with _bundle_write_lock(bundle_slug):
-            _refresh_bundle_artifacts_for_slug(bundle_slug, root)
     return True
 
 
@@ -602,7 +511,3 @@ def rename_skill_package_workflow(bundle_slug: str, old_workflow: str, new_workf
         if isinstance(parsed, dict):
             parsed["name"] = new_s
             manifest_path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    root = bundle_root_dir(bundle_slug)
-    if root:
-        with _bundle_write_lock(bundle_slug):
-            _refresh_bundle_artifacts_for_slug(bundle_slug, root)

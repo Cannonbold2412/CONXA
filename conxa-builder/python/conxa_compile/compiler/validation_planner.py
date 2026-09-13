@@ -27,11 +27,21 @@ from conxa_compile.compiler.selector_filters import is_ephemeral_anchor
 Step = dict[str, Any]
 
 
-def _normalize_legacy_no_evidence_wait(raw: str) -> str:
+_VALID_NO_EVIDENCE_WAITS = frozenset({"url_change", "intent_outcome"})
+
+
+def _no_evidence_wait(raw: str) -> str:
+    """Validate policy.validation.commit_no_evidence_wait. "dom_change" was retired in favor
+    of "intent_outcome" — a policy file still specifying it needs updating, not silent
+    translation, since the compiler no longer knows what dom_change-based waiting meant."""
     r = str(raw or "intent_outcome").strip().lower()
-    if r == "dom_change":
-        return "intent_outcome"
-    return r if r in {"url_change", "intent_outcome"} else "intent_outcome"
+    if r not in _VALID_NO_EVIDENCE_WAITS:
+        raise ValueError(
+            f"policy.validation.commit_no_evidence_wait={raw!r} is not a valid value "
+            f"({sorted(_VALID_NO_EVIDENCE_WAITS)}). 'dom_change' was retired — use "
+            "'intent_outcome'. Update the policy bundle."
+        )
+    return r
 
 
 def dom_signal_to_intent_mapped_wait(step: Step, timeout: int) -> dict[str, Any]:
@@ -114,7 +124,7 @@ def _pick_commit_wait(
         return {"type": "url_change", "target": "", "timeout": t_commit}
     if d > 0:
         return dom_signal_to_intent_mapped_wait(step, t_commit)
-    pref = _normalize_legacy_no_evidence_wait(str(val.get("commit_no_evidence_wait", "intent_outcome")))
+    pref = _no_evidence_wait(str(val.get("commit_no_evidence_wait", "intent_outcome")))
     if pref == "url_change":
         return {"type": "url_change", "target": "", "timeout": t_commit}
     return {"type": "intent_outcome", "target": "", "timeout": t_commit}
@@ -174,7 +184,7 @@ def infer_wait_for_shape(
                 and d == 0.0
             ):
                 wf_seed = {
-                    "type": _normalize_legacy_no_evidence_wait(str(val.get("commit_no_evidence_wait", "intent_outcome"))),
+                    "type": _no_evidence_wait(str(val.get("commit_no_evidence_wait", "intent_outcome"))),
                     "target": "",
                     "timeout": t_commit,
                 }
