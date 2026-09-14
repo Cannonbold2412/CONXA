@@ -376,6 +376,10 @@ Defined in `server.js` `_toolDefinitions()`:
 normally except a `destructive === true` one, which is resolved (proving its target is findable)
 but never dispatched or verified. See §10.6a's sibling section for the full mechanism.
 
+**EXEC-13**: `execute_skill` also accepts `review_results: { "<step_index>": <answer> }` — the
+`ai_review` step type's resume payload, parallel to `step_overrides` but bound straight into
+`inputs` rather than run through `applyStepOverrides`. See §10.9.
+
 There is no `refresh_skills` tool — skill pack sync runs automatically on startup
 (`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails a
 real on-disk checksum mismatch. Before that gate, `ensureSkillIntegrity` re-reads the
@@ -727,7 +731,7 @@ A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `conxa_core/sto
 
 **Per-workflow app scoping (`required_apps`, 2026-08-16):** a group's apps only *gate* the specific workflows that actually use them, computed from `target_url`/`protected_url` **and** every hostname the recording actually visited. `SkillMeta.visited_hosts` (`conxa_core.models.skill_spec`) is populated at compile time by `compiler/build.py::_extract_visited_hosts` from every recorded event's `page.url`/`tab.url` — so a workflow that *starts* in one app but clicks through to a sibling app mid-recording (a link-out, not a planned navigation) still gates on both apps at execution time, not just the one its start URL happens to resolve to. `skill_package_builder.py` calls the same `apps_for_workflow` helper the recording gate above uses (`conxa_core.storage.group_store`, which accepts bare hostnames as well as full URLs) against `target_url`, `protected_url`, and `visited_hosts` together, and writes the matching app ids into that skill's `manifest.json.required_apps`. A workflow that never navigates to any of its group's apps (e.g. a "Sales" group holding both a Salesforce workflow and an unrelated one-off scrape of a public site) gets `required_apps: []` and runs with no group auth gate at all. Skills compiled before `visited_hosts` existed have an empty list and fall back to today's start-URL-only matching; manifests built before `required_apps` existed have no key at all, which the runtime treats as "gate on every app in the group" — both fully backward compatible, no republish required to keep working.
 
-**Runtime resolution (`runtime/browser.js`):** `getAuthContext(company, authManager, {groupId, requiredAppIds})` calls `_resolveGroup(company, groupId)` against `pack.json`; if the pack has a matching group, `getGroupAuthContext` narrows the *gate* to `requiredAppIds` (via `_filterRequiredApps`, unit-tested in `runtime/test/test_group_required_apps.js` — `undefined` means every app, matching a pre-`required_apps` manifest) and pays a live network validation **only for those required apps** (2026-08-25; previously every sibling app was also probed over the network just to decide whether to seed it), while *seeding* the merged context from every app that has a stored session at all — mirroring the recording gate's "seed all, require only what's needed" split above — a workflow that wanders into a sibling app it wasn't gated on still arrives signed in rather than hitting a login wall (merging an expired sibling's cookies is harmless since siblings are never gated). Required-app validations run as one batch against a single shared headless browser (`_validateSessionsBatch` — N contexts instead of N cold `chromium.launch()`es; launch contention had effectively serialized the old parallel probes). A successful validation is stamped per app key into `<sessions>/_auth_validation_cache.json`; repeat runs within `CONXA_AUTH_VALIDATION_TTL_MS` (default 6h, env-overridable) skip the live check entirely — the stamp records the session file's mtime, so a fresh interactive login (which rewrites that file) invalidates it (unit-tested in `runtime/test/unit/test_auth_validation_cache.js`). mirroring the recording gate's "seed all, require only what's needed" split above — a workflow that wanders into a sibling app it wasn't gated on still arrives signed in rather than hitting a login wall. Sessions are keyed `${company}__${appId}` (same encrypt/raw/keytar machinery as the single-session path in `auth_manager.js` — every function there already takes the session key as its first argument, so this is purely a call-site convention) and merged via `mergeStorageStates` (JS twin of the Python function above). `server.js` passes `requiredAppIds` — for `execute_sequence`, the **union** of every resolved skill's `required_apps` (2026-08-17; a sequence shares one browser/context for its whole run, so gating only on the first skill left skill 2..N's required apps undiscovered until they broke mid-sequence; `undefined` on any one skill's manifest still falls the whole union back to "gate on every app," the same safe legacy meaning) — into `getCachedBrowser`, which folds the (sorted) app-id set into its browser cache key so two skills in the same group that need different app subsets never share a cached context. `getCachedBrowser`'s reuse window is intentionally short (90s, not the 5 minutes it used to be) — a cache hit skips re-validating the underlying session entirely, so keeping it short bounds how long a session that expired while cached goes undetected. **An `requiredAppIds` array that is present but EMPTY (2026-08-24) is a distinct case from "narrowed to zero after validating everyone":** `getGroupAuthContext` checks for it *before* the validate-everyone-then-narrow step above and, when true, skips validating (and seeding from) every sibling app entirely — building a fresh, empty-state context immediately via the same path `group.apps.length === 0` already used. This only fires when the caller passed a real (if empty) array — `undefined` still takes the full validate-then-narrow path, preserving legacy "gate + seed on every app" behavior for manifests that predate `required_apps`. The distinction matters because validating N group siblings each costs up to a 30s-timeout real network round-trip (`_validateSession`'s `page.goto`) run in parallel via `Promise.all` — before this fix, a skill whose manifest *explicitly* declared it needs none of a group's apps (`required_apps: []`) still paid that cost on every single execution, seeding sessions it had already declared it would never use; Build Studio's Test Skill flow, which runs the same skill repeatedly in a tight iterate loop, made this the dominant source of a slow-feeling "Run Test." A skill that still wants gate-free seeding for the "might wander into a sibling app" case needs a non-empty, narrowed `requiredAppIds` for that — an explicit empty list is now read as "definitely won't," not "might, but isn't required to." Emits `test_phase` log entries (`group_auth_validate_start`/`group_auth_validate_done`, relayed to Build Studio's live test log the same way the launch-phase markers are — see the "Run Test" performance notes below) around the validate-everyone path when it does run, so a case that legitimately still pays this cost is visible instead of silent. Otherwise (a real, non-empty required list, possibly still narrowed to fewer than all of `group.apps`), **every** missing/expired required app opens its own non-blocking login window at once (2026-08-16 — previously one at a time, costing N interrupted runs for N expired apps), with one message naming all of them:
+**Runtime resolution (`runtime/browser.js`):** `getAuthContext(company, authManager, {groupId, requiredAppIds})` calls `_resolveGroup(company, groupId)` against `pack.json`; if the pack has a matching group, `getGroupAuthContext` narrows the *gate* to `requiredAppIds` (via `_filterRequiredApps`, unit-tested in `runtime/test/test_group_required_apps.js` — `undefined` means every app, matching a pre-`required_apps` manifest) and pays a live network validation **only for those required apps** (2026-08-25; previously every sibling app was also probed over the network just to decide whether to seed it), while *seeding* the merged context from every app that has a stored session at all — mirroring the recording gate's "seed all, require only what's needed" split above — a workflow that wanders into a sibling app it wasn't gated on still arrives signed in rather than hitting a login wall (merging an expired sibling's cookies is harmless since siblings are never gated). Required-app validations run as one batch against a single shared headless browser (`_validateSessionsBatch` — N contexts instead of N cold `chromium.launch()`es; launch contention had effectively serialized the old parallel probes). A successful validation is stamped per app key into `<sessions>/_auth_validation_cache.json`; repeat runs within `CONXA_AUTH_VALIDATION_TTL_MS` (default 6h, env-overridable) skip the live check entirely — the stamp records the session file's mtime, so a fresh interactive login (which rewrites that file) invalidates it (unit-tested in `runtime/test/unit/test_auth_validation_cache.js`). mirroring the recording gate's "seed all, require only what's needed" split above — a workflow that wanders into a sibling app it wasn't gated on still arrives signed in rather than hitting a login wall. Sessions are keyed `${company}__${appId}` (same encrypt/raw/keytar machinery as the single-session path in `auth_manager.js` — every function there already takes the session key as its first argument, so this is purely a call-site convention) and merged via `mergeStorageStates` (JS twin of the Python function above). **Session-file precedence is newest-mtime-wins, decided at read time (`_loadSessionForKey`, shared by both this path and the single-session path)** — not "encrypted always wins, raw is a stale fallback," which was the bug behind a re-authenticated group app still gating as expired until the whole runtime process restarted: a `<key>_raw_state.json` newer than its `<key>_state.json` sibling means something other than this process wrote a fresher session since encryption last ran — most commonly Build Studio's `_stage_runtime_auth` re-staging a session the user just re-authenticated in the Group Auth Wizard, or a save that fell back to plaintext (SG-11) — and the old unconditional encrypted-first read served that stale session until the next cold start's one-time `reencryptPlaintextSessions()` sweep happened to reconcile them. A winning raw file is now promoted into the encrypted one immediately (unit-tested in `runtime/test/unit/test_session_precedence.js`), so the cost is paid once, by whichever run first notices the fresher file, not deferred to the next restart. `server.js` passes `requiredAppIds` — for `execute_sequence`, the **union** of every resolved skill's `required_apps` (2026-08-17; a sequence shares one browser/context for its whole run, so gating only on the first skill left skill 2..N's required apps undiscovered until they broke mid-sequence; `undefined` on any one skill's manifest still falls the whole union back to "gate on every app," the same safe legacy meaning) — into `getCachedBrowser`, which folds the (sorted) app-id set into its browser cache key so two skills in the same group that need different app subsets never share a cached context. `getCachedBrowser`'s reuse window is intentionally short (90s, not the 5 minutes it used to be) — a cache hit skips re-validating the underlying session entirely, so keeping it short bounds how long a session that expired while cached goes undetected. **An `requiredAppIds` array that is present but EMPTY (2026-08-24) is a distinct case from "narrowed to zero after validating everyone":** `getGroupAuthContext` checks for it *before* the validate-everyone-then-narrow step above and, when true, skips validating (and seeding from) every sibling app entirely — building a fresh, empty-state context immediately via the same path `group.apps.length === 0` already used. This only fires when the caller passed a real (if empty) array — `undefined` still takes the full validate-then-narrow path, preserving legacy "gate + seed on every app" behavior for manifests that predate `required_apps`. The distinction matters because validating N group siblings each costs up to a 30s-timeout real network round-trip (`_validateSession`'s `page.goto`) run in parallel via `Promise.all` — before this fix, a skill whose manifest *explicitly* declared it needs none of a group's apps (`required_apps: []`) still paid that cost on every single execution, seeding sessions it had already declared it would never use; Build Studio's Test Skill flow, which runs the same skill repeatedly in a tight iterate loop, made this the dominant source of a slow-feeling "Run Test." A skill that still wants gate-free seeding for the "might wander into a sibling app" case needs a non-empty, narrowed `requiredAppIds` for that — an explicit empty list is now read as "definitely won't," not "might, but isn't required to." Emits `test_phase` log entries (`group_auth_validate_start`/`group_auth_validate_done`, relayed to Build Studio's live test log the same way the launch-phase markers are — see the "Run Test" performance notes below) around the validate-everyone path when it does run, so a case that legitimately still pays this cost is visible instead of silent. Otherwise (a real, non-empty required list, possibly still narrowed to fewer than all of `group.apps`), **every** missing/expired required app opens its own non-blocking login window at once (2026-08-16 — previously one at a time, costing N interrupted runs for N expired apps), with one message naming all of them:
 
 > This workflow belongs to the Sales group and requires authentication to 5 applications. Sign in to Salesforce, Billing, Reports in the windows that just opened, then run the skill again.
 
@@ -3303,6 +3307,87 @@ redundant-click drop-and-archive, BUILD-34's percent-encoded-filename templating
 round-trip through `_build_workflow_from_saved_skill`), and two new cases in `test_workflow_dto.py`
 (a fresh suggestion surfaces; a previously-rejected one is filtered at read time, not just at
 compile time).
+
+### 10.9 AI Review Step (EXEC-13)
+
+`ai_review` is an author-placed reasoning checkpoint, not a page action and not a recovery
+candidate — it deliberately sits *outside* the Tier 1-4 recovery cascade documented in §10.1.
+Authored during Human Edit (`ai_review_prompt`, `ai_review_output_schema`, `ai_review_on_failure`,
+`ai_review_default_value`), it compiles to a flat execution step (`skill_package_builder_saved_skill.py`'s
+`ai_review` branch): `{type: "ai_review", prompt, on_failure, output_schema?, default_value?,
+reference_screenshot_ref?, output_name?}`. A step with a blank prompt is dropped at build time with
+an actionable warning (the same drop-and-warn shape `drag_drop` already used), rather than shipping
+an unaskable question.
+
+**Why it isn't recovery, and why that matters:** `CLAUDE.md`'s Key Invariants forbid a *silent* LLM
+fallback in a compiled-selector or a11y resolution path, and require Tier A recovery to cost zero
+tokens. `ai_review` is neither silent nor a fallback — it's an explicit, editor-visible step whose
+entire purpose is to invoke reasoning, and it never touches `recovery_stage.js`'s escalation state,
+`retry_budget.js`'s retry-budget map, or `CONXA_MAX_RECOVERY_TIER`'s Strict Mode ceiling. Concretely:
+the resume-adoption branch in `server.js` (`_resumeReviewStep`) is **not** gated on
+`agentRecoveryEnabled` (tier ≥ 3) the way Tier B recovery escalation is — an `ai_review` pause must
+be answerable by any MCP caller, agent or not.
+
+**The two-call contract (reuses recovery's park primitive, not recovery itself):** `run.js`
+intercepts `step.type === "ai_review"` before it ever reaches `executeStep`/`recoverStep`
+(`runtime/app/run.js`, right after tab resolution). On first arrival it throws a distinct
+`reviewPause` signal; `server.js` parks the live page (same `_parks` map, same `PARK_TTL_MS`,
+same `capturePageFingerprint`/`PARK_DIVERGENCE_TOLERANCE` divergence check as §10.1a's recovery
+park — a sibling use of the primitive, not recovery state) and returns a review request instead of
+a failure response. `execute_skill` gained a `review_results: { "<step_index>": <answer> }`
+parameter, parallel to `step_overrides` but never run through `applyStepOverrides` — an `ai_review`
+step carries no selector for that to inject, only a structured answer bound into `inputs`.
+
+The review request (`runtime/app/review_pause.js::buildReviewRequest`) mirrors Tier B's
+text+image shape: a header naming the exact `resume_from`/`review_results` call to make, an
+optional reference image (`reference_screenshot_ref`, when the compiler wrote one — dormant today,
+see "Not built" below), a live DOM inventory block (the same `domInventory()` script §10.1a's
+`gatherInventory` uses), and the current-page screenshot (JPEG q80). It also returns
+`_meta: {"conxa/ai_review": {step_index, prompt, output_schema}}` alongside `content` — an MCP
+`Result`'s `_meta` field is a passthrough object per the SDK's `ResultSchema`
+(`z.looseObject({_meta: RequestMetaSchema.optional()})`), so a programmatic (non-agent) caller can
+answer without parsing prose. Claude Desktop ignores unknown `_meta` keys.
+
+On resume, `server.js` validates the answer against `output_schema` (`review_pause.js`'s hand-rolled
+structural check — required fields, type, enum; not full JSON Schema, deliberately, to avoid a new
+dependency in every customer's runtime bundle) and against the park's divergence check. Unlike an
+agent-override resume, **divergence or an invalid answer does not refuse outright** — a review
+answer is a judgment about page state, so the right move is a bounded re-ask (`REVIEW_RETRY_MAX =
+2`, its own small counter, separate from recovery's retry budget) against the current page. Once
+re-asks are exhausted, the step's `on_failure` policy applies: `abort` (default, ends the run),
+`use_default` (binds `ai_review_default_value` and continues from the same parked page — restarting
+on a fresh page would break every later step's assumption about where in the app the workflow
+already got to), or `continue` (binds `null`). A review step that is never answered closes its
+parked browser via the same `PARK_TTL_MS` TTL sweep every recovery park uses — it leaks nothing.
+
+**Studio sandbox path (no agent present):** `conxa_runtime.py`'s sandbox runs with
+`CONXA_MAX_RECOVERY_TIER=2` and no MCP agent in the loop, so nothing would ever answer a parked
+review request. `handlers/workflows.py::cmd_test_workflow` closes this: after each `execute_skill`
+call it checks the result for an `ai_review` pause (via `_meta`, falling back to parsing the prose
+`resume_from:` line), and if found, answers it itself through the metered cloud LLM proxy
+(`_answer_ai_review`) and resumes — a bounded loop, capped at 5 pauses per test run, so a
+misconfigured workflow can't hold the sandbox's host-lock and parked browser open indefinitely.
+The answerer calls a new `ai_review` LLM task (`packages/conxa-core/conxa_core/llm/client.py`)
+with `usage_class="human_edit"` — the same `ensure_human_edit_available`/`record_llm_usage` metering
+path every other Human Edit vision call already uses (§13.3), no new entitlement surface. `ai_review`
+is deliberately **not** added to `VISION_TASKS`: the text-model route is tried first (multimodal
+providers accept the image on either route, only the *model selected* differs), falling back once to
+`route_vision` directly on a `CloudUnreachable` failure (a provider rejecting the image, or the pool
+exhausted); a `QuotaExceeded`/`EntitlementBlocked` propagates immediately rather than burning a
+second, equally-blocked call.
+
+**Safety interaction (PROD-3):** the patch gate refuses to save a destructive step that directly
+follows an `ai_review` step (`ai_review_step_cannot_patch_recovery`'s sibling check,
+`destructive_step_cannot_directly_follow_ai_review`) — a model-supplied answer has no entity binding
+to prove it's acting on the right record, so a review output may gate *whether* a later step runs
+(via a conditional), never supply *what* a destructive step acts on directly.
+
+**Not built (deliberate, tracked in `TODO.md`):** a build-time reference screenshot for an
+*inserted* `ai_review` step — the field, the patch-gate validation, and the runtime loader all
+already work, but nothing writes the asset (`_write_saved_visual_assets` only ever walks a
+*recorded* step's `signals.visual`); and branching on a review's answer — the conditional primitives
+in §10.7 all branch on a live DOM probe, not on an `inputs` value, so a review's output can be read
+by a later step's placeholder but can't itself gate whether a step runs.
 
 ---
 

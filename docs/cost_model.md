@@ -167,6 +167,16 @@ this roughly doubles the token cost of asking the copilot a question compared to
 streaming shipped. No pooling/caching applies across turns — each turn's evidence bundle is
 rebuilt fresh and both calls fire every time, same as the single call did previously.
 
+**Testing a workflow containing an AI Review step (EXEC-13) costs one `human_edit` call per
+checkpoint the test run pauses at, capped at 5 pauses per Run Test.** An `ai_review` step is a
+reasoning checkpoint an author drops into a workflow — "is there an error banner on this page?"
+— and on a customer's own machine it's answered by their own Claude subscription at **zero cost
+to Conxa**. In the Build Studio's local test sandbox there is no such agent to ask, so Build
+Studio answers it itself through the same metered proxy every other Human Edit call uses (one
+`ai_review` call per pause, image included, same as a vision-repair call). This only meters
+*testing* a workflow that has one of these steps — real customer runs stay free to Conxa
+regardless of how many review steps a workflow has.
+
 **Example — Company on Starter (paid plan), 1 plugin, 50 workflows:**
 - Initial build: 50 × $0.21 = **$10.50 one-time** (50 compile credits spent)
 - Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.042 = **$1.26/month** (30 more compile credits spent — recompiles meter the same as first compiles)

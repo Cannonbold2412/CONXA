@@ -994,6 +994,64 @@ decoding isn't). A raw substring check previously missed any filename containing
 character (`+`, space, non-ASCII, ...) entirely, with no error — the suggestion simply never
 appeared. See `docs/TRD.md` §10.8's BUILD-34 writeup.
 
+### 3.4j AI Review Step (EXEC-13)
+
+An author-placed reasoning checkpoint, not a page action — no `target`/`identity_bundle`, and
+outside the Tier 1-4 recovery cascade entirely (never a `recovery` block). See `docs/TRD.md` §10.9
+for the full park/resume mechanism; this section is the data shape.
+
+**Execution step** (`execution.json`, emitted by `skill_package_builder_saved_skill.py`'s
+`ai_review` branch):
+
+```python
+{
+  "type": "ai_review",
+  "prompt": str,                       # required — dropped at build time (with a warning) if blank
+  "on_failure": "abort" | "use_default" | "continue",   # default "abort"
+  "output_schema": dict | omitted,     # a JSON-Schema-shaped object (required/properties/type/enum
+                                        # only — see the hand-rolled validator note below), or
+                                        # omitted to accept any answer
+  "default_value": Any | omitted,      # present only when on_failure == "use_default"
+  "reference_screenshot_ref": str | omitted,   # relative path under the skill's visuals/ dir
+  "output_name": str | omitted,        # falls back to `ai_review_output_<step index>` at runtime
+}
+```
+
+**Editor-side (pre-compile) fields**, top-level siblings of `action` on the saved document —
+patched only through `patch_gate.py`'s dedicated `ai_review` branch, which rejects a `recovery`
+patch outright and requires `ai_review_default_value` whenever `ai_review_on_failure` is
+`"use_default"`:
+
+```python
+ai_review_prompt: str
+ai_review_output_schema: dict | None
+ai_review_on_failure: "abort" | "use_default" | "continue"
+ai_review_default_value: Any
+ai_review_reference_screenshot_ref: str | None
+```
+
+**`execute_skill` gains `review_results: { "<step_index>": <answer> }`** — the resume payload for
+a paused `ai_review` step, parallel to `execute_skill`'s `step_overrides` param but never run
+through `applyStepOverrides`: the answer is bound straight into `inputs` under the step's
+`output_name`. A pause response carries `_meta: {"conxa/ai_review": {step_index, prompt,
+output_schema}}` alongside its `content` blocks, for a programmatic (non-agent) caller to answer
+without parsing the prose header — see `docs/TRD.md` §10.9 for the Build Studio sandbox's own use
+of this.
+
+**Answer validation** (`runtime/app/review_pause.js::validateReviewAnswer`, mirrored in Python by
+`handlers/workflows.py::_validate_ai_review_answer` for the Studio sandbox path) is a hand-rolled
+structural check against `output_schema` — required fields present, declared `type` matches
+(`string`/`boolean`/`number`/`integer`/`object`/`array`), declared `enum` membership — not full
+JSON Schema (no `$ref`, no nested `items`/`additionalProperties` validation, no string `format`).
+Deliberate: the schema an author writes here is always shallow (a `yes`/`no` + reason, a single
+value), and a real JSON Schema validator would be new weight in every customer's runtime bundle for
+constraints nobody authors on this surface.
+
+**Safety:** the patch gate refuses to save a destructive step that directly follows an `ai_review`
+step (`destructive_step_cannot_directly_follow_ai_review` — the sibling of PROD-3's entity-binding
+confirmation gate) — a review answer may gate *whether* a later step runs, never supply *what* a
+destructive step acts on.
+
 ### 3.5 RecoveryBlock
 
 ```python

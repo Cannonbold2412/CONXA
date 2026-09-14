@@ -135,6 +135,11 @@ export type StepEditorDTO = {
   check_threshold?: number
   check_selector?: string
   check_text?: string
+  /** EXEC-13: ai_review's own config — None/absent on every other step kind. */
+  ai_review_prompt?: string | null
+  ai_review_output_schema?: Record<string, unknown> | null
+  ai_review_on_failure?: string | null
+  ai_review_default_value?: unknown
   /** Read-only visibility additions — the 2026-07-10 Human Edit vs. Skill Package redesign.
    * None of these accept edits; patch_gate.py (conxa_compile/editor) is the sole write path. */
   recovery_view: RecoveryView | Record<string, never>

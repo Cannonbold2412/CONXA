@@ -11,7 +11,8 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { InfoHint } from '@/components/ui/info-hint'
 import { editorHelp } from '@/lib/editorHelp'
-import { fieldSelectClass } from '@/lib/fieldStyles'
+import { fieldSelectClass, fieldTextareaClass } from '@/lib/fieldStyles'
+import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { Trash2 } from 'lucide-react'
 import { AssertionEditorRows, describeWaitFor, hasInvalidAssertions, type AssertionDraft } from '@/components/validation/AssertionEditor'
@@ -44,7 +45,38 @@ type FormValues = {
   check_threshold: string
   check_selector: string
   check_text: string
+  ai_review_prompt: string
+  ai_review_output_schema_preset: 'yes_no' | 'text' | 'none' | 'custom'
+  ai_review_output_schema_json: string
+  ai_review_on_failure: 'abort' | 'use_default' | 'continue'
+  ai_review_default_value: string
   assertions: AssertionDraft[]
+}
+
+// EXEC-13: canonical shapes the preset picker offers — 'custom' isn't a real option, it's what
+// defaultsFromStep falls back to when a saved schema doesn't match any preset, so the raw JSON
+// textarea (always editable underneath) is the source of truth rather than the picker.
+const AI_REVIEW_SCHEMA_PRESETS: Record<'yes_no' | 'text' | 'none', Record<string, unknown> | null> = {
+  yes_no: {
+    type: 'object',
+    required: ['answer', 'why'],
+    properties: { answer: { type: 'string', enum: ['yes', 'no'] }, why: { type: 'string' } },
+  },
+  text: {
+    type: 'object',
+    required: ['value'],
+    properties: { value: { type: 'string' } },
+  },
+  none: null,
+}
+
+function presetForAiReviewSchema(schema: unknown): FormValues['ai_review_output_schema_preset'] {
+  if (!schema || typeof schema !== 'object') return 'none'
+  const json = JSON.stringify(schema)
+  for (const key of ['yes_no', 'text'] as const) {
+    if (JSON.stringify(AI_REVIEW_SCHEMA_PRESETS[key]) === json) return key
+  }
+  return 'custom'
 }
 
 const emptyForm: FormValues = {
@@ -65,6 +97,11 @@ const emptyForm: FormValues = {
   check_threshold: '0.9',
   check_selector: '',
   check_text: '',
+  ai_review_prompt: '',
+  ai_review_output_schema_preset: 'yes_no',
+  ai_review_output_schema_json: JSON.stringify(AI_REVIEW_SCHEMA_PRESETS.yes_no, null, 2),
+  ai_review_on_failure: 'abort',
+  ai_review_default_value: '',
   assertions: [],
 }
 
@@ -118,6 +155,18 @@ function defaultsFromStep(step: StepEditorDTO): FormValues {
     check_threshold: String(step.check_threshold ?? 0.9),
     check_selector: String(step.check_selector || ''),
     check_text: String(step.check_text || ''),
+    ai_review_prompt: String(step.ai_review_prompt || ''),
+    ai_review_output_schema_preset: presetForAiReviewSchema(step.ai_review_output_schema),
+    ai_review_output_schema_json: step.ai_review_output_schema
+      ? JSON.stringify(step.ai_review_output_schema, null, 2)
+      : '',
+    ai_review_on_failure: (step.ai_review_on_failure as FormValues['ai_review_on_failure']) || 'abort',
+    ai_review_default_value:
+      step.ai_review_default_value === undefined || step.ai_review_default_value === null
+        ? ''
+        : typeof step.ai_review_default_value === 'string'
+          ? step.ai_review_default_value
+          : JSON.stringify(step.ai_review_default_value),
     assertions: (step.validation.assertions || []) as AssertionDraft[],
   }
 }
@@ -256,7 +305,70 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       const isMarkerStep = actionSpecFlag(step, 'marker')
       const isCheckStep = actionKind === 'check' || actionKind === 'assert'
       const isNavigateStep = actionKind === 'navigate'
+      const isAiReviewStep = actionKind === 'ai_review'
       if (isMarkerStep) return
+      if (isAiReviewStep) {
+        const prompt = values.ai_review_prompt.trim()
+        if (!prompt) {
+          const err = new Error('Prompt is required')
+          methods.setError('ai_review_prompt', { message: err.message })
+          if (!silent) toast.error(err.message)
+          throw err
+        }
+        let outputSchema: Record<string, unknown> | null = null
+        const schemaText = values.ai_review_output_schema_json.trim()
+        if (schemaText) {
+          try {
+            const parsed = JSON.parse(schemaText) as unknown
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+            outputSchema = parsed as Record<string, unknown>
+          } catch {
+            const err = new Error('Expected answer schema must be valid JSON (an object)')
+            methods.setError('ai_review_output_schema_json', { message: err.message })
+            if (!silent) toast.error(err.message)
+            throw err
+          }
+        }
+        const onFailure = values.ai_review_on_failure
+        if (onFailure === 'use_default' && !values.ai_review_default_value.trim()) {
+          const err = new Error('A default value is required when "Use a default value" is selected')
+          methods.setError('ai_review_default_value', { message: err.message })
+          if (!silent) toast.error(err.message)
+          throw err
+        }
+        const patch: Record<string, unknown> = {
+          semantic_description: values.intent,
+          action: { action: 'ai_review' },
+          ai_review_prompt: prompt,
+          ai_review_output_schema: outputSchema,
+          ai_review_on_failure: onFailure,
+        }
+        if (onFailure === 'use_default') {
+          // A default value is free-form: an author typing `{"answer":"no"}` gets a real object
+          // bound back into inputs on failure; plain text (e.g. `no`) is kept as a string.
+          let defaultValue: unknown = values.ai_review_default_value
+          try { defaultValue = JSON.parse(values.ai_review_default_value) } catch { /* keep raw string */ }
+          patch.ai_review_default_value = defaultValue
+        }
+        if (canEditField('value')) {
+          patch.value = values.value
+          patch.action = { action: 'ai_review', value: values.value }
+        }
+        try {
+          const res = await patchStep(skillId, patchIndex, patch, false, path)
+          onWorkflowUpdated(res.workflow)
+          if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
+          const next = findUpdatedStep(res.workflow, step.id)
+          if (next) methods.reset(defaultsFromStep(next))
+          if (!silent) toast.success('Step saved')
+          return
+        } catch (e) {
+          const msg = errorMessage(e, 'Save failed')
+          methods.setError('root', { message: msg })
+          if (!silent) toast.error(msg)
+          throw e
+        }
+      }
       if (isNavigateStep) {
         const url = values.url.trim()
         if (!/^https?:\/\//i.test(url)) {
@@ -505,6 +617,8 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
   const checkKind = useWatch({ control: methods.control, name: 'check_kind' }) || 'url'
   const scrollMode = useWatch({ control: methods.control, name: 'scroll_mode' }) || 'scroll_only'
   const assertions = useWatch({ control: methods.control, name: 'assertions' }) || []
+  const aiReviewSchemaPreset = useWatch({ control: methods.control, name: 'ai_review_output_schema_preset' }) || 'yes_no'
+  const aiReviewOnFailure = useWatch({ control: methods.control, name: 'ai_review_on_failure' }) || 'abort'
 
   if (!step) {
     return (
@@ -525,6 +639,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
   const isScrollStep = step.flags.is_scroll || actionKind === 'scroll'
   const isWaitStep = actionKind === 'wait'
   const isScreenshotStep = actionKind === 'screenshot'
+  const isAiReviewStep = actionKind === 'ai_review'
   const showSelectorAndAnchorTools =
     !hideSelectorTools &&
     actionHasSelectors && !isScrollStep && !isNavigateStep && !isMarkerStep && !(isCheckStep && URL_CHECK_KINDS.has(checkKind))
@@ -635,6 +750,88 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
                   />
                 </div>
               )}
+            </>
+          ) : null}
+          {isAiReviewStep ? (
+            <>
+              <div className="grid gap-2">
+                <Label htmlFor="ai_review_prompt" className="flex items-center gap-1.5">
+                  Question
+                  <InfoHint {...editorHelp.actionStep} size="md" side="top" align="start" />
+                </Label>
+                <Textarea
+                  id="ai_review_prompt"
+                  className={cn(fieldTextareaClass, 'min-h-20 w-full text-sm')}
+                  placeholder="e.g., Is there an error banner on this page? Answer yes or no and say why."
+                  {...methods.register('ai_review_prompt')}
+                />
+                {methods.formState.errors.ai_review_prompt ? (
+                  <p className="text-destructive text-xs">{methods.formState.errors.ai_review_prompt.message}</p>
+                ) : null}
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ai_review_output_schema_preset">Expected answer</Label>
+                <select
+                  id="ai_review_output_schema_preset"
+                  className={fieldSelectClass}
+                  {...methods.register('ai_review_output_schema_preset', {
+                    onChange: (e) => {
+                      const key = e.target.value as 'yes_no' | 'text' | 'none' | 'custom'
+                      if (key === 'yes_no' || key === 'text') {
+                        methods.setValue(
+                          'ai_review_output_schema_json',
+                          JSON.stringify(AI_REVIEW_SCHEMA_PRESETS[key], null, 2),
+                          { shouldDirty: true },
+                        )
+                      } else if (key === 'none') {
+                        methods.setValue('ai_review_output_schema_json', '', { shouldDirty: true })
+                      }
+                    },
+                  })}
+                >
+                  <option value="yes_no">Yes / no, with a reason</option>
+                  <option value="text">A single text value</option>
+                  <option value="none">No schema — accept anything</option>
+                  <option value="custom" disabled hidden>
+                    Custom (edit the JSON below)
+                  </option>
+                </select>
+                <p className="text-muted-foreground text-xs">
+                  Picking a preset fills in the JSON schema below — edit it directly for anything else.
+                </p>
+                {aiReviewSchemaPreset !== 'none' ? (
+                  <Textarea
+                    id="ai_review_output_schema_json"
+                    className={cn(fieldTextareaClass, 'min-h-32 w-full font-mono text-xs')}
+                    {...methods.register('ai_review_output_schema_json')}
+                  />
+                ) : null}
+                {methods.formState.errors.ai_review_output_schema_json ? (
+                  <p className="text-destructive text-xs">{methods.formState.errors.ai_review_output_schema_json.message}</p>
+                ) : null}
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ai_review_on_failure">If a usable answer never arrives</Label>
+                <select id="ai_review_on_failure" className={fieldSelectClass} {...methods.register('ai_review_on_failure')}>
+                  <option value="abort">Abort the run</option>
+                  <option value="use_default">Use a default value</option>
+                  <option value="continue">Continue anyway</option>
+                </select>
+              </div>
+              {aiReviewOnFailure === 'use_default' ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="ai_review_default_value">Default value</Label>
+                  <Input
+                    id="ai_review_default_value"
+                    type="text"
+                    placeholder='e.g., {"answer":"no","why":"no answer received"} or a plain value'
+                    {...methods.register('ai_review_default_value')}
+                  />
+                  {methods.formState.errors.ai_review_default_value ? (
+                    <p className="text-destructive text-xs">{methods.formState.errors.ai_review_default_value.message}</p>
+                  ) : null}
+                </div>
+              ) : null}
             </>
           ) : null}
           {isNavigateStep ? (
@@ -764,7 +961,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       </CardContent>
       </Card>
 
-      {!hideSelectorTools && canEdit('validation') ? (
+      {!hideSelectorTools && !isAiReviewStep && canEdit('validation') ? (
         <StepValidationPanel
           step={step}
           assertions={assertions}

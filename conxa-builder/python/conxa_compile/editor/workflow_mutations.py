@@ -292,6 +292,7 @@ def _new_manual_step(action_kind: str, page_url: str) -> dict[str, Any]:
         "try_dismiss": "try_dismiss_interstitial",
         "wait_for_one_of": "wait_for_one_of_states",
         "for_each": "process_each_row",
+        "ai_review": "ai_review_checkpoint",
     }.get(kind, f"{kind}_target")
     url = page_url if page_url.startswith(("http://", "https://")) else ""
     action: dict[str, Any] = {"action": kind}
@@ -364,6 +365,25 @@ def _new_manual_step(action_kind: str, page_url: str) -> dict[str, Any]:
             "on_row_error": "stop",
             "steps": [],
         }
+    if kind == "ai_review":
+        # EXEC-13: an ai_review step carries no selector/identity_bundle (see
+        # skill_package_builder_saved_skill.py's ai_review branch) — these top-level
+        # `ai_review_*` fields, not `action`, are what patch_gate.py validates and the
+        # serializer reads. The prompt is deliberately left blank: the patch gate rejects a
+        # blank prompt on save (`ai_review_prompt_empty`), and a step left unconfigured is
+        # dropped at build time with a compile-report warning rather than shipping empty.
+        # `output_schema` seeds the canonical "yes/no + why" shape editable in the renderer's
+        # preset picker; an author who wants no schema can clear it.
+        step["ai_review_prompt"] = ""
+        step["ai_review_output_schema"] = {
+            "type": "object",
+            "required": ["answer", "why"],
+            "properties": {
+                "answer": {"type": "string", "enum": ["yes", "no"]},
+                "why": {"type": "string"},
+            },
+        }
+        step["ai_review_on_failure"] = "abort"
     return step
 
 

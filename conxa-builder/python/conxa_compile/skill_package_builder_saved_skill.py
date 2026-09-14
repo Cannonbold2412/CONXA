@@ -1053,6 +1053,13 @@ def _build_workflow_from_saved_skill(
                 if on_warning:
                     on_warning(f"Step {raw_index}: drag-and-drop isn't supported and was removed from the skill.")
                 continue
+            if normalize_action_kind(action) == "ai_review":
+                # EXEC-13: an inserted-but-unconfigured AI Review step (blank prompt — see
+                # _new_manual_step) has nothing to ask. Same drop-and-warn shape as drag_drop
+                # above, rather than failing the whole build over one unfinished checkpoint.
+                if on_warning:
+                    on_warning(f"Step {raw_index}: AI Review has no prompt yet and was removed from the skill. Add a prompt in Human Edit, then rebuild.")
+                continue
             raise ValueError(f"Saved skill step {raw_index} action {action!r} is not exportable.")
         execution_steps.append(converted)
         source_steps.append(raw)

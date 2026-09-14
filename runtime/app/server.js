@@ -1079,7 +1079,14 @@ async function _handleTool(name, args, extra) {
     // invalid answer do NOT refuse outright: a review answer is a judgment about page STATE, so
     // if the state changed (or the answer didn't parse) the right move is a bounded re-ask
     // against the current page, not a hard refusal — see review_pause.js's header.
-    const _resumeReviewStep = _effAgentEnabled && resolved.length === 1 && primary.isResume
+    //
+    // Deliberately NOT gated on _effAgentEnabled: CONXA_MAX_RECOVERY_TIER / the Strict Mode
+    // ceiling governs escalation into the Tier 1-4 RECOVERY cascade. An ai_review step is not
+    // recovery — it's an author-placed checkpoint that must be answerable by any MCP caller,
+    // including the Build Studio sandbox (tier 2, no agent), which answers it itself via the
+    // cloud proxy (see handlers/workflows.py::cmd_test_workflow). The matching park-creation
+    // branch below (runErr.reviewPause) was already unconditional.
+    const _resumeReviewStep = resolved.length === 1 && primary.isResume
       && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom].type === "ai_review";
     if (_resumeReviewStep) {
       const stepDef = primary.steps[primary.resumeFrom];

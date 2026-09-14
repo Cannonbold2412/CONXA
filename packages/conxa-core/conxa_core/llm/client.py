@@ -630,6 +630,40 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
         ]
+    if task == "ai_review":
+        # EXEC-13: the Build Studio sandbox's stand-in answerer for an ai_review checkpoint when
+        # no MCP agent is present to answer it (runtime/app/review_pause.js's park/resume request
+        # is otherwise unanswerable under Studio's tier-2 ceiling). Deliberately NOT in
+        # VISION_TASKS above — the text-model route is tried first (multimodal providers accept
+        # the image on either route; only the *model selected* differs), with a caller-side
+        # fallback to route_vision on a provider rejection (see
+        # handlers/workflows.py::_answer_ai_review). user_text already carries the prompt, the
+        # runtime's live-DOM inventory text, and the output_schema — assembled once, not
+        # duplicated in the system prompt.
+        image_b64 = str(payload.get("image_base64") or "")
+        mime = str(payload.get("image_mime") or "image/jpeg")
+        user_text = str(payload.get("user_text") or "")
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are answering one reasoning checkpoint inside a browser-automation "
+                    "workflow. The user message names the question and shows the current page as "
+                    "a screenshot, its live DOM elements, and a JSON Schema your answer must "
+                    "match. Look at the page and answer the question. Return ONLY a JSON object "
+                    "conforming to the given schema — no markdown, no extra keys, no commentary "
+                    "outside the object. When no schema is given, return a JSON object with a "
+                    "single \"answer\" string field."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                    {"type": "text", "text": user_text},
+                ],
+            },
+        ]
     return [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
 
@@ -663,6 +697,10 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
     if task == "copilot_reply":
         # Prose only, no proposals JSON riding along — smaller budget than copilot_diagnose.
         body["max_tokens"] = 500
+    if task == "ai_review":
+        # A small structured answer (yes/no + a short reason, or similar) — same order as
+        # region_selector's handful of candidates.
+        body["max_tokens"] = 1024
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     return body

@@ -297,6 +297,18 @@ steps cannot patch `recovery`/`validation` since branch bodies are best-effort a
 recovery. `try_dismiss`/`wait_for_one_of` show read-only summary badges only — no authoring UI
 for their candidate/option lists yet (`TODO.md` BUILD-6).
 
+**AI Review step authoring (EXEC-13, 2026-09-14):** `ai_review` (§10.9 of `docs/TRD.md`) is now
+insertable from the Add-action menu alongside the branch primitives above. It has no selector to
+pick and no post-condition to assert, so its config block replaces the usual selector/Validation
+panels entirely: a required question, an answer-shape preset that fills an editable JSON schema
+textarea, an on-failure policy (abort / use a default / continue), and — like `wait`/`screenshot`
+before it — the generic Value field, here labelled "Output binding name" and doubling as the name
+later steps read the answer back from. Testing a workflow containing one in the Build Studio no
+longer fails outright: the sandbox has no MCP agent to answer the paused checkpoint, so it answers
+the checkpoint itself through the metered cloud LLM proxy and resumes, the same way a real agent
+would over MCP on a customer's machine (at zero cost there, since that path runs on the customer's
+own Claude subscription).
+
 **"Treat as optional?" suggestion (recording-next-steps.md Priority 2, 2026-07-10):** the recorder
 now observes (never probes) whether a step's target sat inside what looked like an optional
 interstitial — a dialog or cookie/consent banner — during recording, and flags it advisory-only;

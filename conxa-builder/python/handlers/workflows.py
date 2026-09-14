@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -46,6 +47,97 @@ def _redact_sensitive_test_inputs(skill_id: str, inputs: dict[str, Any]) -> dict
     if not sensitive_ids:
         return inputs
     return {k: ("" if str(k).strip().lower() in sensitive_ids else v) for k, v in inputs.items()}
+
+
+# EXEC-13: bounds the Studio sandbox's answer-and-resume loop for an ai_review checkpoint (see
+# cmd_test_workflow). A misconfigured workflow whose later steps never see a satisfying answer
+# would otherwise hold the parked browser/host-lock open indefinitely.
+_MAX_AI_REVIEW_PAUSES = 5
+_AI_REVIEW_META_KEY = "conxa/ai_review"
+
+
+def _extract_ai_review_pause(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull {step_index, prompt, output_schema} from an ai_review pause response, or None if
+    `result` isn't one. Primary source is `_meta["conxa/ai_review"]`
+    (runtime/app/review_pause.js::buildReviewRequest) — the MCP SDK's ResultSchema is a loose
+    object, so this survives the stdio round-trip unmodified. Falls back to the prose header's
+    `resume_from: N` line (no schema available on that path, so the answer goes unvalidated
+    locally and leans on the runtime's own bounded re-ask instead)."""
+    meta = result.get("_meta") if isinstance(result.get("_meta"), dict) else {}
+    review = meta.get(_AI_REVIEW_META_KEY)
+    if isinstance(review, dict) and isinstance(review.get("step_index"), int):
+        return {
+            "step_index": review["step_index"],
+            "prompt": str(review.get("prompt") or ""),
+            "output_schema": review.get("output_schema") if isinstance(review.get("output_schema"), dict) else None,
+        }
+    for item in result.get("content") or []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            m = re.search(r"resume_from:\s*(\d+)", str(item.get("text") or ""))
+            if m:
+                return {"step_index": int(m.group(1)), "prompt": "", "output_schema": None}
+    return None
+
+
+def _review_context_from_content(content: list[Any]) -> tuple[str, tuple[str, str] | None]:
+    """Split an ai_review pause's MCP content blocks into (joined text, last image). The LAST
+    image block is always the current-page screenshot — buildReviewRequest pushes an optional
+    reference image first, the current one last."""
+    text_parts: list[str] = []
+    image: tuple[str, str] | None = None
+    for item in content or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            text = str(item.get("text") or "").strip()
+            if text:
+                text_parts.append(text)
+        elif item.get("type") == "image" and item.get("data"):
+            image = (str(item["data"]), str(item.get("mimeType") or "image/jpeg"))
+    return "\n\n".join(text_parts), image
+
+
+def _matches_type(value: Any, type_name: str) -> bool:
+    if type_name == "string":
+        return isinstance(value, str)
+    if type_name == "boolean":
+        return isinstance(value, bool)
+    if type_name == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if type_name == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if type_name == "object":
+        return isinstance(value, dict)
+    if type_name == "array":
+        return isinstance(value, list)
+    return True  # unknown type token — don't block on it
+
+
+def _validate_ai_review_answer(answer: Any, output_schema: dict[str, Any] | None) -> list[str]:
+    """Same hand-rolled structural check as runtime/app/review_pause.js::validateReviewAnswer
+    (required fields + type + enum, not full JSON Schema) — mirrored here so a malformed Studio
+    answer fails fast instead of burning the runtime's own two bounded re-asks."""
+    if not output_schema:
+        return []
+    if not isinstance(answer, dict):
+        return ["answer must be a JSON object"]
+    errors: list[str] = []
+    for key in output_schema.get("required") or []:
+        if key not in answer:
+            errors.append(f'missing required field "{key}"')
+    properties = output_schema.get("properties") if isinstance(output_schema.get("properties"), dict) else {}
+    for key, spec in properties.items():
+        if key not in answer or not isinstance(spec, dict):
+            continue
+        value = answer[key]
+        type_name = spec.get("type")
+        if type_name and not _matches_type(value, type_name):
+            errors.append(f'field "{key}" must be of type {type_name}')
+            continue
+        enum = spec.get("enum")
+        if isinstance(enum, list) and value not in enum:
+            errors.append(f'field "{key}" must be one of {json.dumps(enum)}')
+    return errors
 
 
 # EXEC-35: tracks the one in-flight "Run Test" per workflow so cmd_cancel_test_workflow can find
@@ -473,6 +565,55 @@ class WorkflowsMixin:
             })
         return result
 
+    def _answer_ai_review(self, review: dict[str, Any], content: list[Any]) -> dict[str, Any]:
+        """EXEC-13: Studio's stand-in answerer for an ai_review checkpoint when no MCP agent is
+        present to answer it (see cmd_test_workflow's park/resume loop). Metered exactly like
+        every other Human Edit vision call — `usage_class="human_edit"` routes through
+        `ensure_human_edit_available`/`record_llm_usage` on the cloud proxy, no new entitlement
+        surface (conxa-cloud/backend/app/api/llm_proxy_routes.py::_meter_and_call).
+
+        Tries the text-model route first (`call_llm`'s default for a task not in VISION_TASKS —
+        deliberate: multimodal providers accept the image on either route, only the *model
+        selected* differs) and falls back once to the vision route directly on a provider-side
+        failure. Raises RuntimeError on any failure — the caller (cmd_test_workflow) already
+        catches RuntimeError and surfaces it as a failed test.
+        """
+        from conxa_compile.llm.client import call_llm
+        from conxa_core import llm as core_llm
+        from conxa_core.config import settings as _settings
+        from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+
+        self._install_proxy_router(usage_class="human_edit")
+
+        context_text, image = _review_context_from_content(content)
+        prompt = str(review.get("prompt") or "")
+        output_schema = review.get("output_schema")
+        schema_note = (
+            f"\n\nYour answer must be a JSON object matching this schema:\n{json.dumps(output_schema)}"
+            if output_schema
+            else "\n\nReturn a JSON object with a single \"answer\" string field."
+        )
+        payload: dict[str, Any] = {"user_text": f"Question: {prompt}{schema_note}\n\n{context_text}"}
+        if image:
+            payload["image_base64"], payload["image_mime"] = image
+
+        timeout_ms = _settings.llm_vision_timeout_ms
+        try:
+            data = call_llm("ai_review", payload, timeout_ms)
+        except (QuotaExceeded, EntitlementBlocked):
+            # Retrying via the vision route hits the same quota/entitlement wall — propagate
+            # immediately rather than burning a second (also-blocked) call.
+            raise
+        except CloudUnreachable:
+            data = core_llm.get_router().route_vision("ai_review", payload, timeout_ms)
+
+        if not isinstance(data, dict):
+            raise RuntimeError("AI review answerer returned no usable response.")
+        errors = _validate_ai_review_answer(data, output_schema if isinstance(output_schema, dict) else None)
+        if errors:
+            raise RuntimeError(f"AI review answer did not match the required output: {'; '.join(errors)}")
+        return data
+
     def cmd_test_workflow(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         """Run a workflow end-to-end against the local Conxa runtime.
 
@@ -622,19 +763,48 @@ class WorkflowsMixin:
             )
 
             _mark(f"Running {workflow.name!r}…")
+            run_args: dict[str, Any] = {
+                "skill": workflow.slug,
+                "company": company,
+                "inputs": inputs,
+                "watch": not bool(payload.get("headless")),
+            }
             result = call_runtime_tool(
-                runtime_dir,
-                "execute_skill",
-                {
-                    "skill": workflow.slug,
-                    "company": company,
-                    "inputs": inputs,
-                    "watch": not bool(payload.get("headless")),
-                },
+                runtime_dir, "execute_skill", run_args,
                 conxa_dir=conxa_dir,
                 env={"CONXA_DATA_DIR": str(test_data_dir)},
                 phase_sink=_phase_sink,
             )
+            # EXEC-13: no MCP agent is present in a Studio test run to answer an ai_review
+            # checkpoint's park/resume request — Studio answers it itself through the metered
+            # cloud proxy and resumes, exactly like a real agent would. Bounded (not `while True`)
+            # so a misbehaving answerer fails the test loudly instead of looping forever holding
+            # the parked browser/host-lock open.
+            pauses_seen = 0
+            while True:
+                review = _extract_ai_review_pause(result)
+                if review is None:
+                    break
+                pauses_seen += 1
+                if pauses_seen > _MAX_AI_REVIEW_PAUSES:
+                    raise RuntimeError(
+                        f"AI review paused {pauses_seen} times in one test run — stopping "
+                        "instead of looping. Check the workflow for a review step whose answer "
+                        "never satisfies a later step."
+                    )
+                _mark(f"Answering AI review at step {review['step_index'] + 1}…")
+                answer = self._answer_ai_review(review, result.get("content") or [])
+                run_args = {
+                    **run_args,
+                    "resume_from": review["step_index"],
+                    "review_results": {str(review["step_index"]): answer},
+                }
+                result = call_runtime_tool(
+                    runtime_dir, "execute_skill", run_args,
+                    conxa_dir=conxa_dir,
+                    env={"CONXA_DATA_DIR": str(test_data_dir)},
+                    phase_sink=_phase_sink,
+                )
             _mark("Runtime call finished")
         except (RuntimeToolError, RuntimeError) as exc:
             # Read before `finally` pops the tracked entry below.

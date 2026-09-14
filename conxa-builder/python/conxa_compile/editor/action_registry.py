@@ -332,6 +332,10 @@ def default_action_value(kind: str) -> Any:
         return "1000"
     if normalized == "upload":
         return "{{file_path}}"
+    if normalized == "ai_review":
+        # EXEC-13: not a page-interaction value — the output binding name later steps read the
+        # reviewed answer back from (see VALUE_LABELS above).
+        return "review_answer"
     if normalized in {"type", "fill", "select", "select_option", "date_pick", "set_radio"}:
         return ""
     return None

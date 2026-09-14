@@ -1184,6 +1184,39 @@ class TestSavedSkillJsonBuild:
         assert len(warnings) == 1
         assert "drag" in warnings[0].lower()
 
+    def test_saved_skill_export_drops_unconfigured_ai_review_with_warning(self, tmp_path):
+        """EXEC-13: an inserted-but-never-configured AI Review step (blank prompt, the
+        _new_manual_step scaffold) is dropped with an actionable warning — same shape as
+        drag_drop above — instead of failing the whole build."""
+        saved_skill = {
+            "meta": {"id": "skill_123", "title": "Unconfigured Review Among Others"},
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {"action": {"action": "ai_review"}, "ai_review_prompt": ""},
+                        {"action": {"action": "wait", "ms": 750}},
+                    ]
+                }
+            ],
+        }
+        warnings = []
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="unconfigured_review_among_others",
+            saved_skill=saved_skill,
+            on_warning=warnings.append,
+        )
+
+        execution = json.loads(
+            (tmp_path / "skills" / "unconfigured_review_among_others" / "execution.json").read_text(encoding="utf-8")
+        )
+        assert [step["type"] for step in execution] == ["wait"]
+        assert len(warnings) == 1
+        assert "ai review" in warnings[0].lower()
+        assert "prompt" in warnings[0].lower()
+
     def test_normalizes_human_edit_input_id_to_runtime_name(self):
         inputs = _normalize_saved_skill_inputs(
             [{"id": "service_name", "label": "Service Name", "type": "text"}]
