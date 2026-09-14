@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from handlers.protocol import _CommandError, _safe_id, _skill_response
+from conxa_compile.editor.step_path import StepPathError, parse_nested_step_path
 
 class VisualMixin:
     def cmd_compile_updated(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -44,25 +45,39 @@ class VisualMixin:
         import copy
         from conxa_core.storage.json_store import read_skill, write_skill
         from conxa_compile.editor.recording_visual import apply_recording_event_visual_to_step_or_raise
+        from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
         from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
         event_index = int(payload.get("event_index") or 0)
         frame_label = str(payload.get("frame_label") or "").strip() or None
+        try:
+            nested_path = parse_nested_step_path(payload.get("path"))
+        except StepPathError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         snapshot = copy.deepcopy(doc)
         self._install_proxy_router(usage_class="human_edit")
         try:
-            doc = apply_recording_event_visual_to_step_or_raise(doc, step_index, event_index, frame_label=frame_label)
+            doc = apply_recording_event_visual_to_step_or_raise(
+                doc, step_index, event_index, frame_label=frame_label, nested_path=nested_path
+            )
         except EntitlementBlocked as exc:
             raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
         except QuotaExceeded as exc:
             raise _CommandError("quota_exceeded", str(exc)) from exc
         except CloudUnreachable as exc:
             raise _CommandError("cloud_unreachable", str(exc)) from exc
+        except VisionAnchorGenerationError as exc:
+            detail = f" ({exc.hint})" if exc.hint else ""
+            raise _CommandError(
+                "vision_anchors_failed", f"Could not generate recovery anchors ({exc.reason}){detail}."
+            ) from exc
+        except ValueError as exc:
+            raise _CommandError(str(exc), str(exc)) from exc
         self._push_undo(skill_id, snapshot)
         write_skill(skill_id, doc)
         result = _skill_response(skill_id, doc)
@@ -80,19 +95,25 @@ class VisualMixin:
         frame_label = str(payload.get("frame_label") or "").strip()
         if not frame_label:
             raise _CommandError("invalid_frame_label", "frame_label is required")
+        try:
+            nested_path = parse_nested_step_path(payload.get("path"))
+        except StepPathError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         snapshot = copy.deepcopy(doc)
         self._install_proxy_router(usage_class="human_edit")
         try:
-            doc = apply_step_frame_or_raise(doc, step_index, frame_label)
+            doc = apply_step_frame_or_raise(doc, step_index, frame_label, nested_path=nested_path)
         except EntitlementBlocked as exc:
             raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
         except QuotaExceeded as exc:
             raise _CommandError("quota_exceeded", str(exc)) from exc
         except CloudUnreachable as exc:
             raise _CommandError("cloud_unreachable", str(exc)) from exc
+        except ValueError as exc:
+            raise _CommandError(str(exc), str(exc)) from exc
         self._push_undo(skill_id, snapshot)
         write_skill(skill_id, doc)
         result = _skill_response(skill_id, doc)
@@ -106,11 +127,18 @@ class VisualMixin:
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
+        try:
+            nested_path = parse_nested_step_path(payload.get("path"))
+        except StepPathError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         self._push_undo(skill_id, copy.deepcopy(doc))
-        doc = clear_step_visual_screenshots_or_raise(doc, step_index)
+        try:
+            doc = clear_step_visual_screenshots_or_raise(doc, step_index, nested_path=nested_path)
+        except ValueError as exc:
+            raise _CommandError(str(exc), str(exc)) from exc
         write_skill(skill_id, doc)
         result = _skill_response(skill_id, doc)
         result.update(self._history_flags(skill_id))

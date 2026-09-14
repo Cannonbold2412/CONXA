@@ -120,6 +120,7 @@ export function HumanEditPage() {
   const splitPaneRef = useRef<HTMLDivElement | null>(null)
   const stepEditorRef = useRef<InlineRetargetFlowHandle>(null)
   const selected = useEditorStore((s) => s.selectedStepIndex)
+  const focusedBranchIndex = useEditorStore((s) => s.focusedBranchIndex)
   const setValidationReport = useEditorStore((s) => s.setValidationReport)
   const setSelectedStepIndex = useEditorStore((s) => s.setSelectedStepIndex)
   const canUndo = useEditorStore((s) => s.canUndo)
@@ -160,6 +161,17 @@ export function HumanEditPage() {
     if (!q.data || selected === null) return null
     return q.data.steps.find((s) => s.step_index === selected) ?? null
   }, [q.data, selected])
+
+  // A focused nested for_each step (clicked in ForEachSubList.tsx) — the recording-screenshots
+  // tool (opened from InlineRetargetFlow.tsx's Pick Element phase) must read/write the nested
+  // step's own screenshot data, not the parent for_each wrapper's, and address it the same way
+  // InlineRetargetFlow.tsx does: `for_each.steps[N]` (see step_path.py).
+  const nestedForEachStep =
+    currentStep?.for_each_summary && focusedBranchIndex !== null
+      ? (currentStep.for_each_steps[focusedBranchIndex] ?? null)
+      : null
+  const nestedPath = nestedForEachStep ? `for_each.steps[${focusedBranchIndex}]` : undefined
+  const effectiveStep = nestedForEachStep ?? currentStep
 
   useEffect(() => {
     if (skillId) {
@@ -411,13 +423,15 @@ export function HumanEditPage() {
   }
 
   const onDroppedRecordingScreenshot = useCallback(
-    async (stepIndex: number, eventIndex: number, frameLabel?: string) => {
+    async (stepIndex: number, eventIndex: number, frameLabel?: string, path?: string) => {
       if (!skillId) return
       try {
-        const res = await postApplyRecordingVisual(skillId, stepIndex, {
-          event_index: eventIndex,
-          frame_label: frameLabel,
-        })
+        const res = await postApplyRecordingVisual(
+          skillId,
+          stepIndex,
+          { event_index: eventIndex, frame_label: frameLabel },
+          path,
+        )
         onWorkflowUpdated(res.workflow)
         if (res.can_undo !== undefined) setHistoryState(res.can_undo, res.can_redo ?? false)
         useEditorStore.getState().clearStepDirty(stepIndex)
@@ -437,18 +451,20 @@ export function HumanEditPage() {
   })
 
   const onSelectAllScreenshot = useCallback(
-    (eventIndex: number, frameLabel: string) => {
+    (eventIndex: number, frameLabel: string | null) => {
       if (selected === null) return
-      void onDroppedRecordingScreenshot(selected, eventIndex, frameLabel)
+      // null means this event has no precomputed timed frame — apply its representative
+      // full_screenshot by omitting frame_label, not a frame image that doesn't exist.
+      void onDroppedRecordingScreenshot(selected, eventIndex, frameLabel ?? undefined, nestedPath)
     },
-    [onDroppedRecordingScreenshot, selected],
+    [onDroppedRecordingScreenshot, selected, nestedPath],
   )
 
   const onClearStepVisual = useCallback(
-    async (stepIndex: number) => {
+    async (stepIndex: number, path?: string) => {
       if (!skillId) return
       try {
-        const res = await postClearStepVisual(skillId, stepIndex)
+        const res = await postClearStepVisual(skillId, stepIndex, path)
         onWorkflowUpdated(res.workflow)
         if (res.can_undo !== undefined) setHistoryState(res.can_undo, res.can_redo ?? false)
         useEditorStore.getState().clearStepDirty(stepIndex)
@@ -464,7 +480,7 @@ export function HumanEditPage() {
     async (frameLabel: string) => {
       if (!skillId || selected === null) return
       try {
-        const res = await postApplyStepFrame(skillId, selected, frameLabel)
+        const res = await postApplyStepFrame(skillId, selected, frameLabel, nestedPath)
         onWorkflowUpdated(res.workflow)
         if (res.can_undo !== undefined) setHistoryState(res.can_undo, res.can_redo ?? false)
         useEditorStore.getState().clearStepDirty(selected)
@@ -473,7 +489,7 @@ export function HumanEditPage() {
         toast.error(errorMessage(err, 'Could not apply frame'))
       }
     },
-    [onWorkflowUpdated, selected, setHistoryState, skillId],
+    [onWorkflowUpdated, selected, setHistoryState, skillId, nestedPath],
   )
 
   const openSkillForEdit = useCallback(
@@ -779,7 +795,7 @@ export function HumanEditPage() {
     iconClass: 'text-fuchsia-300',
     help: editorHelp.toolScreenshots,
     controls: 'recording-screenshots-modal',
-    count: currentStep?.screenshot?.frames?.length ?? '—',
+    count: effectiveStep?.screenshot?.frames?.length ?? '—',
   }
   const activeTool = openTool === 'screenshots' ? screenshotsTool : (toolPanes.find((t) => t.key === openTool) ?? null)
 
@@ -1079,16 +1095,18 @@ export function HumanEditPage() {
                   {activeTool.key === 'suggestions' && <SuggestionsInlinePanel suggestions={wf.suggestions} />}
                   {activeTool.key === 'screenshots' && (
                     <RecordingScreenshotsPanel
-                      frames={currentStep?.screenshot?.frames ?? []}
-                      activeFrameLabel={currentStep?.screenshot?.default_frame_label ?? null}
-                      canClearVisual={!!currentStep && !currentStep.flags.is_scroll}
-                      onApplyFrame={currentStep && !currentStep.flags.is_scroll ? onApplyStepFrame : undefined}
-                      onClearVisual={selected !== null ? () => void onClearStepVisual(selected) : undefined}
+                      frames={effectiveStep?.screenshot?.frames ?? []}
+                      activeFrameLabel={effectiveStep?.screenshot?.default_frame_label ?? null}
+                      canClearVisual={!!effectiveStep && !effectiveStep.flags.is_scroll}
+                      onApplyFrame={effectiveStep && !effectiveStep.flags.is_scroll ? onApplyStepFrame : undefined}
+                      onClearVisual={
+                        selected !== null ? () => void onClearStepVisual(selected, nestedPath) : undefined
+                      }
                       showAllFrames={showAllScreenshots}
                       allItems={allScreenshotsQ.data?.items}
                       isLoadingAllFrames={allScreenshotsQ.isLoading}
                       onSelectAllFrame={
-                        currentStep && !currentStep.flags.is_scroll ? onSelectAllScreenshot : undefined
+                        effectiveStep && !effectiveStep.flags.is_scroll ? onSelectAllScreenshot : undefined
                       }
                     />
                   )}

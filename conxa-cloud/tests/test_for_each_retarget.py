@@ -10,6 +10,7 @@ import pytest
 
 from conxa_compile.editor.step_path import StepPathError, get_nested_step, parse_nested_step_path, with_nested_step
 from conxa_compile.editor.retarget import RetargetError, apply_retarget, preview_retarget
+from conxa_compile.editor.recording_visual import clear_step_visual_screenshots_or_raise
 from conxa_compile.editor.patch_gate import validate_editor_patch
 
 
@@ -148,6 +149,39 @@ def test_for_each_nested_patch_allows_validation_and_recovery():
     step = _nested_click_step()
     validate_editor_patch(step, {"validation": {"wait_for": {"kind": "text_present"}}}, {}, in_branch_body=False)
     validate_editor_patch(step, {"recovery": {"anchors": []}}, {}, in_branch_body=False)
+
+
+# ── recording_visual.py: clear/apply-visual against a for_each nested step ─────────
+# Regression for the bug where picking a recording screenshot for a loop-body step
+# mutated the parent for_each wrapper instead of the nested step (missing nested_path
+# support). clear_step_visual_screenshots_or_raise needs no recording-session assets on
+# disk, unlike apply_recording_event_visual_to_step_or_raise/apply_step_frame_or_raise,
+# so it's the cheapest of the three to exercise the shared _resolve_nested_step/
+# _write_nested_step plumbing all three now share.
+
+
+def test_clear_step_visual_screenshots_clears_only_the_nested_step():
+    nested_a = _nested_click_step()
+    nested_a["signals"]["visual"]["full_screenshot"] = "sessions/sess_x/images/evt_0001_element.jpg"
+    nested_b = _nested_click_step('[data-testid="other-btn"]')
+    nested_b["signals"]["visual"]["full_screenshot"] = "sessions/sess_x/images/evt_0002_element.jpg"
+    doc = _document(nested_body=[nested_a, nested_b])
+    out = clear_step_visual_screenshots_or_raise(doc, 1, nested_path=("for_each", 0))
+    for_each = out["skills"][0]["steps"][1]["for_each"]
+    assert "full_screenshot" not in for_each["steps"][0]["signals"]["visual"]
+    assert for_each["steps"][0]["signals"]["anchors"] == []
+    # Sibling nested step untouched.
+    assert for_each["steps"][1]["signals"]["visual"]["full_screenshot"] == "sessions/sess_x/images/evt_0002_element.jpg"
+    # The parent for_each step itself was never touched.
+    assert "signals" not in out["skills"][0]["steps"][1] or "visual" not in out["skills"][0]["steps"][1].get(
+        "signals", {}
+    )
+
+
+def test_clear_step_visual_screenshots_stale_nested_index_raises():
+    doc = _document()
+    with pytest.raises(ValueError):
+        clear_step_visual_screenshots_or_raise(doc, 1, nested_path=("for_each", 5))
 
 
 def test_branch_nested_patch_still_rejects_validation_and_recovery():

@@ -159,27 +159,33 @@ export function fetchRecordingScreenshots(skillId: string): Promise<{
   return cmd('list_recording_screenshots', { skill_id: skillId })
 }
 
+// `path` addresses a nested for_each loop-body step ("for_each.steps[N]") instead of the
+// top-level step at stepIndex — see retargetPreview's `path` doc comment. Omit for an
+// ordinary top-level step.
 export function postApplyRecordingVisual(
   skillId: string,
   stepIndex: number,
   body: { event_index: number; frame_label?: string },
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('apply_recording_visual', { skill_id: skillId, step_index: stepIndex, ...body })
+  return cmd('apply_recording_visual', { skill_id: skillId, step_index: stepIndex, ...body, path })
 }
 
 export function postApplyStepFrame(
   skillId: string,
   stepIndex: number,
   frameLabel: string,
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('apply_step_frame', { skill_id: skillId, step_index: stepIndex, frame_label: frameLabel })
+  return cmd('apply_step_frame', { skill_id: skillId, step_index: stepIndex, frame_label: frameLabel, path })
 }
 
 export function postClearStepVisual(
   skillId: string,
   stepIndex: number,
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('clear_step_visual', { skill_id: skillId, step_index: stepIndex })
+  return cmd('clear_step_visual', { skill_id: skillId, step_index: stepIndex, path })
 }
 
 export function postUpdateVisualBbox(
