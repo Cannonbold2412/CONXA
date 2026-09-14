@@ -701,6 +701,97 @@ fix status; sign GO/NO-GO at the bottom of the run.
 
 ---
 
+## WF-13 — Variables, loop, branch, dedupe: Sheets→Gmail + GitHub PR triage
+
+**Sites:** Google Sheets + Gmail (Leg A) · GitHub (Leg B) · **Accounts:** your own Google account,
+your own GitHub account with at least one repo that has 2+ open PRs (or open 2 test PRs first) ·
+**Tabs:** 1 per leg
+
+Two short recordings picked to isolate variables/loop/dedupe (Leg A) and branch/recovery (Leg B)
+without needing any of the arsenal sites above. Record each leg separately in Build Studio so a
+failure in one doesn't block diagnosing the other.
+
+### Leg A — Sheets → Gmail (variables, loop, dedupe)
+
+**Step 1 — Build the source sheet.**
+1. Go to `sheets.google.com` → **Blank spreadsheet**.
+2. In row 1 type headers: `A1=Name`, `B1=Email`, `C1=Amount`.
+3. Fill 3 data rows, e.g.:
+   - Row 2: `Alex`, `alex@example.com`, `250`
+   - Row 3: `Priya`, `priya@example.com`, `1800`
+   - Row 4: `Sam`, `sam@example.com`, `90`
+4. Leave the tab open — you'll read from it during recording.
+
+**Step 2 — Start recording in Build Studio.**
+1. Open Build Studio → **New Recording**.
+2. Name it `sheets-to-gmail-test`.
+3. Click **Start Recording**.
+
+**Step 3 — Record the per-row actions (only do ONE row live — this is what the loop will replay for the rest).**
+1. Switch to the Sheets tab. Click cell **A2** (`Alex`) — this is your `{{name}}` source.
+2. Click cell **B2** (`alex@example.com`) — `{{email}}` source.
+3. Click cell **C2** (`250`) — `{{amount}}` source.
+4. Switch to Gmail (`mail.google.com`). Click **Compose**.
+5. Click the **To** field, type `alex@example.com` (or paste from the cell you just clicked, if Build Studio's recorder captures copy/paste — otherwise just type the same value you saw in B2).
+6. Click the **Subject** field, type `Payment update for Alex`.
+7. Click the **Body**, type `Hi Alex, your recorded amount is 250.`
+8. **Branch point:** since `250 < 1000`, click **Send** directly. Do NOT click any "star"/"important" marker on this row.
+9. Stop recording here. **Do not loop live for rows 3–4** — that's what Human Edit is for.
+
+**Step 4 — Human Edit: turn this into a loop + branch.**
+1. Open the recorded workflow in the editor.
+2. Select the three Sheets-read steps (A2/B2/C2 clicks) and the Gmail compose/send steps as one group.
+3. Use **Wrap in for_each** (or the editor's loop-insertion action) bound to the sheet range `A2:C4` — this makes `{{name}}`, `{{email}}`, `{{amount}}` per-iteration variables instead of literal recorded text.
+4. Insert a branch before the Send step: **if** `{{amount}} > 1000` → click the star/important-mark icon in Gmail's compose toolbar **before** Send; **else** → Send directly (this is exactly what you recorded for the `250` row, so the else-branch is your recorded path).
+5. Save. Compile.
+
+**Step 5 — Verify compile output.**
+1. Open the compile report. Confirm there is **one** loop step over the 3 rows, not 9 duplicated steps — that's the dedupe check.
+2. Confirm the compiled step's `value` fields show `{{name}}`, `{{email}}`, `{{amount}}` tokens, not the literal `Alex`/`alex@example.com`/`250` you recorded — that's the variable-binding check.
+3. Confirm the branch step exists once, referencing `{{amount}}`.
+
+**Step 6 — Replay and check the result.**
+1. Run the compiled skill (Studio Run Test or via MCP `execute_skill`).
+2. Check Gmail's Sent folder: 3 emails, one per row, each with the row's own name/email/amount in the body — not all 3 saying "Alex".
+3. Check that Priya's email (amount `1800`) got starred/marked important and Alex's and Sam's did not — that's the branch check.
+4. Check recovery/LLM logs: 0 recovery events, 0 runtime LLM calls expected on a clean replay.
+
+### Leg B — GitHub PR triage (branch + recovery)
+
+**Step 1 — Prepare two PRs in one repo.**
+1. In a repo you own, open **Pull requests**.
+2. Make sure at least one open PR shows a green **"Merge"** button (no conflicts) and at least one shows a **"Resolve conflicts"** button (or the "This branch has conflicts" banner). If you don't have one naturally, create a throwaway branch that edits the same line as `main` in two different ways and open a PR from it to force a conflict.
+
+**Step 2 — Record on the clean-path PR.**
+1. Start a new Build Studio recording named `github-pr-triage-test`.
+2. Go to `github.com/<you>/<repo>/pulls`.
+3. Click the clean PR's title to open it.
+4. Click **Merge pull request** → **Confirm merge**.
+5. Stop recording.
+
+**Step 3 — Human Edit: add the branch for the conflicted case.**
+1. Open the recording in the editor.
+2. Before the Merge click, insert an `if_present` probe: does the "Resolve conflicts" button / conflict banner exist on this PR page?
+   - **If present:** click **Resolve conflicts**, wait for GitHub's inline conflict editor to load, then stop the branch there (don't try to auto-resolve text conflicts — just prove the branch fires and stops safely).
+   - **If absent (your recorded path):** click **Merge pull request** → **Confirm merge**, exactly as recorded.
+3. Wrap the whole thing in a `for_each` over the PR list if you want to test more than one PR per run (optional for this test — one branch firing correctly is the main proof).
+4. Save. Compile.
+
+**Step 4 — Replay against the clean PR (regression check).**
+1. Run the skill against the same clean PR (or another clean one). Expect: `if_present` finds nothing → falls through to Merge → PR merges. Zero recovery events.
+
+**Step 5 — Replay against the conflicted PR (branch + recovery check).**
+1. Run the same compiled skill against the conflicted PR's URL/selection.
+2. Expect: `if_present` detects the conflict banner → clicks "Resolve conflicts" → stops there without error. The Merge button must NOT be clicked on this run.
+3. To also test self-healing: before this replay, resize your browser window narrower (or toggle GitHub's light/dark theme) so the button layout shifts slightly, then replay. Check the recovery log — if the selector needed a Tier A re-find, that's the self-heal working; if it needed a Tier B agent call, that's still a pass but log the token cost.
+
+**Step 6 — Record results.**
+Use the standard log block from "How to work" above for both legs. If either branch fires on the wrong PR type (e.g. Merge gets clicked on a conflicted PR, or vice versa), that's a hard fail — log it immediately as a PROD-3-style entity/branch-safety issue, same severity class as WF-8's B-8.
+
+**Where failures go:** loop/dedupe issues → compiler `IdentityBundle`/loop-wrapping items in `TODO.md`; variable-binding issues → editor patch-gate items; branch misfires → treat like WF-6/WF-8 B-8 (wrong-branch-taken is a safety bug, not a cosmetic one); recovery issues → WF-7's cascade owners.
+
+---
+
 ## What to watch for across ALL workflows (known gaps these tests exercise)
 
 - **Tab-landing correctness** — next action after any switch lands in the expected tab (EXEC-5 #43).
