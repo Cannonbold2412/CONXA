@@ -87,6 +87,19 @@ def url_matches_pattern(url: str, pattern: str, *, exclude_prefix: str = "") -> 
     return bool(prefix) and url.startswith(prefix)
 
 
+def _quiet_target_closed_exception_handler(loop: Any, context: dict[str, Any]) -> None:
+    """asyncio exception handler for the sync-Playwright driver's own event loop.
+
+    Swallows only TargetClosedError (matched by name, not isinstance — this loop's
+    exceptions come from playwright._impl internals we don't want a hard import on)
+    so a real bug still surfaces via the loop's default handler.
+    """
+    exc = context.get("exception")
+    if exc is not None and type(exc).__name__ == "TargetClosedError":
+        return
+    loop.default_exception_handler(context)
+
+
 def extract_visited_hosts(events: list[dict[str, Any]]) -> list[str]:
     """Every hostname a recording actually navigated to — main frame
     (ev.page.url) and any tab opened during the recording (ev.tab.url).
@@ -1893,7 +1906,15 @@ class RecordingSession:
     def _run_sync_recorder(self) -> None:
         try:
             import sys as _sys
-            self._playwright = sync_playwright().start()
+            playwright_cm = sync_playwright()
+            self._playwright = playwright_cm.start()
+            # expose_binding's internal delivery of a __skillReport result back to the page
+            # (asyncio.create_task(binding_call.call(...)) inside playwright's own dispatcher,
+            # never awaited by our code) races the user closing the tab/browser mid-recording.
+            # Losing that race raises TargetClosedError on an orphaned task, which asyncio logs
+            # as "Task exception was never retrieved" — cosmetic, since our handler already ran;
+            # only the result delivery back to the already-gone page failed. Silence just that.
+            playwright_cm._loop.set_exception_handler(_quiet_target_closed_exception_handler)
             # Isolated per-session workspace, mirroring the runtime's runs/{runId}/ — downloads
             # taken during recording land here instead of nowhere durable.
             if not self.auth_mode:
