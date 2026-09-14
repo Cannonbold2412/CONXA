@@ -101,10 +101,6 @@ function _resolveGroup(workspace_id, groupId) {
   return groups[0];
 }
 
-function _groupAppSessionPath(workspace_id, appId) {
-  return path.join(SESSIONS_DIR, `${workspace_id}__${appId}_raw_state.json`);
-}
-
 // ─── Auth-validation TTL cache ────────────────────────────────────────────
 // A successful network validation is stamped per app key; repeat runs within
 // CONXA_AUTH_VALIDATION_TTL_MS (default 6h) skip the live check entirely. The
@@ -136,30 +132,69 @@ function _writeValidationCache(key, sessionPath) {
   } catch (_) {}
 }
 
-// Cheap half of the old _validateGroupApp: resolve an app's stored session
-// (encrypted first, raw fallback) WITHOUT launching a browser. Returns the
+function _mtimeOrZero(p) {
+  try { return fs.statSync(p).mtimeMs; } catch (_) { return 0; }
+}
+
+// Resolve a session for `key` (a bare workspace_id, or `${workspace_id}__${appId}` for a
+// group app) WITHOUT launching a browser, preferring whichever of the encrypted/raw files
+// was written most recently — not always the encrypted file. A raw file newer than the
+// encrypted one means something other than this runtime process wrote a fresher session
+// since the encrypted file was last produced (Build Studio's _stage_runtime_auth
+// re-staging a freshly re-authenticated group app, or a save that fell back to
+// saveRawSession) — reading the encrypted file unconditionally in that case serves a
+// stale, already-expired session until the next process restart runs
+// auth_manager.reencryptPlaintextSessions. A winning raw file is promoted into the
+// encrypted one on the spot (same steps the startup sweep runs), so this is a one-time
+// cost paid only by the first read after a fresh raw write, not every call. Returns the
 // session's file path too so callers can key mtime-sensitive caches on it.
-async function _loadGroupAppSession(workspace_id, app, authManager, logFn) {
-  const key = `${workspace_id}__${app.id}`;
-  if (authManager) {
+async function _loadSessionForKey(key, authManager, logFn) {
+  const encPath = path.join(SESSIONS_DIR, `${key}_state.json`);
+  const rawPath = path.join(SESSIONS_DIR, `${key}_raw_state.json`);
+  const encMtime = _mtimeOrZero(encPath);
+  const rawMtime = _mtimeOrZero(rawPath);
+
+  if (rawMtime > 0 && rawMtime > encMtime) {
+    let stored = null;
+    try { stored = JSON.parse(fs.readFileSync(rawPath, "utf8")); } catch (_) {}
+    if (stored) {
+      if (authManager) {
+        try {
+          const token = await authManager.getSessionKey(key, logFn);
+          if (authManager.saveEncryptedSession(key, stored, token, SESSIONS_DIR, logFn)) {
+            fs.unlinkSync(rawPath);
+            return { stored, sessionPath: encPath };
+          }
+        } catch (_) {}
+      }
+      return { stored, sessionPath: rawPath };
+    }
+  }
+
+  if (encMtime > 0 && authManager) {
     try {
       const token = await authManager.getSessionKey(key, logFn);
       if (token) {
         const stored = authManager.loadDecryptedSession(key, token, SESSIONS_DIR);
-        if (stored) {
-          return { stored, sessionPath: path.join(SESSIONS_DIR, `${key}_state.json`) };
-        }
+        if (stored) return { stored, sessionPath: encPath };
       }
     } catch (_) {}
   }
-  const rawPath = _groupAppSessionPath(workspace_id, app.id);
-  if (fs.existsSync(rawPath)) {
+
+  if (rawMtime > 0) {
     try {
       const stored = JSON.parse(fs.readFileSync(rawPath, "utf8"));
       return { stored, sessionPath: rawPath };
     } catch (_) {}
   }
+
   return { stored: null, sessionPath: null };
+}
+
+// Thin per-app wrapper over _loadSessionForKey — kept as its own name since
+// getGroupAuthContext's caller comments and tests refer to "loading a group app session".
+async function _loadGroupAppSession(workspace_id, app, authManager, logFn) {
+  return _loadSessionForKey(`${workspace_id}__${app.id}`, authManager, logFn);
 }
 
 // Scopes a group's apps down to the ones a skill's manifest.required_apps actually
@@ -725,52 +760,26 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
     return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds });
   }
 
-  let _hadEncryptedSession = false; // set true if encrypted path ran; raw session is then stale
-  let lastKnownState = null; // best available (possibly expired) session — seeds the login window
   const pack = _loadPack(workspace_id);
   const protectedUrl = _resolveProtectedUrl(workspace_id, pack);
   const targetUrl    = pack.target_url || protectedUrl;
 
-  // Try encrypted session (uses per-machine session key from keytar). Only the session
-  // lookup itself is guarded — a keytar/decrypt failure legitimately means "no usable
-  // session, fall back to raw/interactive auth" (auth_manager.js's own loadDecryptedSession
-  // already returns null internally for a corrupt file). _validateSession/_buildExecContext
-  // run unguarded, matching _validateGroupApp's pattern below: a real failure there (e.g. a
+  // Resolve whichever of the encrypted/raw session files is newest — see
+  // _loadSessionForKey. A keytar/decrypt failure there legitimately means "no usable
+  // session, fall back to interactive auth" (loadDecryptedSession already returns null
+  // internally for a corrupt file). _validateSession/_buildExecContext below run
+  // unguarded, matching _validateSessionsBatch's pattern: a real failure there (e.g. a
   // broken/misconfigured browser install) must propagate with its own message, not be
-  // swallowed and replaced by the misleading "No target_url configured" thrown further down
-  // — retrying via the raw-session path would only hit the identical browser failure again.
-  if (authManager) {
-    let token, stored;
-    try {
-      token = await authManager.getSessionKey(workspace_id, logFn);
-      if (token) stored = authManager.loadDecryptedSession(workspace_id, token, SESSIONS_DIR);
-    } catch (_) {}
-    if (stored) {
-      lastKnownState = stored;
-      if (await _validateSession(stored, protectedUrl)) {
-        _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
-        const { browser, context } = await _buildExecContext(stored, headless);
-        return { browser, context, protectedUrl, sessionSource: "encrypted" };
-      }
-      // Session expired — skip raw session (encrypted takes precedence), go to interactive auth
-      _hadEncryptedSession = true;
-    }
-  }
-
-  // Try raw session (installer-included initial session, not yet encrypted)
-  // Skip if encrypted path already ran — raw session is then stale and should not override
-  const rawSessionPath = path.join(SESSIONS_DIR, `${workspace_id}_raw_state.json`);
-  if (!_hadEncryptedSession && fs.existsSync(rawSessionPath)) {
-    let stored;
-    try { stored = JSON.parse(fs.readFileSync(rawSessionPath, "utf8")); } catch (_) {}
-    if (stored) {
-      lastKnownState = stored;
-      if (await _validateSession(stored, protectedUrl)) {
-        _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
-        const { browser, context } = await _buildExecContext(stored, headless);
-        return { browser, context, protectedUrl, sessionSource: "raw" };
-      }
-    }
+  // swallowed and replaced by the misleading "No target_url configured" thrown further down.
+  const { stored, sessionPath } = await _loadSessionForKey(workspace_id, authManager, logFn);
+  const lastKnownState = stored; // best available (possibly expired) session — seeds the login window
+  if (stored && await _validateSession(stored, protectedUrl)) {
+    _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
+    const { browser, context } = await _buildExecContext(stored, headless);
+    return {
+      browser, context, protectedUrl,
+      sessionSource: sessionPath && sessionPath.endsWith("_raw_state.json") ? "raw" : "encrypted",
+    };
   }
 
   // No valid session — open an interactive login window for the user (non-blocking).
@@ -873,6 +882,7 @@ module.exports = {
   _reachedProtectedUrl,
   _resolveGroup,
   _loadGroupAppSession,
+  _loadSessionForKey,
   _validateSessionsBatch,
   _readValidationCache,
   _writeValidationCache,
