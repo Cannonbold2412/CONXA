@@ -1052,6 +1052,55 @@ step (`destructive_step_cannot_directly_follow_ai_review` — the sibling of PRO
 confirmation gate) — a review answer may gate *whether* a later step runs, never supply *what* a
 destructive step acts on.
 
+### 3.4k Hand-Over Step (EXEC-21, hand-over shape)
+
+`ai_review`'s human sibling: a planned pause with no `target`/`identity_bundle`, outside the
+Tier 1-4 recovery cascade for the same reasons as §3.4j. See `docs/TRD.md` §10.10 for the full
+park/resume mechanism (three resume signals — banner, file drop, loopback HTTP — and why the host
+lock is released rather than held for the pause); this section is the data shape.
+
+**Execution step** (`execution.json`, emitted by `skill_package_builder_saved_skill.py`'s
+`handover` branch):
+
+```python
+{
+  "type": "handover",
+  "message": str,                      # required — dropped at build time if blank
+  "on_failure": "abort" | "continue",  # default "abort" — no "use_default": a hand-over produces
+                                        # no answer value to fall back to
+  "resume_when": dict | omitted,       # an optional probe spec (same shape wait_for_one_of's
+                                        # options use) the resumed page must satisfy before the
+                                        # next step runs
+  "resume_when_timeout_ms": int | omitted,   # default 10000 when resume_when is set
+}
+```
+
+**Editor-side (pre-compile) fields.** Unlike `ai_review`, the message shown to the person rides
+the step's generic `value` field (the same one `ai_review` uses for its output binding name) —
+`VALUE_LABELS["handover"]` labels it "Message shown to the person" — so no dedicated
+`handover_message` field exists. Patched only through `patch_gate.py`'s `handover` branch, which
+rejects a `recovery` patch outright:
+
+```python
+value: str                                   # the message — top-level, not "handover_*"
+handover_on_failure: "abort" | "continue"
+handover_resume_when: dict | None
+handover_resume_when_timeout_ms: int | None  # must be > 0 when present
+```
+
+**No new `execute_skill` parameter.** A hand-over produces no structured answer, so unlike
+`ai_review`'s `review_results` there is nothing to pass alongside `resume_from` — and in practice a
+resume is normally self-driven (the runtime process itself calls `execute_skill` again the moment
+a signal fires, per §10.10), not agent-initiated. A pause response carries `_meta: {"conxa/handover":
+{step_index, message, run_id, resume_http: {port, token, path} | null, resume_file}}` for a
+programmatic caller.
+
+**Not built (deliberate, tracked in `TODO.md`):** a compile-time guard rejecting a `handover` step
+authored inside a `for_each` loop body — unwinding the loop on the pause throws away the iteration
+cursor, so the runtime propagates the pause rather than treating it as a row failure, but nothing
+yet stops one from being authored there in the first place; approve/reject and supply-a-judgement,
+EXEC-21's other two shapes.
+
 ### 3.5 RecoveryBlock
 
 ```python
@@ -1340,6 +1389,9 @@ says whether an accepted proposal actually worked, not just that a reviewer like
 | `for_each_start` | (EXEC-38) A for_each loop began — row enumeration finished | `si`, `total` (rows found), `cap` (effective max_iterations after clamping) |
 | `for_each_row_fail` | (EXEC-38) One row's loop body failed | `si`, `row_index`, `continued` (whether `on_row_error: "continue"` let the loop proceed) |
 | `for_each_done` | (EXEC-38) A for_each loop finished (success or a `stop`-mode failure that halted it) | `si`, `processed`, `failed`, `total` |
+| `park_created` | A run paused and parked its live page — Tier 3/4 agent recovery, an `ai_review` checkpoint, or (EXEC-21) a `handover` step, all sharing one park primitive (`docs/TRD.md` §10.1a/§10.9/§10.10) | `si`, `kind` (`"handover"` when a hand-over parked; omitted for the other two cases) |
+| `park_resumed` | A parked run resumed execution on the same live page it paused on | `si` |
+| `handover_resumed` | (EXEC-21) A parked hand-over's self-driven resume completed | `si` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
 | `wf_fail` | Workflow failed | `dur`, `fsi` (failed step index), `fc` (failure code) |
 

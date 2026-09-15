@@ -865,9 +865,27 @@ HANDLERS["dialog_dismiss"] = async (_page, step, inputs, ctx) => {
   await answerDialog(dialog, step, inputs);
 };
 
+// Step types run.js's executeOneStep intercepts BEFORE ever reaching this dispatcher: ai_review
+// and handover are planned pauses with no selector or handler at all, for_each is a loop
+// primitive whose body steps re-enter executeOneStep directly. In normal operation `step.type`
+// is never one of these by the time executeStep runs — this set only matters if something calls
+// executeStep directly, bypassing run.js (a test harness, say), where the correct behavior is
+// still "do nothing" rather than the throw below.
+const PRE_DISPATCH_STEP_TYPES = new Set(["ai_review", "handover", "for_each"]);
+
 async function executeStep(page, step, inputs, ctx = {}) {
   const handler = HANDLERS[step.type];
-  if (handler) await handler(page, step, inputs, ctx);
+  if (handler) { await handler(page, step, inputs, ctx); return; }
+  if (PRE_DISPATCH_STEP_TYPES.has(step.type)) return;
+  // An unrecognized step type used to be silently skipped and reported as a successful step —
+  // harmless for a step that's genuinely decorative, but a safety gate (e.g. `handover`)
+  // replayed by a runtime older than the pack that authored it would vanish the same way,
+  // letting whatever came after it (often the destructive step the gate exists to guard) run
+  // unguarded. Fail loud instead.
+  throw Object.assign(
+    new Error(`Unrecognized step type "${step.type}" — this runtime does not know how to execute it. Update the Conxa runtime.`),
+    { unrecognizedStepType: step.type }
+  );
 }
 
 // Recovery embedding

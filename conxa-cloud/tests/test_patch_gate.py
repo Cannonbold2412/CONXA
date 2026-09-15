@@ -143,6 +143,69 @@ def test_ai_review_step_rejects_unknown_keys():
         validate_editor_patch(step, {"target": {"primary_selector": "#x"}}, {})
 
 
+# ── EXEC-21 (hand-over shape): handover step patches ────────────────────────
+# The human sibling of ai_review above — same shape, but the message shown to the person rides
+# the generic `value` field (see action_registry.py's VALUE_LABELS) rather than a dedicated
+# `handover_message` field.
+
+def _handover_step() -> dict:
+    return {
+        "action": {"action": "handover"},
+        "intent": "Wait for the person to complete 2FA",
+        "value": "Please complete the 2FA challenge, then click Done.",
+    }
+
+
+def test_handover_step_accepts_a_valid_message_patch():
+    step = _handover_step()
+    validate_editor_patch(step, {"value": "Please sign the document, then click Done."}, {})
+
+
+def test_handover_step_accepts_on_failure_and_resume_when():
+    step = _handover_step()
+    validate_editor_patch(step, {
+        "handover_on_failure": "continue",
+        "handover_resume_when": {"selector": "#dashboard"},
+        "handover_resume_when_timeout_ms": 15000,
+    }, {})
+
+
+def test_handover_step_rejects_empty_message():
+    step = _handover_step()
+    with pytest.raises(ValueError, match="handover_message_empty"):
+        validate_editor_patch(step, {"value": "   "}, {})
+
+
+def test_handover_step_rejects_invalid_on_failure():
+    step = _handover_step()
+    with pytest.raises(ValueError, match="handover_on_failure_invalid"):
+        validate_editor_patch(step, {"handover_on_failure": "use_default"}, {})
+
+
+def test_handover_step_rejects_non_object_resume_when():
+    step = _handover_step()
+    with pytest.raises(ValueError, match="handover_resume_when_must_be_object"):
+        validate_editor_patch(step, {"handover_resume_when": "#dashboard"}, {})
+
+
+def test_handover_step_rejects_non_positive_resume_when_timeout():
+    step = _handover_step()
+    with pytest.raises(ValueError, match="handover_resume_when_timeout_ms_invalid"):
+        validate_editor_patch(step, {"handover_resume_when_timeout_ms": 0}, {})
+
+
+def test_handover_step_rejects_recovery_patch():
+    step = _handover_step()
+    with pytest.raises(ValueError, match="handover_step_cannot_patch_recovery"):
+        validate_editor_patch(step, {"recovery": {"tier": 2}}, {})
+
+
+def test_handover_step_rejects_unknown_keys():
+    step = _handover_step()
+    with pytest.raises(ValueError, match="handover_step_allows_only_handover_fields"):
+        validate_editor_patch(step, {"target": {"primary_selector": "#x"}}, {})
+
+
 # ── EXEC-13 / PROD-3: destructive step cannot directly follow ai_review ─────
 
 def _destructive_click_step() -> dict:

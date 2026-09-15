@@ -313,6 +313,55 @@ class TestBranchStepSerialization:
         assert "output_schema" not in out
         assert "reference_screenshot_ref" not in out
 
+    # ── EXEC-21 (hand-over shape): handover ──────────────────────────────────
+    # The human sibling of ai_review above — same shape, but the message shown to the person
+    # rides the generic `value` field rather than a dedicated `handover_message` field.
+
+    def test_handover_step_serializes_message_and_defaults_on_failure_to_abort(self):
+        step = {"action": "handover", "value": "Please complete the 2FA challenge, then click Done."}
+        out = _saved_step_to_execution_step(step)
+        assert out == {
+            "type": "handover",
+            "message": "Please complete the 2FA challenge, then click Done.",
+            "on_failure": "abort",
+        }
+
+    def test_handover_step_dropped_when_message_is_blank(self):
+        assert _saved_step_to_execution_step({"action": "handover", "value": "   "}) is None
+        assert _saved_step_to_execution_step({"action": "handover"}) is None
+
+    def test_handover_step_serializes_full_config(self):
+        step = {
+            "action": "handover",
+            "value": "Please sign the document, then click Done.",
+            "handover_on_failure": "continue",
+            "handover_resume_when": {"selector": "#signed-confirmation"},
+            "handover_resume_when_timeout_ms": 15000,
+        }
+        out = _saved_step_to_execution_step(step)
+        assert out == {
+            "type": "handover",
+            "message": "Please sign the document, then click Done.",
+            "on_failure": "continue",
+            "resume_when": {"selector": "#signed-confirmation"},
+            "resume_when_timeout_ms": 15000,
+        }
+
+    def test_handover_step_omits_resume_when_timeout_unless_resume_when_is_set(self):
+        step = {
+            "action": "handover",
+            "value": "Please log in.",
+            "handover_resume_when_timeout_ms": 15000,
+        }
+        out = _saved_step_to_execution_step(step)
+        assert "resume_when" not in out
+        assert "resume_when_timeout_ms" not in out
+
+    def test_handover_step_omits_empty_resume_when(self):
+        step = {"action": "handover", "value": "Please log in.", "handover_resume_when": {}}
+        out = _saved_step_to_execution_step(step)
+        assert "resume_when" not in out
+
     def test_editor_authored_if_present_step_serializes_correctly(self):
         """An if_present step scaffolded via the Human Edit editor (workflow_mutations.py::
         _new_manual_step + insert_branch_step — the 2026-07-10 branch-authoring work closing

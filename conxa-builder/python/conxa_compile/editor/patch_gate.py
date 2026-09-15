@@ -397,6 +397,39 @@ def validate_editor_patch(
             if on_failure == "use_default" and "ai_review_default_value" not in patch \
                     and "ai_review_default_value" not in step:
                 raise ValueError("ai_review_use_default_requires_default_value")
+    if act == "handover":
+        # EXEC-21 (hand-over shape): the human sibling of ai_review above — same "no recovery
+        # block, config lives in top-level fields" shape, but the message shown to the person
+        # rides the generic `value` field (VALUE_LABELS covers this in action_registry.py)
+        # rather than a dedicated `handover_message` field, since that's the one thing every
+        # action-kind editor already renders a labeled text box for.
+        if "recovery" in patch:
+            raise ValueError("handover_step_cannot_patch_recovery")
+        invalid_keys = sorted(
+            set(patch) - {
+                "intent", "semantic_description", "action", "validation", "value", "frame",
+                "handover_on_failure", "handover_resume_when", "handover_resume_when_timeout_ms",
+            }
+        )
+        if invalid_keys:
+            raise ValueError("handover_step_allows_only_handover_fields")
+        message = str(merged.get("value") or "").strip()
+        if not message:
+            raise ValueError("handover_message_empty")
+        if "handover_on_failure" in patch:
+            on_failure = str(patch.get("handover_on_failure") or "").strip().lower()
+            # No use_default: a hand-over produces no answer value, so there's nothing to fall
+            # back to — only abort (default) or continue past it are meaningful.
+            if on_failure not in {"abort", "continue"}:
+                raise ValueError("handover_on_failure_invalid")
+        if "handover_resume_when" in patch:
+            resume_when = patch.get("handover_resume_when")
+            if resume_when is not None and not isinstance(resume_when, dict):
+                raise ValueError("handover_resume_when_must_be_object")
+        if "handover_resume_when_timeout_ms" in patch:
+            timeout_ms = patch.get("handover_resume_when_timeout_ms")
+            if timeout_ms is not None and (not isinstance(timeout_ms, (int, float)) or timeout_ms <= 0):
+                raise ValueError("handover_resume_when_timeout_ms_invalid")
     if act in {"if_present", "try_dismiss", "wait_for_one_of"}:
         invalid_keys = sorted(
             set(patch)

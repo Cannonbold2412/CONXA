@@ -905,6 +905,24 @@ the new item below this one.
 ---
 
 ### EXEC-21 — Human review points: record where a person is genuinely needed, and pause there
+- **Status (2026-09-15):** the **hand-over** shape shipped — a first-class `handover` step type
+  (`runtime/app/handover.js`, `run.js`'s pre-dispatch interception, `server.js`'s park/resume,
+  authoring via `action_registry.py`/`patch_gate.py`/`skill_package_builder_saved_skill.py`, see
+  `docs/TRD.md` §10.10 and `docs/Backend-Schema.md` §3.4k for the full mechanism). Reused EXEC-13's
+  park-and-resume primitive as specified, with the two differences this entry called out in
+  advance: the host lock is released (not held) for the pause — `PARK_TTL_MS` stayed the wrong
+  lifetime for a person, so hand-over gets its own person-scale `HANDOVER_PARK_TTL_MS` (30 min
+  default) instead — and the resume is now driven by three signal sources with no EXEC-13
+  equivalent (an in-page banner via `context.exposeBinding`, a file drop mirroring the scheduler
+  daemon's own command pattern plus a `conxa-runtime.exe resume` CLI subcommand, and a token-gated
+  loopback HTTP listener — the runtime's first-ever inbound network surface, armed only while a
+  hand-over is pending). The resume is self-driven: the long-lived runtime process calls its own
+  `execute_skill` handler the instant any signal fires, with no agent polling required. **Deferred,
+  not built:** approve/reject and supply-a-judgement, the other two shapes — see the unchanged
+  description below for what each still needs. **Known gap carried forward:** a `handover` step
+  authored inside a `for_each` loop body has no compile-time guard yet (unwinding the loop on the
+  pause loses the iteration cursor — the runtime propagates rather than silently corrupting, but
+  nothing stops the authoring). 725 new/updated runtime tests, 13 new cloud pytest cases, all green.
 - **Category:** Execution & Recovery / Builder / Product Strategy
 - **Description:** A recorded, compiled, first-class step type marking a point in a workflow where a **human** — not a model — has to be involved, plus the runtime behaviour that pauses there and resumes afterwards. Three shapes, all authored rather than discovered at run time: **approve/reject** (run pauses, a person confirms, run continues or aborts); **supply a judgement** (run pauses, a person provides a value later steps consume — which category, which record, is this a duplicate); and **hand over** (a person takes over the live browser, does the part only they can do, and hands control back). The review is presented **in the Chromium instance the runtime is already driving on the customer's own machine** — the person sees the real page in the state the run left it in and answers there. No review UI in the cloud, no run state leaving the machine.
 - **Why required:** `docs/PRD.md` §14.1 makes this current Horizon 1 scope, and §8 (*Human review points*) describes it as product capability — flagged there as being built, not shipped. It also reverses a previous product position: the Workflow Qualification Checklist used to treat a mid-flow human decision as a shape problem to be engineered around by splitting the workflow in two. That checklist has been revised, so the capability now has to exist to match what the PRD promises.

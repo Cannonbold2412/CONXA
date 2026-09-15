@@ -77,6 +77,7 @@ const {
   extractZipOnce,
   uniqueDownloadName,
 } = require("./uploads");
+const handover = require("./handover");
 const { dismissAgentNominated } = require("./dismiss_patterns");
 const learnedDismissals = require("./learned_dismissals");
 
@@ -234,6 +235,54 @@ async function executeOneStep(ctx, state, steps, i) {
       return;
     }
     throw Object.assign(new Error("ai_review_pause"), { reviewPause: true, stepIndex: i, step, page });
+  }
+
+  // EXEC-21 (hand-over shape): a step the recording deliberately left for a PERSON, not the
+  // agent — 2FA, a CAPTCHA, an e-signature. Like ai_review, this is a planned pause: no
+  // selector, no identity_bundle, never reaches executeStep/HANDLERS or the recovery cascade.
+  // Two speeds (see handover.js's header): most hand-overs finish inside HANDOVER_INCALL_MS and
+  // never leave this function — the person clicks the in-page banner and execution just
+  // continues in this same call. If they haven't by then, this throws a distinct non-recovery
+  // signal (mirroring ai_review_pause) that server.js parks the page on and returns a pause
+  // response for; the SAME armed banner/file/http signals stay live on the parked page, so the
+  // eventual resume is driven by the person's own click, not by another MCP call polling in.
+  // A resumed call binds `__handover_done_<i>` into inputs (server.js's resume path) after
+  // re-validating the page — this interception just consumes that marker and moves on.
+  if (step.type === "handover") {
+    const doneKey = `__handover_done_${i}`;
+    if (Object.prototype.hasOwnProperty.call(state.inputs, doneKey)) {
+      delete state.inputs[doneKey];
+      state.hasExecutedStep = true;
+      state.prevStepType = step.type;
+      state.prevPage = page;
+      return;
+    }
+    if (!ctx.context) {
+      // No browser context threaded through (e.g. a unit test harness that calls runPlan
+      // directly) — fail loud rather than silently skipping the human gate.
+      throw stepFailure(step, i, new Error("handover: no browser context available to arm"), null, state.warnings);
+    }
+    const armed = await handover.arm(ctx.context, page, step, ctx.runCtx && ctx.runCtx.runId);
+    const winner = await Promise.race([
+      armed.signal,
+      new Promise((resolve) => setTimeout(() => resolve(null), handover.HANDOVER_INCALL_MS)),
+    ]);
+    if (winner) {
+      await armed.disarm();
+      const revalidated = await handover.revalidate(ctx.tabs, step, ctx.watch).catch((e) => {
+        ctx.tracker.emit("step_fail", { si: i, fc: "handover_revalidation_failed" });
+        throw stepFailure(step, i, e, null, state.warnings);
+      });
+      ctx.tracker.emit("handover_resumed", { si: i, via: winner, inCall: true });
+      state.hasExecutedStep = true;
+      state.prevStepType = step.type;
+      state.prevPage = revalidated;
+      return;
+    }
+    // In-call wait expired — hand the still-armed signal sources to server.js so it can park
+    // the page and let the eventual resume drive itself; disarm() is NOT called here, the park
+    // owns armed's lifetime until it resumes or discards.
+    throw Object.assign(new Error("handover_pause"), { handoverPause: true, stepIndex: i, step, page, armed, dryRun: ctx.dryRun });
   }
 
   // EXEC-38 — "for each row, do steps A-C". Runs its body through THIS SAME function (recovery,
@@ -561,9 +610,13 @@ async function runForEachStep(ctx, state, step, page, i) {
         }
         processed++;
       } catch (bodyErr) {
-        // Cancellation and an ai_review pause inside the body are never row-level failures —
-        // they must always propagate immediately regardless of on_row_error.
-        if (bodyErr && (bodyErr.cancelled || bodyErr.reviewPause)) throw bodyErr;
+        // Cancellation and an ai_review/handover pause inside the body are never row-level
+        // failures — they must always propagate immediately regardless of on_row_error. (Note:
+        // patch_gate.py refuses to compile a handover step inside a for_each body in the first
+        // place — unwinding this loop on a pause loses the iteration cursor, so resuming would
+        // restart the loop from row 0 rather than continuing the interrupted row. This branch
+        // only matters if an older/hand-authored pack manages to carry one anyway.)
+        if (bodyErr && (bodyErr.cancelled || bodyErr.reviewPause || bodyErr.handoverPause)) throw bodyErr;
         failed++;
         ctx.tracker.emit("for_each_row_fail", { si: i, row_index: idx, continued: onRowError === "continue" });
         if (onRowError !== "continue") throw bodyErr;
@@ -590,7 +643,7 @@ async function runForEachStep(ctx, state, step, page, i) {
   ctx.tracker.emit("for_each_done", { si: i, processed, failed, total: rowIds.length });
 }
 
-async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, dataDir, dryRun } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, dataDir, dryRun, context } = {}) {
   // BUILD-26 stage (f): threaded into recoverStep -> cascade.js's dismiss-overlay remedy, which
   // is the one place the runtime captures an unexpected overlay's identity even on a run that
   // ultimately passes. Optional — omitted (e.g. a Studio caller that predates this) simply
@@ -692,7 +745,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
   // rather than the best-effort, no-recovery path other branch primitives use).
   const ctx = {
     onStep, onPhase, cancelCheck, tracker: t, downloadQueue, dialogQueue,
-    tabs, watch, dryRun, slug, runCtx,
+    tabs, watch, dryRun, slug, runCtx, context, // context: EXEC-21 handover needs it to arm its banner
   };
 
   for (let i = startFrom; i < steps.length; i++) {

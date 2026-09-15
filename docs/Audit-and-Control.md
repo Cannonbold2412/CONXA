@@ -83,11 +83,15 @@ actually blocking anything, so a misconfigured window is caught by the dashboard
 stops a real run. An admin flips `enforce: true` once satisfied.
 
 **Not built:** require-approval-before-step (a step type that pauses for a human decision
-before acting). This needs a human answerer at the pause point — EXEC-13's `ai_review`
-step exists and uses this exact pause/resume mechanism, but its answerer is the MCP agent
-itself, which would make "approval" self-approval and is not evidence an auditor accepts.
-This is deferred until EXEC-21 (human review points, tracked separately in `TODO.md`)
-ships a genuine human-in-the-loop answerer.
+before acting). This needs a human ANSWERING A YES/NO DECISION at the pause point — EXEC-13's
+`ai_review` step exists and uses this exact pause/resume mechanism, but its answerer is the MCP
+agent itself, which would make "approval" self-approval and is not evidence an auditor accepts.
+EXEC-21 (tracked in `TODO.md`) shipped its **hand-over** shape (2026-09-15) — a genuine
+human-in-the-loop pause, but for a person *acting* on the page (2FA, a CAPTCHA, an e-signature),
+not for a person *deciding* whether the run should proceed. It is the wrong shape for this
+control: a hand-over produces no yes/no verdict to gate on, only a "done" signal. This item
+stays deferred until EXEC-21's still-open **approve/reject** shape ships a real decision
+answerer.
 
 ---
 

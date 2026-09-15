@@ -309,6 +309,17 @@ the checkpoint itself through the metered cloud LLM proxy and resumes, the same 
 would over MCP on a customer's machine (at zero cost there, since that path runs on the customer's
 own Claude subscription).
 
+**Hand-over step authoring (EXEC-21, hand-over shape, 2026-09-15):** `handover` (§10.10 of
+`docs/TRD.md`) is `ai_review`'s human sibling in the Add-action menu — same "no selector, no
+Validation panel" shape, but the generic Value field (labelled "Message shown to the person" here,
+rather than an output binding name) is the message a person sees on the pause banner, since that's
+the one thing every hand-over must have and it's the field every action-kind editor already
+renders. On-failure is narrower than `ai_review`'s (abort / continue — no "use a default", since a
+hand-over produces no answer value). Testing one in the Build Studio requires an actual person: the
+sandbox forces a visible browser and shows the same in-page banner a production run would, and the
+tester clicks it themselves to resume — there is no cloud-proxy stand-in the way `ai_review`'s
+sandbox answerer provides, because nothing but a person can do what a hand-over step exists for.
+
 **"Treat as optional?" suggestion (recording-next-steps.md Priority 2, 2026-07-10):** the recorder
 now observes (never probes) whether a step's target sat inside what looked like an optional
 interstitial — a dialog or cookie/consent banner — during recording, and flags it advisory-only;

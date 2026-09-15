@@ -568,6 +568,30 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
             out["output_name"] = output_name
         return _copy_saved_common(step, out)
 
+    if action == "handover":
+        # EXEC-21 (hand-over shape): a planned pause, no selector — the human sibling of
+        # ai_review immediately above. The message shown to the person rides the generic value
+        # field (see action_registry.py's VALUE_LABELS) rather than a dedicated
+        # `handover_message` field; everything else lives in top-level `handover_*` fields, same
+        # convention as ai_review's `ai_review_*` fields.
+        message = _action_value_text(step).strip()
+        if not message:
+            return None
+        out: dict[str, Any] = {
+            "type": "handover",
+            "message": message,
+            # No use_default here (unlike ai_review) — a hand-over produces no answer value to
+            # fall back to, only abort (default) or continue past it are meaningful.
+            "on_failure": str(step.get("handover_on_failure") or "abort").strip().lower(),
+        }
+        resume_when = step.get("handover_resume_when")
+        if isinstance(resume_when, dict) and resume_when:
+            out["resume_when"] = resume_when
+            timeout_ms = step.get("handover_resume_when_timeout_ms")
+            if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
+                out["resume_when_timeout_ms"] = int(timeout_ms)
+        return _copy_saved_common(step, out)
+
     if action in {"if_present", "try_dismiss", "wait_for_one_of"}:
         return _saved_branch_step(step, action)
 

@@ -380,6 +380,11 @@ but never dispatched or verified. See §10.6a's sibling section for the full mec
 `ai_review` step type's resume payload, parallel to `step_overrides` but bound straight into
 `inputs` rather than run through `applyStepOverrides`. See §10.9.
 
+**EXEC-21 (hand-over shape)**: no new `execute_skill` parameter — a hand-over pause is resumed by
+calling `execute_skill` again with `resume_from` alone (there is no structured answer to pass, and
+the resume is normally self-driven anyway, see §10.10) or, outside any MCP call at all, via a file
+drop / `conxa-runtime.exe resume <run_id>` / a token-gated loopback HTTP POST. See §10.10.
+
 There is no `refresh_skills` tool — skill pack sync runs automatically on startup
 (`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails a
 real on-disk checksum mismatch. Before that gate, `ensureSkillIntegrity` re-reads the
@@ -3388,6 +3393,99 @@ already work, but nothing writes the asset (`_write_saved_visual_assets` only ev
 *recorded* step's `signals.visual`); and branching on a review's answer — the conditional primitives
 in §10.7 all branch on a live DOM probe, not on an `inputs` value, so a review's output can be read
 by a later step's placeholder but can't itself gate whether a step runs.
+
+### 10.10 Hand-Over Step (EXEC-21, hand-over shape)
+
+`handover` is `ai_review`'s human sibling: a planned pause, not a page action, sitting outside the
+Tier 1-4 recovery cascade for the same reasons §10.9 gives — no selector/`identity_bundle`, never
+touches `recovery_stage.js` or `retry_budget.js`. Where `ai_review` asks Claude a structured
+question, `handover` yields the live page to a **person** for the part only they can do — 2FA, a
+CAPTCHA, an e-signature, a one-off login — then reclaims it. Only this one shape of EXEC-21 (the
+backlog's "hand-over" case) is built; the other two (approve/reject, supply-a-judgement) remain
+open, tracked separately in `TODO.md`.
+
+**No new browser, no new network capability the runtime didn't already half-have.** Playwright's
+connection to a page is bidirectional: `context.exposeBinding` installs a function inside the
+page's JS world that calls straight back into this Node process, which is what lets a person's
+click on an in-page banner resume execution with no polling and no MCP round-trip. The one
+genuinely new thing is `runtime/app/handover.js`'s loopback HTTP listener (`127.0.0.1`, random
+port, per-pause token) — the runtime's first-ever inbound network surface, deliberately scoped to
+exist only while a hand-over is pending, closed on disarm.
+
+**Three independent resume signals, one race:** a banner injected via `context.addInitScript` +
+an immediate `evalOn` on every live page (so it survives navigation and appears on a tab the
+person opens); a file drop at `~/.conxa/resume/<run_id>.cmd`, watched with `fs.watch` plus a 5s
+poll fallback — the exact pattern `scheduler_daemon.js`'s command drain already uses — paired with
+a `conxa-runtime.exe resume <run_id>` CLI subcommand (dispatched in `bootstrap.js` alongside
+`register-mcp`, before any app-layer resolution, since it's a pure filesystem write); and the
+loopback HTTP listener above. Whichever fires first wins; `handover.js::arm()` returns `{signal,
+disarm}`, and `disarm()` — idempotent — tears down all three.
+
+**Two speeds:** `run.js` races the armed signal against `CONXA_HANDOVER_INCALL_MS` (default 120s,
+comfortably under `EXECUTION_DEADLINE_MS`). If the person is already there (the common case — a
+2FA code, a CAPTCHA), the run continues inside the *same* `execute_skill` call, no park, nothing
+for the agent to do. If not, `run.js` throws a distinct `handoverPause` signal (mirroring
+`reviewPause`) carrying the still-armed `armed` object; `server.js` parks the page — same `_parks`
+map, same `capturePageFingerprint` divergence machinery as `ai_review`'s park — and returns a
+pause response. Three deliberate differences from `ai_review`'s park:
+
+- **The host lock is released, not held**, for the length of the pause (`_hostRelease()` called
+  before parking, `hostRelease: null` stored) — `ai_review`'s pause is model-scale (~180s,
+  `PARK_TTL_MS`), so holding §10.1's platform lock the whole time is cheap; a hand-over is
+  person-scale (`HANDOVER_PARK_TTL_MS`, default 30 minutes), and holding it that long would starve
+  every sibling run touching the same platform until each died on its own `EXECUTION_DEADLINE_MS`.
+  Re-acquired on resume, gated on `hostRelease == null`, in the same `if (_park) {…}` branch that
+  adopts the parked browser/context/page.
+- **Extra tabs are not closed** on park — the person may be mid-flow in a popup (an OAuth window,
+  a document viewer) that the run itself opened.
+- **No divergence-triggered refusal.** `ai_review`'s resume distrusts a page that moved underneath
+  it (§10.9's re-ask loop). A hand-over's whole point is letting a person change the page — drift
+  is success, not a signal to distrust. What actually gates a resume is `handover.js::revalidate()`:
+  it re-resolves the recorded tab through `tabs.js::resolveStepPage` (the same tab-chain Key
+  Invariant every other step honors — never fall back to "whatever page is current"), confirms it
+  isn't closed, and — if the step declared `resume_when` — requires that probe true before handing
+  control back. Any of those failing is a clean step failure, never a blind continue.
+
+**The resume is self-driven, not agent-polled.** The pause-creation branch in `server.js` attaches
+`armed.signal.then(...)` before returning the pause response; whenever any signal fires — seconds
+or hours later, long after that MCP call returned — this same long-lived runtime process calls its
+own `_handleTool("execute_skill", { resume_from, watch: true })`, the identical path an agent's own
+explicit resume call would take. There is no separate "internal resume" code path to drift out of
+sync with the external one. (Consequence for the Build Studio sandbox specifically: `call_runtime_tool`
+caches the spawned runtime process for `_IDLE_TIMEOUT_S = 300` seconds of inactivity — long enough
+for a quick 2FA/CAPTCHA test, but a hand-over left pending past 5 minutes in a Studio test run gets
+its cached process torn down, killing the parked browser. This limitation is specific to sandbox
+testing; a real Claude Desktop MCP session is one long-lived process for the whole chat and has no
+such ceiling.)
+
+**Compiles from Human Edit like `ai_review`:** `action_registry.py` adds `"handover"` alongside
+`"ai_review"` (validation category, value-bearing) — but where `ai_review`'s generic value field
+carries the output binding name, `handover`'s carries the **message shown to the person** (see
+`VALUE_LABELS`), so no new renderer field is needed for the one thing every hand-over must have.
+Everything else (`on_failure` ∈ `{abort, continue}` — no `use_default`, since a hand-over produces
+no answer value to fall back to; an optional `resume_when` probe + timeout) rides top-level
+`handover_*` fields, validated by `patch_gate.py` and flattened by
+`skill_package_builder_saved_skill.py` into `{type: "handover", message, on_failure, resume_when?,
+resume_when_timeout_ms?}` — the same `ai_review_*` convention, same drop-with-no-message-set
+behavior as a blank `ai_review_prompt`.
+
+**A step type an older runtime doesn't recognize now fails loud, not silently.** Before EXEC-21,
+`handlers.js::executeStep` looked up `HANDLERS[step.type]` and simply did nothing on a miss —
+harmless for a genuinely decorative marker, but a replayed pack whose `handover` gate predates the
+runtime's support for it would vanish the same way, letting whatever the gate exists to guard
+(often the destructive step right after it) run unguarded. `executeStep` now throws on any
+`step.type` that is neither a known handler nor one of the three types `run.js` intercepts before
+dispatch (`ai_review`, `handover`, `for_each`).
+
+**Known limitations, stated rather than engineered around:** a native `alert`/`confirm`/`prompt`
+cannot be operated by a person during a hand-over — Playwright intercepts dialogs at the CDP level
+the instant a `dialog` listener is attached (every run has one, for `dialog_accept`/`dismiss`
+steps), and no configuration lets a real user click one on a Playwright-driven page; a hand-over
+inside a `for_each` loop body is not resumable (unwinding the loop on the pause throws away the
+iteration cursor) — `run.js` propagates a `handoverPause` out of the loop body exactly like a
+`cancelled`/`reviewPause` signal rather than treating it as a row failure, but there is no
+compile-time guard yet rejecting a `handover` authored inside a loop body (tracked in `TODO.md`);
+and a hand-over is not durable across a runtime restart — that is EXEC-22.
 
 ---
 
