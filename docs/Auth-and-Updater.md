@@ -259,6 +259,18 @@ On cold start (packaged only):
 
 ---
 
+### 2.1a Conxa Execute Auto-Updater (silent, non-blocking)
+
+Conxa Execute uses the same generic electron-updater feed topology as the Studio — `provider: generic`, GitHub Releases for the `.exe`/`.blockmap`, the cloud only proxying `latest.yml` — but the update itself is **silent and non-blocking**, not mandatory. There is no `UpdateRequiredScreen`, no IPC surface, and no Settings update card; the app never asks the user anything.
+
+**Feed:** `GET /api/v1/updates/execute/latest.yml` (same proxy/rewrite logic as `/updates/studio/latest.yml`, factored into a shared `_latest_yml()` helper in `updates_routes.py`) and `GET /api/v1/updates/execute-manifest` for the website download link. Driven by `CONXA_EXECUTE_VERSION` / `_WIN_URL` / `_WIN_SHA256` / `_WIN_SHA512`, set by hand on Render — see `SHIP-GUIDE.md`.
+
+**Wiring:** unlike the Studio, the feed URL and the `useMultipleRangeRequest: false` flag are declared once in `electron-builder.yml`'s `publish` block, not set at runtime via `setFeedURL()` — electron-builder writes both into `app-update.yml`, which electron-updater reads automatically. `main.js` (packaged builds only) calls `autoUpdater.checkForUpdates()` on startup and lets the library's defaults do the rest: `autoDownload` and `autoInstallOnAppQuit` are both `true`, so a found update downloads in the background and installs the next time the user quits — no progress bar, no confirmation, no relaunch prompt. A failed check or download is swallowed (`.catch(() => {})` / a no-op `"error"` listener) rather than surfaced anywhere.
+
+**Why the divergence:** the Studio's blocking update exists because a stale Studio can silently miscompile skills — correctness risk that justifies interrupting the user. Execute is a thin MCP caller with no compile step; a version behind for a few days has no correctness consequence, so there is nothing here worth a blocking screen for.
+
+---
+
 ### 2.2 Runtime Self-Updater (bootstrap.js + server.js + manifest_signer.py)
 
 > The flat-file `update.bat` / `runtime.exe.next` / `runtime-update-pending.json` mechanism described

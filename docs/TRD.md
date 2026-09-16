@@ -239,6 +239,9 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/updates/conxa-runtime-manifest` | **Deprecated** — thin shim reading the same `component_versions` KV data, kept only for runtimes that haven't picked up the manifest-driven self-updater. | Public |
 | `GET /api/v1/updates/conxa-app-manifest` | **Deprecated** — same shim pattern as above. | Public |
 | `GET /api/v1/updates/studio-manifest` | Studio download info | Public |
+| `GET /api/v1/updates/studio/latest.yml` | electron-updater generic-provider feed for Build Studio — proxies GitHub's `latest.yml`, rewriting relative `files[].url` to absolute | Public |
+| `GET /api/v1/updates/execute-manifest` | Conxa Execute download info | Public |
+| `GET /api/v1/updates/execute/latest.yml` | electron-updater generic-provider feed for Conxa Execute — same proxy/rewrite as the Studio one | Public |
 | `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — `since` is a JSON map of `{skill_slug: last_known_version}`; response is `{skills: [{name, action: "update"|"no_change", group, version?, files?}]}`. Each skill is compared and shipped independently — republishing one skill never triggers a re-download of the others. `group` is the skill's `group_id` (or `"_default"`), telling the runtime which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to sync into (§5.2a). Authenticated by installer-embedded sync_token. | Bearer: `pack.json.sync_token`; 401 if invalid |
 | `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
 | `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |

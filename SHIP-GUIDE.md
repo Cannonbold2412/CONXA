@@ -370,6 +370,24 @@ There is no dev/stable manifest system for Build Studio. It ships differently:
    dashboard and the Studio's own self-updater read from — is driven entirely by these env
    vars. Nothing promotes automatically the way conxa-app/conxa-runtime do.
 
+### Conxa Execute — no promotion step, this one is manual
+
+Same shape as Build Studio, its own tag prefix and env vars:
+
+1. Commit your change.
+2. Tag it:
+   - `execute-v0.1.1-beta.1` to test — marks the GitHub Release `prerelease`, so it will
+     **not** reach the stable auto-update channel.
+   - `execute-v0.1.1` for a real release.
+
+   Either tag triggers `build-execute.yml`, which runs `electron-builder publish` straight
+   to a GitHub Release.
+3. **To make it live**, manually update Render env vars on the `conxa-api` service:
+   `CONXA_EXECUTE_VERSION`, `CONXA_EXECUTE_WIN_URL`, `CONXA_EXECUTE_WIN_SHA256`, and
+   `CONXA_EXECUTE_WIN_SHA512`. The `/api/v1/updates/execute-manifest` endpoint and the
+   `/api/v1/updates/execute/latest.yml` feed the installed app's own silent updater reads
+   are driven entirely by these env vars.
+
 ### If the source repo goes private, does any of this change?
 
 No — same tags, same triggers, same `workflow_dispatch` for promotion. The one thing that
