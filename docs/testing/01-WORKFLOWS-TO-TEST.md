@@ -792,6 +792,154 @@ Use the standard log block from "How to work" above for both legs. If either bra
 
 ---
 
+## WF-14 — AI Review step: reasoning checkpoint (EXEC-13)
+
+**Sites:** S11 (en.wikipedia.org) + S3 (demoqa.com/text-box) · **Tabs:** 1
+
+`ai_review` is an author-placed reasoning checkpoint (`docs/TRD.md` §10.9) — it pauses the run,
+asks Claude a structured question about the live page, and binds the answer into a later step. It
+sits outside the recovery cascade (no tokens spent unless this step fires, on purpose) and must
+never be answered by guessing — always verify a real pause happened and a real answer came back.
+
+### Stage 1 — Record, insert the review step, and verify compile
+1. Record (~4 steps): `en.wikipedia.org` → search box → type `Marie Curie` → Enter → land on the
+   article; then `demoqa.com/text-box` → click **Full Name** → type placeholder `test` → **Submit**.
+   Stop recording.
+2. In the editor, select the step right after the Wikipedia article loads and insert an **AI
+   Review** step:
+   - **Prompt:** `Read the visible page text and classify this Wikipedia article's subject into exactly one of: person, place, organization, event, other. Reply with only the category word.`
+   - **Output schema:** enum of `person | place | organization | event | other`.
+   - **Output name:** `article_category` (becomes the `{{article_category}}` placeholder).
+   - **On failure:** `use_default`, **Default value:** `other`.
+3. Replace the demoqa **Full Name** field's recorded value (`test`) with `{{article_category}}`, so
+   the review's answer is what actually gets typed. Save. Compile.
+4. Verify: the compile report shows one `ai_review` step with your prompt/schema/`on_failure`, not
+   silently dropped (only a blank prompt gets dropped); the demoqa step's value shows the
+   `{{article_category}}` token, not the literal `test`.
+5. Safety-gate check: try inserting a **destructive** step (e.g. delete/remove) directly after the
+   AI Review step and save. **Expect the patch gate to refuse the save** — PROD-3's
+   `destructive_step_cannot_directly_follow_ai_review` rule: a review answer has no entity binding,
+   so it can gate *whether* a later step runs but never supply *what* a destructive step acts on.
+   Remove that destructive step before continuing.
+
+### Stage 2 — Replay in the Studio sandbox (self-answering path)
+1. Run **Studio Run Test** 5 times. The sandbox has no agent in the loop, so `cmd_test_workflow`
+   answers each pause itself through the metered cloud LLM proxy.
+2. Expect every run to complete; demoqa's Full Name field ends up filled with one of `person /
+   place / organization / event / other` (Marie Curie → expect `person`); each report shows exactly
+   one `ai_review` pause answered. Studio caps at 5 pauses per test run (a safety limit against a
+   misconfigured workflow holding the sandbox's host-lock open forever) — a 6th pause in one run
+   hitting the cap is expected behavior, not a bug, if you engineer a workflow with 6+ review steps.
+
+### Stage 3 — Replay via real MCP: pause, bad answer, timeout, token audit
+1. Install the pack, connect Claude Desktop, call `execute_skill`. **Expect a pause, not a
+   completed run** — the review prompt, a live DOM inventory, a current-page screenshot (confirm it
+   actually shows the Marie Curie article), plus `_meta: {"conxa/ai_review": {...}}` naming the
+   exact `resume_from`/`review_results` call to make.
+2. Answer it: call `execute_skill` again with `resume_from` and
+   `review_results: {"<step_index>": "person"}`. Confirm it resumes from the same parked page (not
+   a fresh navigation) and completes with the demoqa field showing `person`.
+3. **Bad-answer path:** resume once with an answer outside the enum (e.g. `"banana"`). Expect a
+   bounded re-ask (`REVIEW_RETRY_MAX = 2`), not an immediate hard failure. Exhaust both re-asks with
+   bad answers and confirm `on_failure` applies (`use_default` → binds `other`, continues from the
+   same parked page).
+4. **Never-answered path:** trigger a pause and don't resume it. Wait past `PARK_TTL_MS` (~180s) and
+   confirm the parked browser closes itself (`Get-Process chrome,node` shows nothing leaked).
+5. **Zero-token sanity check:** every OTHER step (searches, clicks, typing) shows zero LLM calls in
+   the recovery/LLM log — only the one deliberate `ai_review` call spends tokens.
+
+**What this proves on pass:** the pause/resume contract works end-to-end for both a real agent and
+the token-free sandbox self-answer path; a bad or missing answer degrades safely (re-ask → default,
+never a crash or a silent wrong click); the destructive-step safety gate actually blocks the unsafe
+pattern in the editor.
+**Where failures go:** `TODO.md` EXEC-13; safety-gate bypass → PROD-3 immediately (same severity
+class as WF-8's B-8); pause/resume plumbing → `runtime/app/review_pause.js` / `server.js`'s
+`_resumeReviewStep`.
+
+---
+
+## WF-15 — Hand-Over step: yield the page to a person (EXEC-21)
+
+**Site:** S13 (google.com/recaptcha/api2/demo) · **Tabs:** 1 (plus any popup the CAPTCHA flow
+itself opens)
+
+`handover` is `ai_review`'s human sibling (`docs/TRD.md` §10.10) — it pauses the run and lets a
+*person*, not Claude, do the one thing only they can do (here: solve a CAPTCHA), then reclaims the
+page. Unlike `ai_review`, drift while paused is expected and fine — the whole point is letting a
+person change the page.
+
+### Stage 1 — Record, insert the hand-over, and the fast "person already there" path
+1. Record (~3 steps): go to `google.com/recaptcha/api2/demo` → click the **I'm not a robot**
+   checkbox (don't worry about solving the challenge during recording, cancel/retry after) →
+   click **Submit**. Stop recording.
+2. In the editor, insert a **Hand-Over** step immediately before the checkbox-click step:
+   - **Message:** `Please solve the CAPTCHA challenge, then let the workflow continue.`
+   - **On failure:** `abort` (only option besides `continue` — no `use_default`, a hand-over
+     produces no answer value).
+   - **Resume-when probe** (worth testing): a probe checking the checkbox now reads as checked
+     (e.g. its `aria-checked`/checked-state selector) — gates the actual resume, not just "the
+     person clicked something."
+3. Save. Compile. Confirm the compile report shows one `handover` step with your message, not
+   dropped (only a blank message gets dropped).
+4. Install the pack, connect Claude Desktop, call `execute_skill`. The moment the run reaches the
+   hand-over, **sit at the keyboard and solve the CAPTCHA yourself within 120 seconds**
+   (`CONXA_HANDOVER_INCALL_MS` default). Expect the run to continue and complete **inside the same
+   `execute_skill` call** — no pause response, no park, nothing for the agent to do; confirm via
+   the run log that no `handoverPause` event fired.
+
+### Stage 2 — Real pause: all three resume signals, host-lock release, drift tolerance
+Run three separate times, deliberately waiting past 120 seconds before touching the CAPTCHA each
+time, and resume via a different signal each run:
+
+| Run | Resume via | What to check |
+|---|---|---|
+| P1 | Click the **in-page banner** the hand-over injects (should appear on the CAPTCHA tab automatically, and re-appear if you open a new tab) | Solve CAPTCHA → click banner → run resumes and completes from the parked page |
+| P2 | `conxa-runtime.exe resume <run_id>` from a terminal (get `run_id` from the pause response) | Solve CAPTCHA first, then run the CLI command → run resumes |
+| P3 | Drop a file at `~/.conxa/resume/<run_id>.cmd` (any content) | Solve CAPTCHA, create the file (`New-Item`), confirm the `fs.watch`/poll fallback picks it up within ~5s and resumes |
+
+For each: confirm the pause response showed the page screenshot/DOM (mirrors `ai_review`'s pause
+shape); confirm the platform's `host_lock` was **released** during the pause (start a second,
+unrelated skill against a *different* site during the pause and confirm it runs immediately, not
+blocked); confirm the resume happened via the runtime's own long-lived process (check the run's own
+log timestamps against when you actually solved the CAPTCHA, not a fresh agent-initiated call).
+
+Then, reusing the same setup, confirm drift tolerance and clean-failure boundaries:
+- Trigger a pause, navigate the paused tab away and back before resuming — confirm resume still
+  succeeds (no divergence refusal, unlike `ai_review` — this is by design).
+- Trigger a pause, **close the tab** entirely before resuming (via CLI or file-drop, since the
+  banner is gone with the tab) — confirm this fails the step cleanly (tab resolution fails) rather
+  than silently continuing on whatever page happens to be current.
+- With the `resume_when` probe from Stage 1 set: trigger a pause, resume without actually
+  completing the checkbox — confirm the resume is refused/times out cleanly rather than continuing
+  on an unfinished CAPTCHA.
+
+### Stage 3 — Known limitations (confirm they fail as documented, not worse)
+- **Native dialogs:** if you can arrange a variant where a hand-over precedes a JS `alert`/
+  `confirm`/`prompt`, confirm a person genuinely cannot interact with it live (Playwright's dialog
+  listener intercepts it at the CDP level) — expect this to be a known, stated limitation, not
+  something to debug further.
+- **Hand-over inside a loop:** wrap the hand-over step in a `for_each` (e.g. loop over 2 dummy rows
+  and put the CAPTCHA hand-over inside the loop body), trigger a pause mid-loop, and resume.
+  Expect it to NOT resume at the same iteration — the loop unwinds and the iteration cursor is
+  lost. This is a stated gap (no compile-time guard yet rejects authoring a hand-over inside a loop
+  body) — log it as confirmed-expected, not a new bug, unless it does something worse (e.g. crashes
+  or silently skips the rest of the loop with a false success).
+- **Runtime restart:** trigger a pause, then restart the runtime process entirely before resuming.
+  Expect the hand-over to be lost (not durable across a restart — this is EXEC-22, separately
+  tracked, not part of this test).
+
+**What this proves on pass:** all three resume signals work independently; the fast "person already
+there" path never parks or spends a token; the platform lock releases during a long pause so
+sibling runs aren't starved; drift during a hand-over is tolerated by design while a closed tab or
+failed probe still fails cleanly; the documented limitations (dialogs, loop bodies, restarts) fail
+exactly as documented and not worse.
+**Where failures go:** `TODO.md` EXEC-21 (built shape) / EXEC-22 (restart durability, separately
+tracked) / loop-guard gap (tracked, not urgent unless it fails unsafely); host-lock starvation →
+`runtime/app/host_lock.js`; any silent continue after a closed tab or failed probe → treat as a
+safety bug, same severity class as WF-8's B-8.
+
+---
+
 ## What to watch for across ALL workflows (known gaps these tests exercise)
 
 - **Tab-landing correctness** — next action after any switch lands in the expected tab (EXEC-5 #43).
