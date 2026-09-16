@@ -125,6 +125,45 @@ function scrollBy([x, y]) {
   window.scrollBy(x, y);
 }
 
+// BUILD-30: advance a virtualized container's scroll position by roughly one screenful, or
+// reset to the top once the bottom is reached (so a recorded row above the current position is
+// still reachable on a later pass). Called via Locator.evaluate(), so `el` is the container
+// element Playwright already resolved — self-contained, no closure over module scope (see the
+// file-header note: these functions are re-serialized and run standalone in the page realm).
+function scrollVirtualContainerStep(el) {
+  if (!el) return { advanced: false };
+  const before = el.scrollTop;
+  const step = Math.max(el.clientHeight || 300, 100);
+  const atBottom = before + el.clientHeight >= el.scrollHeight - 2;
+  el.scrollTop = atBottom ? 0 : before + step;
+  return { advanced: el.scrollTop !== before };
+}
+
+// BUILD-30: no compiled virtualized_container hint and no entity binding to key a selector
+// off — find the page's (or frame's) own dominant scrollable element (largest
+// scrollHeight - clientHeight among auto/scroll-overflow elements) and scroll it the same way.
+// For a virtualized listbox or long dropdown with nothing else to go on. Runs via Page/Frame
+// .evaluate() (no element argument), so it reads `document` directly.
+function scrollDominantScrollableElement() {
+  let best = null;
+  let bestRange = 0;
+  const all = document.querySelectorAll("*");
+  for (const el of all) {
+    const range = el.scrollHeight - el.clientHeight;
+    if (range <= 40 || range <= bestRange) continue;
+    const style = getComputedStyle(el);
+    if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
+    best = el;
+    bestRange = range;
+  }
+  if (!best) return { advanced: false };
+  const before = best.scrollTop;
+  const step = Math.max(best.clientHeight || 300, 100);
+  const atBottom = before + best.clientHeight >= best.scrollHeight - 2;
+  best.scrollTop = atBottom ? 0 : before + step;
+  return { advanced: best.scrollTop !== before };
+}
+
 function getScrollY() {
   return window.scrollY;
 }
@@ -135,6 +174,51 @@ function preStepSignature(sel) {
   return {
     textLen: (document.body && document.body.innerText || "").length,
     interactiveCount: document.querySelectorAll(sel).length,
+  };
+}
+
+// EXEC-37: settle-detection signature, extending preStepSignature with a total node count (a
+// coarser churn signal than interactiveCount alone) and a busy-indicator count. Self-contained —
+// no reference to any outer module scope — because this runs serialized into the page realm
+// (see this file's "in-page" obfuscation-profile note at the top: no module-scope decoder var
+// survives re-parsing there). Zero-arg by design so settle.js never needs to thread a selector
+// arg through evalOn.
+function settleSignature() {
+  var interactiveSel = 'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"]';
+  var busySel = '[aria-busy="true"], [role="progressbar"], .spinner, .loading, .loader, [class*="spinner" i]';
+  function isVisible(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    var cs = window.getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none";
+  }
+  var busyCount = 0;
+  var busyEls = document.querySelectorAll(busySel);
+  for (var i = 0; i < busyEls.length; i++) {
+    if (isVisible(busyEls[i])) busyCount++;
+  }
+  return {
+    textLen: (document.body && document.body.innerText || "").length,
+    interactiveCount: document.querySelectorAll(interactiveSel).length,
+    nodeCount: document.querySelectorAll("*").length,
+    busyCount: busyCount,
+  };
+}
+
+// EXEC-36: replay-side counterpart to recorder/session.py::_write_environment_sync's capture
+// script — same field shape, evaluated against the LIVE page instead of the recording page, so
+// env_match.js can compare the two. Self-contained for the same "in-page" reason as
+// settleSignature above.
+function environmentSignature() {
+  var d = new Intl.DateTimeFormat().resolvedOptions();
+  return {
+    locale: navigator.language || "",
+    timezone: d.timeZone || "",
+    utc_offset_minutes: -new Date().getTimezoneOffset(),
+    viewport: { w: window.innerWidth, h: window.innerHeight },
+    device_pixel_ratio: window.devicePixelRatio || 1,
+    date_format_sample: new Date(2026, 0, 31).toLocaleDateString(),
+    platform: navigator.platform || "",
   };
 }
 
@@ -237,18 +321,61 @@ function overlayProbe() {
   const coverage = (Math.max(0, rect.width) * Math.max(0, rect.height)) / (vw * vh);
   if (coverage < 0.05) return null; // a slim sticky header is not "the story"
 
+  // BUILD-26 stage (f): a duplicate of extractDescriptor's field shape, not a call to it —
+  // page.evaluate() re-parses overlayProbe's source standalone in the page realm (see this
+  // file's header comment), so it cannot close over or call the sibling extractDescriptor
+  // function above. Same six fields resolver.js::scoreCandidate reads (role/name/text/testid/
+  // anchorNeighbors/_hashPayload), without extractDescriptor's dynamic-class-token filtering —
+  // unnecessary here since only role/name/text/testid ever become a selector, filtered again
+  // server-side by selector_filters.py::selector_passes_filters before anything is proposed.
+  function controlDescriptor(el) {
+    const tag = el.tagName.toLowerCase();
+    const ariaLabel = el.getAttribute("aria-label") || "";
+    const text = (el.innerText || el.value || el.getAttribute("placeholder") || "").trim().slice(0, 80);
+    const name = (ariaLabel || text || el.getAttribute("placeholder") || "").slice(0, 120);
+    const testid = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-test-id") || "";
+    const role = el.getAttribute("role") || (tag === "button" ? "button" : tag === "a" && el.hasAttribute("href") ? "link" : "");
+    if (!name && !text && !testid && !el.id) return null;
+    const neighbors = [];
+    const pushText = (n) => {
+      const t = (n && n.textContent || "").trim();
+      if (t && t.length < 60) neighbors.push(t);
+    };
+    pushText(el.parentElement);
+    return {
+      tag, role: role || undefined, name, text: text || undefined,
+      testid: testid || undefined, id: el.id || undefined,
+      anchorNeighbors: neighbors,
+      _hashPayload: `${tag}|id=${el.id || ""}|${name}`,
+    };
+  }
+
   const controls = Array.from(container.querySelectorAll(
     'button, a[href], input, [role="button"], [role="link"]'
-  )).slice(0, 15).map(el => {
-    const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().slice(0, 80);
-    const tag  = el.tagName.toLowerCase();
-    const type = el.getAttribute("type")        || "";
-    const role = el.getAttribute("role")        || "";
-    const id   = el.id                          || undefined;
-    const dt   = el.getAttribute("data-testid") || el.getAttribute("data-test") || undefined;
-    if (!text && !type && !id && !dt) return null;
-    return { tag, type: type || undefined, role: role || undefined, text: text || undefined, id, "data-testid": dt };
-  }).filter(Boolean);
+  )).slice(0, 15).map(controlDescriptor).filter(Boolean);
+
+  // Container selector ladder (id > role > bounded css path) — the same priority order
+  // recorder/bridge.js::buildDialogSignal uses for an observed dialog, duplicated rather than
+  // shared for the same standalone-reparse reason as controlDescriptor above.
+  function containerSignal(el) {
+    if (el.id) return "#" + (window.CSS && CSS.escape ? CSS.escape(el.id) : el.id.replace(/[^a-zA-Z0-9_-]/g, c => "\\" + c));
+    const role = el.getAttribute("role") || (el.getAttribute("aria-modal") === "true" ? "dialog" : "");
+    if (role) return `[role="${role}"]`;
+    const parts = [];
+    let cur = el, depth = 0;
+    while (cur && cur.nodeType === 1 && depth < 6) {
+      let part = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(n => n.tagName === cur.tagName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(cur) + 1})`;
+      }
+      parts.unshift(part);
+      cur = parent;
+      depth++;
+    }
+    return parts.join(" > ") || null;
+  }
 
   return {
     container: {
@@ -257,6 +384,7 @@ function overlayProbe() {
       class: container.className && typeof container.className === "string" ? container.className.slice(0, 120) : undefined,
       role: container.getAttribute("role") || undefined,
       text: (container.innerText || "").trim().slice(0, 120),
+      signal: containerSignal(container),
     },
     controls,
   };
@@ -269,9 +397,13 @@ module.exports = {
   scrollBy,
   getScrollY,
   preStepSignature,
+  settleSignature,
+  environmentSignature,
   pageFingerprint,
   domInventory,
   inventoryEntryForElement,
   overlayProbe,
   INVENTORY_SELECTOR,
+  scrollVirtualContainerStep,
+  scrollDominantScrollableElement,
 };

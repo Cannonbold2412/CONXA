@@ -10,6 +10,7 @@ from conxa_compile.compiler.decision_layer import rank_merged_anchors
 from conxa_compile.compiler.recovery_policy import merge_recovery_strategies_for_wait_shape
 from conxa_core.config import settings
 from conxa_compile.editor.assets import asset_url, resolve_skill_asset
+from conxa_compile.editor.step_path import NestedPath, StepPathError, get_nested_step, with_nested_step
 from conxa_compile.editor.step_view import skill_step_for_destructive_check
 from conxa_compile.llm import anchor_vision_llm
 from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
@@ -18,6 +19,36 @@ from conxa_compile.policy.bundle import PolicyBundle, get_policy_bundle
 _STRIP_VISUAL_IMAGE_KEYS = ("full_screenshot", "element_snapshot", "scroll_screenshot", "bbox")
 
 _FRAME_LABEL_ORDER = {"before_far": 0, "before_near": 1, "at": 2, "after_near": 3, "after_far": 4}
+
+
+def _resolve_nested_step(
+    steps: list[Any], step_index: int, nested_path: NestedPath | None
+) -> dict[str, Any]:
+    """Look up the target step at ``step_index``, or the nested step it addresses via
+    ``nested_path`` (``for_each.steps[N]`` / ``branch.steps[N]``). Shared by the three
+    screenshot-apply entry points below — see ``_resolve_step_for_visual_update`` for the
+    bbox-flow twin of this lookup."""
+    if step_index < 0 or step_index >= len(steps):
+        raise ValueError("step_index_out_of_range")
+    parent_step = dict(steps[step_index])
+    if nested_path is None:
+        return parent_step
+    try:
+        return get_nested_step(parent_step, nested_path)
+    except StepPathError as exc:
+        raise ValueError(exc.code) from exc
+
+
+def _write_nested_step(
+    steps: list[Any], step_index: int, nested_path: NestedPath | None, step: dict[str, Any]
+) -> None:
+    """Write ``step`` back at ``step_index``, or nested within it via ``nested_path`` — the
+    writeback twin of ``_resolve_nested_step``. Mutates ``steps`` in place."""
+    if nested_path is None:
+        steps[step_index] = step
+    else:
+        parent_step = dict(steps[step_index])
+        steps[step_index] = with_nested_step(parent_step, nested_path, step)
 
 
 def screenshot_items_for_skill(
@@ -118,12 +149,15 @@ def apply_recording_event_visual_to_step_or_raise(
     *,
     frame_label: str | None = None,
     policy_bundle: PolicyBundle | None = None,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
     """Return a **new** document dict with swapped ``signals.visual``, fresh vision anchors, and bumped meta.version.
 
     By default picks the event's representative screenshot. Pass ``frame_label`` (one of
     before_far/before_near/at/after_near/after_far) to instead pick one of that event's 5
     timed frames — e.g. when browsing every frame of every step, not just one per step.
+    ``nested_path`` addresses a for_each loop-body step (``for_each.steps[N]``) instead of the
+    top-level step at ``step_index`` — see retarget.py::preview_retarget's docstring.
     """
     bundle = policy_bundle or get_policy_bundle()
     policy = bundle.data
@@ -204,10 +238,7 @@ def apply_recording_event_visual_to_step_or_raise(
         raise ValueError("no_skills_block")
     block = dict(skills[0])
     steps = list(block.get("steps") or [])
-    if step_index < 0 or step_index >= len(steps):
-        raise ValueError("step_index_out_of_range")
-
-    step = dict(steps[step_index])
+    step = _resolve_nested_step(steps, step_index, nested_path)
     if action_name(step).lower() == "scroll":
         raise ValueError("cannot_swap_visual_on_scroll_step")
 
@@ -218,7 +249,12 @@ def apply_recording_event_visual_to_step_or_raise(
         raise ValueError("intent_required_for_visual_swap")
 
     session_root = (settings.data_dir / "sessions" / session_id).resolve()
-    ev_llm = {"visual": dict(persisted_visual)}
+    # The recorded event's own timed frameset (before_far/.../after_far, session-relative
+    # paths) — persisted_visual never carries this (it only stores the one chosen
+    # representative image), so without it the vision-anchor call below always raised
+    # full_screenshot_path_missing even for an event with a complete frameset on disk.
+    event_frames = visual.get("frames") if isinstance(visual.get("frames"), dict) else {}
+    ev_llm = {"visual": {**persisted_visual, "frames": event_frames}}
     anchors = anchor_vision_llm.generate_anchors_for_step_or_raise(
         ev_llm,
         session_root=session_root,
@@ -259,7 +295,7 @@ def apply_recording_event_visual_to_step_or_raise(
         policy,
     )
 
-    steps[step_index] = step
+    _write_nested_step(steps, step_index, nested_path, step)
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills
@@ -270,10 +306,13 @@ def apply_recording_event_visual_to_step_or_raise(
 
 
 def _resolve_step_for_visual_update(
-    document: dict[str, Any], step_index: int, bbox: dict[str, Any]
+    document: dict[str, Any], step_index: int, bbox: dict[str, Any], nested_path: NestedPath | None = None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Normalize the drawn bbox and look up the target step. Shared by the preview (Continue) and
-    apply-time entry points below so both validate identically."""
+    apply-time entry points below so both validate identically.
+
+    ``nested_path`` addresses a for_each loop-body step (``for_each.steps[N]``) instead of the
+    top-level step at ``step_index`` — see retarget.py::preview_retarget's docstring."""
     try:
         next_bbox = {
             "x": int(round(float(bbox.get("x") or 0))),
@@ -297,7 +336,14 @@ def _resolve_step_for_visual_update(
     if step_index < 0 or step_index >= len(steps):
         raise ValueError("step_index_out_of_range")
 
-    step = dict(steps[step_index])
+    parent_step = dict(steps[step_index])
+    if nested_path is None:
+        step = parent_step
+    else:
+        try:
+            step = get_nested_step(parent_step, nested_path)
+        except StepPathError as exc:
+            raise ValueError(exc.code) from exc
     if action_name(step).lower() == "scroll":
         raise ValueError("cannot_update_visual_bbox_on_scroll_step")
     return next_bbox, step
@@ -338,6 +384,7 @@ def preview_visual_anchors_for_bbox_or_raise(
     bbox: dict[str, Any],
     *,
     policy_bundle: PolicyBundle | None = None,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
     """Compute (without persisting) the vision anchors a redrawn region would produce.
 
@@ -346,7 +393,7 @@ def preview_visual_anchors_for_bbox_or_raise(
     ``precomputed_anchors`` param.
     """
     bundle = policy_bundle or get_policy_bundle()
-    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox)
+    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox, nested_path)
     meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
     session_id = str(meta.get("source_session_id") or "").strip()
     anchors, intent = _generate_anchors_for_bbox(step, next_bbox, session_id, bundle.data, step_index)
@@ -360,15 +407,17 @@ def update_step_visual_bbox_and_regenerate_anchors_or_raise(
     *,
     policy_bundle: PolicyBundle | None = None,
     precomputed_anchors: dict[str, Any] | None = None,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
     """Update ``signals.visual.bbox`` and apply vision-backed anchors for the current screenshot.
 
     Pass ``precomputed_anchors`` (from ``preview_visual_anchors_for_bbox_or_raise``) to reuse
-    anchors already generated at Continue instead of calling the LLM again here.
+    anchors already generated at Continue instead of calling the LLM again here. ``nested_path``
+    addresses a for_each loop-body step — see retarget.py::preview_retarget's docstring.
     """
     bundle = policy_bundle or get_policy_bundle()
     policy = bundle.data
-    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox)
+    next_bbox, step = _resolve_step_for_visual_update(document, step_index, bbox, nested_path)
     meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
     session_id = str(meta.get("source_session_id") or "").strip()
 
@@ -421,7 +470,11 @@ def update_step_visual_bbox_and_regenerate_anchors_or_raise(
         policy,
     )
 
-    steps[step_index] = step
+    if nested_path is None:
+        steps[step_index] = step
+    else:
+        parent_step = dict(steps[step_index])
+        steps[step_index] = with_nested_step(parent_step, nested_path, step)
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills
@@ -436,8 +489,13 @@ def clear_step_visual_screenshots_or_raise(
     step_index: int,
     *,
     policy_bundle: PolicyBundle | None = None,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
-    """Remove screenshot assets from ``signals.visual`` and clear vision anchors (no LLM)."""
+    """Remove screenshot assets from ``signals.visual`` and clear vision anchors (no LLM).
+
+    ``nested_path`` addresses a for_each loop-body step (``for_each.steps[N]``) instead of the
+    top-level step at ``step_index`` — see retarget.py::preview_retarget's docstring.
+    """
     bundle = policy_bundle or get_policy_bundle()
     policy = bundle.data
 
@@ -447,10 +505,7 @@ def clear_step_visual_screenshots_or_raise(
         raise ValueError("no_skills_block")
     block = dict(skills[0])
     steps = list(block.get("steps") or [])
-    if step_index < 0 or step_index >= len(steps):
-        raise ValueError("step_index_out_of_range")
-
-    step = dict(steps[step_index])
+    step = _resolve_nested_step(steps, step_index, nested_path)
 
     signals = dict(step.get("signals") or {})
     visual_prev = signals.get("visual") if isinstance(signals.get("visual"), dict) else {}
@@ -490,7 +545,7 @@ def clear_step_visual_screenshots_or_raise(
         policy,
     )
 
-    steps[step_index] = step
+    _write_nested_step(steps, step_index, nested_path, step)
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills
@@ -506,12 +561,16 @@ def apply_step_frame_or_raise(
     frame_label: str,
     *,
     policy_bundle: PolicyBundle | None = None,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
     """Set a specific video frame as the step representative and re-run vision anchors.
 
     Picks ``frame_label`` (one of before_far/before_near/at/after_near/after_far) from
     ``signals.visual.frames``, crops a new element snapshot, re-runs the vision anchor
     LLM, and bumps meta.version. Returns a new document dict.
+
+    ``nested_path`` addresses a for_each loop-body step (``for_each.steps[N]``) instead of the
+    top-level step at ``step_index`` — see retarget.py::preview_retarget's docstring.
     """
     bundle = policy_bundle or get_policy_bundle()
     policy = bundle.data
@@ -526,10 +585,7 @@ def apply_step_frame_or_raise(
         raise ValueError("no_skills_block")
     block = dict(skills[0])
     steps = list(block.get("steps") or [])
-    if step_index < 0 or step_index >= len(steps):
-        raise ValueError("step_index_out_of_range")
-
-    step = dict(steps[step_index])
+    step = _resolve_nested_step(steps, step_index, nested_path)
     if action_name(step).lower() == "scroll":
         raise ValueError("cannot_swap_frame_on_scroll_step")
 
@@ -623,7 +679,7 @@ def apply_step_frame_or_raise(
         policy,
     )
 
-    steps[step_index] = step
+    _write_nested_step(steps, step_index, nested_path, step)
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills

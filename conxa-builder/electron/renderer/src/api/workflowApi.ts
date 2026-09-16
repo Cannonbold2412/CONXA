@@ -2,6 +2,7 @@ import { cmd, CmdError } from '@/lib/ipc'
 import type { BackendEvent } from '@/lib/ipc'
 import { errorMessages } from '@/lib/errorMessages'
 import type {
+  ForEachSuggestion,
   WorkflowResponse,
   WorkflowRevalidationResponse,
   WorkflowStepMutationResponse,
@@ -158,27 +159,33 @@ export function fetchRecordingScreenshots(skillId: string): Promise<{
   return cmd('list_recording_screenshots', { skill_id: skillId })
 }
 
+// `path` addresses a nested for_each loop-body step ("for_each.steps[N]") instead of the
+// top-level step at stepIndex — see retargetPreview's `path` doc comment. Omit for an
+// ordinary top-level step.
 export function postApplyRecordingVisual(
   skillId: string,
   stepIndex: number,
   body: { event_index: number; frame_label?: string },
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('apply_recording_visual', { skill_id: skillId, step_index: stepIndex, ...body })
+  return cmd('apply_recording_visual', { skill_id: skillId, step_index: stepIndex, ...body, path })
 }
 
 export function postApplyStepFrame(
   skillId: string,
   stepIndex: number,
   frameLabel: string,
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('apply_step_frame', { skill_id: skillId, step_index: stepIndex, frame_label: frameLabel })
+  return cmd('apply_step_frame', { skill_id: skillId, step_index: stepIndex, frame_label: frameLabel, path })
 }
 
 export function postClearStepVisual(
   skillId: string,
   stepIndex: number,
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('clear_step_visual', { skill_id: skillId, step_index: stepIndex })
+  return cmd('clear_step_visual', { skill_id: skillId, step_index: stepIndex, path })
 }
 
 export function postUpdateVisualBbox(
@@ -242,13 +249,17 @@ export type RetargetPreviewResponse = {
 
 // regenerate=false reviews the already-compiled selectors (no LLM); pass true only when the
 // user re-picked the element and the selectors must be regenerated for the new target.
+// `path` addresses a nested for_each loop-body step ("for_each.steps[N]") instead of the
+// top-level step at stepIndex — see cmd_retarget_preview's `path` parameter
+// (handlers/workflow_editor.py). Omit for an ordinary top-level step.
 export function retargetPreview(
   skillId: string,
   stepIndex: number,
   bbox: Bbox,
   regenerate = true,
+  path?: string,
 ): Promise<RetargetPreviewResponse> {
-  return cmd('retarget_preview', { skill_id: skillId, step_index: stepIndex, ...bbox, regenerate })
+  return cmd('retarget_preview', { skill_id: skillId, step_index: stepIndex, ...bbox, regenerate, path })
 }
 
 export function retargetApply(
@@ -268,8 +279,11 @@ export function retargetApply(
      *  vision LLM again. Omitted/undefined on the position-only/no-preview fallback paths. */
     visual_anchors?: VisualAnchors | null
   },
+  /** Addresses a nested for_each loop-body step ("for_each.steps[N]") — see retargetPreview's
+   *  `path` doc comment. Omit for an ordinary top-level step. */
+  path?: string,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('retarget_apply', { skill_id: skillId, step_index: stepIndex, ...body })
+  return cmd('retarget_apply', { skill_id: skillId, step_index: stepIndex, ...body, path })
 }
 
 export function patchStep(
@@ -513,4 +527,213 @@ export function postAppendSkillPack(
 
 export function patchSkillPackBundleRoot(bundleRoot: string): Promise<{ bundle_root: string }> {
   return cmd<{ bundle_root: string }>('set_skill_pack_bundle_root', { bundle_root: bundleRoot })
+}
+
+// ── Human Review Copilot (BUILD-26) ──────────────────────────────────────────────────────────
+// A chat turn diagnoses from the server-assembled evidence bundle (conxa_compile/editor/
+// evidence.py — the copilot backend resolves the workflow's most recent test run on its own, no
+// run_id needed from here) and may return pre-gated proposals; the renderer never applies one
+// itself — accept delegates server-side to the exact patch_step path a manual edit takes, reject
+// only logs. See conxa_compile/editor/copilot_proposals.py for what "pre-gated" means.
+
+export type CopilotTurnMessage = { role: 'user' | 'assistant'; text: string }
+
+export type CopilotProposal = {
+  id: string
+  command: string
+  why: string
+  evidence_refs?: string[]
+  preview: { before: unknown; after: unknown }
+  // `patch_step` proposals only:
+  patch?: Record<string, unknown>
+  step_key?: string | null
+  field?: string
+  // `insert_overlay_branch` proposals only (BUILD-26 stage f) — an inserted step, not an edited
+  // field, so it carries no step_key/field of its own.
+  primitive?: 'try_dismiss' | 'if_present'
+  overlay_id?: string
+  after_step_key?: string | null
+  nested_step?: Record<string, unknown> | null
+  // `structural_op` proposals only (BUILD-26 stage g) — insert/delete/move a step, or a
+  // workflow-level edit. `op` names which; the renderer never inspects the rest itself, it just
+  // round-trips whatever the gate produced back to `accept_copilot_proposal` unchanged (see
+  // acceptCopilotProposal below) — the server is the only side that interprets these fields.
+  op?: 'insert_step' | 'delete_step' | 'move_step' | 'update_inputs' | 'replace_literals'
+  action_kind?: string
+  fields?: Record<string, unknown>
+  identity_from_step_key?: string | null
+  inputs?: unknown[]
+  find?: string
+  replace?: string
+}
+
+export type CopilotTurnResult = {
+  reply: string
+  proposals: CopilotProposal[]
+}
+
+/** `onDelta`, when given, is called with each piece of the reply's text as the model generates
+ *  it (relayed from the backend's `copilot_delta` events — see cmd_copilot_turn) — the same
+ *  `onEvent` mechanism runSkillPackStream uses, just without a terminal event to watch for
+ *  since the final `{reply, proposals}` already arrives via this call's own resolution. */
+export function copilotTurn(
+  skillId: string,
+  message: string,
+  transcript: CopilotTurnMessage[],
+  onDelta?: (text: string) => void,
+): Promise<CopilotTurnResult> {
+  if (!onDelta) return cmd('copilot_turn', { skill_id: skillId, message, transcript })
+  const unsub = window.conxa.onEvent((ev: BackendEvent) => {
+    if (ev.phase === 'copilot_delta' && typeof ev.text === 'string') onDelta(ev.text)
+  })
+  return cmd<CopilotTurnResult>('copilot_turn', { skill_id: skillId, message, transcript }).finally(unsub)
+}
+
+/** Resolves the proposal's step_key to the CURRENT step_index server-side, then patches through
+ *  cmd_patch_step — same undo entry, same edits.jsonl trail (attributed source="copilot") a
+ *  manual edit gets. Refuses with `proposal_stale` if the workflow changed since this was shown.
+ *
+ *  An `insert_overlay_branch` proposal (BUILD-26 stage f) carries no step_key — the same command
+ *  name routes server-side to a different accept path (cmd_insert_step + cmd_patch_step, +
+ *  cmd_insert_branch_step for if_present) based on `command`/`primitive` in the payload.
+ *
+ *  A `structural_op` proposal (BUILD-26 stage g) round-trips as one op in a single-item `ops`
+ *  batch — the server applies it (and any sibling ops accepted alongside it in the same call)
+ *  as one all-or-nothing change with exactly one undo entry. This function always sends a
+ *  one-element batch; a caller that wants to accept several structural proposals together should
+ *  call `acceptCopilotProposalBatch` instead. */
+export function acceptCopilotProposal(
+  skillId: string,
+  proposal: CopilotProposal,
+): Promise<WorkflowRevalidationResponse> {
+  if (proposal.command === 'structural_op') {
+    return acceptCopilotProposalBatch(skillId, [proposal])
+  }
+  return cmd('accept_copilot_proposal', {
+    skill_id: skillId,
+    step_key: proposal.step_key ?? null,
+    patch: proposal.patch,
+    proposal_id: proposal.id,
+    command: proposal.command,
+    primitive: proposal.primitive,
+    overlay_id: proposal.overlay_id,
+    after_step_key: proposal.after_step_key ?? null,
+    nested_step: proposal.nested_step ?? null,
+  })
+}
+
+/** Accepts several `structural_op` proposals as ONE batch — one document write, one undo entry,
+ *  aborting the whole batch untouched if any op in it turns out stale. Use this when the reviewer
+ *  accepts a multi-step proposal (e.g. "insert an ai_review checkpoint, then hover the result")
+ *  as a single action rather than one accept per step. */
+export function acceptCopilotProposalBatch(
+  skillId: string,
+  proposals: CopilotProposal[],
+): Promise<WorkflowRevalidationResponse> {
+  return cmd('accept_copilot_proposal', {
+    skill_id: skillId,
+    command: 'structural_op',
+    proposal_id: proposals.map((p) => p.id).join(','),
+    ops: proposals.map((p) => ({
+      op: p.op,
+      step_key: p.step_key ?? null,
+      after_step_key: p.after_step_key ?? null,
+      action_kind: p.action_kind,
+      fields: p.fields ?? {},
+      identity_from_step_key: p.identity_from_step_key ?? null,
+      inputs: p.inputs,
+      find: p.find,
+      replace: p.replace,
+    })),
+  })
+}
+
+/** Changes nothing in the compiled skill — logs the rejection so the correction dataset never
+ *  keeps only the flattering half. An insert_overlay_branch rejection sends overlay_id instead of
+ *  step_key — the backend logs it against "overlay:<overlay_id>" since there is no step to name. */
+export function rejectCopilotProposal(skillId: string, proposal: CopilotProposal): Promise<{ ok: boolean }> {
+  return cmd('reject_copilot_proposal', {
+    skill_id: skillId,
+    step_key: proposal.step_key ?? null,
+    overlay_id: proposal.overlay_id,
+    proposal_id: proposal.id,
+    field: proposal.field,
+    why: proposal.why,
+    command: proposal.command,
+  })
+}
+
+/** Archives the outgoing conversation to disk before "New session" clears it in-memory —
+ *  never blocks starting a fresh conversation; a save failure is surfaced but not fatal. */
+export function saveCopilotSession(skillId: string, transcript: CopilotTurnMessage[]): Promise<{ ok: boolean }> {
+  return cmd('copilot_save_session', { skill_id: skillId, transcript })
+}
+
+/** BUILD-26 stage g: the archive above was write-only until now — this resumes the last saved
+ *  conversation for a skill instead of always starting cold, called from copilotStore's
+ *  `ensureFor` the first time a skill's panel opens in this session. Empty when there is no
+ *  archive yet. */
+export function loadLastCopilotSession(skillId: string): Promise<{ messages: CopilotTurnMessage[] }> {
+  return cmd('copilot_load_session', { skill_id: skillId })
+}
+
+/** Applies a `compiler/loop_suggestion.py` finding — a one-click "generalize this to a loop"
+ *  suggestion (deterministic, no LLM). One atomic document write server-side
+ *  (`apply_for_each_loop_suggestion`), one undo entry, logged with source="for_each_suggestion"
+ *  in the same edits.jsonl every other proposal decision uses. Refuses with `suggestion_stale`
+ *  if the workflow changed since this was shown. */
+export function acceptForEachSuggestion(
+  skillId: string,
+  suggestion: ForEachSuggestion,
+): Promise<WorkflowRevalidationResponse> {
+  return cmd('accept_for_each_suggestion', { skill_id: skillId, suggestion })
+}
+
+/** Changes nothing in the compiled skill — logs the dismissal so this exact suggestion is
+ *  excluded from the next compile's findings (`loop_suggestion.py::filter_rejected`). */
+export function rejectForEachSuggestion(skillId: string, suggestion: ForEachSuggestion): Promise<{ ok: boolean }> {
+  return cmd('reject_for_each_suggestion', { skill_id: skillId, suggestion })
+}
+
+// ── Verified retest (BUILD-26 stage e) ───────────────────────────────────────────────────────
+// Two-phase: call with confirmed=false first to get the irreversible-step count for a confirm
+// prompt (no build, no browser); confirmed=true actually rebuilds + retests. cmd_copilot_verify
+// delegates to cmd_build_skill_package / cmd_test_workflow server-side, so their own progress
+// events (kind: 'skill_package_build' / 'workflow_test') arrive on the same channel alongside the
+// verify command's own 'copilot_verify' phase — onLog is handed all three.
+
+export type CopilotVerifyPreflight = {
+  status: 'confirm_required'
+  irreversible_count: number
+  irreversible_steps: { step_key: string; description: string }[]
+}
+
+export type CopilotVerifyOutcome = {
+  status: 'verified' | 'cancelled'
+  verdict?: 'fixed' | 'still_failing' | 'progressed'
+  run_id: string | null
+  message?: string
+}
+
+export type CopilotVerifyResponse = CopilotVerifyPreflight | CopilotVerifyOutcome
+
+export function copilotVerify(
+  skillId: string,
+  args: { stepKey: string; proposalId?: string; confirmed: boolean },
+  onLog?: (message: string) => void,
+): Promise<CopilotVerifyResponse> {
+  const payload = {
+    skill_id: skillId,
+    step_key: args.stepKey,
+    proposal_id: args.proposalId ?? null,
+    confirmed: args.confirmed,
+  }
+  if (!onLog) return cmd('copilot_verify', payload)
+  const unsub = window.conxa.onEvent((ev: BackendEvent) => {
+    if (ev.phase === 'copilot_verify' && typeof ev.text === 'string') onLog(ev.text)
+    else if ((ev.kind === 'workflow_test' || ev.kind === 'skill_package_build') && ev.message) {
+      onLog(String(ev.message))
+    }
+  })
+  return cmd<CopilotVerifyResponse>('copilot_verify', payload).finally(unsub)
 }

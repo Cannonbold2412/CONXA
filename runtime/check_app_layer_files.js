@@ -27,7 +27,7 @@ const APP_DIR = path.join(RUNTIME_ROOT, "app");
 const MANIFEST_PATH = path.join(RUNTIME_ROOT, "app-layer-files.json");
 
 // Repo-side tooling that lives in app/ but must never ship in the zip.
-const EXCLUDE = new Set(["check_recovery_purity.js"]);
+const EXCLUDE = new Set(["check_recovery_purity.js", "check_page_eval_seam.js"]);
 
 const VALID_PROFILES = new Set(["default", "no-self-defending", "in-page"]);
 

@@ -21,6 +21,7 @@ from conxa_core.storage.snapshots_gc import cleanup_old_snapshots
 
 from app.api.byok_routes import router as byok_router
 from app.api.entitlement_routes import router as entitlement_router
+from app.api.execute_bridge_routes import router as execute_bridge_router
 from app.api.job_routes import router as job_router
 from app.api.legal_routes import router as legal_router
 from app.api.llm_proxy_routes import router as llm_proxy_router
@@ -135,6 +136,7 @@ app.add_middleware(ProductionRequestMiddleware)
 app.include_router(job_router, prefix="/api/v1")
 app.include_router(byok_router, prefix="/api/v1")
 app.include_router(entitlement_router, prefix="/api/v1")
+app.include_router(execute_bridge_router, prefix="/api/v1")
 app.include_router(product_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
 app.include_router(llm_proxy_router, prefix="/api/v1")

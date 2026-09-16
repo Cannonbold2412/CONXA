@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from . import llm_client, subscription, wallet
+from . import cloud_bridge, llm_client, subscription, wallet
 from .auth import get_current_user
 
 router = APIRouter()
@@ -26,6 +26,18 @@ async def get_wallet(user_id: str = Depends(get_current_user)) -> dict:
 
 @router.get("/v1/entitlement")
 async def get_entitlement(user_id: str = Depends(get_current_user)) -> dict:
+    # A claimed Execute seat grant takes priority over personal
+    # subscription/wallet — that seat is meant to draw entirely from the
+    # granting workspace's shared AI Usage Credits pool.
+    pool = cloud_bridge.pool_check(user_id=user_id)
+    if pool.get("bound"):
+        return {
+            "mode": "workspace_pool",
+            "workspace_id": pool.get("workspace_id"),
+            "workspace_name": pool.get("workspace_name"),
+            "ok": pool.get("ok", False),
+            "remaining": pool.get("remaining"),
+        }
     sub = subscription.get_active_subscription(user_id)
     if sub is not None:
         return {
@@ -42,13 +54,28 @@ async def get_entitlement(user_id: str = Depends(get_current_user)) -> dict:
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request, user_id: str = Depends(get_current_user)) -> JSONResponse:
-    sub = subscription.get_active_subscription(user_id)
-    has_subscription_quota = sub is not None and sub["quota_used"] < sub["quota_total"]
-    if not has_subscription_quota and wallet.get_balance(user_id) <= 0:
-        return JSONResponse(
-            status_code=402,
-            content={"error": {"message": "Out of tokens — top up at /plans", "type": "insufficient_quota"}},
-        )
+    pool = cloud_bridge.pool_check(user_id=user_id)
+    pool_bound = pool.get("bound", False)
+
+    if pool_bound:
+        if not pool.get("ok"):
+            return JSONResponse(
+                status_code=402,
+                content={
+                    "error": {
+                        "message": "Your workspace's AI Usage Credits pool is exhausted",
+                        "type": "insufficient_quota",
+                    }
+                },
+            )
+    else:
+        sub = subscription.get_active_subscription(user_id)
+        has_subscription_quota = sub is not None and sub["quota_used"] < sub["quota_total"]
+        if not has_subscription_quota and wallet.get_balance(user_id) <= 0:
+            return JSONResponse(
+                status_code=402,
+                content={"error": {"message": "Out of tokens — top up at /plans", "type": "insufficient_quota"}},
+            )
 
     body = await request.json()
     body.pop("stream", None)  # run_turn.js never streams; strip defensively either way
@@ -64,6 +91,8 @@ async def chat_completions(request: Request, user_id: str = Depends(get_current_
         raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     usage = int((data.get("usage") or {}).get("total_tokens") or 0)
-    if usage and not subscription.debit_quota_if_available(user_id, usage):
+    if usage and pool_bound:
+        cloud_bridge.pool_debit(user_id=user_id, input_tokens=0, output_tokens=usage)
+    elif usage and not subscription.debit_quota_if_available(user_id, usage):
         wallet.debit_if_available(user_id, usage)
     return JSONResponse(content=data)

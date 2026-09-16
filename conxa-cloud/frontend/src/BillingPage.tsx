@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Code2,
   CreditCard,
@@ -77,7 +78,7 @@ const ENTERPRISE_PLAN: Plan = {
   features: [
     'Custom seats and installer slots',
     'Custom compile credits',
-    'Custom Human Edit pool',
+    'Custom AI Usage Credits',
     'Dedicated onboarding and support',
     'Security review and procurement support',
   ],
@@ -97,15 +98,21 @@ const METER_CONFIGS: UsageMeterConfig[] = [
     icon: PackageCheck,
   },
   {
+    key: 'execute_seats',
+    label: 'Execute Seats',
+    description: 'People with Conxa Execute access',
+    icon: Bot,
+  },
+  {
     key: 'compile_credits',
     label: 'Compile Credits',
     description: 'Fresh workflow compiles',
     icon: Code2,
   },
   {
-    key: 'human_edit_tokens',
-    label: 'Human Edit Pool',
-    description: 'LLM-assisted recovery and edits',
+    key: 'ai_usage_credits',
+    label: 'AI Usage Credits',
+    description: 'LLM-assisted recovery, edits, and Execute chat usage',
     icon: Wand2,
   },
 ]
@@ -303,7 +310,7 @@ export function BillingPage() {
         </section>
 
         <CompileCreditAddonPanel
-          wallet={entitlements?.wallet ?? { compile_credits: 0, human_edit_tokens: 0 }}
+          wallet={entitlements?.wallet ?? { compile_credits: 0, human_edit_tokens: 0, ai_usage_credits: 0 }}
           loading={entitlementsQuery.isLoading}
           processingTier={processingTier}
           onBuy={(tier) => void buyAddonPack(tier)}
@@ -446,6 +453,7 @@ function formatTokens(tokens: number) {
 type CreditWallet = {
   compile_credits: number
   human_edit_tokens: number
+  ai_usage_credits: number
 }
 
 function CompileCreditAddonPanel({
@@ -470,10 +478,10 @@ function CompileCreditAddonPanel({
             <CardTitle className="text-base text-white">Compile Credit Add-Ons</CardTitle>
             <p className="mt-0.5 text-xs text-zinc-500">
               One-time top-ups that never expire — used automatically after your monthly allowance runs out.
-              {wallet.compile_credits > 0 || wallet.human_edit_tokens > 0 ? (
+              {wallet.compile_credits > 0 || wallet.ai_usage_credits > 0 ? (
                 <span className="ml-1 text-emerald-300/90">
                   Wallet balance: {wallet.compile_credits.toLocaleString()} compiles ·{' '}
-                  {formatTokens(wallet.human_edit_tokens)} Human Edit tokens.
+                  {formatTokens(wallet.ai_usage_credits)} AI Usage Credits.
                 </span>
               ) : null}
             </p>
@@ -760,7 +768,7 @@ function PaymentOperationsPanel({
         <div className="rounded-md border border-white/8 bg-black/20 p-2.5">
           <p className="text-sm font-medium text-cyan-300">Metering policy</p>
           <p className="mt-1.5 text-xs text-zinc-500">
-            Workflow creation and recording stay unlimited. Only seats, installer slots, compile credits, and Human Edit pool are customer-visible meters.
+            Workflow creation and recording stay unlimited. Only seats, installer slots, compile credits, Execute seats, and AI Usage Credits are customer-visible meters.
           </p>
         </div>
       </CardContent>

@@ -7,20 +7,30 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib import error, request
 
 from conxa_core.config import settings
+
 from conxa_core.llm.client import (
+    VISION_TASKS,
     _chat_completions_url,
+    _copilot_modality,
     _debug_log,
     _is_openai_compatible_endpoint,
+    _iter_sse_text_deltas,
     _normalize_openai_response,
     _openai_body_dict,
     _provider_top_level_error,
     _safe_error_snippet,
 )
 from conxa_core.progress import append_current_job_event, has_active_job_sink
+
+
+# The BYOK-path (for_vision is None) alias for conxa_core.llm.client.VISION_TASKS — see that
+# constant's docstring. Not a separate literal set; kept as a local name only so call sites in
+# this file don't need to say the fully-qualified conxa_core name everywhere.
+_VISION_TASK_NAMES = VISION_TASKS
 
 
 @dataclass
@@ -36,6 +46,12 @@ class PoolEntry:
     # Only Starter/Pro tiers set these today; Free-pool entries leave them empty.
     fallback_text_model: str = ""
     fallback_vision_model: str = ""
+    # Copilot's screenshot+conversation turns (BUILD-26) — separate from vision_model/
+    # cooled_until_vision so a rate-limited vision model never falsely cools down a distinct
+    # multimodal model on the same entry, or vice versa. Empty = falls back to vision_model
+    # (see _call_provider's model selection).
+    multimodal_model: str = ""
+    fallback_multimodal_model: str = ""
     # "bearer" (Authorization: Bearer <key>, every pooled provider) or
     # "api_key_header" (api-key: <key> — Azure OpenAI's REST auth, used only
     # by BYOK entries; see app/services/byok.py).
@@ -48,6 +64,7 @@ class PoolEntry:
     # capacity, so one flavor of call starving the pool would also fail the other.
     cooled_until_text: float = 0.0
     cooled_until_vision: float = 0.0
+    cooled_until_multimodal: float = 0.0
     # Consecutive transient (timeout/connection) failures, used to back off the
     # cooldown per-entry (5s -> 15s -> 45s, capped) instead of a flat 60s that both
     # over-punishes a single blip and under-punishes a truly dead endpoint. Reset
@@ -59,11 +76,15 @@ class PoolEntry:
     # selected again once the quarantine clears.
     quarantined_until: float = 0.0
 
-    def cooled_until(self, *, for_vision: bool) -> float:
+    def cooled_until(self, *, for_vision: bool, multimodal: bool = False) -> float:
+        if for_vision and multimodal:
+            return self.cooled_until_multimodal
         return self.cooled_until_vision if for_vision else self.cooled_until_text
 
-    def cool(self, *, for_vision: bool, until: float) -> None:
-        if for_vision:
+    def cool(self, *, for_vision: bool, until: float, multimodal: bool = False) -> None:
+        if for_vision and multimodal:
+            self.cooled_until_multimodal = until
+        elif for_vision:
             self.cooled_until_vision = until
         else:
             self.cooled_until_text = until
@@ -229,6 +250,8 @@ class LLMRouter:
                 pool=provider_cfg.pool,
                 fallback_text_model=provider_cfg.fallback_text_model,
                 fallback_vision_model=provider_cfg.fallback_vision_model,
+                multimodal_model=provider_cfg.multimodal_model,
+                fallback_multimodal_model=provider_cfg.fallback_multimodal_model,
             )
             self.pool.append(entry)
         # Ensures a full pool sweep gets tried even when max_retries (a config
@@ -237,7 +260,9 @@ class LLMRouter:
         # shot at every key within one route_text/route_vision call.
         self.max_retries = max(self.max_retries, len(self.pool))
 
-    def _next_available_entry(self, *, for_vision: bool = False, pool: str | None = None) -> PoolEntry | None:
+    def _next_available_entry(
+        self, *, for_vision: bool = False, multimodal: bool = False, pool: str | None = None
+    ) -> PoolEntry | None:
         """Pick next available entry from pool using LRU, skipping cooled entries.
 
         ``pool`` (None = no filter) restricts to "free", "starter", or "pro"
@@ -260,11 +285,13 @@ class LLMRouter:
             attempts += 1
 
             # Skip cooled or quarantined entries (quarantine — see 401/403 handling
-            # below — applies to both modalities, unlike the per-modality cooldown)
-            if entry.cooled_until(for_vision=for_vision) > now or entry.quarantined_until > now:
+            # below — applies to every modality, unlike the per-modality cooldown)
+            if entry.cooled_until(for_vision=for_vision, multimodal=multimodal) > now or entry.quarantined_until > now:
                 continue
 
-            # For vision tasks, skip entries without vision_model
+            # For vision tasks, skip entries without vision_model — multimodal_model is an
+            # optional bonus on an already vision-admitted entry, never its own gate (it falls
+            # back to vision_model when unset, so admission stays keyed on vision_model alone).
             if for_vision and not entry.vision_model:
                 continue
 
@@ -275,7 +302,7 @@ class LLMRouter:
 
         return None
 
-    def _soonest_cooldown(self, *, for_vision: bool, pool: str | None = None) -> float | None:
+    def _soonest_cooldown(self, *, for_vision: bool, multimodal: bool = False, pool: str | None = None) -> float | None:
         """Earliest clear time (monotonic) among entries matching ``for_vision``
         and ``pool`` (None = no filter), or None if no such entries exist at all (a
         config gap, not a cooldown). Filtering on ``pool`` matters — without it a
@@ -288,7 +315,10 @@ class LLMRouter:
         ]
         if not candidates:
             return None
-        return min(max(e.cooled_until(for_vision=for_vision), e.quarantined_until) for e in candidates)
+        return min(
+            max(e.cooled_until(for_vision=for_vision, multimodal=multimodal), e.quarantined_until)
+            for e in candidates
+        )
 
     def _route(
         self,
@@ -299,6 +329,7 @@ class LLMRouter:
         for_vision: bool,
         error_detail: list[str] | None,
         pool: str | None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
         """Shared route_text/route_vision body: pick an entry, fall back across pools,
         and wait for cooled-down keys to clear (bounded by a total ``wait_ceiling_secs``
@@ -309,6 +340,10 @@ class LLMRouter:
         past it and getting cut off at the edge."""
         wait_budget = self.wait_ceiling_secs
         deadline = time.monotonic() + self.total_budget_secs
+        # Computed once per call — Copilot's own two tasks pick "multimodal" vs. plain "vision"
+        # per turn depending on whether a screenshot is attached (see _copilot_modality); every
+        # other vision task is unaffected (multimodal stays False).
+        multimodal = for_vision and (_copilot_modality(task, payload) == "multimodal")
 
         for attempt in range(self.max_retries):
             remaining = deadline - time.monotonic()
@@ -318,22 +353,22 @@ class LLMRouter:
                     error_detail.append("router: total request budget exhausted")
                 break
 
-            entry = self._next_available_entry(for_vision=for_vision, pool=pool)
+            entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal, pool=pool)
             if entry is None and pool is not None:
                 _debug_log(f"router: pool={pool} exhausted{' for vision' if for_vision else ''}, falling back to any pool")
-                entry = self._next_available_entry(for_vision=for_vision)
+                entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal)
 
             if entry is None and wait_budget > 0:
-                soonest = self._soonest_cooldown(for_vision=for_vision, pool=pool)
+                soonest = self._soonest_cooldown(for_vision=for_vision, multimodal=multimodal, pool=pool)
                 if soonest is not None:
                     wait_s = min(soonest - time.monotonic(), remaining)
                     if 0 < wait_s <= wait_budget:
                         _debug_log(f"router: all entries cooled, waiting {wait_s:.1f}s for soonest to clear")
                         time.sleep(wait_s)
                         wait_budget -= wait_s
-                        entry = self._next_available_entry(for_vision=for_vision, pool=pool)
+                        entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal, pool=pool)
                         if entry is None and pool is not None:
-                            entry = self._next_available_entry(for_vision=for_vision)
+                            entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal)
                     else:
                         wait_budget = 0
 
@@ -357,6 +392,9 @@ class LLMRouter:
                     min(timeout_ms, int(remaining * 1000)),
                     error_detail=error_detail,
                     attempt=attempt,
+                    on_delta=on_delta,
+                    for_vision=for_vision,
+                    multimodal=multimodal,
                 )
             except _DeterministicRejection:
                 # Every provider will reject this exact payload the same way — stop
@@ -380,18 +418,28 @@ class LLMRouter:
         *,
         error_detail: list[str] | None = None,
         pool: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
         """Route a text-only LLM call to an available provider.
 
         ``pool`` restricts to "free", "starter", or "pro" providers; if the
         requested pool has no available entry, falls back to any pool rather
-        than failing a paying customer's compile over a provider misconfiguration."""
+        than failing a paying customer's compile over a provider misconfiguration.
+
+        ``on_delta``, when given, streams the reply: the provider request sets
+        ``stream: true`` and drops JSON-object mode (see `_call_provider`), and `on_delta` fires
+        with each text chunk as it arrives. Cross-provider failover still applies between
+        attempts, but a failure mid-stream (after some chunks already reached `on_delta`) is not
+        retried — the caller sees whatever text arrived. Today only `copilot_reply` uses this."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
                 "*_ENABLED=true in .env (e.g. GROQ_API_KEYS=gsk_... + GROQ_ENABLED=true)."
             )
-        return self._route(task, payload, timeout_ms, for_vision=False, error_detail=error_detail, pool=pool)
+        return self._route(
+            task, payload, timeout_ms, for_vision=False, error_detail=error_detail, pool=pool,
+            on_delta=on_delta,
+        )
 
     def route_vision(
         self,
@@ -401,15 +449,19 @@ class LLMRouter:
         *,
         error_detail: list[str] | None = None,
         pool: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, Any] | None:
         """Route a vision-capable LLM call to an available provider. See
-        route_text for the ``pool`` fallback behavior."""
+        route_text for the ``pool`` fallback behavior and the ``on_delta`` streaming contract."""
         if not self.pool:
             raise RuntimeError(
                 "No LLM providers enabled. Set at least one *_API_KEYS and "
                 "*_ENABLED=true in .env. Note: vision tasks require providers with a vision_model."
             )
-        return self._route(task, payload, timeout_ms, for_vision=True, error_detail=error_detail, pool=pool)
+        return self._route(
+            task, payload, timeout_ms, for_vision=True, error_detail=error_detail, pool=pool,
+            on_delta=on_delta,
+        )
 
     def call_entry_directly(
         self,
@@ -447,18 +499,36 @@ class LLMRouter:
         *,
         error_detail: list[str] | None = None,
         attempt: int = 0,
+        on_delta: Callable[[str], None] | None = None,
+        for_vision: bool | None = None,
+        multimodal: bool | None = None,
     ) -> dict[str, Any] | None:
-        """Make a single HTTP request to a provider."""
+        """Make a single HTTP request to a provider.
+
+        ``for_vision``/``multimodal`` are normally supplied by ``_route`` (which already
+        computed them once for the whole call). ``call_entry_directly`` (BYOK) never passes
+        them, so they're recomputed here from ``task``/``payload`` — this is what keeps a
+        BYOK image-less Copilot turn routed to the text model instead of always falling
+        through to vision, matching the pooled path."""
         self._request_counter += 1
         req_id = self._request_counter
         now = time.monotonic()
 
-        # Use provider-specific model, falling back to payload model
-        is_vision_task = task in {"anchor_vision", "anchor_vision_batch", "vision_reasoning", "region_selector"}
+        # Kept in sync with the two other copies of this literal set — conxa_core.llm.client.
+        # _is_vision_task's docstring has the BUILD-26 note on why this is triplicated.
+        is_vision_task = for_vision if for_vision is not None else (task in _VISION_TASK_NAMES)
+        is_multimodal_task = (
+            multimodal if multimodal is not None else (_copilot_modality(task, payload) == "multimodal")
+        )
         model = payload.get("model")
         if not model:
-            primary_model = entry.vision_model if is_vision_task else entry.text_model
-            fallback_model = entry.fallback_vision_model if is_vision_task else entry.fallback_text_model
+            if not is_vision_task:
+                primary_model, fallback_model = entry.text_model, entry.fallback_text_model
+            elif is_multimodal_task:
+                primary_model = entry.multimodal_model or entry.vision_model
+                fallback_model = entry.fallback_multimodal_model or entry.fallback_vision_model
+            else:
+                primary_model, fallback_model = entry.vision_model, entry.fallback_vision_model
             # ponytail: retries land on the same entry when the pool has just one
             # matching entry (the common Starter/Pro shape), so attempt>0 == "primary
             # already failed on this entry" and switching to the fallback model is
@@ -495,7 +565,22 @@ class LLMRouter:
         started = time.perf_counter()
 
         try:
-            body_dict = _openai_body_dict(task, payload_with_model, json_mode=True)
+            # Streaming never uses json_object mode — the model would produce raw JSON text one
+            # token at a time, which reads as garbage mid-stream (see route_text's docstring).
+            body_dict = _openai_body_dict(task, payload_with_model, json_mode=on_delta is None)
+            if on_delta is not None:
+                body_dict["stream"] = True
+            # BUILD-33: OpenRouter-specific lever to skip the hidden chain-of-thought prefix. No
+            # task here ever reads reasoning text (see _sse_choice_reasoning's docstring) — it
+            # is billed output that can consume the whole completion budget before the answer
+            # starts (observed live: copilot_diagnose on z-ai/glm-5.3-flash returning
+            # finish_reason="length" with empty content at its old 900 AND 2048 caps). Gated on
+            # the endpoint (what actually accepts this body key), not entry.provider (a
+            # free-text name a deployment can spell however it likes) — an OpenAI-compatible
+            # endpoint that doesn't recognise "reasoning" would otherwise reject the whole
+            # request.
+            if "openrouter.ai" in entry.endpoint:
+                body_dict["reasoning"] = {"enabled": False}
             raw_body = json.dumps(body_dict).encode("utf-8")
             # Guarded on has_active_job_sink() — the proxy path never opens a job
             # scope, so this used to build a full redacted preview (including a
@@ -519,6 +604,71 @@ class LLMRouter:
                     },
                 )
             req = request.Request(ep, data=raw_body, headers=headers, method="POST")
+
+            if on_delta is not None:
+                # Streaming: read the provider's own SSE stream and forward each text delta as
+                # it arrives. No JSON envelope to inspect for a provider-level error here — an
+                # error surfaces as an HTTPError before any body streams (handled below), or as
+                # an empty stream, which the caller (route_text/route_vision) treats as failure.
+                full_text_parts: list[str] = []
+                observed: dict[str, Any] = {}
+                with request.urlopen(req, timeout=timeout_s) as res:
+                    status_code = getattr(res, "status", None) or getattr(res, "code", None)
+                    for chunk in _iter_sse_text_deltas(res, observed=observed):
+                        full_text_parts.append(chunk)
+                        on_delta(chunk)
+
+                entry.requests_sent += 1
+                entry.last_used_at = now
+                entry.consecutive_transient_failures = 0
+                duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                full_text = "".join(full_text_parts)
+                _debug_log(f"router: response_ok(stream) req_id={req_id} provider={entry.provider}")
+                if has_active_job_sink():
+                    append_current_job_event(
+                        "api_call",
+                        f"LLM request completed: {task}.",
+                        {
+                            "phase": "llm_request_done",
+                            "request_id": req_id,
+                            "provider": entry.provider,
+                            "endpoint": _redact_url(ep),
+                            "model": model,
+                            "task": task,
+                            "attempt": attempt,
+                            "status_code": status_code,
+                            "duration_ms": duration_ms,
+                            "request_bytes": len(raw_body),
+                            "response_bytes": len(full_text.encode("utf-8")),
+                        },
+                    )
+                if not full_text:
+                    # BUILD-33: a reasoning-capable model can spend its whole completion budget
+                    # on hidden chain-of-thought and write zero content — a real, paid-for
+                    # generation, not a dead provider. Every other retry against the same entry
+                    # would hit the identical shape, so this is _DeterministicRejection's case
+                    # too: fail fast (no cooldown, no more attempts on this call) instead of
+                    # burning the pool's other entries and 2 more billed attempts on a request
+                    # that can't produce content this way.
+                    # ponytail: doesn't retry with a non-reasoning fallback model on the same
+                    # entry before giving up — attempt>0 would pick one up if configured, but a
+                    # dedicated retry-with-different-model path isn't worth it here; add if this
+                    # condition turns out common enough that the fallback would routinely rescue it.
+                    if observed.get("reasoning_chars", 0) > 0 or observed.get("finish_reason") == "length":
+                        msg = (
+                            f"reasoning_only_no_content: {observed.get('reasoning_chars', 0)} "
+                            f"reasoning chars, finish_reason={observed.get('finish_reason')!r}, "
+                            f"model={model}, provider={entry.provider}"
+                        )
+                        _debug_log(f"router: {msg}")
+                        _log_llm_exception(req_id, entry, ep, model, task, attempt, status_code, duration_ms, msg)
+                        if error_detail is not None:
+                            error_detail.append(msg)
+                        raise _DeterministicRejection(msg)
+                    if error_detail is not None:
+                        error_detail.append("stream produced no content")
+                    return None
+                return {"text": full_text, "output": full_text}
 
             with request.urlopen(req, timeout=timeout_s) as res:
                 status_code = getattr(res, "status", None) or getattr(res, "code", None)
@@ -564,6 +714,36 @@ class LLMRouter:
                     error_detail.append(f"provider_error: {prov_msg}")
                 return None
 
+            # BUILD-33 (non-streaming twin of the check above, line 647-672): a reasoning-
+            # capable model can ignore the reasoning={"enabled": False} lever above and spend
+            # the whole completion budget on hidden chain-of-thought, returning finish_reason
+            # "length" with empty message content — a real, paid-for generation, not a dead
+            # provider. Every retry against the same entry hits the identical shape, so this is
+            # _DeterministicRejection's case: fail fast instead of burning the pool's other
+            # entries and more billed attempts on a request that can't produce content this way.
+            choices = data_raw.get("choices")
+            first_choice = choices[0] if isinstance(choices, list) and choices else None
+            finish_reason = first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
+            raw_message = first_choice.get("message") if isinstance(first_choice, dict) else None
+            raw_content = raw_message.get("content") if isinstance(raw_message, dict) else None
+            if isinstance(raw_content, list):
+                has_content = any(
+                    isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+                    for part in raw_content
+                )
+            else:
+                has_content = bool(str(raw_content or "").strip())
+            if not has_content and finish_reason == "length":
+                msg = (
+                    f"reasoning_only_no_content: finish_reason={finish_reason!r}, "
+                    f"model={model}, provider={entry.provider}"
+                )
+                _debug_log(f"router: {msg}")
+                _log_llm_exception(req_id, entry, ep, model, task, attempt, status_code, duration_ms, msg)
+                if error_detail is not None:
+                    error_detail.append(msg)
+                raise _DeterministicRejection(msg)
+
             data = _normalize_openai_response(data_raw)
             _debug_log(f"router: response_ok req_id={req_id} provider={entry.provider}")
             if has_active_job_sink():
@@ -600,7 +780,7 @@ class LLMRouter:
                 entry.requests_429 += 1
                 retry_after = _parse_retry_after_secs(exc.headers)
                 cooldown = retry_after if retry_after is not None else 30.0
-                entry.cool(for_vision=is_vision_task, until=time.monotonic() + cooldown)
+                entry.cool(for_vision=is_vision_task, multimodal=is_multimodal_task, until=time.monotonic() + cooldown)
                 msg = f"HTTPError 429 rate_limited (cooled {cooldown:g}s): {snippet}"
                 _debug_log(f"router: {msg}")
                 _log_llm_exception(req_id, entry, ep, model, task, attempt, exc.code, duration_ms, msg)
@@ -637,7 +817,7 @@ class LLMRouter:
             # Other HTTP errors (5xx etc.): transient, flat cooldown and retry.
             cooldown = 10.0
             msg = f"HTTPError {exc.code}: {snippet}"
-            entry.cool(for_vision=is_vision_task, until=time.monotonic() + cooldown)
+            entry.cool(for_vision=is_vision_task, multimodal=is_multimodal_task, until=time.monotonic() + cooldown)
             _debug_log(f"router: {msg} (cooled {cooldown:g}s)")
             _log_llm_exception(req_id, entry, ep, model, task, attempt, exc.code, duration_ms, msg)
             if error_detail is not None:
@@ -648,7 +828,7 @@ class LLMRouter:
             msg = f"{type(exc).__name__}: {exc}"
             entry.consecutive_transient_failures += 1
             cooldown = min(60.0, 5.0 * (3 ** (entry.consecutive_transient_failures - 1)))
-            entry.cool(for_vision=is_vision_task, until=time.monotonic() + cooldown)
+            entry.cool(for_vision=is_vision_task, multimodal=is_multimodal_task, until=time.monotonic() + cooldown)
             _debug_log(f"router: transient_error (cooled {cooldown:g}s) {msg}")
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             _log_llm_exception(req_id, entry, ep, model, task, attempt, None, duration_ms, msg)
@@ -658,7 +838,7 @@ class LLMRouter:
 
         except (json.JSONDecodeError, ValueError) as exc:
             msg = f"{type(exc).__name__}: {exc}"
-            entry.cool(for_vision=is_vision_task, until=time.monotonic() + 10.0)
+            entry.cool(for_vision=is_vision_task, multimodal=is_multimodal_task, until=time.monotonic() + 10.0)
             _debug_log(f"router: parse_error (cooled 10s) {msg}")
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             _log_llm_exception(req_id, entry, ep, model, task, attempt, None, duration_ms, msg)
@@ -679,6 +859,7 @@ class LLMRouter:
                     "requests_429": entry.requests_429,
                     "cooled_text": entry.cooled_until_text > time.monotonic(),
                     "cooled_vision": entry.cooled_until_vision > time.monotonic(),
+                    "cooled_multimodal": entry.cooled_until_multimodal > time.monotonic(),
                     "quarantined": entry.quarantined_until > time.monotonic(),
                 }
                 for entry in self.pool

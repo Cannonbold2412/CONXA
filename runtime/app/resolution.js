@@ -7,9 +7,13 @@ const { resolve: resolveSignals, scoreCandidate, DEFAULT_UNIQUE_MARGIN, DEFAULT_
 const { gatherCandidates, bundleFingerprint, _extractDescriptor, toLocator } = require("./resolve_adapter");
 const { STALE_RE } = require("./recovery");
 const { interpolate } = require("./interpolate");
-const { envNumber } = require("./run_config");
+const {
+  envNumber,
+  VIRTUAL_SCROLL_ENABLED,
+  VIRTUAL_SCROLL_MAX_PASSES,
+} = require("./run_config");
 const { unique, asObject, asArray } = require("./step_utils");
-const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
+const { evalOn, countOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 // Frame roots are driven solely by identity_bundle.frame_chain (durability-ranked signals per
 // iframe level). Each frame signal selector is a CSS attribute selector (iframe[name=…] etc.),
@@ -37,7 +41,10 @@ async function rootCandidates(page, step, inputs) {
       for (const s of sigs) {
         const selector = interpolate(String(s.selector), inputs);
         let exists = false;
-        try { exists = (await root.locator(selector).count()) > 0; } catch (_) { exists = false; }
+        try {
+          const n = await countOn(root.locator(selector));
+          exists = n !== EVAL_TIMED_OUT && n > 0;
+        } catch (_) { exists = false; }
         if (!exists) continue;
         next.push(root.frameLocator(selector));
       }
@@ -78,7 +85,8 @@ async function entityRoots(roots, step, inputs) {
     let rows = null;
     try {
       rows = root.locator(eb.container_selector).filter({ hasText: wanted });
-      count = await rows.count();
+      const n = await countOn(rows);
+      count = n === EVAL_TIMED_OUT ? 0 : n; // fail closed on a hung count — never guess a match
     } catch (_) { count = 0; }
     if (count === 1) out.push(rows.first());
   }
@@ -91,6 +99,116 @@ async function entityRoots(roots, step, inputs) {
 function isEntityNotFound(step, roots) {
   const eb = asObject(step && step.entity_binding);
   return !!(eb.container_selector && eb.identifier) && roots.length === 0;
+}
+
+// EXEC-38 — the inverse of entityRoots: given a for_each step's row spec, list every row
+// matching the container selector (top-level page only — no iframe scoping in this first cut)
+// and derive each row's own full text as its identifier. entityRoots later re-locates that exact
+// row with `.filter({ hasText: identifier })`, so using the row's own full text as its own
+// identifier is self-consistent by construction — it always matches itself, and if two rows
+// happen to share identical text, entityRoots's existing "exactly one match" gate fails that
+// iteration closed rather than guessing, which is the correct non-guessing behavior, not a bug
+// to work around here.
+//
+// Snapshot semantics: call this ONCE, up front — the for_each executor never re-enumerates
+// mid-loop. Re-enumerating over a list that mutates as you act on it (a row you just processed
+// disappears from a queue view) is how a batch silently skips or double-processes rows.
+async function enumerateRows(page, spec, cap) {
+  const containerSelector = String((spec && spec.container_selector) || "").trim();
+  if (!containerSelector) return [];
+  let all = [];
+  try {
+    all = await page.locator(containerSelector).all();
+  } catch (_) {
+    return [];
+  }
+  const seen = new Set();
+  const out = [];
+  for (const row of all) {
+    if (out.length >= cap) break;
+    let text = "";
+    try {
+      const t = await evalOn(row, (el) => (el.innerText || el.textContent || "").trim());
+      text = t === EVAL_TIMED_OUT ? "" : String(t || "").trim();
+    } catch (_) {
+      text = "";
+    }
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+
+// EXEC-38 items-source sibling to enumerateRows: a for_each driven by a runtime input
+// (`items: "<input_name>"`) instead of a DOM container. `raw` is the named input's current
+// value — a comma-separated string (the only shape a plain `text` input can carry) or, for a
+// caller that already has one, an array. Trim/drop-empty/de-dup/cap mirror enumerateRows
+// exactly, so both sources behave identically to the loop executor and its telemetry.
+function splitListInput(raw, cap) {
+  let items;
+  if (Array.isArray(raw)) {
+    items = raw.map((v) => String(v));
+  } else if (typeof raw === "string") {
+    items = raw.split(",");
+  } else {
+    return [];
+  }
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    if (out.length >= cap) break;
+    const text = item.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+
+// BUILD-30: a virtualized grid (AG Grid, react-window, TanStack Virtual, ...) only renders the
+// rows currently in the scrolled viewport, so a step's target/row can be entirely absent from
+// the DOM until scrolled into range — indistinguishable, before this, from genuine breakage.
+// Called by resolveStep on either miss path (entity_not_found or a plain resolve_miss); the
+// caller re-runs its own lookup afterward and only fails for real if that also comes up empty.
+// `scrollState` is one plain object created fresh per withLocator PRIMARY attempt (see
+// locators.js) — not module-level state — so nothing here leaks across steps or concurrent runs.
+async function maybeScrollForVirtualization(step, frameRoots, scrollState) {
+  if (!VIRTUAL_SCROLL_ENABLED || !scrollState || !frameRoots.length) return false;
+  if (scrollState.passes >= VIRTUAL_SCROLL_MAX_PASSES) return false;
+
+  const root = frameRoots[0];
+  if (!root || typeof root.locator !== "function") return false;
+
+  const hints = asObject(step && step.handler_hints);
+  const eb = asObject(step && step.entity_binding);
+  // Container resolution order: the compiled hint first, then the entity-binding row container
+  // (rescues a skill compiled before this shipped), then (empty selector) the page's own
+  // dominant scrollable element — but only for a compiled choice/dropdown-kind control, never
+  // for an ordinary step with no virtualization evidence at all. Without this last guard, an
+  // unrelated broken selector would also scroll some unrelated part of the page on every
+  // retry — this is the regression guard that keeps an unrelated miss's behavior untouched.
+  const selector = String(hints.virtualized_container || eb.container_selector || "");
+  if (!selector && hints.control_kind !== "choice") return false;
+
+  scrollState.passes += 1;
+  // Deadline extension (locators.js) is gated on real compiled evidence, never on the
+  // dominant-scrollable guess alone — an ordinary broken selector must not get a longer wait
+  // just because some unrelated scrollable element exists on the page.
+  if (selector) scrollState.attemptedScroll = true;
+
+  const target = root.locator(selector || ":root").first();
+  const script = selector ? pageScripts.scrollVirtualContainerStep : pageScripts.scrollDominantScrollableElement;
+  let outcome = null;
+  try {
+    outcome = await evalOn(target, script, undefined, 500);
+  } catch (_) {
+    outcome = null;
+  }
+  if (outcome && outcome.advanced) {
+    step._used_virtual_scroll = true;
+  }
+  return !!(outcome && outcome !== EVAL_TIMED_OUT && outcome.advanced);
 }
 
 async function locatorCandidates(page, step, inputs, selector) {
@@ -109,7 +227,9 @@ const PRIMARY = Symbol("primary-target");
 
 // Resolve the step's primary target through the pure resolver over the live DOM.
 // Returns a single Playwright locator for the chosen element, or throws a classified error.
-async function resolveStep(page, step, inputs) {
+// `scrollState` (optional — see maybeScrollForVirtualization) lets a miss try one scroll pass
+// before giving up, for a step whose target may be virtualized out of the DOM.
+async function resolveStep(page, step, inputs, scrollState) {
   const bundle = asObject(step.identity_bundle);
   const signals = asArray(bundle.signals).filter(s => s && s.selector);
   if (!signals.length) {
@@ -118,23 +238,34 @@ async function resolveStep(page, step, inputs) {
       { recompileRequired: true },
     );
   }
-  let roots = await rootCandidates(page, step, inputs);
-  if (isFrameNotFound(step, roots)) {
+  const frameRoots = await rootCandidates(page, step, inputs);
+  if (isFrameNotFound(step, frameRoots)) {
     throw Object.assign(
       new Error("Containing frame could not be located (identity may have changed)"),
       { frameNotFound: true },
     );
   }
-  roots = await entityRoots(roots, step, inputs);
+  let roots = await entityRoots(frameRoots, step, inputs);
   if (isEntityNotFound(step, roots)) {
-    throw Object.assign(
-      new Error("Bound record could not be uniquely located on the page — refusing to act on a different row"),
-      { entityNotFound: true },
-    );
+    if (await maybeScrollForVirtualization(step, frameRoots, scrollState)) {
+      roots = await entityRoots(frameRoots, step, inputs);
+    }
+    if (isEntityNotFound(step, roots)) {
+      throw Object.assign(
+        new Error("Bound record could not be uniquely located on the page — refusing to act on a different row"),
+        { entityNotFound: true },
+      );
+    }
   }
-  const map = await gatherCandidates(roots, signals, interpolate, inputs);
   const fp = bundleFingerprint(bundle);
-  const result = resolveSignals(signals, fp, { queryAll: sel => map[sel] || [] }, {});
+  let map = await gatherCandidates(roots, signals, interpolate, inputs);
+  let result = resolveSignals(signals, fp, { queryAll: sel => map[sel] || [] }, {});
+  if (!(result && result.node && result.node._loc) && !(result && result.ambiguous)) {
+    if (await maybeScrollForVirtualization(step, frameRoots, scrollState)) {
+      map = await gatherCandidates(roots, signals, interpolate, inputs);
+      result = resolveSignals(signals, fp, { queryAll: sel => map[sel] || [] }, {});
+    }
+  }
   if (result && result.node && result.node._loc) {
     return result.node._loc;
   }
@@ -234,8 +365,8 @@ async function validateOverrideSelector(page, step, inputs) {
     try { all = await root.locator(selector).all(); } catch (_) { continue; }
     for (const item of all) {
       let d;
-      try { d = await item.evaluate(_extractDescriptor); } catch (_) { continue; }
-      if (!d) continue;
+      try { d = await evalOn(item, _extractDescriptor); } catch (_) { continue; }
+      if (!d || d === EVAL_TIMED_OUT) continue;
       d._loc = item;
       descriptors.push(d);
     }
@@ -288,8 +419,8 @@ async function frameScopedInventory(page, step, inputs) {
     for (const item of items.slice(0, FRAME_INVENTORY_PER_ROOT_CAP)) {
       if (out.length >= FRAME_INVENTORY_CAP) break;
       let entry;
-      try { entry = await item.evaluate(pageScripts.inventoryEntryForElement); } catch (_) { continue; }
-      if (!entry) continue;
+      try { entry = await evalOn(item, pageScripts.inventoryEntryForElement); } catch (_) { continue; }
+      if (!entry || entry === EVAL_TIMED_OUT) continue;
       const key = `${entry.tag}|${entry.type || ""}|${entry.text || ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -307,11 +438,11 @@ async function frameScopedInventory(page, step, inputs) {
 async function captureEarlyDomSnapshot(page, step, inputs) {
   let top;
   try {
-    top = await page.evaluate(pageScripts.domInventory);
+    top = await evalOn(page, pageScripts.domInventory);
   } catch (_) {
     return null;
   }
-  if (!Array.isArray(top)) return null;
+  if (top === EVAL_TIMED_OUT || !Array.isArray(top)) return null;
   let frameEntries = null;
   try { frameEntries = await frameScopedInventory(page, step, inputs); } catch (_) { frameEntries = null; }
   if (Array.isArray(frameEntries) && frameEntries.length) {
@@ -329,6 +460,9 @@ module.exports = {
   isFrameNotFound,
   entityRoots,
   isEntityNotFound,
+  enumerateRows,
+  splitListInput,
+  maybeScrollForVirtualization,
   locatorCandidates,
   resolveStep,
   gateLocator,

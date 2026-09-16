@@ -12,6 +12,7 @@
 
 const { scoreCandidate } = require("./resolver");
 const { _extractDescriptor, toLocator } = require("./resolve_adapter");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 const PRESENCE_THRESHOLD = 0.5;      // per-landmark agreement below this = "missing"
 const DRIFT_RATIO_THRESHOLD = 0.5;   // fraction of missing landmarks that trips drift
@@ -83,8 +84,8 @@ async function _gatherForLandmark(page, lm, cap) {
     try { all = await loc.all(); } catch (_) { all = []; }
     for (const item of all.slice(0, cap)) {
       let d;
-      try { d = await item.evaluate(_extractDescriptor); } catch (_) { continue; }
-      if (d) descriptors.push(d);
+      try { d = await evalOn(item, _extractDescriptor); } catch (_) { continue; }
+      if (d && d !== EVAL_TIMED_OUT) descriptors.push(d);
     }
     if (descriptors.length) break; // first productive signal is enough
   }

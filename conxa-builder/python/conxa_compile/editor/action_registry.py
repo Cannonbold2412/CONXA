@@ -44,6 +44,14 @@ ACTION_KIND_ORDER = (
     # (the "value" carried is the output binding name, not a page-interaction value — see
     # VALUE_LABELS below) like "wait"/"screenshot" before it.
     "ai_review",
+    # EXEC-21 (hand-over shape): pauses execution and yields the live page to a PERSON for the
+    # part only they can do (2FA, a CAPTCHA, an e-signature) — the human sibling of ai_review
+    # immediately above, same "no selector/identity_bundle, value-bearing like wait/screenshot"
+    # shape. The generic value field (VALUE_LABELS below) carries the message shown to the
+    # person, exactly as ai_review's carries its output binding name — everything else
+    # (on_failure, an optional resume_when probe) is a top-level `handover_*` field validated by
+    # patch_gate.py, same convention as ai_review's own `ai_review_*` fields.
+    "handover",
     "upload_intent",
     "upload",
     "tab_open",
@@ -65,6 +73,11 @@ ACTION_KIND_ORDER = (
     "if_present",
     "try_dismiss",
     "wait_for_one_of",
+    # EXEC-38: iteration primitive — "for each row matching X, do steps A-C." Not a marker
+    # (carries a real rows/as/max_iterations/steps body, same "real probe, not a bookkeeping
+    # event" reasoning as the branch primitives above). Authored the same way branch bodies are
+    # — wrap N existing steps into a body — one level deep only.
+    "for_each",
 )
 
 MARKER_ACTIONS = frozenset(
@@ -107,10 +120,12 @@ INSERTABLE_ACTIONS = frozenset(
         "wait",
         "screenshot",
         "ai_review",
+        "handover",
         "upload",
         "if_present",
         "try_dismiss",
         "wait_for_one_of",
+        "for_each",
     }
 )
 
@@ -152,6 +167,9 @@ VALUE_ACTIONS = frozenset(
         # EXEC-13: not a page-interaction value — this is the output binding name later steps
         # read the reviewed answer back from (see VALUE_LABELS below).
         "ai_review",
+        # EXEC-21: likewise not a page-interaction value — this is the message shown to the
+        # person in the hand-over banner (see VALUE_LABELS below).
+        "handover",
     }
 )
 
@@ -179,6 +197,7 @@ ACTION_LABELS = {
     "wait": "Wait",
     "screenshot": "Screenshot",
     "ai_review": "AI Review",
+    "handover": "Hand over to person",
     "upload_intent": "Upload intent",
     "upload": "Upload",
     "tab_open": "Tab open",
@@ -196,6 +215,7 @@ ACTION_LABELS = {
     "if_present": "If present",
     "try_dismiss": "Try dismiss",
     "wait_for_one_of": "Wait for one of",
+    "for_each": "For each row",
 }
 
 CATEGORIES = {
@@ -208,6 +228,7 @@ CATEGORIES = {
     "wait": "validation",
     "screenshot": "validation",
     "ai_review": "validation",
+    "handover": "validation",
     "click": "pointer",
     "dblclick": "pointer",
     "right_click": "pointer",
@@ -227,6 +248,7 @@ CATEGORIES = {
     "if_present": "conditional",
     "try_dismiss": "conditional",
     "wait_for_one_of": "conditional",
+    "for_each": "iteration",
 }
 
 VALUE_LABELS = {
@@ -242,6 +264,7 @@ VALUE_LABELS = {
     "wait": "Milliseconds",
     "upload": "File path input",
     "ai_review": "Output binding name",
+    "handover": "Message shown to the person",
 }
 
 
@@ -324,6 +347,14 @@ def default_action_value(kind: str) -> Any:
         return "1000"
     if normalized == "upload":
         return "{{file_path}}"
+    if normalized == "ai_review":
+        # EXEC-13: not a page-interaction value — the output binding name later steps read the
+        # reviewed answer back from (see VALUE_LABELS above).
+        return "review_answer"
+    if normalized == "handover":
+        # EXEC-21: not a page-interaction value — the message shown to the person (see
+        # VALUE_LABELS above).
+        return "Please complete this step, then click Done."
     if normalized in {"type", "fill", "select", "select_option", "date_pick", "set_radio"}:
         return ""
     return None

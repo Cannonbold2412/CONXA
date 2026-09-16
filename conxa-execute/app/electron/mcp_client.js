@@ -2,7 +2,10 @@
 /**
  * Form-path MCP client — same Client + StdioClientTransport pattern as
  * runtime/app/scheduler_daemon.js. Spawns the *installed* runtime exe, never
- * Electron's process.execPath. watch: true for a person at the desk.
+ * Electron's process.execPath. watch: true for a person at the desk — the browser it
+ * opens renders in this app's own panel (CONXA_HOST_BROWSER_CDP / CONXA_HOST_CONTROL_URL,
+ * set on this process's env by main.js before ensureEngine ever spawns the runtime, and
+ * forwarded below along with everything else in `process.env`).
  */
 
 const { connectStdio, toolText } = require("../vendor/opencode/mcp/stdio");

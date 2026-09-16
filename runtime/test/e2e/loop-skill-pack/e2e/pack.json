@@ -1,0 +1,10 @@
+{
+  "workspace_id": "e2e",
+  "display_name": "E2E loop fixture",
+  "skill_pack_version": "0.0.1",
+  "required_runtime": ">=1.0.0",
+  "target_url": "",
+  "protected_url": "",
+  "skills": ["loop-skill"],
+  "tracking": { "enabled": false }
+}

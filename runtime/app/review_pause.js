@@ -13,6 +13,8 @@
  */
 const fs = require("fs");
 const path = require("path");
+const pageScripts = require("./page_scripts");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 const REVIEW_RETRY_MAX = 2;
 const _reviewRetries = new Map(); // `${slug}:${stepIndex}` -> attempts
@@ -129,6 +131,14 @@ async function buildReviewRequest(page, step, stepIndex, resolvedEntry, opts = {
     );
   }
 
+  // Same domInventory() script failure_response.js's gatherInventory uses for Tier B recovery
+  // context — best-effort, bounded by evalOn's short deadline, never blocks the pause on a
+  // stuck page.
+  const inventory = await evalOn(page, pageScripts.domInventory).catch(() => null);
+  if (inventory && inventory !== EVAL_TIMED_OUT && Array.isArray(inventory) && inventory.length) {
+    content.push({ type: "text", text: `Page elements (live DOM):\n${JSON.stringify(inventory)}` });
+  }
+
   // P7: JPEG over lossless PNG — 3-8x smaller, same token cost either way (dimension-based).
   const currentShot = await page.screenshot({ type: "jpeg", quality: 80 }).catch(() => null);
   if (currentShot) {
@@ -138,7 +148,14 @@ async function buildReviewRequest(page, step, stepIndex, resolvedEntry, opts = {
     );
   }
 
-  return { content };
+  // _meta lets a non-agent MCP caller (the Build Studio sandbox — see runtime_tool.py /
+  // handlers/workflows.py cmd_test_workflow) answer programmatically instead of parsing the
+  // prose header for "resume_from: N". Claude Desktop ignores unknown _meta keys per the MCP
+  // spec, so this is additive for the agent path.
+  return {
+    content,
+    _meta: { "conxa/ai_review": { step_index: stepIndex, prompt, output_schema: outputSchema } },
+  };
 }
 
 module.exports = {

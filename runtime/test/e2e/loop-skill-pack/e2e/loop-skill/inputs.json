@@ -1,0 +1,7 @@
+{
+  "inputs": [
+    { "name": "fixture_dir", "type": "string", "description": "file:// base URL of the local fixture pages (injected by the e2e runner)" },
+    { "name": "files", "type": "string", "description": "Comma-separated filenames to download and upload — any number, no recompile needed" },
+    { "name": "expected_status", "type": "string", "description": "Expected drive.html status text once every file has been uploaded (injected by the e2e runner)" }
+  ]
+}

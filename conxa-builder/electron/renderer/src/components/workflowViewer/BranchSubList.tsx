@@ -10,6 +10,10 @@ type Props = {
    * clicked nested index so the center column's BranchBodyEditor can scroll to it. */
   parentStepIndex: number
   branchSteps: StepEditorDTO[]
+  /** Selects a nested step, guarded the same way a top-level click is (WorkflowViewer's
+   *  guardedSelect) — confirms first if the re-target wizard or a copilot proposal has unsaved
+   *  state on whatever's currently open, instead of silently discarding it. */
+  onSelectNested: (parentStepIndex: number, nestedIndex: number) => void
 }
 
 /**
@@ -19,9 +23,8 @@ type Props = {
  * surface, shown in the center column once the parent is selected) can scroll to it. This closes
  * the audit's P0 finding: branch bodies were previously invisible to an approver entirely.
  */
-export function BranchSubList({ parentStepIndex, branchSteps }: Props) {
+export function BranchSubList({ parentStepIndex, branchSteps, onSelectNested }: Props) {
   const [expanded, setExpanded] = useState(false)
-  const selectBranchStep = useEditorStore((s) => s.selectBranchStep)
   const selected = useEditorStore((s) => s.selectedStepIndex)
   const focusedBranchIndex = useEditorStore((s) => s.focusedBranchIndex)
 
@@ -53,7 +56,7 @@ export function BranchSubList({ parentStepIndex, branchSteps }: Props) {
                     'flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/[0.04]',
                     isFocused && 'border-brand/40 bg-brand-subtle text-brand',
                   )}
-                  onClick={() => selectBranchStep(parentStepIndex, nestedIndex)}
+                  onClick={() => onSelectNested(parentStepIndex, nestedIndex)}
                 >
                   <span className="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded bg-white/[0.06] text-[0.6rem] text-zinc-500">
                     {nestedIndex + 1}

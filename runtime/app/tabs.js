@@ -12,6 +12,7 @@
 // through the exact same code path as before this module existed.
 
 const { SETTLE_TIMEOUT_MS: DEFAULT_SETTLE_TIMEOUT_MS, NAV_SETTLE_CAP_MS } = require("./run_config");
+const hostBrowser = require("./host_browser");
 
 const DEFAULT_TAB_OPEN_TIMEOUT_MS = 30000;
 
@@ -26,7 +27,7 @@ function tabOpenTimeoutMs() {
  * immediately so a popup that fires before any step asks for it is still queued, not missed
  * (the race this replaces: waiting for a "page" event only once the step that needs it runs).
  */
-function createTabRegistry(initialPage) {
+function createTabRegistry(initialPage, opts = {}) {
   const context = initialPage.context();
   const pages = new Map([["tab_0", initialPage]]);
   // Every page the registry has ever bound to a tab id — a drained popup, a waitForEvent
@@ -42,7 +43,16 @@ function createTabRegistry(initialPage) {
   // reclaim off. Left unreclaimed, every later step drives a BACKGROUND tab: invisible under
   // watch, and with rAF/timers throttled, which stalls Playwright's actionability "stable"
   // wait. This flag is that missing signal; _settleIfSwitched consumes and clears it.
-  const registry = { context, pages, pendingPages, bound, foregroundStale: false };
+  // hostOwned/runId: when the context is a view borrowed from Execute's panel (see
+  // host_browser.js), context.newPage() doesn't work (Electron has no Target.createTarget —
+  // confirmed by the Stage-0 spike), so a user-opened (Ctrl+T-style) tab has to ask Execute
+  // for a new view instead — see resolveStepPage's opened_by === "user" branch below.
+  // Site-opened popups need none of this: Execute's own window-open handler creates the
+  // sibling view, and it arrives through the same context "page" event either way.
+  const registry = {
+    context, pages, pendingPages, bound, foregroundStale: false,
+    hostOwned: Boolean(opts.hostOwned), runId: opts.runId,
+  };
   context.on("page", (page) => {
     pendingPages.push(page);
     registry.foregroundStale = true;
@@ -114,7 +124,9 @@ async function resolveStepPage(registry, step, opts = {}) {
     // runs normally against the fresh page. This itself fires the context's "page" event, so it
     // lands in pendingPages too — bind it before that queue is ever drained, or a later
     // opened_by="site" step could hand this same blank page back out as a different tab.
-    page = await registry.context.newPage();
+    page = registry.hostOwned
+      ? await hostBrowser.newTab({ context: registry.context, runId: registry.runId })
+      : await registry.context.newPage();
     registry.bound.add(page);
   } else {
     // opened_by === "site" (a link/window.open) or unset (older compiles) — something on the

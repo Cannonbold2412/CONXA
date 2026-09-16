@@ -31,14 +31,11 @@ def _sha256_file(path: Path) -> str:
 def _compute_inputs_required(idata: dict[str, Any]) -> list[str]:
     """Derive the manifest's `inputs_required` from a parsed inputs.json.
 
-    An explicit top-level `required` list (legacy/cloud-authored packages) wins outright.
-    Otherwise every declared input is required EXCEPT one flagged `optional` in the editor —
-    that flag means the skill may run without it, so it must not block execution
-    (runtime/server.js's pre-execution gate) or be advertised as mandatory to the calling agent
-    (runtime/server.js's `_skillToolDefinitions`).
+    Every declared input is required EXCEPT one flagged `optional` in the editor — that flag
+    means the skill may run without it, so it must not block execution (runtime/server.js's
+    pre-execution gate) or be advertised as mandatory to the calling agent (runtime/server.js's
+    `_skillToolDefinitions`).
     """
-    if "required" in idata:
-        return list(idata["required"])
     if "inputs" in idata and isinstance(idata["inputs"], list):
         return [
             i["name"]
@@ -137,40 +134,58 @@ def _write_skill_packs_format(
             if p.is_file():
                 checksums[fname] = _sha256_file(p)
 
-        # Read name/description from input.json or SKILL.md fallback
+        # Read name/description from input.json or SKILL.md fallback. inputs.json was
+        # written moments ago by this same build (skill_package_builder_saved_skill.py) —
+        # if it exists but fails to parse, that's a real bug (a race, a disk error, a
+        # writer that emitted invalid JSON), not a normal miss, so it raises rather than
+        # silently shipping the skill with no description and every input demoted to
+        # optional (inputs_required feeds the runtime's pre-execution gate).
         skill_name = slug.replace("_", " ").title()
         description = ""
+        inputs_required: list[str] = []
         inputs_p = dest_dir / "inputs.json"
         if inputs_p.is_file():
             try:
                 idata = json.loads(inputs_p.read_text(encoding="utf-8"))
-                description = idata.get("description", "")
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Skill {slug!r}: inputs.json at {inputs_p} was just written by this "
+                    f"build but is unreadable — cannot compute its required inputs: {exc}"
+                ) from exc
+            description = idata.get("description", "")
+            inputs_required = _compute_inputs_required(idata)
         if not description:
             md_p = src_dir / "SKILL.md"
             if md_p.is_file():
                 first = next((l.lstrip("# ").strip() for l in md_p.read_text(encoding="utf-8").splitlines() if l.strip()), "")
                 description = first
 
-        inputs_required: list[str] = []
-        if inputs_p.is_file():
+        def _read_json_sidecar(path: Path, label: str) -> dict[str, Any]:
+            """A sidecar this same build just wrote (structural_fingerprint.json,
+            environment.json, compensation_skill.json) that exists but won't parse is a
+            real bug, not a normal miss — raise instead of silently disabling the
+            feature it feeds (drift gate / environment gate / compensation link)."""
+            if not path.is_file():
+                return {}
             try:
-                idata = json.loads(inputs_p.read_text(encoding="utf-8"))
-                inputs_required = _compute_inputs_required(idata)
-            except Exception:
-                pass
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Skill {slug!r}: {label} at {path} was just written by this build "
+                    f"but is unreadable: {exc}"
+                ) from exc
+            return loaded if isinstance(loaded, dict) else {}
 
         # Structural fingerprint (optional) for the runtime's pre-execution drift gate.
-        structural_fp: dict[str, Any] = {}
-        fp_src = src_dir / "structural_fingerprint.json"
-        if fp_src.is_file():
-            try:
-                loaded = json.loads(fp_src.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    structural_fp = loaded
-            except (OSError, json.JSONDecodeError):
-                structural_fp = {}
+        structural_fp = _read_json_sidecar(src_dir / "structural_fingerprint.json", "structural_fingerprint.json")
+
+        # EXEC-36 (optional) — recording environment for the runtime's replay-time environment
+        # mismatch warning. Same read-from-disk pattern as structural_fingerprint above.
+        environment = _read_json_sidecar(src_dir / "environment.json", "environment.json")
+
+        # PROD-3-DRYRUN layer 5 (optional) — compensation-workflow link.
+        loaded_comp = _read_json_sidecar(src_dir / "compensation_skill.json", "compensation_skill.json")
+        compensation_skill = str(loaded_comp.get("compensation_skill") or "").strip()
 
         manifest = {
             "slug":             slug,
@@ -219,6 +234,8 @@ def _write_skill_packs_format(
             "required_apps":    (skill_required_apps or {}).get(slug, []),
             "inputs_required":  inputs_required,
             "structural_fingerprint": structural_fp,
+            "environment":      environment,
+            "compensation_skill": compensation_skill,
             "checksum":         checksums,
         }
         # PROD-3 "Strict Mode": a per-skill recovery-tier ceiling, honoured by the runtime as
@@ -249,8 +266,13 @@ def _write_skill_packs_format(
     if existing_pack_path.is_file():
         try:
             existing_pack = json.loads(existing_pack_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            existing_pack = {}
+        except (OSError, json.JSONDecodeError) as exc:
+            # Silently treating this as "no prior pack" would drop every sibling skill a
+            # previous build already wrote here — the exact bug this merge exists to avoid.
+            raise RuntimeError(
+                f"Existing pack.json at {existing_pack_path} is corrupted and cannot be "
+                f"merged — fix or delete it before building again: {exc}"
+            ) from exc
     merged_skills = [s for s in (existing_pack.get("skills") or []) if s not in written_slugs] + written_slugs
     merged_skill_groups = {**(existing_pack.get("skill_groups") or {}), **skill_groups}
     existing_groups_by_id = {g.get("id"): g for g in (existing_pack.get("groups") or []) if isinstance(g, dict)}

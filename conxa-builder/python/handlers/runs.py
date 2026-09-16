@@ -1,66 +1,31 @@
-"""Execution-run listing and metrics command handlers."""
+"""Execution-run evidence and metrics command handlers.
+
+`cmd_list_runs`/`cmd_get_run` used to live here, reading `data/runs/*.jsonl` — a file nothing in
+the codebase ever wrote (confirmed by repo-wide search while scoping BUILD-26). Deleted rather
+than left beside the new evidence reader: a dead reader of a nonexistent log next to a real one
+is exactly how the next spec inherits the same wrong assumption that a run log already existed.
+See TODO.md BUILD-26 stage (a4).
+"""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from handlers.protocol import _CommandError
+from handlers.protocol import _CommandError, _safe_id
 
 class RunsMixin:
-    def cmd_list_runs(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        from pathlib import Path
-        from conxa_core.config import settings
+    def cmd_get_failure_evidence(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        """BUILD-26 stage (a): the Human Review copilot's evidence bundle for one skill's most
+        recent (or a named) test failure — conxa_compile/editor/evidence.py."""
+        from conxa_compile.editor.evidence import EvidenceError, build_evidence_bundle
 
-        workflow_id = payload.get("workflow_id")
-        since = payload.get("since")
-        runs_dir = Path(settings.data_dir) / "runs"
-        runs = []
-        if runs_dir.is_dir():
-            for fpath in sorted(runs_dir.glob("*.jsonl")):
-                try:
-                    for line in fpath.read_text(encoding="utf-8", errors="replace").splitlines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            record = json.loads(line)
-                            if workflow_id and record.get("workflow_id") != workflow_id:
-                                continue
-                            if since is not None and record.get("ts", 0) < float(since):
-                                continue
-                            runs.append(record)
-                        except (json.JSONDecodeError, TypeError):
-                            continue
-                except Exception:
-                    continue
-        runs.sort(key=lambda r: r.get("ts", 0), reverse=True)
-        return {"runs": runs[:100]}
-
-    def cmd_get_run(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        from pathlib import Path
-        from conxa_core.config import settings
-
-        run_id = str(payload.get("run_id") or "").strip()
-        if not run_id:
-            raise _CommandError("invalid_input", "run_id is required")
-        runs_dir = Path(settings.data_dir) / "runs"
-        if runs_dir.is_dir():
-            for fpath in sorted(runs_dir.glob("*.jsonl")):
-                try:
-                    for line in fpath.read_text(encoding="utf-8", errors="replace").splitlines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            record = json.loads(line)
-                            if record.get("run_id") == run_id:
-                                return {"run": record}
-                        except (json.JSONDecodeError, TypeError):
-                            continue
-                except Exception:
-                    continue
-        raise _CommandError("run_not_found", f"No run {run_id}")
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        run_id = payload.get("run_id")
+        run_id = str(run_id).strip() if run_id else None
+        try:
+            return {"evidence": build_evidence_bundle(skill_id, run_id=run_id)}
+        except EvidenceError as exc:
+            raise _CommandError(exc.code, exc.message) from exc
 
     # ─── metrics ─────────────────────────────────────────────────────────────
 

@@ -701,6 +701,245 @@ fix status; sign GO/NO-GO at the bottom of the run.
 
 ---
 
+## WF-13 — Variables, loop, branch, dedupe: Sheets→Gmail + GitHub PR triage
+
+**Sites:** Google Sheets + Gmail (Leg A) · GitHub (Leg B) · **Accounts:** your own Google account,
+your own GitHub account with at least one repo that has 2+ open PRs (or open 2 test PRs first) ·
+**Tabs:** 1 per leg
+
+Two short recordings picked to isolate variables/loop/dedupe (Leg A) and branch/recovery (Leg B)
+without needing any of the arsenal sites above. Record each leg separately in Build Studio so a
+failure in one doesn't block diagnosing the other.
+
+### Leg A — Sheets → Gmail (variables, loop, dedupe)
+
+**Step 1 — Build the source sheet.**
+1. Go to `sheets.google.com` → **Blank spreadsheet**.
+2. In row 1 type headers: `A1=Name`, `B1=Email`, `C1=Amount`.
+3. Fill 3 data rows, e.g.:
+   - Row 2: `Alex`, `alex@example.com`, `250`
+   - Row 3: `Priya`, `priya@example.com`, `1800`
+   - Row 4: `Sam`, `sam@example.com`, `90`
+4. Leave the tab open — you'll read from it during recording.
+
+**Step 2 — Start recording in Build Studio.**
+1. Open Build Studio → **New Recording**.
+2. Name it `sheets-to-gmail-test`.
+3. Click **Start Recording**.
+
+**Step 3 — Record the per-row actions (only do ONE row live — this is what the loop will replay for the rest).**
+1. Switch to the Sheets tab. Click cell **A2** (`Alex`) — this is your `{{name}}` source.
+2. Click cell **B2** (`alex@example.com`) — `{{email}}` source.
+3. Click cell **C2** (`250`) — `{{amount}}` source.
+4. Switch to Gmail (`mail.google.com`). Click **Compose**.
+5. Click the **To** field, type `alex@example.com` (or paste from the cell you just clicked, if Build Studio's recorder captures copy/paste — otherwise just type the same value you saw in B2).
+6. Click the **Subject** field, type `Payment update for Alex`.
+7. Click the **Body**, type `Hi Alex, your recorded amount is 250.`
+8. **Branch point:** since `250 < 1000`, click **Send** directly. Do NOT click any "star"/"important" marker on this row.
+9. Stop recording here. **Do not loop live for rows 3–4** — that's what Human Edit is for.
+
+**Step 4 — Human Edit: turn this into a loop + branch.**
+1. Open the recorded workflow in the editor.
+2. Select the three Sheets-read steps (A2/B2/C2 clicks) and the Gmail compose/send steps as one group.
+3. Use **Wrap in for_each** (or the editor's loop-insertion action) bound to the sheet range `A2:C4` — this makes `{{name}}`, `{{email}}`, `{{amount}}` per-iteration variables instead of literal recorded text.
+4. Insert a branch before the Send step: **if** `{{amount}} > 1000` → click the star/important-mark icon in Gmail's compose toolbar **before** Send; **else** → Send directly (this is exactly what you recorded for the `250` row, so the else-branch is your recorded path).
+5. Save. Compile.
+
+**Step 5 — Verify compile output.**
+1. Open the compile report. Confirm there is **one** loop step over the 3 rows, not 9 duplicated steps — that's the dedupe check.
+2. Confirm the compiled step's `value` fields show `{{name}}`, `{{email}}`, `{{amount}}` tokens, not the literal `Alex`/`alex@example.com`/`250` you recorded — that's the variable-binding check.
+3. Confirm the branch step exists once, referencing `{{amount}}`.
+
+**Step 6 — Replay and check the result.**
+1. Run the compiled skill (Studio Run Test or via MCP `execute_skill`).
+2. Check Gmail's Sent folder: 3 emails, one per row, each with the row's own name/email/amount in the body — not all 3 saying "Alex".
+3. Check that Priya's email (amount `1800`) got starred/marked important and Alex's and Sam's did not — that's the branch check.
+4. Check recovery/LLM logs: 0 recovery events, 0 runtime LLM calls expected on a clean replay.
+
+### Leg B — GitHub PR triage (branch + recovery)
+
+**Step 1 — Prepare two PRs in one repo.**
+1. In a repo you own, open **Pull requests**.
+2. Make sure at least one open PR shows a green **"Merge"** button (no conflicts) and at least one shows a **"Resolve conflicts"** button (or the "This branch has conflicts" banner). If you don't have one naturally, create a throwaway branch that edits the same line as `main` in two different ways and open a PR from it to force a conflict.
+
+**Step 2 — Record on the clean-path PR.**
+1. Start a new Build Studio recording named `github-pr-triage-test`.
+2. Go to `github.com/<you>/<repo>/pulls`.
+3. Click the clean PR's title to open it.
+4. Click **Merge pull request** → **Confirm merge**.
+5. Stop recording.
+
+**Step 3 — Human Edit: add the branch for the conflicted case.**
+1. Open the recording in the editor.
+2. Before the Merge click, insert an `if_present` probe: does the "Resolve conflicts" button / conflict banner exist on this PR page?
+   - **If present:** click **Resolve conflicts**, wait for GitHub's inline conflict editor to load, then stop the branch there (don't try to auto-resolve text conflicts — just prove the branch fires and stops safely).
+   - **If absent (your recorded path):** click **Merge pull request** → **Confirm merge**, exactly as recorded.
+3. Wrap the whole thing in a `for_each` over the PR list if you want to test more than one PR per run (optional for this test — one branch firing correctly is the main proof).
+4. Save. Compile.
+
+**Step 4 — Replay against the clean PR (regression check).**
+1. Run the skill against the same clean PR (or another clean one). Expect: `if_present` finds nothing → falls through to Merge → PR merges. Zero recovery events.
+
+**Step 5 — Replay against the conflicted PR (branch + recovery check).**
+1. Run the same compiled skill against the conflicted PR's URL/selection.
+2. Expect: `if_present` detects the conflict banner → clicks "Resolve conflicts" → stops there without error. The Merge button must NOT be clicked on this run.
+3. To also test self-healing: before this replay, resize your browser window narrower (or toggle GitHub's light/dark theme) so the button layout shifts slightly, then replay. Check the recovery log — if the selector needed a Tier A re-find, that's the self-heal working; if it needed a Tier B agent call, that's still a pass but log the token cost.
+
+**Step 6 — Record results.**
+Use the standard log block from "How to work" above for both legs. If either branch fires on the wrong PR type (e.g. Merge gets clicked on a conflicted PR, or vice versa), that's a hard fail — log it immediately as a PROD-3-style entity/branch-safety issue, same severity class as WF-8's B-8.
+
+**Where failures go:** loop/dedupe issues → compiler `IdentityBundle`/loop-wrapping items in `TODO.md`; variable-binding issues → editor patch-gate items; branch misfires → treat like WF-6/WF-8 B-8 (wrong-branch-taken is a safety bug, not a cosmetic one); recovery issues → WF-7's cascade owners.
+
+---
+
+## WF-14 — AI Review step: reasoning checkpoint (EXEC-13)
+
+**Sites:** S11 (en.wikipedia.org) + S3 (demoqa.com/text-box) · **Tabs:** 1
+
+`ai_review` is an author-placed reasoning checkpoint (`docs/TRD.md` §10.9) — it pauses the run,
+asks Claude a structured question about the live page, and binds the answer into a later step. It
+sits outside the recovery cascade (no tokens spent unless this step fires, on purpose) and must
+never be answered by guessing — always verify a real pause happened and a real answer came back.
+
+### Stage 1 — Record, insert the review step, and verify compile
+1. Record (~4 steps): `en.wikipedia.org` → search box → type `Marie Curie` → Enter → land on the
+   article; then `demoqa.com/text-box` → click **Full Name** → type placeholder `test` → **Submit**.
+   Stop recording.
+2. In the editor, select the step right after the Wikipedia article loads and insert an **AI
+   Review** step:
+   - **Prompt:** `Read the visible page text and classify this Wikipedia article's subject into exactly one of: person, place, organization, event, other. Reply with only the category word.`
+   - **Output schema:** enum of `person | place | organization | event | other`.
+   - **Output name:** `article_category` (becomes the `{{article_category}}` placeholder).
+   - **On failure:** `use_default`, **Default value:** `other`.
+3. Replace the demoqa **Full Name** field's recorded value (`test`) with `{{article_category}}`, so
+   the review's answer is what actually gets typed. Save. Compile.
+4. Verify: the compile report shows one `ai_review` step with your prompt/schema/`on_failure`, not
+   silently dropped (only a blank prompt gets dropped); the demoqa step's value shows the
+   `{{article_category}}` token, not the literal `test`.
+5. Safety-gate check: try inserting a **destructive** step (e.g. delete/remove) directly after the
+   AI Review step and save. **Expect the patch gate to refuse the save** — PROD-3's
+   `destructive_step_cannot_directly_follow_ai_review` rule: a review answer has no entity binding,
+   so it can gate *whether* a later step runs but never supply *what* a destructive step acts on.
+   Remove that destructive step before continuing.
+
+### Stage 2 — Replay in the Studio sandbox (self-answering path)
+1. Run **Studio Run Test** 5 times. The sandbox has no agent in the loop, so `cmd_test_workflow`
+   answers each pause itself through the metered cloud LLM proxy.
+2. Expect every run to complete; demoqa's Full Name field ends up filled with one of `person /
+   place / organization / event / other` (Marie Curie → expect `person`); each report shows exactly
+   one `ai_review` pause answered. Studio caps at 5 pauses per test run (a safety limit against a
+   misconfigured workflow holding the sandbox's host-lock open forever) — a 6th pause in one run
+   hitting the cap is expected behavior, not a bug, if you engineer a workflow with 6+ review steps.
+
+### Stage 3 — Replay via real MCP: pause, bad answer, timeout, token audit
+1. Install the pack, connect Claude Desktop, call `execute_skill`. **Expect a pause, not a
+   completed run** — the review prompt, a live DOM inventory, a current-page screenshot (confirm it
+   actually shows the Marie Curie article), plus `_meta: {"conxa/ai_review": {...}}` naming the
+   exact `resume_from`/`review_results` call to make.
+2. Answer it: call `execute_skill` again with `resume_from` and
+   `review_results: {"<step_index>": "person"}`. Confirm it resumes from the same parked page (not
+   a fresh navigation) and completes with the demoqa field showing `person`.
+3. **Bad-answer path:** resume once with an answer outside the enum (e.g. `"banana"`). Expect a
+   bounded re-ask (`REVIEW_RETRY_MAX = 2`), not an immediate hard failure. Exhaust both re-asks with
+   bad answers and confirm `on_failure` applies (`use_default` → binds `other`, continues from the
+   same parked page).
+4. **Never-answered path:** trigger a pause and don't resume it. Wait past `PARK_TTL_MS` (~180s) and
+   confirm the parked browser closes itself (`Get-Process chrome,node` shows nothing leaked).
+5. **Zero-token sanity check:** every OTHER step (searches, clicks, typing) shows zero LLM calls in
+   the recovery/LLM log — only the one deliberate `ai_review` call spends tokens.
+
+**What this proves on pass:** the pause/resume contract works end-to-end for both a real agent and
+the token-free sandbox self-answer path; a bad or missing answer degrades safely (re-ask → default,
+never a crash or a silent wrong click); the destructive-step safety gate actually blocks the unsafe
+pattern in the editor.
+**Where failures go:** `TODO.md` EXEC-13; safety-gate bypass → PROD-3 immediately (same severity
+class as WF-8's B-8); pause/resume plumbing → `runtime/app/review_pause.js` / `server.js`'s
+`_resumeReviewStep`.
+
+---
+
+## WF-15 — Hand-Over step: yield the page to a person (EXEC-21)
+
+**Site:** S13 (google.com/recaptcha/api2/demo) · **Tabs:** 1 (plus any popup the CAPTCHA flow
+itself opens)
+
+`handover` is `ai_review`'s human sibling (`docs/TRD.md` §10.10) — it pauses the run and lets a
+*person*, not Claude, do the one thing only they can do (here: solve a CAPTCHA), then reclaims the
+page. Unlike `ai_review`, drift while paused is expected and fine — the whole point is letting a
+person change the page.
+
+### Stage 1 — Record, insert the hand-over, and the fast "person already there" path
+1. Record (~3 steps): go to `google.com/recaptcha/api2/demo` → click the **I'm not a robot**
+   checkbox (don't worry about solving the challenge during recording, cancel/retry after) →
+   click **Submit**. Stop recording.
+2. In the editor, insert a **Hand-Over** step immediately before the checkbox-click step:
+   - **Message:** `Please solve the CAPTCHA challenge, then let the workflow continue.`
+   - **On failure:** `abort` (only option besides `continue` — no `use_default`, a hand-over
+     produces no answer value).
+   - **Resume-when probe** (worth testing): a probe checking the checkbox now reads as checked
+     (e.g. its `aria-checked`/checked-state selector) — gates the actual resume, not just "the
+     person clicked something."
+3. Save. Compile. Confirm the compile report shows one `handover` step with your message, not
+   dropped (only a blank message gets dropped).
+4. Install the pack, connect Claude Desktop, call `execute_skill`. The moment the run reaches the
+   hand-over, **sit at the keyboard and solve the CAPTCHA yourself within 120 seconds**
+   (`CONXA_HANDOVER_INCALL_MS` default). Expect the run to continue and complete **inside the same
+   `execute_skill` call** — no pause response, no park, nothing for the agent to do; confirm via
+   the run log that no `handoverPause` event fired.
+
+### Stage 2 — Real pause: all three resume signals, host-lock release, drift tolerance
+Run three separate times, deliberately waiting past 120 seconds before touching the CAPTCHA each
+time, and resume via a different signal each run:
+
+| Run | Resume via | What to check |
+|---|---|---|
+| P1 | Click the **in-page banner** the hand-over injects (should appear on the CAPTCHA tab automatically, and re-appear if you open a new tab) | Solve CAPTCHA → click banner → run resumes and completes from the parked page |
+| P2 | `conxa-runtime.exe resume <run_id>` from a terminal (get `run_id` from the pause response) | Solve CAPTCHA first, then run the CLI command → run resumes |
+| P3 | Drop a file at `~/.conxa/resume/<run_id>.cmd` (any content) | Solve CAPTCHA, create the file (`New-Item`), confirm the `fs.watch`/poll fallback picks it up within ~5s and resumes |
+
+For each: confirm the pause response showed the page screenshot/DOM (mirrors `ai_review`'s pause
+shape); confirm the platform's `host_lock` was **released** during the pause (start a second,
+unrelated skill against a *different* site during the pause and confirm it runs immediately, not
+blocked); confirm the resume happened via the runtime's own long-lived process (check the run's own
+log timestamps against when you actually solved the CAPTCHA, not a fresh agent-initiated call).
+
+Then, reusing the same setup, confirm drift tolerance and clean-failure boundaries:
+- Trigger a pause, navigate the paused tab away and back before resuming — confirm resume still
+  succeeds (no divergence refusal, unlike `ai_review` — this is by design).
+- Trigger a pause, **close the tab** entirely before resuming (via CLI or file-drop, since the
+  banner is gone with the tab) — confirm this fails the step cleanly (tab resolution fails) rather
+  than silently continuing on whatever page happens to be current.
+- With the `resume_when` probe from Stage 1 set: trigger a pause, resume without actually
+  completing the checkbox — confirm the resume is refused/times out cleanly rather than continuing
+  on an unfinished CAPTCHA.
+
+### Stage 3 — Known limitations (confirm they fail as documented, not worse)
+- **Native dialogs:** if you can arrange a variant where a hand-over precedes a JS `alert`/
+  `confirm`/`prompt`, confirm a person genuinely cannot interact with it live (Playwright's dialog
+  listener intercepts it at the CDP level) — expect this to be a known, stated limitation, not
+  something to debug further.
+- **Hand-over inside a loop:** wrap the hand-over step in a `for_each` (e.g. loop over 2 dummy rows
+  and put the CAPTCHA hand-over inside the loop body), trigger a pause mid-loop, and resume.
+  Expect it to NOT resume at the same iteration — the loop unwinds and the iteration cursor is
+  lost. This is a stated gap (no compile-time guard yet rejects authoring a hand-over inside a loop
+  body) — log it as confirmed-expected, not a new bug, unless it does something worse (e.g. crashes
+  or silently skips the rest of the loop with a false success).
+- **Runtime restart:** trigger a pause, then restart the runtime process entirely before resuming.
+  Expect the hand-over to be lost (not durable across a restart — this is EXEC-22, separately
+  tracked, not part of this test).
+
+**What this proves on pass:** all three resume signals work independently; the fast "person already
+there" path never parks or spends a token; the platform lock releases during a long pause so
+sibling runs aren't starved; drift during a hand-over is tolerated by design while a closed tab or
+failed probe still fails cleanly; the documented limitations (dialogs, loop bodies, restarts) fail
+exactly as documented and not worse.
+**Where failures go:** `TODO.md` EXEC-21 (built shape) / EXEC-22 (restart durability, separately
+tracked) / loop-guard gap (tracked, not urgent unless it fails unsafely); host-lock starvation →
+`runtime/app/host_lock.js`; any silent continue after a closed tab or failed probe → treat as a
+safety bug, same severity class as WF-8's B-8.
+
+---
+
 ## What to watch for across ALL workflows (known gaps these tests exercise)
 
 - **Tab-landing correctness** — next action after any switch lands in the expected tab (EXEC-5 #43).

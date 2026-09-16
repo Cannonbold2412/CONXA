@@ -297,6 +297,29 @@ steps cannot patch `recovery`/`validation` since branch bodies are best-effort a
 recovery. `try_dismiss`/`wait_for_one_of` show read-only summary badges only — no authoring UI
 for their candidate/option lists yet (`TODO.md` BUILD-6).
 
+**AI Review step authoring (EXEC-13, 2026-09-14):** `ai_review` (§10.9 of `docs/TRD.md`) is now
+insertable from the Add-action menu alongside the branch primitives above. It has no selector to
+pick and no post-condition to assert, so its config block replaces the usual selector/Validation
+panels entirely: a required question, an answer-shape preset that fills an editable JSON schema
+textarea, an on-failure policy (abort / use a default / continue), and — like `wait`/`screenshot`
+before it — the generic Value field, here labelled "Output binding name" and doubling as the name
+later steps read the answer back from. Testing a workflow containing one in the Build Studio no
+longer fails outright: the sandbox has no MCP agent to answer the paused checkpoint, so it answers
+the checkpoint itself through the metered cloud LLM proxy and resumes, the same way a real agent
+would over MCP on a customer's machine (at zero cost there, since that path runs on the customer's
+own Claude subscription).
+
+**Hand-over step authoring (EXEC-21, hand-over shape, 2026-09-15):** `handover` (§10.10 of
+`docs/TRD.md`) is `ai_review`'s human sibling in the Add-action menu — same "no selector, no
+Validation panel" shape, but the generic Value field (labelled "Message shown to the person" here,
+rather than an output binding name) is the message a person sees on the pause banner, since that's
+the one thing every hand-over must have and it's the field every action-kind editor already
+renders. On-failure is narrower than `ai_review`'s (abort / continue — no "use a default", since a
+hand-over produces no answer value). Testing one in the Build Studio requires an actual person: the
+sandbox forces a visible browser and shows the same in-page banner a production run would, and the
+tester clicks it themselves to resume — there is no cloud-proxy stand-in the way `ai_review`'s
+sandbox answerer provides, because nothing but a person can do what a hand-over step exists for.
+
 **"Treat as optional?" suggestion (recording-next-steps.md Priority 2, 2026-07-10):** the recorder
 now observes (never probes) whether a step's target sat inside what looked like an optional
 interstitial — a dialog or cookie/consent banner — during recording, and flags it advisory-only;
@@ -326,6 +349,41 @@ assertion is flagged in the UI ("this step will pass even if the action had no e
 than silently accepted.
 
 Deterministic Human Edit actions are available without quota: patch, reorder, delete, input edits, validation edits, sign-off, and reviewing a step's already-compiled selectors in the re-target wizard (continuing without re-picking the element). LLM-assisted actions such as selector regeneration (including the re-target wizard's Phase 2 candidate generation **when the element is re-picked**), visual re-anchor, screenshot/bbox anchor regeneration, semantic repair, and raw-recording recompile require remaining Human Edit pool.
+
+**Human Review Copilot (BUILD-26, 2026-09-10):** Human Edit gains a conversation. A floating
+launcher (bottom-right by default, freely draggable anywhere on screen, position persisted)
+opens a chat card without leaving the step list — deliberately not the Tools rail, which opens
+as a shared modal and would hide the step being discussed. A "new session" button archives the
+outgoing conversation to disk (`copilot_sessions.jsonl`, §5.10a of `docs/Backend-Schema.md`)
+before clearing it, so switching topics never silently loses the prior thread. A reviewer types
+a question ("why did step 3 fail?",
+"give me a better assertion for step 5") and the copilot answers grounded in real evidence: the
+compile report, the recovery cascade's own log of what it tried, a live element inventory, and —
+when the most recent Studio test run failed — the screenshot taken at that moment. It may propose
+a change as an accept/reject diff (never applying anything itself), restricted to a step's
+`value`/`input_binding`/`intent`/`semantic_description`/`validation.assertions` — never a
+selector, same boundary as every other LLM path in this product. Accepting one runs through the
+exact same `cmd_patch_step` a manual edit uses (its own undo entry, its own quota draw from the
+Human Edit pool); rejecting logs the decision without touching the compiled skill. Switching to a
+different step while a proposal is pending prompts the same "you'll lose this" confirmation the
+re-target wizard already shows for an unsaved edit — discarding one this way still counts as a
+rejection, not a silent drop. See `docs/UI-UX-Brief.md` §2.7 and `docs/TRD.md` §7.2a.
+
+**Verify fix (BUILD-26 stage e, 2026-09-10):** after accepting a proposal, a **Verify fix** button
+appears — clicking it first shows a count of the workflow's non-reversible steps ("this run
+performs N steps that commit or destroy data") with **Run anyway** / **Cancel**; nothing runs
+against the real system until the reviewer clicks through that confirmation. Confirming rebuilds
+the skill package and retests the workflow, streaming the same progress lines a manual Run Test
+does into the chat, then shows a verdict: **Fixed** (the retest passed), **Still failing** (the
+same step still fails), or **Progressed** (a different step now fails). A reviewer-initiated
+cancel mid-retest shows no verdict at all — it is neither a pass nor a failure worth recording.
+
+**Overlay-aware proposals (BUILD-26 stage f, 2026-09-10):** when a Studio test run hits an
+unexpected overlay (a popup, a banner) that blocks a step — whether or not it ultimately recovers
+— the runtime remembers what it saw. A reviewer can then ask "add a condition for that popup" and
+the copilot proposes inserting a conditional branch (dismiss it, or check for it before a step)
+built from that actual observation — never a guessed selector. The proposal renders the same
+accept/reject diff as any other, just describing an inserted step instead of a field change.
 
 ---
 
@@ -585,6 +643,13 @@ A step failing mid-execution with a login redirect (session expired) follows the
 non-blocking pattern: `isAuthFailure()` detects it, a login window opens in the background, and
 `execute_skill` returns immediately telling Claude to resume with `resume_from` once the user has
 signed in — see `docs/Auth-and-Updater.md` §1.3.
+
+**Dry-run (PROD-3-DRYRUN).** When a skill's last step is a hard-to-undo action (delete a record,
+send a payment), the user can ask to preview it first: `execute_skill(..., dry_run: true)` runs
+every ordinary step normally but, on reaching the destructive one, only confirms its target is
+still findable — it never clicks/submits it. The response names exactly what it held back
+("Dry run: 1 committing step skipped — Click 'Delete invoice'"), and the user decides whether to
+re-run for real. See `docs/TRD.md` §10.6a.
 
 ---
 

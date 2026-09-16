@@ -313,6 +313,55 @@ class TestBranchStepSerialization:
         assert "output_schema" not in out
         assert "reference_screenshot_ref" not in out
 
+    # ── EXEC-21 (hand-over shape): handover ──────────────────────────────────
+    # The human sibling of ai_review above — same shape, but the message shown to the person
+    # rides the generic `value` field rather than a dedicated `handover_message` field.
+
+    def test_handover_step_serializes_message_and_defaults_on_failure_to_abort(self):
+        step = {"action": "handover", "value": "Please complete the 2FA challenge, then click Done."}
+        out = _saved_step_to_execution_step(step)
+        assert out == {
+            "type": "handover",
+            "message": "Please complete the 2FA challenge, then click Done.",
+            "on_failure": "abort",
+        }
+
+    def test_handover_step_dropped_when_message_is_blank(self):
+        assert _saved_step_to_execution_step({"action": "handover", "value": "   "}) is None
+        assert _saved_step_to_execution_step({"action": "handover"}) is None
+
+    def test_handover_step_serializes_full_config(self):
+        step = {
+            "action": "handover",
+            "value": "Please sign the document, then click Done.",
+            "handover_on_failure": "continue",
+            "handover_resume_when": {"selector": "#signed-confirmation"},
+            "handover_resume_when_timeout_ms": 15000,
+        }
+        out = _saved_step_to_execution_step(step)
+        assert out == {
+            "type": "handover",
+            "message": "Please sign the document, then click Done.",
+            "on_failure": "continue",
+            "resume_when": {"selector": "#signed-confirmation"},
+            "resume_when_timeout_ms": 15000,
+        }
+
+    def test_handover_step_omits_resume_when_timeout_unless_resume_when_is_set(self):
+        step = {
+            "action": "handover",
+            "value": "Please log in.",
+            "handover_resume_when_timeout_ms": 15000,
+        }
+        out = _saved_step_to_execution_step(step)
+        assert "resume_when" not in out
+        assert "resume_when_timeout_ms" not in out
+
+    def test_handover_step_omits_empty_resume_when(self):
+        step = {"action": "handover", "value": "Please log in.", "handover_resume_when": {}}
+        out = _saved_step_to_execution_step(step)
+        assert "resume_when" not in out
+
     def test_editor_authored_if_present_step_serializes_correctly(self):
         """An if_present step scaffolded via the Human Edit editor (workflow_mutations.py::
         _new_manual_step + insert_branch_step — the 2026-07-10 branch-authoring work closing
@@ -459,7 +508,12 @@ class TestSkillPackageConfigStructure:
 # ─────────────────────────────────────────────────
 
 class TestSavedSkillJsonBuild:
-    def test_saved_skill_export_strips_legacy_synthetic_start_navigation(self, tmp_path):
+    def test_saved_skill_export_keeps_the_compiler_synthesized_start_navigation(self, tmp_path):
+        """The current compiler's own synthesized leading navigate step (intent
+        navigate_to_page, see build.py::_insert_start_navigate_step) is exported like any
+        other step — no special-casing strips it. (An older compiler's synthetic first step,
+        tagged navigate_to_start_url, no longer gets any special treatment either: recompiling
+        that old data was dropped in favor of a clear re-record message.)"""
         saved_skill = {
             "meta": {"id": "skill_123", "title": "Delete Database"},
             "inputs": [{"id": "service_name", "label": "Service Name", "type": "text"}],
@@ -469,12 +523,12 @@ class TestSavedSkillJsonBuild:
                     "steps": [
                         {
                             "action": {"action": "navigate", "url": "https://dashboard.render.com/"},
-                            "intent": "navigate_to_start_url",
+                            "intent": "navigate_to_page",
                             "target": {},
                             "signals": {
                                 "semantic": {
-                                    "final_intent": "navigate_to_start_url",
-                                    "llm_intent": "navigate_to_start_url",
+                                    "final_intent": "navigate_to_page",
+                                    "llm_intent": "navigate_to_page",
                                 },
                                 "selectors": {},
                                 "anchors": [],
@@ -503,11 +557,12 @@ class TestSavedSkillJsonBuild:
 
         skill_dir = tmp_path / "skills" / "delete_database"
         execution = json.loads((skill_dir / "execution.json").read_text(encoding="utf-8"))
-        assert [step["type"] for step in execution] == ["type", "click"]
-        assert all(step["type"] != "navigate" for step in execution)
+        assert [step["type"] for step in execution] == ["navigate", "type", "click"]
 
+        # navigate has no recovery block (Key Invariant: navigation markers are never
+        # retried) — only the type/click steps (2, 3) appear in recovery.json.
         recovery = json.loads((skill_dir / "recovery.json").read_text(encoding="utf-8"))
-        assert [step["step_id"] for step in recovery["steps"]] == [1, 2]
+        assert [step["step_id"] for step in recovery["steps"]] == [2, 3]
         assert recovery["steps"][0]["selector_context"]["primary"] == 'input[placeholder="Search"]'
         assert recovery["steps"][1]["selector_context"]["primary"] == "text={{service_name}}"
 
@@ -763,6 +818,42 @@ class TestSavedSkillJsonBuild:
             }
         ]
 
+    def test_saved_skill_recovery_carries_the_labeled_phase(self, tmp_path):
+        """BUILD-25 stage e: the compiler's second-opinion pass's label_phase
+        finding, read by runtime/app/failure_response.js's Tier B recovery
+        prompt. Absent on any step the pass never labeled."""
+        saved_skill = {
+            "meta": {"id": "skill_123", "title": "Delete Database"},
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {
+                            "action": "click",
+                            "intent": "sign_in",
+                            "phase": "login",
+                            "target": {"primary_selector": "#login-submit", "role": "button"},
+                        },
+                        {
+                            "action": "click",
+                            "intent": "unlabeled_step",
+                            "target": {"primary_selector": "#other", "role": "button"},
+                        },
+                    ],
+                }
+            ],
+        }
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="delete_database",
+            saved_skill=saved_skill,
+        )
+
+        recovery = json.loads((tmp_path / "skills" / "delete_database" / "recovery.json").read_text(encoding="utf-8"))
+        assert recovery["steps"][0]["phase"] == "login"
+        assert "phase" not in recovery["steps"][1]
+
     def test_saved_skill_recovery_writes_visual_refs_from_saved_step_screenshots(self, tmp_path, monkeypatch):
         import conxa_compile.skill_package_builder_saved_skill as skill_package_builder_saved_skill
 
@@ -812,6 +903,78 @@ class TestSavedSkillJsonBuild:
 
         recovery = json.loads((skill_dir / "recovery.json").read_text(encoding="utf-8"))
         assert recovery["steps"][0]["visual_ref"] == "visuals/Image_1.jpg"
+
+    def test_saved_skill_recovery_visual_ref_uses_chosen_frame_and_carries_anchor_sentence(self, tmp_path, monkeypatch):
+        """visual_ref now resolves through signals.visual.default_frame_label (the
+        vision LLM's chosen_frame) against signals.visual.frames, instead of always
+        the deterministic before_near/full_screenshot frame — and the full prose
+        anchor sentence rides alongside the short anchors as its own field."""
+        import conxa_compile.skill_package_builder_saved_skill as skill_package_builder_saved_skill
+
+        data_dir = tmp_path / "data"
+        image_dir = data_dir / "sessions" / "sess_visual" / "images"
+        image_dir.mkdir(parents=True)
+        Image.new("RGB", (120, 80), "white").save(image_dir / "before_near.jpg")
+        chosen_image = image_dir / "at.jpg"
+        Image.new("RGB", (120, 80), (10, 20, 30)).save(chosen_image)
+        monkeypatch.setattr(skill_package_builder_saved_skill, "resolve_skill_asset", lambda rel: data_dir / rel)
+
+        saved_skill = {
+            "meta": {
+                "id": "skill_456",
+                "title": "Submit Form",
+                "source_session_id": "sess_visual",
+            },
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {
+                            "action": "click",
+                            "target": {"primary_selector": 'text="Submit"'},
+                            "signals": {
+                                "visual": {
+                                    "full_screenshot": "images/before_near.jpg",
+                                    "default_frame_label": "at",
+                                    "frames": {
+                                        "before_near": "images/before_near.jpg",
+                                        "at": "images/at.jpg",
+                                    },
+                                    "bbox": {"x": 10, "y": 12, "w": 40, "h": 20},
+                                    "viewport": "120x80",
+                                },
+                                "anchors": [
+                                    {"element": "submit", "relation": "near"},
+                                    {"element": "The blue Submit button", "relation": "target_sentence"},
+                                ],
+                            },
+                            "recovery": {
+                                "anchors": [
+                                    {"element": "submit", "relation": "near"},
+                                    {"element": "The blue Submit button", "relation": "target_sentence"},
+                                ]
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="submit_form",
+            saved_skill=saved_skill,
+        )
+
+        skill_dir = tmp_path / "skills" / "submit_form"
+        visual_path = skill_dir / "visuals" / "Image_1.jpg"
+        assert visual_path.is_file()
+
+        recovery = json.loads((skill_dir / "recovery.json").read_text(encoding="utf-8"))
+        entry = recovery["steps"][0]
+        assert entry["anchor_sentence"] == "The blue Submit button"
+        # The sentence must not also show up as one of the short anchor phrases.
+        assert all(a["text"] != "The blue Submit button" for a in entry["anchors"])
 
     def test_saved_skill_recovery_carries_recorded_page_structure(self, tmp_path):
         """The agent recovery tier is handed a ranked list of what is on the page NOW. That
@@ -1069,6 +1232,39 @@ class TestSavedSkillJsonBuild:
         assert [step["type"] for step in execution] == ["wait"]
         assert len(warnings) == 1
         assert "drag" in warnings[0].lower()
+
+    def test_saved_skill_export_drops_unconfigured_ai_review_with_warning(self, tmp_path):
+        """EXEC-13: an inserted-but-never-configured AI Review step (blank prompt, the
+        _new_manual_step scaffold) is dropped with an actionable warning — same shape as
+        drag_drop above — instead of failing the whole build."""
+        saved_skill = {
+            "meta": {"id": "skill_123", "title": "Unconfigured Review Among Others"},
+            "inputs": [],
+            "skills": [
+                {
+                    "steps": [
+                        {"action": {"action": "ai_review"}, "ai_review_prompt": ""},
+                        {"action": {"action": "wait", "ms": 750}},
+                    ]
+                }
+            ],
+        }
+        warnings = []
+
+        _build_workflow_from_saved_skill(
+            bundle_root=tmp_path,
+            workflow_slug="unconfigured_review_among_others",
+            saved_skill=saved_skill,
+            on_warning=warnings.append,
+        )
+
+        execution = json.loads(
+            (tmp_path / "skills" / "unconfigured_review_among_others" / "execution.json").read_text(encoding="utf-8")
+        )
+        assert [step["type"] for step in execution] == ["wait"]
+        assert len(warnings) == 1
+        assert "ai review" in warnings[0].lower()
+        assert "prompt" in warnings[0].lower()
 
     def test_normalizes_human_edit_input_id_to_runtime_name(self):
         inputs = _normalize_saved_skill_inputs(

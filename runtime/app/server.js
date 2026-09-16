@@ -221,6 +221,7 @@ let sweepOldRuns;
 let extractZipOnce;
 let getCachedBrowser;
 let releaseCachedBrowser;
+let teardownExecBrowser;
 let captureReAuth;
 let gracefulShutdown;
 let resolveGroup;
@@ -241,7 +242,7 @@ try {
   sync         = require("./sync");
   authManager  = require("./auth_manager");
   ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
-  ({ getCachedBrowser, releaseCachedBrowser, captureReAuth, gracefulShutdown,
+  ({ getCachedBrowser, releaseCachedBrowser, teardownExecBrowser, captureReAuth, gracefulShutdown,
      _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
   ({ resolveTargetHosts } = require("./target_hosts"));
   ({ createTracker, mapErrorToCode, drainSpill } = require("./tracker"));
@@ -516,6 +517,11 @@ async function _buildFailureResponse(page, errObj, resolvedEntry, runTracker, st
       appendRecoveryEvent,
       stepAssertions,
       frameScopedInventory,
+      // BUILD-26 stage (a1): lets the Studio-ceiling branch file failure evidence under this
+      // run's own workspace — `exec` already carries both, no new plumbing.
+      dataDir: CONXA_DATA_DIR,
+      runId: exec && exec.runId,
+      runStartTs: exec && exec.startedAt,
     }
   );
 }
@@ -534,6 +540,13 @@ const {
 function _buildReviewRequest(page, step, stepIndex, resolvedEntry, opts) {
   return buildReviewRequest(page, step, stepIndex, resolvedEntry, opts);
 }
+
+// EXEC-21 (hand-over shape): the human sibling of ai_review above, same reasoning for staying
+// its own module — a hand-over is a planned pause, not a failure, and must never touch
+// recovery_stage.js's escalation state or retry_budget.js's map. See handover.js's header for
+// why its park differs from ai_review's (host lock released, no fixed TTL, no closeExtraTabs).
+const handoverMod = require("./handover");
+const HANDOVER_PARK_TTL_MS = handoverMod.HANDOVER_PARK_TTL_MS;
 
 // ─── Scheduler store (PROD-5) ─────────────────────────────────────────────────
 // Lazy — only the schedule tools touch it. Inputs are encrypted at rest under a
@@ -721,13 +734,13 @@ async function _handleTool(name, args, extra) {
 
   // ── execute_skill / execute_sequence ─────────────────────────────────────────
   if (name === "execute_skill" || name === "execute_sequence") {
-    const watch = args.watch !== false;
+    let watch = args.watch !== false;
     // PROD-5: distinguish scheduled runs from chat-driven ones in logs/telemetry.
     // Only the scheduler daemon sends _trigger; anything else is chat-driven.
     const trigger = args._trigger === "scheduled" ? "scheduled" : "chat";
     const runs = name === "execute_sequence"
       ? (Array.isArray(args.skills) ? args.skills : [])
-      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides, review_results: args.review_results }];
+      : [{ skill: args.skill, workspace_id: args.workspace_id, inputs: args.inputs, resume_from: args.resume_from, step_overrides: args.step_overrides, review_results: args.review_results, dry_run: args.dry_run }];
 
     if (runs.length === 0) return err("No skills provided.");
 
@@ -839,7 +852,16 @@ async function _handleTool(name, args, extra) {
         // never run through applyStepOverrides — an ai_review step carries no selector for
         // applyStepOverrides to inject, only a structured answer bound into `inputs`.
         reviewResults: (run.review_results && typeof run.review_results === "object") ? run.review_results : {},
+        dryRun: run.dry_run === true,
       });
+    }
+
+    // EXEC-21: a handover step needs a person to actually see and click something — there is no
+    // window for that in a headless run. Force one open rather than deadlocking on a banner
+    // nobody can see; watch was already resolved above, before we could know what's in the pack.
+    if (!watch && resolved.some((r) => Array.isArray(r.steps) && r.steps.some((s) => s && s.type === "handover"))) {
+      watch = true;
+      log("info", "handover_forced_watch", { skills: resolved.map((r) => r.entry.slug) });
     }
 
     // Retry budget check on resume
@@ -957,6 +979,14 @@ async function _handleTool(name, args, extra) {
     const _runTracker = _tracker.forRun(_runId, { uid: INSTALL_ID, wid: "" });
     const _wfStartAt  = Date.now();
     let   _totalRecovered = 0;
+    // EXEC-36/BUILD-28(a): drift/environment-mismatch warnings collected across every skill in
+    // this run (execute_sequence can chain several), surfaced on both the success and failure
+    // paths below — deduped so a warning that would repeat identically per-skill (a shared
+    // pack-level environment mismatch) only appears once.
+    const _allWarnings = [];
+    // PROD-3-DRYRUN: every destructive step skipped (resolved but never acted on) across every
+    // skill in this run, so a dry-run's response can name exactly what it withheld.
+    const _dryRunSkipped = [];
     if (_overrideAppliedCount) _runTracker.emit("override_applied", { n: _overrideAppliedCount });
 
     // Signal agent-mediated recovery retry (Tier 3/4) when resuming mid-plan.
@@ -1065,7 +1095,14 @@ async function _handleTool(name, args, extra) {
     // invalid answer do NOT refuse outright: a review answer is a judgment about page STATE, so
     // if the state changed (or the answer didn't parse) the right move is a bounded re-ask
     // against the current page, not a hard refusal — see review_pause.js's header.
-    const _resumeReviewStep = _effAgentEnabled && resolved.length === 1 && primary.isResume
+    //
+    // Deliberately NOT gated on _effAgentEnabled: CONXA_MAX_RECOVERY_TIER / the Strict Mode
+    // ceiling governs escalation into the Tier 1-4 RECOVERY cascade. An ai_review step is not
+    // recovery — it's an author-placed checkpoint that must be answerable by any MCP caller,
+    // including the Build Studio sandbox (tier 2, no agent), which answers it itself via the
+    // cloud proxy (see handlers/workflows.py::cmd_test_workflow). The matching park-creation
+    // branch below (runErr.reviewPause) was already unconditional.
+    const _resumeReviewStep = resolved.length === 1 && primary.isResume
       && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom].type === "ai_review";
     if (_resumeReviewStep) {
       const stepDef = primary.steps[primary.resumeFrom];
@@ -1153,6 +1190,45 @@ async function _handleTool(name, args, extra) {
       }
     }
 
+    // EXEC-21: resuming a hand-over pause — the human sibling of the ai_review resume above.
+    // Two differences from review, both because a hand-over has no structured answer to
+    // validate: (1) there is nothing to re-ask for, so a call naming a handover step with no
+    // live park just refuses outright, same message shape as an expired review window; (2) page
+    // drift is not distrusted here — a hand-over's whole point is letting a person change the
+    // page, so no divergence-fingerprint check runs (compare the review resume's `diverged`
+    // check above). run.js's own `revalidate()` call (inside its `handover` interception) is
+    // what actually confirms the recorded tab still exists before the next step touches it.
+    // The one thing THIS resume must do that review's never needs to: re-acquire the host lock,
+    // which the pause-creation branch below released for the whole wait — handled further down,
+    // gated on `_park.hostRelease == null`, right where the fresh-run branch first acquires it.
+    const _resumeHandoverStep = resolved.length === 1 && primary.isResume
+      && primary.steps[primary.resumeFrom] && primary.steps[primary.resumeFrom].type === "handover";
+    if (_resumeHandoverStep) {
+      const handoverPark = _getParkedRecovery(_parkKey);
+      if (!handoverPark) {
+        appendRecoveryEvent({ event: "handover_resume_refused", slug: primary.entry.slug, step_index: primary.resumeFrom });
+        _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: primary.resumeFrom, fc: "handover_resume_refused" });
+        if (_abortSignal) _abortSignal.removeEventListener("abort", _onAbort);
+        runRegistry.end(_runId);
+        await _receiptFlush;
+        await _tracker.flush();
+        _tracker.destroy();
+        return err(
+          `The hand-over window for step ${primary.resumeFrom + 1} has expired or was never opened. Call ` +
+          `execute_skill again for "${primary.entry.slug}" without resume_from to restart the skill from the beginning.`
+        );
+      }
+      clearTimeout(handoverPark.timer);
+      _setParkedRecovery(_parkKey, null);
+      // Whichever caller adopts the park first (a signal firing and self-resuming, or an agent
+      // explicitly calling resume_from) disarms it exactly once here — the banner/file/http
+      // listeners have done their job the moment either path reaches this line.
+      if (handoverPark.armed) await handoverPark.armed.disarm().catch(() => {});
+      _park = handoverPark;
+      primary.inputs[`__handover_done_${primary.resumeFrom}`] = true;
+      _runTracker.emit("handover_resumed", { si: primary.resumeFrom });
+    }
+
     // PROD-18: every surviving path (fresh run or an adopted park) crosses here exactly
     // once, and none of the early returns above reach this line — so this is the one place
     // to settle the start receipt before any browser work begins.
@@ -1160,6 +1236,20 @@ async function _handleTool(name, args, extra) {
 
     let page = null;
     let _browser, _context, _protectedUrl;
+    // True when _browser/_context are a view borrowed from Conxa Execute's own panel
+    // (see host_browser.js) rather than a Chromium this process launched — every
+    // teardown site must check this before closing anything (see teardownExecBrowser).
+    let _hostOwned = false;
+    // EXEC-41 Stage 2: the run id a host-owned browser was actually registered under with
+    // Execute's panel (see browser_panel.js's `_runs` map, keyed by whatever runId `new_view`
+    // was called with). Defaults to this call's OWN _runId — correct for a fresh run, where
+    // they're the same value. A RESUMED park is the one case they diverge: _runId above is
+    // freshly generated for every execute_skill call (including a resume), but the browser
+    // view Execute is holding was registered under the run's ORIGINAL id — restored from
+    // _park.runId below. Every teardownExecBrowser/_setParkedRecovery/runPlan call in this
+    // function must use _hostRunId, never _runId, when talking to Execute or the tab registry,
+    // or a resumed run's teardown/tab_open would target a runId Execute has never heard of.
+    let _hostRunId = _runId;
     // Cache-lease key for _context, when it came from browser.js's headless cache (null for a
     // watch:true run, or a run that got its own uncached browser because the cache slot was
     // already leased by a concurrent run — see getCachedBrowser). Released at every teardown
@@ -1193,6 +1283,12 @@ async function _handleTool(name, args, extra) {
       if (_park) {
         ({ browser: _browser, context: _context, leaseKey: _leaseKey, hostRelease: _hostRelease } = _park);
         page = _park.page;
+        _hostOwned = Boolean(_park.hostOwned);
+        // EXEC-41 Stage 2 fix: restore the ORIGINAL run's id from the park, not this resumed
+        // call's own freshly-generated _runId — see _hostRunId's declaration comment above for
+        // why the two diverge here and nowhere else. _park.runId is set when the park is first
+        // created (below, in the review/handover/failed branches) and survives every resume.
+        _hostRunId = _park.runId || _runId;
         // The park's own listener closures (bound to the PREVIOUS call's runtimeLog/downloadQueue/
         // _openedTabs) are still attached to this same long-lived context — remove them before
         // this call attaches its own, or both calls' listeners would fire side by side.
@@ -1201,6 +1297,37 @@ async function _handleTool(name, args, extra) {
         log("info", "recovery_park_resumed", { skill: primary.entry.slug, step_index: primary.resumeFrom });
         appendRecoveryEvent({ event: "recovery_park_resumed", slug: primary.entry.slug, step_index: primary.resumeFrom });
         _runTracker.emit("park_resumed", { si: primary.resumeFrom });
+
+        // EXEC-21: a hand-over park released its host lock when it was created (see the
+        // handoverPause branch below) so a long human-scale wait doesn't starve every sibling
+        // run touching the same platform — see handover.js's header. `_hostRelease` just came
+        // back null from that destructure, so re-acquire before resuming execution. The policy
+        // gate does NOT re-run here, matching review's resume above: it already passed once, at
+        // this run's original admission, and a resumed park continues that same run rather than
+        // starting a new one.
+        if (_hostRelease == null) {
+          const _targetHosts = resolveTargetHosts(resolved, { resolveGroup, filterRequiredApps });
+          exec.waitingForHost = _targetHosts;
+          const _lock = await hostLock.acquireHosts(_targetHosts, { runId: _runId, slug: primary.entry.slug }, {
+            isDone: _execCancelled,
+            locksDir: path.join(CONXA_DATA_DIR, "locks"),
+          });
+          exec.waitingForHost = null;
+          if (!_lock.release) {
+            // The park slot is already empty (adopted and cleared above) — discardPark has
+            // nothing left to find, so close what we already destructured by hand. A hand-over
+            // park is always a visible (watch:true), uncached browser (see the watch-forcing
+            // check earlier in this handler), so there is no cache lease to release here.
+            try { await page.close(); } catch (_) {}
+            await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
+            throw Object.assign(new Error("Execution cancelled while re-acquiring a platform lock after hand-over."), {
+              cancelled: true,
+              hostLockWait: { host: _lock.host, blockerRunId: _lock.blocker && _lock.blocker.runId, blockerSkill: _lock.blocker && _lock.blocker.skill },
+            });
+          }
+          _hostRelease = _lock.release;
+          _phase("host_lock_reacquired");
+        }
       } else {
         // Serialize against any sibling run touching the same external platform(s) before doing
         // any browser work at all (RT-3 follow-up) — a run on a different platform never waits.
@@ -1281,6 +1408,7 @@ async function _handleTool(name, args, extra) {
           logFn: log,
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
           requiredAppIds: _requiredAppIdsUnion,
+          runId: _runId,
         });
         _phase("browser_context_ready");
         if (_authResult.authPending) {
@@ -1291,7 +1419,11 @@ async function _handleTool(name, args, extra) {
             { session_expired: true, login_url: _authResult.loginUrl });
         }
         ({ browser: _browser, context: _context, protectedUrl: _protectedUrl, leaseKey: _leaseKey } = _authResult);
-        page = await _context.newPage();
+        _hostOwned = Boolean(_authResult.hostOwned);
+        // A host-owned context has no context.newPage() (Electron doesn't support
+        // Target.createTarget — see host_browser.js's header); _authResult.page is
+        // the view Execute already created for this run.
+        page = _authResult.page || await _context.newPage();
         // Packs compiled after the leading-navigate change (compiler/build.py
         // _insert_start_navigate_step) open with their own `navigate` step to the page they
         // were recorded on, so landing on _protectedUrl (the group app's landing page) first is
@@ -1387,7 +1519,7 @@ async function _handleTool(name, args, extra) {
       // (_detachContextListeners itself is declared above, outside the try block — see comment there.)
 
       for (let si = 0; si < resolved.length; si++) {
-        const { entry, steps, inputs, resumeFrom } = resolved[si];
+        const { entry, steps, inputs, resumeFrom, dryRun } = resolved[si];
         const startAt = si === 0 ? resumeFrom : 0;
         // Backs a compiled bulk-upload step's {{downloaded_files_dir}} placeholder (see
         // conxa_compile/compiler/upload_binding.py's _BindingState) — resolveUploadPaths already
@@ -1404,9 +1536,22 @@ async function _handleTool(name, args, extra) {
             downloadQueue: _downloadQueue,
             dialogQueue: _dialogQueue,
             structuralFingerprint: entry.manifest && entry.manifest.structural_fingerprint,
+            environmentFingerprint: entry.manifest && entry.manifest.environment,
             watch,
+            runId: _runId,
+            hostOwned: _hostOwned,
+            hostRunId: _hostRunId,
+            dataDir: CONXA_DATA_DIR,
+            dryRun,
+            context: _context, // EXEC-21: handover needs the browser context to arm its banner
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
+          if (result && Array.isArray(result.warnings)) {
+            for (const w of result.warnings) if (!_allWarnings.includes(w)) _allWarnings.push(w);
+          }
+          if (result && Array.isArray(result.dryRunSkipped) && result.dryRunSkipped.length) {
+            _dryRunSkipped.push(...result.dryRunSkipped.map(s => ({ ...s, slug: entry.slug })));
+          }
           // Times the LAST step, which onStep's start-only markers can never do on their own —
           // and localizes where post-loop teardown (below) begins.
           _phase(`steps_complete:${steps.length}`);
@@ -1483,8 +1628,7 @@ async function _handleTool(name, args, extra) {
       await closeExtraTabs(_openedTabs);
       _detachContextListeners();
       if (watch) {
-        await _context.close().catch(() => {});
-        await _browser.close().catch(() => {});
+        await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         _phase("browser_closed");
       }
       releaseCachedBrowser(_leaseKey); // no-op when _leaseKey is null (watch mode, or uncached)
@@ -1508,7 +1652,15 @@ async function _handleTool(name, args, extra) {
       const downloadNote = _downloads.length
         ? `\nDownloaded files:\n${_downloads.map(p => `  ${p}`).join("\n")}`
         : "";
-      const content = [{ type: "text", text: `Done. URL: ${url}${downloadNote}\n(run_id: ${_runId})` }];
+      const warningNote = _allWarnings.length
+        ? `\n\nWarning:\n${_allWarnings.map(w => `  ${w}`).join("\n")}`
+        : "";
+      const dryRunNote = _dryRunSkipped.length
+        ? `\n\nDry run: ${_dryRunSkipped.length} committing step(s) skipped (resolved but never acted on):\n` +
+          _dryRunSkipped.map(s => `  - ${s.intent || `step ${s.index + 1}`}`).join("\n")
+        : "";
+      const doneVerb = _dryRunSkipped.length ? "Dry run complete" : "Done";
+      const content = [{ type: "text", text: `${doneVerb}. URL: ${url}${downloadNote}${warningNote}${dryRunNote}\n(run_id: ${_runId})` }];
       if (shot) content.push({ type: "image", data: shot.toString("base64"), mimeType: "image/png" });
       return { content };
 
@@ -1541,8 +1693,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await _context?.close().catch(() => {});
-          await _browser?.close().catch(() => {});
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
@@ -1579,8 +1730,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await _context?.close().catch(() => {});
-          await _browser?.close().catch(() => {});
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
@@ -1610,7 +1760,7 @@ async function _handleTool(name, args, extra) {
         const timer = setTimeout(() => { _discardPark(_parkKey, "ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _reviewPage, context: _context, browser: _browser, watch, reviewStepIndex: runErr.stepIndex, timer,
+          page: _reviewPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _hostRunId, watch, reviewStepIndex: runErr.stepIndex, timer,
           pageFingerprint: await capturePageFingerprint(_reviewPage),
           leaseKey: _leaseKey, hostRelease: _hostRelease,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
@@ -1625,6 +1775,61 @@ async function _handleTool(name, args, extra) {
         return reviewResp;
       }
 
+      // EXEC-21 (hand-over shape): reached this step for the first time (not a resume) and the
+      // in-call wait (handover.HANDOVER_INCALL_MS) already expired without the person
+      // signalling — see handover.js's header. Park the live page like ai_review above, but
+      // with three deliberate differences: the host lock is RELEASED (not held) for the length
+      // of the pause, since a human-scale wait would otherwise starve every sibling run
+      // touching the same platform (re-acquired above, on resume, gated on hostRelease being
+      // null); extra tabs are NOT closed, since the person may be mid-flow in a popup (a
+      // 2FA/OAuth window, a document viewer); and the armed banner/file/http signal sources
+      // run.js already set up are kept alive on the park — the moment ANY of them fires, this
+      // process resumes the run ITSELF, with no further agent call needed, the same way the
+      // `skill_` prefix shortcut below calls back into `_handleTool` directly.
+      if (runErr.handoverPause) {
+        const _handoverPage = runErr.page || page;
+        if (_hostRelease) { try { _hostRelease(); } catch (_) {} }
+        const timer = setTimeout(() => {
+          if (runErr.armed) runErr.armed.disarm().catch(() => {});
+          _discardPark(_parkKey, "ttl");
+        }, HANDOVER_PARK_TTL_MS);
+        if (timer.unref) timer.unref();
+        _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
+          page: _handoverPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _hostRunId, watch, handoverStepIndex: runErr.stepIndex, timer,
+          pageFingerprint: await capturePageFingerprint(_handoverPage),
+          leaseKey: _leaseKey, hostRelease: null,
+          attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab,
+          armed: runErr.armed });
+        appendRecoveryEvent({ event: "handover_park_created", slug: primary.entry.slug, step_index: runErr.stepIndex, ttl_ms: HANDOVER_PARK_TTL_MS });
+        log("info", "handover_park_created", { run_id: _runId, skill: primary.entry.slug, step_index: runErr.stepIndex });
+        _runTracker.emit("park_created", { si: runErr.stepIndex, kind: "handover" });
+
+        if (runErr.armed) {
+          // Fire-and-forget: whenever the person signals (possibly minutes or hours from now,
+          // long after this call has returned), resume the run through the exact same path an
+          // agent's own resume_from call would take (_resumeHandoverStep above) — no separate
+          // "internal resume" code path to keep in sync with the external one.
+          runErr.armed.signal.then((via) => {
+            log("info", "handover_signalled", { skill: primary.entry.slug, step_index: runErr.stepIndex, via });
+            _handleTool("execute_skill", {
+              skill: primary.entry.slug,
+              workspace_id: primary.entry.workspace_id,
+              resume_from: runErr.stepIndex,
+              watch: true,
+              dry_run: runErr.dryRun,
+            }).catch((e) => log("error", "handover_self_resume_failed", { error: e && e.message }));
+          }).catch(() => {});
+        }
+
+        const handoverResp = await handoverMod.buildHandoverRequest(_handoverPage, runErr.step, runErr.stepIndex, {
+          runId: _runId,
+          httpPort: runErr.armed && runErr.armed.httpPort,
+          token: runErr.armed && runErr.armed.token,
+          cmdFile: runErr.armed && runErr.armed.cmdFile,
+        });
+        return handoverResp;
+      }
+
       // Multi-tab: use the tab the failing step actually ran on, not always the initial tab —
       // the recovery request (and its DOM fingerprint) must describe the page that failed.
       const _failedPage = runErr.failedPage || page;
@@ -1633,6 +1838,29 @@ async function _handleTool(name, args, extra) {
         ? await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null, exec)
         : err(runErr.message);
       if (failResp && Array.isArray(failResp.content)) {
+        // EXEC-36/BUILD-28(a) — same warnings a passing run would have surfaced, so a run that
+        // failed BECAUSE of a drift/environment mismatch says so instead of reading like an
+        // ordinary selector/timing failure. _allWarnings covers earlier skills in a sequence;
+        // runErr.warnings (set by stepFailure) covers this skill's own run up to the failure.
+        const _runWarnings = _allWarnings.slice();
+        if (Array.isArray(runErr.warnings)) {
+          for (const w of runErr.warnings) if (!_runWarnings.includes(w)) _runWarnings.push(w);
+        }
+        if (_runWarnings.length) {
+          failResp.content.push({ type: "text", text: `Warning:\n${_runWarnings.map(w => `  ${w}`).join("\n")}` });
+        }
+        // PROD-3-DRYRUN layer 5 — a destructive step may already have landed
+        // (actionMayHaveTakenEffect, EXEC-24's signal) before this run died. OFFER the linked
+        // compensation skill as a next step; never run it automatically — an unattended
+        // compensating write after an unknown failure is a second uncontrolled action.
+        const _compEntry = runErr.fromEntry || primary.entry;
+        const _compSlug = runErr.actionMayHaveTakenEffect && _compEntry && _compEntry.manifest
+          ? String(_compEntry.manifest.compensation_skill || "").trim() : "";
+        if (_compSlug) {
+          failResp.content.push({ type: "text", text:
+            `This may have already taken effect before the failure. A cleanup workflow is available: ` +
+            `call execute_skill with skill: "${_compSlug}" to undo it.` });
+        }
         failResp.content.push({ type: "text", text: `(run_id: ${_runId})` });
       }
 
@@ -1656,7 +1884,7 @@ async function _handleTool(name, args, extra) {
         // must stay blocked from touching the same platform while this fix is pending) until
         // whichever call resumes or discards this park releases them.
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _failedPage, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
+          page: _failedPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _hostRunId, watch, failedAt: runErr.failedAt, timer,
           pageFingerprint: await capturePageFingerprint(_failedPage),
           leaseKey: _leaseKey, hostRelease: _hostRelease,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
@@ -1672,8 +1900,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await _context?.close().catch(() => {});
-          await _browser?.close().catch(() => {});
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();

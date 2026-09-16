@@ -16,6 +16,8 @@
  */
 const crypto = require("crypto");
 const pageScripts = require("./page_scripts");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
+const { teardownExecBrowser } = require("./browser");
 
 // Small headroom so incidental noise (a live clock, an ad slot) doesn't false-flag divergence.
 const PARK_DIVERGENCE_TOLERANCE = 3;
@@ -43,7 +45,9 @@ function setParked(key, park) {
 async function capturePageFingerprint(page) {
   try {
     const url = page.url();
-    const { interactiveCount, text } = await page.evaluate(pageScripts.pageFingerprint);
+    const fp = await evalOn(page, pageScripts.pageFingerprint);
+    if (fp === EVAL_TIMED_OUT) return null;
+    const { interactiveCount, text } = fp;
     return { url, interactiveCount, domHash: crypto.createHash("sha256").update(text).digest("hex") };
   } catch (_) {
     return null;
@@ -59,10 +63,11 @@ async function discardPark(key, reason, log) {
   try { await park.page.close(); } catch (_) {}
   // Headless browsers are owned by browser.js's per-workspace cache (idle-closed there, or
   // released back to the cache — see releaseCachedBrowser). A watch (visible) browser is not
-  // cached, so close it here.
+  // cached, so close it here — teardownExecBrowser skips the actual close for a host-owned
+  // (Execute-panel) browser/context and tells Execute to destroy the view instead of tearing
+  // down its whole browser process (see browser.js's header comment on that function).
   if (park.watch) {
-    try { await park.context.close(); } catch (_) {}
-    try { await park.browser.close(); } catch (_) {}
+    await teardownExecBrowser({ browser: park.browser, context: park.context, hostOwned: park.hostOwned, runId: park.runId });
   }
 }
 

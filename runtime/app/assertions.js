@@ -6,7 +6,7 @@ const { interpolate } = require("./interpolate");
 const { PAGE_LOAD_TIMEOUT_MS } = require("./run_config");
 const { asObject, asArray, isNonIdempotent } = require("./step_utils");
 const { rootCandidates } = require("./resolution");
-const { withDeadline, evalOn, EVAL_TIMED_OUT } = require("./page_eval");
+const { withDeadline, evalOn, countOn, EVAL_TIMED_OUT } = require("./page_eval");
 
 // Phase 8: post-action VERIFY — check compiled post-condition assertions independently of the
 // action's own success. Returns { pass, channel, evidence }. Absent assertions → pass (no-op).
@@ -104,7 +104,8 @@ async function pollNegative(checkAbsentFn, timeoutMs) {
 async function anyRootHasMatch(roots, target) {
   for (const root of roots) {
     try {
-      if ((await root.locator(target).count()) > 0) return true;
+      const n = await countOn(root.locator(target));
+      if (n !== EVAL_TIMED_OUT && n > 0) return true;
     } catch (_) { /* try next root */ }
   }
   return false;

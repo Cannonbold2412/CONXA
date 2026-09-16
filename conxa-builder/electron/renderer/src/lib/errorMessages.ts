@@ -21,6 +21,11 @@ export const errorMessages: Record<string, string> = {
   // Cloud / connectivity
   cloud_unreachable:
     "Can't reach Conxa Cloud right now. Check your internet connection and try again.",
+  // Distinct from cloud_unreachable on purpose: the cloud answered, it just couldn't get an
+  // answer out of any AI provider. Sending the reviewer to check a working network wastes
+  // their time on the one failure a retry usually does fix.
+  llm_no_output:
+    "The AI model didn't return an answer this time. Try asking again.",
   cloud_publish_failed:
     "Publishing to Conxa Cloud didn't complete. Please try publishing again.",
   installer_upload_failed:
@@ -34,11 +39,13 @@ export const errorMessages: Record<string, string> = {
   compile_credit_limit_exceeded:
     "You've used all of this month's compile credits. Upgrade your plan or wait for the next cycle.",
   human_edit_pool_exceeded:
-    "You've used all of this month's Human Edit tokens. Upgrade your plan or wait for the next cycle.",
+    "You've used all of this month's AI Usage Credits. Upgrade your plan or wait for the next cycle.",
   seat_limit_exceeded:
     "Your workspace is at its seat limit. Upgrade your plan to add more members.",
   machine_limit_exceeded:
     "This workspace's plan allows fewer build machines than are currently registered. Revoke an old machine in Settings, or upgrade.",
+  execute_seat_limit_exceeded:
+    "Your workspace is at its Conxa Execute seat limit. Upgrade your plan or revoke an existing grant to invite someone new.",
   trial_expired:
     "Your 30-day free trial has ended. Upgrade to keep building and publishing.",
   distribution_not_permitted:

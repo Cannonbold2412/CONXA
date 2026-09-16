@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from conxa_core.config import settings
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -13,13 +14,17 @@ from app.api.machine_binding import register_request_machine
 from app.api.updates_routes import _require_admin
 from app.services.entitlements import (
     PLAN_LIMITS,
+    claim_execute_grant,
     commit_compile_credit,
+    create_execute_grant,
     current_entitlements,
     get_installer_domain,
+    list_execute_grants,
     list_machines,
     refund_compile_credit,
     release_compile_credit,
     reserve_compile_credit,
+    revoke_execute_grant,
     revoke_machine,
     set_installer_domain,
 )
@@ -42,6 +47,18 @@ class ReservationBody(BaseModel):
 
 class RevokeMachineBody(BaseModel):
     machine_hash: str = Field(..., min_length=1, max_length=128)
+
+
+class CreateExecuteGrantBody(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+
+
+class RevokeExecuteGrantBody(BaseModel):
+    grant_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ClaimExecuteGrantBody(BaseModel):
+    grant_id: str = Field(..., min_length=1, max_length=128)
 
 
 class InstallerDomainBody(BaseModel):
@@ -121,6 +138,53 @@ def post_revoke_machine(body: RevokeMachineBody, request: Request) -> dict[str, 
     require_admin(principal)
     revoke_machine(principal, body.machine_hash)
     return {"machine_hash": body.machine_hash, "revoked": True}
+
+
+@router.get("/entitlements/execute-grants")
+def get_execute_grants(request: Request) -> dict[str, Any]:
+    """Admin's list of who's been handed one of this workspace's Conxa
+    Execute seats (pending, claimed, or revoked)."""
+    principal = current_principal(request)
+    require_admin(principal)
+    return {"grants": list_execute_grants(principal.workspace_id)}
+
+
+@router.post("/entitlements/execute-grants")
+def post_create_execute_grant(body: CreateExecuteGrantBody, request: Request) -> dict[str, Any]:
+    """Invite a person to claim an Execute seat, independent of Build Studio
+    org membership — checked against the workspace's execute_seats cap. No
+    transactional email sender exists yet; the admin shares invite_url
+    directly (Slack/email) until one is built."""
+    principal = current_principal(request)
+    require_admin(principal)
+    try:
+        grant = create_execute_grant(principal, body.email)
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
+    invite_url = f"{settings.app_url.rstrip('/')}/claim/{grant['grant_id']}"
+    return {**grant, "invite_url": invite_url}
+
+
+@router.post("/entitlements/execute-grants/revoke")
+def post_revoke_execute_grant(body: RevokeExecuteGrantBody, request: Request) -> dict[str, Any]:
+    principal = current_principal(request)
+    require_admin(principal)
+    revoke_execute_grant(principal, body.grant_id)
+    return {"grant_id": body.grant_id, "revoked": True}
+
+
+@router.post("/entitlements/execute-grants/claim")
+def post_claim_execute_grant(body: ClaimExecuteGrantBody, request: Request) -> dict[str, Any]:
+    """Phase-1 claim path: a signed-in Cloud Dashboard user claims a grant
+    made out to their own email. Conxa Execute's own claim screen (once
+    shipped) relays through the internal service bridge instead — see
+    app/api/execute_bridge_routes.py — so this stays useful as a fallback
+    and for support/testing."""
+    principal = current_principal(request)
+    try:
+        return claim_execute_grant(grant_id=body.grant_id, user_id=principal.user_id, email=principal.email or "")
+    except Exception as exc:  # noqa: BLE001
+        raise entitlement_http_error(exc) from exc
 
 
 @router.get("/entitlements/installer-domain")

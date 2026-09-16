@@ -66,34 +66,6 @@ export type SkillPack = {
   updated_at: number
 }
 
-export type RunEvent = {
-  event: 'step_failure' | 'recovery_attempt' | 'run_outcome'
-  run_id: string
-  workflow_id: string
-  skill_slug: string
-  step_id: string | null
-  data: Record<string, unknown>
-  ts: string
-}
-
-export type RunOutcome = {
-  status: 'success' | 'failure' | 'aborted'
-  duration_ms: number
-  total_steps: number
-  recovered_steps: number
-  failed_step_id: string | null
-}
-
-export type Run = {
-  run_id: string
-  workflow_id: string
-  skill_slug: string
-  events: RunEvent[]
-  outcome: RunOutcome | null
-}
-
-export type RunsResponse = { runs: Run[] }
-
 export type CompiledSkillFiles = {
   'execution.json': Record<string, unknown> | unknown[] | null
   'recovery.json': Record<string, unknown> | unknown[] | null
@@ -519,12 +491,14 @@ export function getCompiledSkill(
   return cmd('get_compiled_skill', { skill_slug: skillSlug })
 }
 
-export function fetchRuns(workflowId?: string, since?: number): Promise<RunsResponse> {
-  return cmd<RunsResponse>('list_runs', { workflow_id: workflowId, since })
-}
-
-export function fetchRun(runId: string): Promise<{ run: Run }> {
-  return cmd<{ run: Run }>('get_run', { run_id: runId })
+// BUILD-26 stage (a4): replaces the former fetchRuns/fetchRun — those read data/runs/*.jsonl,
+// a file nothing in the codebase ever wrote. cmd_get_failure_evidence reads the real thing: the
+// evidence bundle assembled from the runtime's failure capture + the compiled skill document.
+export function fetchFailureEvidence(
+  skillId: string,
+  runId?: string,
+): Promise<{ evidence: Record<string, unknown> }> {
+  return cmd('get_failure_evidence', { skill_id: skillId, run_id: runId })
 }
 
 export function testWorkflow(

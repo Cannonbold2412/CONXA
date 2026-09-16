@@ -233,6 +233,30 @@
   }
 }
 
+/* ── Pending-decision pulse (Copilot launcher) ────────────────────────────
+   A soft, looping ring around the pending-proposal dot — "a decision is
+   waiting on you", not decorative motion. Falls back to a static ring under
+   reduced motion, same pattern as .anim-pop above. */
+@keyframes conxa-pulse-ring {
+  0% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+.anim-pulse-ring {
+  animation: conxa-pulse-ring 1.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-pulse-ring {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* ── Folder cards (Workflows group grid) ─────────────────────────────────
    A group is drawn as an actual folder silhouette rather than a rectangle:
    a tab notch with an angled shoulder is cut out of the card itself. Since

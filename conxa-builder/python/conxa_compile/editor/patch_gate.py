@@ -12,9 +12,39 @@ from conxa_compile.compiler.patch import deep_merge
 from conxa_compile.compiler.selector_filters import selector_passes_filters
 from conxa_compile.compiler.wait_for_shape import destructive_wait_for_is_non_none
 from conxa_compile.editor.action_registry import action_spec, is_supported_action
-from conxa_compile.editor.placeholder_grammar import FULL_PLACEHOLDER_RE, LOOSE_BRACE_RE
+from conxa_compile.editor.placeholder_grammar import (
+    FULL_PLACEHOLDER_RE,
+    LOOSE_BRACE_RE,
+    is_valid_placeholder_id,
+)
 from conxa_compile.editor.step_view import skill_step_for_destructive_check
 from conxa_compile.policy.intent_ontology import sanitize_intent_token
+
+# Per-action-kind patch key allow-lists — the single source of truth both `validate_editor_patch`
+# below and `editor/capability_manifest.py` read, so the copilot's capability manifest can never
+# drift from what the gate actually enforces (they are the same object, not two lists kept in
+# sync by hand).
+NAVIGATE_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "url", "validation", "recovery", "frame"})
+SCROLL_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "frame"})
+WAIT_SCREENSHOT_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "validation", "recovery", "value", "frame"})
+CHECK_ASSERT_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "check_kind", "check_pattern", "check_threshold",
+    "check_selector", "check_text", "signals", "recovery", "frame",
+})
+AI_REVIEW_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "validation", "value", "frame",
+    "ai_review_prompt", "ai_review_output_schema", "ai_review_on_failure",
+    "ai_review_default_value", "ai_review_reference_screenshot_ref",
+})
+HANDOVER_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "validation", "value", "frame",
+    "handover_on_failure", "handover_resume_when", "handover_resume_when_timeout_ms",
+})
+BRANCH_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "target", "frame", "branch", "validation", "recovery"})
+FOR_EACH_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "frame", "for_each"})
+DEFAULT_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "target", "frame", "validation", "recovery", "value", "input_binding",
+})
 
 
 def _validate_value_placeholders(value: str) -> None:
@@ -183,6 +213,64 @@ def _validate_branch_patch(kind: str, raw: Any) -> None:
             raise ValueError("branch_required_must_be_boolean")
 
 
+def _validate_for_each_patch(raw: Any) -> None:
+    """Validate a patch to step["for_each"] (EXEC-38). Nested body steps are NOT edited through
+    this key — same reasoning as `_validate_branch_patch`'s if_present case — so a `steps`
+    key here is rejected to avoid a blind deep-merge clobbering edits made through the
+    path-addressed flow (`for_each.steps[j]`)."""
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise ValueError("for_each_must_be_object")
+    if "steps" in raw:
+        raise ValueError("for_each_steps_not_patchable_here")
+    rows = raw.get("rows")
+    if rows is not None:
+        if not isinstance(rows, dict):
+            raise ValueError("for_each_rows_must_be_object")
+        selector = str(rows.get("container_selector") or "").strip()
+        if selector and not selector_passes_filters(selector):
+            raise ValueError("for_each_rows_container_selector_failed_quality_gates")
+    items = raw.get("items")
+    if items is not None and not is_valid_placeholder_id(str(items).strip()):
+        raise ValueError("for_each_items_must_be_valid_input_id")
+    as_name = raw.get("as")
+    if as_name is not None and not str(as_name).strip():
+        raise ValueError("for_each_as_must_be_non_empty_string")
+    if "max_iterations" in raw:
+        try:
+            max_iterations = int(raw.get("max_iterations"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("for_each_max_iterations_must_be_integer") from exc
+        # A generous sanity ceiling, not the enforced cap — the runtime's own
+        # CONXA_MAX_LOOP_ITERATIONS (default 100) is what actually bounds a run; this just
+        # rejects an obviously-wrong value (0, negative, or absurdly large) at edit time.
+        if max_iterations <= 0 or max_iterations > 1000:
+            raise ValueError("for_each_max_iterations_out_of_range")
+    on_row_error = raw.get("on_row_error")
+    if on_row_error is not None and on_row_error not in ("stop", "continue"):
+        raise ValueError("for_each_on_row_error_invalid")
+
+
+def _validate_for_each_source(step: dict[str, Any], raw_patch: Any) -> None:
+    """Exactly one row source — `rows.container_selector` (a DOM scan) or `items` (a named
+    runtime input, comma-split at execution) — same rule `_saved_for_each_step` enforces at
+    package time, checked here against the EFFECTIVE for_each (existing step merged with this
+    patch) rather than the raw patch alone: a patch touching only `items` must still be
+    rejected if the step's existing `rows.container_selector` would be left in place, and vice
+    versa. Shallow merge is enough — `items`/`rows` are the only keys this check reads, and a
+    patch that sets `rows` always means "replace the row spec", never "merge into it"."""
+    if not isinstance(raw_patch, dict):
+        return
+    existing = step.get("for_each") if isinstance(step.get("for_each"), dict) else {}
+    effective = {**existing, **raw_patch}
+    eff_rows = effective.get("rows") if isinstance(effective.get("rows"), dict) else {}
+    has_selector = bool(str(eff_rows.get("container_selector") or "").strip())
+    has_items = bool(str(effective.get("items") or "").strip())
+    if has_selector == has_items:
+        raise ValueError("for_each_requires_exactly_one_row_source")
+
+
 def validate_editor_patch(
     step: dict[str, Any],
     patch: dict[str, Any],
@@ -198,6 +286,13 @@ def validate_editor_patch(
     bodies run best-effort and never enter the Tier 1-4 recovery cascade (CLAUDE.md Key
     Invariants), so a nested step's `recovery`/`validation` blocks are meaningless there and any
     attempt to patch them is rejected rather than silently accepted.
+
+    A for_each loop body step (`for_each.steps[j]`) is deliberately NOT covered by this flag —
+    the opposite case from branch: EXEC-38 runs a loop body through `executeOneStep`, the exact
+    same tab-resolution/GATE/VERIFY/recovery-cascade path every top-level step gets (see
+    runtime/app/run.js), so `recovery`/`validation` are meaningful there and must stay patchable —
+    the re-target wizard's Validation phase is exactly this. Callers patching a for_each nested
+    step pass `in_branch_body=False` (the default), same as an ordinary top-level step.
 
     `previous_step`, when given, is the step immediately before this one in the same step list
     (top-level only — EXEC-13's destructive-after-ai_review lint below only makes sense there;
@@ -237,7 +332,7 @@ def validate_editor_patch(
             raise ValueError("recording_marker_steps_are_read_only")
         return
     if act == "navigate":
-        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "url", "validation", "recovery", "frame"})
+        invalid_keys = sorted(set(patch) - NAVIGATE_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("navigate_step_allows_only_url_intent_validation_recovery")
         action_patch = patch.get("action")
@@ -249,7 +344,7 @@ def validate_editor_patch(
             raise ValueError("navigate_url_must_be_http_url")
         return
     if act == "scroll":
-        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "frame"})
+        invalid_keys = sorted(set(patch) - SCROLL_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("scroll_step_allows_only_intent_and_action")
         action_patch = patch.get("action")
@@ -267,26 +362,11 @@ def validate_editor_patch(
                 raise ValueError("scroll_amount_out_of_range")
         return
     if act in {"wait", "screenshot"}:
-        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "validation", "recovery", "value", "frame"})
+        invalid_keys = sorted(set(patch) - WAIT_SCREENSHOT_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError(f"{act}_step_allows_only_action_intent_validation_recovery")
     if act in {"check", "assert"}:
-        invalid_keys = sorted(
-            set(patch)
-            - {
-                "intent",
-                "semantic_description",
-                "action",
-                "check_kind",
-                "check_pattern",
-                "check_threshold",
-                "check_selector",
-                "check_text",
-                "signals",
-                "recovery",
-                "frame",
-            }
-        )
+        invalid_keys = sorted(set(patch) - CHECK_ASSERT_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("check_step_allows_only_check_fields")
     if act == "ai_review":
@@ -300,13 +380,7 @@ def validate_editor_patch(
         # gets its own message rather than the generic one.
         if "recovery" in patch:
             raise ValueError("ai_review_step_cannot_patch_recovery")
-        invalid_keys = sorted(
-            set(patch) - {
-                "intent", "semantic_description", "action", "validation", "value", "frame",
-                "ai_review_prompt", "ai_review_output_schema", "ai_review_on_failure",
-                "ai_review_default_value", "ai_review_reference_screenshot_ref",
-            }
-        )
+        invalid_keys = sorted(set(patch) - AI_REVIEW_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("ai_review_step_allows_only_ai_review_fields")
         if "ai_review_prompt" in patch:
@@ -328,15 +402,47 @@ def validate_editor_patch(
             if on_failure == "use_default" and "ai_review_default_value" not in patch \
                     and "ai_review_default_value" not in step:
                 raise ValueError("ai_review_use_default_requires_default_value")
+    if act == "handover":
+        # EXEC-21 (hand-over shape): the human sibling of ai_review above — same "no recovery
+        # block, config lives in top-level fields" shape, but the message shown to the person
+        # rides the generic `value` field (VALUE_LABELS covers this in action_registry.py)
+        # rather than a dedicated `handover_message` field, since that's the one thing every
+        # action-kind editor already renders a labeled text box for.
+        if "recovery" in patch:
+            raise ValueError("handover_step_cannot_patch_recovery")
+        invalid_keys = sorted(set(patch) - HANDOVER_ALLOWED_KEYS)
+        if invalid_keys:
+            raise ValueError("handover_step_allows_only_handover_fields")
+        message = str(merged.get("value") or "").strip()
+        if not message:
+            raise ValueError("handover_message_empty")
+        if "handover_on_failure" in patch:
+            on_failure = str(patch.get("handover_on_failure") or "").strip().lower()
+            # No use_default: a hand-over produces no answer value, so there's nothing to fall
+            # back to — only abort (default) or continue past it are meaningful.
+            if on_failure not in {"abort", "continue"}:
+                raise ValueError("handover_on_failure_invalid")
+        if "handover_resume_when" in patch:
+            resume_when = patch.get("handover_resume_when")
+            if resume_when is not None and not isinstance(resume_when, dict):
+                raise ValueError("handover_resume_when_must_be_object")
+        if "handover_resume_when_timeout_ms" in patch:
+            timeout_ms = patch.get("handover_resume_when_timeout_ms")
+            if timeout_ms is not None and (not isinstance(timeout_ms, (int, float)) or timeout_ms <= 0):
+                raise ValueError("handover_resume_when_timeout_ms_invalid")
     if act in {"if_present", "try_dismiss", "wait_for_one_of"}:
-        invalid_keys = sorted(
-            set(patch)
-            - {"intent", "semantic_description", "action", "target", "frame", "branch", "validation", "recovery"}
-        )
+        invalid_keys = sorted(set(patch) - BRANCH_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("branch_step_allows_only_target_branch_intent_validation_recovery_frame")
         if "branch" in patch:
             _validate_branch_patch(act, patch.get("branch"))
+    if act == "for_each":
+        invalid_keys = sorted(set(patch) - FOR_EACH_ALLOWED_KEYS)
+        if invalid_keys:
+            raise ValueError("for_each_step_allows_only_intent_for_each_frame")
+        if "for_each" in patch:
+            _validate_for_each_patch(patch.get("for_each"))
+            _validate_for_each_source(step, patch.get("for_each"))
     if act != "scroll":
         eff = get_effective_intent_from_skill_step(merged) or str(merged.get("intent") or "").strip()
         if not eff.strip():

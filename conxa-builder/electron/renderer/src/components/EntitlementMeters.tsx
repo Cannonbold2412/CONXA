@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { PencilLine, Users, Monitor, Zap, type LucideIcon } from 'lucide-react'
+import { Bot, PencilLine, Users, Monitor, Zap, type LucideIcon } from 'lucide-react'
 import { fetchEntitlements, type EntitlementMeter, type EntitlementMeterKey } from '@/api/usageApi'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -7,22 +7,29 @@ import { cn } from '@/lib/utils'
 const LABELS: Record<EntitlementMeterKey, string> = {
   seats: 'Seats',
   machines: 'Machines',
+  execute_seats: 'Execute Seats',
   compile_credits: 'Compile credits',
-  human_edit_tokens: 'Human Edit pool',
+  // "human_edit_tokens" is the legacy wire name — kept only for as long as
+  // the backend dual-emits it; "ai_usage_credits" is what's shown.
+  human_edit_tokens: 'AI Usage Credits',
+  ai_usage_credits: 'AI Usage Credits',
 }
 
 const ICONS: Record<EntitlementMeterKey, LucideIcon> = {
   seats: Users,
   machines: Monitor,
+  execute_seats: Bot,
   compile_credits: Zap,
   human_edit_tokens: PencilLine,
+  ai_usage_credits: PencilLine,
 }
 
-const DEFAULT_METERS: EntitlementMeterKey[] = ['seats', 'machines', 'compile_credits', 'human_edit_tokens']
+const DEFAULT_METERS: EntitlementMeterKey[] = ['seats', 'machines', 'compile_credits', 'ai_usage_credits']
 
 function formatCount(value: number | null | undefined, key: EntitlementMeterKey) {
   if (value == null) return 'Unlimited'
-  if (key === 'human_edit_tokens' && value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`
+  if ((key === 'human_edit_tokens' || key === 'ai_usage_credits') && value >= 1_000_000)
+    return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`
   return new Intl.NumberFormat().format(value)
 }
 
@@ -124,22 +131,22 @@ export function MeterBadge({ meterKey, className }: { meterKey: EntitlementMeter
 }
 
 /**
- * The Compile + Human Edit pair, shown in the toolbar of the Workflows and
- * Group pages. These are the two metered resources the product bills on, so
- * they travel together and always in this order.
+ * The Compile + AI Usage Credits pair, shown in the toolbar of the Workflows
+ * and Group pages. These are the two metered resources the product bills on,
+ * so they travel together and always in this order.
  */
 export function UsageCards({ className }: { className?: string }) {
   return (
     <div className={cn('flex min-w-0 items-center gap-2', className)}>
       <MeterBadge meterKey="compile_credits" />
-      <MeterBadge meterKey="human_edit_tokens" />
+      <MeterBadge meterKey="ai_usage_credits" />
     </div>
   )
 }
 
-/** Back-compat wrapper — the Human Edit pool badge used across the editor toolbar. */
+/** Back-compat wrapper — the AI Usage Credits badge used across the editor toolbar. */
 export function HumanEditPoolBadge({ className }: { className?: string }) {
-  return <MeterBadge meterKey="human_edit_tokens" className={className} />
+  return <MeterBadge meterKey="ai_usage_credits" className={className} />
 }
 
 export function EntitlementMeters({

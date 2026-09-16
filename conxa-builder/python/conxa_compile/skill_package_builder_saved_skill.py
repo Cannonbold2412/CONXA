@@ -129,64 +129,6 @@ def _step_url(step: dict[str, Any]) -> str:
     return str(context.get("page_url") or "").strip()
 
 
-def _saved_step_intents(step: dict[str, Any]) -> set[str]:
-    intents = {str(step.get("intent") or "").strip().lower()}
-    signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
-    semantic = signals.get("semantic") if isinstance(signals.get("semantic"), dict) else {}
-    intents.add(str(semantic.get("final_intent") or "").strip().lower())
-    intents.add(str(semantic.get("llm_intent") or "").strip().lower())
-    recovery = step.get("recovery") if isinstance(step.get("recovery"), dict) else {}
-    intents.add(str(recovery.get("final_intent") or "").strip().lower())
-    return {intent for intent in intents if intent}
-
-
-def _has_meaningful_export_payload(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set)):
-        return any(_has_meaningful_export_payload(item) for item in value)
-    if isinstance(value, dict):
-        return any(_has_meaningful_export_payload(item) for item in value.values())
-    return bool(value)
-
-
-def _has_user_interaction_payload(step: dict[str, Any]) -> bool:
-    if _step_selector(step):
-        return True
-
-    target = step.get("target")
-    if isinstance(target, dict) and _has_meaningful_export_payload(target):
-        return True
-
-    signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
-    selectors = signals.get("selectors") if isinstance(signals.get("selectors"), dict) else {}
-    if _has_meaningful_export_payload(selectors):
-        return True
-
-    action = step.get("action") if isinstance(step.get("action"), dict) else {}
-    if isinstance(action, dict):
-        for key, value in action.items():
-            if key in {"action", "url"}:
-                continue
-            if _has_meaningful_export_payload(value):
-                return True
-
-    for key in ("value", "input_binding", "frame", "check_kind", "check_pattern", "check_selector", "check_text"):
-        if _has_meaningful_export_payload(step.get(key)):
-            return True
-    return False
-
-
-def _is_legacy_synthetic_start_navigation_step(step: dict[str, Any]) -> bool:
-    if normalize_action_kind(_step_action_name(step)) != "navigate":
-        return False
-    if "navigate_to_start_url" not in _saved_step_intents(step):
-        return False
-    return not _has_user_interaction_payload(step)
-
-
 def _sanitize_runtime_frame(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -441,6 +383,49 @@ def _saved_branch_step(step: dict[str, Any], action: str) -> dict[str, Any] | No
     return None
 
 
+def _saved_for_each_step(step: dict[str, Any]) -> dict[str, Any] | None:
+    """EXEC-38 iteration primitive — reads SkillStep.for_each (rows/as/max_iterations/
+    on_row_error/steps) and recursively serializes the body the same way
+    _saved_branch_step does, into the flat top-level shape run.js's for_each handler
+    consumes. `max_iterations` is REQUIRED — the runtime refuses an uncapped loop at
+    execute time, but there's no reason to ship a pack that can't possibly run; drop the
+    step here instead (same "return None => step vanishes from execution.json" contract
+    every other action uses for an unfillable step).
+
+    Two mutually exclusive row sources: `rows.container_selector` (a live DOM scan) or
+    `items` (a named runtime input the runtime splits on commas — see resolution.js's
+    splitListInput). Exactly one must be set; patch_gate.py enforces this at edit time,
+    this is just the same rule applied to whatever the document actually holds."""
+    for_each = step.get("for_each") if isinstance(step.get("for_each"), dict) else {}
+    rows = for_each.get("rows") if isinstance(for_each.get("rows"), dict) else {}
+    container_selector = str(rows.get("container_selector") or "").strip()
+    items = str(for_each.get("items") or "").strip()
+    if bool(container_selector) == bool(items):
+        return None  # neither source, or both — not a runnable loop
+    nested = _saved_branch_steps_list(for_each.get("steps"))
+    if not nested:
+        return None
+    try:
+        max_iterations = int(for_each.get("max_iterations"))
+    except (TypeError, ValueError):
+        max_iterations = 0
+    if max_iterations <= 0:
+        return None
+    out: dict[str, Any] = {
+        "type": "for_each",
+        "as": str(for_each.get("as") or "row").strip() or "row",
+        "max_iterations": max_iterations,
+        "steps": nested,
+    }
+    if items:
+        out["items"] = items
+    else:
+        out["rows"] = {"container_selector": container_selector}
+    if for_each.get("on_row_error") == "continue":
+        out["on_row_error"] = "continue"
+    return _copy_saved_common(step, out)
+
+
 def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None:
     action = normalize_action_kind(_step_action_name(step))
     if not is_supported_action(action):
@@ -510,7 +495,11 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
         try:
             ms = int(raw_ms)
         except (TypeError, ValueError):
-            ms = 1000
+            # An unparseable duration means this step has no real wait time to run — drop
+            # it (same "return None => step vanishes from execution.json" contract as
+            # every other unfillable step, e.g. keyboard_shortcut below) rather than
+            # inventing an arbitrary 1000ms that silently changes the automation's timing.
+            return None
         return _copy_saved_common(step, {"type": "wait", "ms": max(ms, 0)})
 
     if action == "screenshot":
@@ -579,8 +568,35 @@ def _saved_step_to_execution_step(step: dict[str, Any]) -> dict[str, Any] | None
             out["output_name"] = output_name
         return _copy_saved_common(step, out)
 
+    if action == "handover":
+        # EXEC-21 (hand-over shape): a planned pause, no selector — the human sibling of
+        # ai_review immediately above. The message shown to the person rides the generic value
+        # field (see action_registry.py's VALUE_LABELS) rather than a dedicated
+        # `handover_message` field; everything else lives in top-level `handover_*` fields, same
+        # convention as ai_review's `ai_review_*` fields.
+        message = _action_value_text(step).strip()
+        if not message:
+            return None
+        out: dict[str, Any] = {
+            "type": "handover",
+            "message": message,
+            # No use_default here (unlike ai_review) — a hand-over produces no answer value to
+            # fall back to, only abort (default) or continue past it are meaningful.
+            "on_failure": str(step.get("handover_on_failure") or "abort").strip().lower(),
+        }
+        resume_when = step.get("handover_resume_when")
+        if isinstance(resume_when, dict) and resume_when:
+            out["resume_when"] = resume_when
+            timeout_ms = step.get("handover_resume_when_timeout_ms")
+            if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
+                out["resume_when_timeout_ms"] = int(timeout_ms)
+        return _copy_saved_common(step, out)
+
     if action in {"if_present", "try_dismiss", "wait_for_one_of"}:
         return _saved_branch_step(step, action)
+
+    if action == "for_each":
+        return _saved_for_each_step(step)
 
     return None
 
@@ -717,11 +733,17 @@ def _merge_saved_inputs_with_execution_placeholders(
     execution_steps: list[dict[str, Any]],
     descriptions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    from conxa_compile.compiler.upload_binding import _RUNTIME_ONLY_PLACEHOLDER_RE
+    from conxa_compile.compiler.upload_binding import (
+        _RUNTIME_ONLY_PLACEHOLDER_RE,
+        for_each_loop_variable_names,
+    )
 
     inputs = _normalize_saved_skill_inputs(declared_inputs)
     seen = {str(item.get("name") or "") for item in inputs}
     overrides = descriptions or {}
+    # A for_each loop's own {{<as>_id}}/{{<as>_index}} are populated by run.js at replay time,
+    # never something a user/agent supplies — same reason downloaded_file* is excluded below.
+    loop_vars = for_each_loop_variable_names(execution_steps)
     # The primary record->compile path (compiler/build.py) already declares file_path with a
     # generic humanized label ("File Path") before this function ever sees it, so the "not yet
     # seen" branch below never fires for it. Overwrite it here too, since the upload-derived
@@ -737,6 +759,8 @@ def _merge_saved_inputs_with_execution_placeholders(
             # downloaded_file / downloaded_file_N — populated automatically at replay time by
             # run.js's download_observed handler from an earlier download in the same run
             # (see _bind_downloads_to_uploads), never something a user/agent supplies.
+            continue
+        if name in loop_vars:
             continue
         seen.add(name)
         inputs.append(
@@ -804,18 +828,38 @@ def _saved_recovery_anchors(step: dict[str, Any], target_text: str) -> list[dict
     for raw in raw_anchors:
         if not isinstance(raw, dict):
             continue
+        relation = str(raw.get("relation") or "").strip().lower()
+        if relation == "target_sentence":
+            # The full vision-anchor sentence — surfaced separately via
+            # _saved_recovery_anchor_sentence's dedicated field, not as one of
+            # these short anchor phrases.
+            continue
         text = str(raw.get("text") or raw.get("element") or "").strip()
         if "{{" in target_text and "{{" not in text:
             continue
         if not text or text in seen:
             continue
-        relation = str(raw.get("relation") or "").strip().lower()
         priority = 2 if relation == "target" or text == target_text else 1
         out.append({"text": text, "priority": priority})
         seen.add(text)
     if target_text and target_text not in seen:
         out.append({"text": target_text, "priority": 2})
     return out[:4]
+
+
+def _saved_recovery_anchor_sentence(step: dict[str, Any]) -> str:
+    """The single vision-chosen prose description of the target — a plain-English
+    caption for Tier B recovery, separate from the short-phrase anchors list."""
+    recovery = step.get("recovery") if isinstance(step.get("recovery"), dict) else {}
+    raw_anchors = recovery.get("anchors") if isinstance(recovery.get("anchors"), list) else []
+    for raw in raw_anchors:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("relation") or "").strip().lower() == "target_sentence":
+            text = str(raw.get("element") or raw.get("text") or "").strip()
+            if text:
+                return text
+    return ""
 
 
 # How many sibling summaries to carry into recovery.json. The recorder already caps each one's
@@ -876,9 +920,23 @@ def _saved_step_visual_ref(step_id: int, visuals_dir: Path | None) -> str | None
 
 
 def _saved_visual_asset_path(step: dict[str, Any], source_session_id: str) -> str:
+    """The frame used for this step's recovery reference image (visual_ref).
+
+    Prefers the vision LLM's chosen_frame (signals.visual.default_frame_label,
+    resolved against signals.visual.frames) — the frame it judged best shows the
+    page's state right before the action — falling back to full_screenshot
+    (before_near) when no chosen frame is recorded or the labeled file is
+    missing (legacy recordings, or the per-step vision call never ran).
+    """
     signals = step.get("signals") if isinstance(step.get("signals"), dict) else {}
     visual = signals.get("visual") if isinstance(signals.get("visual"), dict) else {}
-    rel = str(visual.get("full_screenshot") or "").strip().replace("\\", "/")
+    frames = visual.get("frames") if isinstance(visual.get("frames"), dict) else {}
+    label = str(visual.get("default_frame_label") or "").strip()
+    rel = ""
+    if label and label in frames:
+        rel = str(frames.get(label) or "").strip().replace("\\", "/")
+    if not rel:
+        rel = str(visual.get("full_screenshot") or "").strip().replace("\\", "/")
     if not rel or ".." in rel:
         return ""
     if rel.startswith("sessions/"):
@@ -972,6 +1030,16 @@ def _build_saved_skill_recovery(
         visual_ref = _saved_step_visual_ref(step_id, visuals_dir)
         if visual_ref:
             entry["visual_ref"] = visual_ref
+        anchor_sentence = _saved_recovery_anchor_sentence(step)
+        if anchor_sentence:
+            entry["anchor_sentence"] = anchor_sentence
+        # BUILD-25 stage e: the compiler's second-opinion pass's label_phase
+        # finding. Read by runtime/app/failure_response.js's Tier B recovery
+        # prompt as a workflow-position prior. Absent on any step the pass
+        # never ran on or didn't label.
+        phase = str(step.get("phase") or "").strip()
+        if phase:
+            entry["phase"] = phase
         entries.append(entry)
     return {"steps": entries}
 
@@ -992,15 +1060,7 @@ def _build_workflow_from_saved_skill(
     execution_steps: list[dict[str, Any]] = []
     source_steps: list[dict[str, Any]] = []
     step_ids: list[int] = []
-    export_steps = [
-        raw
-        for raw_index, raw in enumerate(raw_steps)
-        if not (
-            raw_index == 0
-            and isinstance(raw, dict)
-            and _is_legacy_synthetic_start_navigation_step(raw)
-        )
-    ]
+    export_steps = raw_steps
     # Wire a same-run download -> upload handoff before conversion (EXEC-10/W-2), so a matched
     # upload step's value becomes {{downloaded_file...}} instead of the generic {{file_path}}
     # _saved_step_to_execution_step would otherwise fall back to.
@@ -1016,6 +1076,13 @@ def _build_workflow_from_saved_skill(
                 # failing the whole build.
                 if on_warning:
                     on_warning(f"Step {raw_index}: drag-and-drop isn't supported and was removed from the skill.")
+                continue
+            if normalize_action_kind(action) == "ai_review":
+                # EXEC-13: an inserted-but-unconfigured AI Review step (blank prompt — see
+                # _new_manual_step) has nothing to ask. Same drop-and-warn shape as drag_drop
+                # above, rather than failing the whole build over one unfinished checkpoint.
+                if on_warning:
+                    on_warning(f"Step {raw_index}: AI Review has no prompt yet and was removed from the skill. Add a prompt in Human Edit, then rebuild.")
                 continue
             raise ValueError(f"Saved skill step {raw_index} action {action!r} is not exportable.")
         execution_steps.append(converted)
@@ -1051,6 +1118,23 @@ def _build_workflow_from_saved_skill(
     if isinstance(structural_fp, dict) and structural_fp.get("landmarks"):
         (skill_dir / "structural_fingerprint.json").write_text(
             dumps_safe(structural_fp, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    # EXEC-36: same carry-through pattern as structural_fingerprint above — the recording
+    # environment rides on SkillMeta and would otherwise be dropped by _write_skill_packs_format.
+    environment = meta.get("environment")
+    if isinstance(environment, dict) and environment:
+        (skill_dir / "environment.json").write_text(
+            dumps_safe(environment, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    # PROD-3-DRYRUN layer 5: same carry-through pattern — the compensation-workflow link (set in
+    # the Human Edit editor) rides on SkillMeta and would otherwise be dropped.
+    compensation_skill = str(meta.get("compensation_skill") or "").strip()
+    if compensation_skill:
+        (skill_dir / "compensation_skill.json").write_text(
+            dumps_safe({"compensation_skill": compensation_skill}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
         )
 
 

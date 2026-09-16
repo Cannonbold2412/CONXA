@@ -6,7 +6,8 @@ from typing import Any
 
 
 def get_effective_intent(semantic: dict[str, Any] | None) -> str:
-    """Return FINAL_INTENT if set, else legacy llm_intent (must match compiler output after Phase 3)."""
+    """Return final_intent if the second-opinion pass overrode it, else the compiler's own
+    llm_intent (must match compiler output after Phase 3)."""
     if not semantic:
         return ""
     fin = str(semantic.get("final_intent") or "").strip()

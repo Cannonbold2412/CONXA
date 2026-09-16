@@ -3,6 +3,8 @@ const fs = require("fs");
 const path = require("path");
 const { app, safeStorage } = require("electron");
 
+const VALID_MODES = new Set(["byok", "topup", "subscription", "workspace_pool"]);
+
 function settingsPath() {
   return path.join(app.getPath("userData"), "byo-settings.bin");
 }
@@ -27,7 +29,7 @@ function loadSettings() {
       model: json.model || "",
       hasKey: Boolean(json.apiKey),
       apiKey: json.apiKey || "",
-      mode: json.mode === "topup" || json.mode === "subscription" ? json.mode : "byok",
+      mode: VALID_MODES.has(json.mode) ? json.mode : "byok",
     };
   } catch (e) {
     return { baseURL: "", model: "", hasKey: false, mode: "byok", error: e.message };
@@ -43,7 +45,7 @@ function saveSettings({ baseURL, model, apiKey, mode }) {
     baseURL: String(baseURL || prev.baseURL || "").trim(),
     model: String(model || prev.model || "").trim(),
     apiKey: apiKey != null && apiKey !== "" ? String(apiKey) : prev.apiKey || "",
-    mode: mode === "topup" || mode === "subscription" ? mode : mode === "byok" ? "byok" : prev.mode || "byok",
+    mode: VALID_MODES.has(mode) ? mode : prev.mode || "byok",
   };
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), safeStorage.encryptString(JSON.stringify(next)));

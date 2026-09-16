@@ -122,9 +122,9 @@ def backfill_attrs_from_snapshot(
     xpath = str(selectors.get("xpath") or "").strip()
     if not xpath:
         return None
-    try:
-        from lxml import etree  # type: ignore
+    from lxml import etree  # type: ignore — hard pinned dependency, ImportError propagates
 
+    try:
         matches = etree.HTML(dom_html).xpath(xpath)
     except Exception:  # noqa: BLE001 — malformed xpath / snapshot
         return None

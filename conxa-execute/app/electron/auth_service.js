@@ -186,7 +186,15 @@ function claimsFromTokens(tokens) {
 }
 
 async function login() {
-  if (!clerkDomain() || !clientId()) throw new Error("auth_not_configured");
+  if (!clerkDomain() || !clientId()) {
+    // ponytail: dev-only bypass, real Clerk app not wired up yet — remove once CONXA_EXECUTE_CLERK_DOMAIN/CLIENT_ID are set
+    if (!require("electron").app.isPackaged) {
+      const userinfo = { sub: "dev-user", name: "Dev User", email: "dev@conxa.local" };
+      saveTokens({ access_token: "dev-bypass-token", refresh_token: "", exp: Date.now() / 1000 + 86400 * 365, userinfo });
+      return claimsFromTokens({ userinfo });
+    }
+    throw new Error("auth_not_configured");
+  }
   const { verifier, challenge } = pkcePair();
   const state = base64url(crypto.randomBytes(16));
 

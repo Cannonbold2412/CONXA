@@ -81,6 +81,13 @@ class StepEditorDTO(BaseModel):
     check_threshold: float | None = None
     check_selector: str | None = None
     check_text: str | None = None
+    # EXEC-13: ai_review is value-bearing (the "value" is the output binding name) and carries
+    # no selector — its own config lives in these top-level `ai_review_*` fields, patchable only
+    # through patch_gate.py's dedicated ai_review branch. None on every other step kind.
+    ai_review_prompt: str | None = None
+    ai_review_output_schema: dict[str, Any] | None = None
+    ai_review_on_failure: str | None = None
+    ai_review_default_value: Any = None
     # Going-forward selector signals from identity_bundle — drives the runtime hot path.
     # Each entry: {selector (public display string), engine, durability, orthogonality_class,
     # unique_at_compile, source}. The editor's selector list is authoritative; this field
@@ -125,6 +132,14 @@ class StepEditorDTO(BaseModel):
     # Nested body steps projected the same way as top-level steps, addressed by a path-based id
     # (e.g. "{skill_id}:{step_index}.branch.steps[1]") for patch_gate path-addressed edits.
     branch_steps: list["StepEditorDTO"] = Field(default_factory=list)
+    # EXEC-38: {rows, as, max_iterations, on_row_error, step_count} when this step is a
+    # for_each iteration primitive; None for ordinary steps. Read-only visibility only — no
+    # dedicated editor control exists yet (see TODO.md's for_each editor-UI follow-up); a
+    # vendor edits these fields via the generic patch mechanism, same as Strict Mode.
+    for_each_summary: dict[str, Any] | None = None
+    # Nested body steps, same path-addressed projection as branch_steps
+    # ("{skill_id}:{step_index}.for_each.steps[1]").
+    for_each_steps: list["StepEditorDTO"] = Field(default_factory=list)
 
 
 class SuggestionItem(BaseModel):

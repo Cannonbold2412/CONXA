@@ -58,6 +58,33 @@ if (process.argv[2] === "register-mcp" || process.argv[2] === "unregister-mcp") 
   return;
 }
 
+// EXEC-21 (hand-over shape): `resume <run_id>` is one of handover.js's three signal sources —
+// dropping ~/.conxa/resume/<run_id>.cmd, which the paused runtime process (still running,
+// already watching that folder via fs.watch) picks up and treats exactly like an in-page banner
+// click. Pure filesystem write, no app layer needed, so — like register-mcp/unregister-mcp
+// above — this runs and exits here rather than going through the min_host-gated app-layer
+// resolution below. Lets a script, a scheduled task, or a person at a terminal resume a
+// hand-over without touching the browser at all.
+if (process.argv[2] === "resume") {
+  const fs = require("fs");
+  const runId = process.argv[3];
+  if (!runId) {
+    process.stderr.write("Usage: conxa-runtime resume <run_id>\n");
+    process.exitCode = 1;
+    return;
+  }
+  const resumeDir = path.join(envInfo.dataDir, "resume");
+  try {
+    fs.mkdirSync(resumeDir, { recursive: true });
+    fs.writeFileSync(path.join(resumeDir, `${runId}.cmd`), "resume");
+    process.stdout.write(`Resume signal sent for run ${runId}.\n`);
+  } catch (e) {
+    process.stderr.write(`Could not send resume signal: ${e.message}\n`);
+    process.exitCode = 1;
+  }
+  return;
+}
+
 const HOST_VERSION = require("../package.json").host_version || "host-v1.0.0";
 const CONXA_DIR    = process.env.CONXA_DIR; // set by env.apply() above
 // APP_ROOT is the component root (contains v1.0.0/, v1.1.0/, current/) — not the live dir itself.

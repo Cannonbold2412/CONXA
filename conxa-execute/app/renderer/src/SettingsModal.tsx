@@ -4,7 +4,6 @@ type Props = {
   open: boolean;
   onClose: () => void;
   mode: ChatMode;
-  onModeChange: (m: ChatMode) => void;
   baseURL: string;
   model: string;
   apiKey: string;
@@ -16,20 +15,21 @@ type Props = {
   signedIn: boolean;
   identity: Identity | null;
   entitlement: Entitlement | null;
-  plansUrl: string;
+  theme: "light" | "dark";
+  onThemeChange: (theme: "light" | "dark") => void;
   onLogin: () => void;
   onLogout: () => void;
+  redeemCode: string;
+  onRedeemCodeChange: (v: string) => void;
+  onRedeem: () => void;
+  redeeming: boolean;
+  redeemMsg: { type: "ok" | "err"; text: string } | null;
 };
 
-const MODES: { value: ChatMode; label: string }[] = [
-  { value: "byok", label: "BYOK" },
-  { value: "topup", label: "Top-up" },
-  { value: "subscription", label: "Subscription" },
-];
-
 export function SettingsModal({
-  open, onClose, mode, onModeChange, baseURL, model, apiKey, hasKey,
-  onBaseURL, onModel, onApiKey, onSave, signedIn, identity, entitlement, plansUrl, onLogin, onLogout,
+  open, onClose, mode, baseURL, model, apiKey, hasKey,
+  onBaseURL, onModel, onApiKey, onSave, signedIn, identity, entitlement, theme, onThemeChange, onLogin, onLogout,
+  redeemCode, onRedeemCodeChange, onRedeem, redeeming, redeemMsg,
 }: Props) {
   if (!open) return null;
   return (
@@ -67,31 +67,55 @@ export function SettingsModal({
             <div className="flex items-center justify-between gap-4">
               <span className="text-sm text-fg-muted">Theme</span>
               <div className="flex rounded-lg border border-line bg-bg p-0.5">
-                <span className="rounded-md px-3 py-1.5 text-xs text-fg-dim">System</span>
-                <span className="rounded-md px-3 py-1.5 text-xs text-fg-dim">Light</span>
-                <span className="rounded-md bg-bg-active px-3 py-1.5 text-xs">Dark</span>
+                <button
+                  type="button"
+                  className={`rounded-md px-3 py-1.5 text-xs ${theme === "light" ? "bg-bg-active text-fg" : "text-fg-dim hover:text-fg"}`}
+                  onClick={() => onThemeChange("light")}
+                >
+                  Light
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-md px-3 py-1.5 text-xs ${theme === "dark" ? "bg-bg-active text-fg" : "text-fg-dim hover:text-fg"}`}
+                  onClick={() => onThemeChange("dark")}
+                >
+                  Dark
+                </button>
               </div>
             </div>
-            <p className="mt-2 text-xs text-fg-dim">v0.1 is dark only.</p>
           </section>
 
           <section className="mb-8">
-            <h3 className="mb-1 text-[15px] font-medium">Chat mode</h3>
-            <p className="mb-4 text-sm text-fg-muted">BYOK uses your own API key, unchanged. Top-up and Subscription route through CONXA's managed chat.</p>
-            <div className="flex rounded-lg border border-line bg-bg p-0.5" role="radiogroup">
-              {MODES.map((m) => (
-                <button
-                  key={m.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={mode === m.value}
-                  className={`flex-1 rounded-md px-3 py-1.5 text-xs ${mode === m.value ? "bg-bg-active text-fg" : "text-fg-dim"}`}
-                  onClick={() => onModeChange(m.value)}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
+            <h3 className="mb-1 text-[15px] font-medium">Execute seat</h3>
+            {entitlement?.mode === "workspace_pool" ? (
+              <p className="text-sm text-fg-muted">
+                ✓ Paid by {entitlement.workspace_name || "your workspace"}. Chat draws from their AI Usage Credits pool
+                {typeof entitlement.remaining === "number" ? ` — ${entitlement.remaining.toLocaleString()} credits left.` : "."}
+              </p>
+            ) : (
+              <>
+                <p className="mb-3 text-sm text-fg-muted">Have an invite code from a workspace admin? Redeem it to have your chat paid for by their AI Usage Credits pool.</p>
+                <div className="flex gap-2">
+                  <input
+                    className="w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]"
+                    value={redeemCode}
+                    onChange={(e) => onRedeemCodeChange(e.target.value)}
+                    placeholder="Invite code"
+                  />
+                  <button
+                    type="button"
+                    className="rounded-lg bg-fg px-4 py-2 text-sm font-medium text-bg hover:bg-white disabled:opacity-40"
+                    disabled={!redeemCode.trim() || redeeming}
+                    onClick={onRedeem}
+                  >
+                    {redeeming ? "Redeeming…" : "Redeem"}
+                  </button>
+                </div>
+                {redeemMsg && (
+                  <p className={`mt-2 text-sm ${redeemMsg.type === "err" ? "text-err" : "text-ok"}`}>{redeemMsg.text}</p>
+                )}
+              </>
+            )}
           </section>
 
           {mode === "byok" ? (
@@ -100,15 +124,15 @@ export function SettingsModal({
               <p className="mb-4 text-sm text-fg-muted">Paste an OpenAI-compatible URL and key. Skills still run with no key from the form.</p>
               <label className="mb-3 flex items-center justify-between gap-6 text-sm">
                 <span className="shrink-0 text-fg-muted">Base URL</span>
-                <input className="w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm" value={baseURL} onChange={(e) => onBaseURL(e.target.value)} placeholder="https://api.openai.com/v1" />
+                <input className="w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]" value={baseURL} onChange={(e) => onBaseURL(e.target.value)} placeholder="https://api.openai.com/v1" />
               </label>
               <label className="mb-3 flex items-center justify-between gap-6 text-sm">
                 <span className="shrink-0 text-fg-muted">Model</span>
-                <input className="w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm" value={model} onChange={(e) => onModel(e.target.value)} placeholder="gpt-4o-mini" />
+                <input className="w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]" value={model} onChange={(e) => onModel(e.target.value)} placeholder="gpt-4o-mini" />
               </label>
               <label className="mb-5 flex items-center justify-between gap-6 text-sm">
                 <span className="shrink-0 text-fg-muted">API key</span>
-                <input className="w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm" type="password" value={apiKey} onChange={(e) => onApiKey(e.target.value)} placeholder={hasKey ? "•••• saved" : "Required for chat"} />
+                <input className="w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]" type="password" value={apiKey} onChange={(e) => onApiKey(e.target.value)} placeholder={hasKey ? "•••• saved" : "Required for chat"} />
               </label>
               <button type="button" className="rounded-lg bg-fg px-4 py-2 text-sm font-medium text-bg hover:bg-white" onClick={onSave}>
                 Save
@@ -132,17 +156,10 @@ export function SettingsModal({
                       Plan {entitlement.plan_id} — {(entitlement.quota_used ?? 0).toLocaleString()} / {(entitlement.quota_total ?? 0).toLocaleString()} tokens used this period.
                     </p>
                   )}
-                  {entitlement?.mode !== "subscription" && (
+                  {entitlement?.mode !== "subscription" && entitlement?.mode !== "workspace_pool" && (
                     <p className="mb-3 text-sm text-fg-muted">Balance: {(entitlement?.topup_balance ?? 0).toLocaleString()} tokens.</p>
                   )}
                   <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className="rounded-lg border border-line px-4 py-2 text-sm text-fg-muted hover:bg-bg-hover"
-                      onClick={() => window.conxaExecute.openExternal({ url: plansUrl })}
-                    >
-                      Manage billing
-                    </button>
                     <button type="button" className="rounded-lg border border-line px-4 py-2 text-sm text-fg-muted hover:bg-bg-hover" onClick={onLogout}>
                       Sign out
                     </button>

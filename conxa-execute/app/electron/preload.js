@@ -20,7 +20,17 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   authStatus: () => ipcRenderer.invoke("auth:status"),
   getEntitlement: () => ipcRenderer.invoke("account:entitlement"),
+  redeemGrant: (payload) => ipcRenderer.invoke("account:redeem-grant", payload),
   openExternal: (payload) => ipcRenderer.invoke("shell:openExternal", payload),
+  panel: {
+    setBounds: (payload) => ipcRenderer.invoke("panel:bounds", payload),
+    selectTab: (payload) => ipcRenderer.invoke("panel:select-tab", payload),
+    onTabsChanged: (cb) => {
+      const listener = (_e, payload) => cb(payload);
+      ipcRenderer.on("panel:tabs", listener);
+      return () => ipcRenderer.removeListener("panel:tabs", listener);
+    },
+  },
   windowControls: {
     minimize: () => ipcRenderer.invoke("window:minimize"),
     toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),

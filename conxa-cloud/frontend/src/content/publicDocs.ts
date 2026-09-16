@@ -492,7 +492,7 @@ export const publicDocs = [
             type: 'paragraphs',
             items: [
               'Compiling turns a saved recording into a structured automation, typically in under a minute to a few minutes depending on the length of the recording, with a progress view while it works.',
-              'A first compile uses one of your compile credits. Re-compiling an automation you have already compiled draws from a separate, smaller Human Edit pool instead. Both meters are visible at the top of the screen.',
+              'A first compile uses one of your compile credits. Re-compiling an automation you have already compiled draws from a separate, smaller AI Usage Credits pool instead. Both meters are visible at the top of the screen.',
             ],
           },
         ],
@@ -596,7 +596,7 @@ export const publicDocs = [
                 "Open the step's reliability details in review; it usually shows the recorded element could not be found the same way anymore. Re-target it by drawing a box around the correct element, then re-test.",
               ],
               [
-                'Out of compile credits or Human Edit uses.',
+                'Out of compile credits or AI Usage Credits.',
                 'Check the usage meters at the top of the screen for what is left and when they reset. Editing steps directly does not use quota; only AI-assisted actions like re-generating a selector do.',
               ],
               [
@@ -1355,7 +1355,7 @@ export const publicDocs = [
             type: 'paragraphs',
             items: [
               'Paid plans are subscription services unless an order form says otherwise. Self-serve paid checkout may use Razorpay or another payment provider. Enterprise plans may use custom procurement, invoicing, and written commercial terms.',
-              'Plan limits may include seats, machines/devices, monthly compile credits, and Human Edit pools, along with which capabilities a plan unlocks — internal or external distribution, dashboard and audit-log depth, and bring-your-own-key. CONXA may enforce these limits automatically through the dashboard, Build Studio, backend APIs, or support processes.',
+              'Plan limits may include seats, machines/devices, Conxa Execute seats, monthly compile credits, and AI Usage Credits pools, along with which capabilities a plan unlocks — internal or external distribution, dashboard and audit-log depth, and bring-your-own-key. CONXA may enforce these limits automatically through the dashboard, Build Studio, backend APIs, or support processes.',
               'Taxes, payment fees, foreign exchange costs, and bank charges may apply depending on the payment method, jurisdiction, and customer setup.',
             ],
           },
@@ -1566,7 +1566,7 @@ export const publicDocs = [
     lastUpdated: LAST_UPDATED,
     readingTime: '9 min read',
     summary: [
-      'CONXA is a capability ladder: Free proves it works, Starter and Pro run it across your organization, and Pro and Enterprise can ship it to your own customers. Every tier has visible meters for seats, machines, compile credits, and Human Edit pool.',
+      'CONXA is a capability ladder: Free proves it works, Starter and Pro run it across your organization, and Pro and Enterprise can ship it to your own customers. Every tier has visible meters for seats, machines, Conxa Execute seats, compile credits, and AI Usage Credits.',
       'Self-serve checkout may use Razorpay. Enterprise customers can use custom procurement and written order forms.',
       'Refunds are reviewed case by case unless mandatory law or a signed agreement requires a different result.',
     ],
@@ -1591,7 +1591,7 @@ export const publicDocs = [
               ],
               [
                 'Pro',
-                'An enterprise running its own cross-system processes, or a team scaling as a distribution channel — more seats, compile volume, and Human Edit usage, plus external distribution and the full dashboard.',
+                'An enterprise running its own cross-system processes, or a team scaling as a distribution channel — more seats, Conxa Execute seats, compile volume, and AI Usage Credits, plus external distribution and the full dashboard.',
                 'Monthly self-serve subscription where checkout is available.',
               ],
               [
@@ -1612,8 +1612,9 @@ export const publicDocs = [
             items: [
               'Seats: people who can use the dashboard or Build Studio for the workspace.',
               'Machines: distinct devices a workspace can build from — the control that keeps a trial from becoming a free seat.',
+              'Conxa Execute seats: people the workspace has granted access to Conxa Execute, independent of Build Studio membership.',
               'Compile credits: monthly fresh workflow compiles.',
-              'Human Edit pool: monthly LLM-assisted repair, recompile, selector repair, semantic repair, visual re-anchor, or screenshot/bbox anchor regeneration usage.',
+              'AI Usage Credits: monthly LLM-assisted repair, recompile, selector repair, semantic repair, visual re-anchor, screenshot/bbox anchor regeneration, or Conxa Execute chat usage under a granted seat.',
             ],
           },
           {

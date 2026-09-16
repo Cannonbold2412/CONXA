@@ -69,6 +69,40 @@ def test_extract_frames_isolates_per_event_failure(monkeypatch, tmp_path) -> Non
     assert "full_screenshot" not in events[1]["visual"]
 
 
+def test_extract_frames_skips_upload_intent_events(monkeypatch, tmp_path) -> None:
+    session_dir = tmp_path / "sessions" / "sess-1"
+    session_dir.mkdir(parents=True)
+    (session_dir / "recording.webm").write_bytes(b"fake-video")
+    events_path = session_dir / "events.jsonl"
+    with open(events_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"visual": {"timestamp_ms": 1000}, "action": {"action": "click"}}) + "\n")
+        f.write(json.dumps({"visual": {"timestamp_ms": 1200}, "action": {"action": "upload_intent"}}) + "\n")
+
+    monkeypatch.setattr(frame_extractor, "_find_ffmpeg", lambda: "ffmpeg")
+
+    def fake_extract_frame(ffmpeg, video_path, out_path, timestamp_ms):
+        assert "evt_0002" not in out_path.name
+        out_path.write_bytes(b"png")
+
+    monkeypatch.setattr(frame_extractor, "_extract_frame", fake_extract_frame)
+    monkeypatch.setattr(
+        frame_extractor, "crop_element_from_frame", lambda *a, **k: "images/element.jpg"
+    )
+
+    result, failures = frame_extractor.extract_frames_for_session(session_dir)
+
+    assert set(result) == {0}
+    assert failures == []
+
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[0]["visual"]["full_screenshot"] == "frames/evt_0001_before_near.png"
+    assert "frames" not in events[1]["visual"]
+    assert "full_screenshot" not in events[1]["visual"]
+
+
 def test_extract_frames_skips_frames_already_on_disk(monkeypatch, tmp_path) -> None:
     session_dir = _write_session(tmp_path, n_events=1)
     frames_dir = session_dir / "frames"

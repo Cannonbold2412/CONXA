@@ -30,16 +30,16 @@ HOVERS_DOM = """
 """
 
 # What Playwright's accessibility snapshot actually reports for that image — the paragraph
-# is its own node, and is never the image's name.
+# is its own node, and is never the image's name. Recorder shape: {"aria_snapshot": "<yaml>"}
+# (Locator.aria_snapshot()), one `- role "name":` line per node.
 HOVERS_A11Y = {
-    "role": "WebArea",
-    "name": "The Internet",
-    "children": [
-        {"role": "heading", "name": "Hovers"},
-        {"role": "text", "name": "Hover over the image for additional information"},
-        {"role": "img", "name": "User Avatar"},
-        {"role": "link", "name": "View profile"},
-    ],
+    "aria_snapshot": (
+        '- WebArea "The Internet":\n'
+        '  - heading "Hovers"\n'
+        '  - text "Hover over the image for additional information"\n'
+        '  - img "User Avatar"\n'
+        '  - link "View profile"'
+    ),
 }
 
 
@@ -225,12 +225,11 @@ def test_keyboard_shortcut_tail_stripped_from_accessible_name():
 
 DRIVE_MENU_DOM = "<html><body><ul role='menu'><li>File upload</li><li>Folder upload</li></ul></body></html>"
 DRIVE_MENU_A11Y = {
-    "role": "WebArea",
-    "name": "Drive",
-    "children": [
-        {"role": "menuitem", "name": "File upload"},
-        {"role": "menuitem", "name": "Folder upload"},
-    ],
+    "aria_snapshot": (
+        '- WebArea "Drive":\n'
+        '  - menuitem "File upload"\n'
+        '  - menuitem "Folder upload"'
+    ),
 }
 
 
@@ -255,10 +254,8 @@ def test_drive_file_upload_keeps_role_signal_when_snapshot_omits_shortcut():
 
 
 # ---------------------------------------------------------------------------
-# _count_role against the current a11y evidence shape ({"aria_snapshot": "<yaml>"} —
-# Locator.aria_snapshot()'s YAML, replacing the removed Page.accessibility tree-dict).
-# The legacy dict-tree shape (HOVERS_A11Y above) stays supported for snapshots captured
-# before this change; both must gate a fabricated role+name selector identically.
+# _count_role against the a11y evidence shape ({"aria_snapshot": "<yaml>"} —
+# Locator.aria_snapshot()'s YAML, the only shape the recorder captures).
 # ---------------------------------------------------------------------------
 
 YEAR_SELECT_ARIA_SNAPSHOT = {
@@ -306,10 +303,3 @@ def test_extract_a11y_node_no_match_against_aria_snapshot_yaml():
 
     node = _extract_a11y_node(YEAR_SELECT_ARIA_SNAPSHOT, {"role": "checkbox", "aria_label": "Nothing here"})
     assert node is None
-
-
-def test_extract_a11y_node_still_matches_legacy_tree_dict_shape():
-    from conxa_compile.llm.selector_regeneration import _extract_a11y_node
-
-    node = _extract_a11y_node(HOVERS_A11Y, {"role": "img", "aria_label": "User Avatar"})
-    assert node == {"role": "img", "name": "User Avatar"}

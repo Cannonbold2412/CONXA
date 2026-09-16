@@ -527,6 +527,102 @@ def test_trial_expired_blocks_compile_but_not_sync(monkeypatch, tmp_path):
     assert reserve.json()["detail"] == "trial_expired"
 
 
+def test_execute_seat_limit_blocks_new_grant_but_allows_repeat_invite(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_execute_seats", True)
+    from app.services.entitlements import EntitlementError, create_execute_grant
+
+    _set_plan("free")  # free's execute_seats limit is 1
+    principal = Principal(
+        user_id="u1", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+
+    first = create_execute_grant(principal, "person-a@example.com")
+    assert first["status"] == "pending"
+
+    with pytest.raises(EntitlementError) as exc_info:
+        create_execute_grant(principal, "person-b@example.com")
+    assert exc_info.value.code == "execute_seat_limit_exceeded"
+
+    # Re-inviting the same still-pending email is idempotent — doesn't double-count.
+    again = create_execute_grant(principal, "person-a@example.com")
+    assert again["grant_id"] == first["grant_id"]
+
+
+def test_execute_grant_claim_binds_pool_without_creating_membership(monkeypatch, tmp_path):
+    """The whole reason ensure_execute_pool_available/record_execute_pool_usage
+    exist as workspace_id-scoped twins of the Principal-based functions: a
+    claimed grant must never register the claimant as a Build Studio
+    workspace member (which would silently inflate the seats meter)."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    from app.services.entitlements import (
+        claim_execute_grant,
+        create_execute_grant,
+        ensure_execute_pool_available,
+        execute_pool_binding_for_user,
+        record_execute_pool_usage,
+    )
+    from app.services.saas import is_known_member
+
+    _set_plan("pro")
+    principal = Principal(
+        user_id="u_admin", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+    grant = create_execute_grant(principal, "grantee@example.com")
+    seats_before_claim = client.get("/api/v1/entitlements/current").json()["meters"]["seats"]["used"]
+
+    claim_execute_grant(grant_id=grant["grant_id"], user_id="u_grantee", email="grantee@example.com")
+
+    binding = execute_pool_binding_for_user("u_grantee")
+    assert binding is not None
+    assert binding["workspace_id"] == "wrk_local"
+
+    ensure_execute_pool_available("wrk_local", estimated_tokens=100)  # does not raise
+    record_execute_pool_usage("wrk_local", input_tokens=100, output_tokens=50)
+
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    assert entitlements["meters"]["ai_usage_credits"]["used"] == 150
+    # The grantee never became a counted Build Studio workspace member —
+    # claiming and spending from the pool leave the seats meter untouched.
+    assert is_known_member("u_grantee", "wrk_local") is False
+    assert entitlements["meters"]["seats"]["used"] == seats_before_claim
+
+
+def test_execute_grant_claim_rejects_email_mismatch_and_revoke_frees_slot(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    from app.services.entitlements import (
+        EntitlementError,
+        claim_execute_grant,
+        create_execute_grant,
+        execute_grant_count,
+        execute_pool_binding_for_user,
+        revoke_execute_grant,
+    )
+
+    _set_plan("free")
+    principal = Principal(
+        user_id="u1", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+    grant = create_execute_grant(principal, "grantee@example.com")
+
+    with pytest.raises(EntitlementError) as exc_info:
+        claim_execute_grant(grant_id=grant["grant_id"], user_id="u_x", email="wrong@example.com")
+    assert exc_info.value.code == "execute_grant_email_mismatch"
+
+    claim_execute_grant(grant_id=grant["grant_id"], user_id="u_grantee", email="grantee@example.com")
+    assert execute_grant_count("wrk_local") == 1
+
+    revoke_execute_grant(principal, grant["grant_id"])
+    assert execute_grant_count("wrk_local") == 0
+    assert execute_pool_binding_for_user("u_grantee") is None
+
+
 def test_ops_tier_gates_dashboard_and_drift_by_plan(monkeypatch, tmp_path):
     """Free: no dashboard at all. Starter ("basic"): runs list yes, drift no.
     Pro ("full"): everything. Mirrors the capability ladder in docs/PRD.md §11."""

@@ -4,11 +4,13 @@
 // executeStep, recovery embedding, and agent-override injection.
 const pageScripts = require("./page_scripts");
 const { interpolate } = require("./interpolate");
+const { evalOn, countOn, EVAL_TIMED_OUT } = require("./page_eval");
 const {
   PAGE_LOAD_TIMEOUT_MS,
   ACTION_TIMEOUT_MS,
   SECONDARY_ACTION_TIMEOUT_MS,
   DOWNLOAD_WAIT_TIMEOUT_MS,
+  UPLOAD_SETTLE_TIMEOUT_MS,
   DIALOG_WAIT_TIMEOUT_MS,
 } = require("./run_config");
 const { asObject, asArray, unique } = require("./step_utils");
@@ -87,7 +89,8 @@ async function probePresent(page, probeSpec, inputs, timeoutMs) {
   return pollPositive(async () => {
     for (const locator of candidates) {
       try {
-        if ((await locator.count()) > 0) return true;
+        const n = await countOn(locator);
+        if (n !== EVAL_TIMED_OUT && n > 0) return true;
       } catch (_) {}
     }
     return false;
@@ -133,7 +136,8 @@ async function _ensureChoiceMenuOpen(page, choice, option) {
   const opener = String((choice && choice.opener_selector) || "").trim();
   if (!opener || !option || !option.selector) return;
   try {
-    if (await page.locator(option.selector).count()) return; // already open
+    const n = await countOn(page.locator(option.selector));
+    if (n !== EVAL_TIMED_OUT && n > 0) return; // already open
     await page.locator(opener).first().click({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
     await page.locator(option.selector).first()
       .waitFor({ state: "attached", timeout: CHOICE_MENU_OPEN_TIMEOUT_MS });
@@ -350,7 +354,7 @@ const HANDLERS = {
     } else {
       const deltaX = Number(step.delta_x) || 0;
       const deltaY = Number(step.delta_y) || 0;
-      await page.evaluate(pageScripts.scrollBy, [deltaX, deltaY]);
+      await evalOn(page, pageScripts.scrollBy, [deltaX, deltaY]);
     }
   },
 
@@ -658,7 +662,8 @@ const HANDLERS = {
       if (filePaths.length > 1) {
         // Unknown (detached, cross-origin, evaluate blocked) stays permissive: let
         // setInputFiles have its say rather than blocking an upload on a failed probe.
-        const acceptsMultiple = await locator.evaluate(el => el.multiple === true).catch(() => true);
+        const _acceptsResult = await evalOn(locator, el => el.multiple === true).catch(() => true);
+        const acceptsMultiple = _acceptsResult === EVAL_TIMED_OUT ? true : _acceptsResult;
         if (!acceptsMultiple) {
           throw Object.assign(new Error(
             `this upload control accepts only one file, but ${filePaths.length} files were given ` +
@@ -668,6 +673,13 @@ const HANDLERS = {
       }
       return locator.setInputFiles(filePaths, { timeout: ACTION_TIMEOUT_MS });
     });
+
+    // Wait for the page's own upload request(s) to settle before this step (and the run, if
+    // this is the last step) is considered done — setInputFiles above only confirms the file
+    // was attached, not that any upload to a server finished. Best-effort: some pages never go
+    // fully network-idle (websockets, polling, analytics beacons), so this must not fail an
+    // upload that otherwise succeeded.
+    await page.waitForLoadState?.("networkidle", { timeout: UPLOAD_SETTLE_TIMEOUT_MS }).catch(() => {});
 
     // EXEC-19: the compiler already guarantees a downloaded file is bound to at most one upload
     // step (FIFO consumption in upload_binding.py), but nothing removed the file from the shared
@@ -748,7 +760,23 @@ HANDLERS["popup"] = async () => {};
 
 HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   const queue = ctx && ctx.downloadQueue;
-  if (!queue) return;
+  // Used to silently `return` on every one of these three paths — this step "succeeded" having
+  // downloaded nothing, and nothing downstream ever checked. Inside a for_each loop that meant
+  // every iteration could report success while quietly downloading some, one, or zero of the
+  // files the customer asked for; the final bulk upload only failed if the shared downloads
+  // folder ended up COMPLETELY empty, so even a partial miss uploaded happily. `badInput: true`
+  // is the same short-circuit for_each's own max_iterations check uses (run.js) — it routes
+  // straight to stepFailure, skipping the Tier 1-4 recovery cascade entirely, because no amount
+  // of re-finding a selector can produce a download that never fired; there is no selector here
+  // to re-find (download_observed compiles with recovery.max_attempts=0, same as every other
+  // marker action — action_policy.py's NO_RECOVERY_ACTION_TYPES).
+  const noDownload = (why) => {
+    throw Object.assign(
+      new Error(`Expected a file download at this step, but ${why}.`),
+      { badInput: true },
+    );
+  };
+  if (!queue) noDownload("no download tracking was set up for this run");
   // server.js's `page.on("download", ...)` listener only pushes onto this queue once Playwright's
   // download event actually fires — which can trail the triggering click by real wall-clock time
   // (server round-trip, header negotiation). Checking the queue once and bailing when it's still
@@ -759,30 +787,35 @@ HANDLERS["download_observed"] = async (_page, _step, inputs, ctx) => {
   if (!queue.length) {
     await pollPositive(() => queue.length > 0, DOWNLOAD_WAIT_TIMEOUT_MS);
   }
-  if (!queue.length) return;
+  if (!queue.length) {
+    noDownload(`none arrived within ${DOWNLOAD_WAIT_TIMEOUT_MS}ms — the click before this step may not have triggered one`);
+  }
   const pending = queue.shift();
   const entry = await Promise.race([
     pending,
     new Promise(resolve => setTimeout(resolve, DOWNLOAD_WAIT_TIMEOUT_MS)),
   ]);
+  // entry is null when server.js's save itself failed, or undefined when the race above timed
+  // out before `pending` resolved either way — both mean no real file exists to bind.
+  if (!entry || !entry.path) {
+    noDownload("it did not finish saving in time");
+  }
   // Bind the saved path into `inputs` so a later `upload` step in this same run can reference
   // it — `downloaded_file` always holds the latest download, `downloaded_file_N` (1-indexed,
   // in download order) disambiguates when several downloads happen in one run. See
   // conxa_compile/compiler/upload_binding.py's _BindingState for how the compiler decides which
   // one an upload step's value points at (EXEC-10/W-2 — previously a compiled skill had no way
   // to hand a file from one tab to another without an LLM round-trip per file).
-  if (entry && entry.path) {
-    inputs.downloaded_file = entry.path;
-    const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
-    inputs[`downloaded_file_${n}`] = entry.path;
-    // A zip is always extracted at download time (server.js) — bind its sibling extraction
-    // folder too, so an upload step the compiler matched against specific files inside that
-    // zip (upload_binding.py's _BindingState) has somewhere to resolve `{{downloaded_file_dir}}`
-    // / `{{downloaded_file_N_dir}}` against. Absent entirely for a non-zip download.
-    if (entry.extractedDir) {
-      inputs.downloaded_file_dir = entry.extractedDir;
-      inputs[`downloaded_file_${n}_dir`] = entry.extractedDir;
-    }
+  inputs.downloaded_file = entry.path;
+  const n = (inputs.__downloadCount = (inputs.__downloadCount || 0) + 1);
+  inputs[`downloaded_file_${n}`] = entry.path;
+  // A zip is always extracted at download time (server.js) — bind its sibling extraction
+  // folder too, so an upload step the compiler matched against specific files inside that
+  // zip (upload_binding.py's _BindingState) has somewhere to resolve `{{downloaded_file_dir}}`
+  // / `{{downloaded_file_N_dir}}` against. Absent entirely for a non-zip download.
+  if (entry.extractedDir) {
+    inputs.downloaded_file_dir = entry.extractedDir;
+    inputs[`downloaded_file_${n}_dir`] = entry.extractedDir;
   }
 };
 
@@ -832,9 +865,27 @@ HANDLERS["dialog_dismiss"] = async (_page, step, inputs, ctx) => {
   await answerDialog(dialog, step, inputs);
 };
 
+// Step types run.js's executeOneStep intercepts BEFORE ever reaching this dispatcher: ai_review
+// and handover are planned pauses with no selector or handler at all, for_each is a loop
+// primitive whose body steps re-enter executeOneStep directly. In normal operation `step.type`
+// is never one of these by the time executeStep runs — this set only matters if something calls
+// executeStep directly, bypassing run.js (a test harness, say), where the correct behavior is
+// still "do nothing" rather than the throw below.
+const PRE_DISPATCH_STEP_TYPES = new Set(["ai_review", "handover", "for_each"]);
+
 async function executeStep(page, step, inputs, ctx = {}) {
   const handler = HANDLERS[step.type];
-  if (handler) await handler(page, step, inputs, ctx);
+  if (handler) { await handler(page, step, inputs, ctx); return; }
+  if (PRE_DISPATCH_STEP_TYPES.has(step.type)) return;
+  // An unrecognized step type used to be silently skipped and reported as a successful step —
+  // harmless for a step that's genuinely decorative, but a safety gate (e.g. `handover`)
+  // replayed by a runtime older than the pack that authored it would vanish the same way,
+  // letting whatever came after it (often the destructive step the gate exists to guard) run
+  // unguarded. Fail loud instead.
+  throw Object.assign(
+    new Error(`Unrecognized step type "${step.type}" — this runtime does not know how to execute it. Update the Conxa runtime.`),
+    { unrecognizedStepType: step.type }
+  );
 }
 
 // Recovery embedding
@@ -867,6 +918,14 @@ function enrichStepsWithRecovery(steps, recovery) {
       // Where this element sat on the page at recording time. The agent tier gets a ranked list
       // of what is on the page NOW; this is the only thing in the payload that says what changed.
       _recorded_context: asObject(rec.recorded_context),
+      // Prose description written by the vision LLM at compile time (looked at 5 time-offset
+      // frames around the action) — a plain-English caption alongside the short anchor phrases.
+      _anchor_sentence: rec.anchor_sentence || "",
+      // BUILD-25 stage e: which part of the journey this step belongs to
+      // (login/navigate/act/verify/cleanup), written by the compiler's
+      // second-opinion pass. "" on any step the pass never ran on or didn't
+      // label. Read by failure_response.js's phaseHintBlock.
+      _phase: rec.phase || "",
     };
   });
 }

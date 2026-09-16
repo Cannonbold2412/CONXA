@@ -486,6 +486,48 @@ def _branch_info(
     return summary, []
 
 
+def _for_each_info(
+    skill_id: str,
+    step: dict[str, Any],
+    step_index: int,
+    policy: dict[str, Any],
+    asset_base_url: str,
+    source_session_id: str,
+) -> tuple[dict[str, Any] | None, list[StepEditorDTO]]:
+    """Read-only projection of step["for_each"] (EXEC-38 iteration primitive). Same
+    path-addressed-nested-body pattern as _branch_info's if_present case — the body is
+    editable only through structural RPCs / path-addressed patches, never through this
+    summary. No dedicated editor control exists yet (see TODO.md); this is visibility only,
+    same as every other field the 2026-08 audit flagged as hidden."""
+    kind = normalize_action_kind(action_name(step))
+    if kind != "for_each":
+        return None, []
+    for_each = step.get("for_each") if isinstance(step.get("for_each"), dict) else {}
+    rows = for_each.get("rows") if isinstance(for_each.get("rows"), dict) else {}
+    nested_raw = [s for s in (for_each.get("steps") or []) if isinstance(s, dict)]
+    for_each_steps = [
+        step_to_dto(
+            skill_id,
+            dict(nested),
+            j,
+            policy,
+            asset_base_url,
+            source_session_id,
+            dto_id=f"{skill_id}:{step_index}.for_each.steps[{j}]",
+        )
+        for j, nested in enumerate(nested_raw)
+    ]
+    summary = {
+        "container_selector": str(rows.get("container_selector") or "").strip(),
+        "items": str(for_each.get("items") or "").strip(),
+        "as": str(for_each.get("as") or "row").strip() or "row",
+        "max_iterations": for_each.get("max_iterations"),
+        "on_row_error": str(for_each.get("on_row_error") or "stop").strip() or "stop",
+        "step_count": len(for_each_steps),
+    }
+    return summary, for_each_steps
+
+
 def step_to_dto(
     skill_id: str,
     step: dict[str, Any],
@@ -555,6 +597,9 @@ def step_to_dto(
     branch_summary, branch_steps = _branch_info(
         skill_id, step, step_index, policy, asset_base_url, source_session_id
     )
+    for_each_summary, for_each_steps = _for_each_info(
+        skill_id, step, step_index, policy, asset_base_url, source_session_id
+    )
 
     return StepEditorDTO(
         id=dto_id or f"{skill_id}:{step_index}",
@@ -599,6 +644,10 @@ def step_to_dto(
         check_threshold=step.get("check_threshold") if isinstance(step.get("check_threshold"), (int, float)) else None,
         check_selector=str(step.get("check_selector") or "") or None,
         check_text=str(step.get("check_text") or "") or None,
+        ai_review_prompt=str(step.get("ai_review_prompt") or "") or None,
+        ai_review_output_schema=step.get("ai_review_output_schema") if isinstance(step.get("ai_review_output_schema"), dict) else None,
+        ai_review_on_failure=str(step.get("ai_review_on_failure") or "") or None,
+        ai_review_default_value=step.get("ai_review_default_value"),
         recovery_view=_recovery_view(recovery, action_spec(action_name(step)).marker),
         fingerprint=_fingerprint_view(bundle),
         handler_hints_view=handler_hints_view,
@@ -606,11 +655,13 @@ def step_to_dto(
         entity_binding=_entity_binding_view(step),
         branch_summary=branch_summary,
         branch_steps=branch_steps,
+        for_each_summary=for_each_summary,
+        for_each_steps=for_each_steps,
         optional_hint=step.get("optional_hint") if isinstance(step.get("optional_hint"), dict) else None,
     )
 
 
-def _compile_health(document: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+def _compile_health(document: dict[str, Any], meta: dict[str, Any], skill_id: str = "") -> dict[str, Any]:
     """Workflow-level compile-health summary — derived from compile_report + meta, both computed
     at compile time (compiler/build.py::_build_compile_report) but never surfaced to Human Edit
     before this redesign."""
@@ -634,7 +685,27 @@ def _compile_health(document: dict[str, Any], meta: dict[str, Any]) -> dict[str,
         # Diagnostics-tier only — provider/router telemetry from compile time, not a
         # Review-tier concern. See DiagnosticsPanel.tsx.
         "llm_router_stats": report.get("llm_router_stats") or {},
+        # One-click "generalize this to a loop" suggestion(s) — compiler/loop_suggestion.py.
+        # Filtered HERE (read time), not only at compile time: a reviewer's "Dismiss" only logs
+        # a decision (edit_log.py), it never edits compile_report on disk, so a plain page
+        # reload with no recompile in between would otherwise show the same dismissed
+        # suggestion again. Filtering on every read is the one place that covers a fresh
+        # compile, a page reload, and a post-accept refresh uniformly.
+        "for_each_suggestions": _for_each_suggestions(report, skill_id),
     }
+
+
+def _for_each_suggestions(report: dict[str, Any], skill_id: str) -> list[dict[str, Any]]:
+    suggestions = report.get("for_each_suggestions") or []
+    if not suggestions or not skill_id:
+        return suggestions
+    from conxa_compile.compiler.loop_suggestion import filter_rejected
+    from conxa_compile.editor.edit_log import read_edits
+
+    try:
+        return filter_rejected(suggestions, read_edits(skill_id))
+    except Exception:  # noqa: BLE001 — a suggestion display glitch must never break Human Edit
+        return suggestions
 
 
 def build_workflow_response(skill_id: str, document: dict[str, Any], *, asset_base_url: str) -> WorkflowResponse:
@@ -658,7 +729,7 @@ def build_workflow_response(skill_id: str, document: dict[str, Any], *, asset_ba
         suggestions=suggestions,
         asset_base_url=asset_base_url,
         intent_graph=intent_graph,
-        compile_health=_compile_health(document, meta),
+        compile_health=_compile_health(document, meta, skill_id),
     )
 
 

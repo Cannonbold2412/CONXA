@@ -24,13 +24,16 @@ type Props = {
   showAllFrames?: boolean
   allItems?: RecordingScreenshotItemDTO[]
   isLoadingAllFrames?: boolean
-  onSelectAllFrame?: (eventIndex: number, frameLabel: string) => void | Promise<void>
+  onSelectAllFrame?: (eventIndex: number, frameLabel: string | null) => void | Promise<void>
 }
 
 type FlatRecordingFrame = {
   eventIndex: number
   sequence: number
-  label: string
+  /** A real frame label (before_far/.../after_far), or null when this event has no
+   *  precomputed timed frames — selecting it must apply the representative full_screenshot,
+   *  never a frame_label the backend has no image for. */
+  label: string | null
   url: string
 }
 
@@ -43,7 +46,7 @@ function flattenRecordingFrames(items: RecordingScreenshotItemDTO[]): FlatRecord
         out.push({ eventIndex: item.event_index, sequence: item.sequence, label: frame.label, url: frame.url })
       }
     } else if (item.preview_url) {
-      out.push({ eventIndex: item.event_index, sequence: item.sequence, label: 'at', url: item.preview_url })
+      out.push({ eventIndex: item.event_index, sequence: item.sequence, label: null, url: item.preview_url })
     }
   }
   return out
@@ -140,7 +143,7 @@ function AllScreenshotsGrid({
 }: {
   items: RecordingScreenshotItemDTO[]
   isLoading?: boolean
-  onSelect?: (eventIndex: number, frameLabel: string) => void
+  onSelect?: (eventIndex: number, frameLabel: string | null) => void
 }) {
   if (isLoading) {
     return (
@@ -161,7 +164,7 @@ function AllScreenshotsGrid({
   return (
     <div className="space-y-4">
       {flatFrames.map((frame) => {
-        const timeLabel = FRAME_LABELS[frame.label] ?? frame.label
+        const timeLabel = frame.label ? (FRAME_LABELS[frame.label] ?? frame.label) : 'Screenshot'
         return (
           <button
             type="button"

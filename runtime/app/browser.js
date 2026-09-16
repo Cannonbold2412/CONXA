@@ -2,6 +2,7 @@
 const { chromium } = require("./host_bridge").hostRequire("playwright");
 const fs   = require("fs");
 const path = require("path");
+const hostBrowser = require("./host_browser");
 
 // env.js is authoritative (see server.js note): process.env is already normalized
 // under the host exe; the resolve() fallback only serves standalone dev mode.
@@ -101,10 +102,6 @@ function _resolveGroup(workspace_id, groupId) {
   return groups[0];
 }
 
-function _groupAppSessionPath(workspace_id, appId) {
-  return path.join(SESSIONS_DIR, `${workspace_id}__${appId}_raw_state.json`);
-}
-
 // ─── Auth-validation TTL cache ────────────────────────────────────────────
 // A successful network validation is stamped per app key; repeat runs within
 // CONXA_AUTH_VALIDATION_TTL_MS (default 6h) skip the live check entirely. The
@@ -136,30 +133,69 @@ function _writeValidationCache(key, sessionPath) {
   } catch (_) {}
 }
 
-// Cheap half of the old _validateGroupApp: resolve an app's stored session
-// (encrypted first, raw fallback) WITHOUT launching a browser. Returns the
+function _mtimeOrZero(p) {
+  try { return fs.statSync(p).mtimeMs; } catch (_) { return 0; }
+}
+
+// Resolve a session for `key` (a bare workspace_id, or `${workspace_id}__${appId}` for a
+// group app) WITHOUT launching a browser, preferring whichever of the encrypted/raw files
+// was written most recently — not always the encrypted file. A raw file newer than the
+// encrypted one means something other than this runtime process wrote a fresher session
+// since the encrypted file was last produced (Build Studio's _stage_runtime_auth
+// re-staging a freshly re-authenticated group app, or a save that fell back to
+// saveRawSession) — reading the encrypted file unconditionally in that case serves a
+// stale, already-expired session until the next process restart runs
+// auth_manager.reencryptPlaintextSessions. A winning raw file is promoted into the
+// encrypted one on the spot (same steps the startup sweep runs), so this is a one-time
+// cost paid only by the first read after a fresh raw write, not every call. Returns the
 // session's file path too so callers can key mtime-sensitive caches on it.
-async function _loadGroupAppSession(workspace_id, app, authManager, logFn) {
-  const key = `${workspace_id}__${app.id}`;
-  if (authManager) {
+async function _loadSessionForKey(key, authManager, logFn) {
+  const encPath = path.join(SESSIONS_DIR, `${key}_state.json`);
+  const rawPath = path.join(SESSIONS_DIR, `${key}_raw_state.json`);
+  const encMtime = _mtimeOrZero(encPath);
+  const rawMtime = _mtimeOrZero(rawPath);
+
+  if (rawMtime > 0 && rawMtime > encMtime) {
+    let stored = null;
+    try { stored = JSON.parse(fs.readFileSync(rawPath, "utf8")); } catch (_) {}
+    if (stored) {
+      if (authManager) {
+        try {
+          const token = await authManager.getSessionKey(key, logFn);
+          if (authManager.saveEncryptedSession(key, stored, token, SESSIONS_DIR, logFn)) {
+            fs.unlinkSync(rawPath);
+            return { stored, sessionPath: encPath };
+          }
+        } catch (_) {}
+      }
+      return { stored, sessionPath: rawPath };
+    }
+  }
+
+  if (encMtime > 0 && authManager) {
     try {
       const token = await authManager.getSessionKey(key, logFn);
       if (token) {
         const stored = authManager.loadDecryptedSession(key, token, SESSIONS_DIR);
-        if (stored) {
-          return { stored, sessionPath: path.join(SESSIONS_DIR, `${key}_state.json`) };
-        }
+        if (stored) return { stored, sessionPath: encPath };
       }
     } catch (_) {}
   }
-  const rawPath = _groupAppSessionPath(workspace_id, app.id);
-  if (fs.existsSync(rawPath)) {
+
+  if (rawMtime > 0) {
     try {
       const stored = JSON.parse(fs.readFileSync(rawPath, "utf8"));
       return { stored, sessionPath: rawPath };
     } catch (_) {}
   }
+
   return { stored: null, sessionPath: null };
+}
+
+// Thin per-app wrapper over _loadSessionForKey — kept as its own name since
+// getGroupAuthContext's caller comments and tests refer to "loading a group app session".
+async function _loadGroupAppSession(workspace_id, app, authManager, logFn) {
+  return _loadSessionForKey(`${workspace_id}__${app.id}`, authManager, logFn);
 }
 
 // Scopes a group's apps down to the ones a skill's manifest.required_apps actually
@@ -283,6 +319,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
         authManager,
         sessionsDir: SESSIONS_DIR,
         logFn,
+        runId: opts.runId,
       })
     ));
     const allPending = pendings.every((p) => p.authPending);
@@ -298,11 +335,11 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   }
 
   const merged = mergeStorageStates(results.filter((r) => r.valid).map((r) => r.stored));
-  const { browser, context } = await _buildExecContext(merged, headless);
+  const { browser, context, page, hostOwned } = await _buildExecContext(merged, headless, opts);
   const protectedUrl = (required[0] && (required[0].success_url || required[0].login_url))
     || (results.find((r) => r.valid) && (results.find((r) => r.valid).app.success_url || results.find((r) => r.valid).app.login_url))
     || "";
-  return { browser, context, protectedUrl, sessionSource: "group" };
+  return { browser, context, page, hostOwned, protectedUrl, sessionSource: "group" };
 }
 
 async function _persistSession(workspace_id, state, authManager, sessionsDir, logFn) {
@@ -375,7 +412,7 @@ async function getCachedBrowser(workspace_id, authManager, opts = {}) {
     // than waiting for or stealing the lease. Falls through to getAuthContext below.
   }
   const result = await getAuthContext(workspace_id, authManager, {
-    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds,
+    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds, runId: opts.runId,
   });
   // authPending means no browser/context was built (a login window was opened instead) —
   // nothing to cache or lease.
@@ -519,7 +556,22 @@ async function _validateSession(stored, protectedUrl) {
   return outcomes.get("single");
 }
 
-async function _buildExecContext(stored, headless = false) {
+// opts.runId, when set, is Execute's cue to borrow its own browser view instead of
+// launching one (see host_browser.js). Only reachable when headless is false — a
+// borrowed browser is always visible, by definition of what Execute uses it for —
+// and only when CONXA_HOST_BROWSER_CDP is actually set, so every other client
+// (Claude Desktop, the scheduler, the Build Studio sandbox) never even attempts it.
+// A failure at any step (connect, view creation, seeding) falls through to the
+// normal launch below and logs why — a run must never hard-fail over Execute's
+// panel being unavailable.
+async function _buildExecContext(stored, headless = false, opts = {}) {
+  if (!headless && opts.runId && hostBrowser.endpoint()) {
+    try {
+      return await hostBrowser.acquire({ runId: opts.runId, storageState: stored });
+    } catch (e) {
+      if (opts.logFn) opts.logFn("warn", "host_browser_fallback", { run_id: opts.runId, error: e.message });
+    }
+  }
   const browser = await chromium.launch({
     headless,
     args: ["--disable-blink-features=AutomationControlled"],
@@ -533,7 +585,28 @@ async function _buildExecContext(stored, headless = false) {
 // a chromium.launch()/goto() failure surfaces to the caller immediately instead of
 // being swallowed by a detached background task (see beginInteractiveAuth).
 async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
-  const { storedState } = opts;
+  const { storedState, runId, logFn } = opts;
+  // EXEC-41 Stage 2: a login window is just another headed browser, so it gets the exact
+  // same host branch as a skill run's own context (see _buildExecContext) — Execute's panel,
+  // not a separate OS window, when Execute is the client. One real, accepted trade-off: the
+  // launch path below applies STEALTH_CONTEXT_OPTIONS (a desktop-Chrome UA, viewport, locale,
+  // timezone) via browser.newContext(), which the host branch cannot do — Electron's CDP
+  // target has no Target.createBrowserContext (Stage-0 spike), so this reuses Execute's own
+  // single context as-is. A bot-protection screen that specifically distrusts Electron's own
+  // UA string may reject a host-owned login page more often than the launched one; this is
+  // caught the same way any login failure is — the retry in beginInteractiveAuth, and a
+  // connect failure here falling straight through to the launch path below.
+  if (runId && hostBrowser.endpoint()) {
+    try {
+      const { browser: loginBrowser, context: loginCtx, page: loginPage } =
+        await hostBrowser.acquire({ runId, storageState: storedState });
+      await _maskAutomation(loginPage);
+      await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      return { loginBrowser, loginCtx, loginPage, hostOwned: true, hostRunId: runId };
+    } catch (e) {
+      if (logFn) logFn("warn", "host_browser_fallback", { run_id: runId, phase: "login", error: e.message });
+    }
+  }
   const loginBrowser = await chromium.launch({
     headless: false,
     args: ["--disable-blink-features=AutomationControlled"],
@@ -557,10 +630,20 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   const { protectedUrl } = opts;
-  const { loginBrowser, loginCtx, loginPage } = opened;
+  const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId } = opened;
   let lastUrl = "";
   let lastState = null;
   let _autoCloseScheduled = false;
+
+  // Shared close point for both the auto-close-on-success timer below and the final
+  // fallback close — mirrors teardownExecBrowser's reasoning exactly: loginBrowser.close()
+  // on a CDP connection only ever disconnects (never kills Execute's browser process), but
+  // a host-owned login still needs Execute told to actually destroy the view, or it leaks
+  // until Execute's own idle cleanup reclaims it.
+  const _closeLoginBrowser = async () => {
+    try { if (loginBrowser.isConnected()) await loginBrowser.close(); } catch (_) {}
+    if (hostOwned && hostRunId) await hostBrowser.release({ runId: hostRunId });
+  };
 
   // Capture storageState when the user lands on an authenticated page. Scoped to
   // protectedUrl's own hostname when known — an OAuth leg through a different host
@@ -581,9 +664,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     try { lastState = await loginCtx.storageState(); } catch (_) { return; }
     if (lastState && !_autoCloseScheduled) {
       _autoCloseScheduled = true;
-      setTimeout(async () => {
-        try { if (loginBrowser.isConnected()) await loginBrowser.close(); } catch (_) {}
-      }, 1500);
+      setTimeout(() => { _closeLoginBrowser().catch(() => {}); }, 1500);
     }
   };
 
@@ -630,9 +711,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     try { lastState = await loginCtx.storageState(); } catch (_) {}
   }
 
-  try {
-    if (loginBrowser.isConnected()) await loginBrowser.close();
-  } catch (_) {}
+  await _closeLoginBrowser();
 
   const rejectReason = _rejectReasonForProtectedUrl(lastUrl);
   if (rejectReason) throw new Error(rejectReason);
@@ -652,7 +731,7 @@ const _pendingAuth = new Map();
 // with no session captured (user closed it before signing in) reopens once, then gives
 // up — the next call to this function starts a fresh attempt.
 async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
-  const { storedState, protectedUrl, authManager, sessionsDir, logFn } = opts;
+  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId } = opts;
 
   const existing = _pendingAuth.get(workspace_id);
   if (existing && existing.status === "pending") {
@@ -663,7 +742,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 
   let opened;
   try {
-    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState });
+    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn });
   } catch (e) {
     // authPending stays true so the existing "gate on auth" handling in callers still
     // fires (they only branch on this flag) — only the message differs, carrying the
@@ -692,7 +771,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
         // (disconnected is what got us here).
         if (attempt === 0) {
           try {
-            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState });
+            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn });
           } catch (e2) {
             lastErr = e2;
             break;
@@ -722,55 +801,29 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   // _resolveGroup's comment.
   const group = _resolveGroup(workspace_id, opts.groupId);
   if (group && group.apps && group.apps.length > 0) {
-    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds });
+    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds, runId: opts.runId });
   }
 
-  let _hadEncryptedSession = false; // set true if encrypted path ran; raw session is then stale
-  let lastKnownState = null; // best available (possibly expired) session — seeds the login window
   const pack = _loadPack(workspace_id);
   const protectedUrl = _resolveProtectedUrl(workspace_id, pack);
   const targetUrl    = pack.target_url || protectedUrl;
 
-  // Try encrypted session (uses per-machine session key from keytar). Only the session
-  // lookup itself is guarded — a keytar/decrypt failure legitimately means "no usable
-  // session, fall back to raw/interactive auth" (auth_manager.js's own loadDecryptedSession
-  // already returns null internally for a corrupt file). _validateSession/_buildExecContext
-  // run unguarded, matching _validateGroupApp's pattern below: a real failure there (e.g. a
+  // Resolve whichever of the encrypted/raw session files is newest — see
+  // _loadSessionForKey. A keytar/decrypt failure there legitimately means "no usable
+  // session, fall back to interactive auth" (loadDecryptedSession already returns null
+  // internally for a corrupt file). _validateSession/_buildExecContext below run
+  // unguarded, matching _validateSessionsBatch's pattern: a real failure there (e.g. a
   // broken/misconfigured browser install) must propagate with its own message, not be
-  // swallowed and replaced by the misleading "No target_url configured" thrown further down
-  // — retrying via the raw-session path would only hit the identical browser failure again.
-  if (authManager) {
-    let token, stored;
-    try {
-      token = await authManager.getSessionKey(workspace_id, logFn);
-      if (token) stored = authManager.loadDecryptedSession(workspace_id, token, SESSIONS_DIR);
-    } catch (_) {}
-    if (stored) {
-      lastKnownState = stored;
-      if (await _validateSession(stored, protectedUrl)) {
-        _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
-        const { browser, context } = await _buildExecContext(stored, headless);
-        return { browser, context, protectedUrl, sessionSource: "encrypted" };
-      }
-      // Session expired — skip raw session (encrypted takes precedence), go to interactive auth
-      _hadEncryptedSession = true;
-    }
-  }
-
-  // Try raw session (installer-included initial session, not yet encrypted)
-  // Skip if encrypted path already ran — raw session is then stale and should not override
-  const rawSessionPath = path.join(SESSIONS_DIR, `${workspace_id}_raw_state.json`);
-  if (!_hadEncryptedSession && fs.existsSync(rawSessionPath)) {
-    let stored;
-    try { stored = JSON.parse(fs.readFileSync(rawSessionPath, "utf8")); } catch (_) {}
-    if (stored) {
-      lastKnownState = stored;
-      if (await _validateSession(stored, protectedUrl)) {
-        _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
-        const { browser, context } = await _buildExecContext(stored, headless);
-        return { browser, context, protectedUrl, sessionSource: "raw" };
-      }
-    }
+  // swallowed and replaced by the misleading "No target_url configured" thrown further down.
+  const { stored, sessionPath } = await _loadSessionForKey(workspace_id, authManager, logFn);
+  const lastKnownState = stored; // best available (possibly expired) session — seeds the login window
+  if (stored && await _validateSession(stored, protectedUrl)) {
+    _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
+    const { browser, context, page, hostOwned } = await _buildExecContext(stored, headless, opts);
+    return {
+      browser, context, page, hostOwned, protectedUrl,
+      sessionSource: sessionPath && sessionPath.endsWith("_raw_state.json") ? "raw" : "encrypted",
+    };
   }
 
   // No valid session — open an interactive login window for the user (non-blocking).
@@ -782,6 +835,7 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
     authManager,
     sessionsDir: SESSIONS_DIR,
     logFn,
+    runId: opts.runId,
   });
 }
 
@@ -846,6 +900,26 @@ async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, l
   };
 }
 
+// The one place a watch-mode run's browser/context gets torn down. Replaces four
+// near-identical `if (watch) { await _context.close(); await _browser.close(); }`
+// blocks that used to live at each of server.js's teardown sites — a launched
+// browser really is closed there, but a host-owned one (Execute's panel) is only
+// ever disconnected: closing it would tear down Execute's whole browser process,
+// panel and all, out from under the user. Doing this in one shared function is the
+// point — a call site that forgot the `hostOwned` check would silently kill
+// Execute's browser mid-session, and the fix belongs where every teardown path
+// routes through, not patched into each one by hand.
+async function teardownExecBrowser({ browser, context, hostOwned, runId }) {
+  if (!browser) return;
+  if (hostOwned) {
+    await browser.close().catch(() => {}); // CDP connection: disconnect only
+    if (runId) await hostBrowser.release({ runId }); // tell Execute to destroy the view
+    return;
+  }
+  if (context) await context.close().catch(() => {});
+  await browser.close().catch(() => {});
+}
+
 async function gracefulShutdown() {
   for (const [, entry] of _cache.entries()) {
     clearTimeout(entry.idleTimer);
@@ -858,6 +932,7 @@ async function gracefulShutdown() {
 module.exports = {
   getCachedBrowser,
   releaseCachedBrowser,
+  teardownExecBrowser,
   getAuthContext,
   getGroupAuthContext,
   _filterRequiredApps,
@@ -873,8 +948,11 @@ module.exports = {
   _reachedProtectedUrl,
   _resolveGroup,
   _loadGroupAppSession,
+  _loadSessionForKey,
   _validateSessionsBatch,
   _readValidationCache,
   _writeValidationCache,
+  _buildExecContext,
+  _openInteractiveAuthWindow,
   AUTH_VALIDATION_TTL_MS,
 };

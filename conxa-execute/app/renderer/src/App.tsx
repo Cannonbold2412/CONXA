@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChatMessage, ChatMode, Entitlement, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
+import { BrowserPanel } from "./BrowserPanel";
 import { Icon, Row, paths } from "./ui";
 
 type Mode = "form" | "chat";
@@ -69,9 +70,21 @@ export function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
-  const [plansUrl, setPlansUrl] = useState("");
+  const [redeemCode, setRedeemCode] = useState("");
+  const [redeeming, setRedeeming] = useState(false);
+  const [redeemMsg, setRedeemMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [theme, setTheme] = useState<"light" | "dark">(
+    () => (localStorage.getItem("conxa-theme") === "light" ? "light" : "dark"),
+  );
+
+  useEffect(() => {
+    document.documentElement.classList.remove("light", "dark");
+    document.documentElement.classList.add(theme);
+    localStorage.setItem("conxa-theme", theme);
+  }, [theme]);
 
   const refreshHistory = useCallback(async () => {
     const h = await api.history();
@@ -95,7 +108,6 @@ export function App() {
     }
     const e = await api.getEntitlement();
     setEntitlement(e.entitlement || null);
-    setPlansUrl(e.plansUrl || "");
   }, [api]);
 
   const load = useCallback(async () => {
@@ -109,6 +121,7 @@ export function App() {
     setChatMode(s.mode || "byok");
     await refreshHistory();
     await refreshAccount();
+    setAuthChecked(true);
 
     const list = await refreshSessions();
     const current = list[0] || (await api.createSession()).session;
@@ -215,9 +228,21 @@ export function App() {
     }
   }
 
-  async function changeMode(next: ChatMode) {
-    setChatMode(next);
-    await api.saveSettings({ mode: next });
+  async function redeemGrant() {
+    const grantId = redeemCode.trim();
+    if (!grantId || redeeming) return;
+    setRedeeming(true);
+    setRedeemMsg(null);
+    const r = await api.redeemGrant({ grantId });
+    setRedeeming(false);
+    if (r.ok) {
+      setRedeemCode("");
+      setRedeemMsg({ type: "ok", text: r.workspaceName ? `Paid by ${r.workspaceName}.` : "Seat claimed." });
+      setChatMode("workspace_pool");
+      await refreshAccount();
+    } else {
+      setRedeemMsg({ type: "err", text: r.message || "Could not redeem that code." });
+    }
   }
 
   async function login() {
@@ -293,10 +318,11 @@ export function App() {
 
   const composer = (
     <div className="mx-auto w-full max-w-[720px]">
-      <div className="rounded-2xl border border-line bg-bg-elevated px-3 pb-2 pt-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)]">
+      <div className="rounded-2xl border border-line bg-bg-elevated px-3 pb-2 pt-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] transition-shadow focus-within:border-brand/50 focus-within:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]">
         <textarea
-          className="min-h-[72px] w-full resize-none bg-transparent px-1 text-[15px] text-fg placeholder:text-fg-dim outline-none"
+          className="theme-scroll max-h-[220px] min-h-[72px] w-full resize-none overflow-y-auto bg-transparent px-1 text-[15px] text-fg placeholder:text-fg-dim outline-none"
           rows={emptyChatHome ? 3 : 2}
+          spellCheck={false}
           value={mode === "chat" ? chatInput : ""}
           onChange={(e) => setChatInput(e.target.value)}
           onKeyDown={(e) => {
@@ -342,6 +368,22 @@ export function App() {
       </div>
     </div>
   );
+
+  if (!authChecked) {
+    return <div className="h-full bg-bg" />;
+  }
+
+  if (!signedIn) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 bg-bg text-fg">
+        <div className="text-lg font-medium">Sign in to CONXA</div>
+        <p className="max-w-xs text-center text-sm text-fg-muted">Sign in with your CONXA account to use Execute.</p>
+        <button type="button" className="rounded-lg bg-fg px-5 py-2.5 text-sm font-medium text-bg hover:bg-white" onClick={login}>
+          Sign in with CONXA
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col bg-bg text-fg">
@@ -422,7 +464,7 @@ export function App() {
 
       <main className="relative flex min-w-0 flex-1 flex-col">
         {runtimeOk === false && (
-          <div className="border-b border-err/30 bg-[#3a1c1c] px-5 py-2 text-sm text-[#f0c4c4]">{runtimeMsg}</div>
+          <div className="border-b border-err/30 bg-err-bg px-5 py-2 text-sm text-err-fg">{runtimeMsg}</div>
         )}
 
         {emptyChatHome && (
@@ -465,7 +507,7 @@ export function App() {
               {fields.map((f) => (
                 <label key={f.name} className="block text-sm">
                   <span className="text-fg-muted">{f.name}{f.required ? " *" : ""}</span>
-                  <input className="mt-1.5 w-full rounded-xl border border-line bg-bg-elevated px-3 py-2.5" value={values[f.name] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk} />
+                  <input className="mt-1.5 w-full rounded-xl border border-line bg-bg-elevated px-3 py-2.5 outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]" value={values[f.name] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk} />
                   {f.description && <span className="mt-1 block text-xs text-fg-dim">{f.description}</span>}
                 </label>
               ))}
@@ -481,7 +523,7 @@ export function App() {
         {mode === "chat" && !emptyChatHome && (
           <div className="flex min-h-0 flex-1 flex-col">
             {!chatReady && (
-              <p className="mx-auto mt-4 max-w-[720px] rounded-xl border border-warn/40 bg-[#2a2114] px-4 py-2 text-sm text-[#e8d4b0]">
+              <p className="mx-auto mt-4 max-w-[720px] rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
                 {chatMode === "byok"
                   ? "Chat needs your own API key. Open Settings — the form still runs skills with no model."
                   : "Sign in to CONXA in Settings to use chat — the form still runs skills with no login."}
@@ -500,11 +542,12 @@ export function App() {
         )}
       </main>
 
+      <BrowserPanel />
+
       <SettingsModal
         open={showSettings}
         onClose={() => setShowSettings(false)}
         mode={chatMode}
-        onModeChange={changeMode}
         baseURL={baseURL}
         model={model}
         apiKey={apiKey}
@@ -516,9 +559,15 @@ export function App() {
         signedIn={signedIn}
         identity={identity}
         entitlement={entitlement}
-        plansUrl={plansUrl}
+        theme={theme}
+        onThemeChange={setTheme}
         onLogin={login}
         onLogout={logout}
+        redeemCode={redeemCode}
+        onRedeemCodeChange={setRedeemCode}
+        onRedeem={redeemGrant}
+        redeeming={redeeming}
+        redeemMsg={redeemMsg}
       />
       </div>
     </div>

@@ -155,26 +155,34 @@ def resolve_element_recovery(
     }
 
 
-def infer_workflow_intent(
+def infer_workflow_review(
     *,
-    steps_summary: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
     page_urls: list[str],
+    sibling_bindings: dict[str, list[str]],
     model: str | None = None,
     error_detail: list[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Single LLM call to build workflow intent graph (Claude Browser-style)."""
+    """Single multimodal whole-workflow LLM call producing BOTH the workflow
+    intent graph (goal + per-step intent) AND BUILD-25's compile-time review
+    suggestions — merges what used to be two text-only calls
+    (workflow_intent, workflow_semantics) into one. Each step in `steps` may
+    carry `image_base64`/`image_mime` (the frame the vision-anchor stage
+    already chose for that step) alongside its text context. Never selectors,
+    never a change to compiled behavior."""
     payload = {
-        "task": "workflow_intent",
+        "task": "workflow_review",
         "model": model,
         "input": {
-            "steps": steps_summary,
+            "steps": steps,
             "page_urls": page_urls,
+            "sibling_bindings": sibling_bindings,
         },
     }
     data = _call_llm_or_none(
-        "workflow_intent",
+        "workflow_review",
         payload,
-        settings.llm_selector_timeout_ms,
+        settings.llm_vision_timeout_ms,
         error_detail=error_detail,
     )
     if data is None:
@@ -184,4 +192,5 @@ def infer_workflow_intent(
         "steps": list(data.get("steps") or []),
         "decision_points": list(data.get("decision_points") or []),
         "expected_end_state": dict(data.get("expected_end_state") or {}),
+        "suggestions": list(data.get("suggestions") or []),
     }

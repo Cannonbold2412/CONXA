@@ -51,7 +51,7 @@ export function formatCompactNumber(value?: number | null) {
 
 export function formatMeterValue(value?: number | null, key?: EntitlementMeterKey) {
   if (value == null) return 'Unlimited'
-  if (key === 'human_edit_tokens') return formatCompactNumber(value)
+  if (key === 'human_edit_tokens' || key === 'ai_usage_credits') return formatCompactNumber(value)
   return value.toLocaleString()
 }
 

@@ -135,6 +135,11 @@ export type StepEditorDTO = {
   check_threshold?: number
   check_selector?: string
   check_text?: string
+  /** EXEC-13: ai_review's own config — None/absent on every other step kind. */
+  ai_review_prompt?: string | null
+  ai_review_output_schema?: Record<string, unknown> | null
+  ai_review_on_failure?: string | null
+  ai_review_default_value?: unknown
   /** Read-only visibility additions — the 2026-07-10 Human Edit vs. Skill Package redesign.
    * None of these accept edits; patch_gate.py (conxa_compile/editor) is the sole write path. */
   recovery_view: RecoveryView | Record<string, never>
@@ -150,6 +155,21 @@ export type StepEditorDTO = {
    * hasn't confirmed it yet — drives the "treat as optional?" suggestion. null once confirmed
    * (confirmOptionalInterstitial clears it) or for ordinary steps. */
   optional_hint: { kind: 'try_dismiss'; container_signal: string } | null
+  /** Set only for a `for_each` step (EXEC-38); null otherwise. Read-only visibility — same
+   * "no dedicated authoring UI yet" caveat as branch_summary (see TODO.md EXEC-38-UI). Without
+   * this a loop's wrapped body (e.g. from accepting a ForEachSuggestionBanner suggestion)
+   * disappears from the step list entirely, looking exactly like the wrapped steps were deleted. */
+  for_each_summary: {
+    container_selector: string
+    items: string
+    as: string
+    max_iterations: number | null
+    on_row_error: string
+    step_count: number
+  } | null
+  /** Nested body steps for a `for_each` step, same path-addressed `id` shape as branch_steps
+   * (`{skill_id}:{step_index}.for_each.steps[{j}]`). Read-only. */
+  for_each_steps: StepEditorDTO[]
 }
 
 export type SuggestionItem = {
@@ -181,6 +201,29 @@ export type CompileHealth = {
   structural_fingerprint_present?: boolean
   /** Diagnostics-tier only — provider/router telemetry from compile time. */
   llm_router_stats?: Record<string, unknown>
+  /** One-click "generalize this to a loop" suggestion(s) — compiler/loop_suggestion.py.
+   *  Deterministic (no LLM); already excludes anything this skill's reviewer previously
+   *  rejected. See ForEachSuggestionBanner.tsx. */
+  for_each_suggestions?: ForEachSuggestion[]
+}
+
+/** A `compiler/loop_suggestion.py::detect_download_upload_loop_candidates` finding — accept via
+ *  `acceptForEachSuggestion`, reject via `rejectForEachSuggestion` (api/workflowApi.ts). */
+export type ForEachSuggestion = {
+  id: string
+  kind: string
+  wrap_start_key: string
+  wrap_end_key: string
+  upload_step_key: string
+  template_literal: string
+  suggested_input_name: string
+  as_name: string
+  why: string
+  preview: { before: string; after: string }
+  /** Set when a hardcoded click on the recorded file (immediately before the loop's per-item
+   *  navigate) is being removed as part of this suggestion, not wrapped into the loop body —
+   *  the navigate already overrides whatever it picked. See workflow_mutations.py. */
+  redundant_click_key?: string
 }
 
 export type WorkflowResponse = {

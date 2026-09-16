@@ -9,6 +9,7 @@ import { RetargetPhasePick } from './RetargetPhasePick'
 import { RetargetPhaseSelectors } from './RetargetPhaseSelectors'
 import { RetargetPhaseValidation } from './RetargetPhaseValidation'
 import { BranchBodyEditor } from '@/components/branch/BranchBodyEditor'
+import { ForEachBodyViewer } from '@/components/loop/ForEachBodyViewer'
 import { RecoveryAnchorsCard } from '@/components/RecoveryAnchorsCard'
 import { BuildPipelineStepper, type PipelineStep } from '@/components/build/BuildPipelineStepper'
 import { Button } from '@/components/ui/button'
@@ -74,12 +75,27 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
   const ensureFor = useRetargetStore((s) => s.ensureFor)
   const reset = useRetargetStore((s) => s.reset)
 
-  // Scope the wizard store to the open step. No-ops if it's already scoped there (e.g. a
-  // workflow refresh), so it never wipes an in-progress wizard out from under the user — only
-  // switching to a genuinely different step resets bbox/candidates/validation edits.
+  // A focused nested for_each step (clicked in ForEachSubList.tsx — the same focusedBranchIndex
+  // BranchSubList uses) gets the SAME 3-phase wizard a top-level step gets, scoped to it via
+  // path-addressing ("for_each.steps[N]") — see handlers/workflow_editor.py's cmd_patch_step /
+  // cmd_retarget_preview / cmd_retarget_apply `path` param and conxa_compile/editor/step_path.py.
+  // `step` stays the outer (possibly for_each-wrapper) DTO throughout — its `.step_index` is
+  // always the real top-level position the backend needs; `effectiveStep` is whichever step's
+  // OWN data (selectors, screenshot, url, ...) should actually render.
+  const focusedBranchIndex = useEditorStore((s) => s.focusedBranchIndex)
+  const nestedForEachStep =
+    step?.for_each_summary && focusedBranchIndex !== null ? (step.for_each_steps[focusedBranchIndex] ?? null) : null
+  const nestedPath = nestedForEachStep ? `for_each.steps[${focusedBranchIndex}]` : undefined
+  const effectiveStep = nestedForEachStep ?? step
+  const scopeKey = step ? (nestedForEachStep ? `${step.step_index}:${nestedPath}` : String(step.step_index)) : null
+
+  // Scope the wizard store to the open step (or nested step). No-ops if it's already scoped
+  // there (e.g. a workflow refresh), so it never wipes an in-progress wizard out from under the
+  // user — only switching to a genuinely different step/nested-step resets bbox/candidates/
+  // validation edits.
   useEffect(() => {
-    if (step) ensureFor(skillId, step.step_index)
-  }, [skillId, step?.step_index, ensureFor])
+    if (scopeKey) ensureFor(skillId, scopeKey)
+  }, [skillId, scopeKey, ensureFor])
 
   useImperativeHandle(
     ref,
@@ -96,7 +112,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
       setSessionMissing(false)
       setLoading(true)
       try {
-        const result = await retargetPreview(skillId, step.step_index, drawn, regenerate)
+        const result = await retargetPreview(skillId, step.step_index, drawn, regenerate, nestedPath)
         setPreview(result)
         const seeded = result.candidates.map((c) => ({ ...c, id: makeCandidateId() }))
         setCandidates(seeded)
@@ -113,21 +129,26 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
         setLoading(false)
       }
     },
-    [skillId, step, setBbox, setPreview, setCandidates, setKeepValidation, setEditedAssertions],
+    [skillId, step, nestedPath, setBbox, setPreview, setCandidates, setKeepValidation, setEditedAssertions],
   )
 
   const handleApplyPositionOnly = useCallback(async () => {
-    if (!step || !bbox) return
+    if (!step || !effectiveStep || !bbox) return
     setApplying(true)
     try {
-      const res = await retargetApply(skillId, step.step_index, {
-        bbox,
-        primary_selector: String(step.target.primary_selector ?? ''),
-        fallback_selectors: Array.isArray(step.target.fallback_selectors)
-          ? (step.target.fallback_selectors as string[])
-          : [],
-        keep_validation: true,
-      })
+      const res = await retargetApply(
+        skillId,
+        step.step_index,
+        {
+          bbox,
+          primary_selector: String(effectiveStep.target.primary_selector ?? ''),
+          fallback_selectors: Array.isArray(effectiveStep.target.fallback_selectors)
+            ? (effectiveStep.target.fallback_selectors as string[])
+            : [],
+          keep_validation: true,
+        },
+        nestedPath,
+      )
       onWorkflowUpdated(res.workflow)
       if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
       useEditorStore.getState().clearStepDirty(step.step_index)
@@ -139,7 +160,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     } finally {
       setApplying(false)
     }
-  }, [skillId, step, bbox, onWorkflowUpdated, onHistoryUpdate, reset])
+  }, [skillId, step, effectiveStep, nestedPath, bbox, onWorkflowUpdated, onHistoryUpdate, reset])
 
   const handleCancelPick = useCallback(() => {
     reset()
@@ -171,20 +192,25 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
       .filter(Boolean)
     setApplying(true)
     try {
-      const res = await retargetApply(skillId, step.step_index, {
-        bbox,
-        primary_selector: primary,
-        fallback_selectors: fallbacks,
-        keep_validation: keepValidation,
-        proposed_wait_for: preview.proposed_wait_for,
-        proposed_assertions: preview.proposed_assertions,
-        // Only sent when the human actually touched the Validation phase's assertion editor —
-        // otherwise the backend falls back to keep_validation/proposed_assertions as before.
-        edited_assertions: editedAssertions ?? undefined,
-        // Generated back at Continue's preview — passing it through here means Apply skips the
-        // vision LLM call entirely instead of regenerating anchors it already has.
-        visual_anchors: preview.visual_anchors ?? undefined,
-      })
+      const res = await retargetApply(
+        skillId,
+        step.step_index,
+        {
+          bbox,
+          primary_selector: primary,
+          fallback_selectors: fallbacks,
+          keep_validation: keepValidation,
+          proposed_wait_for: preview.proposed_wait_for,
+          proposed_assertions: preview.proposed_assertions,
+          // Only sent when the human actually touched the Validation phase's assertion editor —
+          // otherwise the backend falls back to keep_validation/proposed_assertions as before.
+          edited_assertions: editedAssertions ?? undefined,
+          // Generated back at Continue's preview — passing it through here means Apply skips the
+          // vision LLM call entirely instead of regenerating anchors it already has.
+          visual_anchors: preview.visual_anchors ?? undefined,
+        },
+        nestedPath,
+      )
       onWorkflowUpdated(res.workflow)
       if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
       useEditorStore.getState().clearStepDirty(step.step_index)
@@ -196,9 +222,9 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     } finally {
       setApplying(false)
     }
-  }, [skillId, step, bbox, preview, candidates, keepValidation, editedAssertions, onWorkflowUpdated, onHistoryUpdate, reset])
+  }, [skillId, step, nestedPath, bbox, preview, candidates, keepValidation, editedAssertions, onWorkflowUpdated, onHistoryUpdate, reset])
 
-  if (!step) {
+  if (!step || !effectiveStep) {
     return (
       <div className={cn(PANEL_CLASS, 'text-muted-foreground items-center justify-center border-x p-4 text-sm')}>
         Select a step to edit
@@ -206,10 +232,12 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     )
   }
 
-  // Navigate steps have no element to re-target — their editable surface is the URL/intent
-  // form plus validations, which StepConfigForm already owns (http/https gate on save). Like
-  // scroll and branch steps, they skip the 3-phase wizard entirely.
-  if (step.action_type.trim().toLowerCase().replace(/-/g, '_') === 'navigate' || step.flags.is_scroll) {
+  // for_each steps (EXEC-38) have no element of their own to re-target — this is the loop's own
+  // config + nested body list. Order matters: a focused nested step (nestedForEachStep set) takes
+  // priority and falls through to the SAME treatment below any other step gets (navigate/scroll/
+  // branch skip-blocks or the full wizard, based on THAT nested step's own shape) — clicking a
+  // row in ForEachSubList.tsx means "show me its details", not the loop's own summary.
+  if (step.for_each_summary && !nestedForEachStep) {
     return (
       <div className={PANEL_CLASS}>
         <ScrollArea className="min-h-0 flex-1">
@@ -221,10 +249,52 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               onWorkflowUpdated={onWorkflowUpdated}
               onHistoryUpdate={onHistoryUpdate}
             />
+            <ForEachBodyViewer step={step} />
+          </div>
+        </ScrollArea>
+      </div>
+    )
+  }
+
+  // Navigate steps have no element to re-target — their editable surface is the URL/intent
+  // form plus validations, which StepConfigForm already owns (http/https gate on save). Like
+  // scroll and branch steps, they skip the 3-phase wizard entirely. Checked against
+  // effectiveStep so a nested for_each step of this shape gets the same treatment.
+  //
+  // Upload/upload_intent steps skip it too, for a different reason: unlike navigate, they DO have
+  // a real compiled selector (StepConfigForm's own selector fields below still edit it — see
+  // SELECTOR_ACTIONS in action_registry.py) — but that selector targets a hidden <input
+  // type="file">, which has no meaningful on-page appearance to draw a box around and is resolved
+  // deterministically at compile time from IdentityBundle/DOM signals, never from a human-picked
+  // screenshot region. Recorded upload_intent events also never get their own screenshot
+  // extracted (frame_extractor.py — the preceding click that opens the file picker already has
+  // one), so Phase 1's "draw a box" requirement was a dead end here: no image to draw on, and
+  // nothing meaningful to pick even when one happened to exist from an older compile.
+  const normalizedAction = effectiveStep.action_type.trim().toLowerCase().replace(/-/g, '_')
+  if (
+    normalizedAction === 'navigate' ||
+    normalizedAction === 'upload' ||
+    normalizedAction === 'upload_intent' ||
+    effectiveStep.flags.is_scroll
+  ) {
+    return (
+      <div className={PANEL_CLASS}>
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="space-y-2 p-3">
+            <StepConfigForm
+              ref={formRef}
+              step={effectiveStep}
+              skillId={skillId}
+              onWorkflowUpdated={onWorkflowUpdated}
+              onHistoryUpdate={onHistoryUpdate}
+              path={nestedPath}
+              parentStepIndex={step.step_index}
+            />
             <RecoveryAnchorsCard
               stepIndex={step.step_index}
+              path={nestedPath}
               skillId={skillId}
-              anchors={step.anchors_recovery}
+              anchors={effectiveStep.anchors_recovery}
               onWorkflowUpdated={onWorkflowUpdated}
               onHistoryUpdate={onHistoryUpdate}
             />
@@ -240,22 +310,25 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
   // probe selector is still editable through the normal selector fields in StepConfigForm below.
   // Only if_present gets a dedicated nested-body editor this pass — try_dismiss's `candidates`
   // and wait_for_one_of's `options` are readable (see BranchSummaryBadge in WorkflowStepItem.tsx)
-  // but have no authoring UI yet; see TODO.md follow-up.
-  if (step.branch_summary) {
+  // but have no authoring UI yet; see TODO.md follow-up. A for_each loop body step nested one
+  // level deeper than THIS can't itself be a branch step (patch_gate.py has no such nesting), so
+  // effectiveStep.branch_summary here is only ever true for a genuine top-level branch step —
+  // nestedPath stays undefined in that case.
+  if (effectiveStep.branch_summary) {
     return (
       <div className={PANEL_CLASS}>
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-2 p-3">
             <StepConfigForm
               ref={formRef}
-              step={step}
+              step={effectiveStep}
               skillId={skillId}
               onWorkflowUpdated={onWorkflowUpdated}
               onHistoryUpdate={onHistoryUpdate}
             />
-            {step.branch_summary.kind === 'if_present' ? (
+            {effectiveStep.branch_summary.kind === 'if_present' ? (
               <BranchBodyEditor
-                step={step}
+                step={effectiveStep}
                 skillId={skillId}
                 onWorkflowUpdated={onWorkflowUpdated}
                 onHistoryUpdate={onHistoryUpdate}
@@ -264,7 +337,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
             <RecoveryAnchorsCard
               stepIndex={step.step_index}
               skillId={skillId}
-              anchors={step.anchors_recovery}
+              anchors={effectiveStep.anchors_recovery}
               onWorkflowUpdated={onWorkflowUpdated}
               onHistoryUpdate={onHistoryUpdate}
             />
@@ -292,7 +365,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
         <div className="space-y-3.5 p-3">
           {phase === 1 ? (
             <RetargetPhasePick
-              step={step}
+              step={effectiveStep}
               loading={loading || applying}
               sessionMissing={sessionMissing}
               onDrawn={handleDrawn}
@@ -313,12 +386,14 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
           <div className={phase === 2 ? '' : 'hidden'}>
             <StepConfigForm
               ref={formRef}
-              step={step}
+              step={effectiveStep}
               skillId={skillId}
               onWorkflowUpdated={onWorkflowUpdated}
               onHistoryUpdate={onHistoryUpdate}
               hideSelectorTools
               hideSubmitButton
+              path={nestedPath}
+              parentStepIndex={step.step_index}
             />
           </div>
           {phase === 2 && preview ? (
@@ -337,8 +412,9 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
             <>
               <RecoveryAnchorsCard
                 stepIndex={step.step_index}
+                path={nestedPath}
                 skillId={skillId}
-                anchors={step.anchors_recovery}
+                anchors={effectiveStep.anchors_recovery}
                 onWorkflowUpdated={onWorkflowUpdated}
                 onHistoryUpdate={onHistoryUpdate}
               />
@@ -365,7 +441,7 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
           ) : null}
           {phase === 3 && preview ? (
             <RetargetPhaseValidation
-              step={step}
+              step={effectiveStep}
               preview={preview}
               keepValidation={keepValidation}
               onKeepValidationChange={(v) => {

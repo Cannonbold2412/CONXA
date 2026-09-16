@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from conxa_compile.editor.step_path import NestedPath, StepPathError, get_nested_step, with_nested_step
+
 
 class RetargetError(Exception):
     def __init__(self, code: str, message: str) -> None:
@@ -44,14 +46,22 @@ def _is_frame_nested(step: dict[str, Any]) -> bool:
     return bool(bundle.get("frame_chain"))
 
 
-def _get_step(document: dict[str, Any], step_index: int) -> dict[str, Any]:
+def _get_step(
+    document: dict[str, Any], step_index: int, nested_path: NestedPath | None = None
+) -> dict[str, Any]:
     skills = list(document.get("skills") or [])
     if not skills:
         raise RetargetError("invalid_document", "No skills block")
     steps = list((skills[0] or {}).get("steps") or [])
     if step_index < 0 or step_index >= len(steps):
         raise RetargetError("step_not_found", f"Step {step_index} out of range")
-    return dict(steps[step_index])
+    parent_step = dict(steps[step_index])
+    if nested_path is None:
+        return parent_step
+    try:
+        return get_nested_step(parent_step, nested_path)
+    except StepPathError as exc:
+        raise RetargetError(exc.code, exc.message) from exc
 
 
 def find_source_event(step: dict[str, Any], document: dict[str, Any]) -> dict[str, Any] | None:
@@ -271,13 +281,25 @@ def _existing_candidates(step: dict[str, Any], dom_snapshot: str | None) -> list
 
 
 def preview_retarget(
-    document: dict[str, Any], step_index: int, bbox: dict[str, Any], regenerate: bool = True
+    document: dict[str, Any],
+    step_index: int,
+    bbox: dict[str, Any],
+    regenerate: bool = True,
+    nested_path: NestedPath | None = None,
 ) -> dict[str, Any]:
     """Return Phase 2 (candidates) + Phase 3 (validation diff) data. Persists nothing.
 
     ``regenerate`` controls whether selectors are re-derived by the LLM (the user re-picked
     the element) or simply read back from the compile (the user is only reviewing). The LLM
     fires *only* on the regenerate path — reviewing an unchanged step costs zero tokens.
+
+    ``nested_path`` addresses a for_each loop-body step (``for_each.steps[N]``) instead of the
+    top-level step at ``step_index`` — lets the wizard run against a loop's nested step exactly
+    as it would a top-level one. The nested step carries its own `snapshot_ref`/screenshot/
+    identity_bundle verbatim (it WAS a top-level recorded step before the loop-wrap splice —
+    see workflow_mutations.py::apply_for_each_loop_suggestion), so nothing else here needs to
+    change: `find_source_event` and every downstream lookup key off the step dict itself, not
+    its position in the document.
     """
     from conxa_compile.compiler.build import _build_assertions
     from conxa_compile.compiler.validation_planner import infer_wait_for_shape
@@ -285,7 +307,7 @@ def preview_retarget(
     from conxa_core.storage import snapshots
     from conxa_core.models.skill_spec import ValidationBlock
 
-    step = _get_step(document, step_index)
+    step = _get_step(document, step_index, nested_path)
     next_bbox = _normalize_bbox(bbox)
 
     source_session_id = (document.get("meta") or {}).get("source_session_id")
@@ -352,7 +374,9 @@ def preview_retarget(
         from conxa_compile.llm.anchor_vision_llm import VisionAnchorGenerationError
 
         try:
-            visual_anchors = preview_visual_anchors_for_bbox_or_raise(document, step_index, next_bbox)
+            visual_anchors = preview_visual_anchors_for_bbox_or_raise(
+                document, step_index, next_bbox, nested_path=nested_path
+            )
         except VisionAnchorGenerationError as exc:
             detail = f" ({exc.hint})" if exc.hint else ""
             raise RetargetError(
@@ -414,12 +438,21 @@ def preview_retarget(
     }
 
 
-def apply_retarget(document: dict[str, Any], step_index: int, payload: dict[str, Any]) -> dict[str, Any]:
+def apply_retarget(
+    document: dict[str, Any],
+    step_index: int,
+    payload: dict[str, Any],
+    nested_path: NestedPath | None = None,
+) -> dict[str, Any]:
     """Atomically apply bbox + target selectors + identity_bundle + validation.
 
     Returns a **new** document dict. Caller is responsible for the single undo
     entry (push the pre-apply snapshot once, before calling this) and for
     writing the result.
+
+    ``nested_path`` addresses a for_each loop-body step (``for_each.steps[N]``) — see
+    ``preview_retarget``'s docstring for why the nested step needs nothing special beyond
+    reading/writing it at the right place in the document.
     """
     from conxa_compile.compiler.build import _confidence_from_identity_bundle
     from conxa_compile.compiler.patch import _sync_recovery_deterministic
@@ -443,13 +476,14 @@ def apply_retarget(document: dict[str, Any], step_index: int, payload: dict[str,
     # 1. bbox + vision anchors. Reuses anchors already generated at Continue (Phase 1's preview)
     # when the caller sends them back — the LLM call happens once, there, not again here.
     doc = update_step_visual_bbox_and_regenerate_anchors_or_raise(
-        document, step_index, next_bbox, precomputed_anchors=payload.get("visual_anchors")
+        document, step_index, next_bbox, precomputed_anchors=payload.get("visual_anchors"), nested_path=nested_path
     )
 
     skills = list(doc.get("skills") or [])
     block = dict(skills[0])
     steps = list(block.get("steps") or [])
-    step = dict(steps[step_index])
+    parent_step = dict(steps[step_index])
+    step = get_nested_step(parent_step, nested_path) if nested_path is not None else dict(parent_step)
 
     # 2. target selectors + rebuilt identity_bundle + re-derived confidence.
     step["target"] = {
@@ -487,7 +521,7 @@ def apply_retarget(document: dict[str, Any], step_index: int, payload: dict[str,
         step["validation"] = validation
         step = _sync_recovery_deterministic(step)
 
-    steps[step_index] = step
+    steps[step_index] = with_nested_step(parent_step, nested_path, step) if nested_path is not None else step
     block["steps"] = steps
     skills[0] = block
     doc["skills"] = skills

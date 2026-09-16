@@ -336,6 +336,43 @@ def test_assertions_no_state_changed_for_non_consequential_click():
     assert assertions == []
 
 
+def test_assertions_state_changed_for_upload_with_no_evidence():
+    # A file input rarely moves the URL or visible DOM on its own — most sites don't react
+    # until a later, separate submit — so without the upload fallback this compiled to zero
+    # assertions. Mirrors test_assertions_state_changed_for_evidence_less_commit.
+    ev = _make_ev(inner_text="")
+    ev["action"]["action"] = "upload"
+    validation = _make_validation(wait_for={"type": "none"})
+    assertions = _build_assertions(ev, validation, {}, {})
+    assert len(assertions) == 1
+    assert assertions[0].type == "state_changed"
+    assert assertions[0].required is True
+
+
+def test_assertions_state_changed_for_upload_intent_with_no_evidence():
+    # Same fallback for the raw recorder-emitted action name, in case a step is ever built
+    # directly from it rather than the post-compile "upload" name.
+    ev = _make_ev(inner_text="")
+    ev["action"]["action"] = "upload_intent"
+    validation = _make_validation(wait_for={"type": "none"})
+    assertions = _build_assertions(ev, validation, {}, {})
+    assert len(assertions) == 1
+    assert assertions[0].type == "state_changed"
+    assert assertions[0].required is True
+
+
+def test_assertions_upload_prefers_stronger_evidence():
+    # When the recording did show a real reaction (e.g. a redirect after upload), that stronger,
+    # more specific assertion wins — the state_changed fallback must not also claim the slot.
+    ev = _make_ev(inner_text="")
+    ev["action"]["action"] = "upload"
+    ev["page"] = {"url": "https://example.com/upload"}
+    validation = _make_validation(wait_for={"type": "url_change", "timeout": 8000})
+    assertions = _build_assertions(ev, validation, {}, {})
+    assert any(a.type == "url_changed" and a.required for a in assertions)
+    assert not any(a.type == "state_changed" for a in assertions)
+
+
 # ─── Structural fingerprint ──────────────────────────────────────────────────
 
 def _make_step(intent="click_button", primary_selector="button.submit", data_testid="", inner_text="Submit", tag="button"):
@@ -526,11 +563,7 @@ def test_uniqueness_gate_role_with_a11y_tree_multi_match():
 def test_uniqueness_gate_role_with_a11y_tree_single_match():
     html = "<button>Edit</button><button>Delete</button>"
     a11y_tree = {
-        "role": "WebArea",
-        "children": [
-            {"role": "button", "name": "Edit"},
-            {"role": "button", "name": "Delete"},
-        ],
+        "aria_snapshot": '- WebArea:\n  - button "Edit"\n  - button "Delete"',
     }
     assert uniqueness_gate('internal:role=button[name="Edit"]', html, a11y_tree) is True
 

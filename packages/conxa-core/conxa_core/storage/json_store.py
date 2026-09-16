@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -20,18 +21,27 @@ def skills_dir() -> Path:
 def write_skill(skill_id: str, document: dict[str, Any]) -> Path:
     document = scrub_surrogates(document)
     is_update = read_skill(skill_id) is not None
-    db_set("skills", skill_id, document)
+    db_set("skills", skill_id, document)  # the durable copy — Postgres, or db.py's own KV fallback
     path = skills_dir() / f"{skill_id}.json"
     try:
         path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as exc:
+        # A secondary, human-readable-by-id copy — db_set above already holds the
+        # canonical one, so this failing doesn't lose data, but silently returning
+        # `path` as if it were written is misleading to anyone who stats/reads it directly.
+        warnings.warn(f"Secondary skill file write failed for {skill_id!r} at {path}: {exc}", stacklevel=2)
     if is_update:
         try:
             from conxa_core.storage.workflow_store import invalidate_workflow_test_by_skill  # noqa: PLC0415
             invalidate_workflow_test_by_skill(skill_id)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # A reviewer signs off against last_test_* fields — if this reset silently
+            # fails, a stale pass/fail from before this edit can survive and mislead them.
+            warnings.warn(
+                f"Failed to invalidate stale test results for skill {skill_id!r} after an "
+                f"edit — last_test_* may now be stale: {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
     return path
 
 
@@ -81,7 +91,8 @@ def list_skill_summaries() -> list[dict[str, Any]]:
         skill_id = path.stem
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.warn(f"Dropping corrupt skill file {path} from list_skill_summaries: {exc}", stacklevel=2)
             continue
         meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
         skills_raw = doc.get("skills") or []

@@ -1,5 +1,40 @@
-import type { StepEditorDTO } from '@/types/workflow'
+import type { StepEditorDTO, WorkflowResponse } from '@/types/workflow'
 import { RECORDING_DRAG_MODE_CLEAR_VISUAL } from '@/api/workflowApi'
+
+/** Parses a step's own `id` — `"{skillId}:{stepIndex}"` for a top-level step, or
+ * `"{skillId}:{stepIndex}.for_each.steps[{j}]"` / `"...branch.steps[{j}]"` for a nested one
+ * (see `conxa_compile/editor/workflow_dto.py`'s `dto_id` construction) — into its addressable
+ * parts. Shared so every caller that needs to re-locate a step after a patch (nested or not)
+ * parses the same shape the backend produces, instead of a second hand-rolled regex drifting. */
+export function parseStepDtoId(
+  id: string,
+): { stepIndex: number; nested: { container: 'for_each' | 'branch'; index: number } | null } | null {
+  const nestedMatch = /^.+:(\d+)\.(for_each|branch)\.steps\[(\d+)\]$/.exec(id)
+  if (nestedMatch) {
+    return {
+      stepIndex: Number(nestedMatch[1]),
+      nested: { container: nestedMatch[2] as 'for_each' | 'branch', index: Number(nestedMatch[3]) },
+    }
+  }
+  const topMatch = /^.+:(\d+)$/.exec(id)
+  if (topMatch) return { stepIndex: Number(topMatch[1]), nested: null }
+  return null
+}
+
+/** Re-locates a step's fresh DTO in a just-patched workflow response by its stable `id` — works
+ * for a top-level step or a nested for_each/branch body step alike. Use this instead of matching
+ * on `step_index` after a patch: a nested step's own `.step_index` field is its LOCAL ordinal
+ * within its container, not a position in `workflow.steps`, so matching on it directly would
+ * silently resolve to the wrong (or no) step once nested paths are involved. */
+export function findUpdatedStep(workflow: WorkflowResponse, id: string): StepEditorDTO | undefined {
+  const parsed = parseStepDtoId(id)
+  if (!parsed) return workflow.steps.find((s) => s.id === id)
+  const parent = workflow.steps.find((s) => s.step_index === parsed.stepIndex)
+  if (!parent) return undefined
+  if (!parsed.nested) return parent
+  const list = parsed.nested.container === 'for_each' ? parent.for_each_steps : parent.branch_steps
+  return list[parsed.nested.index]
+}
 
 export const ADD_ACTION_OPTIONS = [
   { value: 'navigate', label: 'Navigate', category: 'Flow' },
@@ -8,6 +43,7 @@ export const ADD_ACTION_OPTIONS = [
   { value: 'check', label: 'Check', category: 'Validation' },
   { value: 'assert', label: 'Assert', category: 'Validation' },
   { value: 'screenshot', label: 'Screenshot', category: 'Validation' },
+  { value: 'ai_review', label: 'AI Review', category: 'Validation' },
   { value: 'click', label: 'Click', category: 'Pointer' },
   { value: 'dblclick', label: 'Double click', category: 'Pointer' },
   { value: 'right_click', label: 'Right click', category: 'Pointer' },

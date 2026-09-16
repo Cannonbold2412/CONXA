@@ -1,0 +1,12 @@
+{
+  "slug": "loop-skill",
+  "name": "GitHub to Drive loop (E2E fixture)",
+  "description": "Downloads any number of caller-named files from a GitHub-shaped fixture and uploads all of them to a Drive-shaped fixture, exercising the real for_each/download/upload runtime code path end to end.",
+  "version": "0.0.1",
+  "required_runtime": ">=1.0.0",
+  "company": "e2e",
+  "target_url": "",
+  "inputs_required": ["fixture_dir", "files", "expected_status"],
+  "structural_fingerprint": { "landmarks": [], "landmark_count": 0 },
+  "checksum": {}
+}

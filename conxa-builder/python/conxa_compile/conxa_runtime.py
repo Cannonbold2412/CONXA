@@ -420,8 +420,8 @@ def sync_skill_pack(
     shutil.copy2(str(pack_src), str(dest / "pack.json"))
     try:
         pack = json.loads(pack_src.read_text(encoding="utf-8"))
-    except Exception:
-        pack = {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Corrupt pack.json at {pack_src} — cannot stage any skills: {exc}") from exc
 
     skill_groups = pack.get("skill_groups") or {}
     for slug in pack.get("skills") or []:
@@ -434,8 +434,11 @@ def sync_skill_pack(
             continue
         try:
             manifest = json.loads(manifest_src.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Corrupt manifest.json for skill {slug!r} at {manifest_src} — "
+                f"cannot stage it into the runtime sandbox: {exc}"
+            ) from exc
 
         version = str(manifest.get("version") or "0.0.0")
         slug_dir = dest / group / slug

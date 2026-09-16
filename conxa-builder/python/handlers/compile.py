@@ -185,7 +185,7 @@ class CompileMixin:
             sink({"phase": "compile_error", "message": str(exc), "failed_step": "selectors"})
             # Only the infra-class reason (the proxy call itself failed, after the
             # client's own retries and the router's own pool failover) is worth a
-            # refund. vision_llm_empty_response / vision_llm_invalid_primary_phrase
+            # refund. vision_llm_empty_response / vision_llm_invalid_anchor_sentence
             # are content-quality outcomes — the LLM answered, just not usefully —
             # not something a refund is meant to cover.
             if exc.reason == "vision_llm_request_failed" and reservation_id and reservation_committed:

@@ -40,6 +40,17 @@ services:
         sync: false
       - key: SKILL_CLERK_AUTHORIZED_PARTIES
         sync: false
+      # Internal bridge to conxa-cloud for Execute seat grants — a workspace
+      # admin on Build Studio can hand a person an Execute seat that draws
+      # from that workspace's shared AI Usage Credits pool instead of a
+      # personal wallet/subscription. SKILL_EXECUTE_SERVICE_TOKEN must match
+      # conxa-cloud's value exactly (docs/TRD.md §13.4c). Binding is by
+      # email string, not shared Clerk identity — this service's Clerk app
+      # stays deliberately separate from conxa-cloud's (see above).
+      - key: SKILL_EXECUTE_SERVICE_TOKEN
+        sync: false
+      - key: SKILL_CONXA_CLOUD_API_BASE_URL
+        sync: false
       # Cashfree billing — same merchant account as conxa-cloud, distinct webhook secret.
       - key: CASHFREE_ENV
         value: PROD

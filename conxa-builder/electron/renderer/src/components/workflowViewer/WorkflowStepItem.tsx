@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import type { StepEditorDTO } from '@/types/workflow'
 import { RECORDING_SCREENSHOT_DRAG_MIME } from '@/api/workflowApi'
-import { BoxSelect, GitBranch, GripVertical, MousePointer2, ShieldAlert, Sparkles, Trash2 } from 'lucide-react'
+import { BoxSelect, GitBranch, GripVertical, MousePointer2, Repeat, ShieldAlert, Sparkles, Trash2 } from 'lucide-react'
 import { compactStepLabel, handleRecordingScreenshotDrop, visualBboxState, type BboxState } from '@/lib/workflowViewerHelpers'
 
 type WorkflowStepItemProps = {
@@ -108,6 +108,7 @@ export function WorkflowStepItem({
           <span className="block">{compactStepLabel(step.human_readable_description)}</span>
           {bboxState ? <VisualBboxBadge state={bboxState} /> : null}
           {step.branch_summary ? <BranchSummaryBadge summary={step.branch_summary} /> : null}
+          {step.for_each_summary ? <ForEachSummaryBadge summary={step.for_each_summary} /> : null}
         </span>
         <StepBadges
           step={step}
@@ -144,6 +145,30 @@ function BranchSummaryBadge({ summary }: { summary: NonNullable<import('@/types/
           : summary.kind === 'try_dismiss'
             ? 'Tries each candidate selector in order and dismisses the first one found.'
             : 'Waits for one of several alternative states before continuing.'}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** "Loops N steps" badge for a for_each step — the loop-suggestion Accept flow
+ * (ForEachSuggestionBanner.tsx) replaces several visible steps with one for_each step whose body
+ * is nested and otherwise invisible in this list; without this badge that looks exactly like the
+ * wrapped steps (a filename click, a download) were deleted rather than moved into the loop. */
+function ForEachSummaryBadge({ summary }: { summary: NonNullable<import('@/types/workflow').StepEditorDTO['for_each_summary']> }) {
+  const source = summary.items ? `input "${summary.items}"` : summary.container_selector ? 'a matched row list' : 'no source set'
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="mt-1 inline-flex max-w-full items-center gap-1 rounded border border-sky-400/20 bg-sky-400/[0.06] px-1.5 py-0.5 text-[0.65rem] leading-none text-sky-100">
+          <Repeat className="size-3 shrink-0" aria-hidden />
+          <span className="min-w-0 truncate">
+            loops {summary.step_count} step{summary.step_count === 1 ? '' : 's'} · driven by {source}
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        Runs its {summary.step_count} nested step{summary.step_count === 1 ? '' : 's'} once per item from{' '}
+        {source}, up to {summary.max_iterations ?? '?'} times. Nothing was deleted — expand below to see them.
       </TooltipContent>
     </Tooltip>
   )

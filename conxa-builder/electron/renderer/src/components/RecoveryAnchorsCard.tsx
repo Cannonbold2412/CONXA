@@ -17,6 +17,9 @@ type Props = {
   onWorkflowUpdated: (wf: WorkflowResponse) => void
   onHistoryUpdate?: (canUndo: boolean, canRedo: boolean) => void
   disabled?: boolean
+  /** Set when editing a nested for_each loop-body step — see StepConfigForm's `path` prop doc
+   *  comment. `stepIndex` stays the PARENT's real top-level index either way. */
+  path?: string
 }
 
 /**
@@ -26,7 +29,7 @@ type Props = {
  * and only matters once recovery is already underway. Deliberately does NOT expose
  * max_attempts/confidence_threshold/strategies — those stay policy-owned, not editable per step.
  */
-export function RecoveryAnchorsCard({ stepIndex, skillId, anchors, onWorkflowUpdated, onHistoryUpdate, disabled }: Props) {
+export function RecoveryAnchorsCard({ stepIndex, skillId, anchors, onWorkflowUpdated, onHistoryUpdate, disabled, path }: Props) {
   const [rows, setRows] = useState<string[]>(() => {
     const initial = anchorRowsFromObjects(anchors)
     return initial.length > 0 ? initial : ['']
@@ -58,7 +61,7 @@ export function RecoveryAnchorsCard({ stepIndex, skillId, anchors, onWorkflowUpd
   const handleSave = async () => {
     setSaving(true)
     try {
-      const res = await patchStep(skillId, stepIndex, { recovery: { anchors: parseAnchorRows(rows) } }, false)
+      const res = await patchStep(skillId, stepIndex, { recovery: { anchors: parseAnchorRows(rows) } }, false, path)
       onWorkflowUpdated(res.workflow)
       if (res.can_undo !== undefined) onHistoryUpdate?.(res.can_undo, res.can_redo ?? false)
       setDirty(false)

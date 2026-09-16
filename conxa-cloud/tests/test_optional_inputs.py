@@ -20,9 +20,11 @@ def test_optional_input_excluded_from_inputs_required():
     assert _compute_inputs_required(idata) == ["email"]
 
 
-def test_explicit_required_list_still_wins():
+def test_a_top_level_required_list_is_ignored_only_per_input_optional_flags_matter():
+    """A stray top-level `required` list (no current writer produces one) must not override
+    the per-input `optional` flags — those are the only source of truth now."""
     idata = {"required": ["a", "b"], "inputs": [{"name": "a"}, {"name": "b", "optional": True}]}
-    assert _compute_inputs_required(idata) == ["a", "b"]
+    assert _compute_inputs_required(idata) == ["a"]
 
 
 def test_no_optional_inputs_all_required():

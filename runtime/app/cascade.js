@@ -25,6 +25,9 @@ const { executeStep } = require("./handlers");
 const { verifyStep, hasRequiredAssertion, capturePreStepSignature, signatureChanged } = require("./assertions");
 const { dismissKnownOverlay } = require("./dismiss_patterns");
 const learnedDismissals = require("./learned_dismissals");
+const { evalOn } = require("./page_eval");
+const pageScripts = require("./page_scripts");
+const { recordOverlayObservation } = require("./overlay_capture");
 
 const INTERACTIVE_STEP_TYPES = new Set([
   "click", "dblclick", "right_click",
@@ -243,7 +246,7 @@ async function recoverWithDialogScope(page, step, inputs, slug, stepIndex, prima
 
 // Layer 1 deterministic ladder: apply a single targeted remedy keyed off the exception class,
 // then retry the primary selector once. Zero-token. Returns true if the retry succeeded.
-async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline = null, guard = null) {
+async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline = null, guard = null, runCtx = null) {
   const klass = classifyException(primaryErr);
   const remedy = remedyFor(klass);
   if (remedy === "descend-layer2") {
@@ -273,15 +276,16 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
       // few ubiquitous consent toolkits — try their accept/close affordances (plus anything
       // previously learned on THIS host) before giving up on Tier 1. Zero-token by
       // construction; reactive only (we got here because something actually intercepted).
+      let dismissHit = null;
       try {
         const learned = learnedDismissals.selectorsFor(page.url());
-        const hit = await dismissKnownOverlay(page, { learned });
-        if (hit) {
+        dismissHit = await dismissKnownOverlay(page, { learned });
+        if (dismissHit) {
           // Record every clicked candidate: the winning tail matters, and refreshing each
           // keeps the replay order stable for the next interception on this host.
-          for (const selector of hit.selectors) learnedDismissals.record(page.url(), selector);
+          for (const selector of dismissHit.selectors) learnedDismissals.record(page.url(), selector);
           appendRecoveryEvent({ event: "tier1_dismiss_pattern", slug,
-            step_index: stepIndex, pattern: hit.selectors.join(" | "), source: hit.source });
+            step_index: stepIndex, pattern: dismissHit.selectors.join(" | "), source: dismissHit.source });
         } else if (primaryErr) {
           // EXEC-30: an INTERCEPTED failure that no known pattern could clear — flag it so the
           // agent tier's failure payload can say "this looks like an unrecognized overlay"
@@ -289,6 +293,22 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
           primaryErr.unknownOverlay = true;
         }
       } catch (_) {}
+      // BUILD-26 stage (f): capture what covered the target, here — the one point the runtime
+      // already knows something intercepted a click (an INTERCEPTED classification) — and on
+      // the recovered-and-passed path too, not only on eventual failure. `_writeStudioEvidence`
+      // (failure_response.js) only fires when the whole step ultimately fails, so this is the
+      // only place a passing run's overlay ever gets written.
+      if (runCtx && runCtx.dataDir && runCtx.runId) {
+        try {
+          const probe = await evalOn(page, pageScripts.overlayProbe);
+          if (probe) {
+            recordOverlayObservation({
+              dataDir: runCtx.dataDir, runId: runCtx.runId, slug, stepIndex,
+              probe, dismissed: !!dismissHit,
+            });
+          }
+        } catch (_) {}
+      }
     } else if (remedy === "wait-stable" || remedy === "wait-enabled") {
       await page.waitForTimeout(300);
     } else if (remedy === "wait-navigation") {
@@ -307,7 +327,7 @@ async function layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector
   return ok ? remedy : false;
 }
 
-async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null, baseline = null, guard = null, dialogQueue = null) {
+async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector, tracker, primaryErr = null, cancelCheck = null, baseline = null, guard = null, dialogQueue = null, runCtx = null) {
   // EXEC-29 — every stage below eventually touches the page (an `.evaluate()` a11y probe, a
   // fresh `resolveStep`, a plain `waitForTimeout`), and a renderer with an open native dialog
   // does not run any of that: Chromium blocks the whole tab, not just the action that triggered
@@ -354,7 +374,7 @@ async function recoverStep(page, step, inputs, slug, stepIndex, primarySelector,
   // Layer 1 — deterministic exception ladder (targeted single remedy).
   // (Alternate-signal recovery is inherent: resolveStep already walks all bundle signals in
   // durability order, so there is no separate legacy compiled-selector tier.)
-  const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline, g);
+  const l1 = await layer1Ladder(page, step, inputs, slug, stepIndex, primarySelector, primaryErr, baseline, g, runCtx);
   if (l1) {
     tracker.emit("tier_ok", { si: stepIndex, tier: "layer1", sel: l1 });
     return { tier: "L1", method: l1 };

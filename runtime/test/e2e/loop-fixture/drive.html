@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture: Google Drive upload page</title></head>
+<body>
+  <!-- Stands in for a Google Drive upload dialog: a real multi-file <input type=file>. The
+       upload step (runtime/app/handlers.js) calls Locator.setInputFiles on this exact element,
+       the same call it would make against Drive's own file input. #status renders the uploaded
+       filenames sorted so the driving script can assert the whole set arrived, in order-
+       independent form, for any N without hardcoding a count. -->
+  <input type="file" multiple data-testid="drive-upload" />
+  <div id="status">idle</div>
+  <script>
+    document.querySelector('[data-testid="drive-upload"]').addEventListener('change', function () {
+      const names = Array.from(this.files).map((f) => f.name).sort();
+      document.getElementById('status').textContent = 'Uploaded: ' + names.join(',');
+    });
+  </script>
+</body>
+</html>

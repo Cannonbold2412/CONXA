@@ -18,10 +18,14 @@ from urllib.parse import urlparse
 
 
 class _CommandError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, run_id: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        # Optional (BUILD-26 stage e): cmd_test_workflow's workflow_test_failed error carries the
+        # run id the failure was filed under, so cmd_copilot_verify can read the failing step's
+        # evidence without re-deriving it from the (deliberately stale) Workflow.last_test_run_id.
+        self.run_id = run_id
 
 
 def _safe_id(value: object, field: str) -> str:

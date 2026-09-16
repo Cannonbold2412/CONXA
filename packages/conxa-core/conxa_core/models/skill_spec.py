@@ -34,6 +34,23 @@ class SkillMeta(BaseModel):
     # [executor] Structural fingerprint of the first 3 steps' landmark selectors — used by
     # drift detection to detect site redesigns before execution begins. Browser-DOM specific.
     structural_fingerprint: dict[str, Any] = Field(default_factory=dict)
+    # [executor] EXEC-36: the recording browser's environment (locale, timezone, viewport,
+    # device_pixel_ratio, date_format_sample, platform), captured once at session start
+    # (recorder/session.py::_write_environment_sync). Compared against the replay browser's own
+    # environment at run start (runtime/app/env_match.js) to WARN — never block — when a
+    # workflow is replayed in a materially different locale/timezone/viewport than it was
+    # recorded in, a failure mode that otherwise burns the recovery ladder and Tier B tokens
+    # looking exactly like drift. Empty on skills compiled before this field existed, or when
+    # the recording page never finished loading — the runtime treats an empty dict as "unknown,"
+    # never as a mismatch. Browser-DOM specific, not part of the executor-independent contract.
+    environment: dict[str, Any] = Field(default_factory=dict)
+    # [contract] PROD-3-DRYRUN layer 5: the slug of a sibling skill in the same pack the runtime
+    # should OFFER (never auto-run) after a mid-run failure that happened after a destructive
+    # step already executed — e.g. "cancel the draft invoice" as the companion to "create
+    # invoice." Empty when no compensation workflow is linked. Set in the Human Edit editor;
+    # surfaced by failure_response.js as a named next step, never executed automatically — an
+    # unattended compensating write after an unknown failure is a second uncontrolled action.
+    compensation_skill: str = ""
     # [contract] Every hostname the recording actually navigated to (main frame + any tab
     # opened during the recording), lowercase, deduped. Used to compute a workflow's
     # required_apps (conxa_core.storage.group_store.apps_for_workflow) from everywhere the
@@ -102,7 +119,11 @@ class IdentitySignal(BaseModel):
     durability: float                # 0.0–1.0 from durability_score()
     orthogonality_class: str         # test-contract | named-attr | semantic-aria | visible-text | spatial-anchor | structural
     unique_at_compile: bool = False  # matched exactly 1 node in recorded DOM
-    source: str = "compiler"         # compiler | llm | input_bound | user (manually edited in editor)
+    # compiler | llm | input_bound | user (manually edited in editor) | runtime (BUILD-26 stage
+    # f: synthesized from a runtime-observed overlay's descriptor, editor/overlay_identity.py —
+    # deterministic, not LLM-authored; distinct from "compiler" because it was never seen at
+    # compile time and carries no DOM-snapshot uniqueness verification)
+    source: str = "compiler"
 
 
 class ElementFingerprint(BaseModel):
@@ -233,6 +254,12 @@ class SkillStep(BaseModel):
     # Runtime Tier 1 tries these in order; runtime never calls LLM unless all fail.
     compiled_selectors: list[str] = Field(default_factory=list)
     semantic_description: str = ""        # [contract] "First Name input in Add Person dialog"
+    # [contract] BUILD-25: which part of the workflow this step belongs to —
+    # "login" | "navigate" | "act" | "verify" | "cleanup", or "" when the second-opinion
+    # pass didn't run or didn't label this step. Written by the compiler's second-opinion
+    # pass (compiler/second_opinion.py); read by runtime/app/failure_response.js's Tier B
+    # recovery prompt (stage e) as a workflow-position prior for the agent tier.
+    phase: str = ""
     snapshot_ref: str = ""                # [executor] which recorded DOM blob this step compiled against
     snapshot_dom_hash: str = ""           # [executor] for cross-compilation cache lookup
 
@@ -253,16 +280,40 @@ class SkillStep(BaseModel):
     # [contract] Conditional-state observation (recording-next-steps.md Priority 2): carried
     # verbatim from the recorded event's optionality/branch_hint (see
     # conxa_core.models.events.RecordedEvent) when the step's target sat inside an optional
-    # interstitial. Advisory only — this step still compiles and executes as a normal required
-    # linear step; it exists so the editor can surface a "treat as optional?" suggestion. Never
-    # read by the compiler's own assertion/branch logic and never populates `branch` on its own
-    # — only editor/workflow_mutations.py's confirm_optional_interstitial (human-initiated)
-    # does that. None for ordinary steps.
+    # interstitial. Never read by the compiler's own assertion/branch logic. Two consumers
+    # convert it into a real try_dismiss branch, both through the same builder
+    # (compiler/second_opinion.py::build_try_dismiss_from_hint): the compiler's
+    # second-opinion pass at compile time, and editor/workflow_mutations.py's
+    # confirm_optional_interstitial when a human confirms one the pass left alone. Cleared to
+    # None by whichever one consumes it. None for ordinary steps.
     optional_hint: dict[str, Any] | None = None
 
     # [mixed] PROD-3: entity binding — see EntityBinding. None when the compiler found no
     # repeating ancestor container for this step's target (nothing to bind against).
     entity_binding: EntityBinding | None = None
+
+    # [mixed] EXEC-38: the "for each row, do steps A-C" iteration primitive. Empty for ordinary
+    # steps. Holds a row source (see below), `as` (the {{name}} body steps read the current
+    # row's identifier/index under — {{as}}_id / {{as}}_index), `max_iterations`
+    # (REQUIRED at runtime — see runtime/app/run.js; a loop with no cap refuses to load),
+    # `on_row_error` ("stop" default | "continue"), and `steps` (the loop body, same nested
+    # saved-step-dict shape `branch` uses; skill_package_builder_saved_skill.py serializes it the
+    # same way). Author-first, not inferred from a recording: authored in the Human Edit editor
+    # by wrapping N existing steps into a body, one level deep only (same constraint as
+    # `branch`).
+    #
+    # Exactly one row source, never both, never neither (enforced by
+    # skill_package_builder_saved_skill.py::_saved_for_each_step at package time and
+    # editor/patch_gate.py::_validate_for_each_source at edit time):
+    #   `rows` ({container_selector} — the [executor] half: a live DOM scan, every sibling row
+    #   matching this selector is a candidate iteration). Entity-bound to `{{<as>_id}}` inside
+    #   the body is what gives recovery the same "never substitute a different row" guarantee
+    #   entity_binding already provides elsewhere — see EntityBinding and
+    #   runtime/app/resolution.js::entityRoots.
+    #   `items` (a named runtime input — e.g. a plain `text` input the caller filled with a
+    #   comma-separated list — split via runtime/app/resolution.js::splitListInput; no DOM scan,
+    #   no entity_binding, since there is no live row to re-locate).
+    for_each: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowIntentStep(BaseModel):

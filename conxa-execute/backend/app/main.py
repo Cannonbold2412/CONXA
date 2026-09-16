@@ -17,6 +17,7 @@ from conxa_core.db import healthcheck, init_db, using_database
 
 from app.db_schema import init_execute_schema
 from app.routes_checkout import router as checkout_router
+from app.routes_grants import router as grants_router
 from app.routes_proxy import router as proxy_router
 from app.routes_sessions import router as sessions_router
 
@@ -50,6 +51,7 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="CONXA", version="0.1.0", lifespan=_lifespan)
 app.include_router(checkout_router)
+app.include_router(grants_router)
 app.include_router(proxy_router)
 app.include_router(sessions_router)
 

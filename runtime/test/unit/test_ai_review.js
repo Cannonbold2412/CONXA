@@ -108,6 +108,16 @@ function mockPage() {
   };
 }
 
+// evaluate() is what evalOn()/domInventory ride on — absent on the plain mockPage() above
+// (evalOn's synchronous TypeError is swallowed by buildReviewRequest's own .catch(() => null),
+// so those tests never see a DOM block), present here to exercise it directly.
+function mockPageWithDom(domResult) {
+  return {
+    ...mockPage(),
+    evaluate: async () => domResult,
+  };
+}
+
 test("buildReviewRequest: includes the prompt and resume instructions, no schema/reference", async () => {
   const step = { type: "ai_review", prompt: "Is the confirmation banner visible?" };
   const resp = await buildReviewRequest(mockPage(), step, 4, { slug: "s1", skillDir: tmpSkillDir() });
@@ -146,6 +156,33 @@ test("buildReviewRequest: appends validation-error and drift notes on a re-ask",
   assert.match(header, /did not match the required output/);
   assert.match(header, /missing required field "visible"/);
   assert.match(header, /the page changed while this was pending/);
+});
+
+test("buildReviewRequest: includes a live DOM inventory block when the page yields one", async () => {
+  const step = { type: "ai_review", prompt: "Is the banner visible?" };
+  const domRows = [{ tag: "button", text: "Confirm" }];
+  const resp = await buildReviewRequest(mockPageWithDom(domRows), step, 0, { slug: "s1", skillDir: tmpSkillDir() });
+  const domBlock = resp.content.find((c) => c.type === "text" && /live DOM/.test(c.text));
+  assert.ok(domBlock, "expected a live-DOM text block");
+  assert.match(domBlock.text, /Confirm/);
+});
+
+test("buildReviewRequest: omits the DOM block when the page eval fails or returns nothing", async () => {
+  const step = { type: "ai_review", prompt: "Is the banner visible?" };
+  // mockPage() has no evaluate() at all — evalOn's synchronous TypeError is swallowed.
+  const resp = await buildReviewRequest(mockPage(), step, 0, { slug: "s1", skillDir: tmpSkillDir() });
+  assert.strictEqual(resp.content.some((c) => c.type === "text" && /live DOM/.test(c.text)), false);
+});
+
+test("buildReviewRequest: _meta carries the step index, prompt, and output schema for a non-agent caller", async () => {
+  const outputSchema = { type: "object", required: ["visible"] };
+  const step = { type: "ai_review", prompt: "Is the banner visible?", output_schema: outputSchema };
+  const resp = await buildReviewRequest(mockPage(), step, 2, { slug: "s1", skillDir: tmpSkillDir() });
+  assert.deepStrictEqual(resp._meta["conxa/ai_review"], {
+    step_index: 2,
+    prompt: "Is the banner visible?",
+    output_schema: outputSchema,
+  });
 });
 
 // ── run.js's runPlan interception ────────────────────────────────────────────

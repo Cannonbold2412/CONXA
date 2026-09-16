@@ -61,6 +61,7 @@ from handlers.visual import VisualMixin  # noqa: E402
 from handlers.skill_packages import SkillPackagesMixin  # noqa: E402
 from handlers.runs import RunsMixin  # noqa: E402
 from handlers.legal import LegalMixin  # noqa: E402
+from handlers.copilot import CopilotMixin  # noqa: E402
 from conxa_core.progress import set_event_sink  # noqa: E402
 
 # Compile-time sub-step logging (conxa_compile/compiler/build.py's
@@ -137,6 +138,7 @@ class Backend(
     SkillPackagesMixin,
     RunsMixin,
     LegalMixin,
+    CopilotMixin,
 ):
     """JSON-RPC dispatcher. Command handlers (cmd_*) live in the handlers/
     package, grouped by domain and mixed in here; this class owns shared
@@ -305,9 +307,10 @@ class Backend(
     def _entitlement_error_message(self, code: str) -> str:
         messages = {
             "compile_credit_limit_exceeded": "Monthly compile credits are exhausted for this workspace.",
-            "human_edit_pool_exceeded": "Monthly Human Edit pool is exhausted for this workspace.",
+            "human_edit_pool_exceeded": "Monthly AI Usage Credits are exhausted for this workspace.",
             "seat_limit_exceeded": "Seat limit reached for this workspace.",
             "machine_limit_exceeded": "This workspace's plan is limited to fewer build machines than are currently registered.",
+            "execute_seat_limit_exceeded": "This workspace's Conxa Execute seat limit has been reached.",
             "trial_expired": "The 30-day free trial has ended. Upgrade to keep building.",
             "distribution_not_permitted": "This plan can only build installers for internal use. Upgrade to Pro to distribute to customers.",
             "white_label_not_permitted": "White-label installer branding requires the Enterprise plan.",
@@ -680,6 +683,26 @@ class Backend(
 
     # -- dispatch ------------------------------------------------------------
 
+    # Commands that mutate a skill document from Human Edit — every command
+    # here persists to a skill's steps and is worth attributing an edit-log
+    # entry to (BUILD-25 stage a). Hooked once in dispatch() rather than at
+    # each cmd_* so undo/redo (which bypass _push_undo) are covered too.
+    _EDIT_COMMANDS = frozenset({
+        "patch_step", "insert_branch_step", "delete_branch_step", "reorder_branch_steps",
+        "confirm_optional_interstitial", "reorder_steps", "insert_step", "delete_step",
+        "update_workflow_inputs", "replace_literals", "undo_workflow", "redo_workflow",
+        "retarget_apply", "sign_off_workflow", "apply_recording_visual", "apply_step_frame",
+        "clear_step_visual", "update_visual_bbox",
+        # BUILD-26 stage (d): logged with source="copilot" below, not "patch_step" — the command
+        # this delegates to internally is a plain method call, not a re-entrant dispatch(), so it
+        # never trips this hook a second time under the wrong name.
+        "accept_copilot_proposal",
+        # One-click "generalize this to a loop" suggestion — deterministic, no LLM, but shares
+        # the accept/undo/edit-log machinery above; logged with its own honestly-labeled source
+        # below rather than "copilot" since no model produced this finding.
+        "accept_for_each_suggestion",
+    })
+
     def dispatch(self, msg: dict[str, Any]) -> None:
         rid = msg.get("id")
         cmd = str(msg.get("type") or "")
@@ -688,9 +711,46 @@ class Backend(
         if handler is None:
             _write({"id": rid, "type": "error", "code": "unknown_command", "message": cmd})
             return
+        skill_id_for_log = str(payload.get("skill_id") or "").strip() if cmd in self._EDIT_COMMANDS else ""
+        before_doc = None
+        if skill_id_for_log:
+            try:
+                from conxa_core.storage.json_store import read_skill  # noqa: PLC0415
+                before_doc = read_skill(skill_id_for_log)
+            except Exception:  # noqa: BLE001 — edit-log read must never block dispatch
+                before_doc = None
         try:
             result = handler(payload, rid)
             _write({"id": rid, "type": "result", "result": result})
+            if skill_id_for_log:
+                try:
+                    from conxa_core.storage.json_store import read_skill  # noqa: PLC0415
+                    from conxa_compile.editor.edit_log import append_edit  # noqa: PLC0415
+                    # BUILD-26 stage (d): an accepted copilot proposal is attributed here, not
+                    # inside cmd_accept_copilot_proposal — that handler delegates to cmd_patch_step
+                    # via a plain method call (never re-entering dispatch()), so this is the one
+                    # place that ever sees the true top-level command name for this request.
+                    if cmd == "accept_copilot_proposal":
+                        source = "copilot"
+                    elif cmd == "accept_for_each_suggestion":
+                        source = "for_each_suggestion"
+                    else:
+                        source = "human"
+                    # accept_for_each_suggestion carries its proposal id nested under
+                    # payload["suggestion"]["id"] rather than a top-level proposal_id (its
+                    # payload shape is {skill_id, suggestion}, not {skill_id, proposal_id, patch}
+                    # like the copilot proposal commands) — check both.
+                    proposal_id = str(
+                        payload.get("proposal_id")
+                        or (payload.get("suggestion") or {}).get("id")
+                        or ""
+                    ).strip() or None
+                    append_edit(
+                        skill_id_for_log, cmd, before_doc, read_skill(skill_id_for_log),
+                        source=source, proposal_id=proposal_id,
+                    )
+                except Exception:  # noqa: BLE001 — edit-log write must never block dispatch
+                    pass
         except _CommandError as exc:
             _write({"id": rid, "type": "error", "code": exc.code, "message": exc.message})
         except Exception as exc:  # noqa: BLE001 — report any handler failure to the renderer
