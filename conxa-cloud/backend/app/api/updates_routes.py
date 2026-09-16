@@ -7,6 +7,8 @@ Public GET endpoints (no auth):
   GET /updates/conxa-app-manifest   — fetched by runtime self-updater (app layer, ~60 KB zip, every release)
   GET /updates/studio-manifest        — fetched by web frontend for download link
   GET /updates/studio/latest.yml      — served to electron-updater
+  GET /updates/execute-manifest       — fetched by web frontend for download link
+  GET /updates/execute/latest.yml     — served to electron-updater
 
 Admin POST endpoints (Bearer CONXA_ADMIN_TOKEN required — called by CI after each build):
   POST /updates/conxa-runtime-manifest — update host manifest vars in memory
@@ -112,6 +114,19 @@ _STUDIO_LATEST_YML_URL = os.environ.get(
     f"https://github.com/{_GITHUB_REPO}/releases/download/{_STUDIO_VERSION}/latest.yml",
 )
 
+_EXECUTE_VERSION = os.environ.get("CONXA_EXECUTE_VERSION", "execute-v0.1.0")
+_EXECUTE_BARE_VERSION = re.sub(r"^execute-v", "", _EXECUTE_VERSION).lstrip("v")
+_EXECUTE_WIN_URL = os.environ.get(
+    "CONXA_EXECUTE_WIN_URL",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_EXECUTE_VERSION}/Conxa-Execute-Setup-{_EXECUTE_BARE_VERSION}.exe",
+)
+_EXECUTE_WIN_SHA256 = os.environ.get("CONXA_EXECUTE_WIN_SHA256", "")
+_EXECUTE_WIN_SHA512 = os.environ.get("CONXA_EXECUTE_WIN_SHA512", "")
+_EXECUTE_LATEST_YML_URL = os.environ.get(
+    "CONXA_EXECUTE_LATEST_YML_URL",
+    f"https://github.com/{_GITHUB_REPO}/releases/download/{_EXECUTE_VERSION}/latest.yml",
+)
+
 
 @router.get("/updates/deps-manifest", include_in_schema=False)
 def deps_manifest() -> dict:
@@ -172,29 +187,28 @@ def deps_manifest() -> dict:
     }
 
 
-@router.get("/updates/studio/latest.yml", include_in_schema=False)
-def studio_latest_yml() -> Response:
+def _latest_yml(latest_yml_url: str, win_url: str, sha512: str, bare_version: str) -> Response:
     """
-    Served to electron-updater's generic provider.
+    electron-updater generic-provider manifest for a desktop app (Studio, Execute).
 
-    When CONXA_STUDIO_LATEST_YML_URL is set, proxies the real electron-builder
-    generated latest.yml from GitHub Releases, rewriting the relative files[].url
-    to an absolute URL so electron-updater fetches the .exe (and .blockmap) directly
-    from GitHub. The full YAML — including size and blockMapSize — comes through
-    unchanged, which is what engages blockmap-differential download.
+    When latest_yml_url is set, proxies the real electron-builder generated latest.yml
+    from GitHub Releases, rewriting the relative files[].url to an absolute URL so
+    electron-updater fetches the .exe (and .blockmap) directly from GitHub. The full
+    YAML — including size and blockMapSize — comes through unchanged, which is what
+    engages blockmap-differential download.
 
     Falls back to a minimal hand-crafted YAML if the env var is not set.
     """
     import urllib.request as _urllib_request
 
-    if _STUDIO_LATEST_YML_URL:
+    if latest_yml_url:
         try:
-            with _urllib_request.urlopen(_STUDIO_LATEST_YML_URL, timeout=8) as r:
+            with _urllib_request.urlopen(latest_yml_url, timeout=8) as r:
                 content = r.read().decode()
             # Rewrite relative files[].url to absolute GitHub URL.
             # electron-builder emits: "  - url: Conxa Build Studio-Setup-1.0.0.exe"
             # electron-updater then auto-fetches <absolute_url>.blockmap for differential.
-            base = _STUDIO_LATEST_YML_URL.rsplit("/", 1)[0]
+            base = latest_yml_url.rsplit("/", 1)[0]
             content = re.sub(
                 r"(^\s*-\s*url:\s*)(.+\.exe)",
                 lambda m: m.group(1) + base + "/" + m.group(2).strip(),
@@ -206,19 +220,24 @@ def studio_latest_yml() -> Response:
             pass  # fall through to hand-crafted YAML on any fetch error
 
     # Fallback: minimal YAML (no blockMapSize → full download, not differential).
-    filename = unquote(_STUDIO_WIN_URL.split("/")[-1])
+    filename = unquote(win_url.split("/")[-1])
     lines = [
-        f"version: {_STUDIO_BARE_VERSION}",
+        f"version: {bare_version}",
         "files:",
-        f"  - url: {_STUDIO_WIN_URL}",
+        f"  - url: {win_url}",
     ]
-    if _STUDIO_WIN_SHA512:
-        lines.append(f"    sha512: {_STUDIO_WIN_SHA512}")
+    if sha512:
+        lines.append(f"    sha512: {sha512}")
     lines += [
         f"path: {filename}",
         f"releaseDate: '{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')}'",
     ]
     return Response("\n".join(lines) + "\n", media_type="text/yaml")
+
+
+@router.get("/updates/studio/latest.yml", include_in_schema=False)
+def studio_latest_yml() -> Response:
+    return _latest_yml(_STUDIO_LATEST_YML_URL, _STUDIO_WIN_URL, _STUDIO_WIN_SHA512, _STUDIO_BARE_VERSION)
 
 
 @router.get("/updates/studio-manifest", include_in_schema=False)
@@ -232,6 +251,25 @@ def studio_manifest() -> dict:
         "version": _STUDIO_VERSION,
         "win_url": _STUDIO_WIN_URL,
         "win_sha256": _STUDIO_WIN_SHA256,
+    }
+
+
+@router.get("/updates/execute/latest.yml", include_in_schema=False)
+def execute_latest_yml() -> Response:
+    return _latest_yml(_EXECUTE_LATEST_YML_URL, _EXECUTE_WIN_URL, _EXECUTE_WIN_SHA512, _EXECUTE_BARE_VERSION)
+
+
+@router.get("/updates/execute-manifest", include_in_schema=False)
+def execute_manifest() -> dict:
+    """
+    Fetched by the web frontend to surface the Conxa Execute download link.
+    Public — called without authentication.
+    Set CONXA_EXECUTE_WIN_URL on Render once the installer is published.
+    """
+    return {
+        "version": _EXECUTE_VERSION,
+        "win_url": _EXECUTE_WIN_URL,
+        "win_sha256": _EXECUTE_WIN_SHA256,
     }
 
 
