@@ -34,14 +34,12 @@ const IDLE_VERIFY: CopilotVerifyState = {
   message: '',
 }
 
-const POSITION_KEY = 'conxa-copilot-position'
 // Matches the launcher button's size-12 (48px) footprint.
 const LAUNCHER_SIZE = 48
 
 export type CopilotPosition = { x: number; y: number }
 
-/** Keeps a position (button top-left) fully on-screen — a corner remembered on a bigger
- *  monitor, or a viewport that shrank since, would otherwise restore off-screen forever. */
+/** Keeps a position (button top-left) fully on-screen while a drag is in progress. */
 export function clampPosition(pos: CopilotPosition, size = LAUNCHER_SIZE): CopilotPosition {
   return {
     x: Math.min(Math.max(pos.x, 0), Math.max(0, window.innerWidth - size)),
@@ -49,21 +47,19 @@ export function clampPosition(pos: CopilotPosition, size = LAUNCHER_SIZE): Copil
   }
 }
 
-function defaultPosition(): CopilotPosition {
+/** Recomputed from the *current* window size every time it's called. The launcher is not
+ *  a remembered, freely-placed widget — it always rests in the bottom-right corner, so
+ *  nothing here reads or writes localStorage. */
+export function defaultPosition(): CopilotPosition {
   return { x: window.innerWidth - LAUNCHER_SIZE - 20, y: window.innerHeight - LAUNCHER_SIZE - 20 }
 }
 
-function loadPosition(): CopilotPosition {
-  try {
-    const raw = window.localStorage.getItem(POSITION_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') return clampPosition(parsed)
-    }
-  } catch {
-    /* private-browsing / storage disabled / malformed JSON — fall through to default */
-  }
-  return defaultPosition()
+// One-time cleanup of the now-unused persisted position from before the launcher stopped
+// remembering where it was dragged.
+try {
+  window.localStorage.removeItem('conxa-copilot-position')
+} catch {
+  /* private-browsing / storage disabled — nothing to clean up */
 }
 
 // The Human Review Copilot's conversation state (BUILD-26). Lives outside the launcher/panel
@@ -75,6 +71,10 @@ type CopilotState = {
   skillId: string | null
   open: boolean
   position: CopilotPosition
+  /** True once the reviewer has dragged the launcher this session — until then it keeps
+   *  tracking the live bottom-right corner instead of a one-time computed spot. Never
+   *  persisted: the launcher always starts back in the corner next time it mounts. */
+  positionDragged: boolean
   messages: CopilotTurnMessage[]
   pendingProposal: CopilotProposal | null
   verify: CopilotVerifyState
@@ -91,10 +91,10 @@ type CopilotState = {
    *  PREVIOUS skill's conversation while the resume call is in flight. */
   ensureFor: (skillId: string) => void
   setOpen: (open: boolean) => void
-  /** In-memory-only move, called on every pointermove while dragging — no localStorage write
-   *  per frame. */
+  /** In-memory-only move, called on every pointermove while dragging. */
   setPosition: (position: CopilotPosition) => void
-  /** Clamps, applies, and persists the final position — called once on pointerup. */
+  /** Clamps and applies the final position on pointerup — never persisted. The launcher
+   *  resets to the bottom-right corner the next time it mounts (see CopilotLauncher). */
   commitPosition: (position: CopilotPosition) => void
   addMessage: (message: CopilotTurnMessage) => void
   /** Drops the user message at `index` and everything after it (so a re-send doesn't pile a
@@ -121,7 +121,8 @@ type CopilotState = {
 export const useCopilotStore = create<CopilotState>((set, get) => ({
   skillId: null,
   open: false,
-  position: loadPosition(),
+  position: defaultPosition(),
+  positionDragged: false,
   messages: [],
   pendingProposal: null,
   verify: IDLE_VERIFY,
@@ -144,15 +145,7 @@ export const useCopilotStore = create<CopilotState>((set, get) => ({
   },
   setOpen: (open) => set({ open }),
   setPosition: (position) => set({ position }),
-  commitPosition: (position) => {
-    const clamped = clampPosition(position)
-    try {
-      window.localStorage.setItem(POSITION_KEY, JSON.stringify(clamped))
-    } catch {
-      /* private-browsing / storage disabled — position just won't persist */
-    }
-    set({ position: clamped })
-  },
+  commitPosition: (position) => set({ position: clampPosition(position), positionDragged: true }),
   addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
   editFromIndex: (index) => {
     const message = get().messages[index]

@@ -56,3 +56,14 @@ def test_copilot_diagnose_body_gets_its_own_token_budget():
     body = _openai_body_dict("copilot_diagnose", {"user_text": "x"}, json_mode=True)
     assert body["max_tokens"] == 2048
     assert body["response_format"] == {"type": "json_object"}
+
+
+def test_copilot_reply_gets_the_same_reasoning_budget_as_diagnose():
+    """The streamed prose call needs a fraction of this for its answer — the budget is sized for
+    the reasoning prefix. At 900 (the number copilot_diagnose above was raised OFF) a reasoning
+    model was observed to spend the lot on hidden chain-of-thought and write nothing, which on
+    this task means zero content deltas and a stream the Studio reads as "no result at all"."""
+    body = _openai_body_dict("copilot_reply", {"user_text": "x"}, json_mode=False)
+    assert body["max_tokens"] == 2048
+    # Prose only — a streamed JSON object would show the reviewer a raw `{"reply": "...` scroll by.
+    assert "response_format" not in body

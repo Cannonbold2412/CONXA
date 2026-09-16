@@ -307,9 +307,10 @@ class Backend(
     def _entitlement_error_message(self, code: str) -> str:
         messages = {
             "compile_credit_limit_exceeded": "Monthly compile credits are exhausted for this workspace.",
-            "human_edit_pool_exceeded": "Monthly Human Edit pool is exhausted for this workspace.",
+            "human_edit_pool_exceeded": "Monthly AI Usage Credits are exhausted for this workspace.",
             "seat_limit_exceeded": "Seat limit reached for this workspace.",
             "machine_limit_exceeded": "This workspace's plan is limited to fewer build machines than are currently registered.",
+            "execute_seat_limit_exceeded": "This workspace's Conxa Execute seat limit has been reached.",
             "trial_expired": "The 30-day free trial has ended. Upgrade to keep building.",
             "distribution_not_permitted": "This plan can only build installers for internal use. Upgrade to Pro to distribute to customers.",
             "white_label_not_permitted": "White-label installer branding requires the Enterprise plan.",

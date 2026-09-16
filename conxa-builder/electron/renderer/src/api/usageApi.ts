@@ -1,6 +1,14 @@
 import { cmd } from '@/lib/ipc'
 
-export type EntitlementMeterKey = 'seats' | 'machines' | 'compile_credits' | 'human_edit_tokens'
+export type EntitlementMeterKey =
+  | 'seats'
+  | 'machines'
+  | 'execute_seats'
+  | 'compile_credits'
+  // "human_edit_tokens" is the legacy wire name, kept for as long as the
+  // backend dual-emits it; "ai_usage_credits" is the canonical name.
+  | 'human_edit_tokens'
+  | 'ai_usage_credits'
 
 export interface EntitlementMeter {
   used: number

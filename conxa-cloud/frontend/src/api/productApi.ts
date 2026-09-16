@@ -56,7 +56,15 @@ export type UsageResponse = {
   limits: Record<string, number | null>
 }
 
-export type EntitlementMeterKey = 'seats' | 'skill_pack_slots' | 'compile_credits' | 'human_edit_tokens'
+export type EntitlementMeterKey =
+  | 'seats'
+  | 'skill_pack_slots'
+  | 'execute_seats'
+  | 'compile_credits'
+  // "human_edit_tokens" is the legacy wire name, kept for as long as the
+  // backend dual-emits it; "ai_usage_credits" is the canonical name.
+  | 'human_edit_tokens'
+  | 'ai_usage_credits'
 
 export type EntitlementMeter = {
   used: number
@@ -72,7 +80,7 @@ export type EntitlementsResponse = {
   reset_at: string
   trial_ends_at?: string | null
   trial_expired?: boolean
-  wallet?: { compile_credits: number; human_edit_tokens: number }
+  wallet?: { compile_credits: number; human_edit_tokens: number; ai_usage_credits: number }
   meters: Record<EntitlementMeterKey, EntitlementMeter>
 }
 
@@ -202,6 +210,41 @@ export function revokeMachine(machineHash: string): Promise<{ machine_hash: stri
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ machine_hash: machineHash }),
   }).then((r) => json<{ machine_hash: string; revoked: boolean }>(r))
+}
+
+export type ExecuteGrantStatus = 'pending' | 'claimed' | 'revoked'
+
+export type ExecuteGrant = {
+  grant_id: string
+  workspace_id: string
+  email: string
+  status: ExecuteGrantStatus
+  granted_at: string
+  granted_by: string
+  claimed_at?: string | null
+  claimed_user_id?: string | null
+  revoked_at?: string | null
+  revoked_by?: string | null
+}
+
+export function fetchExecuteGrants(): Promise<{ grants: ExecuteGrant[] }> {
+  return apiFetch('/entitlements/execute-grants').then((r) => json<{ grants: ExecuteGrant[] }>(r))
+}
+
+export function createExecuteGrant(email: string): Promise<ExecuteGrant & { invite_url: string }> {
+  return apiFetch('/entitlements/execute-grants', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  }).then((r) => json<ExecuteGrant & { invite_url: string }>(r))
+}
+
+export function revokeExecuteGrant(grantId: string): Promise<{ grant_id: string; revoked: boolean }> {
+  return apiFetch('/entitlements/execute-grants/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_id: grantId }),
+  }).then((r) => json<{ grant_id: string; revoked: boolean }>(r))
 }
 
 export type ByokKeyStatus = {

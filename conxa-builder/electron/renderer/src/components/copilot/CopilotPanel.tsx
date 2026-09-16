@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Send, SquarePen, X } from 'lucide-react'
+import { Send, Sparkles, SquarePen, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Textarea } from '@/components/ui/textarea'
@@ -78,7 +78,13 @@ export function CopilotPanel({ skillId, onClose, onProposalAccepted }: Props) {
       // otherwise silently orphan the first (BUILD-26: the copilot proposes one diff at a time).
       setPendingProposal(proposal)
     } catch (err) {
-      toast.error(errorMessage(err, 'Conxa Copilot could not respond'))
+      // The toast alone used to be the ONLY feedback — it fades after a few seconds and leaves
+      // the reviewer's question sitting in the transcript with no answer under it, which reads
+      // as "the app swallowed my question" rather than "the turn failed". Put the failure in the
+      // conversation too, the same way the empty-reply case above does.
+      const failure = errorMessage(err, 'Conxa Copilot could not respond')
+      toast.error(failure)
+      addMessage({ role: 'assistant', text: failure })
     } finally {
       setSending(false)
       clearStreamingText()
@@ -106,16 +112,20 @@ export function CopilotPanel({ skillId, onClose, onProposalAccepted }: Props) {
       )}
       role="dialog"
       aria-label="Human Review Conxa Copilot"
+      data-state="open"
     >
       <div className="flex items-center justify-between gap-2 border-b border-white/8 px-3.5 py-3">
         <div
-          className="min-w-0 touch-none select-none"
+          className="flex min-w-0 items-center gap-2 touch-none select-none"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
         >
-          <p className="text-sm font-medium text-white">Conxa Copilot</p>
-          <p className="truncate text-xs text-zinc-500">Ask about a failed step, or a step to improve</p>
+          <Sparkles className="size-4 shrink-0 text-zinc-400" aria-hidden />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white">Conxa Copilot</p>
+            <p className="truncate text-xs text-zinc-400">Ask about a failed step, or a step to improve</p>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Tooltip>
@@ -149,7 +159,7 @@ export function CopilotPanel({ skillId, onClose, onProposalAccepted }: Props) {
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-2.5 p-3">
           {messages.length === 0 ? (
-            <p className="rounded-lg border border-white/8 bg-black/20 p-3 text-sm text-zinc-500">
+            <p className="rounded-lg border border-white/8 bg-black/20 p-3 text-sm text-zinc-400">
               Ask "why did step 3 fail?" or "give me a better assertion for step 5" — I'll answer
               from the compile report, the recovery log, and the failure screenshot when there is
               one.
@@ -191,7 +201,7 @@ export function CopilotPanel({ skillId, onClose, onProposalAccepted }: Props) {
           }}
           placeholder="Ask Conxa Copilot…"
           rows={1}
-          className="max-h-24 min-h-9 flex-1 resize-none border-white/10 bg-black/20 text-sm text-zinc-100 placeholder:text-zinc-600"
+          className="max-h-24 min-h-9 flex-1 resize-none border-white/10 bg-black/20 text-sm text-zinc-100 placeholder:text-zinc-500"
           disabled={sending}
         />
         <Button

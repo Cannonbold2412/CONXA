@@ -60,3 +60,52 @@ def test_skips_role_only_deltas_and_malformed_json():
         'data: {"choices":[{"delta":{"content":"ok"}}]}',
     )
     assert list(_iter_sse_text_deltas(response)) == ["ok"]
+
+
+# BUILD-33: a reasoning-capable routed model can spend its whole completion budget on hidden
+# chain-of-thought and emit zero content deltas — `observed` is how a caller tells that apart
+# from a genuinely empty/dead stream.
+
+
+def test_observed_reports_reasoning_chars_and_finish_reason_openrouter_spelling():
+    response = _lines(
+        'data: {"choices":[{"delta":{"reasoning":"thinking..."}}]}',
+        'data: {"choices":[{"delta":{"reasoning":"more thoughts"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+        "data: [DONE]",
+    )
+    observed: dict = {}
+    assert list(_iter_sse_text_deltas(response, observed=observed)) == []
+    assert observed["reasoning_chars"] == len("thinking...") + len("more thoughts")
+    assert observed["finish_reason"] == "length"
+
+
+def test_observed_reports_reasoning_content_glm_spelling():
+    response = _lines(
+        'data: {"choices":[{"delta":{"reasoning_content":"pondering"}}]}',
+        "data: [DONE]",
+    )
+    observed: dict = {}
+    assert list(_iter_sse_text_deltas(response, observed=observed)) == []
+    assert observed["reasoning_chars"] == len("pondering")
+
+
+def test_observed_stays_empty_for_a_genuinely_empty_stream():
+    response = _lines(
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+        "data: [DONE]",
+    )
+    observed: dict = {}
+    assert list(_iter_sse_text_deltas(response, observed=observed)) == []
+    assert observed == {}
+
+
+def test_observed_still_collects_content_alongside_reasoning():
+    response = _lines(
+        'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}',
+        'data: {"choices":[{"delta":{"content":"answer"}}]}',
+        "data: [DONE]",
+    )
+    observed: dict = {}
+    assert list(_iter_sse_text_deltas(response, observed=observed)) == ["answer"]
+    assert observed["reasoning_chars"] == len("thinking")

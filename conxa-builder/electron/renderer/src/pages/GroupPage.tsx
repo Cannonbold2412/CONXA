@@ -346,7 +346,7 @@ function WorkflowRow({
           <AlertDialogHeader>
             <AlertDialogTitle className="text-white">Recompile &ldquo;{wf.name}&rdquo;?</AlertDialogTitle>
             <AlertDialogDescription className="text-zinc-400">
-              This rebuilds the skill from the original raw recording and uses the Human Edit pool. Saved editor changes will be replaced.
+              This rebuilds the skill from the original raw recording and uses your AI Usage Credits. Saved editor changes will be replaced.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

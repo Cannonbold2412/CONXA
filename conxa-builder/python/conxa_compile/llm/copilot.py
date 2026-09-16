@@ -21,7 +21,6 @@ BUILD-26 stage g adds two things to the `copilot_diagnose` side only (never to t
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any, Callable
 
 from conxa_core.config import settings
@@ -30,7 +29,12 @@ from conxa_compile.editor.capability_manifest import build_capability_manifest
 from conxa_compile.editor.copilot_retrieval import MAX_RETRIEVAL_ROUNDS, resolve_need
 from conxa_compile.llm.anchor_vision_llm import _bounded_jpeg_bytes
 from conxa_compile.llm.client import call_llm, stream_llm
-from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+from services.llm_proxy_client import (
+    CloudUnreachable,
+    EntitlementBlocked,
+    ProxyUnavailable,
+    QuotaExceeded,
+)
 
 _CAPABILITY_MANIFEST_TEXT: str | None = None
 
@@ -134,7 +138,7 @@ def copilot_turn(
     Returns ``{"reply": str, "proposals": list[dict]}``. Graceful-empty on any failure —
     matching `workflow_intent.py` / `workflow_semantics.py` — **except** QuotaExceeded /
     EntitlementBlocked / CloudUnreachable, which propagate so the caller
-    (`handlers/copilot.py`) can surface an actionable message ("your Human Edit pool is
+    (`handlers/copilot.py`) can surface an actionable message ("your AI Usage Credits are
     exhausted") instead of the panel going silently mute — the same carve-out
     `region_selector_vision.py` makes.
     """
@@ -167,16 +171,21 @@ def copilot_turn(
                 "copilot_reply", payload, settings.llm_vision_timeout_ms,
                 on_delta=_forward_delta, error_detail=stream_err_lines,
             )
+        except ProxyUnavailable as exc:
+            # Must sit ABOVE the infra tuple — ProxyUnavailable subclasses CloudUnreachable, and
+            # here it means something different: the proxy answered, the streaming endpoint just
+            # produced no text. A reasoning model that spends its whole completion budget on hidden
+            # chain-of-thought before writing content emits zero content deltas and lands here,
+            # even though the provider recorded a complete generation. `copilot_diagnose` below is
+            # a separate, non-streamed request with its own budget that routinely succeeds when
+            # this one didn't, so degrade to it instead of killing the turn — otherwise the
+            # reviewer's question sits in the panel with no answer and no explanation. A genuinely
+            # unreachable cloud still propagates: the diagnose call raises it moments later.
+            stream_result = None
         except (QuotaExceeded, EntitlementBlocked, CloudUnreachable):
             raise
-        except Exception as exc:  # noqa: BLE001 — streaming failure falls back to the non-streamed reply below
-            print(f"[copilot debug] copilot_reply raised: {exc!r}", file=sys.stderr)
+        except Exception:  # noqa: BLE001 — streaming failure falls back to the non-streamed reply below
             stream_result = None
-        print(
-            f"[copilot debug] copilot_reply streamed_parts={streamed_parts!r} "
-            f"stream_result={stream_result!r} stream_err_lines={stream_err_lines!r}",
-            file=sys.stderr,
-        )
         streamed_reply = "".join(streamed_parts).strip() or _llm_reply_text(
             stream_result if isinstance(stream_result, dict) else None
         )
@@ -194,10 +203,8 @@ def copilot_turn(
             )
         except (QuotaExceeded, EntitlementBlocked, CloudUnreachable):
             raise
-        except Exception as exc:  # noqa: BLE001 — any other failure degrades to an empty turn, never a crash
-            print(f"[copilot debug] copilot_diagnose raised: {exc!r}", file=sys.stderr)
+        except Exception:  # noqa: BLE001 — any other failure degrades to an empty turn, never a crash
             data = None
-        print(f"[copilot debug] copilot_diagnose round={round_num} data={data!r} err_lines={err_lines!r}", file=sys.stderr)
 
         if not isinstance(data, dict):
             break
@@ -221,5 +228,4 @@ def copilot_turn(
     reply = streamed_reply or _llm_reply_text(data)
     raw_proposals = data.get("proposals")
     proposals = [p for p in raw_proposals if isinstance(p, dict)] if isinstance(raw_proposals, list) else []
-    print(f"[copilot debug] final reply={reply!r} proposals={proposals!r}", file=sys.stderr)
     return {"reply": reply, "proposals": proposals}

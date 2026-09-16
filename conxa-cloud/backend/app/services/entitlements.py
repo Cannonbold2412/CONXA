@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import threading
 import time
 import urllib.error
@@ -24,6 +25,8 @@ RESERVATION_NS = "compile_reservations"
 DEVICE_NS = "workspace_devices"
 WORKFLOW_NS = "entitlement_workflows"
 INSTALLER_DOMAIN_NS = "workspace_installer_domain"
+EXECUTE_GRANT_NS = "execute_grants"
+EXECUTE_GRANT_BY_USER_NS = "execute_grant_by_user"
 
 _DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 
@@ -39,6 +42,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "free": {
         "seats": 1,
         "machines": 1,
+        "execute_seats": 1,
         "compile_credits": 25,
         "human_edit_tokens": 500_000,
         "trial_days": 30,
@@ -53,6 +57,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "starter": {
         "seats": 3,
         "machines": 3,
+        "execute_seats": 25,
         "compile_credits": 200,
         "human_edit_tokens": 2_500_000,
         "trial_days": None,
@@ -67,6 +72,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "pro": {
         "seats": 10,
         "machines": 10,
+        "execute_seats": 100,
         "compile_credits": 500,
         "human_edit_tokens": 10_000_000,
         "trial_days": None,
@@ -83,6 +89,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "enterprise": {
         "seats": 0,
         "machines": 0,
+        "execute_seats": 0,
         "compile_credits": None,
         "human_edit_tokens": 0,
         "trial_days": None,
@@ -101,6 +108,7 @@ PLAN_LIMITS: dict[str, dict[str, Any]] = {
     "development": {
         "seats": None,
         "machines": None,
+        "execute_seats": None,
         "compile_credits": None,
         "human_edit_tokens": None,
         "trial_days": None,
@@ -280,6 +288,8 @@ _QUOTA_ALIASES = {
     "seat_limit": "seats",
     "machines": "machines",
     "machine_limit": "machines",
+    "execute_seats": "execute_seats",
+    "execute_seat_limit": "execute_seats",
     "compile_credits": "compile_credits",
     "monthly_compile_credits": "compile_credits",
     "human_edit_tokens": "human_edit_tokens",
@@ -577,6 +587,136 @@ def revoke_machine(principal: Principal, machine_hash: str) -> None:
             store.set(DEVICE_NS, _device_key(workspace_id, machine_hash), {**existing, "revoked": True})
 
 
+def _workspace_execute_grants(store: _FileKvStore | _SqlKvStore, workspace_id: str) -> list[dict[str, Any]]:
+    """Active (pending or claimed) grants — a revoked grant frees its slot
+    immediately, same shape as _workspace_devices."""
+    rows: list[dict[str, Any]] = []
+    for row in store.list(EXECUTE_GRANT_NS):
+        if (
+            isinstance(row, dict)
+            and row.get("workspace_id") == workspace_id
+            and row.get("status") in ("pending", "claimed")
+        ):
+            rows.append(row)
+    return rows
+
+
+def execute_grant_count(workspace_id: str) -> int:
+    with _locked_store(f"execute-grants:{workspace_id}") as store:
+        return len(_workspace_execute_grants(store, workspace_id))
+
+
+def list_execute_grants(workspace_id: str) -> list[dict[str, Any]]:
+    """All grants ever created for this workspace, including revoked ones, for
+    the admin UI — unlike _workspace_execute_grants, doesn't filter them out."""
+    with _locked_store(f"execute-grants:{workspace_id}") as store:
+        rows = [
+            row for row in store.list(EXECUTE_GRANT_NS)
+            if isinstance(row, dict) and row.get("workspace_id") == workspace_id
+        ]
+    rows.sort(key=lambda row: str(row.get("granted_at") or ""), reverse=True)
+    return rows
+
+
+def create_execute_grant(principal: Principal, email: str) -> dict[str, Any]:
+    """Invite a person (by email, independent of Clerk org membership) to
+    claim one of the workspace's Conxa Execute seats. Idempotent on a repeat
+    invite to the same still-pending email — resending an invite link should
+    never consume a second seat."""
+    email = str(email or "").strip().lower()
+    if not email or "@" not in email:
+        raise EntitlementError("invalid_email", 400)
+    billing = billing_for(principal)
+    limits = _limits_from_billing(billing)
+    limit = limits["execute_seats"]
+    workspace_id = principal.workspace_id
+    with _locked_store(f"execute-grants:{workspace_id}") as store:
+        for row in store.list(EXECUTE_GRANT_NS):
+            if not isinstance(row, dict) or row.get("workspace_id") != workspace_id or row.get("email") != email:
+                continue
+            if row.get("status") == "pending":
+                return row
+            if row.get("status") == "claimed":
+                raise EntitlementError("execute_grant_already_claimed", 409)
+        used = len(_workspace_execute_grants(store, workspace_id))
+        if settings.entitlements_enforce_execute_seats and limit is not None and used >= int(limit):
+            raise EntitlementError("execute_seat_limit_exceeded", 402)
+        now_iso = _iso(_now())
+        grant_id = secrets.token_urlsafe(32)
+        row = {
+            "grant_id": grant_id,
+            "workspace_id": workspace_id,
+            "email": email,
+            "status": "pending",
+            "granted_at": now_iso,
+            "granted_by": principal.user_id,
+            "claimed_at": None,
+            "claimed_user_id": None,
+            "revoked_at": None,
+            "revoked_by": None,
+        }
+        store.set(EXECUTE_GRANT_NS, grant_id, row)
+    return row
+
+
+def revoke_execute_grant(principal: Principal, grant_id: str) -> None:
+    workspace_id = principal.workspace_id
+    with _locked_store(f"execute-grants:{workspace_id}") as store:
+        existing = store.get(EXECUTE_GRANT_NS, grant_id)
+        if not isinstance(existing, dict) or existing.get("workspace_id") != workspace_id:
+            return
+        claimed_user_id = existing.get("claimed_user_id")
+        store.set(
+            EXECUTE_GRANT_NS,
+            grant_id,
+            {**existing, "status": "revoked", "revoked_at": _iso(_now()), "revoked_by": principal.user_id},
+        )
+        # Frees the pool binding immediately — the very next chat turn from
+        # this person stops resolving to the workspace's pool rather than
+        # waiting for some later sync.
+        if claimed_user_id:
+            store.set(EXECUTE_GRANT_BY_USER_NS, claimed_user_id, None)
+
+
+def claim_execute_grant(*, grant_id: str, user_id: str, email: str) -> dict[str, Any]:
+    """Binds a Clerk user_id to the workspace that invited their email.
+    Deliberately takes plain strings rather than a Principal — this must
+    never go through billing_for/ensure_principal, which would register the
+    claimant as a Build Studio workspace member (see the metering split in
+    ensure_execute_pool_available/record_execute_pool_usage below)."""
+    email = str(email or "").strip().lower()
+    with _locked_store("execute-grants:claims") as store:
+        grant = store.get(EXECUTE_GRANT_NS, grant_id)
+        if not isinstance(grant, dict):
+            raise EntitlementError("execute_grant_not_found", 404)
+        if grant.get("status") != "pending":
+            raise EntitlementError("execute_grant_not_pending", 409)
+        if grant.get("email") != email:
+            raise EntitlementError("execute_grant_email_mismatch", 403)
+        workspace_id = grant["workspace_id"]
+        now_iso = _iso(_now())
+        store.set(
+            EXECUTE_GRANT_NS,
+            grant_id,
+            {**grant, "status": "claimed", "claimed_at": now_iso, "claimed_user_id": user_id},
+        )
+        store.set(
+            EXECUTE_GRANT_BY_USER_NS,
+            user_id,
+            {"grant_id": grant_id, "workspace_id": workspace_id, "email": email, "claimed_at": now_iso},
+        )
+    return {"workspace_id": workspace_id, "status": "claimed"}
+
+
+def execute_pool_binding_for_user(user_id: str) -> dict[str, Any] | None:
+    """Internal-only lookup: is this Clerk user_id bound to a workspace's
+    shared AI Usage Credits pool via a claimed Execute grant? O(1) so it's
+    cheap to call on every Execute chat turn."""
+    with _locked_store("execute-grants:lookup") as store:
+        row = store.get(EXECUTE_GRANT_BY_USER_NS, user_id)
+    return row if isinstance(row, dict) else None
+
+
 def trial_expired(billing: dict[str, Any]) -> bool:
     """True only for a free-plan workspace past its trial window. Paid and
     development plans never expire regardless of trial_started_at."""
@@ -735,19 +875,30 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
         "trial_expired": trial_expired(billing),
         # One-time add-on purchases land here — a never-expiring balance drawn
         # down only once the plan's monthly allowance is exhausted.
-        "wallet": _wallet(billing),
+        # "ai_usage_credits" dual-emits the same value as the legacy
+        # "human_edit_tokens" key — see the meters block above for why.
+        "wallet": {**_wallet(billing), "ai_usage_credits": _wallet(billing)["human_edit_tokens"]},
         "meters": {
             "seats": _meter(
                 _clerk_org_member_count(principal) or membership_count_for(workspace_id),
                 limits["seats"],
             ),
             "machines": _meter(machine_count(workspace_id), limits["machines"]),
+            "execute_seats": _meter(execute_grant_count(workspace_id), limits["execute_seats"]),
             "compile_credits": _meter(
                 int(usage.get("compile_credits_used") or 0),
                 limits["compile_credits"],
                 reserved=reserved_compile,
             ),
+            # "human_edit_tokens" is the legacy wire name for this meter, kept
+            # so already-installed Build Studio builds (Electron, auto-updates
+            # asynchronously) don't break between this deploy and their next
+            # update. "ai_usage_credits" is the canonical name going forward —
+            # same value, new name. TODO(remove human_edit_tokens key once
+            # MIN_HOST-equivalent Electron floor no longer predates this): drop
+            # the legacy key.
             "human_edit_tokens": _meter(human_edit_used, limits["human_edit_tokens"]),
+            "ai_usage_credits": _meter(human_edit_used, limits["human_edit_tokens"]),
         },
         # The capability ladder (docs/PRD.md §11) — what this plan unlocks, not
         # just how much of it. Consumed by the pricing page, the dashboard nav,
@@ -1050,20 +1201,16 @@ def workflow_lock_status(principal: Principal) -> dict[str, Any]:
     return {"limit": limit, "active": len(rows) - locked, "locked": locked, "workflows": rows}
 
 
-def record_llm_usage(
-    principal: Principal,
+def _record_llm_usage_for_workspace(
+    workspace_id: str,
+    billing: dict[str, Any],
     *,
     usage_class: str,
     input_tokens: int,
     output_tokens: int,
 ) -> dict[str, Any]:
-    usage_class = str(usage_class or "compile").strip()
-    if usage_class not in ALLOWED_USAGE_CLASSES:
-        raise EntitlementError("invalid_usage_class", 400)
-    billing = billing_for(principal)
     limits = _limits_from_billing(billing)
     period, _reset_at = usage_window_for_billing(billing)
-    workspace_id = principal.workspace_id
     with _locked_store(f"llm-usage:{workspace_id}:{period}") as store:
         usage = _get_usage(store, workspace_id, period)
         if usage_class == "human_edit":
@@ -1096,22 +1243,92 @@ def record_llm_usage(
     return usage
 
 
-def ensure_human_edit_available(principal: Principal, *, estimated_tokens: int = 0) -> None:
+def record_llm_usage(
+    principal: Principal,
+    *,
+    usage_class: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> dict[str, Any]:
+    usage_class = str(usage_class or "compile").strip()
+    if usage_class not in ALLOWED_USAGE_CLASSES:
+        raise EntitlementError("invalid_usage_class", 400)
     billing = billing_for(principal)
+    return _record_llm_usage_for_workspace(
+        principal.workspace_id,
+        billing,
+        usage_class=usage_class,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def record_execute_pool_usage(workspace_id: str, *, input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    """Debits a Conxa Execute grantee's chat usage against their granting
+    workspace's shared AI Usage Credits pool. Uses billing_for_workspace
+    (read-only) rather than billing_for/a synthetic Principal — the latter
+    would call ensure_principal and silently register the grantee as a Build
+    Studio workspace member, inflating the workspace's own seats meter (see
+    create_execute_grant / claim_execute_grant docstrings). Always meters as
+    usage_class="human_edit" internally — same pool, same wallet fallback,
+    same lock key as the Build Studio Human Edit / AI Usage Credits path;
+    only the user-facing label differs (see current_entitlements' dual-emit)."""
+    billing = billing_for_workspace(workspace_id)
+    return _record_llm_usage_for_workspace(
+        workspace_id,
+        billing,
+        usage_class="human_edit",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def _ensure_human_edit_available_for_billing(
+    billing: dict[str, Any], workspace_id: str, estimated_tokens: int = 0
+) -> None:
     limits = _limits_from_billing(billing)
     limit = limits["human_edit_tokens"]
     if limit is None:
         return
     period, _reset_at = usage_window_for_billing(billing)
-    workspace_id = principal.workspace_id
     with _locked_store(f"human-edit-check:{workspace_id}:{period}") as store:
         usage = _get_usage(store, workspace_id, period)
     used = int(usage.get("human_edit_input_tokens") or 0) + int(usage.get("human_edit_output_tokens") or 0)
     if settings.entitlements_enforce_human_edit and used >= int(limit):
         # Wallet fallback mirrors record_llm_usage — a positive never-expiring
-        # balance keeps the Human Edit pool open past the monthly allowance.
+        # balance keeps the AI Usage Credits pool open past the monthly
+        # allowance.
         if _wallet(billing)["human_edit_tokens"] <= 0:
             raise EntitlementError("human_edit_pool_exceeded", 402)
+
+
+def ensure_human_edit_available(principal: Principal, *, estimated_tokens: int = 0) -> None:
+    billing = billing_for(principal)
+    _ensure_human_edit_available_for_billing(billing, principal.workspace_id, estimated_tokens)
+
+
+def ensure_execute_pool_available(workspace_id: str, *, estimated_tokens: int = 0) -> None:
+    """Pre-flight pool check for a Conxa Execute grantee, scoped to the
+    granting workspace_id — the workspace-id-only twin of
+    ensure_human_edit_available, see record_execute_pool_usage for why this
+    must not go through a synthetic Principal."""
+    billing = billing_for_workspace(workspace_id)
+    _ensure_human_edit_available_for_billing(billing, workspace_id, estimated_tokens)
+
+
+def execute_pool_status(workspace_id: str) -> dict[str, Any]:
+    """Read-only AI Usage Credits pool snapshot for a Conxa Execute grantee's
+    'Paid by <workspace>' display — the workspace-id-only twin of the
+    ai_usage_credits meter in current_entitlements. Never raises;
+    ensure_execute_pool_available above remains the sole enforcement path."""
+    billing = billing_for_workspace(workspace_id)
+    limits = _limits_from_billing(billing)
+    period, _reset_at = usage_window_for_billing(billing)
+    with _locked_store(f"human-edit-check:{workspace_id}:{period}") as store:
+        usage = _get_usage(store, workspace_id, period)
+    used = int(usage.get("human_edit_input_tokens") or 0) + int(usage.get("human_edit_output_tokens") or 0)
+    meter = _meter(used, limits["human_edit_tokens"])
+    return {**meter, "wallet_balance": _wallet(billing)["human_edit_tokens"]}
 
 
 def ensure_distribution_allowed(principal: Principal, *, external: bool) -> None:

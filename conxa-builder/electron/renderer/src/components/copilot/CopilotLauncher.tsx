@@ -1,6 +1,7 @@
+import { useEffect } from 'react'
 import { Sparkles } from 'lucide-react'
 import { useDraggable } from '@/hooks/useDraggable'
-import { useCopilotStore } from '@/store/copilotStore'
+import { clampPosition, defaultPosition, useCopilotStore } from '@/store/copilotStore'
 import type { WorkflowRevalidationResponse } from '@/types/workflow'
 import { CopilotPanel } from './CopilotPanel'
 
@@ -11,8 +12,9 @@ type Props = {
 
 /** A free-draggable launcher + floating chat card, not a Tools-rail tab — the Tools rail opens
  *  as a shared modal dialog (see HumanEditPage.tsx), which would hide the step list exactly when
- *  a conversation about a specific step needs it visible. Position and open state persist per
- *  browser storage the same way the workflow pane's width does (BUILD-26).
+ *  a conversation about a specific step needs it visible. Unlike the Tools rail, the launcher's
+ *  position is never persisted — it always starts back in the bottom-right corner, and a drag
+ *  only holds for the current session (BUILD-26).
  *
  *  Per DESIGN.md's One Accent Rule, this stays a flat charcoal surface — clay is already spent
  *  on this page's Approve CTA. The one place clay appears here is the pending-decision dot and
@@ -21,6 +23,7 @@ type Props = {
 export function CopilotLauncher({ skillId, onProposalAccepted }: Props) {
   const open = useCopilotStore((s) => s.open)
   const position = useCopilotStore((s) => s.position)
+  const positionDragged = useCopilotStore((s) => s.positionDragged)
   const pendingProposal = useCopilotStore((s) => s.pendingProposal)
   const setOpen = useCopilotStore((s) => s.setOpen)
   const setPosition = useCopilotStore((s) => s.setPosition)
@@ -28,6 +31,25 @@ export function CopilotLauncher({ skillId, onProposalAccepted }: Props) {
   const ensureFor = useCopilotStore((s) => s.ensureFor)
 
   ensureFor(skillId)
+
+  // Nothing about the launcher's position is persisted. Until the reviewer drags it this
+  // session, it keeps tracking the live bottom-right corner (fixing a stale in-memory
+  // default the moment this page mounts, and again on every resize) rather than a size
+  // snapshot frozen whenever this store module first happened to load. Once dragged, a
+  // resize only re-clamps that placement on-screen instead of overriding it — the reset
+  // to the corner happens next time this component mounts, not mid-session.
+  useEffect(() => {
+    const reposition = () => {
+      if (positionDragged) {
+        commitPosition(clampPosition(useCopilotStore.getState().position))
+      } else {
+        setPosition(defaultPosition())
+      }
+    }
+    reposition()
+    window.addEventListener('resize', reposition)
+    return () => window.removeEventListener('resize', reposition)
+  }, [positionDragged, commitPosition, setPosition])
 
   const { onPointerDown, onPointerMove, onPointerUp, wasDragged } = useDraggable(position, {
     onDrag: setPosition,
@@ -64,15 +86,15 @@ export function CopilotLauncher({ skillId, onProposalAccepted }: Props) {
           onClick={() => {
             if (!wasDragged.current) setOpen(!open)
           }}
-          className="relative flex size-12 touch-none items-center justify-center rounded-full border border-white/10 bg-[#181b22] text-zinc-300 shadow-lg transition select-none hover:border-white/20 hover:text-white"
+          className="relative flex size-12 touch-none items-center justify-center rounded-full border border-white/10 bg-[#181b22] text-zinc-300 shadow-lg transition-all select-none hover:scale-105 hover:border-white/20 hover:text-white active:scale-95 focus-visible:ring-2 focus-visible:ring-brand/50 focus-visible:outline-none"
           aria-label={open ? 'Close Conxa Copilot' : 'Open Conxa Copilot'}
         >
           <Sparkles className="size-5" aria-hidden />
           {pendingProposal && !open ? (
-            <span
-              className="bg-brand ring-background absolute top-0.5 right-0.5 size-2.5 rounded-full ring-2"
-              aria-label="A proposal is waiting for your decision"
-            />
+            <span className="absolute top-0.5 right-0.5 size-2.5" aria-label="A proposal is waiting for your decision">
+              <span className="bg-brand anim-pulse-ring absolute inset-0 rounded-full" aria-hidden />
+              <span className="bg-brand ring-background absolute inset-0 rounded-full ring-2" aria-hidden />
+            </span>
           ) : null}
         </button>
       </div>

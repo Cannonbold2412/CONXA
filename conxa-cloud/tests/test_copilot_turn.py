@@ -6,7 +6,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+from services.llm_proxy_client import (
+    CloudUnreachable,
+    EntitlementBlocked,
+    ProxyUnavailable,
+    QuotaExceeded,
+)
 
 from conxa_compile.llm.copilot import copilot_turn
 
@@ -162,3 +167,41 @@ def test_on_delta_infra_exception_from_streaming_call_propagates():
                 assert False, f"expected {type(exc).__name__} to propagate"
             except type(exc):
                 pass
+
+
+def test_proxy_unavailable_from_streaming_falls_back_to_diagnose():
+    """ProxyUnavailable subclasses CloudUnreachable but means something else: the proxy answered,
+    the STREAM just produced no text (a reasoning model that burns its whole completion budget on
+    hidden chain-of-thought before writing content lands here). copilot_diagnose is a separate,
+    non-streamed request that routinely succeeds when that happens — so the turn must degrade to
+    it, not die. Before this, the reviewer's question sat in the panel with no answer at all."""
+    with (
+        patch(
+            "conxa_compile.llm.copilot.stream_llm",
+            side_effect=ProxyUnavailable("stream ended without a result"),
+        ),
+        patch(
+            "conxa_compile.llm.copilot.call_llm",
+            return_value={"reply": "Step 3 failed because the button moved.", "proposals": []},
+        ),
+    ):
+        result = copilot_turn(evidence={}, transcript=[], message="why?", on_delta=lambda _: None)
+    assert result["reply"] == "Step 3 failed because the button moved."
+
+
+def test_proxy_unavailable_from_the_diagnose_call_still_propagates():
+    """The fallback above only applies to the STREAM. When the non-streamed call is the one that
+    comes back empty there is nothing left to degrade to, so it must surface as a real error
+    rather than a silently empty turn."""
+    with (
+        patch("conxa_compile.llm.copilot.stream_llm", return_value=None),
+        patch(
+            "conxa_compile.llm.copilot.call_llm",
+            side_effect=ProxyUnavailable("stream ended without a result"),
+        ),
+    ):
+        try:
+            copilot_turn(evidence={}, transcript=[], message="hi", on_delta=lambda _: None)
+            assert False, "expected ProxyUnavailable to propagate"
+        except ProxyUnavailable:
+            pass

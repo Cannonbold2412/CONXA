@@ -32,6 +32,7 @@ export const queryKeys = {
   trackingRun: (company: string, runId: string) => ['tracking-run', company, runId] as const,
   roiAssumptions: () => ['roi-assumptions'] as const,
   machines: ['machines'] as const,
+  executeGrants: ['execute-grants'] as const,
   llmKey: ['llm-key'] as const,
   runtimes: (limit?: number, offset?: number) => ['runtimes', limit, offset] as const,
 } as const

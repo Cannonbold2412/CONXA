@@ -249,6 +249,7 @@ class LLMProxyClient:
                 "compile_credit_limit_exceeded",
                 "human_edit_pool_exceeded",
                 "machine_limit_exceeded",
+                "execute_seat_limit_exceeded",
                 "trial_expired",
                 "entitlements_unavailable",
                 "invalid_usage_class",

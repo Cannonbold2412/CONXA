@@ -273,7 +273,15 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
 
             full_text = "".join(full_text_parts)
             if not full_text:
-                message = str(worker_error) if worker_error else "llm_all_providers_failed"
+                # BUILD-33: distinguish "every provider genuinely failed" from "a reasoning
+                # model spent its whole budget on hidden chain-of-thought and wrote nothing" —
+                # the router already labels the latter in error_detail before giving up.
+                if worker_error:
+                    message = str(worker_error)
+                elif any(line.startswith("reasoning_only_no_content") for line in error_detail):
+                    message = "llm_reasoning_only_no_content"
+                else:
+                    message = "llm_all_providers_failed"
                 yield f"data: {json.dumps({'error': message})}\n\n"
                 return
 

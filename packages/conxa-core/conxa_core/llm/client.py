@@ -737,9 +737,14 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
         # budget entirely on reasoning and return finish_reason="length" with an empty answer.
         body["max_tokens"] = 2048
     if task == "copilot_reply":
-        # Prose only, no proposals JSON riding along — smaller budget than copilot_diagnose, but
-        # doubled from 500 for the same reasoning-budget headroom noted above.
-        body["max_tokens"] = 900
+        # Prose only, no proposals JSON riding along — the answer itself needs a fraction of this.
+        # The budget is sized for the REASONING PREFIX, not the answer: 900 is the exact number
+        # copilot_diagnose above was raised off, because z-ai/glm-5.3-flash was observed to spend
+        # all of it on hidden chain-of-thought and return finish_reason="length" with nothing
+        # written. This task hurts more when that happens — it is streamed, and a stream that
+        # yields zero content deltas reaches the Studio as "the proxy produced no result" rather
+        # than as an empty answer. Matched to copilot_diagnose's 2048 for the same reason.
+        body["max_tokens"] = 2048
     if task == "ai_review":
         # A small structured answer (yes/no + a short reason, or similar) — same order as
         # region_selector's handful of candidates.
@@ -871,11 +876,33 @@ def _sse_choice_text(first: Any) -> str:
     return _sse_content_to_text(raw)
 
 
-def _iter_sse_text_deltas(response: Any) -> Any:
+def _sse_choice_reasoning(first: Any) -> str:
+    """Like _sse_choice_text but for the hidden chain-of-thought delta a reasoning-capable
+    routed model streams before (sometimes instead of) any content — OpenRouter's
+    ``delta.reasoning``, the DeepSeek/GLM-family ``delta.reasoning_content`` spelling. Used only
+    to detect "this stream carried tokens but zero content" (BUILD-33), never surfaced to a
+    caller as text."""
+    if not isinstance(first, dict):
+        return ""
+    delta = first.get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    raw = delta.get("reasoning")
+    if raw is None:
+        raw = delta.get("reasoning_content")
+    return _sse_content_to_text(raw)
+
+
+def _iter_sse_text_deltas(response: Any, *, observed: dict[str, Any] | None = None) -> Any:
     """Parse an OpenAI-compatible ``stream: true`` response, yielding each content delta as it
     arrives. `response` is the file-like object returned by ``urlopen`` — iterating it yields
     one raw HTTP chunk-line at a time. Skips non-``data:`` lines (SSE comments/blank keep-alives)
-    and non-content deltas (role markers, finish_reason); never raises on a malformed line."""
+    and non-content deltas (role markers, finish_reason); never raises on a malformed line.
+
+    ``observed``, when given, is filled in place with ``reasoning_chars`` (running total of
+    hidden chain-of-thought characters seen) and ``finish_reason`` (the last non-null one seen) —
+    lets a caller tell a genuinely empty stream apart from one that spent its whole budget on
+    reasoning and wrote no content (BUILD-33)."""
     for raw_line in response:
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line or not line.startswith("data:"):
@@ -890,7 +917,15 @@ def _iter_sse_text_deltas(response: Any) -> Any:
         choices = obj.get("choices") if isinstance(obj, dict) else None
         if not isinstance(choices, list) or not choices:
             continue
-        text = _sse_choice_text(choices[0])
+        first = choices[0]
+        if observed is not None:
+            reasoning = _sse_choice_reasoning(first)
+            if reasoning:
+                observed["reasoning_chars"] = observed.get("reasoning_chars", 0) + len(reasoning)
+            finish_reason = first.get("finish_reason") if isinstance(first, dict) else None
+            if finish_reason:
+                observed["finish_reason"] = finish_reason
+        text = _sse_choice_text(first)
         if text:
             yield text
 

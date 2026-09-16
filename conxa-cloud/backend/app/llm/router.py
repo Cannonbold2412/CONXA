@@ -32,6 +32,12 @@ from conxa_core.progress import append_current_job_event, has_active_job_sink
 # this file don't need to say the fully-qualified conxa_core name everywhere.
 _VISION_TASK_NAMES = VISION_TASKS
 
+# Streamed, prose-only tasks where a reasoning-capable model's hidden chain-of-thought buys
+# nothing but a chance of eating the whole completion budget (BUILD-33). copilot_diagnose is
+# deliberately excluded — it returns structured JSON and its larger max_tokens already
+# accommodates a reasoning prefix.
+_NO_REASONING_TASKS = frozenset({"copilot_reply"})
+
 
 @dataclass
 class PoolEntry:
@@ -570,6 +576,13 @@ class LLMRouter:
             body_dict = _openai_body_dict(task, payload_with_model, json_mode=on_delta is None)
             if on_delta is not None:
                 body_dict["stream"] = True
+            # BUILD-33: OpenRouter-specific lever to skip the hidden chain-of-thought prefix on
+            # tasks that never use it. Gated on the endpoint (what actually accepts this body
+            # key), not entry.provider (a free-text name a deployment can spell however it
+            # likes) — an OpenAI-compatible endpoint that doesn't recognise "reasoning" would
+            # otherwise reject the whole request.
+            if task in _NO_REASONING_TASKS and "openrouter.ai" in entry.endpoint:
+                body_dict["reasoning"] = {"enabled": False}
             raw_body = json.dumps(body_dict).encode("utf-8")
             # Guarded on has_active_job_sink() — the proxy path never opens a job
             # scope, so this used to build a full redacted preview (including a
@@ -600,9 +613,10 @@ class LLMRouter:
                 # error surfaces as an HTTPError before any body streams (handled below), or as
                 # an empty stream, which the caller (route_text/route_vision) treats as failure.
                 full_text_parts: list[str] = []
+                observed: dict[str, Any] = {}
                 with request.urlopen(req, timeout=timeout_s) as res:
                     status_code = getattr(res, "status", None) or getattr(res, "code", None)
-                    for chunk in _iter_sse_text_deltas(res):
+                    for chunk in _iter_sse_text_deltas(res, observed=observed):
                         full_text_parts.append(chunk)
                         on_delta(chunk)
 
@@ -631,6 +645,28 @@ class LLMRouter:
                         },
                     )
                 if not full_text:
+                    # BUILD-33: a reasoning-capable model can spend its whole completion budget
+                    # on hidden chain-of-thought and write zero content — a real, paid-for
+                    # generation, not a dead provider. Every other retry against the same entry
+                    # would hit the identical shape, so this is _DeterministicRejection's case
+                    # too: fail fast (no cooldown, no more attempts on this call) instead of
+                    # burning the pool's other entries and 2 more billed attempts on a request
+                    # that can't produce content this way.
+                    # ponytail: doesn't retry with a non-reasoning fallback model on the same
+                    # entry before giving up — attempt>0 would pick one up if configured, but a
+                    # dedicated retry-with-different-model path isn't worth it here; add if this
+                    # condition turns out common enough that the fallback would routinely rescue it.
+                    if observed.get("reasoning_chars", 0) > 0 or observed.get("finish_reason") == "length":
+                        msg = (
+                            f"reasoning_only_no_content: {observed.get('reasoning_chars', 0)} "
+                            f"reasoning chars, finish_reason={observed.get('finish_reason')!r}, "
+                            f"model={model}, provider={entry.provider}"
+                        )
+                        _debug_log(f"router: {msg}")
+                        _log_llm_exception(req_id, entry, ep, model, task, attempt, status_code, duration_ms, msg)
+                        if error_detail is not None:
+                            error_detail.append(msg)
+                        raise _DeterministicRejection(msg)
                     if error_detail is not None:
                         error_detail.append("stream produced no content")
                     return None

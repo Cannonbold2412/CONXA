@@ -37,7 +37,12 @@ class CopilotMixin:
         from conxa_compile.editor.evidence import EvidenceError, build_evidence_bundle
         from conxa_compile.llm.copilot import copilot_turn
         from conxa_core.storage.json_store import read_skill
-        from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+        from services.llm_proxy_client import (
+            CloudUnreachable,
+            EntitlementBlocked,
+            ProxyUnavailable,
+            QuotaExceeded,
+        )
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         message = str(payload.get("message") or "").strip()
@@ -76,6 +81,11 @@ class CopilotMixin:
             raise _CommandError(exc.code, self._entitlement_error_message(exc.code)) from exc
         except QuotaExceeded as exc:
             raise _CommandError("quota_exceeded", str(exc)) from exc
+        except ProxyUnavailable as exc:
+            # Above CloudUnreachable (its parent) on purpose: the cloud answered, it just couldn't
+            # get an answer out of any provider. Reporting that as "check your internet connection"
+            # sends the reviewer to debug a network that is working fine.
+            raise _CommandError("llm_no_output", str(exc)) from exc
         except CloudUnreachable as exc:
             raise _CommandError("cloud_unreachable", str(exc)) from exc
 
