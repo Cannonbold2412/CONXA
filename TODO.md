@@ -2184,6 +2184,45 @@ the new item below this one.
   scope (a) above, which is about notifying the *workspace/vendor* — still open. Scopes (b) and
   (c) are also still open.
 
+### ~~BUILD-33~~ — A reasoning-only LLM stream is indistinguishable from a dead provider — **Resolved 2026-09-16**
+- **Category:** Builder
+- **Description:** found while fixing the Copilot's silent turns (2026-09-16). When a routed
+  reasoning model spends its whole completion budget on hidden chain-of-thought and writes no
+  content, the stream carries plenty of tokens but zero `delta.content`. `_sse_choice_text`
+  (`conxa_core/llm/client.py`) only reads `content`/`text`, so the router sees "stream produced no
+  content" and retries the identical call up to three times; the proxy then reports
+  `llm_all_providers_failed`. Every layer's diagnosis — from the router log to the toast — says
+  "the provider is broken" when the provider answered fine and was paid for it. Raising
+  `copilot_reply`'s `max_tokens` to 2048 makes it rare, not impossible, and any future task on the
+  streaming path inherits the same blind spot.
+- **Correction to the original write-up:** the streaming branch never actually cooled the entry —
+  it resets `consecutive_transient_failures` and returns `None` before any `except` handler runs.
+  The real costs were the wasted retries and the misleading label, not a benched key. Also, a retry
+  isn't always identical: `attempt > 0` switches to `entry.fallback_text_model` when one is
+  configured (Starter/Pro tiers), so only the Free pool's retries were genuinely the same call
+  three times.
+- **Resolution:** (a) `_iter_sse_text_deltas` (`conxa_core/llm/client.py`) takes an optional
+  `observed` out-param tracking `reasoning_chars` (`delta.reasoning`/`delta.reasoning_content`) and
+  the stream's `finish_reason`. `LLMRouter._call_provider`'s streaming branch (`app/llm/router.py`)
+  now raises `_DeterministicRejection` — the same short-circuit the 400/413/422 path already uses —
+  when the stream ends empty with reasoning chars seen or `finish_reason == "length"`; `_route`
+  already stops on that exception without cooling the entry or trying another provider.
+  `_meter_and_stream` (`llm_proxy_routes.py`) reports this as `llm_reasoning_only_no_content`
+  instead of `llm_all_providers_failed`. (b) `_NO_REASONING_TASKS` (today just `copilot_reply`) sets
+  OpenRouter's `reasoning: {"enabled": false}` body field, gated on the target entry's endpoint
+  (`openrouter.ai`) rather than `entry.provider` — a free-text name a deployment can spell however
+  it likes — so other OpenAI-compatible endpoints that would reject the key are unaffected;
+  `copilot_diagnose` is deliberately excluded since its structured-JSON, larger-`max_tokens` shape
+  already tolerates a reasoning prefix. (c) all six `[copilot debug]` `print`s in
+  `conxa_compile/llm/copilot.py` removed, along with the now-unused `import sys`.
+- **Why required:** the failure was silent, cost real money per occurrence, and pointed every
+  investigation at the wrong component.
+- **Complexity:** S–M, as scoped.
+- **Success criteria:** a reasoning-only response is logged as `reasoning_only_no_content`, costs
+  one attempt instead of three, and does not cool the entry that produced it — verified in
+  `conxa-cloud/tests/test_llm_reasoning_only_stream.py` and the new `test_llm_client_sse_deltas.py`
+  cases.
+
 ### BUILD-32 — Compile asks the reviewer a few clarifying questions instead of silently guessing
 - **Category:** Builder
 - **Description:** the compiler's second opinion (**BUILD-25**) already decides, on its own, things
@@ -2599,6 +2638,40 @@ the new item below this one.
 - **Suggested order:** revisit when installer sizes or DB storage costs actually approach a limit, or when EXEC-2's design calls for asynchronous job processing — not urgent before either trigger.
 - **Complexity:** M/L — wiring `blob_read_write_token` to a real object-storage backend is more contained than standing up a full durable queue from scratch.
 - **Success criteria:** installer/skill-pack blobs above a defined size threshold are served from object storage/CDN rather than Postgres; a real job queue exists if/when something in the platform needs asynchronous processing.
+
+### ~~CLOUD-22~~ — Execute seat grant admin UI + Execute claim UI — **Resolved 2026-09-16**
+- **Category:** Cloud
+- **Description:** The backend for Conxa Execute seat grants (a workspace admin handing Conxa Execute
+  access to people independent of Build Studio membership, billed against the workspace's shared AI
+  Usage Credits pool — `docs/TRD.md` §13.4c, `docs/Implementation-Plan.md` 1.15) is fully built and
+  curl-testable: `GET/POST /entitlements/execute-grants`, `POST /entitlements/execute-grants/revoke`,
+  a Phase-1 Cloud Dashboard claim fallback, and conxa-execute's own `POST /v1/execute-grants/claim`
+  relay. No UI exists yet for either side: the Cloud Dashboard has no screen to list/create/revoke
+  grants (would live on `BillingPage.tsx` or a new settings tab), and Conxa Execute has no claim
+  screen or "Paid by `<workspace>`" indicator for a pool-bound user.
+- **Why required:** without this, the feature is only usable via direct API calls — not something a
+  real customer admin can self-serve.
+- **Business value:** unlocks the Pro-tier "distribute Execute access to your team/customers" pitch
+  for actual customers, not just internal testing.
+- **Technical value:** none beyond the feature itself — pure UI work on top of an already-stable API.
+- **Dependencies:** none blocking; the backend (1.15) is done and independently testable.
+- **Suggested order:** next natural follow-up to 1.15, whenever Execute-seat-grants is prioritized for
+  a real customer rollout.
+- **Complexity:** M — two small UI surfaces (an admin table + a claim page), no new backend logic.
+- **Success criteria:** an admin can create/revoke Execute seat grants from the Cloud Dashboard without
+  curl; an invited person can claim their seat and see it reflected in Conxa Execute's own UI.
+- **What shipped (2026-09-16):** a Conxa Execute Seats panel on the Cloud Dashboard's Team page
+  (invite-by-email form, status table, copy-link, revoke); a new public `/claim/[grantId]` landing
+  page; a "Have an invite code?" redeem field in Conxa Execute's Settings that shows "Paid by
+  &lt;workspace&gt;" once claimed. Also fixed two correctness gaps found during the build: the invite
+  link previously routed through the Cloud Dashboard's Clerk app, which can never bind the identity
+  Conxa Execute's own Clerk app checks — claiming now happens inside Conxa Execute itself; and a
+  claimed grant wasn't switching Conxa Execute's locally saved chat mode, so a pool-bound user whose
+  local mode was still BYOK would never reach the metered pool proxy. Small backend addition: the
+  internal Execute bridge now returns the workspace's display name and real remaining-credits count
+  (`app/services/saas.py::workspace_name_for`, `app/services/entitlements.py::execute_pool_status`),
+  purely additive — `ensure_execute_pool_available` remains the sole enforcement path. See
+  `docs/UI-UX-Brief.md` §3.7 for the screen details.
 
 ### MCP-2 — Skill discovery manifests + Cloud discovery endpoint
 - **Category:** MCP

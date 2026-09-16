@@ -1789,12 +1789,14 @@ Response:
   "reset_at": "2026-06-29T00:00:00Z",
   "trial_ends_at": null,
   "trial_expired": false,
-  "wallet": {"compile_credits": 20, "human_edit_tokens": 200000},
+  "wallet": {"compile_credits": 20, "human_edit_tokens": 200000, "ai_usage_credits": 200000},
   "meters": {
     "seats": {"used": 2, "limit": 3, "remaining": 1, "unlimited": false},
     "machines": {"used": 1, "limit": 3, "remaining": 2, "unlimited": false},
+    "execute_seats": {"used": 4, "limit": 25, "remaining": 21, "unlimited": false},
     "compile_credits": {"used": 42, "limit": 200, "remaining": 158, "unlimited": false},
-    "human_edit_tokens": {"used": 230000, "limit": 2500000, "remaining": 2270000, "unlimited": false}
+    "human_edit_tokens": {"used": 230000, "limit": 2500000, "remaining": 2270000, "unlimited": false},
+    "ai_usage_credits": {"used": 230000, "limit": 2500000, "remaining": 2270000, "unlimited": false}
   },
   "capabilities": {
     "distribution": "external",
@@ -1838,6 +1840,32 @@ For paid (Cashfree-subscribed) workspaces, `period` is `billing:<current_period_
 **POST /api/v1/entitlements/machines/revoke** (owner/admin) — `{machine_hash}` → frees that slot; the same hash re-registers as a brand-new device on its next call, re-entering through the limit check.
 
 Dashboard: the "Build Studio Devices" card on `conxa-cloud/frontend/src/SettingsPage.tsx` (added 2026-08-22, closing the frontend gap tracked as `TODO.md` CLOUD-6) — these two routes were the whole backend for it already.
+
+**Renamed 2026-09-16 — `human_edit_tokens` → "AI Usage Credits".** Customer-visible label only; the
+wire response now dual-emits `ai_usage_credits` (canonical) alongside the legacy `human_edit_tokens`
+key (deprecated, kept only until already-installed Build Studio Electron builds have auto-updated
+past this change — see `docs/TRD.md` §13.4). Internal storage keys, the `usage_class="human_edit"`
+string, and the `human_edit_pool_exceeded` error code are all unchanged — zero migration.
+
+**Added 2026-09-16 — `execute_seats`.** New numeric meter: people a workspace has granted Conxa
+Execute access to via `POST /entitlements/execute-grants` below, independent of Build Studio org
+membership. See `docs/TRD.md` §13.4c for the full grant/claim/shared-pool design.
+
+**GET /api/v1/entitlements/execute-grants** (owner/admin) — `{"grants": [{grant_id, email, status,
+granted_at, claimed_at, revoked_at, ...}]}`, newest first. Includes revoked/claimed grants for history.
+
+**POST /api/v1/entitlements/execute-grants** (owner/admin) — `{"email": str}` → creates (or, for a
+repeat invite to the same still-pending email, idempotently returns) a `pending` grant, checked
+against the `execute_seats` cap. Response adds `invite_url` (`{app_url}/claim/{grant_id}`) — no
+transactional email sender exists in this repo, so the admin shares the link manually.
+
+**POST /api/v1/entitlements/execute-grants/revoke** (owner/admin) — `{"grant_id": str}` → frees the
+slot immediately and clears the pool binding if it had already been claimed.
+
+**POST /api/v1/entitlements/execute-grants/claim** (any signed-in Cloud Dashboard user) — `{"grant_id":
+str}` → claims a grant made out to the caller's own email. Phase-1 fallback path; Conxa Execute's own
+claim screen (`POST /v1/execute-grants/claim` on `conxa-execute`'s backend) relays through the
+service-token-authenticated internal bridge instead — see `docs/TRD.md` §13.4c.
 
 **POST /api/v1/usage/compile/reserve**
 
@@ -2755,6 +2783,8 @@ erDiagram
 | `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |
 | `manifest` | `current` (composed+signed `UnifiedManifest`), `skill_pack_index` (list of `{company}:{skill}` identifiers), `minimum_versions`, `compatibility` | 5.8 unified manifest — `skill_pack_index` exists because the filesystem-fallback KV store hashes keys, so `component_versions` entries for skills can't be discovered by scanning keys directly |
 | `workspace_devices` | `{workspace_id}:{machine_hash}` | `{workspace_id, machine_hash, last_ip, first_seen, last_seen, revoked?}` | 5.3 machine binding — `machine_hash` is SHA-256 of the Windows `MachineGuid`, never the raw ID. Added 2026-08-08 |
+| `execute_grants` | `{grant_id}` | `{grant_id, workspace_id, email, status, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}` | §5.3 / `docs/TRD.md` §13.4c — Execute seat grants; `grant_id` also doubles as the invite-link token. Added 2026-09-16 |
+| `execute_grant_by_user` | `{claimed_user_id}` | `{grant_id, workspace_id, email, claimed_at}` | §5.3 / `docs/TRD.md` §13.4c — O(1) pool-binding lookup keyed by the claiming Execute Clerk `user_id`, written on claim, cleared on revoke. Added 2026-09-16 |
 | `workspace_llm_keys` | `{workspace_id}` | `{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}` | Enterprise BYOK (§TRD 13.5) — the API key is AES-256-GCM encrypted at rest under `SKILL_BYOK_ENCRYPTION_KEY`; never stored or returned in plaintext. Added 2026-08-08 |
 | `legal_acceptances` | `{user_id}:{version}` | `{id, user_id, email, name, workspace_id, workspace_slug, workspace_name, role, auth_provider, identity_source, version, document_hashes, documents[], accepted_at, accepted_at_iso, client_ip, user_agent, app_version, machine_hash}` | §5.14 Build Studio legal acceptance — **write-once**, one row per (user, terms version); a repeat acceptance returns the existing row rather than overwriting it, so the stored timestamp is always the moment the person actually agreed. Deliberately *not* stored only in `saas.audit_events`, which is a global 500-entry ring buffer — an acceptance mirrored there for the Audit page (`legal.accepted`) would be evicted long before it was needed as evidence. Added 2026-08-29 |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |

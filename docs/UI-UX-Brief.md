@@ -576,9 +576,29 @@ with a muted dash instead of a cyan tick — a tick beside a negative statement 
 ### 3.7 Team Page (`app/(protected)/team/page.tsx`)
 
 **Purpose:** Manage workspace members, roles, and seats.
-**Outputs:** Workspace/team summary, seat usage, current role, last team activity, role guide, billing/audit links, and organization member controls.
+**Outputs:** Workspace/team summary, seat usage, current role, last team activity, role guide, billing/audit links, organization member controls, and — below the member directory — a Conxa Execute Seats panel (shipped 2026-09-16, CLOUD-22).
 **Meter behavior:** Shows seat usage before member controls. Hard enforcement still requires Conxa-owned invites or Clerk webhook cleanup; raw `OrganizationProfile` alone is metered/audited, not a complete hard gate.
 **Status:** Company-facing team UI is implemented. Member operations remain handled by Clerk organization controls.
+
+**Conxa Execute Seats panel (shipped 2026-09-16):** an admin-facing table backed by `GET/POST
+/api/v1/entitlements/execute-grants` and `POST .../revoke` (`docs/TRD.md` §13.4c) for granting
+Conxa Execute access to people independent of Build Studio membership, billed against the
+workspace's shared AI Usage Credits pool. An email form creates a `pending` grant and copies its
+invite link (`{app_url}/claim/{grant_id}`, a new public page — see below); the table shows every
+grant's status (pending/claimed/revoked) with a Copy-link action on pending rows and a
+confirm-guarded Revoke on any non-revoked row. Seat usage is read from the already-fetched
+`meters.execute_seats`. The invited person redeems the code inside Conxa Execute itself (its own
+Settings screen), not on this dashboard — a Clerk-authenticated self-claim route also exists here
+(`POST .../execute-grants/claim`) as a support/testing fallback only, since the dashboard and Conxa
+Execute run on separate Clerk applications and a dashboard-side claim can't bind the identity Conxa
+Execute actually checks.
+
+**New public page — `app/claim/[grantId]/page.tsx` (shipped 2026-09-16):** the invite link's
+landing page. Deliberately outside both the `(marketing)` and `(protected)` route groups — no
+Clerk/org gate, added to `proxy.ts`'s public matcher — since the invitee is typically not a member
+of the inviting workspace at all. Shows the grant id as a copyable invite code plus numbered
+instructions to redeem it in Conxa Execute. Fetches nothing; the page has no data to fetch beyond
+the code already in its own URL.
 
 ---
 

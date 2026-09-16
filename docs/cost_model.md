@@ -148,9 +148,9 @@ Token costs at Groq (text) + Google AI Studio (vision) — **actually billed to 
 
 **Key insight on continuous iteration:** Vision anchor calls are cached by element hash (`anchor_vision_llm.py`); the workflow-intent call is cached by a steps-summary+URLs hash (`workflow_intent.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps' vision anchors — the rest are cache hits. This makes daily iteration cheap regardless of provider. Selector strings are generated deterministically at zero token cost in all cases.
 
-**Human Edit pool:** Human Edit can trigger extra LLM calls after the initial compile: step repair, selector or anchor regeneration, validation, and recovery artifact updates. Each plan gets a monthly Human Edit token pool that applies to both text and vision repair calls. The re-target wizard's "draw a new region" step (Pick element phase) is one of these vision calls (`region_selector_vision.py`, cached by DOM hash + drawn bbox so redrawing the same box doesn't re-bill) — it replaced a text-only regenerate call that couldn't actually resolve a drawn region to a DOM element (see `docs/App-Flow.md` §7 re-target wizard note), so this is a cost-neutral swap of one Human Edit call for another, not a new charge:
+**AI Usage Credits:** Human Edit can trigger extra LLM calls after the initial compile: step repair, selector or anchor regeneration, validation, and recovery artifact updates. Each plan gets a monthly AI Usage Credits pool that applies to both text and vision repair calls. The re-target wizard's "draw a new region" step (Pick element phase) is one of these vision calls (`region_selector_vision.py`, cached by DOM hash + drawn bbox so redrawing the same box doesn't re-bill) — it replaced a text-only regenerate call that couldn't actually resolve a drawn region to a DOM element (see `docs/App-Flow.md` §7 re-target wizard note), so this is a cost-neutral swap of one Human Edit call for another, not a new charge:
 
-| Plan | Monthly Human Edit pool |
+| Plan | Monthly AI Usage Credits |
 |------|----------------------------|
 | Free | 500K text + vision tokens |
 | Starter | 2.5M text + vision tokens |
@@ -162,7 +162,7 @@ These are compilation/recompilation costs, not execution costs, because customer
 **Human Review Conxa Copilot turns cost two `human_edit` LLM calls, not one (BUILD-26 stage c):**
 a streamed `copilot_reply` call for the prose the reviewer reads live, plus the existing
 `copilot_diagnose` call for gated proposals — added so the reply can stream without showing raw
-JSON mid-generation (see `docs/TRD.md` §7.2a). Both draw from the same Human Edit pool above;
+JSON mid-generation (see `docs/TRD.md` §7.2a). Both draw from the same AI Usage Credits pool above;
 this roughly doubles the token cost of asking the copilot a question compared to before
 streaming shipped. No pooling/caching applies across turns — each turn's evidence bundle is
 rebuilt fresh and both calls fire every time, same as the single call did previously.
@@ -367,7 +367,7 @@ customers (Conxa-branded on Pro, white-label on Enterprise). See the capability 
 `docs/PRD.md` §11.
 
 **The public pricing axis is subscription tier + four visible meters.** Customers see seats, machines,
-monthly compile credits, and the monthly Human Edit pool. Local plugin creation and workflow recording
+monthly compile credits, and the monthly AI Usage Credits pool. Local plugin creation and workflow recording
 are unlimited; workflow count and product-slug count are no longer visible quotas — reach is gated by
 distribution capability, not a count.
 
@@ -400,8 +400,9 @@ This is why margins improve after the first build month. The cap protects Conxa 
 **Customer-facing meters:**
 - **Seats** - people who can use the dashboard / Build Studio for the workspace.
 - **Machines** - distinct devices a workspace can build from. Replaces the old installer-slot meter (removed 2026-08-08 — a workspace may now publish under unlimited product slugs on every tier); this is the control that keeps a single-machine free trial from quietly becoming a free Pro seat.
+- **Execute seats** (added 2026-09-16) - people a workspace has granted Conxa Execute access to, independent of Build Studio membership. Their chat usage draws from the workspace's AI Usage Credits pool below.
 - **Compile credits** - monthly UTC fresh-compile credits. A fresh workflow compile consumes 1 credit. Starter and Pro can top up with one-time add-on packs (each also adds Human Edit tokens) that never expire and are consumed only after the monthly allowance runs out: +20 credits at ₹3,999, +50 at ₹9,999, +100 at ₹19,999, and +250 at ₹49,999.
-- **Human Edit pool** - monthly UTC token pool for editor-triggered LLM work only: selector repair (1-click fix), semantic repair, visual re-anchor, and screenshot/bbox anchor regeneration (the "draw a new region" retarget wizard). Recompiling a whole workflow is billed like a first compile — see Compile credits above — not from this pool.
+- **AI Usage Credits** - monthly UTC token pool for editor-triggered LLM work only: selector repair (1-click fix), semantic repair, visual re-anchor, and screenshot/bbox anchor regeneration (the "draw a new region" retarget wizard). Recompiling a whole workflow is billed like a first compile — see Compile credits above — not from this pool.
 
 Local plugin creation, workflow recording, plugin package builds before testing, deterministic Human Edit patches, reorder/delete/input edits, validation edits, and sign-off remain unlimited.
 
@@ -423,8 +424,9 @@ Local plugin creation, workflow recording, plugin package builds before testing,
 | **Price** | **₹0 · 30-day trial** | **₹19,999/mo** | **₹49,999/mo** | Custom, from ₹99,999/mo |
 | **Seats** | 1 | 3 | 10 | Custom override |
 | **Machines** | 1 | 3 | 10 | Custom override |
+| **Execute seats** | 1 | 25 | 100 | Custom override |
 | **Compile credits / month** | 25 | 200 | 500 | Unlimited |
-| **Human Edit pool / month** | 500K tokens | 2.5M tokens | 10M tokens | Custom override |
+| **AI Usage Credits / month** | 500K tokens | 2.5M tokens | 10M tokens | Custom override |
 | **Distribution** | Internal, 1 machine | Internal, unbranded | External, Conxa-branded | External, white-label |
 | **Installer icon** | No | Yes | Yes | Yes |
 | **Ops tier** | None | Basic | Full | Full + SSO |
@@ -437,11 +439,11 @@ Local plugin creation, workflow recording, plugin package builds before testing,
 Compiling is the clearest proxy for expensive extraction work. Customers can record and re-record as many workflows as they need locally at no cost, but every time they ask Conxa to turn a workflow into execution data — whether that's the first compile or a recompile after re-recording — it consumes 1 monthly compile credit.
 
 **Why Human Edit is separate:**
-Editing an already-compiled workflow (selector repair, semantic repair, visual re-anchor) is a different product action from compiling — it's a targeted quality-improvement loop on an existing skill, not a full recompile, so it draws from the Human Edit token pool instead. Deterministic edits stay available even when the pool is exhausted.
+Editing an already-compiled workflow (selector repair, semantic repair, visual re-anchor) is a different product action from compiling — it's a targeted quality-improvement loop on an existing skill, not a full recompile, so it draws from the AI Usage Credits pool instead. Deterministic edits stay available even when the pool is exhausted.
 
 **Recommended hard gates:**
 - Compile is blocked — first compile or recompile alike — when monthly compile credits are exhausted, or when a free trial has passed its 30-day window.
-- LLM-assisted Human Edit actions (selector/semantic repair, visual re-anchor) are blocked when the Human Edit pool is exhausted.
+- LLM-assisted Human Edit actions (selector/semantic repair, visual re-anchor) are blocked when the AI Usage Credits pool is exhausted.
 - A new build machine is blocked once the plan's machine limit is reached; a machine already registered keeps working.
 - Publishing an external, customer-facing installer is blocked below Pro; custom branding is blocked below Enterprise.
 - Seat usage is metered immediately. Hard enforcement requires a Conxa-controlled invite API or Clerk webhook cleanup.
@@ -456,7 +458,7 @@ Using recalculated LLM costs from current provider pricing. The customer sees su
 models an internal build-heavy month for margin planning. Revenue is INR (what's actually charged);
 COGS is estimated in USD (what LLM providers actually bill) and converted at an indicative ₹83/USD for
 the margin line — **recompute against the live rate and current provider pricing before using these
-numbers for planning.** Compile credits and the Human Edit pool both dropped from the prior pricing
+numbers for planning.** Compile credits and AI Usage Credits both dropped from the prior pricing
 sheet (Starter: 300→200 credits, 10M→2.5M Human Edit tokens; Pro: 1,000→500 credits, 50M→10M tokens),
 so build-heavy-month COGS should scale down roughly in proportion — the ranges below are a first pass,
 not a re-derivation from current per-token provider pricing.
@@ -467,7 +469,7 @@ not a re-derivation from current per-token provider pricing.
 | Seats | 1 | 3 | 10 | Contracted |
 | Machines | 1 | 3 | 10 | Contracted |
 | Compile credits / month | 25 | 200 | 500 | Unlimited |
-| Human Edit pool | 500K tokens | 2.5M tokens | 10M tokens | Contracted |
+| AI Usage Credits | 500K tokens | 2.5M tokens | 10M tokens | Contracted |
 | Internal build-month envelope | ~25 fresh compiles | ~200 fresh compiles | ~500 fresh compiles | Contracted |
 | Compile + Human Edit planning cost (indicative) | **~$1–$5** | **~$14–$23** | **~$44–$60** | Contracted |
 | Infra, telemetry, installer, payment-fee reserve | **~$10–$20** | **~$25–$40** | **~$65–$105** | Contracted |
@@ -542,7 +544,7 @@ Mix: 1,000 Starter, 800 Pro, 200 Enterprise at ₹8,30,000 (~$10K) average contr
 | **Monthly Profit (indicative)** | **~+₹14.3 crore** (~$1.72M, ~$20.6M/year) |
 
 Enterprise contracts should be priced from the customer's requested seats, machines, compile credits,
-Human Edit pool, active installs, telemetry retention, support SLA, BYOK, and SSO. Do not sell
+AI Usage Credits, active installs, telemetry retention, support SLA, BYOK, and SSO. Do not sell
 "unlimited" Enterprise unless the contract has a negotiated usage envelope behind it.
 
 ---
@@ -551,8 +553,8 @@ Human Edit pool, active installs, telemetry retention, support SLA, BYOK, and SS
 
 | Milestone | Companies | Monthly Revenue | Monthly Cost | Profit | Key Actions |
 |-----------|-----------|-----------------|--------------|--------|-------------|
-| **MVP live** | 10 | ~₹2.9L | ~₹0.64L | +₹2.26L | Ship subscription billing; enforce compile credits, Human Edit pool, machine limit, and trial expiry |
-| **Beta** | 50 | ~₹14.5L | ~₹3.2L | +₹11.3L | Dashboard usage meters for seats, machines, compile credits, and Human Edit pool |
+| **MVP live** | 10 | ~₹2.9L | ~₹0.64L | +₹2.26L | Ship subscription billing; enforce compile credits, AI Usage Credits, machine limit, and trial expiry |
+| **Beta** | 50 | ~₹14.5L | ~₹3.2L | +₹11.3L | Dashboard usage meters for seats, machines, compile credits, and AI Usage Credits |
 | **Growth** | 100 | ~₹29.0L | ~₹6.4L | +₹22.6L | Priority build queue, internal COGS alerts, fair-use throttles |
 | **Scale** | 500 | ~₹1.6Cr | ~₹35.2L | +₹1.25Cr | Negotiate provider discounts; add Enterprise sales motion |
 | **Enterprise** | 2,000 | ~₹18.9Cr | ~₹4.65Cr | +₹14.3Cr | SLA support, custom retention, reserved provider capacity |
@@ -711,7 +713,7 @@ Vision anchor calls are cached by element hash and the workflow-intent call by a
 Most companies spend the first month building and polishing the plugin, then move to 1–2 updates per month. This makes ongoing LLM cost much lower than the full-cap build-month model while subscription revenue continues for dashboard, signing, telemetry retention, support, update delivery, and Conxa healing/runtime updates.
 
 **3. Four visible meters, plus capability gates**
-Seats, machines, compile credits, and Human Edit pool are the cleanest customer-visible numeric controls. Workflow recording and plugin creation stay unlimited — there is no limit on how many product slugs a workspace can publish under — while expensive LLM-heavy extraction/repair loops are bounded by the meters, and external distribution reach is bounded by which tier a workspace is on rather than a count.
+Seats, machines, compile credits, and AI Usage Credits are the cleanest customer-visible numeric controls. Workflow recording and plugin creation stay unlimited — there is no limit on how many product slugs a workspace can publish under — while expensive LLM-heavy extraction/repair loops are bounded by the meters, and external distribution reach is bounded by which tier a workspace is on rather than a count.
 
 **4. Vision anchor cache hit rate**
 Vision anchor calls dominate compilation cost. Cache hits (same screenshot hash) cost zero tokens. Apps that recompile with minimal visual DOM change will have high anchor cache hit rates, making recompiles near-free. The cache key is the screenshot hash — stable page designs recompile at ~80% lower cost. Adding a "cache hit %" column to the build report gives companies visibility into their recompile efficiency.
@@ -736,9 +738,9 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 |------|--------|-----------|
 | Customers expect unlimited fresh compiles because recording is unlimited | Support and compile surface grows without matching revenue | Show compile credits explicitly; block first compile when credits are exhausted |
 | A Starter/Free workspace tries to distribute externally to bypass the ladder | Undermines the Pro/Enterprise revenue tier | Server-side distribution gate on installer upload and publish, independent of Studio UI hiding |
-| Human Edit pool is exhausted by repeated repair loops | Margin erosion and degraded edit experience | Track text + vision token usage by workspace; block only LLM-assisted edits when the pool is exhausted |
+| AI Usage Credits pool is exhausted by repeated repair loops | Margin erosion and degraded edit experience | Track text + vision token usage by workspace; block only LLM-assisted edits when the pool is exhausted |
 | Telemetry volume explodes unexpectedly | $500 -> $5K/month infra cost | Implement event sampling for healthy runs; keep 100% of failures and recovery events |
-| Enterprise customer asks for "unlimited" under a fixed price | Contract becomes negative margin | Sell Enterprise as custom usage envelope: seats, machines, compile credits, Human Edit pool, active installs, retention, SLA, BYOK |
+| Enterprise customer asks for "unlimited" under a fixed price | Contract becomes negative margin | Sell Enterprise as custom usage envelope: seats, machines, compile credits, AI Usage Credits, active installs, retention, SLA, BYOK |
 | High churn because customers don't adopt `.exe` | Companies cancel from low ROI | Instrument adoption rate; alert company when <20% of target customers installed |
 | Concurrency spikes during compilation | Build queue backs up or providers return 429 | Async compilation with job queue (`/api/v1/jobs`); use provider priority tiers and reserved capacity only when cohort demand proves it |
 
@@ -763,7 +765,7 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 - Seats used vs. plan limit
 - Machines used vs. plan limit
 - Compile credits used/reserved vs. monthly limit (including add-on packs)
-- Human Edit pool used vs. monthly limit
+- AI Usage Credits used vs. monthly limit
 - Blocked fresh compile, LLM-assisted Human Edit, new-machine, external-distribution, and trial-expired attempts
 - Upgrade prompts shown and conversion rate
 
@@ -811,9 +813,9 @@ score), so the figures in this doc can be checked against measured fleet data ra
 ### Week 3–4: Instrumentation & Dashboard
 - [x] Track per-compilation LLM usage separately from Human Edit usage.
 - [x] Track Human Edit text + vision token usage against the plan pool.
-- [x] Show companies simple subscription usage: seats, installer slots, compile credits, Human Edit pool.
+- [x] Show companies simple subscription usage: seats, installer slots, compile credits, AI Usage Credits.
 - [ ] Add internal fair-use alerts for repeated compile/Human Edit outliers and reserve exhaustion.
-- [ ] Build customer alerts at 80% of compile credits, Human Edit pool, machines, and seats.
+- [ ] Build customer alerts at 80% of compile credits, AI Usage Credits, machines, and seats.
 - [ ] Test billing end-to-end: Free trial -> Starter -> visible limit hit -> upgrade -> limits reset.
 - [x] Repriced to the capability ladder (2026-08-08): removed the installer-slot limit, added machines,
   30-day trial expiry, distribution/white-label/ops_tier/BYOK capability gates, and a compile-credit
@@ -847,6 +849,7 @@ score), so the figures in this doc can be checked against measured fleet data ra
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-09-16 | Kiran | v22: Renamed "Human Edit pool" to "AI Usage Credits" throughout forward-looking body text and tables — the pool is no longer a Build Studio-only concept now that Conxa Execute seat grants (a workspace can hand out Execute access, billed against this same shared pool) draw from it too. Added the `execute_seats` meter (Free 1 / Starter 25 / Pro 100 / Enterprise contracted) alongside the existing seats/machines/compile-credits meters. No underlying token pricing or reserve-size changes — display rename plus one new capability meter. See `docs/Implementation-Plan.md` 1.15 and `docs/TRD.md` §13.4c. |
 | 2026-09-02 | — | v21: Re-synced execution-time recovery costs with `docs/TRD.md` §10.1. The product now has two behavioural tiers — A (in-process, zero tokens) and B (armed agent round, digest + screenshots). The old four-number ladder and the "text-only first, vision later" split are gone; ceiling env `CONXA_MAX_RECOVERY_TIER` still uses 2 vs 4. |
 | 2026-08-22 | Kiran | v20: Re-synced the doc with `docs/PRD.md` §11 and the enforced tier table (`PLAN_LIMITS`/`ADDON_TIERS` in `conxa-cloud/backend/app/services/entitlements.py`). Fixed Human Edit pool figures that still carried pre-repricing numbers (1M/10M/50M → 500K/2.5M/10M for Free/Starter/Pro) and the stale per-compilation LLM costs that contradicted the doc's own per-step math ($0.54/$0.11/$1.93/$0.39 → $0.21/$0.042/$0.81/$0.162, blended $0.195/$0.695 → $0.075/$0.292). Replaced the fictional "+25 credits/mo add-on at ₹4,999" with the real add-on catalog: +20 @ ₹3,999, +50 @ ₹9,999, +100 @ ₹19,999, +250 @ ₹49,999, each stacking Human Edit tokens too. Aligned Free's distribution wording with PRD §11 — installs are unlimited on every tier; what Free is capped at is one build machine ("capped at 1 install" was stale). Added the installer-icon capability row (Starter and up, per PRD 2026-08-09). Marked the old Week-1–2 limits confirmation as superseded; updated the Month-2 validation item to current Starter numbers. Added "Future Horizons — Revenue Projections & Cost Posture" from PRD §11/§14: how "pay for reach, not for runs" extends across Horizon 2 (concurrency capacity + review-resolver seats on customer-owned workers) and Horizon 3 (instrumentation-based reach on customer infrastructure), what each horizon earns the next, the §14.5 open questions that gate pricing work, and explicit planning guidance not to fold unratified horizon figures into forecasts. |
 | 2026-08-09 | Kiran | v19: Re-verified all LLM provider pricing against current provider docs (previously checked June 3, 2026) — GPT-5.4-mini, GPT-5.4, Together AI Gemma 4 31B, and Claude Sonnet 4.6 are all **unchanged**. Added real Claude Opus 4.8/5 pricing ($5/$25 per MTok, down from the retired Opus 4.1's $15/$75) in place of the old unpriced "quality upgrade path" note. Flagged new Claude Sonnet 5 introductory pricing ($2/$10 through Aug 31, 2026, converging to Sonnet 4.6's $3/$15 on Sept 1) — not worth a router migration for the discount alone. Replaced the free-tier plan's vague "$0.075/1M" shadow price with the actual current Gemini Flash-Lite rate ($0.10/1M) and recomputed the notional free-plan cost figures accordingly (real Conxa cost remains $0). Documented concrete, sourced free-tier rate limits for Groq (30 req/min, 6,000 TPM, 14,400 req/day), Google AI Studio (5–15 req/min, 1,000 req/day — noting Google pulled Pro-family Gemini models from the free tier on April 1, 2026, leaving only Flash/Flash-Lite eligible), and NVIDIA NIM (~40 req/min, 1,000 free credits). Fixed the stale "Last Updated" header, which still read July 2 despite the doc's own revision history extending to Aug 8. No changes to Conxa's own subscription pricing, tier structure, or unit economics — this pass only re-verified upstream LLM provider costs. |

@@ -320,6 +320,8 @@ A separate, standalone Render service (`conxa-execute/backend/`, own `render.yam
 
 Cashfree vendor mechanics (auth headers, base URL, both webhook HMAC schemes) are deliberately duplicated from `conxa-cloud/backend/app/api/cashfree_routes.py` into `conxa-execute/backend/app/cashfree.py` rather than shared via `conxa_core` — see that file's header comment for the extraction plan once this is validated in production.
 
+**Workspace-pool mode (added 2026-09-16):** a fourth quota mode alongside BYOK/Top-up/Subscription — a Build Studio workspace admin can grant a person an Execute seat (`execute_seats` meter, §13.4c) whose chat usage draws entirely from that workspace's shared AI Usage Credits pool instead of a personal wallet/subscription. This is conxa-execute's first intentional network coupling back to conxa-cloud: `app/cloud_bridge.py` calls conxa-cloud's `/api/v1/internal/execute/*` bridge (shared-secret authenticated, `SKILL_EXECUTE_SERVICE_TOKEN`) on `GET /v1/entitlement` and every `POST /v1/chat/completions` for a pool-bound user. BYOK and personal wallet/subscription traffic are unaffected — no new coupling on those paths. See §13.4c for the full grant/claim/metering design.
+
 ---
 
 ## 4. Conxa Runtime (MCP)
@@ -1933,6 +1935,26 @@ to the client (headers are long committed) — a recording failure here is only 
 surfaced. BYOK has no streaming call path (`call_entry_directly` takes no `on_delta`); a BYOK
 tenant gets the streamed endpoint's shape back, but as one immediate chunk rather than
 incremental delivery.
+
+**Reasoning-only streams (BUILD-33).** A routed reasoning-capable model (observed live:
+OpenRouter's `z-ai/glm-5.3-flash`) can spend its whole completion budget on hidden
+chain-of-thought and write zero content — the stream carries real tokens (billed) but
+`_iter_sse_text_deltas` yields nothing, which used to look identical to a dead provider:
+`_route` retried the same call up to `max_retries` times before the proxy answered
+`llm_all_providers_failed`. `_iter_sse_text_deltas` now takes an optional `observed` out-param
+tracking `reasoning_chars` (from `delta.reasoning`/`delta.reasoning_content`) and the stream's
+`finish_reason`. When `_call_provider`'s streaming branch sees an empty `full_text` alongside
+reasoning chars or `finish_reason == "length"`, it raises `_DeterministicRejection` instead of
+returning `None` — `_route` already treats that as "every provider would fail this identically,"
+so it stops after one attempt without cooling the (healthy) entry, the same short-circuit the
+400/413/422 deterministic-rejection path uses. `_meter_and_stream` reports this distinctly as
+`llm_reasoning_only_no_content` rather than `llm_all_providers_failed`. Separately,
+`_NO_REASONING_TASKS` (today just `copilot_reply` — prose-only, streamed, no use for a reasoning
+prefix) sets OpenRouter's `reasoning: {"enabled": false}` body field when the target entry's
+endpoint is `openrouter.ai`, gated on the endpoint rather than `entry.provider` since other
+OpenAI-compatible endpoints reject an unrecognised body key. `copilot_diagnose` is deliberately
+excluded — it returns structured JSON with a larger `max_tokens` budget that already
+accommodates a reasoning prefix.
 
 `handlers/copilot.py::cmd_copilot_turn` relays each delta over the existing generic
 `{"type": "event", "id": rid, ...}` channel (`handlers/protocol.py::_event_sink`) as
@@ -3882,12 +3904,18 @@ meter was removed entirely — a workspace may publish under unlimited product s
 and reach is now gated by *capability* keys (distribution, white-label, ops tier, BYOK) rather than a
 count. `machines` replaced it as the numeric meter, enforcing the trial-abuse/seat-integrity control.
 
-The cloud exposes four customer-visible numeric meters, all defined in `PLAN_LIMITS`
+The cloud exposes five customer-visible numeric meters, all defined in `PLAN_LIMITS`
 (`conxa-cloud/backend/app/services/entitlements.py`):
 - `seats`
 - `machines` — distinct build-side devices a workspace has registered (§13.4a)
+- `execute_seats` — people a workspace has granted Conxa Execute access to, independent of Build
+  Studio org membership (§13.4c, added 2026-09-16)
 - `compile_credits`
-- `human_edit_tokens`
+- `human_edit_tokens` — labeled "AI Usage Credits" everywhere customer-visible (renamed 2026-09-16;
+  the wire field dual-emits `ai_usage_credits` alongside the legacy `human_edit_tokens` key so
+  already-installed Build Studio builds don't break before their next auto-update — the internal
+  `usage_class="human_edit"` string, storage keys, and `human_edit_pool_exceeded` error code are
+  unchanged, this is a display-only rename)
 
 ...and six capability keys that shape what a plan can *do*, not just how much:
 - `distribution` — `"internal"` (Free only) or `"external"` (Starter, Pro, Enterprise). Starter's
@@ -3915,15 +3943,15 @@ The cloud exposes four customer-visible numeric meters, all defined in `PLAN_LIM
   fallback when the entitlement fetch itself fails, or for local dev with no cloud reachable.
 
 Plan defaults:
-- `free`: 1 seat, 1 machine, 25 compile credits/mo, 500K Human Edit tokens/mo, 30-day `trial_days`,
-  internal distribution, no white-label, `ops_tier="none"`, free compile pool, no BYOK.
+- `free`: 1 seat, 1 machine, 1 Execute seat, 25 compile credits/mo, 500K AI Usage Credits/mo, 30-day
+  `trial_days`, internal distribution, no white-label, `ops_tier="none"`, free compile pool, no BYOK.
 - `starter`: 3 seats, 3 machines (Build Studio dev-side seats only — its distributed installer output
-  reaches unlimited customer machines), 200 compile credits/mo, 2.5M Human Edit tokens/mo, external
-  distribution, no white-label, `ops_tier="basic"`, `"starter"` compile pool (its own single designated
-  provider, §13.1a), no BYOK.
-- `pro`: 10 seats, 10 machines, 500 compile credits/mo, 10M Human Edit tokens/mo, external
-  distribution, Conxa-branded (no white-label), `ops_tier="full"`, `"pro"` compile pool (its own single
-  designated provider, §13.1a), no BYOK.
+  reaches unlimited customer machines), 25 Execute seats, 200 compile credits/mo, 2.5M AI Usage
+  Credits/mo, external distribution, no white-label, `ops_tier="basic"`, `"starter"` compile pool (its
+  own single designated provider, §13.1a), no BYOK.
+- `pro`: 10 seats, 10 machines, 100 Execute seats, 500 compile credits/mo, 10M AI Usage Credits/mo,
+  external distribution, Conxa-branded (no white-label), `ops_tier="full"`, `"pro"` compile pool (its
+  own single designated provider, §13.1a), no BYOK.
 - `enterprise`: explicit workspace overrides for the numeric limits; capability floor is external
   distribution, white-label, `ops_tier="full"`, `"premium"` pool (unchanged; falls back to any pool
   unless BYOK provides a matching entry), BYOK.
@@ -4104,6 +4132,85 @@ CBS-only (§13.4a).
 - Dashboard: `conxa-cloud/frontend/src/FleetPage.tsx` (route `/fleet`) — search/filter table with a
   computed `status` (`active`/`stale`/`revoked`) per row, styled after the existing per-skill
   `DeploymentPanel.tsx`. See `docs/Backend-Schema.md` §5.9a for the full API contract.
+
+### 13.4c Execute Seat Grants (shared AI Usage Credits pool, added 2026-09-16)
+
+A workspace's plan also caps how many people it can grant Conxa Execute (`conxa-execute/`, §3.6)
+access to — the `execute_seats` meter above. Unlike `seats`/`machines`, a grant is **standalone**:
+the granted person never needs to be a Build Studio Clerk org member, and Conxa Execute deliberately
+runs on its own separate Clerk application (no SSO between the two products — see §3.6). Binding
+happens by email string, not shared identity.
+
+Data model — two new KV namespaces in `entitlements.py`, no new Postgres table (grant lookups are
+either "all grants for a workspace" or "one grant by its own key", both things `kv_store` already
+answers well, same reasoning as `db_schema.py`'s docstring for why Execute's wallet/subscription
+don't need dedicated tables either):
+- `execute_grants` — keyed by `grant_id` (a `secrets.token_urlsafe(32)` value that doubles as the
+  invite-link token). Record: `{grant_id, workspace_id, email, status: pending|claimed|revoked,
+  granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}`.
+- `execute_grant_by_user` — keyed by the claimed Execute Clerk `user_id`, written only on claim,
+  cleared on revoke. The O(1) lookup used on every Execute chat turn.
+
+Cloud-side functions (`entitlements.py`): `create_execute_grant`, `revoke_execute_grant`,
+`list_execute_grants`, `execute_grant_count` mirror the existing machine-registry functions
+(`ensure_machine_slot`/`list_machines`/`revoke_machine`, §13.4a) exactly, same `_locked_store`
+locking discipline. `claim_execute_grant(*, grant_id, user_id, email)` and
+`execute_pool_binding_for_user(user_id)` deliberately take plain strings, not a `Principal` — see
+below for why.
+
+**Correctness note (why not a synthetic Principal):** `ensure_human_edit_available`/`record_llm_usage`
+both call `billing_for(principal)` → `saas.ensure_principal(principal)`, which writes a `memberships`
+row and would silently register an Execute grantee as a Build Studio workspace member, inflating the
+`seats` meter. The fix: `ensure_execute_pool_available(workspace_id, ...)` and
+`record_execute_pool_usage(workspace_id, ...)` are workspace-id-scoped twins of those two functions,
+using the existing **read-only** `billing_for_workspace(workspace_id)` (already used by delta-sync for
+exactly this "no Principal available" reason) instead. Both share the same `_locked_store(f"llm-usage:
+{workspace_id}:{period}")` advisory-lock key as the Build Studio path — this is why multiple Execute
+grantees sharing one pool concurrently is already safe, no new locking code needed. Internally this
+still meters as `usage_class="human_edit"` — same pool, same wallet fallback; only the customer-facing
+label differs (§13.4's "AI Usage Credits" rename note).
+
+API surface:
+- Clerk-authenticated, admin-only (`entitlement_routes.py`): `GET /entitlements/execute-grants`,
+  `POST /entitlements/execute-grants {email}` (checks the `execute_seats` cap, idempotent on a
+  repeat invite to the same pending email; returns `invite_url` — no transactional email sender
+  exists in this repo, so the admin shares the link manually), `POST
+  /entitlements/execute-grants/revoke {grant_id}`, and a Phase-1 fallback claim route `POST
+  /entitlements/execute-grants/claim {grant_id}` for a Cloud-Dashboard-authenticated user claiming
+  their own invite.
+- Service-token-authenticated (new file `app/api/execute_bridge_routes.py`, under `/api/v1/internal/
+  execute/*` — a different trust boundary than the Clerk-principal routes, kept separate the same way
+  `updates_routes.py`'s admin-token routes are): `POST /internal/execute/grants/claim`, `POST
+  /internal/execute/pool/check` (pre-flight, translates any `EntitlementError` into `ok:false` rather
+  than an HTTP error), `POST /internal/execute/pool/debit` (post-call, no-ops instead of erroring if
+  the binding was revoked between check and debit — mirrors the existing fail-soft post-hoc metering
+  precedent at `llm_proxy_routes.py`). The claim and pool/check responses both additionally carry
+  `workspace_name` (`saas.py::workspace_name_for`, a read-only display-name lookup by workspace_id
+  alone) and pool/check's `remaining` is a real count (`entitlements.py::execute_pool_status`, a
+  read-only twin of `ensure_execute_pool_available` that never raises) — added 2026-09-16 so Conxa
+  Execute's UI can show "Paid by `<workspace>`" with a real credits-left figure instead of a generic
+  string. Authenticated with a single shared bearer secret
+  (`SKILL_EXECUTE_SERVICE_TOKEN`, set identically on both Render services) rather than per-workspace
+  tokens — conxa-execute is a service Conxa itself operates end-to-end on behalf of many workspaces,
+  unlike the `sync_tokens`/`tracking_tokens` per-workspace tokens shipped to external runtime installs.
+- conxa-execute side (`routes_grants.py`, `cloud_bridge.py`, both new): `POST /v1/execute-grants/claim
+  {grant_id}` relays to the Cloud bridge's claim endpoint using the invitee's own Execute-side Clerk
+  claims (`auth.py::get_current_claims`, additive alongside the existing `get_current_user`). `GET
+  /v1/entitlement` gains a `mode: "workspace_pool"` branch, checked before subscription/topup. `POST
+  /v1/chat/completions` reroutes pre-flight/post-debit through the Cloud bridge instead of the
+  personal wallet/subscription when the calling user is pool-bound — a bound seat draws **only** from
+  the workspace's pool, no personal fallback.
+
+Claim flow: an admin invites by email → the invitee opens the link in Conxa Execute, signs in with
+that same email (a separate Clerk app from Build Studio's — no cross-app identity needed, matching is
+by email string) → Execute's backend relays the claim to Cloud's internal bridge, which validates the
+grant is `pending` and the email matches, marks it `claimed`, and writes the `execute_grant_by_user`
+pointer. From then on, that Clerk `user_id`'s Execute chat usage debits the granting workspace's AI
+Usage Credits pool via the bridge on every turn.
+
+This is conxa-execute's **first** intentional coupling back to conxa-cloud — §3.6 otherwise describes
+it as intentionally decoupled (own Postgres, own deploy). The coupling is narrow and synchronous only
+on the pool-bound chat path; BYOK and personal wallet/subscription usage never touch conxa-cloud.
 
 ### 13.5 Enterprise BYOK (Azure OpenAI)
 

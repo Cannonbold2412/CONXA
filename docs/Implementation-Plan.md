@@ -437,6 +437,59 @@ routing. Frontend `npm run lint` and `npm run build` both clean, `/pricing` rend
 
 ---
 
+### ✅ 1.15 Conxa Execute Seat Grants + AI Usage Credits Rename — Backend + UI DONE 2026-09-16
+
+**What was changed:** Connects Build Studio's per-workspace plan billing to Conxa Execute, which
+previously had no workspace concept at all. A new `execute_seats` quota (Free=1, Starter=25, Pro=100,
+Enterprise=contracted) lets a workspace admin grant Conxa Execute access to people who never touch
+Build Studio, independent of Clerk org membership. A granted person's Execute chat usage draws
+entirely from the granting workspace's shared LLM token pool — the existing per-workspace "Human Edit
+Pool" (`human_edit_tokens`), renamed customer-facing to **"AI Usage Credits"** since it's no longer
+just a Build Studio concept.
+
+**What shipped:**
+- **conxa-cloud backend:** `execute_seats` in `PLAN_LIMITS`/`_QUOTA_ALIASES`; `ExecuteGrant` KV data
+  model (`execute_grants`/`execute_grant_by_user` namespaces) with
+  create/list/revoke/claim/binding-lookup functions mirroring the existing machine-registry pattern;
+  admin CRUD routes plus a Phase-1 Cloud-Dashboard claim fallback
+  (`app/api/entitlement_routes.py`); a new service-token-authenticated internal bridge
+  (`app/api/execute_bridge_routes.py`, `/api/v1/internal/execute/*`) for conxa-execute to check/debit
+  the pool; a workspace-id-scoped refactor of `ensure_human_edit_available`/`record_llm_usage` (new
+  `ensure_execute_pool_available`/`record_execute_pool_usage`) so a claimed grant never registers the
+  claimant as a Build Studio workspace member — see the correctness note in `docs/TRD.md` §13.4c.
+  `GET /entitlements/current` dual-emits `ai_usage_credits` alongside the deprecated
+  `human_edit_tokens` key.
+- **conxa-execute backend:** `app/cloud_bridge.py` (new), `app/routes_grants.py` (new, `POST
+  /v1/execute-grants/claim`), `auth.py::get_current_claims` (additive), `routes_proxy.py`'s `/v1/
+  entitlement` (new `workspace_pool` mode) and `/v1/chat/completions` (reroutes pre-flight/post-debit
+  through the Cloud bridge for a pool-bound user, no personal wallet/subscription fallback).
+- **Rename surface:** conxa-cloud/frontend (`BillingPage.tsx`, `productApi.ts`, `billingData.ts`,
+  `PricingTable.tsx`, `content/publicDocs.ts`), conxa-builder/electron renderer
+  (`EntitlementMeters.tsx`, `usageApi.ts`, `errorMessages.ts`, `GroupPage.tsx`), conxa-builder/python
+  (`backend.py`, `llm_proxy_client.py`, `copilot.py` docstring). Internal identifiers, storage keys,
+  `usage_class="human_edit"`, and the `human_edit_pool_exceeded` error code are all unchanged —
+  display-only rename, zero migration. The "Human Edit" workflow-editing screen/feature name
+  (`HumanEditPage.tsx`) is a distinct concept and was deliberately left untouched.
+- **Docs:** `docs/TRD.md` §3.6, §13.4, new §13.4c; `docs/Backend-Schema.md` §5.3 + KV namespace table.
+
+**Tests:** 3 new tests in `conxa-cloud/tests/test_entitlements.py` (seat-cap + idempotent re-invite,
+claim binds the pool without creating a workspace membership, email-mismatch rejection + revoke frees
+the slot); full `conxa-cloud` suite (1528 tests) and both frontends' typechecks pass clean.
+
+**UI shipped 2026-09-16 (CLOUD-22):** a Conxa Execute Seats panel on the Cloud Dashboard's Team page
+(list/create/revoke, invite links), a public `/claim/[grantId]` landing page, and a "Have an invite
+code?" redeem field in Conxa Execute's Settings showing "Paid by `<workspace>`" once claimed. Fixed
+along the way: the invite link previously routed through the Cloud Dashboard's own Clerk app, which
+can never bind the identity Conxa Execute's separate Clerk app checks (claiming now happens inside
+Conxa Execute itself); and a claimed grant wasn't switching Conxa Execute's locally saved chat mode
+off BYOK, which would have silently kept routing chat around the metered pool. A small additive
+backend change (`saas.py::workspace_name_for`, `entitlements.py::execute_pool_status`) lets the
+internal Execute bridge return the workspace's display name and real remaining-credits count.
+No transactional email sender exists in this repo — an admin still shares the invite link manually.
+See `docs/UI-UX-Brief.md` §3.7 and `TODO.md` CLOUD-22 for details.
+
+---
+
 **Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
 phase's original closure.** The rest of Phase 1 (1.1-1.8, 1.10-1.13) is done, superseded, or moot;
 other open work has moved to Phase 2 (drift gate, macOS, code signing, selector-cache GC,
