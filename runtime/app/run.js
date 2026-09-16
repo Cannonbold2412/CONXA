@@ -643,7 +643,7 @@ async function runForEachStep(ctx, state, step, page, i) {
   ctx.tracker.emit("for_each_done", { si: i, processed, failed, total: rowIds.length });
 }
 
-async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, hostOwned, dataDir, dryRun, context } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, hostOwned, hostRunId, dataDir, dryRun, context } = {}) {
   // BUILD-26 stage (f): threaded into recoverStep -> cascade.js's dismiss-overlay remedy, which
   // is the one place the runtime captures an unexpected overlay's identity even on a run that
   // ultimately passes. Optional — omitted (e.g. a Studio caller that predates this) simply
@@ -680,7 +680,12 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
   // binds tab_0 to startPage and starts listening for new pages immediately, before any step
   // runs, so a tab opened by an early step is queued even if a later step is the first to ask
   // for it.
-  const tabs = createTabRegistry(startPage, { hostOwned, runId });
+  // hostRunId (not runId — see host_browser.js/server.js's _hostRunId comment) is what a
+  // tab_open step's Execute-panel lookup must correlate against: on a resumed hand-over/
+  // review park, runId is freshly generated per call (the caller-facing resume identity
+  // runCtx above needs), but the browser view Execute is holding was registered under the
+  // run's ORIGINAL id. They're the same value for every fresh (non-resumed) run.
+  const tabs = createTabRegistry(startPage, { hostOwned, runId: hostRunId ?? runId });
 
   // Settle the page before the first step so step 0 doesn't fire against a still-hydrating SPA.
   // Uses the same timeout constant as navigation waits; best-effort (catch swallowed).

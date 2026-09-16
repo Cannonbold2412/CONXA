@@ -319,6 +319,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
         authManager,
         sessionsDir: SESSIONS_DIR,
         logFn,
+        runId: opts.runId,
       })
     ));
     const allPending = pendings.every((p) => p.authPending);
@@ -584,7 +585,28 @@ async function _buildExecContext(stored, headless = false, opts = {}) {
 // a chromium.launch()/goto() failure surfaces to the caller immediately instead of
 // being swallowed by a detached background task (see beginInteractiveAuth).
 async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
-  const { storedState } = opts;
+  const { storedState, runId, logFn } = opts;
+  // EXEC-41 Stage 2: a login window is just another headed browser, so it gets the exact
+  // same host branch as a skill run's own context (see _buildExecContext) — Execute's panel,
+  // not a separate OS window, when Execute is the client. One real, accepted trade-off: the
+  // launch path below applies STEALTH_CONTEXT_OPTIONS (a desktop-Chrome UA, viewport, locale,
+  // timezone) via browser.newContext(), which the host branch cannot do — Electron's CDP
+  // target has no Target.createBrowserContext (Stage-0 spike), so this reuses Execute's own
+  // single context as-is. A bot-protection screen that specifically distrusts Electron's own
+  // UA string may reject a host-owned login page more often than the launched one; this is
+  // caught the same way any login failure is — the retry in beginInteractiveAuth, and a
+  // connect failure here falling straight through to the launch path below.
+  if (runId && hostBrowser.endpoint()) {
+    try {
+      const { browser: loginBrowser, context: loginCtx, page: loginPage } =
+        await hostBrowser.acquire({ runId, storageState: storedState });
+      await _maskAutomation(loginPage);
+      await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      return { loginBrowser, loginCtx, loginPage, hostOwned: true, hostRunId: runId };
+    } catch (e) {
+      if (logFn) logFn("warn", "host_browser_fallback", { run_id: runId, phase: "login", error: e.message });
+    }
+  }
   const loginBrowser = await chromium.launch({
     headless: false,
     args: ["--disable-blink-features=AutomationControlled"],
@@ -608,10 +630,20 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   const { protectedUrl } = opts;
-  const { loginBrowser, loginCtx, loginPage } = opened;
+  const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId } = opened;
   let lastUrl = "";
   let lastState = null;
   let _autoCloseScheduled = false;
+
+  // Shared close point for both the auto-close-on-success timer below and the final
+  // fallback close — mirrors teardownExecBrowser's reasoning exactly: loginBrowser.close()
+  // on a CDP connection only ever disconnects (never kills Execute's browser process), but
+  // a host-owned login still needs Execute told to actually destroy the view, or it leaks
+  // until Execute's own idle cleanup reclaims it.
+  const _closeLoginBrowser = async () => {
+    try { if (loginBrowser.isConnected()) await loginBrowser.close(); } catch (_) {}
+    if (hostOwned && hostRunId) await hostBrowser.release({ runId: hostRunId });
+  };
 
   // Capture storageState when the user lands on an authenticated page. Scoped to
   // protectedUrl's own hostname when known — an OAuth leg through a different host
@@ -632,9 +664,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     try { lastState = await loginCtx.storageState(); } catch (_) { return; }
     if (lastState && !_autoCloseScheduled) {
       _autoCloseScheduled = true;
-      setTimeout(async () => {
-        try { if (loginBrowser.isConnected()) await loginBrowser.close(); } catch (_) {}
-      }, 1500);
+      setTimeout(() => { _closeLoginBrowser().catch(() => {}); }, 1500);
     }
   };
 
@@ -681,9 +711,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     try { lastState = await loginCtx.storageState(); } catch (_) {}
   }
 
-  try {
-    if (loginBrowser.isConnected()) await loginBrowser.close();
-  } catch (_) {}
+  await _closeLoginBrowser();
 
   const rejectReason = _rejectReasonForProtectedUrl(lastUrl);
   if (rejectReason) throw new Error(rejectReason);
@@ -703,7 +731,7 @@ const _pendingAuth = new Map();
 // with no session captured (user closed it before signing in) reopens once, then gives
 // up — the next call to this function starts a fresh attempt.
 async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
-  const { storedState, protectedUrl, authManager, sessionsDir, logFn } = opts;
+  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId } = opts;
 
   const existing = _pendingAuth.get(workspace_id);
   if (existing && existing.status === "pending") {
@@ -714,7 +742,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 
   let opened;
   try {
-    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState });
+    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn });
   } catch (e) {
     // authPending stays true so the existing "gate on auth" handling in callers still
     // fires (they only branch on this flag) — only the message differs, carrying the
@@ -743,7 +771,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
         // (disconnected is what got us here).
         if (attempt === 0) {
           try {
-            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState });
+            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn });
           } catch (e2) {
             lastErr = e2;
             break;
@@ -807,6 +835,7 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
     authManager,
     sessionsDir: SESSIONS_DIR,
     logFn,
+    runId: opts.runId,
   });
 }
 
@@ -924,5 +953,6 @@ module.exports = {
   _readValidationCache,
   _writeValidationCache,
   _buildExecContext,
+  _openInteractiveAuthWindow,
   AUTH_VALIDATION_TTL_MS,
 };

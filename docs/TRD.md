@@ -623,13 +623,28 @@ Execute's panel being unavailable.
 - **Per-run isolation.** Each run's view(s) live in their own non-persistent Electron partition
   (`conxa-run-<runId>`, no `persist:` prefix — in-memory, gone when the run ends) — nothing about
   one run's cookies or storage can leak into a sibling's.
-- **Not yet in the panel (Stage 2, open — see TODO.md EXEC-41):** interactive site login
-  (`browser.js::_openInteractiveAuthWindow`) and hand-over/AI-review pauses still open a separate
-  Chromium window. The park/resume machinery carries `hostOwned` through a parked run so it doesn't
-  crash if one occurs, but a resumed park's eventual teardown reports the *resumed* call's `runId`
-  to Execute, not the original run's — a known, self-healing gap (documented in `server.js` at the
-  park-resume site) rather than a correctness bug, since host-owned browsers don't reach parks in
-  Stage 1's actual usage.
+- **Stage 2 (also shipped 2026-09-17): login and hand-over/review in the panel.**
+  `browser.js::_openInteractiveAuthWindow` gets the identical host branch as a skill run's own
+  context — a login window is just another headed context, so `beginInteractiveAuth`'s existing
+  non-blocking design (the window opens, the MCP call returns immediately, a background task waits
+  for the user) is unchanged; only *where* the window renders differs. Hand-over/AI-review pauses
+  needed no new code at all: `handover.js`'s in-page "Done — resume workflow" banner
+  (`context.exposeBinding` + `context.addInitScript`, injected straight into the live page's own
+  DOM) already worked unmodified against a host-owned context — confirmed by a dedicated spike
+  (real injected-button click firing the binding, script re-applying after navigation) before
+  assuming it, not after.
+  - **The real bug the design flagged going in, now fixed:** a resumed park's teardown used to
+    report the *new* call's `runId` to Execute — wrong, since Execute registered the browser view
+    under the ORIGINAL run's id, and every `execute_skill` call (including a resume) generates a
+    fresh `_runId`. `server.js` now carries a second value, `_hostRunId` — the id Execute actually
+    knows this view by — alongside `_runId` — the caller-facing resume identity hand-over's
+    file-drop (`~/.conxa/resume/<run_id>.cmd`) and loopback-HTTP paths need, which must stay
+    per-call. They're identical for a fresh run and diverge only across a park/resume cycle, where
+    `_hostRunId` is restored from `_park.runId` (itself set from `_hostRunId` at park-creation time,
+    so it survives arbitrarily many resume cycles). `run.js::runPlan` takes a matching `hostRunId`
+    opt, kept separate from its existing `runId` opt — conflating them would have fixed
+    `tab_open`'s Execute-panel correlation while silently breaking hand-over's own resume-file
+    naming.
 
 ---
 

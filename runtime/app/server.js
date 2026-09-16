@@ -1240,6 +1240,16 @@ async function _handleTool(name, args, extra) {
     // (see host_browser.js) rather than a Chromium this process launched — every
     // teardown site must check this before closing anything (see teardownExecBrowser).
     let _hostOwned = false;
+    // EXEC-41 Stage 2: the run id a host-owned browser was actually registered under with
+    // Execute's panel (see browser_panel.js's `_runs` map, keyed by whatever runId `new_view`
+    // was called with). Defaults to this call's OWN _runId — correct for a fresh run, where
+    // they're the same value. A RESUMED park is the one case they diverge: _runId above is
+    // freshly generated for every execute_skill call (including a resume), but the browser
+    // view Execute is holding was registered under the run's ORIGINAL id — restored from
+    // _park.runId below. Every teardownExecBrowser/_setParkedRecovery/runPlan call in this
+    // function must use _hostRunId, never _runId, when talking to Execute or the tab registry,
+    // or a resumed run's teardown/tab_open would target a runId Execute has never heard of.
+    let _hostRunId = _runId;
     // Cache-lease key for _context, when it came from browser.js's headless cache (null for a
     // watch:true run, or a run that got its own uncached browser because the cache slot was
     // already leased by a concurrent run — see getCachedBrowser). Released at every teardown
@@ -1273,13 +1283,12 @@ async function _handleTool(name, args, extra) {
       if (_park) {
         ({ browser: _browser, context: _context, leaseKey: _leaseKey, hostRelease: _hostRelease } = _park);
         page = _park.page;
-        // NOTE (Stage 2/handover territory, not fully solved here): a resumed park's eventual
-        // teardown reports the NEW call's _runId to Execute's control channel, not the original
-        // run's — Execute's "run_end" for an unrecognized id is a documented no-op (see
-        // host_browser.js::release), so this just leaks that one view until Execute's own idle
-        // cleanup reclaims it. Acceptable for Stage 1 (host-owned browsers don't yet reach
-        // hand-over/review parks in practice); revisit if that changes.
         _hostOwned = Boolean(_park.hostOwned);
+        // EXEC-41 Stage 2 fix: restore the ORIGINAL run's id from the park, not this resumed
+        // call's own freshly-generated _runId — see _hostRunId's declaration comment above for
+        // why the two diverge here and nowhere else. _park.runId is set when the park is first
+        // created (below, in the review/handover/failed branches) and survives every resume.
+        _hostRunId = _park.runId || _runId;
         // The park's own listener closures (bound to the PREVIOUS call's runtimeLog/downloadQueue/
         // _openedTabs) are still attached to this same long-lived context — remove them before
         // this call attaches its own, or both calls' listeners would fire side by side.
@@ -1310,7 +1319,7 @@ async function _handleTool(name, args, extra) {
             // park is always a visible (watch:true), uncached browser (see the watch-forcing
             // check earlier in this handler), so there is no cache lease to release here.
             try { await page.close(); } catch (_) {}
-            await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
+            await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
             throw Object.assign(new Error("Execution cancelled while re-acquiring a platform lock after hand-over."), {
               cancelled: true,
               hostLockWait: { host: _lock.host, blockerRunId: _lock.blocker && _lock.blocker.runId, blockerSkill: _lock.blocker && _lock.blocker.skill },
@@ -1531,6 +1540,7 @@ async function _handleTool(name, args, extra) {
             watch,
             runId: _runId,
             hostOwned: _hostOwned,
+            hostRunId: _hostRunId,
             dataDir: CONXA_DATA_DIR,
             dryRun,
             context: _context, // EXEC-21: handover needs the browser context to arm its banner
@@ -1618,7 +1628,7 @@ async function _handleTool(name, args, extra) {
       await closeExtraTabs(_openedTabs);
       _detachContextListeners();
       if (watch) {
-        await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
+        await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         _phase("browser_closed");
       }
       releaseCachedBrowser(_leaseKey); // no-op when _leaseKey is null (watch mode, or uncached)
@@ -1683,7 +1693,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
@@ -1720,7 +1730,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
@@ -1750,7 +1760,7 @@ async function _handleTool(name, args, extra) {
         const timer = setTimeout(() => { _discardPark(_parkKey, "ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _reviewPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _runId, watch, reviewStepIndex: runErr.stepIndex, timer,
+          page: _reviewPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _hostRunId, watch, reviewStepIndex: runErr.stepIndex, timer,
           pageFingerprint: await capturePageFingerprint(_reviewPage),
           leaseKey: _leaseKey, hostRelease: _hostRelease,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
@@ -1785,7 +1795,7 @@ async function _handleTool(name, args, extra) {
         }, HANDOVER_PARK_TTL_MS);
         if (timer.unref) timer.unref();
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _handoverPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _runId, watch, handoverStepIndex: runErr.stepIndex, timer,
+          page: _handoverPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _hostRunId, watch, handoverStepIndex: runErr.stepIndex, timer,
           pageFingerprint: await capturePageFingerprint(_handoverPage),
           leaseKey: _leaseKey, hostRelease: null,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab,
@@ -1874,7 +1884,7 @@ async function _handleTool(name, args, extra) {
         // must stay blocked from touching the same platform while this fix is pending) until
         // whichever call resumes or discards this park releases them.
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _failedPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _runId, watch, failedAt: runErr.failedAt, timer,
+          page: _failedPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _hostRunId, watch, failedAt: runErr.failedAt, timer,
           pageFingerprint: await capturePageFingerprint(_failedPage),
           leaseKey: _leaseKey, hostRelease: _hostRelease,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
@@ -1890,7 +1900,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _hostRunId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
