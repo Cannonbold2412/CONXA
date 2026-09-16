@@ -1,0 +1,144 @@
+"use strict";
+/**
+ * host_browser.js — the one seam where the runtime borrows a browser view an MCP
+ * client already owns, instead of launching its own Chromium.
+ *
+ * Today the only such client is Conxa Execute: it renders skill runs inside its own
+ * window (a "cowork" panel) rather than letting a separate Chromium window pop up.
+ * Execute passes two things as environment variables when it spawns the runtime
+ * (see conxa-execute/app/electron/mcp_client.js):
+ *   - CONXA_HOST_BROWSER_CDP   the Chrome DevTools Protocol endpoint of its own
+ *                              Electron process (chromium.connectOverCDP target)
+ *   - CONXA_HOST_CONTROL_URL   a loopback HTTP control channel Execute runs, used to
+ *                              ask it to create/destroy a WebContentsView per run
+ *
+ * Every other client (Claude Desktop, the scheduler, the Build Studio sandbox) never
+ * sets these, so endpoint() returns null and browser.js's existing chromium.launch()
+ * path is exercised exactly as before — this module is inert for them.
+ *
+ * Electron's CDP target does NOT support Target.createBrowserContext or
+ * Target.createTarget (confirmed by a Stage-0 spike against Electron 42 / Playwright
+ * 1.59) — there is exactly one browser context (browser.contexts()[0]), and a new
+ * page can only come from Execute itself creating a WebContentsView. That shapes
+ * every function below: acquire() takes the existing context and asks Execute for a
+ * page rather than creating one, and newTab() is a control-channel round trip, not a
+ * context.newPage() call.
+ */
+
+const httpClient = require("./http_client");
+const { hostRequire } = require("./host_bridge");
+const { evalOn } = require("./page_eval");
+const chromium = hostRequire("playwright").chromium;
+
+function endpoint() {
+  const v = process.env.CONXA_HOST_BROWSER_CDP;
+  return v && v.trim() ? v.trim() : null;
+}
+
+function controlUrl() {
+  const v = process.env.CONXA_HOST_CONTROL_URL;
+  return v && v.trim() ? v.trim() : null;
+}
+
+// POST {op, ...body} to Execute's control channel and return the parsed JSON reply.
+// Loopback-only, short timeout — a wedged Execute must fail fast into the caller's
+// fallback rather than hang the run.
+async function _controlPost(op, body) {
+  const url = controlUrl();
+  if (!url) throw new Error("host_browser: CONXA_HOST_CONTROL_URL not set");
+  const { body: raw } = await httpClient.postForBuffer(url, {
+    json: { op, ...body },
+    timeoutMs: 5000,
+  });
+  return JSON.parse(raw.toString("utf8"));
+}
+
+// Seed a Playwright storageState into Execute's existing (single) browser context.
+// This is the manual equivalent of what chromium.launch()'s
+// browser.newContext({ storageState }) does in one call — split into its two parts
+// because Electron's context can't be created fresh, only reused:
+//   - cookies: context.addCookies() works fine over CDP against Electron (confirmed
+//     by the Stage-0 spike) as long as each cookie carries a real domain, not a
+//     file:// url.
+//   - localStorage: Playwright has no CDP call for this; the only way is to visit
+//     each origin and set it from the page itself, same as Playwright's own
+//     storageState-loading code does internally when it owns the context.
+async function _seedStorageState(context, page, storageState) {
+  if (!storageState) return;
+  if (Array.isArray(storageState.cookies) && storageState.cookies.length) {
+    await context.addCookies(storageState.cookies);
+  }
+  const origins = Array.isArray(storageState.origins) ? storageState.origins : [];
+  for (const o of origins) {
+    if (!o.localStorage || !o.localStorage.length) continue;
+    try {
+      await page.goto(o.origin, { waitUntil: "domcontentloaded", timeout: 15000 });
+      // Routed through page_eval.js's evalOn (EXEC-34) rather than a bare page.evaluate() —
+      // this is a CDP round-trip like any other and gets no timeout of its own.
+      await evalOn(page, (entries) => {
+        for (const { name, value } of entries) {
+          try { window.localStorage.setItem(name, value); } catch (_) {}
+        }
+      }, o.localStorage);
+    } catch (_) {
+      // A single origin failing to seed (site down, blocked) must not fail the whole
+      // run — cookies (the common case) are already in; this only loses that one
+      // origin's localStorage, same risk profile as a stale cache entry.
+    }
+  }
+}
+
+// Borrow Execute's browser for one run. Returns the same shape browser.js's
+// _buildExecContext() returns ({ browser, context }), plus `page` (the view Execute
+// already created — callers must use this instead of context.newPage(), which
+// Electron doesn't support) and `hostOwned: true` so teardownExecBrowser() knows to
+// disconnect rather than close.
+async function acquire({ runId, storageState }) {
+  const cdp = endpoint();
+  if (!cdp) throw new Error("host_browser: CONXA_HOST_BROWSER_CDP not set");
+  const { markerUrl } = await _controlPost("new_view", { runId });
+  const browser = await chromium.connectOverCDP(cdp);
+  const context = browser.contexts()[0];
+  if (!context) {
+    await browser.close().catch(() => {});
+    throw new Error("host_browser: no browser context on connect");
+  }
+  const page = await _findPageByMarker(context, markerUrl, runId);
+  await _seedStorageState(context, page, storageState);
+  return { browser, context, page, hostOwned: true };
+}
+
+// Execute's control channel responds with the about:blank-with-marker URL it loaded
+// into the new view (?conxa_run=<runId>) so this side can pick the right page out of
+// a context that may hold other runs' tabs too — context.pages() has no other way to
+// tell them apart.
+async function _findPageByMarker(context, markerUrl, runId) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const found = context.pages().find((p) => p.url() === markerUrl);
+    if (found) return found;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`host_browser: view for run ${runId} did not appear (marker ${markerUrl})`);
+}
+
+// tab_open steps need a second page in the same run. context.newPage() is
+// unsupported against Electron, so this is a control-channel round trip identical
+// in shape to acquire()'s first step, just without re-seeding storageState (the new
+// tab shares the run's existing context/cookies already).
+async function newTab({ context, runId }) {
+  const { markerUrl } = await _controlPost("new_tab", { runId });
+  return _findPageByMarker(context, markerUrl, runId);
+}
+
+// Tell Execute the run is over so it can destroy the view(s) and their partition.
+// The CDP `browser` handle itself is only ever disconnected (see
+// teardownExecBrowser in browser.js) — closing it would tear down Execute's whole
+// browser process out from under the app.
+function release({ runId }) {
+  return _controlPost("run_end", { runId }).catch(() => {});
+  // ponytail: best-effort — a failed run_end leaks one view until Execute's own
+  // idle cleanup (or app restart) reclaims it; never worth failing a run over.
+}
+
+module.exports = { endpoint, controlUrl, acquire, newTab, release };

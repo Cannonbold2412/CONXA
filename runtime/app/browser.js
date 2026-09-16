@@ -2,6 +2,7 @@
 const { chromium } = require("./host_bridge").hostRequire("playwright");
 const fs   = require("fs");
 const path = require("path");
+const hostBrowser = require("./host_browser");
 
 // env.js is authoritative (see server.js note): process.env is already normalized
 // under the host exe; the resolve() fallback only serves standalone dev mode.
@@ -333,11 +334,11 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   }
 
   const merged = mergeStorageStates(results.filter((r) => r.valid).map((r) => r.stored));
-  const { browser, context } = await _buildExecContext(merged, headless);
+  const { browser, context, page, hostOwned } = await _buildExecContext(merged, headless, opts);
   const protectedUrl = (required[0] && (required[0].success_url || required[0].login_url))
     || (results.find((r) => r.valid) && (results.find((r) => r.valid).app.success_url || results.find((r) => r.valid).app.login_url))
     || "";
-  return { browser, context, protectedUrl, sessionSource: "group" };
+  return { browser, context, page, hostOwned, protectedUrl, sessionSource: "group" };
 }
 
 async function _persistSession(workspace_id, state, authManager, sessionsDir, logFn) {
@@ -410,7 +411,7 @@ async function getCachedBrowser(workspace_id, authManager, opts = {}) {
     // than waiting for or stealing the lease. Falls through to getAuthContext below.
   }
   const result = await getAuthContext(workspace_id, authManager, {
-    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds,
+    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds, runId: opts.runId,
   });
   // authPending means no browser/context was built (a login window was opened instead) —
   // nothing to cache or lease.
@@ -554,7 +555,22 @@ async function _validateSession(stored, protectedUrl) {
   return outcomes.get("single");
 }
 
-async function _buildExecContext(stored, headless = false) {
+// opts.runId, when set, is Execute's cue to borrow its own browser view instead of
+// launching one (see host_browser.js). Only reachable when headless is false — a
+// borrowed browser is always visible, by definition of what Execute uses it for —
+// and only when CONXA_HOST_BROWSER_CDP is actually set, so every other client
+// (Claude Desktop, the scheduler, the Build Studio sandbox) never even attempts it.
+// A failure at any step (connect, view creation, seeding) falls through to the
+// normal launch below and logs why — a run must never hard-fail over Execute's
+// panel being unavailable.
+async function _buildExecContext(stored, headless = false, opts = {}) {
+  if (!headless && opts.runId && hostBrowser.endpoint()) {
+    try {
+      return await hostBrowser.acquire({ runId: opts.runId, storageState: stored });
+    } catch (e) {
+      if (opts.logFn) opts.logFn("warn", "host_browser_fallback", { run_id: opts.runId, error: e.message });
+    }
+  }
   const browser = await chromium.launch({
     headless,
     args: ["--disable-blink-features=AutomationControlled"],
@@ -757,7 +773,7 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   // _resolveGroup's comment.
   const group = _resolveGroup(workspace_id, opts.groupId);
   if (group && group.apps && group.apps.length > 0) {
-    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds });
+    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds, runId: opts.runId });
   }
 
   const pack = _loadPack(workspace_id);
@@ -775,9 +791,9 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   const lastKnownState = stored; // best available (possibly expired) session — seeds the login window
   if (stored && await _validateSession(stored, protectedUrl)) {
     _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
-    const { browser, context } = await _buildExecContext(stored, headless);
+    const { browser, context, page, hostOwned } = await _buildExecContext(stored, headless, opts);
     return {
-      browser, context, protectedUrl,
+      browser, context, page, hostOwned, protectedUrl,
       sessionSource: sessionPath && sessionPath.endsWith("_raw_state.json") ? "raw" : "encrypted",
     };
   }
@@ -855,6 +871,26 @@ async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, l
   };
 }
 
+// The one place a watch-mode run's browser/context gets torn down. Replaces four
+// near-identical `if (watch) { await _context.close(); await _browser.close(); }`
+// blocks that used to live at each of server.js's teardown sites — a launched
+// browser really is closed there, but a host-owned one (Execute's panel) is only
+// ever disconnected: closing it would tear down Execute's whole browser process,
+// panel and all, out from under the user. Doing this in one shared function is the
+// point — a call site that forgot the `hostOwned` check would silently kill
+// Execute's browser mid-session, and the fix belongs where every teardown path
+// routes through, not patched into each one by hand.
+async function teardownExecBrowser({ browser, context, hostOwned, runId }) {
+  if (!browser) return;
+  if (hostOwned) {
+    await browser.close().catch(() => {}); // CDP connection: disconnect only
+    if (runId) await hostBrowser.release({ runId }); // tell Execute to destroy the view
+    return;
+  }
+  if (context) await context.close().catch(() => {});
+  await browser.close().catch(() => {});
+}
+
 async function gracefulShutdown() {
   for (const [, entry] of _cache.entries()) {
     clearTimeout(entry.idleTimer);
@@ -867,6 +903,7 @@ async function gracefulShutdown() {
 module.exports = {
   getCachedBrowser,
   releaseCachedBrowser,
+  teardownExecBrowser,
   getAuthContext,
   getGroupAuthContext,
   _filterRequiredApps,
@@ -886,5 +923,6 @@ module.exports = {
   _validateSessionsBatch,
   _readValidationCache,
   _writeValidationCache,
+  _buildExecContext,
   AUTH_VALIDATION_TTL_MS,
 };

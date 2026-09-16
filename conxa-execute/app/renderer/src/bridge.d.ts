@@ -27,6 +27,10 @@ export type SessionDetail = SessionSummary & { messages: ChatMessage[] };
 
 export type Identity = { user_id: string; name?: string; email?: string };
 
+export type PanelRect = { x: number; y: number; width: number; height: number };
+
+export type PanelTab = { id: string; active: boolean };
+
 export type Entitlement = {
   mode: "subscription" | "topup" | "none" | "workspace_pool";
   plan_id?: string;
@@ -58,6 +62,11 @@ export type Bridge = {
   getEntitlement: () => Promise<{ ok: boolean; entitlement?: Entitlement; plansUrl?: string; message?: string }>;
   redeemGrant: (p: { grantId: string }) => Promise<{ ok: boolean; workspaceName?: string; message?: string }>;
   openExternal: (p: { url: string }) => Promise<{ ok: boolean }>;
+  panel: {
+    setBounds: (p: { runId: string; tabId: string; rect: PanelRect }) => Promise<{ ok: boolean }>;
+    selectTab: (p: { runId: string; tabId: string; rect?: PanelRect }) => Promise<{ ok: boolean }>;
+    onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[] }) => void) => () => void;
+  };
   windowControls: {
     minimize: () => Promise<void>;
     toggleMaximize: () => Promise<boolean>;

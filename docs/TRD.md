@@ -582,7 +582,54 @@ before it ever started.
   corruption).
 - **Known limitation.** In `watch: true` mode each parallel run is its own visible Chromium
   window, and `tabs.js`'s `bringToFront()` means concurrent visible runs compete for OS foreground
-  focus — correct execution, a noisy desktop.
+  focus — correct execution, a noisy desktop. **Exception (EXEC-41, 2026-09-17):** a run launched
+  by Conxa Execute doesn't open an OS window at all — see below.
+
+**In-app browser panel for Conxa Execute (EXEC-41, Stage 1 shipped 2026-09-17).** Conxa Execute
+(`conxa-execute/`) renders a skill run's browser inside its own window — chat left, a panel on the
+right, one tab strip entry per active run — instead of a separate Chromium window. The seam is one
+branch in `browser.js::_buildExecContext`: when Execute sets `CONXA_HOST_BROWSER_CDP` (its own
+Electron process's CDP endpoint) and a run is headed (`watch: true`, i.e. `headless: false`) with a
+`runId`, the runtime calls `chromium.connectOverCDP()` and asks Execute's loopback control channel
+(`conxa-execute/app/electron/browser_control.js`, same shape as `handover.js`'s own loopback
+listener) for a `WebContentsView` instead of launching its own Chromium. Every other MCP client
+(Claude Desktop, `scheduler_daemon.js`, the Build Studio sandbox) never sets that env var and takes
+the unchanged `chromium.launch()` path — this is inert for them by construction, not by a runtime
+check. A connection failure at any step falls back to launching normally; a run is never lost over
+Execute's panel being unavailable.
+
+- **New module `runtime/app/host_browser.js`** — `acquire({ runId, storageState })` connects and
+  asks Execute for a view (`new_view` control op), then seeds `storageState` manually: cookies via
+  `context.addCookies()` (works fine over CDP against Electron), `localStorage` by navigating each
+  origin and setting it from the page itself via `page_eval.js`'s `evalOn` (EXEC-34 seam) — there is
+  no CDP call for this, same technique Playwright's own `storageState` loading uses internally.
+  `newTab({ context, runId })` backs `tabs.js`'s `opened_by === "user"` (`tab_open` step) branch.
+  `release({ runId })` disconnects (never closes Execute's browser) and best-effort tells Execute to
+  tear the run's views down (`run_end`) — a missed notification just leaks one view until Execute's
+  own idle cleanup reclaims it, never a hard failure.
+- **Electron limits, confirmed by a Stage-0 spike before any of this was built (not assumed):**
+  Electron's CDP target implements neither `Target.createBrowserContext` (so `host_browser.js` uses
+  `browser.contexts()[0]`, the one Electron exposes) nor `Target.createTarget` (so every new page —
+  a `tab_open` step, a site-opened popup — has to be created by Execute itself, in
+  `browser_panel.js`, not by a Playwright `context.newPage()` call). A site-opened popup needs no
+  special handling beyond that: Execute's `setWindowOpenHandler` creates the sibling view, and
+  Playwright observes it as a normal `context.on("page")` event either way.
+- **Teardown: `browser.js::teardownExecBrowser`.** One shared function, replacing what used to be
+  four separate `if (watch) { context.close(); browser.close(); }` blocks in `server.js` plus one in
+  `recovery_park.js::discardPark` — closing `context`/`browser` on a host-owned run would tear down
+  Execute's whole browser process, panel and all, not just the one run's view. A host-owned
+  `browser.close()` (a CDP connection) only disconnects; Execute's `run_end` handler is what
+  actually destroys the view and clears its partition.
+- **Per-run isolation.** Each run's view(s) live in their own non-persistent Electron partition
+  (`conxa-run-<runId>`, no `persist:` prefix — in-memory, gone when the run ends) — nothing about
+  one run's cookies or storage can leak into a sibling's.
+- **Not yet in the panel (Stage 2, open — see TODO.md EXEC-41):** interactive site login
+  (`browser.js::_openInteractiveAuthWindow`) and hand-over/AI-review pauses still open a separate
+  Chromium window. The park/resume machinery carries `hostOwned` through a parked run so it doesn't
+  crash if one occurs, but a resumed park's eventual teardown reports the *resumed* call's `runId`
+  to Execute, not the original run's — a known, self-healing gap (documented in `server.js` at the
+  park-resume site) rather than a correctness bug, since host-owned browsers don't reach parks in
+  Stage 1's actual usage.
 
 ---
 

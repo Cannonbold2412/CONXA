@@ -221,6 +221,7 @@ let sweepOldRuns;
 let extractZipOnce;
 let getCachedBrowser;
 let releaseCachedBrowser;
+let teardownExecBrowser;
 let captureReAuth;
 let gracefulShutdown;
 let resolveGroup;
@@ -241,7 +242,7 @@ try {
   sync         = require("./sync");
   authManager  = require("./auth_manager");
   ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
-  ({ getCachedBrowser, releaseCachedBrowser, captureReAuth, gracefulShutdown,
+  ({ getCachedBrowser, releaseCachedBrowser, teardownExecBrowser, captureReAuth, gracefulShutdown,
      _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
   ({ resolveTargetHosts } = require("./target_hosts"));
   ({ createTracker, mapErrorToCode, drainSpill } = require("./tracker"));
@@ -1235,6 +1236,10 @@ async function _handleTool(name, args, extra) {
 
     let page = null;
     let _browser, _context, _protectedUrl;
+    // True when _browser/_context are a view borrowed from Conxa Execute's own panel
+    // (see host_browser.js) rather than a Chromium this process launched — every
+    // teardown site must check this before closing anything (see teardownExecBrowser).
+    let _hostOwned = false;
     // Cache-lease key for _context, when it came from browser.js's headless cache (null for a
     // watch:true run, or a run that got its own uncached browser because the cache slot was
     // already leased by a concurrent run — see getCachedBrowser). Released at every teardown
@@ -1268,6 +1273,13 @@ async function _handleTool(name, args, extra) {
       if (_park) {
         ({ browser: _browser, context: _context, leaseKey: _leaseKey, hostRelease: _hostRelease } = _park);
         page = _park.page;
+        // NOTE (Stage 2/handover territory, not fully solved here): a resumed park's eventual
+        // teardown reports the NEW call's _runId to Execute's control channel, not the original
+        // run's — Execute's "run_end" for an unrecognized id is a documented no-op (see
+        // host_browser.js::release), so this just leaks that one view until Execute's own idle
+        // cleanup reclaims it. Acceptable for Stage 1 (host-owned browsers don't yet reach
+        // hand-over/review parks in practice); revisit if that changes.
+        _hostOwned = Boolean(_park.hostOwned);
         // The park's own listener closures (bound to the PREVIOUS call's runtimeLog/downloadQueue/
         // _openedTabs) are still attached to this same long-lived context — remove them before
         // this call attaches its own, or both calls' listeners would fire side by side.
@@ -1298,8 +1310,7 @@ async function _handleTool(name, args, extra) {
             // park is always a visible (watch:true), uncached browser (see the watch-forcing
             // check earlier in this handler), so there is no cache lease to release here.
             try { await page.close(); } catch (_) {}
-            try { await _context.close(); } catch (_) {}
-            try { await _browser.close(); } catch (_) {}
+            await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
             throw Object.assign(new Error("Execution cancelled while re-acquiring a platform lock after hand-over."), {
               cancelled: true,
               hostLockWait: { host: _lock.host, blockerRunId: _lock.blocker && _lock.blocker.runId, blockerSkill: _lock.blocker && _lock.blocker.skill },
@@ -1388,6 +1399,7 @@ async function _handleTool(name, args, extra) {
           logFn: log,
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
           requiredAppIds: _requiredAppIdsUnion,
+          runId: _runId,
         });
         _phase("browser_context_ready");
         if (_authResult.authPending) {
@@ -1398,7 +1410,11 @@ async function _handleTool(name, args, extra) {
             { session_expired: true, login_url: _authResult.loginUrl });
         }
         ({ browser: _browser, context: _context, protectedUrl: _protectedUrl, leaseKey: _leaseKey } = _authResult);
-        page = await _context.newPage();
+        _hostOwned = Boolean(_authResult.hostOwned);
+        // A host-owned context has no context.newPage() (Electron doesn't support
+        // Target.createTarget — see host_browser.js's header); _authResult.page is
+        // the view Execute already created for this run.
+        page = _authResult.page || await _context.newPage();
         // Packs compiled after the leading-navigate change (compiler/build.py
         // _insert_start_navigate_step) open with their own `navigate` step to the page they
         // were recorded on, so landing on _protectedUrl (the group app's landing page) first is
@@ -1514,6 +1530,7 @@ async function _handleTool(name, args, extra) {
             environmentFingerprint: entry.manifest && entry.manifest.environment,
             watch,
             runId: _runId,
+            hostOwned: _hostOwned,
             dataDir: CONXA_DATA_DIR,
             dryRun,
             context: _context, // EXEC-21: handover needs the browser context to arm its banner
@@ -1601,8 +1618,7 @@ async function _handleTool(name, args, extra) {
       await closeExtraTabs(_openedTabs);
       _detachContextListeners();
       if (watch) {
-        await _context.close().catch(() => {});
-        await _browser.close().catch(() => {});
+        await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
         _phase("browser_closed");
       }
       releaseCachedBrowser(_leaseKey); // no-op when _leaseKey is null (watch mode, or uncached)
@@ -1667,8 +1683,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await _context?.close().catch(() => {});
-          await _browser?.close().catch(() => {});
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
@@ -1705,8 +1720,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await _context?.close().catch(() => {});
-          await _browser?.close().catch(() => {});
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
@@ -1736,7 +1750,7 @@ async function _handleTool(name, args, extra) {
         const timer = setTimeout(() => { _discardPark(_parkKey, "ttl"); }, PARK_TTL_MS);
         if (timer.unref) timer.unref();
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _reviewPage, context: _context, browser: _browser, watch, reviewStepIndex: runErr.stepIndex, timer,
+          page: _reviewPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _runId, watch, reviewStepIndex: runErr.stepIndex, timer,
           pageFingerprint: await capturePageFingerprint(_reviewPage),
           leaseKey: _leaseKey, hostRelease: _hostRelease,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
@@ -1771,7 +1785,7 @@ async function _handleTool(name, args, extra) {
         }, HANDOVER_PARK_TTL_MS);
         if (timer.unref) timer.unref();
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _handoverPage, context: _context, browser: _browser, watch, handoverStepIndex: runErr.stepIndex, timer,
+          page: _handoverPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _runId, watch, handoverStepIndex: runErr.stepIndex, timer,
           pageFingerprint: await capturePageFingerprint(_handoverPage),
           leaseKey: _leaseKey, hostRelease: null,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab,
@@ -1860,7 +1874,7 @@ async function _handleTool(name, args, extra) {
         // must stay blocked from touching the same platform while this fix is pending) until
         // whichever call resumes or discards this park releases them.
         _setParkedRecovery(_parkKey, { slug: primary.entry.slug, workspace_id: primary.entry.workspace_id,
-          page: _failedPage, context: _context, browser: _browser, watch, failedAt: runErr.failedAt, timer,
+          page: _failedPage, context: _context, browser: _browser, hostOwned: _hostOwned, runId: _runId, watch, failedAt: runErr.failedAt, timer,
           pageFingerprint: await capturePageFingerprint(_failedPage),
           leaseKey: _leaseKey, hostRelease: _hostRelease,
           attachPageListeners: _attachPageListeners, trackOpenedTab: _trackOpenedTab });
@@ -1876,8 +1890,7 @@ async function _handleTool(name, args, extra) {
         await closeExtraTabs(_openedTabs);
         _detachContextListeners();
         if (watch) {
-          await _context?.close().catch(() => {});
-          await _browser?.close().catch(() => {});
+          await teardownExecBrowser({ browser: _browser, context: _context, hostOwned: _hostOwned, runId: _runId });
         }
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();

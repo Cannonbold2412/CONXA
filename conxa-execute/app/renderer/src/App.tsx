@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChatMessage, ChatMode, Entitlement, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
+import { BrowserPanel } from "./BrowserPanel";
 import { Icon, Row, paths } from "./ui";
 
 type Mode = "form" | "chat";
@@ -540,6 +541,8 @@ export function App() {
           </div>
         )}
       </main>
+
+      <BrowserPanel />
 
       <SettingsModal
         open={showSettings}

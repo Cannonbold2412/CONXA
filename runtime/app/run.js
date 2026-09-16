@@ -643,7 +643,7 @@ async function runForEachStep(ctx, state, step, page, i) {
   ctx.tracker.emit("for_each_done", { si: i, processed, failed, total: rowIds.length });
 }
 
-async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, dataDir, dryRun, context } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, hostOwned, dataDir, dryRun, context } = {}) {
   // BUILD-26 stage (f): threaded into recoverStep -> cascade.js's dismiss-overlay remedy, which
   // is the one place the runtime captures an unexpected overlay's identity even on a run that
   // ultimately passes. Optional — omitted (e.g. a Studio caller that predates this) simply
@@ -680,7 +680,7 @@ async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPh
   // binds tab_0 to startPage and starts listening for new pages immediately, before any step
   // runs, so a tab opened by an early step is queued even if a later step is the first to ask
   // for it.
-  const tabs = createTabRegistry(startPage);
+  const tabs = createTabRegistry(startPage, { hostOwned, runId });
 
   // Settle the page before the first step so step 0 doesn't fire against a still-hydrating SPA.
   // Uses the same timeout constant as navigation waits; best-effort (catch swallowed).

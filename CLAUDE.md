@@ -148,6 +148,8 @@ runtime/                    Node.js MCP server — ships to ~/.conxa/ on custome
   install_identity.js       Writes version.json and integrity metadata for the app layer on first install
   skill_loader.js           Skill pack loading + input validation
   browser.js                Playwright browser lifecycle
+  host_browser.js           Borrows a browser view from Conxa Execute's own panel instead of
+                            launching Chromium, when Execute is the MCP client (inert otherwise)
   auth_manager.js           Per-company token via keytar; AES-256-GCM session encryption
   sync.js                   Skill pack delta sync with SHA-256 atomic writes
   tracker.js                Telemetry batching → POST /tracking/{co}/events
@@ -283,6 +285,7 @@ MCP tools exposed by `runtime/server.js`: `execute_skill`, `execute_sequence`, `
 | Selector scoring / anchor quality | `conxa_compile/compiler/selector_score.py`, `selector_filters.py` (anchor quality gates) |
 | Runtime element resolution | `runtime/resolver.js` (pure, unit-testable) + `runtime/resolve_adapter.js` (Playwright adapter) |
 | Runtime recovery cascade | `runtime/app/cascade.js` + `recovery.js` — Tier A (in-process, zero tokens) then Tier B (armed agent handoff). Canonical table: `docs/TRD.md` §10.1 |
+| Conxa Execute's in-app browser panel | `runtime/app/host_browser.js` (runtime side: `connectOverCDP`, borrows a view instead of launching) + `conxa-execute/app/electron/browser_panel.js`/`browser_control.js` (Execute side: owns the `WebContentsView`s + loopback control channel). Inert for every non-Execute MCP client. See `docs/TRD.md` §4.5, `TODO.md` EXEC-41 |
 | Assertions / outcome validation | `conxa_compile/compiler/validation_planner.py`; runtime `verifyAssertions()` in `run.js` |
 | Skill package building | `conxa_compile/skill_package_builder.py` (data-only output, auth excluded) |
 | LLM calls (compile side) | task clients in `conxa_compile/llm/` → `conxa_core.llm.get_router()` → cloud proxy |
