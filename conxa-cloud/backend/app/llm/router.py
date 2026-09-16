@@ -32,12 +32,6 @@ from conxa_core.progress import append_current_job_event, has_active_job_sink
 # this file don't need to say the fully-qualified conxa_core name everywhere.
 _VISION_TASK_NAMES = VISION_TASKS
 
-# Streamed, prose-only tasks where a reasoning-capable model's hidden chain-of-thought buys
-# nothing but a chance of eating the whole completion budget (BUILD-33). copilot_diagnose is
-# deliberately excluded — it returns structured JSON and its larger max_tokens already
-# accommodates a reasoning prefix.
-_NO_REASONING_TASKS = frozenset({"copilot_reply"})
-
 
 @dataclass
 class PoolEntry:
@@ -576,12 +570,16 @@ class LLMRouter:
             body_dict = _openai_body_dict(task, payload_with_model, json_mode=on_delta is None)
             if on_delta is not None:
                 body_dict["stream"] = True
-            # BUILD-33: OpenRouter-specific lever to skip the hidden chain-of-thought prefix on
-            # tasks that never use it. Gated on the endpoint (what actually accepts this body
-            # key), not entry.provider (a free-text name a deployment can spell however it
-            # likes) — an OpenAI-compatible endpoint that doesn't recognise "reasoning" would
-            # otherwise reject the whole request.
-            if task in _NO_REASONING_TASKS and "openrouter.ai" in entry.endpoint:
+            # BUILD-33: OpenRouter-specific lever to skip the hidden chain-of-thought prefix. No
+            # task here ever reads reasoning text (see _sse_choice_reasoning's docstring) — it
+            # is billed output that can consume the whole completion budget before the answer
+            # starts (observed live: copilot_diagnose on z-ai/glm-5.3-flash returning
+            # finish_reason="length" with empty content at its old 900 AND 2048 caps). Gated on
+            # the endpoint (what actually accepts this body key), not entry.provider (a
+            # free-text name a deployment can spell however it likes) — an OpenAI-compatible
+            # endpoint that doesn't recognise "reasoning" would otherwise reject the whole
+            # request.
+            if "openrouter.ai" in entry.endpoint:
                 body_dict["reasoning"] = {"enabled": False}
             raw_body = json.dumps(body_dict).encode("utf-8")
             # Guarded on has_active_job_sink() — the proxy path never opens a job
@@ -715,6 +713,36 @@ class LLMRouter:
                 if error_detail is not None:
                     error_detail.append(f"provider_error: {prov_msg}")
                 return None
+
+            # BUILD-33 (non-streaming twin of the check above, line 647-672): a reasoning-
+            # capable model can ignore the reasoning={"enabled": False} lever above and spend
+            # the whole completion budget on hidden chain-of-thought, returning finish_reason
+            # "length" with empty message content — a real, paid-for generation, not a dead
+            # provider. Every retry against the same entry hits the identical shape, so this is
+            # _DeterministicRejection's case: fail fast instead of burning the pool's other
+            # entries and more billed attempts on a request that can't produce content this way.
+            choices = data_raw.get("choices")
+            first_choice = choices[0] if isinstance(choices, list) and choices else None
+            finish_reason = first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
+            raw_message = first_choice.get("message") if isinstance(first_choice, dict) else None
+            raw_content = raw_message.get("content") if isinstance(raw_message, dict) else None
+            if isinstance(raw_content, list):
+                has_content = any(
+                    isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+                    for part in raw_content
+                )
+            else:
+                has_content = bool(str(raw_content or "").strip())
+            if not has_content and finish_reason == "length":
+                msg = (
+                    f"reasoning_only_no_content: finish_reason={finish_reason!r}, "
+                    f"model={model}, provider={entry.provider}"
+                )
+                _debug_log(f"router: {msg}")
+                _log_llm_exception(req_id, entry, ep, model, task, attempt, status_code, duration_ms, msg)
+                if error_detail is not None:
+                    error_detail.append(msg)
+                raise _DeterministicRejection(msg)
 
             data = _normalize_openai_response(data_raw)
             _debug_log(f"router: response_ok req_id={req_id} provider={entry.provider}")

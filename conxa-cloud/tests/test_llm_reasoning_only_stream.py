@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from threading import Lock as _Lock
 
-from app.llm.router import LLMRouter, PoolEntry, _NO_REASONING_TASKS
+from app.llm.router import LLMRouter, PoolEntry
 
 
 def _entry(**overrides) -> PoolEntry:
@@ -175,11 +175,11 @@ def test_non_openrouter_endpoint_does_not_get_reasoning_key(monkeypatch):
     assert "reasoning" not in seen_bodies[0]
 
 
-def test_copilot_diagnose_never_gets_reasoning_suppressed_even_on_openrouter(monkeypatch):
-    """copilot_diagnose returns structured JSON (non-streamed) and its larger max_tokens
-    already accommodates a reasoning prefix — deliberately excluded from _NO_REASONING_TASKS."""
-    assert "copilot_diagnose" not in _NO_REASONING_TASKS
-
+def test_copilot_diagnose_also_gets_reasoning_suppressed_on_openrouter(monkeypatch):
+    """copilot_diagnose used to be excluded on the assumption its larger max_tokens already
+    accommodated a reasoning prefix — that was observed false live (finish_reason="length" with
+    an empty answer at both 900 and 2048), so the suppression is now endpoint-gated only, for
+    every task."""
     router = _fresh_router([_entry(endpoint="https://openrouter.ai/api/v1")], max_retries=1)
     seen_bodies: list[dict] = []
 
@@ -207,4 +207,74 @@ def test_copilot_diagnose_never_gets_reasoning_suppressed_even_on_openrouter(mon
 
     router.route_text("copilot_diagnose", {}, 5_000)
 
-    assert "reasoning" not in seen_bodies[0]
+    assert seen_bodies[0].get("reasoning") == {"enabled": False}
+
+
+def test_non_copilot_task_also_gets_reasoning_suppressed_on_openrouter(monkeypatch):
+    """The suppression is endpoint-gated only now — not limited to the two copilot tasks."""
+    router = _fresh_router([_entry(endpoint="https://openrouter.ai/api/v1")], max_retries=1)
+    seen_bodies: list[dict] = []
+
+    class _FakeJsonResponse:
+        status = 200
+
+        def read(self):
+            import json as _json
+
+            return _json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        import json as _json
+
+        seen_bodies.append(_json.loads(req.data.decode("utf-8")))
+        return _FakeJsonResponse()
+
+    monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
+
+    router.route_text("anchor_vision", {}, 5_000)
+
+    assert seen_bodies[0].get("reasoning") == {"enabled": False}
+
+
+def test_non_streaming_reasoning_only_response_stops_after_one_attempt_and_does_not_cool(monkeypatch):
+    """Non-streaming twin of test_reasoning_only_stream_stops_after_one_attempt_and_does_not_cool:
+    a JSON response with empty message content and finish_reason="length" must fail fast (no
+    cooldown, no failover) instead of returning a silently empty answer."""
+    router = _fresh_router([_entry(), _entry(provider="fake2")], max_retries=3)
+    calls: list[str] = []
+
+    class _FakeJsonResponse:
+        status = 200
+
+        def read(self):
+            import json as _json
+
+            return _json.dumps(
+                {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+            ).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        calls.append("called")
+        return _FakeJsonResponse()
+
+    monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
+
+    error_detail: list[str] = []
+    result = router.route_text("copilot_diagnose", {}, 5_000, error_detail=error_detail)
+
+    assert result is None
+    assert len(calls) == 1, "a reasoning-only response must not be retried against another provider"
+    assert router.pool[0].cooled_until_text == 0.0
+    assert any(line.startswith("reasoning_only_no_content") for line in error_detail)

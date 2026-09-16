@@ -729,22 +729,22 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
         # candidates.
         body["max_tokens"] = 4096
     if task == "copilot_diagnose":
-        # BUILD-26 stage g: raised from 900 — the manifest+digest prompt plus the wider
-        # need/evidence_refs/structural-op schema is heavier than the original "reply plus a few
-        # small proposals" shape this budget was sized for, and a reasoning-capable routed model
-        # (observed live: OpenRouter's z-ai/glm-5.3-flash) spends completion tokens on hidden
-        # chain-of-thought BEFORE writing the JSON answer — at 900 it was observed to exhaust the
-        # budget entirely on reasoning and return finish_reason="length" with an empty answer.
-        body["max_tokens"] = 2048
+        # BUILD-33: the cloud router (conxa-cloud/backend/app/llm/router.py) sends
+        # reasoning={"enabled": False} to OpenRouter for every task, so a reasoning-capable
+        # routed model shouldn't spend completion tokens on hidden chain-of-thought at all. That
+        # flag is a request, not a guarantee some models keep reasoning anyway — 2048 was
+        # observed live to be entirely consumed by OpenRouter's z-ai/glm-5.3-flash doing exactly
+        # that, returning finish_reason="length" with an empty JSON answer. 16384 gives a full
+        # chain-of-thought room to finish on its own before the answer even starts, not just a
+        # bigger cap around an ignored flag.
+        body["max_tokens"] = 16384
     if task == "copilot_reply":
-        # Prose only, no proposals JSON riding along — the answer itself needs a fraction of this.
-        # The budget is sized for the REASONING PREFIX, not the answer: 900 is the exact number
-        # copilot_diagnose above was raised off, because z-ai/glm-5.3-flash was observed to spend
-        # all of it on hidden chain-of-thought and return finish_reason="length" with nothing
-        # written. This task hurts more when that happens — it is streamed, and a stream that
-        # yields zero content deltas reaches the Studio as "the proxy produced no result" rather
-        # than as an empty answer. Matched to copilot_diagnose's 2048 for the same reason.
-        body["max_tokens"] = 2048
+        # Prose only, no proposals JSON riding along — the answer itself needs a fraction of
+        # this. Same headroom as copilot_diagnose above and for the same reason: a stream that
+        # yields zero content deltas (because a model kept reasoning despite the router's
+        # reasoning={"enabled": False}) reaches the Studio as "the proxy produced no result"
+        # rather than as an empty answer, which is worse than copilot_diagnose's case.
+        body["max_tokens"] = 16384
     if task == "ai_review":
         # A small structured answer (yes/no + a short reason, or similar) — same order as
         # region_selector's handful of candidates.

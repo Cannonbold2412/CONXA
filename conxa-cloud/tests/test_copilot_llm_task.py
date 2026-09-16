@@ -50,20 +50,21 @@ def test_copilot_diagnose_without_image_is_plain_text_content():
 
 
 def test_copilot_diagnose_body_gets_its_own_token_budget():
-    # BUILD-26 stage g: raised from 900 to 2048 — the manifest+digest prompt plus the wider
-    # need/evidence_refs/structural-op schema needs more completion headroom, and a reasoning-
-    # capable routed model spends tokens on hidden chain-of-thought before the JSON answer.
+    # BUILD-33: the router suppresses OpenRouter's hidden reasoning for every task now
+    # (reasoning={"enabled": False}), but that's a request some models ignore — 16384 gives a
+    # full chain-of-thought room to finish on its own before the answer even starts, not just a
+    # bigger cap around an ignored flag.
     body = _openai_body_dict("copilot_diagnose", {"user_text": "x"}, json_mode=True)
-    assert body["max_tokens"] == 2048
+    assert body["max_tokens"] == 16384
     assert body["response_format"] == {"type": "json_object"}
 
 
 def test_copilot_reply_gets_the_same_reasoning_budget_as_diagnose():
-    """The streamed prose call needs a fraction of this for its answer — the budget is sized for
-    the reasoning prefix. At 900 (the number copilot_diagnose above was raised OFF) a reasoning
-    model was observed to spend the lot on hidden chain-of-thought and write nothing, which on
-    this task means zero content deltas and a stream the Studio reads as "no result at all"."""
+    """The streamed prose call needs a fraction of this for its answer — same headroom as
+    copilot_diagnose above, for the same reason. A model that ignores the router's reasoning
+    suppression and spends the budget on hidden chain-of-thought means zero content deltas here,
+    which the Studio reads as "no result at all" rather than an empty answer."""
     body = _openai_body_dict("copilot_reply", {"user_text": "x"}, json_mode=False)
-    assert body["max_tokens"] == 2048
+    assert body["max_tokens"] == 16384
     # Prose only — a streamed JSON object would show the reviewer a raw `{"reply": "...` scroll by.
     assert "response_format" not in body
