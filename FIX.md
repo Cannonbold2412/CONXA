@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Conxa Execute can now be installed as a real Windows app, not just run from source — 2026-09-17
+Until now, the only way to use Conxa Execute was for a developer to check out the code and start it by hand — there was nothing to actually give a customer. Now there's a proper installer, built the same way Build Studio's already is: download it, click through a quick setup, and it puts a normal desktop app on your machine with its own icon and Start Menu shortcut. It also updates itself quietly in the background — when a new version comes out, it downloads next time you're online and finishes installing the next time you close the app, with no pop-ups or prompts to deal with.
+
 ## Conxa Execute now shows the browser inside the app itself, instead of popping open a separate window — 2026-09-17
 Running a skill from Conxa Execute used to open a whole separate Chromium browser window that sat on top of the app, disconnected from the chat. Now, when a skill runs, a panel slides in on the right side of the same window and shows the live page there — chat on the left, the browser working on the right, one window instead of two. It's fully interactive: you can click and type directly in that panel the same as any browser. If several skills run at once, each gets its own tab inside that one panel instead of its own window. This landed in two parts today: first the skill-running part, then signing in to a website and handing control to a person mid-run — both of those also now happen right in the same panel instead of opening their own window. Every other way of running a skill (Claude Desktop, scheduled runs) is completely unaffected — they still work exactly as before, and if anything goes wrong showing the panel, the run quietly falls back to the old separate-window behavior instead of failing.
 
