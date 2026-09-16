@@ -1,0 +1,52 @@
+# Conxa Execute — electron-builder configuration
+# Produces a per-user NSIS installer for Windows (no UAC prompt; installs under %LOCALAPPDATA%).
+# No extraResources: conxa-runtime.exe is installed separately and located at runtime by
+# electron/runtime_path.js — this installer ships the Execute UI only.
+
+appId: ai.conxa.execute
+productName: Conxa Execute
+copyright: "Copyright © Conxa AI"
+
+# Files to include in the app bundle
+files:
+  - "**/*"
+  - "build/**"           # re-include: electron-builder auto-excludes buildResources otherwise
+  - "!renderer/src"       # compiled renderer goes to renderer/dist; exclude source
+  - "!renderer/public"
+  - "!renderer/vite.config.mts"
+  - "!renderer/tsconfig.json"
+  - "!electron/test"
+  - "!electron/scripts"  # dev-only (dev-electron.js)
+  - "!vendor/opencode/packages"  # unused upstream TS reference sources
+  - "!node_modules/.cache"
+
+directories:
+  buildResources: build
+  output: dist/execute
+
+# Auto-update via Conxa Cloud (generic provider), same topology as Build Studio:
+# the cloud only proxies the manifest; the .exe/.blockmap download straight from GitHub.
+# useMultipleRangeRequest is disabled because GitHub release assets (Azure Blob) don't
+# support multi-range HTTP requests — electron-updater reads this from app-update.yml,
+# which electron-builder generates from this publish block.
+publish:
+  provider: generic
+  url: https://apis.conxa.in/api/v1/updates/execute
+  useMultipleRangeRequest: false
+
+win:
+  # build/icon.ico only contains a 16x16 frame (too small for electron-builder's installer
+  # icon requirements); icon.png is 1280x1280, so electron-builder generates a proper
+  # multi-resolution .ico from it directly.
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  # Per-user install: no UAC prompt, no wizard, silent update via quitAndInstall().
+  artifactName: "Conxa-Execute-Setup-${version}.${ext}"
+  perMachine: false
+  oneClick: true
+  shortcutName: Conxa Execute

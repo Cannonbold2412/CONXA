@@ -1,0 +1,117 @@
+name: Conxa Execute
+
+# Builds the Conxa Execute Electron app (NSIS installer for Windows).
+# Publishes to a private GitHub Release. No dev/stable manifest system, same as
+# Build Studio: tags/env vars decide whether a release is stable.
+# Tags: execute-v1.2.3 → stable, execute-v1.2.3-beta.1 → prerelease
+
+on:
+  push:
+    tags:
+      - "execute-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. execute-v0.1.0)"
+        required: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: conxa-execute/app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: conxa-execute/app
+        run: npm ci
+
+      - name: Typecheck renderer
+        working-directory: conxa-execute/app
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: conxa-execute/app
+        run: npm test
+
+  build-execute:
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    env:
+      EXECUTE_VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # used by electron-builder publish
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: conxa-execute/app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: conxa-execute/app
+        run: npm ci
+
+      - name: Set Execute package version
+        working-directory: conxa-execute/app
+        shell: pwsh
+        run: |
+          $version = "${{ env.EXECUTE_VERSION }}" -replace "^execute-v", ""
+          npm version $version --no-git-tag-version
+
+      - name: Build renderer
+        working-directory: conxa-execute/app
+        run: npm run build:renderer
+
+      - name: Build Execute installer (electron-builder)
+        working-directory: conxa-execute/app
+        run: npx electron-builder --config electron-builder.yml --win --publish never
+        env:
+          GH_TOKEN: ""
+          # Code signing — scaffolding, awaiting certificate (same status as Build Studio).
+          # Until these secrets exist, electron-builder produces an unsigned installer
+          # (SmartScreen "Unknown Publisher").
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.EXECUTE_VERSION }}
+          name: Conxa Execute ${{ env.EXECUTE_VERSION }}
+          files: |
+            conxa-execute/app/dist/execute/*.exe
+            conxa-execute/app/dist/execute/*.exe.blockmap
+            conxa-execute/app/dist/execute/latest*.yml
+          # Prereleases (execute-v1.2.3-beta.N / -rc.N / -dev.N) never reach the stable
+          # auto-update channel — same rule as Build Studio.
+          prerelease: ${{ contains(env.EXECUTE_VERSION, '-dev') || contains(env.EXECUTE_VERSION, 'beta') || contains(env.EXECUTE_VERSION, '-rc') }}
+          fail_on_unmatched_files: true
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conxa-execute-installer
+          path: |
+            conxa-execute/app/dist/execute/*.exe
+            conxa-execute/app/dist/execute/*.exe.blockmap
+            conxa-execute/app/dist/execute/latest*.yml
+          retention-days: 30
