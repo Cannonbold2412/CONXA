@@ -1,7 +1,7 @@
 "use strict";
 /**
- * Thin fetch wrapper for conxa-execute's backend (Top-up/Subscription modes
- * only — BYOK never talks to this). Base URL comes from
+ * Thin fetch wrapper for conxa-execute's backend (Top-up/Subscription/
+ * workspace-pool modes only — BYOK never talks to this). Base URL comes from
  * CONXA_EXECUTE_API_BASE_URL, same default-empty-until-configured pattern as
  * auth_service.js's Clerk settings.
  */
@@ -40,18 +40,6 @@ function claimGrant(grantId) {
   });
 }
 
-function listSessions() {
-  return request("/v1/sessions");
-}
-
-function getSession(id) {
-  return request(`/v1/sessions/${id}`);
-}
-
-function createSession() {
-  return request("/v1/sessions", { method: "POST" });
-}
-
 function updateSession(id, messages, title) {
   return request(`/v1/sessions/${id}`, {
     method: "PUT",
@@ -59,8 +47,4 @@ function updateSession(id, messages, title) {
   });
 }
 
-function deleteSession(id) {
-  return request(`/v1/sessions/${id}`, { method: "DELETE" });
-}
-
-module.exports = { getEntitlement, claimGrant, listSessions, getSession, createSession, updateSession, deleteSession, baseUrl };
+module.exports = { getEntitlement, claimGrant, updateSession, baseUrl };

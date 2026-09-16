@@ -10,18 +10,16 @@ retry live in llm_config.py / llm_client.py instead.
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import cloud_bridge, llm_client, subscription, wallet
 from .auth import get_current_user
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-@router.get("/v1/wallet")
-async def get_wallet(user_id: str = Depends(get_current_user)) -> dict:
-    return {"balance": wallet.get_balance(user_id)}
 
 
 @router.get("/v1/entitlement")
@@ -30,6 +28,8 @@ async def get_entitlement(user_id: str = Depends(get_current_user)) -> dict:
     # subscription/wallet — that seat is meant to draw entirely from the
     # granting workspace's shared AI Usage Credits pool.
     pool = cloud_bridge.pool_check(user_id=user_id)
+    if pool.get("unknown"):
+        raise HTTPException(status_code=503, detail="workspace_unreachable")
     if pool.get("bound"):
         return {
             "mode": "workspace_pool",
@@ -55,6 +55,15 @@ async def get_entitlement(user_id: str = Depends(get_current_user)) -> dict:
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request, user_id: str = Depends(get_current_user)) -> JSONResponse:
     pool = cloud_bridge.pool_check(user_id=user_id)
+    if pool.get("unknown"):
+        # Cloud is unreachable and we genuinely don't know whether this user
+        # is workspace-pool-bound — billing personal wallet/subscription would
+        # risk charging the wrong bucket for a pool-bound user, so refuse the
+        # turn rather than guess.
+        return JSONResponse(
+            status_code=503,
+            content={"error": {"message": "Couldn't reach your workspace, so this chat wasn't run. Try again shortly.", "type": "workspace_unreachable"}},
+        )
     pool_bound = pool.get("bound", False)
 
     if pool_bound:
@@ -74,11 +83,10 @@ async def chat_completions(request: Request, user_id: str = Depends(get_current_
         if not has_subscription_quota and wallet.get_balance(user_id) <= 0:
             return JSONResponse(
                 status_code=402,
-                content={"error": {"message": "Out of tokens — top up at /plans", "type": "insufficient_quota"}},
+                content={"error": {"message": "Out of tokens. Buy more from within CONXA's Settings.", "type": "insufficient_quota"}},
             )
 
     body = await request.json()
-    body.pop("stream", None)  # run_turn.js never streams; strip defensively either way
 
     # ponytail: balance is checked before the call and debited by actual usage
     # after — the last request on a near-empty balance can run slightly over.
@@ -90,7 +98,17 @@ async def chat_completions(request: Request, user_id: str = Depends(get_current_
         status = 500 if str(exc) == "no_llm_providers_configured" else 502
         raise HTTPException(status_code=status, detail=str(exc)) from exc
 
-    usage = int((data.get("usage") or {}).get("total_tokens") or 0)
+    usage_block = data.get("usage")
+    if not usage_block:
+        # A provider that omits `usage` isn't a zero-cost call — debiting 0
+        # would give this request away for free every time it happens. Log it
+        # so a persistently silent provider gets noticed, and debit a rough
+        # estimate from the request/response bodies instead of nothing.
+        estimated = (len(str(body)) + len(str(data))) // 4
+        logger.warning("chat_completions: provider omitted usage, estimating %d tokens", estimated)
+        usage = estimated
+    else:
+        usage = int(usage_block.get("total_tokens") or 0)
     if usage and pool_bound:
         cloud_bridge.pool_debit(user_id=user_id, input_tokens=0, output_tokens=usage)
     elif usage and not subscription.debit_quota_if_available(user_id, usage):

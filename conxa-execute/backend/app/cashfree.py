@@ -21,30 +21,25 @@ from fastapi import HTTPException
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 
+from .plans import PLAN_TIERS
+
 _CF_BASE = {
     "PROD": "https://api.cashfree.com",
     "TEST": "https://sandbox.cashfree.com",
 }
 
-CURRENCY = "INR"
-
-# tier id -> tokens / price (INR) / period. period=None is a one-time pack;
-# period="monthly" auto-refills (adds, never resets) the same amount on every
-# successful renewal charge. Six tiers, floored at 250k tokens for ₹500
-# (₹2.00/1k) scaling to a best rate of ₹1.50/1k at the top tier.
+# One-time token packs only — the six monthly subscription tiers live solely
+# in plans.py::PLAN_TIERS (this file used to duplicate them here too, with
+# its own copy of amount/name that could silently drift from plans.py's).
+# Six tiers, floored at 250k tokens for ₹500 (₹2.00/1k) scaling to a best
+# rate of ₹1.50/1k at the top tier — the same price ladder PLAN_TIERS uses.
 TOKEN_TIERS: dict[str, dict[str, Any]] = {
-    "pack_250k": {"tokens": 250_000, "amount": 500, "period": None, "name": "250K Tokens"},
-    "pack_500k": {"tokens": 500_000, "amount": 950, "period": None, "name": "500K Tokens"},
-    "pack_1m": {"tokens": 1_000_000, "amount": 1_800, "period": None, "name": "1M Tokens"},
-    "pack_2_5m": {"tokens": 2_500_000, "amount": 4_250, "period": None, "name": "2.5M Tokens"},
-    "pack_5m": {"tokens": 5_000_000, "amount": 8_000, "period": None, "name": "5M Tokens"},
-    "pack_10m": {"tokens": 10_000_000, "amount": 15_000, "period": None, "name": "10M Tokens"},
-    "sub_250k": {"tokens": 250_000, "amount": 500, "period": "monthly", "name": "250K Tokens / month"},
-    "sub_500k": {"tokens": 500_000, "amount": 950, "period": "monthly", "name": "500K Tokens / month"},
-    "sub_1m": {"tokens": 1_000_000, "amount": 1_800, "period": "monthly", "name": "1M Tokens / month"},
-    "sub_2_5m": {"tokens": 2_500_000, "amount": 4_250, "period": "monthly", "name": "2.5M Tokens / month"},
-    "sub_5m": {"tokens": 5_000_000, "amount": 8_000, "period": "monthly", "name": "5M Tokens / month"},
-    "sub_10m": {"tokens": 10_000_000, "amount": 15_000, "period": "monthly", "name": "10M Tokens / month"},
+    "pack_250k": {"tokens": 250_000, "amount": 500, "name": "250K Tokens"},
+    "pack_500k": {"tokens": 500_000, "amount": 950, "name": "500K Tokens"},
+    "pack_1m": {"tokens": 1_000_000, "amount": 1_800, "name": "1M Tokens"},
+    "pack_2_5m": {"tokens": 2_500_000, "amount": 4_250, "name": "2.5M Tokens"},
+    "pack_5m": {"tokens": 5_000_000, "amount": 8_000, "name": "5M Tokens"},
+    "pack_10m": {"tokens": 10_000_000, "amount": 15_000, "name": "10M Tokens"},
 }
 
 _SUB_PLAN_ID_FIELD = {
@@ -58,7 +53,13 @@ _SUB_PLAN_ID_FIELD = {
 
 
 def _cf_base() -> str:
-    return _CF_BASE.get((settings.cashfree_env or "TEST").upper(), _CF_BASE["TEST"])
+    env = (settings.cashfree_env or "TEST").upper()
+    if env not in _CF_BASE:
+        # A typo'd CASHFREE_ENV (e.g. "PRDO") used to silently fall back to
+        # TEST — which would route real customer payments to the sandbox and
+        # never actually charge them. Fail loud instead.
+        raise HTTPException(status_code=500, detail=f"cashfree_env_invalid: {env!r} (expected PROD or TEST)")
+    return _CF_BASE[env]
 
 
 def _cf_headers() -> dict[str, str]:
@@ -88,7 +89,7 @@ def _ensure_sub_plan_id(tier: str) -> str:
     store = db_get("execute_cashfree_plans", "plans") or {}
     if tier in store:
         return store[tier]
-    info = TOKEN_TIERS[tier]
+    info = PLAN_TIERS[tier]
     plan_id = f"conxa_execute_{tier}"
     resp = _cf_request("POST", "/api/v2/subscription-plans", json={
         "planId": plan_id,
@@ -112,7 +113,7 @@ def create_pack_order(tier: str, order_ref: str, return_url: str) -> str:
     resp = _cf_request("POST", "/pg/links", json={
         "link_id": order_ref,
         "link_amount": info["amount"],
-        "link_currency": CURRENCY,
+        "link_currency": "INR",
         "link_purpose": f"CONXA {info['name']}",
         "customer_details": {
             "customer_email": "buyer@conxa.in",
@@ -143,7 +144,7 @@ def verify_pack_order(order_ref: str) -> bool:
 def create_sub_order(tier: str, order_ref: str, return_url: str) -> str:
     """Create a recurring subscription. Returns the hosted authorization page URL."""
     plan_id = _ensure_sub_plan_id(tier)
-    info = TOKEN_TIERS[tier]
+    info = PLAN_TIERS[tier]
     resp = _cf_request("POST", "/api/v2/subscriptions/nonSeamless/subscription", json={
         "subscriptionId": order_ref,
         "planId": plan_id,

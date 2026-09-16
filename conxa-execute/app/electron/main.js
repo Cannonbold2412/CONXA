@@ -8,6 +8,8 @@ const { app, BrowserWindow, ipcMain, Menu, shell } = require("electron");
 const net = require("net");
 const path = require("path");
 const mcp = require("./mcp_client");
+const { resolveRuntimeCommand } = require("./runtime_path");
+const { classifyRunResult, extractRunId } = require("./classify");
 const settings = require("./settings");
 const history = require("./history");
 const sessionsStore = require("./sessions");
@@ -20,6 +22,17 @@ const { runTurn } = require("../vendor/opencode/loop/run_turn");
 
 const IS_DEV = !app.isPackaged;
 process.env.CONXA_ELECTRON_IS_PACKAGED = app.isPackaged ? "1" : "0";
+
+// electron-builder's extraMetadata bakes public Clerk OAuth config into the packaged
+// package.json (a packaged app doesn't inherit the builder's shell env) — promote it into
+// process.env here so auth_service.js's existing env-var reads pick it up unchanged.
+const pkg = require("../package.json");
+if (!process.env.CONXA_EXECUTE_CLERK_DOMAIN && pkg.conxaExecuteClerkDomain) {
+  process.env.CONXA_EXECUTE_CLERK_DOMAIN = pkg.conxaExecuteClerkDomain;
+}
+if (!process.env.CONXA_EXECUTE_CLERK_CLIENT_ID && pkg.conxaExecuteClerkClientId) {
+  process.env.CONXA_EXECUTE_CLERK_CLIENT_ID = pkg.conxaExecuteClerkClientId;
+}
 
 // Ask the OS for an unused loopback port before Electron reads command line switches —
 // --remote-debugging-port needs a concrete number, not 0 (Electron doesn't surface the
@@ -107,111 +120,98 @@ function createWindow() {
   });
 }
 
-function fail(code, message) {
-  return { ok: false, code, message };
+const RUNTIME_MISSING_MESSAGE = "Conxa runtime is not installed. Install a skill pack first, then reopen CONXA.";
+
+// One place to turn an internal error code into words a person can act on.
+// Anything not listed here falls back to a generic sentence rather than the
+// raw e.message — an MCP SDK string, an HTTP status, or a stack trace is not
+// something a user can do anything with.
+const ERROR_MESSAGES = {
+  runtime_missing: RUNTIME_MISSING_MESSAGE,
+  runtime_bad_reply: null, // mcp_client.js already writes a full human sentence for this one
+  not_signed_in: "Sign in to CONXA in Settings to use this mode.",
+  not_authenticated: "Your CONXA sign-in expired. Sign in again in Settings.",
+  session_expired: "Your CONXA sign-in expired. Sign in again in Settings.",
+  login_timeout: "Sign-in timed out. Try again.",
+  auth_not_configured: "Sign-in isn't set up in this build.",
+  login_identity_missing: "CONXA couldn't read your account details after sign-in. Try again.",
+  claim_failed: "Could not redeem that code.",
+  no_grant_id: "Paste an invite code first.",
+  no_byo_key: "Chat needs your own API key. Open Settings, paste a key and base URL.",
+  no_session: "No active chat session.",
+};
+
+function humanMessage(code, fallbackMessage) {
+  if (Object.prototype.hasOwnProperty.call(ERROR_MESSAGES, code)) {
+    return ERROR_MESSAGES[code] || fallbackMessage;
+  }
+  if (/^execute_api_http_/.test(code || "")) {
+    return "CONXA's servers are unreachable right now. Try again in a moment.";
+  }
+  return "Something went wrong. Try again, and if it keeps happening restart CONXA.";
 }
 
-ipcMain.handle("runtime:status", () => {
-  const cmd = mcp.resolveRuntimeCommand();
-  return cmd
-    ? { ok: true, command: cmd.command }
-    : fail("runtime_missing", "Conxa runtime is not installed. Form and chat will not hang — install a skill pack first.");
+function fail(code, message) {
+  return { ok: false, code, message: message || humanMessage(code) };
+}
+
+// Wraps an IPC handler so every failure path returns the same
+// { ok:false, code, message } shape with a human sentence, and every error is
+// still logged to the main-process console so it isn't lost entirely.
+function handle(channel, fn) {
+  ipcMain.handle(channel, async (event, payload) => {
+    try {
+      return await fn(event, payload);
+    } catch (e) {
+      const code = e.code || `${channel.replace(/[:.]/g, "_")}_error`;
+      console.error(`ipc ${channel} failed:`, e);
+      return fail(code, humanMessage(code, e.message));
+    }
+  });
+}
+
+handle("runtime:status", () => {
+  const cmd = resolveRuntimeCommand();
+  return cmd ? { ok: true, command: cmd.command } : fail("runtime_missing");
 });
 
-ipcMain.handle("skills:list", async () => {
-  try {
-    return await mcp.listSkills();
-  } catch (e) {
-    return fail(e.code || "mcp_error", e.message);
-  }
-});
+handle("skills:list", () => mcp.listSkills());
 
-ipcMain.handle("skills:inputs", async (_e, payload) => {
-  try {
-    return await mcp.getSkillInputs(payload.skill, payload.workspace_id);
-  } catch (e) {
-    return fail(e.code || "mcp_error", e.message);
-  }
-});
+handle("skills:inputs", (_e, payload) => mcp.getSkillInputs(payload.skill, payload.workspace_id));
 
-ipcMain.handle("skills:execute", async (_e, payload) => {
-  try {
-    const result = await mcp.executeSkill(payload);
-    history.pushHistory({
-      at: new Date().toISOString(),
-      skill: payload.skill,
-      workspace_id: payload.workspace_id || null,
-      status: result.status,
-      run_id: result.run_id,
-      message: String(result.text || "").trim().slice(0, 300),
-    });
-    return result;
-  } catch (e) {
-    return fail(e.code || "mcp_error", e.message);
-  }
+handle("skills:execute", async (_e, payload) => {
+  const result = await mcp.executeSkill(payload);
+  history.pushHistory({
+    at: new Date().toISOString(),
+    skill: payload.skill,
+    workspace_id: payload.workspace_id || null,
+    status: result.status,
+    run_id: result.run_id,
+    message: String(result.text || "").trim().slice(0, 300),
+  });
+  return result;
 });
 
 ipcMain.handle("history:list", () => ({ ok: true, items: history.loadHistory() }));
 
-ipcMain.handle("history:delete", (_e, payload) => {
-  try {
-    const items = history.deleteHistoryEntry(payload.at);
-    return { ok: true, items };
-  } catch (e) {
-    return fail("history_error", e.message);
-  }
-});
+handle("history:delete", (_e, payload) => ({ ok: true, items: history.deleteHistoryEntry(payload.at) }));
 
 ipcMain.handle("settings:get", () => ({ ok: true, ...settings.publicSettings() }));
 
-ipcMain.handle("settings:save", (_e, payload) => {
-  try {
-    return { ok: true, ...settings.saveSettings(payload || {}) };
-  } catch (e) {
-    return fail("settings_error", e.message);
-  }
+handle("settings:save", (_e, payload) => ({ ok: true, ...settings.saveSettings(payload || {}) }));
+
+handle("sessions:list", async () => ({ ok: true, sessions: await sessionsStore.listSessions() }));
+
+handle("sessions:create", async () => ({ ok: true, session: await sessionsStore.createSession() }));
+
+handle("sessions:load", async (_e, payload) => ({ ok: true, session: await sessionsStore.loadSession(payload.id) }));
+
+handle("sessions:delete", async (_e, payload) => {
+  await sessionsStore.deleteSession(payload.id);
+  return { ok: true };
 });
 
-ipcMain.handle("sessions:list", async () => {
-  try {
-    return { ok: true, sessions: await sessionsStore.listSessions() };
-  } catch (e) {
-    return fail(e.code || "sessions_error", e.message);
-  }
-});
-
-ipcMain.handle("sessions:create", async () => {
-  try {
-    return { ok: true, session: await sessionsStore.createSession() };
-  } catch (e) {
-    return fail(e.code || "sessions_error", e.message);
-  }
-});
-
-ipcMain.handle("sessions:load", async (_e, payload) => {
-  try {
-    return { ok: true, session: await sessionsStore.loadSession(payload.id) };
-  } catch (e) {
-    return fail(e.code || "sessions_error", e.message);
-  }
-});
-
-ipcMain.handle("sessions:delete", async (_e, payload) => {
-  try {
-    await sessionsStore.deleteSession(payload.id);
-    return { ok: true };
-  } catch (e) {
-    return fail(e.code || "sessions_error", e.message);
-  }
-});
-
-ipcMain.handle("auth:login", async () => {
-  try {
-    return { ok: true, identity: await authService.login() };
-  } catch (e) {
-    return fail(e.code || "auth_error", e.message);
-  }
-});
+handle("auth:login", async () => ({ ok: true, identity: await authService.login() }));
 
 ipcMain.handle("auth:logout", () => {
   authService.logout();
@@ -223,31 +223,21 @@ ipcMain.handle("auth:status", async () => {
   return { ok: true, signedIn: Boolean(identity), identity };
 });
 
-ipcMain.handle("account:entitlement", async () => {
-  try {
-    return {
-      ok: true,
-      entitlement: await executeClient.getEntitlement(),
-      plansUrl: `${executeClient.baseUrl()}/plans`,
-    };
-  } catch (e) {
-    return fail(e.code || "entitlement_error", e.message);
-  }
-});
+handle("account:entitlement", async () => ({
+  ok: true,
+  entitlement: await executeClient.getEntitlement(),
+  plansUrl: `${executeClient.baseUrl()}/plans`,
+}));
 
-ipcMain.handle("account:redeem-grant", async (_e, payload) => {
+handle("account:redeem-grant", async (_e, payload) => {
   const grantId = String(payload?.grantId || "").trim();
-  if (!grantId) return fail("no_grant_id", "Paste an invite code first.");
-  try {
-    const result = await executeClient.claimGrant(grantId);
-    // A claimed seat draws entirely from the granting workspace's pool — no
-    // personal BYOK/topup/subscription fallback, so local chat routing must
-    // switch away from whatever mode was previously saved.
-    settings.saveSettings({ mode: "workspace_pool" });
-    return { ok: true, workspaceName: result.workspace_name };
-  } catch (e) {
-    return fail(e.code || "claim_failed", e.message);
-  }
+  if (!grantId) return fail("no_grant_id");
+  const result = await executeClient.claimGrant(grantId);
+  // A claimed seat draws entirely from the granting workspace's pool — no
+  // personal BYOK/topup/subscription fallback, so local chat routing must
+  // switch away from whatever mode was previously saved.
+  settings.saveSettings({ mode: "workspace_pool" });
+  return { ok: true, workspaceName: result.workspace_name };
 });
 
 ipcMain.handle("shell:openExternal", (_e, payload) => {
@@ -304,88 +294,72 @@ Rules:
 - Do not run a shell, edit files, or browse the web yourself. There is no bash or write tool.
 - execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.`;
 
-ipcMain.handle("chat:send", async (_e, payload) => {
+handle("chat:send", async (_e, payload) => {
   const full = settings.loadSettings();
   const mode = full.mode || "byok";
   const sessionId = payload.sessionId;
-  if (!sessionId) {
-    return fail("no_session", "No active chat session.");
-  }
-  if (!mcp.resolveRuntimeCommand()) {
-    return fail("runtime_missing", "Conxa runtime is not installed.");
-  }
+  if (!sessionId) return fail("no_session");
+  if (!resolveRuntimeCommand()) return fail("runtime_missing");
 
   let baseURL, apiKey, model;
   if (mode === "byok") {
-    if (!full.apiKey) {
-      return fail("no_byo_key", "Chat needs your own API key. Form still works — open Settings, paste a key and base URL.");
-    }
+    if (!full.apiKey) return fail("no_byo_key");
     baseURL = full.baseURL || "https://api.openai.com/v1";
     apiKey = full.apiKey;
     model = full.model || "gpt-4o-mini";
   } else {
-    try {
-      apiKey = await authService.getToken();
-    } catch (e) {
-      return fail("not_signed_in", "Sign in to CONXA in Settings to use this mode.");
-    }
+    apiKey = await authService.getToken(); // throws not_authenticated/session_expired — caught by handle()
     baseURL = `${executeClient.baseUrl()}/v1`;
     model = "conxa-execute"; // advisory only — the backend picks the real provider/model per plan.
   }
 
-  let priorMessages;
-  try {
-    priorMessages = (await sessionsStore.loadSession(sessionId)).messages;
-  } catch (e) {
-    return fail("session_error", e.message);
-  }
+  const priorMessages = (await sessionsStore.loadSession(sessionId)).messages;
   const nextMessages = compaction.pruneIfNeeded([
     ...priorMessages,
     { role: "user", content: String(payload.text || "") },
   ]);
 
-  try {
-    const tools = await mcp.listChatTools();
-    const result = await runTurn({
-      baseURL,
-      apiKey,
-      model,
-      system: SYSTEM_PROMPT,
-      messages: nextMessages,
-      tools,
-      executeTool: async (name, args) => {
-        if (name === "execute_skill") {
-          args = { ...args, watch: true };
-        }
-        const text = await mcp.callTool(name, args);
-        if (name === "execute_skill") {
-          history.pushHistory({
-            at: new Date().toISOString(),
-            skill: args.skill,
-            workspace_id: args.workspace_id || null,
-            status: mcp.classifyRunResult(text),
-            run_id: mcp.extractRunId(text),
-            message: String(text || "").trim().slice(0, 300),
-            via: "chat",
-          });
-        }
-        return text;
-      },
+  const tools = await mcp.listChatTools();
+  const result = await runTurn({
+    baseURL,
+    apiKey,
+    model,
+    system: SYSTEM_PROMPT,
+    messages: nextMessages,
+    tools,
+    executeTool: async (name, args) => {
+      if (name === "execute_skill") {
+        args = { ...args, watch: true };
+      }
+      const text = await mcp.callTool(name, args);
+      if (name === "execute_skill") {
+        history.pushHistory({
+          at: new Date().toISOString(),
+          skill: args.skill,
+          workspace_id: args.workspace_id || null,
+          status: classifyRunResult(text),
+          run_id: extractRunId(text),
+          message: String(text || "").trim().slice(0, 300),
+          via: "chat",
+        });
+      }
+      return text;
+    },
+  });
+  if (!result.ok) return fail("model_error", result.error);
+
+  await sessionsStore.saveSessionMessages(sessionId, result.messages);
+  if (mode !== "byok") {
+    // ponytail: a sync-push failure shouldn't block the chat from working —
+    // local storage (just written above) is already this device's source
+    // of truth; the next successful sync catches it up. Still logged, so a
+    // persistently failing sync isn't invisible forever.
+    executeClient.updateSession(sessionId, result.messages).catch((err) => {
+      console.error("chat:send: session sync push failed", err);
     });
-    if (!result.ok) return fail("model_error", result.error);
-
-    await sessionsStore.saveSessionMessages(sessionId, result.messages);
-    if (mode !== "byok") {
-      // ponytail: a sync-push failure shouldn't block the chat from working —
-      // local storage (just written above) is already this device's source
-      // of truth; the next successful sync catches it up.
-      executeClient.updateSession(sessionId, result.messages).catch(() => {});
-    }
-
-    return { ok: true, text: result.text };
-  } catch (e) {
-    return fail(e.code || "chat_error", e.message);
   }
+
+  return { ok: true, text: result.text };
 });
 
 app.on("second-instance", () => {
@@ -410,12 +384,14 @@ app.whenReady().then(async () => {
   // Silent auto-update: feed URL + useMultipleRangeRequest come from app-update.yml
   // (generated by electron-builder from electron-builder.yml's publish block). No
   // update UI — autoDownload/autoInstallOnAppQuit default true, so the installer
-  // just runs the next time the user quits.
+  // just runs the next time the user quits. Failures are logged, not surfaced to the
+  // user — a failed background update check should never interrupt them — but they
+  // must not vanish entirely, or a persistently broken updater is undiagnosable.
   if (!IS_DEV) {
     const { autoUpdater } = require("electron-updater");
     autoUpdater.logger = null;
-    autoUpdater.on("error", () => {}); // a failed download surfaces only as this event
-    autoUpdater.checkForUpdates().catch(() => {});
+    autoUpdater.on("error", (err) => console.error("autoUpdater error:", err));
+    autoUpdater.checkForUpdates().catch((err) => console.error("autoUpdater check failed:", err));
   }
 });
 

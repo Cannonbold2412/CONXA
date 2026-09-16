@@ -18,11 +18,10 @@ from conxa_core.config import settings
 def verify_clerk_jwt(token: str) -> dict[str, Any]:
     if not settings.clerk_issuer or not settings.clerk_jwks_url:
         raise HTTPException(status_code=500, detail="clerk_auth_not_configured")
-    try:
-        import jwt
-        from jwt import PyJWKClient
-    except Exception as exc:  # pragma: no cover - exercised only in auth deployments
-        raise HTTPException(status_code=500, detail="pyjwt_dependency_missing") from exc
+    # PyJWT is a hard dependency (requirements.txt), not optional — a missing
+    # import here would mean a broken deploy, not a runtime condition to guard.
+    import jwt
+    from jwt import PyJWKClient
 
     try:
         signing_key = PyJWKClient(settings.clerk_jwks_url).get_signing_key_from_jwt(token)
@@ -44,14 +43,19 @@ def verify_clerk_jwt(token: str) -> dict[str, Any]:
     return dict(payload)
 
 
-def get_current_user(authorization: str = Header(default="")) -> str:
-    """FastAPI dependency: verify the bearer Clerk JWT, return the user id (`sub`)."""
+def _verified_user_id(authorization: str) -> tuple[str, dict[str, Any]]:
     if not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing_bearer_token")
     claims = verify_clerk_jwt(authorization[7:].strip())
     user_id = claims.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="invalid_clerk_token")
+    return user_id, claims
+
+
+def get_current_user(authorization: str = Header(default="")) -> str:
+    """FastAPI dependency: verify the bearer Clerk JWT, return the user id (`sub`)."""
+    user_id, _claims = _verified_user_id(authorization)
     return user_id
 
 
@@ -60,11 +64,6 @@ def get_current_claims(authorization: str = Header(default="")) -> dict[str, Any
     — used by the Execute-grant claim route, which needs the invitee's email
     to match against the grant (see routes_grants.py). Same claim keys
     conxa-cloud's saas.py reads (`email` / `primary_email_address`)."""
-    if not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="missing_bearer_token")
-    claims = verify_clerk_jwt(authorization[7:].strip())
-    user_id = claims.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="invalid_clerk_token")
+    user_id, claims = _verified_user_id(authorization)
     email = str(claims.get("email") or claims.get("primary_email_address") or "").strip()
     return {"user_id": user_id, "email": email}

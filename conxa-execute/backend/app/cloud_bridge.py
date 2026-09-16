@@ -40,9 +40,12 @@ def claim_grant(*, grant_id: str, user_id: str, email: str) -> dict[str, Any]:
 
 
 def pool_check(*, user_id: str, estimated_tokens: int = 0) -> dict[str, Any]:
-    """Returns {"bound": bool, "ok": bool, ...}. Fails closed (bound/ok False)
-    on any network error rather than raising — a transient Cloud outage
-    should block a pool-bound chat turn, not crash the request."""
+    """Returns {"bound": bool, "ok": bool, ...}. On a network error, returns
+    {"unknown": True, "bound": False, "ok": False} instead of a plain
+    "not bound" — a caller that treated network trouble as "not bound" would
+    fall through to billing this user's personal wallet/subscription instead
+    of their workspace's pool, silently charging the wrong bucket. Callers
+    must check `unknown` and refuse the turn rather than guess."""
     try:
         resp = httpx.post(
             f"{_base_url()}/api/v1/internal/execute/pool/check",
@@ -53,7 +56,7 @@ def pool_check(*, user_id: str, estimated_tokens: int = 0) -> dict[str, Any]:
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPError:
-        return {"bound": False, "ok": False}
+        return {"unknown": True, "bound": False, "ok": False}
 
 
 def pool_debit(*, user_id: str, input_tokens: int, output_tokens: int) -> dict[str, Any]:

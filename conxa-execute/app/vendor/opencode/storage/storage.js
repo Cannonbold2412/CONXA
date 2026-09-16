@@ -15,41 +15,18 @@
  *    recursive glob — conxa-execute's key-space is two flat namespaces
  *    (session/<id>.json, message/<id>.json), not opencode's nested
  *    session/message/part hierarchy, so there is nothing to recurse into.
- *  - Locking uses effect's Effect.makeSemaphore(1), not opencode's
- *    TxReentrantLock/TReentrantLock (effect 3.22's renamed equivalent).
- *    Verified by direct reproduction: TReentrantLock.make succeeds on its
- *    own, but withReadLock/withWriteLock throws inside effect@3.22.1's own
- *    STM internals (entry.js reading `.versioned` off an undefined ref) —
- *    a genuine bug in the installed effect version, not a usage error, so
- *    this is a real fix, not a shortcut. The cost: a semaphore has no
- *    separate read-lock mode, so concurrent reads of the same file now
- *    serialize like writes do (still fully correct, just not the same
- *    read-concurrency optimization opencode's TxReentrantLock gives).
- *    Revisit if a later effect release fixes TReentrantLock and read
- *    concurrency on hot files actually matters at this app's scale.
- *  - ponytail: the lock registry is a plain Map, not opencode's RcMap (which
- *    adds eager eviction of idle locks — a memory-bound optimization for
- *    opencode's much larger, longer-running server process). A desktop app
- *    holding a few dozen semaphores in memory for its lifetime is not a real
- *    cost; switch to RcMap if session-file counts ever get large enough to
- *    matter.
+ *  - Locking is a plain promise-chain mutex per file path, not opencode's
+ *    TxReentrantLock or the effect package's Semaphore (an earlier version of
+ *    this file used effect's Effect.makeSemaphore(1) purely to get this same
+ *    one-permit-per-file behavior, which pulled the whole `effect` package in
+ *    as a runtime dependency for six lines of actual logic — replaced with a
+ *    plain mutex so the dependency, and the FiberFailure-unwrapping ceremony
+ *    it required, are gone). Same cost as before: a mutex has no separate
+ *    read-lock mode, so concurrent reads of the same file still serialize
+ *    like writes do.
  */
 const fs = require("fs/promises");
 const path = require("path");
-const { Effect, Cause, Runtime } = require("effect");
-
-// Effect.runPromise rejects with a FiberFailure wrapper around ANY failure
-// (typed or defect) rather than the plain error — unwrap it so callers of
-// this module (main.js) see the real NotFoundError/Error, not an
-// effect-internal type they shouldn't need to know about.
-function runPromise(effect) {
-  return Effect.runPromise(effect).catch((err) => {
-    if (Runtime.isFiberFailure(err)) {
-      throw Cause.squash(err[Runtime.FiberFailureCauseId]);
-    }
-    throw err;
-  });
-}
 
 class NotFoundError extends Error {
   constructor(target) {
@@ -75,79 +52,64 @@ function isMissing(err) {
   return Boolean(err) && err.code === "ENOENT";
 }
 
+// ponytail: a plain Map of promise chains, not an eagerly-evicting registry
+// (opencode's RcMap) — a desktop app holding a few dozen chained promises in
+// memory for its lifetime is not a real cost. Revisit if session-file counts
+// ever get large enough to matter.
 const _locks = new Map();
-function lockFor(target) {
-  let lock = _locks.get(target);
-  if (!lock) {
-    lock = Effect.runSync(Effect.makeSemaphore(1));
-    _locks.set(target, lock);
-  }
-  return lock;
+function withLock(target, fn) {
+  const prior = _locks.get(target) || Promise.resolve();
+  const next = prior.then(fn, fn); // run fn regardless of the prior chain's outcome
+  // Swallow so an awaited failure doesn't become an unhandled rejection on
+  // the chain itself — callers still see the real rejection via `next`.
+  _locks.set(target, next.then(() => undefined, () => undefined));
+  return next;
 }
 
-function withLock(target, effect) {
-  return lockFor(target).withPermits(1)(effect);
-}
-
-function remove(key) {
+async function remove(key) {
   const target = keyToFile(key);
-  return runPromise(
-    withLock(
-      target,
-      Effect.tryPromise({
-        try: () => fs.rm(target),
-        catch: (err) => (isMissing(err) ? undefined : err),
-      }).pipe(Effect.catchAll(() => Effect.void))
-    )
-  );
+  return withLock(target, async () => {
+    try {
+      await fs.rm(target);
+    } catch (err) {
+      if (!isMissing(err)) throw err;
+    }
+  });
 }
 
-function read(key) {
+async function read(key) {
   const target = keyToFile(key);
-  return runPromise(
-    withLock(
-      target,
-      Effect.tryPromise({
-        try: async () => JSON.parse(await fs.readFile(target, "utf8")),
-        catch: (err) => (isMissing(err) ? new NotFoundError(target) : err),
-      })
-    )
-  );
+  return withLock(target, async () => {
+    try {
+      return JSON.parse(await fs.readFile(target, "utf8"));
+    } catch (err) {
+      throw isMissing(err) ? new NotFoundError(target) : err;
+    }
+  });
 }
 
-function write(key, content) {
+async function write(key, content) {
   const target = keyToFile(key);
-  return runPromise(
-    withLock(
-      target,
-      Effect.tryPromise({
-        try: async () => {
-          await fs.mkdir(path.dirname(target), { recursive: true });
-          await fs.writeFile(target, JSON.stringify(content, null, 2));
-        },
-        catch: (err) => err,
-      })
-    )
-  );
+  return withLock(target, async () => {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, JSON.stringify(content, null, 2));
+  });
 }
 
-function update(key, fn) {
+async function update(key, fn) {
   const target = keyToFile(key);
-  return runPromise(
-    withLock(
-      target,
-      Effect.tryPromise({
-        try: async () => {
-          const content = JSON.parse(await fs.readFile(target, "utf8"));
-          fn(content);
-          await fs.mkdir(path.dirname(target), { recursive: true });
-          await fs.writeFile(target, JSON.stringify(content, null, 2));
-          return content;
-        },
-        catch: (err) => (isMissing(err) ? new NotFoundError(target) : err),
-      })
-    )
-  );
+  return withLock(target, async () => {
+    let content;
+    try {
+      content = JSON.parse(await fs.readFile(target, "utf8"));
+    } catch (err) {
+      throw isMissing(err) ? new NotFoundError(target) : err;
+    }
+    fn(content);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, JSON.stringify(content, null, 2));
+    return content;
+  });
 }
 
 async function list(prefix) {

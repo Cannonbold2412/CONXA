@@ -8,9 +8,23 @@ function historyPath() {
 }
 
 function loadHistory() {
+  const p = historyPath();
+  let raw;
   try {
-    return JSON.parse(fs.readFileSync(historyPath(), "utf8"));
+    raw = fs.readFileSync(p, "utf8");
   } catch {
+    return []; // no history file yet — nothing to recover
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    // The file exists but isn't valid JSON — don't silently start clean, or
+    // the very next pushHistory() overwrites it and the run history is gone
+    // for good. Move it aside so a person could still recover it by hand.
+    console.error("history: run-history.json is corrupt, moving it aside", err);
+    try {
+      fs.renameSync(p, `${p}.corrupt-${Date.now()}`);
+    } catch (_) {}
     return [];
   }
 }

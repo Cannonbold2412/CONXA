@@ -47,10 +47,7 @@ def _mark_granted(namespace: str, idempotency_key: str, info: dict) -> None:
 
 @router.get("/plans", response_class=HTMLResponse)
 def list_plans() -> str:
-    packs = sorted(
-        ((t, i) for t, i in TOKEN_TIERS.items() if i["period"] is None),
-        key=lambda kv: kv[1]["tokens"],
-    )
+    packs = sorted(TOKEN_TIERS.items(), key=lambda kv: kv[1]["tokens"])
     subs = sorted(PLAN_TIERS.items(), key=lambda kv: kv[1]["monthly_quota"])
 
     def _pack_rows() -> str:
@@ -78,12 +75,13 @@ def list_plans() -> str:
 
 @router.post("/v1/checkout/{tier}")
 async def checkout(tier: str, user_id: str = Depends(get_current_user)) -> JSONResponse:
-    if tier not in TOKEN_TIERS:
+    is_pack = tier in TOKEN_TIERS
+    if not is_pack and tier not in PLAN_TIERS:
         raise HTTPException(status_code=404, detail="unknown_plan")
     order_ref = f"exec_{secrets.token_hex(8)}_{tier}_{int(time.time())}"
     db_set(_ORDER_USER_NS, order_ref, {"tier": tier, "user_id": user_id})
     return_url = f"{settings.api_base_url}/checkout/success?ref={order_ref}"
-    if TOKEN_TIERS[tier]["period"] is None:
+    if is_pack:
         link = cashfree.create_pack_order(tier, order_ref, return_url)
     else:
         link = cashfree.create_sub_order(tier, order_ref, return_url)
@@ -96,10 +94,10 @@ def checkout_success(ref: str) -> str:
     if not mapping:
         raise HTTPException(status_code=404, detail="unknown_order")
     tier = mapping["tier"]
-    info = TOKEN_TIERS[tier]
     user_id = mapping["user_id"]
 
-    if info["period"] is None:
+    if tier in TOKEN_TIERS:
+        info = TOKEN_TIERS[tier]
         if not cashfree.verify_pack_order(ref):
             return "<h1>Payment not confirmed yet</h1><p>Refresh in a moment.</p>"
         if not _already_granted(_ADDON_GRANTED_NS, ref):
@@ -108,6 +106,8 @@ def checkout_success(ref: str) -> str:
         balance = wallet.get_balance(user_id)
         return f"<h1>Topped up!</h1><p>New balance: {balance:,} tokens.</p><p>Return to the CONXA app.</p>"
 
+    if tier not in PLAN_TIERS:
+        raise HTTPException(status_code=404, detail="unknown_plan")
     if not cashfree.verify_sub_order(ref):
         return "<h1>Subscription not active yet</h1><p>Refresh in a moment.</p>"
     # Subscription quota activates via the recurring webhook, not here — this
@@ -167,7 +167,10 @@ async def webhook_cashfree(request: Request) -> dict[str, bool]:
     if settings.cashfree_webhook_secret:
         expected = cashfree.webhook_signature(payload, settings.cashfree_webhook_secret)
         received_sig = payload.get("signature", "")
-        if received_sig and not hmac.compare_digest(expected, received_sig):
+        # A request with no signature field at all used to pass verification
+        # here (the orders webhook below already gets this right) — a secret
+        # being configured means every request must carry a matching one.
+        if not received_sig or not hmac.compare_digest(expected, received_sig):
             raise HTTPException(status_code=400, detail="invalid_signature")
 
     event_type = str(payload.get("cf_event") or "")

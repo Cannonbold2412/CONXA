@@ -35,9 +35,19 @@ def call_chat_completions(body: dict) -> dict:
                     )
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
+                logger.warning("execute_proxy_provider_failed provider=%s model=%s error=%s", provider.provider, model, last_error[:300])
                 continue
             if resp.status_code >= 400:
                 last_error = resp.text
+                logger.warning(
+                    "execute_proxy_provider_failed provider=%s model=%s status=%d error=%s",
+                    provider.provider, model, resp.status_code, last_error[:300],
+                )
+                if resp.status_code == 401:
+                    # This key is bad — the fallback model on the SAME provider
+                    # would fail with the identical 401, so move straight to
+                    # the next provider instead of burning a second call here.
+                    break
                 continue
             return resp.json()
 

@@ -7,6 +7,13 @@ appId: ai.conxa.execute
 productName: Conxa Execute
 copyright: "Copyright © Conxa AI"
 
+# Public (non-secret) Clerk OAuth config for auth_service.js's PKCE flow — baked into the
+# packaged app's package.json since a packaged app doesn't inherit the builder's shell env.
+# main.js promotes these into process.env at startup if not already set. See EXEC-42 (TODO.md).
+extraMetadata:
+  conxaExecuteClerkDomain: https://clerk.apis.conxa.in
+  conxaExecuteClerkClientId: pCbQVP1K15tVmQKP
+
 # Files to include in the app bundle
 files:
   - "**/*"
@@ -17,7 +24,6 @@ files:
   - "!renderer/tsconfig.json"
   - "!electron/test"
   - "!electron/scripts"  # dev-only (dev-electron.js)
-  - "!vendor/opencode/packages"  # unused upstream TS reference sources
   - "!node_modules/.cache"
 
 directories:

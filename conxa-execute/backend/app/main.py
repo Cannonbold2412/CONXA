@@ -35,6 +35,12 @@ def _validate_production_config() -> None:
         missing.append("CASHFREE_APP_ID / CASHFREE_SECRET_KEY / CASHFREE_WEBHOOK_SECRET")
     if not (settings.clerk_issuer and settings.clerk_jwks_url):
         missing.append("SKILL_CLERK_ISSUER / SKILL_CLERK_JWKS_URL")
+    if not settings.execute_service_token:
+        missing.append("SKILL_EXECUTE_SERVICE_TOKEN (Execute-seat pool bridge to conxa-cloud)")
+    if not settings.conxa_cloud_api_base_url:
+        missing.append("SKILL_CONXA_CLOUD_API_BASE_URL (Execute-seat pool bridge to conxa-cloud)")
+    if not (settings.groq_api_keys or settings.google_ai_studio_api_keys or settings.nvidia_nim_api_keys):
+        missing.append("at least one of GROQ_API_KEYS / GOOGLE_AI_STUDIO_API_KEYS / NVIDIA_NIM_API_KEYS")
     if missing:
         raise RuntimeError(
             "Refusing to start: SKILL_AUTH_REQUIRED=true but these are unset: " + ", ".join(missing)
@@ -54,11 +60,6 @@ app.include_router(checkout_router)
 app.include_router(grants_router)
 app.include_router(proxy_router)
 app.include_router(sessions_router)
-
-
-@app.get("/")
-def root() -> dict[str, str]:
-    return {"service": "conxa_execute"}
 
 
 @app.get("/healthz")

@@ -91,19 +91,32 @@ function findServer(handler) {
   });
 }
 
+function transientError(message) {
+  const err = new Error(message);
+  err.transient = true; // network/server trouble, not "this session is invalid"
+  return err;
+}
+
 async function tokenRequest(body) {
   const domain = clerkDomain();
-  const resp = await fetch(`${domain}/oauth/token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": USER_AGENT,
-      Accept: "application/json, */*",
-      Origin: domain,
-      Referer: `${domain}/`,
-    },
-    body,
-  });
+  let resp;
+  try {
+    resp = await fetch(`${domain}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": USER_AGENT,
+        Accept: "application/json, */*",
+        Origin: domain,
+        Referer: `${domain}/`,
+      },
+      body,
+    });
+  } catch (err) {
+    // fetch() rejects on a real network failure (offline, DNS, timeout) —
+    // that says nothing about whether the session itself is still good.
+    throw transientError(`clerk_token_network_error: ${err.message}`);
+  }
   const text = await resp.text();
   let data = null;
   try {
@@ -113,6 +126,7 @@ async function tokenRequest(body) {
   }
   if (!resp.ok) {
     const desc = data ? data.error_description || data.error : text.slice(0, 300);
+    if (resp.status >= 500) throw transientError(`clerk_token_error: ${desc}`);
     throw new Error(`clerk_token_error: ${desc}`);
   }
   const now = Date.now() / 1000;
@@ -272,11 +286,19 @@ async function getToken() {
 }
 
 async function currentIdentity() {
-  if (!loadTokens()) return null;
+  const cached = loadTokens();
+  if (!cached) return null;
   try {
     await getToken();
-  } catch {
-    return null;
+  } catch (err) {
+    if (err.transient) {
+      // A network blip or Clerk 5xx during refresh doesn't mean the user
+      // signed out — show them as still signed in using the last-known
+      // identity rather than bouncing them to the sign-in screen.
+      const identity = claimsFromTokens(cached);
+      return identity && identity.user_id ? identity : null;
+    }
+    return null; // refresh token missing/expired/revoked — genuinely signed out
   }
   const tokens = loadTokens();
   const identity = tokens ? claimsFromTokens(tokens) : null;

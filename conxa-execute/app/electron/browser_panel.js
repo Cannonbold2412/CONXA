@@ -1,7 +1,7 @@
 "use strict";
 /**
- * browser_panel.js — Execute's side of the in-app browser panel (Stage 1: skill runs
- * only; logins and hand-over land in Stage 2 — see the plan this shipped under).
+ * browser_panel.js — Execute's side of the in-app browser panel. Covers skill
+ * runs, logins, and recovery hand-over (EXEC-41 stage 1 + stage 2).
  *
  * Owns one WebContentsView per open tab, grouped by run. The runtime never creates
  * these directly — Electron's CDP target doesn't support Target.createTarget
@@ -99,7 +99,13 @@ async function runEnd(runId) {
     try { if (_win) _win.contentView.removeChildView(t.view); } catch (_) {}
     try { t.view.webContents.close(); } catch (_) {}
   }
-  try { await session.fromPartition(run.partition).clearStorageData(); } catch (_) {}
+  try {
+    await session.fromPartition(run.partition).clearStorageData();
+  } catch (err) {
+    // Not fatal to the run (already ended) but leaves this run's cookies/storage
+    // sitting in the partition indefinitely — worth knowing about, not swallowing.
+    console.error(`browser_panel: failed to clear storage for run ${runId}`, err);
+  }
   if (_onTabsChanged) _onTabsChanged(runId, []);
 }
 
@@ -115,11 +121,4 @@ function setActiveBounds(runId, tabId, rect) {
   run.activeTabId = tabId;
 }
 
-function listRuns() {
-  return [..._runs.entries()].map(([runId, run]) => ({
-    runId,
-    tabs: run.tabs.map((t) => ({ id: t.id, active: t.id === run.activeTabId })),
-  }));
-}
-
-module.exports = { init, newView, newTab, runEnd, setActiveBounds, listRuns };
+module.exports = { init, newView, newTab, runEnd, setActiveBounds };

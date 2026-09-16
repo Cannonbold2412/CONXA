@@ -1,17 +1,19 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Icon, paths } from "./ui";
 
-function TitleButton({
+function Chrome({
   label,
   onClick,
   disabled,
   children,
+  size = "small",
   className = "",
 }: {
   label: string;
   onClick?: () => void;
   disabled?: boolean;
   children: ReactNode;
+  size?: "small" | "wide";
   className?: string;
 }) {
   return (
@@ -21,31 +23,9 @@ function TitleButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className={`app-region-no-drag flex h-9 w-9 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-30 ${className}`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function WindowButton({
-  label,
-  onClick,
-  children,
-  className = "",
-}: {
-  label: string;
-  onClick: () => void;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className={`app-region-no-drag flex h-9 w-11 items-center justify-center text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg ${className}`}
+      className={`app-region-no-drag flex h-9 items-center justify-center text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-30 ${
+        size === "wide" ? "w-11" : "w-9 rounded-md"
+      } ${className}`}
     >
       {children}
     </button>
@@ -59,8 +39,6 @@ type Props = {
   onForward: () => void;
   canGoBack: boolean;
   canGoForward: boolean;
-  initials: string;
-  onProfile: () => void;
 };
 
 export function TitleBar({
@@ -70,8 +48,6 @@ export function TitleBar({
   onForward,
   canGoBack,
   canGoForward,
-  initials,
-  onProfile,
 }: Props) {
   const wc = window.conxaExecute.windowControls;
   const [isMaximized, setIsMaximized] = useState(false);
@@ -91,49 +67,46 @@ export function TitleBar({
   return (
     <header className="app-region-drag flex h-10 shrink-0 select-none items-center border-b border-line bg-bg-sidebar">
       <div className="app-region-no-drag flex items-center gap-0.5 pl-1.5">
-        <TitleButton label="Menu" onClick={onMenu}>
+        <Chrome label="Menu" onClick={onMenu}>
           <Icon d={paths.menu} size={16} />
-        </TitleButton>
-        <TitleButton label="Toggle sidebar" onClick={onToggleSidebar}>
+        </Chrome>
+        <Chrome label="Toggle sidebar" onClick={onToggleSidebar}>
           <Icon d={paths.panel} size={16} />
-        </TitleButton>
-        <TitleButton label="Back" onClick={onBack} disabled={!canGoBack}>
+        </Chrome>
+        <Chrome label="Back" onClick={onBack} disabled={!canGoBack}>
           <Icon d={paths.back} size={16} />
-        </TitleButton>
-        <TitleButton label="Forward" onClick={onForward} disabled={!canGoForward}>
+        </Chrome>
+        <Chrome label="Forward" onClick={onForward} disabled={!canGoForward}>
           <Icon d={paths.forward} size={16} />
-        </TitleButton>
+        </Chrome>
       </div>
 
       <div className="min-w-0 flex-1" />
 
+      {/* Account lives in the sidebar footer only — a second avatar here used to
+          toggle the same popover, which is anchored to the sidebar, so clicking
+          it opened a menu in the opposite corner of the window. */}
       <div className="app-region-no-drag flex h-full items-center">
-        <button
-          type="button"
-          aria-label="Account"
-          onClick={onProfile}
-          className="mx-1 flex h-7 w-7 items-center justify-center rounded-full bg-bg-active text-[11px] font-medium text-fg"
-        >
-          {initials}
-        </button>
-        <WindowButton label="Minimize" onClick={() => void wc.minimize()}>
+        <Chrome label="Minimize" size="wide" onClick={() => void wc.minimize()}>
           <Icon d={paths.minimize} size={14} />
-        </WindowButton>
-        <WindowButton
+        </Chrome>
+        <Chrome
           label={isMaximized ? "Restore" : "Maximize"}
+          size="wide"
           onClick={() => {
             void wc.toggleMaximize().then((maximized) => setIsMaximized(maximized));
           }}
         >
           <Icon d={isMaximized ? paths.restore : paths.maximize} size={13} />
-        </WindowButton>
-        <WindowButton
+        </Chrome>
+        <Chrome
           label="Close"
+          size="wide"
           className="hover:bg-err/80 hover:text-white"
           onClick={() => void wc.close()}
         >
           <Icon d={paths.x} size={14} />
-        </WindowButton>
+        </Chrome>
       </div>
     </header>
   );

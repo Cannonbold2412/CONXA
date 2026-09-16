@@ -5,10 +5,13 @@
  * matching opencode's convention: session/<id>.json (metadata) and
  * message/<id>.json (the flat messages array run_turn.js reads/returns).
  *
- * Works in every mode, including BYOK — this is local-only persistence with
- * no account involved. Top-up/Subscription modes additionally push each
- * session to the backend session API (see execute_client.js) for
- * cross-device sync; this store stays the source of truth for local reads.
+ * Works in every mode, including BYOK — this is local-only persistence and
+ * never calls the backend. (Signing in to CONXA is required to reach any
+ * mode including BYOK, but BYOK's chat requests still go straight from this
+ * device to your own model endpoint, never through conxa-execute's backend.)
+ * Top-up/Subscription/workspace-pool modes additionally push each session to
+ * the backend session API (see execute_client.js) for cross-device sync;
+ * this store stays the source of truth for local reads.
  */
 const crypto = require("crypto");
 const storage = require("../vendor/opencode/storage/storage");

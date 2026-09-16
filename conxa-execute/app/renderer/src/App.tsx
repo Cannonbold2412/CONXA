@@ -3,7 +3,7 @@ import type { ChatMessage, ChatMode, Entitlement, HistoryRow, Identity, SessionS
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
 import { BrowserPanel } from "./BrowserPanel";
-import { Icon, Row, paths } from "./ui";
+import { Button, Icon, Row, paths } from "./ui";
 
 type Mode = "form" | "chat";
 
@@ -25,24 +25,34 @@ function userInitials(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+// The runtime's declared-inputs schema is plain JSON-Schema: { properties: {...}, required: [...] }.
 function fieldList(schema: Record<string, unknown>): { name: string; required: boolean; description: string }[] {
-  const props = (schema.properties || schema.fields || {}) as Record<string, { description?: string; type?: string }>;
+  const props = (schema.properties || {}) as Record<string, { description?: string; type?: string }>;
   const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
-  if (props && typeof props === "object" && !Array.isArray(props) && Object.keys(props).length) {
-    return Object.keys(props).map((name) => ({
-      name,
-      required: required.has(name),
-      description: String(props[name]?.description || ""),
-    }));
-  }
-  if (Array.isArray(schema)) {
-    return (schema as { name?: string; key?: string; required?: boolean; description?: string }[]).map((f) => ({
-      name: String(f.name || f.key || ""),
-      required: Boolean(f.required),
-      description: String(f.description || ""),
-    }));
-  }
-  return [];
+  if (!props || typeof props !== "object" || Array.isArray(props)) return [];
+  return Object.keys(props).map((name) => ({
+    name,
+    required: required.has(name),
+    description: String(props[name]?.description || ""),
+  }));
+}
+
+function SkillPills({ skills, onPick, limit }: { skills: SkillRow[]; onPick: (s: SkillRow) => void; limit?: number }) {
+  const list = limit ? skills.slice(0, limit) : skills;
+  return (
+    <div className="flex max-w-[720px] flex-wrap justify-center gap-2">
+      {list.map((s) => (
+        <button
+          key={s.skill}
+          type="button"
+          className="rounded-full border border-line bg-transparent px-3.5 py-1.5 text-[13px] text-fg-muted hover:bg-bg-hover hover:text-fg"
+          onClick={() => onPick(s)}
+        >
+          {s.name || s.skill}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function App() {
@@ -52,9 +62,13 @@ export function App() {
   const [skills, setSkills] = useState<SkillRow[]>([]);
   const [selected, setSelected] = useState<SkillRow | null>(null);
   const [schema, setSchema] = useState<Record<string, unknown>>({});
+  const [inputsError, setInputsError] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [formMsg, setFormMsg] = useState("");
+  const [formOk, setFormOk] = useState(true);
+  const [formDetail, setFormDetail] = useState("");
+  const [formDetailsOpen, setFormDetailsOpen] = useState(false);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [mode, setMode] = useState<Mode>("chat");
   const [hasKey, setHasKey] = useState(false);
@@ -64,18 +78,22 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
+  const [chatLog, setChatLog] = useState<(ChatMessage & { error?: boolean })[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatMode, setChatMode] = useState<ChatMode>("byok");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [startupError, setStartupError] = useState("");
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [redeemCode, setRedeemCode] = useState("");
   const [redeeming, setRedeeming] = useState(false);
   const [redeemMsg, setRedeemMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [loginError, setLoginError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [sidebarError, setSidebarError] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("conxa-theme") === "light" ? "light" : "dark"),
   );
@@ -111,38 +129,46 @@ export function App() {
   }, [api]);
 
   const load = useCallback(async () => {
-    const st = await api.runtimeStatus();
-    setRuntimeOk(st.ok);
-    setRuntimeMsg(st.ok ? "" : st.message || "Runtime missing");
-    const s = await api.getSettings();
-    setHasKey(Boolean(s.hasKey));
-    setBaseURL(s.baseURL || "");
-    setModel(s.model || "");
-    setChatMode(s.mode || "byok");
-    await refreshHistory();
-    await refreshAccount();
-    setAuthChecked(true);
+    setStartupError("");
+    try {
+      const st = await api.runtimeStatus();
+      setRuntimeOk(st.ok);
+      setRuntimeMsg(st.ok ? "" : st.message || "Runtime missing");
+      const s = await api.getSettings();
+      setHasKey(Boolean(s.hasKey));
+      setBaseURL(s.baseURL || "");
+      setModel(s.model || "");
+      setChatMode(s.mode || "byok");
+      await refreshHistory();
+      await refreshAccount();
 
-    const list = await refreshSessions();
-    const current = list[0] || (await api.createSession()).session;
-    if (current) {
-      setSessionId(current.id);
-      const loaded = await api.loadSession({ id: current.id });
-      setChatLog(loaded.session?.messages || []);
-    }
+      const list = await refreshSessions();
+      const current = list[0] || (await api.createSession()).session;
+      if (current) {
+        setSessionId(current.id);
+        const loaded = await api.loadSession({ id: current.id });
+        setChatLog(loaded.session?.messages || []);
+      }
 
-    if (!st.ok) {
-      setSkills([]);
-      return;
+      if (!st.ok) {
+        setSkills([]);
+        return;
+      }
+      const listed = await api.listSkills();
+      if (!listed.ok) {
+        setRuntimeOk(false);
+        setRuntimeMsg(listed.message || "Could not list skills");
+        setSkills([]);
+        return;
+      }
+      setSkills(listed.skills || []);
+    } catch (e) {
+      // Any failure here used to leave the app permanently showing a blank
+      // window (authChecked never became true) — show a real screen instead.
+      setStartupError(e instanceof Error ? e.message : "CONXA couldn't start.");
+    } finally {
+      setAuthChecked(true);
     }
-    const listed = await api.listSkills();
-    if (!listed.ok) {
-      setRuntimeOk(false);
-      setRuntimeMsg(listed.message || "Could not list skills");
-      setSkills([]);
-      return;
-    }
-    setSkills(listed.skills || []);
   }, [api, refreshHistory, refreshSessions, refreshAccount]);
 
   useEffect(() => { load(); }, [load]);
@@ -162,16 +188,31 @@ export function App() {
     if (!selected) {
       setSchema({});
       setValues({});
+      setInputsError("");
       return;
     }
-    api.getInputs({ skill: selected.skill, workspace_id: selected.workspace_id }).then((r) => {
-      const sc = (r.schema || {}) as Record<string, unknown>;
-      setSchema(sc);
-      const fields = fieldList(sc);
-      const next: Record<string, string> = {};
-      for (const f of fields) next[f.name] = "";
-      setValues(next);
-    });
+    let cancelled = false;
+    setInputsError("");
+    api.getInputs({ skill: selected.skill, workspace_id: selected.workspace_id })
+      .then((r) => {
+        if (cancelled) return;
+        if (!r.ok) {
+          setInputsError(r.message || "Could not load this skill's inputs.");
+          return;
+        }
+        const sc = (r.schema || {}) as Record<string, unknown>;
+        setSchema(sc);
+        const fields = fieldList(sc);
+        const next: Record<string, string> = {};
+        for (const f of fields) next[f.name] = "";
+        setValues(next);
+      })
+      .catch(() => {
+        if (!cancelled) setInputsError("Could not load this skill's inputs.");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [api, selected]);
 
   const fields = useMemo(() => fieldList(schema), [schema]);
@@ -179,7 +220,9 @@ export function App() {
     () => chatLog.filter((m) => (m.role === "user" || m.role === "assistant") && m.content),
     [chatLog],
   );
-  const chatReady = chatMode === "byok" ? hasKey : signedIn;
+  // Past the sign-in gate below, `signedIn` is always true — every non-byok
+  // mode only ever runs inside a signed-in session.
+  const chatReady = chatMode !== "byok" || hasKey;
   const emptyChatHome = mode === "chat" && displayLog.length === 0 && !selected;
   const formPicker = mode === "form" && !selected;
   const displayName = userDisplayName(identity, signedIn);
@@ -192,9 +235,13 @@ export function App() {
     if (!selected || busy) return;
     setBusy(true);
     setFormMsg("");
+    setFormDetail("");
+    setFormDetailsOpen(false);
     const r = await api.execute({ skill: selected.skill, workspace_id: selected.workspace_id, inputs: values });
     setBusy(false);
-    setFormMsg(!r.ok ? (r.message || "Run failed") : `${statusLabel(r.status || "failed")}${r.run_id ? ` · ${r.run_id}` : ""}\n${r.text || ""}`);
+    setFormOk(Boolean(r.ok));
+    setFormMsg(!r.ok ? (r.message || "Run failed") : `${statusLabel(r.status || "failed")}${r.run_id ? ` · ${r.run_id}` : ""}`);
+    setFormDetail(r.ok ? r.text || "" : "");
     await refreshHistory();
   }
 
@@ -213,18 +260,21 @@ export function App() {
       const loaded = await api.loadSession({ id: sessionId });
       setChatLog(loaded.session?.messages || []);
     } else {
-      setChatLog((prev) => [...prev, { role: "assistant", content: r.message || "Error" }]);
+      setChatLog((prev) => [...prev, { role: "assistant", content: r.message || "Something went wrong.", error: true }]);
     }
     await refreshHistory();
     await refreshSessions();
   }
 
   async function saveSettings() {
+    setSaveError("");
     const r = await api.saveSettings({ baseURL, model, apiKey, mode: chatMode });
     if (r.ok) {
       setHasKey(Boolean(r.hasKey));
       setApiKey("");
       setShowSettings(false);
+    } else {
+      setSaveError(r.message || "Could not save settings.");
     }
   }
 
@@ -246,8 +296,13 @@ export function App() {
   }
 
   async function login() {
+    setLoginError("");
     const r = await api.authLogin();
-    if (r.ok) await refreshAccount();
+    if (r.ok) {
+      await refreshAccount();
+    } else {
+      setLoginError(r.code === "auth_not_configured" ? "Sign-in isn't set up yet. Contact support." : r.message || "Sign-in failed.");
+    }
   }
 
   async function logout() {
@@ -260,11 +315,14 @@ export function App() {
     setFormMsg("");
     setMode("chat");
     const r = await api.createSession();
-    if (r.session) {
-      await refreshSessions();
-      setSessionId(r.session.id);
-      setChatLog([]);
+    if (!r.session) {
+      setSidebarError(r.message || "Could not start a new chat.");
+      return;
     }
+    setSidebarError("");
+    await refreshSessions();
+    setSessionId(r.session.id);
+    setChatLog([]);
   }
 
   async function pickSession(s: SessionSummary) {
@@ -272,6 +330,11 @@ export function App() {
     setMode("chat");
     setSessionId(s.id);
     const loaded = await api.loadSession({ id: s.id });
+    if (!loaded.ok) {
+      setSidebarError(loaded.message || "Could not open that chat.");
+      return;
+    }
+    setSidebarError("");
     setChatLog(loaded.session?.messages || []);
   }
 
@@ -281,7 +344,12 @@ export function App() {
   }
 
   async function deleteChat(id: string) {
-    await api.deleteSession({ id });
+    const del = await api.deleteSession({ id });
+    if (!del.ok) {
+      setSidebarError(del.message || "Could not delete that chat.");
+      return;
+    }
+    setSidebarError("");
     const list = await refreshSessions();
     if (sessionId === id) {
       const next = list[0] || (await api.createSession()).session;
@@ -299,6 +367,7 @@ export function App() {
   async function deleteRun(at: string) {
     const r = await api.deleteHistory({ at });
     if (r.ok) setHistory(r.items || []);
+    else setSidebarError(r.message || "Could not delete that run.");
   }
 
   function handleBack() {
@@ -323,24 +392,16 @@ export function App() {
           className="theme-scroll max-h-[220px] min-h-[72px] w-full resize-none overflow-y-auto bg-transparent px-1 text-[15px] text-fg placeholder:text-fg-dim outline-none"
           rows={emptyChatHome ? 3 : 2}
           spellCheck={false}
-          value={mode === "chat" ? chatInput : ""}
+          value={chatInput}
           onChange={(e) => setChatInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && mode === "chat") {
+            if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               sendChat();
             }
           }}
-          disabled={mode === "chat" && (!runtimeOk || !chatReady || busy)}
-          placeholder={
-            mode === "form"
-              ? "Switch to Chat to ask in words — or pick a skill from the home screen."
-              : chatReady
-                ? "How can I help you today?"
-                : chatMode === "byok"
-                  ? "Add your API key in Settings to use chat"
-                  : "Sign in to CONXA in Settings to use chat"
-          }
+          disabled={!runtimeOk || !chatReady || busy}
+          placeholder={chatReady ? "How can I help you today?" : "Add your API key in Settings to use chat"}
         />
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
@@ -357,7 +418,7 @@ export function App() {
             <button
               type="button"
               className="flex h-8 w-8 items-center justify-center rounded-full bg-fg text-bg disabled:opacity-30"
-              disabled={mode !== "chat" || !runtimeOk || !chatReady || busy}
+              disabled={!runtimeOk || !chatReady || busy}
               onClick={sendChat}
               aria-label="Send"
             >
@@ -373,14 +434,23 @@ export function App() {
     return <div className="h-full bg-bg" />;
   }
 
+  if (startupError) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 bg-bg text-fg">
+        <div className="text-lg font-medium">CONXA couldn't start</div>
+        <p className="max-w-sm text-center text-sm text-fg-muted">{startupError}</p>
+        <Button onClick={() => { setAuthChecked(false); load(); }}>Retry</Button>
+      </div>
+    );
+  }
+
   if (!signedIn) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 bg-bg text-fg">
         <div className="text-lg font-medium">Sign in to CONXA</div>
         <p className="max-w-xs text-center text-sm text-fg-muted">Sign in with your CONXA account to use Execute.</p>
-        <button type="button" className="rounded-lg bg-fg px-5 py-2.5 text-sm font-medium text-bg hover:bg-white" onClick={login}>
-          Sign in with CONXA
-        </button>
+        <Button className="px-5 py-2.5" onClick={login}>Sign in with CONXA</Button>
+        {loginError && <p className="max-w-xs text-center text-sm text-err">{loginError}</p>}
       </div>
     );
   }
@@ -394,8 +464,6 @@ export function App() {
         onForward={handleForward}
         canGoBack={canGoBack}
         canGoForward={canGoForward}
-        initials={initials}
-        onProfile={() => setAccountOpen((v) => !v)}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -406,6 +474,10 @@ export function App() {
             {!collapsed && "New"}
           </button>
         </div>
+
+        {sidebarError && !collapsed && (
+          <p className="mx-2 mt-2 rounded-lg bg-err-bg px-2.5 py-1.5 text-[12px] text-err-fg">{sidebarError}</p>
+        )}
 
         <div className="sidebar-scroll min-h-0 flex-1 overflow-auto px-2 py-3">
           {!collapsed && <p className="mb-1 px-2 text-[11px] text-fg-dim">Chats</p>}
@@ -471,17 +543,8 @@ export function App() {
           <div className="flex flex-1 flex-col items-center justify-center px-6 pb-8">
             <h1 className="mb-8 font-serif text-[40px] font-normal tracking-tight">Ready when you are</h1>
             {composer}
-            <div className="mt-5 flex max-w-[720px] flex-wrap justify-center gap-2">
-              {skills.slice(0, 5).map((s) => (
-                <button
-                  key={s.skill}
-                  type="button"
-                  className="rounded-full border border-line bg-transparent px-3.5 py-1.5 text-[13px] text-fg-muted hover:bg-bg-hover hover:text-fg"
-                  onClick={() => pickSkill(s)}
-                >
-                  {s.name || s.skill}
-                </button>
-              ))}
+            <div className="mt-5">
+              <SkillPills skills={skills} onPick={pickSkill} limit={5} />
             </div>
           </div>
         )}
@@ -489,13 +552,7 @@ export function App() {
         {formPicker && (
           <div className="flex flex-1 flex-col items-center justify-center px-6">
             <p className="mb-6 font-serif text-3xl">Pick a skill to fill and run</p>
-            <div className="flex max-w-lg flex-wrap justify-center gap-2">
-              {skills.map((s) => (
-                <button key={s.skill} type="button" className="rounded-full border border-line px-3.5 py-1.5 text-[13px] text-fg-muted hover:bg-bg-hover" onClick={() => pickSkill(s)}>
-                  {s.name || s.skill}
-                </button>
-              ))}
-            </div>
+            <SkillPills skills={skills} onPick={pickSkill} />
           </div>
         )}
 
@@ -504,18 +561,31 @@ export function App() {
             <h1 className="font-serif text-3xl">{selected.name || selected.skill}</h1>
             {selected.description && <p className="mt-2 text-sm text-fg-muted">{selected.description}</p>}
             <div className="mt-8 space-y-4">
-              {fields.map((f) => (
+              {inputsError && <p className="text-sm text-err">{inputsError}</p>}
+              {!inputsError && fields.map((f) => (
                 <label key={f.name} className="block text-sm">
                   <span className="text-fg-muted">{f.name}{f.required ? " *" : ""}</span>
                   <input className="mt-1.5 w-full rounded-xl border border-line bg-bg-elevated px-3 py-2.5 outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]" value={values[f.name] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk} />
                   {f.description && <span className="mt-1 block text-xs text-fg-dim">{f.description}</span>}
                 </label>
               ))}
-              {fields.length === 0 && <p className="text-sm text-fg-muted">This skill has no declared inputs.</p>}
-              <button type="button" className="rounded-xl bg-fg px-5 py-2.5 text-sm font-medium text-bg disabled:opacity-40" disabled={!runtimeOk || busy} onClick={runForm}>
+              {!inputsError && fields.length === 0 && <p className="text-sm text-fg-muted">This skill has no declared inputs.</p>}
+              <button type="button" className="rounded-xl bg-fg px-5 py-2.5 text-sm font-medium text-bg disabled:opacity-40" disabled={!runtimeOk || busy || Boolean(inputsError)} onClick={runForm}>
                 {busy ? "Running…" : "Run"}
               </button>
-              {formMsg && <pre className="whitespace-pre-wrap text-xs text-fg-dim">{formMsg}</pre>}
+              {formMsg && (
+                <div className="text-sm">
+                  <p className={formOk ? "text-fg-muted" : "text-err"}>{formMsg}</p>
+                  {formDetail && (
+                    <>
+                      <button type="button" className="mt-1 text-xs text-fg-dim underline" onClick={() => setFormDetailsOpen((v) => !v)}>
+                        {formDetailsOpen ? "Hide details" : "Show details"}
+                      </button>
+                      {formDetailsOpen && <pre className="mt-1 whitespace-pre-wrap text-xs text-fg-dim">{formDetail}</pre>}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -524,16 +594,14 @@ export function App() {
           <div className="flex min-h-0 flex-1 flex-col">
             {!chatReady && (
               <p className="mx-auto mt-4 max-w-[720px] rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
-                {chatMode === "byok"
-                  ? "Chat needs your own API key. Open Settings — the form still runs skills with no model."
-                  : "Sign in to CONXA in Settings to use chat — the form still runs skills with no login."}
+                Chat needs your own API key. Open Settings — the form still runs skills with no model.
               </p>
             )}
             <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
               {displayLog.map((m, i) => (
                 <div key={i} className="mx-auto max-w-[720px]">
-                  <div className="mb-1 text-[11px] text-fg-dim">{m.role === "user" ? "You" : "CONXA"}</div>
-                  <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</div>
+                  <div className="mb-1 text-[11px] text-fg-dim">{m.role === "user" ? "You" : m.error ? "Couldn't run that" : "CONXA"}</div>
+                  <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
                 </div>
               ))}
             </div>
@@ -556,12 +624,11 @@ export function App() {
         onModel={setModel}
         onApiKey={setApiKey}
         onSave={saveSettings}
-        signedIn={signedIn}
+        saveError={saveError}
         identity={identity}
         entitlement={entitlement}
         theme={theme}
         onThemeChange={setTheme}
-        onLogin={login}
         onLogout={logout}
         redeemCode={redeemCode}
         onRedeemCodeChange={setRedeemCode}

@@ -13,6 +13,3 @@ PyJWT[crypto]>=2.8.0
 
 # Postgres driver (db.py uses SQLAlchemy + psycopg2 in production)
 psycopg2-binary>=2.9.0
-
-# Form parsing for the /checkout/{tier} form POST
-python-multipart>=0.0.9
