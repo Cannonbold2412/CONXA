@@ -201,6 +201,21 @@ ipcMain.handle("account:entitlement", async () => {
   }
 });
 
+ipcMain.handle("account:redeem-grant", async (_e, payload) => {
+  const grantId = String(payload?.grantId || "").trim();
+  if (!grantId) return fail("no_grant_id", "Paste an invite code first.");
+  try {
+    const result = await executeClient.claimGrant(grantId);
+    // A claimed seat draws entirely from the granting workspace's pool — no
+    // personal BYOK/topup/subscription fallback, so local chat routing must
+    // switch away from whatever mode was previously saved.
+    settings.saveSettings({ mode: "workspace_pool" });
+    return { ok: true, workspaceName: result.workspace_name };
+  } catch (e) {
+    return fail(e.code || "claim_failed", e.message);
+  }
+});
+
 ipcMain.handle("shell:openExternal", (_e, payload) => {
   shell.openExternal(String(payload?.url || ""));
   return { ok: true };

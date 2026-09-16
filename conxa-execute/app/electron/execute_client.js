@@ -33,6 +33,13 @@ function getEntitlement() {
   return request("/v1/entitlement");
 }
 
+function claimGrant(grantId) {
+  return request("/v1/execute-grants/claim", {
+    method: "POST",
+    body: JSON.stringify({ grant_id: grantId }),
+  });
+}
+
 function listSessions() {
   return request("/v1/sessions");
 }
@@ -56,4 +63,4 @@ function deleteSession(id) {
   return request(`/v1/sessions/${id}`, { method: "DELETE" });
 }
 
-module.exports = { getEntitlement, listSessions, getSession, createSession, updateSession, deleteSession, baseUrl };
+module.exports = { getEntitlement, claimGrant, listSessions, getSession, createSession, updateSession, deleteSession, baseUrl };

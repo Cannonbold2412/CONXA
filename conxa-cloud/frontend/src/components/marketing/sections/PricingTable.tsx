@@ -23,8 +23,9 @@ const STATIC_PLANS: Plan[] = [
     features: [
       '1 seat',
       '1 machine',
+      '1 Conxa Execute seat',
       '25 compile credits/month',
-      '500K Human Edit tokens/month',
+      '500K AI Usage Credits/month',
       'Internal distribution only',
       'No ops dashboard',
       'No analytics retention',
@@ -39,8 +40,9 @@ const STATIC_PLANS: Plan[] = [
     features: [
       '3 seats',
       '3 machines',
+      '25 Conxa Execute seats',
       '200 compile credits/month',
-      '2M Human Edit tokens/month',
+      '2M AI Usage Credits/month',
       'External distribution, Conxa-branded',
       'Basic dashboard',
       '90-day analytics retention',
@@ -55,8 +57,9 @@ const STATIC_PLANS: Plan[] = [
     features: [
       '10 seats',
       '10 machines',
+      '100 Conxa Execute seats',
       '500 compile credits/month',
-      '10M Human Edit tokens/month',
+      '10M AI Usage Credits/month',
       'External distribution, Conxa-branded',
       'Full dashboard, drift detection, audit export',
       '365-day analytics retention',
@@ -71,8 +74,9 @@ const STATIC_PLANS: Plan[] = [
     features: [
       'Seats agreed per contract',
       'Machines agreed per contract',
+      'Conxa Execute seats agreed per contract',
       'Unlimited compile credits/month',
-      'Contracted Human Edit token reserve',
+      'Contracted AI Usage Credits reserve',
       'External distribution, white-label',
       'Full dashboard, drift detection, audit export',
       'Custom analytics retention',

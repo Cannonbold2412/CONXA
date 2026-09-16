@@ -53,3 +53,18 @@ def get_current_user(authorization: str = Header(default="")) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="invalid_clerk_token")
     return user_id
+
+
+def get_current_claims(authorization: str = Header(default="")) -> dict[str, Any]:
+    """FastAPI dependency: verify the bearer Clerk JWT, return {user_id, email}
+    — used by the Execute-grant claim route, which needs the invitee's email
+    to match against the grant (see routes_grants.py). Same claim keys
+    conxa-cloud's saas.py reads (`email` / `primary_email_address`)."""
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing_bearer_token")
+    claims = verify_clerk_jwt(authorization[7:].strip())
+    user_id = claims.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="invalid_clerk_token")
+    email = str(claims.get("email") or claims.get("primary_email_address") or "").strip()
+    return {"user_id": user_id, "email": email}

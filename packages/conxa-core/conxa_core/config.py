@@ -248,6 +248,7 @@ class Settings(BaseSettings):
     entitlements_enforce_distribution: bool = True
     entitlements_enforce_machines: bool = True
     entitlements_enforce_seats: bool = True
+    entitlements_enforce_execute_seats: bool = True
     entitlements_reservation_ttl_secs: int = 30 * 60
 
     # Production backing services. The local MVP still has file-backed fallbacks.
@@ -260,6 +261,15 @@ class Settings(BaseSettings):
     # Billing and app redirects.
     app_url: str = "http://localhost:5173"
     api_base_url: str = ""  # Set in production to prevent X-Forwarded-Host injection
+
+    # Conxa Execute <-> Conxa Cloud service-to-service bridge (Execute seat
+    # grants drawing from a workspace's shared AI Usage Credits pool). Both
+    # services set the same literal secret — this is a trusted first-party
+    # caller Conxa itself operates, not a per-workspace token shipped to
+    # external machines, so one shared secret (like CONXA_ADMIN_TOKEN) is
+    # enough; see docs/TRD.md §13.4c.
+    execute_service_token: str = ""
+    conxa_cloud_api_base_url: str = ""
 
     # Tracking HMAC secret for signing runtime telemetry tokens.
     # Set SKILL_TRACKING_HMAC_SECRET in production to enable company-scoped tracking.

@@ -459,6 +459,17 @@ def billing_for_workspace(workspace_id: str) -> dict[str, Any]:
     return billing
 
 
+def workspace_name_for(workspace_id: str) -> str:
+    """Read-only display-name lookup by workspace_id alone, same call-site
+    shape as billing_for_workspace — for the Execute bridge's 'Paid by
+    <workspace>' UI, which only ever has a workspace_id, never a Principal."""
+    with _lock:
+        state = _read_state()
+        row = state.get("workspaces", {}).get(workspace_id) or {}
+    name = str(row.get("name") or "").strip()
+    return name or "your workspace"
+
+
 def workspace_ids_for_email(email: str) -> list[str]:
     """Workspace IDs for every user we've ever seen sign in with this email
     (case-insensitive). Used by the manual plan-grant admin endpoint to turn

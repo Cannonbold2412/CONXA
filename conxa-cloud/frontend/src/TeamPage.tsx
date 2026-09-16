@@ -1,8 +1,10 @@
 'use client'
 
 import Link from 'next/link'
+import { useState } from 'react'
 import { OrganizationProfile } from '@clerk/nextjs'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import {
   Activity,
   AlertTriangle,
@@ -15,16 +17,22 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import {
+  createExecuteGrant,
   fetchAuditEvents,
   fetchEntitlements,
+  fetchExecuteGrants,
   fetchMe,
   fetchSubscription,
+  revokeExecuteGrant,
   type AuditEvent,
   type EntitlementMeter,
+  type ExecuteGrant,
 } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { EmptyState, ErrorState, LoadingState } from '@/components/product/ProductPrimitives'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { clerkAppearance } from '@/lib/clerkAppearance'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '@/lib/queryKeys'
@@ -309,6 +317,146 @@ function MemberDirectory() {
   )
 }
 
+function ExecuteSeatsPanel({ seatMeter }: { seatMeter?: EntitlementMeter }) {
+  const queryClient = useQueryClient()
+  const [email, setEmail] = useState('')
+  const grantsQ = useQuery({
+    queryKey: queryKeys.executeGrants,
+    queryFn: fetchExecuteGrants,
+    staleTime: 30_000,
+    retry: 1,
+  })
+
+  const createM = useMutation({
+    mutationFn: createExecuteGrant,
+    onSuccess: async (grant) => {
+      setEmail('')
+      queryClient.invalidateQueries({ queryKey: queryKeys.executeGrants })
+      try {
+        await navigator.clipboard.writeText(grant.invite_url)
+        toast.success(`Invite link copied for ${grant.email}`)
+      } catch {
+        toast.success(`Invite created for ${grant.email}`)
+      }
+    },
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : 'Could not create invite'),
+  })
+
+  const revokeM = useMutation({
+    mutationFn: revokeExecuteGrant,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.executeGrants }),
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : 'Could not revoke seat'),
+  })
+
+  async function copyLink(grantId: string) {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/claim/${grantId}`)
+      toast.success('Invite link copied')
+    } catch {
+      toast.error('Could not copy link')
+    }
+  }
+
+  const grants: ExecuteGrant[] = grantsQ.data?.grants ?? []
+  const statusTone: Record<ExecuteGrant['status'], Tone> = { pending: 'neutral', claimed: 'good', revoked: 'bad' }
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-white/8 bg-white/[0.025]">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/8 px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-white">Conxa Execute seats</h2>
+          <p className="mt-1 max-w-lg text-sm text-zinc-500">
+            Grant Conxa Execute access to people independent of Build Studio membership — their
+            chat draws from this workspace&apos;s AI Usage Credits pool.
+            {seatMeter ? ` ${formatCount(seatMeter.used)} / ${seatMeter.unlimited ? 'Unlimited' : formatCount(seatMeter.limit)} used.` : ''}
+          </p>
+        </div>
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            const trimmed = email.trim()
+            if (!trimmed.includes('@')) {
+              toast.error('Enter a valid email address.')
+              return
+            }
+            createM.mutate(trimmed)
+          }}
+        >
+          <Input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="teammate@company.com"
+            className="w-56 border-white/10 bg-black/30 text-sm"
+          />
+          <Button type="submit" size="sm" disabled={createM.isPending}>
+            {createM.isPending ? 'Inviting…' : 'Invite'}
+          </Button>
+        </form>
+      </div>
+
+      {grantsQ.isLoading ? <LoadingState /> : null}
+      {grantsQ.isError ? <ErrorState message={(grantsQ.error as Error).message} /> : null}
+      {!grantsQ.isLoading && !grantsQ.isError && grants.length === 0 ? (
+        <EmptyState
+          title="No Execute seats granted yet"
+          description="Invite someone by email to give them Conxa Execute access paid for by this workspace."
+        />
+      ) : null}
+      {grants.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="min-w-[48rem] w-full text-left text-sm">
+            <thead className="border-b border-white/6 bg-black/20 text-xs text-zinc-500">
+              <tr>
+                <th className="px-4 py-3 font-medium">Email</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Invited</th>
+                <th className="px-4 py-3 font-medium" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/6">
+              {grants.map((grant) => (
+                <tr key={grant.grant_id} className="hover:bg-white/[0.025]">
+                  <td className="px-4 py-3 align-top text-zinc-300">{grant.email}</td>
+                  <td className="px-4 py-3 align-top">
+                    <StatusPill tone={statusTone[grant.status]}>{titleCase(grant.status)}</StatusPill>
+                  </td>
+                  <td className="px-4 py-3 align-top whitespace-nowrap text-zinc-500">
+                    {formatTime(new Date(grant.granted_at).getTime() / 1000)}
+                  </td>
+                  <td className="px-4 py-3 align-top text-right">
+                    <div className="flex justify-end gap-1">
+                      {grant.status === 'pending' ? (
+                        <Button size="sm" variant="ghost" className="text-zinc-400 hover:text-white" onClick={() => copyLink(grant.grant_id)}>
+                          Copy link
+                        </Button>
+                      ) : null}
+                      {grant.status !== 'revoked' ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-zinc-400 hover:text-red-300"
+                          disabled={revokeM.isPending && revokeM.variables === grant.grant_id}
+                          onClick={() => {
+                            if (window.confirm(`Revoke the Execute seat for ${grant.email}?`)) revokeM.mutate(grant.grant_id)
+                          }}
+                        >
+                          Revoke
+                        </Button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 export function TeamPage() {
   const meQ = useQuery({ queryKey: queryKeys.me, queryFn: fetchMe, staleTime: 30_000, retry: 1 })
   const entitlementsQ = useQuery({
@@ -358,6 +506,8 @@ export function TeamPage() {
         </div>
 
         <MemberDirectory />
+
+        <ExecuteSeatsPanel seatMeter={entitlementsQ.data?.meters.execute_seats} />
       </div>
     </div>
   )

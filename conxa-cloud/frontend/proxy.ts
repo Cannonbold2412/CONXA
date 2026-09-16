@@ -8,6 +8,7 @@ const isPublic = createRouteMatcher([
   '/sitemap.xml',
   '/llms.txt',
   '/docs(.*)',
+  '/claim(.*)',
   '/sign-in(.*)',
   '/sign-up(.*)',
   '/__clerk(.*)',

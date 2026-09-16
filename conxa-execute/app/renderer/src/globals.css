@@ -17,9 +17,34 @@
   --ok: #7dcea0;
   --err: #e07a7a;
   --warn: #d4a054;
+  --err-bg: #3a1c1c;
+  --err-fg: #f0c4c4;
+  --warn-bg: #2a2114;
+  --warn-fg: #e8d4b0;
   --radius: 12px;
   --font-ui: Inter, system-ui, sans-serif;
   --font-display: "Source Serif 4", Georgia, serif;
+}
+
+:root.light {
+  --bg: #faf9f6;
+  --bg-sidebar: #f4f3ef;
+  --bg-elevated: #ffffff;
+  --bg-hover: #ece9e2;
+  --bg-active: #e5e2d9;
+  --fg: #2b2a27;
+  --fg-muted: #5f5d56;
+  --fg-dim: #8a8880;
+  --line: rgba(0, 0, 0, 0.08);
+  --brand: #d97757;
+  --brand-hover: #c8663f;
+  --ok: #2f9e63;
+  --err: #c94f4f;
+  --warn: #b4791f;
+  --err-bg: #fbe4e4;
+  --err-fg: #7a2f2f;
+  --warn-bg: #f6e8d0;
+  --warn-fg: #6b4816;
 }
 
 @theme inline {
@@ -36,6 +61,11 @@
   --color-brand-hover: var(--brand-hover);
   --color-ok: var(--ok);
   --color-err: var(--err);
+  --color-err-bg: var(--err-bg);
+  --color-err-fg: var(--err-fg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-warn-fg: var(--warn-fg);
   --font-sans: var(--font-ui);
   --font-serif: var(--font-display);
 }
@@ -102,6 +132,11 @@ button:disabled { cursor: not-allowed; }
 *:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--brand) 70%, white);
   outline-offset: 2px;
+}
+
+textarea:focus-visible,
+input:focus-visible {
+  outline: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

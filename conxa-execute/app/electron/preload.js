@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   authStatus: () => ipcRenderer.invoke("auth:status"),
   getEntitlement: () => ipcRenderer.invoke("account:entitlement"),
+  redeemGrant: (payload) => ipcRenderer.invoke("account:redeem-grant", payload),
   openExternal: (payload) => ipcRenderer.invoke("shell:openExternal", payload),
   windowControls: {
     minimize: () => ipcRenderer.invoke("window:minimize"),
