@@ -171,7 +171,7 @@ def copilot_turn(
                 "copilot_reply", payload, settings.llm_vision_timeout_ms,
                 on_delta=_forward_delta, error_detail=stream_err_lines,
             )
-        except ProxyUnavailable as exc:
+        except ProxyUnavailable:
             # Must sit ABOVE the infra tuple — ProxyUnavailable subclasses CloudUnreachable, and
             # here it means something different: the proxy answered, the streaming endpoint just
             # produced no text. A reasoning model that spends its whole completion budget on hidden

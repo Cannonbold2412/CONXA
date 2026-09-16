@@ -160,7 +160,7 @@ def _write_skill_packs_format(
                 first = next((l.lstrip("# ").strip() for l in md_p.read_text(encoding="utf-8").splitlines() if l.strip()), "")
                 description = first
 
-        def _read_json_sidecar(path: Path, label: str) -> dict[str, Any]:
+        def _read_json_sidecar(path: Path, label: str, slug: str = slug) -> dict[str, Any]:
             """A sidecar this same build just wrote (structural_fingerprint.json,
             environment.json, compensation_skill.json) that exists but won't parse is a
             real bug, not a normal miss — raise instead of silently disabling the

@@ -206,7 +206,7 @@ class CopilotMixin:
         """
         import copy
 
-        from conxa_compile.editor.copilot_proposals import ProposalError, resolve_step_index
+        from conxa_compile.editor.copilot_proposals import ProposalError
         from conxa_core.storage.json_store import read_skill, write_skill
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
@@ -244,7 +244,7 @@ class CopilotMixin:
         return result
 
     def _apply_one_structural_op(self, skill_id: str, op: dict[str, Any], rid: str) -> dict[str, Any]:
-        from conxa_compile.editor.copilot_proposals import ProposalError, resolve_step_index
+        from conxa_compile.editor.copilot_proposals import resolve_step_index
         from conxa_core.storage.json_store import read_skill
 
         kind = str(op.get("op") or "").strip()

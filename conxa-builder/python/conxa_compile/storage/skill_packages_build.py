@@ -9,7 +9,6 @@ during compile and editing it via the workflow editor.
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import threading
 import time
