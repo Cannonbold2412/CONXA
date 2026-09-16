@@ -58,6 +58,7 @@ export function VerifyCard({ skillId }: Props) {
         clearVerify()
         return
       }
+      if (result.status === 'confirm_required') return // confirmed:true never yields this
       setVerifyDone(result.verdict ?? null, result.message ?? '')
     } catch (err) {
       setVerifyDone(null, errorMessage(err, 'Retest failed'))
