@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { CopilotProposal, CopilotTurnMessage } from '@/api/workflowApi'
+import { loadLastCopilotSession, type CopilotProposal, type CopilotTurnMessage } from '@/api/workflowApi'
 
 /** Verified retest state (BUILD-26 stage e), seeded once a proposal is accepted. 'confirming'
  *  shows the non-reversible-action count before anything runs; 'running' streams rebuild/retest
@@ -85,6 +85,10 @@ type CopilotState = {
   streamingText: string
   /** True only while a proposal is pending accept/reject — not while merely chatting. */
   dirty: boolean
+  /** BUILD-26 stage g: hydrates from the last archived session for this skill (fire-and-forget
+   *  — a resume failure must never block opening the panel) instead of always starting cold. A
+   *  skill switch still resets synchronously first, same as before, so the panel never shows the
+   *  PREVIOUS skill's conversation while the resume call is in flight. */
   ensureFor: (skillId: string) => void
   setOpen: (open: boolean) => void
   /** In-memory-only move, called on every pointermove while dragging — no localStorage write
@@ -127,6 +131,16 @@ export const useCopilotStore = create<CopilotState>((set, get) => ({
   ensureFor: (skillId) => {
     if (get().skillId === skillId) return
     set({ skillId, messages: [], pendingProposal: null, verify: IDLE_VERIFY, sending: false, streamingText: '', dirty: false })
+    loadLastCopilotSession(skillId)
+      .then((res) => {
+        // Skill may have changed again (or the panel reset) before this resolved — never
+        // overwrite a newer conversation with a stale resume.
+        if (get().skillId !== skillId || get().messages.length > 0) return
+        if (res.messages?.length) set({ messages: res.messages })
+      })
+      .catch(() => {
+        /* no archive yet, or a disk hiccup — the panel just starts cold, same as before this existed */
+      })
   },
   setOpen: (open) => set({ open }),
   setPosition: (position) => set({ position }),

@@ -2101,6 +2101,24 @@ the new item below this one.
     through the normal publish path. The moment it can patch what customers are running, the version
     history stops describing reality.
 
+  **Stage g — full workflow context, structural hands, session memory — Done 2026-09-16.** Closes
+  several of the "nearly free" and "proposals over existing commands" items above at once: a
+  generated capability manifest (`editor/capability_manifest.py`, cross-checked against
+  `patch_gate.py` by a real test rather than hand-synced prose) replaces the old always-full
+  evidence dump with a compact per-turn digest plus an on-demand `need[]` retrieval loop
+  (`editor/copilot_retrieval.py`) for step detail, screenshots, failure evidence, edit history, and
+  cross-workflow names — "Explain this workflow" / "Cross-workflow consistency" from (i) are now one
+  `list_workflows` need away rather than requiring a separate feature. A third proposal kind,
+  typed structural ops (`insert_step`/`delete_step`/`move_step`/`update_inputs`/`replace_literals`
+  in `gate_structural_proposals`), gives the copilot hands beyond the original five fields —
+  covering "Whole-workflow batch edits" and "Input design" from (ii) — while keeping the
+  never-invent-a-selector rule intact via an `identity_from_step_key` clone requirement for any
+  selector-bearing insert. Accept is now a single all-or-nothing batch with one undo entry. Session
+  resume (`copilot_sessions.py::load_last_session`) makes the write-only archive readable again.
+  Still open from the future-scope list above: "Show me" mode, fleet-failure learning, semantic
+  re-record diff, and per-app memory (iii) — none of these needed the plumbing stage g added, they
+  each need their own new capture/store.
+
 ### BUILD-27 — Nothing reviews the text that decides whether an agent calls the right skill at all
 - **Category:** Builder
 - **Description:** Skills reach the customer as MCP tools exposed by `runtime/app/server.js`

@@ -24,8 +24,7 @@ import {
 } from '@/api/workflowApi'
 import { CopilotLauncher } from '@/components/copilot/CopilotLauncher'
 
-// ponytail: hidden for the 2026-09-16 pilot, flip back to true once ready
-const COPILOT_ENABLED = false
+const COPILOT_ENABLED = true
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
 import { WorkflowPlanPanel } from '@/components/WorkflowPlanPanel'
 import { CompileHealthBanner } from '@/components/CompileHealthBanner'

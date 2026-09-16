@@ -42,6 +42,7 @@ export function ProposalCard({ skillId, proposal, onAccepted }: Props) {
   const addMessage = useCopilotStore((s) => s.addMessage)
   const startVerify = useCopilotStore((s) => s.startVerify)
   const isOverlayInsertion = proposal.command === 'insert_overlay_branch'
+  const isStructuralOp = proposal.command === 'structural_op'
 
   const accept = async () => {
     setBusy('accept')
@@ -53,7 +54,9 @@ export function ProposalCard({ skillId, proposal, onAccepted }: Props) {
         role: 'assistant',
         text: isOverlayInsertion
           ? `Applied — inserted a ${PRIMITIVE_LABEL[proposal.primitive ?? ''] ?? 'branch'} step.`
-          : `Applied — ${proposal.field} updated.`,
+          : isStructuralOp
+            ? `Applied — ${proposal.op?.replace(/_/g, ' ')}.`
+            : `Applied — ${proposal.field} updated.`,
       })
       toast.success('Proposal applied')
       // BUILD-26 stage e: seeds the Verify fix affordance — only meaningful for a proposal that
@@ -83,13 +86,17 @@ export function ProposalCard({ skillId, proposal, onAccepted }: Props) {
     <div className="space-y-2.5 rounded-lg border border-white/10 bg-black/25 p-3">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium tracking-wide text-zinc-400 uppercase">
-          {isOverlayInsertion ? 'Proposed insertion' : 'Proposed change'}
+          {isOverlayInsertion || isStructuralOp ? 'Proposed insertion' : 'Proposed change'}
         </span>
         <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[0.65rem] text-zinc-400">
-          {isOverlayInsertion ? PRIMITIVE_LABEL[proposal.primitive ?? ''] ?? 'branch' : proposal.field}
+          {isOverlayInsertion
+            ? PRIMITIVE_LABEL[proposal.primitive ?? ''] ?? 'branch'
+            : isStructuralOp
+              ? proposal.op
+              : proposal.field}
         </span>
       </div>
-      {isOverlayInsertion ? (
+      {isOverlayInsertion || isStructuralOp ? (
         <p className="text-sm text-zinc-100">{formatValue(proposal.preview.after)}</p>
       ) : (
         <div className="space-y-1 text-sm">

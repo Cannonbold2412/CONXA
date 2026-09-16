@@ -50,6 +50,9 @@ def test_copilot_diagnose_without_image_is_plain_text_content():
 
 
 def test_copilot_diagnose_body_gets_its_own_token_budget():
+    # BUILD-26 stage g: raised from 900 to 2048 — the manifest+digest prompt plus the wider
+    # need/evidence_refs/structural-op schema needs more completion headroom, and a reasoning-
+    # capable routed model spends tokens on hidden chain-of-thought before the JSON answer.
     body = _openai_body_dict("copilot_diagnose", {"user_text": "x"}, json_mode=True)
-    assert body["max_tokens"] == 900
+    assert body["max_tokens"] == 2048
     assert body["response_format"] == {"type": "json_object"}

@@ -2379,8 +2379,9 @@ Streaming event:
 
 ### 5.10a Human Review Copilot RPCs (BUILD-26)
 
-Six `cmd_*` commands on the protocol above, all Build-Studio-local (§5.10) — none of them
-routes are added under `/api/v1`, this is stdio JSON-RPC only.
+Seven `cmd_*` commands on the protocol above (eight since stage g adds `copilot_load_session`),
+all Build-Studio-local (§5.10) — none of them routes are added under `/api/v1`, this is stdio
+JSON-RPC only.
 
 **`get_failure_evidence`** — `{"skill_id": "skill_...", "run_id": "run_abc123"}` (run_id optional;
 falls back to `Workflow.last_test_run_id`) →
@@ -2405,10 +2406,19 @@ falls back to `Workflow.last_test_run_id`) →
 {"reply": "Step 2 failed because an overlay covered the Submit button...",
  "proposals": [{"id": "6f1e...", "step_key": "h2#1", "command": "patch_step",
                 "field": "validation.assertions", "patch": {"validation": {"assertions": [...]}},
-                "why": "...", "preview": {"before": [...], "after": [...]}}]}
+                "why": "...", "evidence_refs": ["h2#1"], "preview": {"before": [...], "after": [...]}}]}
 ```
 Errors: `invalid_input` (empty message), `skill_not_found`, `human_edit_pool_exceeded` /
 `quota_exceeded` / `cloud_unreachable` (same codes `retarget_preview` uses for the same reasons).
+
+**Context sent to the model (BUILD-26 stage g)** is now a capability manifest (what step kinds
+exist and what the runtime does with each — `capability_manifest.py`) plus a compact workflow
+digest (`evidence.py`'s `detail="digest"` — every step, no heavy fields), not the old always-full
+evidence dump. The model may ask for detail it needs via a `need` array in its own response —
+`{"tool": "expand_step"|"get_step_screenshot"|"get_failure_evidence"|"get_edit_history"|"list_workflows", "args": {...}}`
+— resolved server-side and fed back for up to 2 extra rounds before `copilot_turn` returns. This
+is internal to the `copilot_turn` call; the caller never sees a `need` array itself, only the
+final `{reply, proposals}`.
 
 **A second proposal kind (BUILD-26 stage f)** may appear in the same `proposals` array —
 `command: "insert_overlay_branch"`, built from an overlay the runtime actually observed during a
@@ -2474,6 +2484,37 @@ in-memory — appends one line (`{ts, skill_id, messages}`) to `{CONXA_DATA_DIR}
 (mirrors `edits.jsonl`'s append-only shape, §3.10) so the outgoing conversation isn't silently
 lost. A no-op for an empty transcript; fails silently on a disk error (never blocks starting a
 fresh session) — see `conxa_compile/editor/copilot_sessions.py`.
+
+**`copilot_load_session`** (stage g) — `{"skill_id": "skill_..."}` → `{"messages": [{"role": "user"|"assistant", "text": "..."}]}`.
+Reads the LAST line of the same `copilot_sessions.jsonl` `copilot_save_session` writes — an
+archive that was write-only before this. `[]` when there is no archive yet, or when the last line
+is corrupt and no earlier valid line exists. Called once by `copilotStore.ts::ensureFor` the first
+time a skill's panel opens in a session, so a reviewer resumes their last conversation instead of
+always starting cold.
+
+**A third proposal kind — typed structural ops (stage g)** may also appear in `copilot_turn`'s
+`proposals` array — `command: "structural_op"`:
+```json
+{"id": "c4a1...", "command": "structural_op", "op": "insert_step", "action_kind": "ai_review",
+ "after_step_key": "h1#1", "fields": {"ai_review_prompt": "Did the payment go through?"},
+ "identity_from_step_key": null, "why": "...", "evidence_refs": ["h1#1"],
+ "preview": {"before": null, "after": "Insert ai_review after step h1#1"}}
+```
+`op` is one of `insert_step` (`action_kind`, `after_step_key`, `fields?`,
+`identity_from_step_key?` — required and re-validated whenever `action_kind` needs a page
+target), `delete_step` (`step_key`), `move_step` (`step_key`, `after_step_key`), `update_inputs`
+(`inputs`, the full replacement list), `replace_literals` (`find`, `replace`). Every op requires
+non-empty `evidence_refs`.
+
+**`accept_copilot_proposal` for a `structural_op` proposal (stage g)** — same command name,
+payload `{"skill_id": "skill_...", "command": "structural_op", "proposal_id": "...", "ops": [<one or more op objects, same shape as above minus id/command/why/evidence_refs/preview>]}`.
+Applies every op in `ops` as ONE all-or-nothing batch through the same `cmd_*` RPCs a manual edit
+uses (`insert_step`, `patch_step`, `delete_step`, `reorder_steps`, `update_workflow_inputs`,
+`replace_literals`) — same `WorkflowRevalidationResponse` return shape as the other two accept
+paths, but collapsed to exactly ONE `can_undo` entry regardless of how many ops the batch
+contained. Any op failing (most commonly `proposal_stale` — a named `step_key` no longer exists)
+aborts the whole batch and restores the document to its pre-batch state; no partial batch is ever
+left applied.
 
 ---
 

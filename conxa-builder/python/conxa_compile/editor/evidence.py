@@ -171,7 +171,63 @@ def _compile_report_for_step(compile_report: dict[str, Any], step_index: int, st
     }
 
 
-def build_evidence_bundle(skill_id: str, *, run_id: str | None = None) -> dict[str, Any]:
+_PRIOR_DECISIONS_CAP = 30
+
+
+def _prior_decisions(skill_id: str) -> list[dict[str, Any]]:
+    """BUILD-26 stage g: every prior rejected proposal (and accepted copilot edit) for this
+    skill, so the copilot stops re-proposing what a reviewer already turned down. Built from the
+    same edits.jsonl BUILD-25/26 already write — no new log. Capped and reduced to the fields a
+    prompt needs (step_key, field, decision, why), never the full before/after diff."""
+    out: list[dict[str, Any]] = []
+    for e in read_edits(skill_id):
+        if e.get("source") != "copilot":
+            continue
+        decision = e.get("decision")
+        if decision not in ("rejected", "accepted"):
+            continue
+        out.append({
+            "step_key": e.get("step_key"),
+            "field": e.get("field"),
+            "decision": decision,
+            "why": e.get("why") or "",
+        })
+    return out[-_PRIOR_DECISIONS_CAP:]
+
+
+def expand_step(skill_id: str, step_key: str) -> dict[str, Any]:
+    """BUILD-26 stage g: the `expand_step` reader behind the copilot's `need[]` retrieval loop —
+    the full-detail slice for ONE step, on demand, rather than pushed for every step every turn.
+    Mirrors the heavy-field shape `build_evidence_bundle` already puts on the failing step."""
+    doc = read_skill(skill_id)
+    if doc is None:
+        raise EvidenceError("skill_not_found", f"No skill {skill_id}")
+    steps = _steps_of(doc)
+    keys = step_keys(steps)
+    for i, (step, key) in enumerate(zip(steps, keys)):
+        if key != step_key:
+            continue
+        return {
+            "step_key": key,
+            "step_index": i,
+            "description": describe_step(step, i),
+            "target": step.get("target"),
+            "identity_bundle": step.get("identity_bundle"),
+            "compiled_selectors": step.get("compiled_selectors"),
+            "validation": step.get("validation"),
+            "handler_hints": step.get("handler_hints"),
+            "entity_binding": step.get("entity_binding"),
+            "for_each": step.get("for_each"),
+            "branch": step.get("branch"),
+            "recorded_event": _recorded_event_evidence(step, doc),
+            "edit_history": [e for e in read_edits(skill_id) if e.get("step_key") == key][-_EDIT_HISTORY_CAP:],
+        }
+    raise EvidenceError("step_not_found", f"No step {step_key!r} in skill {skill_id}")
+
+
+def build_evidence_bundle(
+    skill_id: str, *, run_id: str | None = None, detail: str = "full"
+) -> dict[str, Any]:
     """Assemble the copilot's evidence bundle for one skill's failing step.
 
     `run_id` is optional — omitted, the bundle is compile-side only (still useful for the
@@ -179,6 +235,13 @@ def build_evidence_bundle(skill_id: str, *, run_id: str | None = None) -> dict[s
     omitted, falls back to the owning Workflow's `last_test_run_id` (persisted by
     handlers/workflows.py::cmd_test_workflow, stage a2) so the copilot can still discuss the
     most recent failure without the caller having to know its run id.
+
+    `detail` (BUILD-26 stage g): `"full"` (default, unchanged) keeps every non-conversational
+    caller's existing behaviour — heavy fields (target/identity_bundle/compiled_selectors)
+    expanded on the failing step and any step with prior edits. `"digest"` is the copilot's L1
+    context layer — no step carries heavy fields at all; the copilot pulls them on demand via
+    `expand_step` through the `need[]` retrieval loop (`llm/copilot.py`) instead of every step's
+    full identity bundle riding every turn.
     """
     doc = read_skill(skill_id)
     if doc is None:
@@ -204,34 +267,41 @@ def build_evidence_bundle(skill_id: str, *, run_id: str | None = None) -> dict[s
         overlay["step_key"] = keys[idx] if isinstance(idx, int) and 0 <= idx < len(keys) else None
 
     compile_report = doc.get("compile_report") if isinstance(doc.get("compile_report"), dict) else {}
+    all_edits = read_edits(skill_id)
 
     steps_bundle: list[dict[str, Any]] = []
     for i, (step, key) in enumerate(zip(steps, keys)):
+        edit_history = [e for e in all_edits if e.get("step_key") == key][-_EDIT_HISTORY_CAP:]
         entry: dict[str, Any] = {
             "step_key": key,
             "step_index": i,
             "description": describe_step(step, i),
+            "action_kind": (step.get("action") or {}).get("action") if isinstance(step.get("action"), dict) else step.get("action"),
             "intent": step.get("intent"),
             "semantic_description": step.get("semantic_description"),
             "phase": step.get("phase"),
             "consequence": step.get("consequence"),
-            "target": step.get("target"),
-            "identity_bundle": step.get("identity_bundle"),
-            "compiled_selectors": step.get("compiled_selectors"),
-            "validation": step.get("validation"),
+            "has_assertions": bool((step.get("validation") or {}).get("assertions")),
+            "has_branch": bool(step.get("branch")),
+            "has_for_each": bool(step.get("for_each")),
             "compile_report": _compile_report_for_step(compile_report, i, steps),
-            "recorded_event": _recorded_event_evidence(step, doc),
-            "edit_history": [e for e in read_edits(skill_id) if e.get("step_key") == key][-_EDIT_HISTORY_CAP:],
+            "edit_history": edit_history,
         }
-        # Only the failing step (when known) and steps with prior edits carry the heavy fields —
-        # a 24-step workflow's full identity_bundle set for every step would dwarf the run
-        # evidence itself. Everything else stays as compact triage-list rows.
-        if key != failed_step_key and not entry["edit_history"]:
-            for heavy in ("target", "identity_bundle", "compiled_selectors"):
-                entry[heavy] = None
+        if detail == "full":
+            entry["target"] = step.get("target")
+            entry["identity_bundle"] = step.get("identity_bundle")
+            entry["compiled_selectors"] = step.get("compiled_selectors")
+            entry["validation"] = step.get("validation")
+            entry["recorded_event"] = _recorded_event_evidence(step, doc)
+            # Only the failing step (when known) and steps with prior edits carry the heavy
+            # fields — a 24-step workflow's full identity_bundle set for every step would dwarf
+            # the run evidence itself. Everything else stays as compact triage-list rows.
+            if key != failed_step_key and not edit_history:
+                for heavy in ("target", "identity_bundle", "compiled_selectors"):
+                    entry[heavy] = None
         steps_bundle.append(entry)
 
-    return {
+    bundle: dict[str, Any] = {
         "skill_id": skill_id,
         "run_id": run_id,
         "failed_step_key": failed_step_key,
@@ -241,6 +311,10 @@ def build_evidence_bundle(skill_id: str, *, run_id: str | None = None) -> dict[s
         "runtime_evidence": runtime_evidence,
         "steps": steps_bundle,
     }
+    if detail == "digest":
+        bundle["inputs"] = doc.get("inputs")
+        bundle["prior_decisions"] = _prior_decisions(skill_id)
+    return bundle
 
 
 if __name__ == "__main__":

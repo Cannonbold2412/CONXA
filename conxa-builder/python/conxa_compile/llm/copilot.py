@@ -8,6 +8,14 @@ a streamed `copilot_reply` call for the prose the reviewer reads live, and the e
 `copilot_diagnose` call for proposals — kept as two calls, not one, because `copilot_diagnose`'s
 JSON-object contract can't be streamed cleanly (see `conxa_core.llm.client`'s `copilot_reply` and
 `copilot_diagnose` branches for both prompts).
+
+BUILD-26 stage g adds two things to the `copilot_diagnose` side only (never to the streamed
+`copilot_reply`, which stays prose-only so the reviewer sees text immediately):
+  - the capability manifest (`editor/capability_manifest.py`) and a workflow DIGEST
+    (`evidence.py`'s `detail="digest"`) replace the old always-full evidence dump, so the model
+    knows what the runtime can execute and sees every step, but not every step's heavy fields;
+  - a bounded `need[]` retrieval loop — the model asks for detail (`editor/copilot_retrieval.py`)
+    instead of receiving it all up front, capped at `MAX_RETRIEVAL_ROUNDS` extra calls per turn.
 """
 
 from __future__ import annotations
@@ -18,9 +26,22 @@ from typing import Any, Callable
 
 from conxa_core.config import settings
 
+from conxa_compile.editor.capability_manifest import build_capability_manifest
+from conxa_compile.editor.copilot_retrieval import MAX_RETRIEVAL_ROUNDS, resolve_need
 from conxa_compile.llm.anchor_vision_llm import _bounded_jpeg_bytes
 from conxa_compile.llm.client import call_llm, stream_llm
 from services.llm_proxy_client import CloudUnreachable, EntitlementBlocked, QuotaExceeded
+
+_CAPABILITY_MANIFEST_TEXT: str | None = None
+
+
+def _capability_manifest_text() -> str:
+    """Cached module-level (BUILD-26 stage g's L0) — the manifest only changes when the Studio
+    build does, so there is no reason to rebuild or re-serialize it every turn."""
+    global _CAPABILITY_MANIFEST_TEXT
+    if _CAPABILITY_MANIFEST_TEXT is None:
+        _CAPABILITY_MANIFEST_TEXT = json.dumps(build_capability_manifest(), ensure_ascii=False, default=str)
+    return _CAPABILITY_MANIFEST_TEXT
 
 
 def _format_transcript(transcript: list[dict[str, Any]]) -> str:
@@ -66,8 +87,26 @@ def _encode_screenshot(path: str | None) -> str | None:
         return None
 
 
+def _base_user_text(digest: dict[str, Any], transcript: list[dict[str, Any]], message: str) -> str:
+    user_text = (
+        "Capability manifest — what you may propose and what the runtime does with each step "
+        "kind (this never changes mid-conversation, no need to ask about it):\n"
+        f"{_capability_manifest_text()}\n\n"
+        "Workflow digest — every step, compact (ask for expand_step/get_step_screenshot/"
+        "get_failure_evidence/get_edit_history/list_workflows via \"need\" for anything not "
+        "shown here):\n"
+        f"{json.dumps(digest, ensure_ascii=False, default=str)}\n\n"
+    )
+    history = _format_transcript(transcript)
+    if history:
+        user_text += f"Conversation so far:\n{history}\n\n"
+    user_text += f"Reviewer's message: {message}"
+    return user_text
+
+
 def copilot_turn(
     *,
+    skill_id: str = "",
     evidence: dict[str, Any],
     transcript: list[dict[str, Any]],
     message: str,
@@ -84,6 +123,14 @@ def copilot_turn(
     ignored once a streamed reply exists, since it's the same answer generated twice — kept
     only as the reply's fallback source when streaming is unavailable or came back empty).
 
+    BUILD-26 stage g: ``evidence`` is now the compact DIGEST (`evidence.py`'s
+    ``detail="digest"``), not the old always-full bundle — every step, no heavy fields. The
+    ``copilot_diagnose`` call (proposals) may come back with a ``need[]`` array asking for detail
+    on specific steps/screenshots/history; that is resolved via `editor/copilot_retrieval.py` and
+    fed back for up to ``MAX_RETRIEVAL_ROUNDS`` extra rounds before the final proposals are
+    returned. The streamed ``copilot_reply`` call never asks for or waits on retrieval — the
+    reviewer's prose answer must not stall on it.
+
     Returns ``{"reply": str, "proposals": list[dict]}``. Graceful-empty on any failure —
     matching `workflow_intent.py` / `workflow_semantics.py` — **except** QuotaExceeded /
     EntitlementBlocked / CloudUnreachable, which propagate so the caller
@@ -91,16 +138,9 @@ def copilot_turn(
     exhausted") instead of the panel going silently mute — the same carve-out
     `region_selector_vision.py` makes.
     """
-    user_text = (
-        "Evidence about the workflow and (if relevant) its most recent test failure:\n"
-        f"{json.dumps(evidence, ensure_ascii=False, default=str)}\n\n"
-    )
-    history = _format_transcript(transcript)
-    if history:
-        user_text += f"Conversation so far:\n{history}\n\n"
-    user_text += f"Reviewer's message: {message}"
+    base_user_text = _base_user_text(evidence, transcript, message)
 
-    payload: dict[str, Any] = {"user_text": user_text}
+    payload: dict[str, Any] = {"user_text": base_user_text}
     image_b64 = _encode_screenshot(screenshot_path)
     if image_b64:
         payload["image_base64"] = image_b64
@@ -109,8 +149,8 @@ def copilot_turn(
         # No screenshot on disk, or no vision provider will ever see it either way — say so
         # explicitly rather than silently sending a bare question, per the plan's graceful-
         # degrade note ("diagnosis quality drops; nothing breaks").
-        user_text += "\n\n(No failure screenshot is available for this turn.)"
-        payload["user_text"] = user_text
+        base_user_text += "\n\n(No failure screenshot is available for this turn.)"
+        payload["user_text"] = base_user_text
     if model:
         payload["model"] = model
 
@@ -143,17 +183,37 @@ def copilot_turn(
     else:
         streamed_reply = ""
 
-    err_lines: list[str] = []
-    try:
-        data = call_llm(
-            "copilot_diagnose", payload, settings.llm_vision_timeout_ms, error_detail=err_lines
+    diagnose_payload = dict(payload)
+    fetched_blocks: list[str] = []
+    data: dict[str, Any] | None = None
+    for round_num in range(MAX_RETRIEVAL_ROUNDS + 1):
+        err_lines: list[str] = []
+        try:
+            data = call_llm(
+                "copilot_diagnose", diagnose_payload, settings.llm_vision_timeout_ms, error_detail=err_lines
+            )
+        except (QuotaExceeded, EntitlementBlocked, CloudUnreachable):
+            raise
+        except Exception as exc:  # noqa: BLE001 — any other failure degrades to an empty turn, never a crash
+            print(f"[copilot debug] copilot_diagnose raised: {exc!r}", file=sys.stderr)
+            data = None
+        print(f"[copilot debug] copilot_diagnose round={round_num} data={data!r} err_lines={err_lines!r}", file=sys.stderr)
+
+        if not isinstance(data, dict):
+            break
+        needs = data.get("need")
+        needs = [n for n in needs if isinstance(n, dict)] if isinstance(needs, list) else []
+        if not needs or round_num == MAX_RETRIEVAL_ROUNDS:
+            break
+        # BUILD-26 stage g: resolve every requested tool call and feed the results back as one
+        # more "Fetched:" block on the SAME base text — never a new conversation turn, never
+        # touching the transcript the reviewer sees.
+        fetched = {json.dumps(n, ensure_ascii=False, default=str): resolve_need(skill_id, n) for n in needs}
+        fetched_blocks.append(
+            "Fetched (in response to your need[]):\n" + json.dumps(fetched, ensure_ascii=False, default=str)
         )
-    except (QuotaExceeded, EntitlementBlocked, CloudUnreachable):
-        raise
-    except Exception as exc:  # noqa: BLE001 — any other failure degrades to an empty turn, never a crash
-        print(f"[copilot debug] copilot_diagnose raised: {exc!r}", file=sys.stderr)
-        data = None
-    print(f"[copilot debug] copilot_diagnose data={data!r} err_lines={err_lines!r}", file=sys.stderr)
+        diagnose_payload = dict(diagnose_payload)
+        diagnose_payload["user_text"] = str(payload.get("user_text") or "") + "\n\n" + "\n\n".join(fetched_blocks)
 
     if not isinstance(data, dict):
         return {"reply": streamed_reply, "proposals": []}

@@ -20,6 +20,32 @@ from conxa_compile.editor.placeholder_grammar import (
 from conxa_compile.editor.step_view import skill_step_for_destructive_check
 from conxa_compile.policy.intent_ontology import sanitize_intent_token
 
+# Per-action-kind patch key allow-lists — the single source of truth both `validate_editor_patch`
+# below and `editor/capability_manifest.py` read, so the copilot's capability manifest can never
+# drift from what the gate actually enforces (they are the same object, not two lists kept in
+# sync by hand).
+NAVIGATE_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "url", "validation", "recovery", "frame"})
+SCROLL_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "frame"})
+WAIT_SCREENSHOT_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "validation", "recovery", "value", "frame"})
+CHECK_ASSERT_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "check_kind", "check_pattern", "check_threshold",
+    "check_selector", "check_text", "signals", "recovery", "frame",
+})
+AI_REVIEW_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "validation", "value", "frame",
+    "ai_review_prompt", "ai_review_output_schema", "ai_review_on_failure",
+    "ai_review_default_value", "ai_review_reference_screenshot_ref",
+})
+HANDOVER_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "validation", "value", "frame",
+    "handover_on_failure", "handover_resume_when", "handover_resume_when_timeout_ms",
+})
+BRANCH_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "target", "frame", "branch", "validation", "recovery"})
+FOR_EACH_ALLOWED_KEYS = frozenset({"intent", "semantic_description", "action", "frame", "for_each"})
+DEFAULT_ALLOWED_KEYS = frozenset({
+    "intent", "semantic_description", "action", "target", "frame", "validation", "recovery", "value", "input_binding",
+})
+
 
 def _validate_value_placeholders(value: str) -> None:
     """Reject a step-value edit containing a malformed {{...}} attempt (hyphens, digits-first,
@@ -306,7 +332,7 @@ def validate_editor_patch(
             raise ValueError("recording_marker_steps_are_read_only")
         return
     if act == "navigate":
-        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "url", "validation", "recovery", "frame"})
+        invalid_keys = sorted(set(patch) - NAVIGATE_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("navigate_step_allows_only_url_intent_validation_recovery")
         action_patch = patch.get("action")
@@ -318,7 +344,7 @@ def validate_editor_patch(
             raise ValueError("navigate_url_must_be_http_url")
         return
     if act == "scroll":
-        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "frame"})
+        invalid_keys = sorted(set(patch) - SCROLL_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("scroll_step_allows_only_intent_and_action")
         action_patch = patch.get("action")
@@ -336,26 +362,11 @@ def validate_editor_patch(
                 raise ValueError("scroll_amount_out_of_range")
         return
     if act in {"wait", "screenshot"}:
-        invalid_keys = sorted(set(patch) - {"intent", "semantic_description", "action", "validation", "recovery", "value", "frame"})
+        invalid_keys = sorted(set(patch) - WAIT_SCREENSHOT_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError(f"{act}_step_allows_only_action_intent_validation_recovery")
     if act in {"check", "assert"}:
-        invalid_keys = sorted(
-            set(patch)
-            - {
-                "intent",
-                "semantic_description",
-                "action",
-                "check_kind",
-                "check_pattern",
-                "check_threshold",
-                "check_selector",
-                "check_text",
-                "signals",
-                "recovery",
-                "frame",
-            }
-        )
+        invalid_keys = sorted(set(patch) - CHECK_ASSERT_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("check_step_allows_only_check_fields")
     if act == "ai_review":
@@ -369,13 +380,7 @@ def validate_editor_patch(
         # gets its own message rather than the generic one.
         if "recovery" in patch:
             raise ValueError("ai_review_step_cannot_patch_recovery")
-        invalid_keys = sorted(
-            set(patch) - {
-                "intent", "semantic_description", "action", "validation", "value", "frame",
-                "ai_review_prompt", "ai_review_output_schema", "ai_review_on_failure",
-                "ai_review_default_value", "ai_review_reference_screenshot_ref",
-            }
-        )
+        invalid_keys = sorted(set(patch) - AI_REVIEW_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("ai_review_step_allows_only_ai_review_fields")
         if "ai_review_prompt" in patch:
@@ -405,12 +410,7 @@ def validate_editor_patch(
         # action-kind editor already renders a labeled text box for.
         if "recovery" in patch:
             raise ValueError("handover_step_cannot_patch_recovery")
-        invalid_keys = sorted(
-            set(patch) - {
-                "intent", "semantic_description", "action", "validation", "value", "frame",
-                "handover_on_failure", "handover_resume_when", "handover_resume_when_timeout_ms",
-            }
-        )
+        invalid_keys = sorted(set(patch) - HANDOVER_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("handover_step_allows_only_handover_fields")
         message = str(merged.get("value") or "").strip()
@@ -431,18 +431,13 @@ def validate_editor_patch(
             if timeout_ms is not None and (not isinstance(timeout_ms, (int, float)) or timeout_ms <= 0):
                 raise ValueError("handover_resume_when_timeout_ms_invalid")
     if act in {"if_present", "try_dismiss", "wait_for_one_of"}:
-        invalid_keys = sorted(
-            set(patch)
-            - {"intent", "semantic_description", "action", "target", "frame", "branch", "validation", "recovery"}
-        )
+        invalid_keys = sorted(set(patch) - BRANCH_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("branch_step_allows_only_target_branch_intent_validation_recovery_frame")
         if "branch" in patch:
             _validate_branch_patch(act, patch.get("branch"))
     if act == "for_each":
-        invalid_keys = sorted(
-            set(patch) - {"intent", "semantic_description", "action", "frame", "for_each"}
-        )
+        invalid_keys = sorted(set(patch) - FOR_EACH_ALLOWED_KEYS)
         if invalid_keys:
             raise ValueError("for_each_step_allows_only_intent_for_each_frame")
         if "for_each" in patch:

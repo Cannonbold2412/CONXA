@@ -33,3 +33,25 @@ def save_copilot_session(skill_id: str, transcript: list[dict[str, Any]]) -> Non
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
     except OSError:
         pass
+
+
+def load_last_session(skill_id: str) -> list[dict[str, Any]]:
+    """BUILD-26 stage g: the archive this file writes was never read back — a reviewer reopening
+    Human Edit always started the copilot cold. Returns the last archived transcript's messages,
+    or [] when there is no archive yet or it can't be read (same fail-silent contract as the
+    writer above: a resume that can't happen must not block opening the panel)."""
+    path = copilot_sessions_path(skill_id)
+    if not path.is_file():
+        return []
+    try:
+        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    except OSError:
+        return []
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        messages = entry.get("messages") if isinstance(entry, dict) else None
+        return messages if isinstance(messages, list) else []
+    return []

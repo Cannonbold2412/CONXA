@@ -574,49 +574,87 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             {"role": "user", "content": user_content},
         ]
     if task == "copilot_diagnose":
-        # BUILD-26 stage (b): Human Review's copilot. One call per turn — there is no multi-turn
-        # session on this path, so the Studio flattens the whole conversation (evidence bundle +
-        # transcript + the reviewer's latest message) into user_text each time; this function
-        # stays stateless either way. The screenshot is optional: a text-only turn (no vision
-        # provider in the pool, or no failure screenshot on disk) is still a valid call — just
-        # without the image content block, per the graceful-degrade contract in
-        # conxa_compile/llm/copilot.py.
+        # BUILD-26 stage (b), widened at stage (g): Human Review's copilot. One call per turn —
+        # there is no multi-turn session on this path, so the Studio flattens the whole
+        # conversation (capability manifest + workflow digest + transcript + the reviewer's
+        # latest message, and any retrieval "Fetched:" blocks from a prior round of this same
+        # turn) into user_text each time; this function stays stateless either way. The
+        # screenshot is optional: a text-only turn (no vision provider in the pool, or no
+        # screenshot available) is still a valid call — just without the image content block,
+        # per the graceful-degrade contract in conxa_compile/llm/copilot.py.
         image_b64 = str(payload.get("image_base64") or "")
         mime = str(payload.get("image_mime") or "image/jpeg")
         user_text = str(payload.get("user_text") or "")
         system = (
             "You are a diagnosis-and-repair copilot inside a browser-automation workflow "
-            "reviewer (Human Review). You are shown evidence about one compiled workflow and, "
-            "when relevant, why one of its steps failed a test run: the compiler's own "
-            "confidence and identity signals, the recorded page's before/after DOM diff, the "
-            "deterministic recovery cascade's trail, a live element inventory, any overlays "
-            "(popups/banners) the runtime observed during test runs, and — when attached — a "
-            "screenshot taken at the moment of failure. Diagnose from this evidence: cite the "
-            "actual cascade stage or page state involved, never a generic restatement of the "
-            "error message. Answer the reviewer's question directly.\n"
-            "Return strict JSON with keys: reply (a short, specific plain-English answer), and "
-            "proposals (array, usually empty — most turns propose nothing). Two kinds of proposal "
-            "exist:\n"
-            "1. A field edit: {step_key, field, patch, why}. step_key copied EXACTLY from a "
-            "step's own \"step_key\" field in the evidence — never invented, never a step number; "
-            "field is exactly one of input_binding, value, intent, semantic_description, "
-            "validation.assertions; patch is the new value for that field.\n"
+            "reviewer (Human Review). Your first message carries a CAPABILITY MANIFEST (what "
+            "step kinds exist, which ones need a page target, which fields are patchable on "
+            "each, and a one-line note on what the runtime actually does with each kind) and a "
+            "WORKFLOW DIGEST (every step, compactly — description, intent, phase, consequence, "
+            "compile confidence, whether it has assertions/a branch/a loop; NOT its full "
+            "selector/identity detail). Treat the manifest as the ground truth for what is "
+            "possible — never propose something it does not list as insertable or patchable for "
+            "that kind, and never assume a runtime behavior the manifest's runtime_note "
+            "contradicts (e.g. recovery.max_attempts and no_recovery_block are never read by the "
+            "runtime — do not propose them as a fix). When the digest lacks the detail you need "
+            "for a specific step (its selectors, a screenshot, its full recorded event, its full "
+            "edit history) or you need the list of other workflows in this workspace, ASK for it "
+            "via \"need\" rather than guessing.\n"
+            "Return strict JSON with keys: reply (a short, specific plain-English answer), need "
+            "(array, usually empty — see below), and proposals (array, usually empty — most "
+            "turns propose nothing).\n"
+            "need entries are {tool, args}, tool one of: expand_step (args: {step_key}) — full "
+            "target/identity_bundle/compiled_selectors/validation/handler_hints for one step; "
+            "get_step_screenshot (args: {step_key}) — that step's recorded screenshot; "
+            "get_failure_evidence (args: {run_id?}) — the runtime's failure capture for a run "
+            "(omit run_id for the workflow's most recent); get_edit_history (args: {step_key?}) "
+            "— prior reviewer/copilot edits; list_workflows (args: {}) — every workflow in this "
+            "workspace, for cross-workflow naming consistency. You will receive the results as a "
+            "\"Fetched:\" block and get one more turn to answer or propose — do not repeat the "
+            "same need twice.\n"
+            "Three kinds of proposal exist, and EVERY proposal must carry evidence_refs (array of "
+            "step_key / overlay_id / tool-name strings naming what it is derived from) — a "
+            "proposal with no evidence_refs is dropped before the reviewer ever sees it:\n"
+            "1. A field edit: {step_key, field, patch, why, evidence_refs}. step_key copied "
+            "EXACTLY from a step's own \"step_key\" — never invented, never a step number. field "
+            "is one of: value, input_binding, intent, semantic_description, "
+            "validation.assertions, consequence, entity_binding.confirmed, branch.timeout_ms, "
+            "for_each.max_iterations, for_each.on_row_error, handler_hints.hover_chain, or (for "
+            "ai_review/handover steps only) one of the ai_review_*/handover_* fields the manifest "
+            "lists for that kind. patch is the new value for that field.\n"
             "2. A conditional-branch insertion, ONLY when the reviewer asks about a popup/overlay "
-            "and the evidence's observed_overlays lists one: {overlay_id, control_index, "
-            "primitive, after_step_key, why}. overlay_id copied EXACTLY from "
-            "observed_overlays[].overlay_id — never invented, and never reference an overlay not "
-            "listed there. control_index is the index into that overlay's own \"controls\" array "
-            "(the button/link to act on, e.g. \"Accept\"). primitive is \"try_dismiss\" (dismiss "
-            "the overlay before the next step) or \"if_present\" (only act when the overlay is "
-            "present). after_step_key is the step_key to insert after, or omit to insert at the "
-            "end.\n"
-            "why is one sentence citing the evidence, for either kind. You must NEVER propose "
-            "target, identity_bundle, compiled_selectors, primary_selector, or fallback_selectors "
-            "— you never write or change a page selector, only a human re-targeting a step in the "
-            "editor does that, and a branch insertion's own selectors are built deterministically "
-            "from the overlay you referenced, not by you. Only propose a change you are confident "
-            "about and can justify from evidence actually shown to you — never invent text, a "
-            "selector, or a DOM fact not present above. No markdown, no extra keys."
+            "and the digest's observed_overlays (fetch via get_failure_evidence if not already "
+            "shown) lists one: {overlay_id, control_index, primitive, after_step_key, why, "
+            "evidence_refs}. overlay_id copied EXACTLY from observed_overlays[].overlay_id — "
+            "never invented. control_index is the index into that overlay's own \"controls\" "
+            "array. primitive is \"try_dismiss\" or \"if_present\". after_step_key is the "
+            "step_key to insert after, or omit to insert at the end.\n"
+            "3. A structural op — insert/delete/move a step, or a workflow-level edit: "
+            "{op, why, evidence_refs, ...}. op is one of:\n"
+            "   - insert_step: {action_kind, after_step_key, fields?, identity_from_step_key?}. "
+            "action_kind must be in the manifest's insertable_kinds. If action_kind is in the "
+            "manifest's selector_kinds (it needs a page target — e.g. hover, click), you MUST "
+            "set identity_from_step_key to an EXISTING step_key whose element this new step "
+            "should act on — you never invent a selector for a kind that needs one; for a kind "
+            "NOT in selector_kinds (ai_review, handover, wait, check, assert, navigate, scroll, "
+            "screenshot) omit identity_from_step_key entirely. fields is an optional {field: "
+            "value} map of the same fields listed in (1), applied right after insert.\n"
+            "   - delete_step: {step_key}.\n"
+            "   - move_step: {step_key, after_step_key}.\n"
+            "   - update_inputs: {inputs}. inputs is the FULL replacement input list, in the same "
+            "shape as the digest's own \"inputs\" — never a partial list.\n"
+            "   - replace_literals: {find, replace}. Only for a literal value the reviewer named "
+            "explicitly — never a guess at a value that merely looks similar.\n"
+            "You must NEVER propose target, identity_bundle, compiled_selectors, primary_selector, "
+            "fallback_selectors, recovery, no_recovery_block, or a raw for_each/branch \"steps\" "
+            "array in any proposal of any kind — you never write or change a page selector or a "
+            "loop/branch body directly; a human re-targeting a step in the editor does that, and a "
+            "branch/structural insertion's own selectors are built deterministically from what you "
+            "referenced, not by you. Never re-propose something the digest's prior_decisions "
+            "already shows as rejected for the same step/field unless the reviewer asks again. "
+            "Only propose a change you are confident about and can justify from evidence actually "
+            "shown to you — never invent text, a selector, or a DOM fact not present above. No "
+            "markdown, no extra keys."
         )
         user_content: list[dict[str, Any]] | str
         if image_b64:
@@ -691,12 +729,17 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
         # candidates.
         body["max_tokens"] = 4096
     if task == "copilot_diagnose":
-        # A conversational reply plus at most a few small proposals — more room than a selector
-        # list, less than a whole-workflow pass.
-        body["max_tokens"] = 900
+        # BUILD-26 stage g: raised from 900 — the manifest+digest prompt plus the wider
+        # need/evidence_refs/structural-op schema is heavier than the original "reply plus a few
+        # small proposals" shape this budget was sized for, and a reasoning-capable routed model
+        # (observed live: OpenRouter's z-ai/glm-5.3-flash) spends completion tokens on hidden
+        # chain-of-thought BEFORE writing the JSON answer — at 900 it was observed to exhaust the
+        # budget entirely on reasoning and return finish_reason="length" with an empty answer.
+        body["max_tokens"] = 2048
     if task == "copilot_reply":
-        # Prose only, no proposals JSON riding along — smaller budget than copilot_diagnose.
-        body["max_tokens"] = 500
+        # Prose only, no proposals JSON riding along — smaller budget than copilot_diagnose, but
+        # doubled from 500 for the same reasoning-budget headroom noted above.
+        body["max_tokens"] = 900
     if task == "ai_review":
         # A small structured answer (yes/no + a short reason, or similar) — same order as
         # region_selector's handful of candidates.

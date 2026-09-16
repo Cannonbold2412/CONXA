@@ -541,10 +541,11 @@ export type CopilotTurnMessage = { role: 'user' | 'assistant'; text: string }
 export type CopilotProposal = {
   id: string
   command: string
-  patch: Record<string, unknown>
   why: string
+  evidence_refs?: string[]
   preview: { before: unknown; after: unknown }
   // `patch_step` proposals only:
+  patch?: Record<string, unknown>
   step_key?: string | null
   field?: string
   // `insert_overlay_branch` proposals only (BUILD-26 stage f) — an inserted step, not an edited
@@ -553,6 +554,17 @@ export type CopilotProposal = {
   overlay_id?: string
   after_step_key?: string | null
   nested_step?: Record<string, unknown> | null
+  // `structural_op` proposals only (BUILD-26 stage g) — insert/delete/move a step, or a
+  // workflow-level edit. `op` names which; the renderer never inspects the rest itself, it just
+  // round-trips whatever the gate produced back to `accept_copilot_proposal` unchanged (see
+  // acceptCopilotProposal below) — the server is the only side that interprets these fields.
+  op?: 'insert_step' | 'delete_step' | 'move_step' | 'update_inputs' | 'replace_literals'
+  action_kind?: string
+  fields?: Record<string, unknown>
+  identity_from_step_key?: string | null
+  inputs?: unknown[]
+  find?: string
+  replace?: string
 }
 
 export type CopilotTurnResult = {
@@ -583,11 +595,20 @@ export function copilotTurn(
  *
  *  An `insert_overlay_branch` proposal (BUILD-26 stage f) carries no step_key — the same command
  *  name routes server-side to a different accept path (cmd_insert_step + cmd_patch_step, +
- *  cmd_insert_branch_step for if_present) based on `command`/`primitive` in the payload. */
+ *  cmd_insert_branch_step for if_present) based on `command`/`primitive` in the payload.
+ *
+ *  A `structural_op` proposal (BUILD-26 stage g) round-trips as one op in a single-item `ops`
+ *  batch — the server applies it (and any sibling ops accepted alongside it in the same call)
+ *  as one all-or-nothing change with exactly one undo entry. This function always sends a
+ *  one-element batch; a caller that wants to accept several structural proposals together should
+ *  call `acceptCopilotProposalBatch` instead. */
 export function acceptCopilotProposal(
   skillId: string,
   proposal: CopilotProposal,
 ): Promise<WorkflowRevalidationResponse> {
+  if (proposal.command === 'structural_op') {
+    return acceptCopilotProposalBatch(skillId, [proposal])
+  }
   return cmd('accept_copilot_proposal', {
     skill_id: skillId,
     step_key: proposal.step_key ?? null,
@@ -598,6 +619,32 @@ export function acceptCopilotProposal(
     overlay_id: proposal.overlay_id,
     after_step_key: proposal.after_step_key ?? null,
     nested_step: proposal.nested_step ?? null,
+  })
+}
+
+/** Accepts several `structural_op` proposals as ONE batch — one document write, one undo entry,
+ *  aborting the whole batch untouched if any op in it turns out stale. Use this when the reviewer
+ *  accepts a multi-step proposal (e.g. "insert an ai_review checkpoint, then hover the result")
+ *  as a single action rather than one accept per step. */
+export function acceptCopilotProposalBatch(
+  skillId: string,
+  proposals: CopilotProposal[],
+): Promise<WorkflowRevalidationResponse> {
+  return cmd('accept_copilot_proposal', {
+    skill_id: skillId,
+    command: 'structural_op',
+    proposal_id: proposals.map((p) => p.id).join(','),
+    ops: proposals.map((p) => ({
+      op: p.op,
+      step_key: p.step_key ?? null,
+      after_step_key: p.after_step_key ?? null,
+      action_kind: p.action_kind,
+      fields: p.fields ?? {},
+      identity_from_step_key: p.identity_from_step_key ?? null,
+      inputs: p.inputs,
+      find: p.find,
+      replace: p.replace,
+    })),
   })
 }
 
@@ -620,6 +667,14 @@ export function rejectCopilotProposal(skillId: string, proposal: CopilotProposal
  *  never blocks starting a fresh conversation; a save failure is surfaced but not fatal. */
 export function saveCopilotSession(skillId: string, transcript: CopilotTurnMessage[]): Promise<{ ok: boolean }> {
   return cmd('copilot_save_session', { skill_id: skillId, transcript })
+}
+
+/** BUILD-26 stage g: the archive above was write-only until now — this resumes the last saved
+ *  conversation for a skill instead of always starting cold, called from copilotStore's
+ *  `ensureFor` the first time a skill's panel opens in this session. Empty when there is no
+ *  archive yet. */
+export function loadLastCopilotSession(skillId: string): Promise<{ messages: CopilotTurnMessage[] }> {
+  return cmd('copilot_load_session', { skill_id: skillId })
 }
 
 /** Applies a `compiler/loop_suggestion.py` finding — a one-click "generalize this to a loop"

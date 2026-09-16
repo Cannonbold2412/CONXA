@@ -29,7 +29,11 @@ from handlers.protocol import _CommandError, _event_sink, _safe_id, _skill_respo
 
 class CopilotMixin:
     def cmd_copilot_turn(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
-        from conxa_compile.editor.copilot_proposals import gate_overlay_proposals, gate_proposals
+        from conxa_compile.editor.copilot_proposals import (
+            gate_overlay_proposals,
+            gate_proposals,
+            gate_structural_proposals,
+        )
         from conxa_compile.editor.evidence import EvidenceError, build_evidence_bundle
         from conxa_compile.llm.copilot import copilot_turn
         from conxa_core.storage.json_store import read_skill
@@ -48,7 +52,10 @@ class CopilotMixin:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
 
         try:
-            evidence = build_evidence_bundle(skill_id, run_id=run_id)
+            # BUILD-26 stage g: the DIGEST, not the old always-full bundle — every step, no heavy
+            # fields. The copilot pulls detail on demand via the need[] retrieval loop instead
+            # (conxa_compile/editor/copilot_retrieval.py, driven from llm/copilot.py).
+            evidence = build_evidence_bundle(skill_id, run_id=run_id, detail="digest")
         except EvidenceError as exc:
             raise _CommandError(exc.code, exc.message) from exc
 
@@ -58,6 +65,7 @@ class CopilotMixin:
         self._install_proxy_router(sink=sink, usage_class="human_edit")
         try:
             result = copilot_turn(
+                skill_id=skill_id,
                 evidence=evidence,
                 transcript=transcript,
                 message=message,
@@ -75,18 +83,25 @@ class CopilotMixin:
         proposals = gate_proposals(doc, raw_proposals)
         # BUILD-26 stage f: a second proposal KIND from the same model call — an overlay
         # insertion, gated separately since it needs the run's observed_overlays rather than
-        # patch_gate's field allow-list. Concatenated: the renderer only ever shows proposals[0].
+        # patch_gate's field allow-list. Stage g adds a THIRD kind — typed structural ops. All
+        # three are concatenated: the renderer only ever shows proposals[0].
         observed_overlays = (evidence.get("runtime_evidence") or {}).get("observed_overlays") or []
         if observed_overlays:
             proposals = proposals + gate_overlay_proposals(doc, observed_overlays, raw_proposals)
+        proposals = proposals + gate_structural_proposals(doc, raw_proposals)
         return {"reply": result.get("reply") or "", "proposals": proposals}
 
     def cmd_accept_copilot_proposal(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
         # BUILD-26 stage f: a second proposal kind branches here before the patch_step path below
         # even looks at step_key — insert_overlay_branch has no step_key of its own (it inserts a
         # new step, it doesn't edit an existing one).
-        if str(payload.get("command") or "").strip() == "insert_overlay_branch":
+        command = str(payload.get("command") or "").strip()
+        if command == "insert_overlay_branch":
             return self._accept_overlay_branch_proposal(payload, rid)
+        # BUILD-26 stage g: the third proposal kind — one or more typed structural ops, applied
+        # as a single all-or-nothing batch with ONE undo entry (see _accept_structural_proposal).
+        if command == "structural_op":
+            return self._accept_structural_proposal(payload, rid)
 
         from conxa_compile.editor.copilot_proposals import ProposalError, resolve_step_index
         from conxa_core.storage.json_store import read_skill
@@ -161,6 +176,136 @@ class CopilotMixin:
                 {"skill_id": skill_id, "step_index": new_index, "path": "branch.steps[0]", "patch": nested_step}, rid
             )
         return result
+
+    def _accept_structural_proposal(self, payload: dict[str, Any], rid: str) -> dict[str, Any]:
+        """Apply one or more gated structural ops (`gate_structural_proposals`) as a single
+        all-or-nothing batch, collapsed to exactly ONE undo entry — this is what fixes the
+        multi-undo-entry ceiling `_accept_overlay_branch_proposal` above accepted as unavoidable.
+
+        Each op still goes through the SAME cmd_* RPC a manual edit would use (cmd_insert_step,
+        cmd_patch_step, cmd_delete_step, cmd_reorder_steps, cmd_update_workflow_inputs,
+        cmd_replace_literals) — no new mutation logic — so every individual op re-runs the patch
+        gate and re-resolves its own step_key against the CURRENT document. Accepts either a
+        single op at the top level (`payload["op"]` + its own fields) or a batch (`payload["ops"]`
+        — a list of the same shape), so a renderer can send one proposal or several accepted
+        together.
+
+        Any op failing mid-batch aborts the WHOLE batch: the document is restored to its
+        pre-batch snapshot and every undo entry the batch's own cmd_* calls pushed is discarded,
+        so a partial structural change is never left half-applied.
+        """
+        import copy
+
+        from conxa_compile.editor.copilot_proposals import ProposalError, resolve_step_index
+        from conxa_core.storage.json_store import read_skill, write_skill
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        ops = payload.get("ops") if isinstance(payload.get("ops"), list) else [payload]
+        ops = [op for op in ops if isinstance(op, dict) and op.get("op")]
+        if not ops:
+            raise _CommandError("invalid_input", "op or ops is required")
+
+        pre_batch_doc = read_skill(skill_id)
+        if pre_batch_doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+        snapshot = copy.deepcopy(pre_batch_doc)
+        undo_stack = self._undo_stacks.setdefault(skill_id, [])
+        depth_before = len(undo_stack)
+
+        result: dict[str, Any] = {}
+        try:
+            for op in ops:
+                result = self._apply_one_structural_op(skill_id, op, rid)
+        except _CommandError:
+            del undo_stack[depth_before:]
+            write_skill(skill_id, snapshot)
+            raise
+        except ProposalError as exc:
+            del undo_stack[depth_before:]
+            write_skill(skill_id, snapshot)
+            raise _CommandError(exc.code, exc.message) from exc
+
+        # Collapse however many undo entries this batch's cmd_* calls pushed into exactly ONE —
+        # the pre-batch snapshot — so a reviewer's single Undo after accepting reverses the whole
+        # proposal, not just its last op.
+        del undo_stack[depth_before:]
+        undo_stack.append(snapshot)
+        self._redo_stacks[skill_id] = []
+        return result
+
+    def _apply_one_structural_op(self, skill_id: str, op: dict[str, Any], rid: str) -> dict[str, Any]:
+        from conxa_compile.editor.copilot_proposals import ProposalError, resolve_step_index
+        from conxa_core.storage.json_store import read_skill
+
+        kind = str(op.get("op") or "").strip()
+        doc = read_skill(skill_id)
+        if doc is None:
+            raise _CommandError("skill_not_found", f"No skill {skill_id}")
+
+        if kind == "insert_step":
+            after_step_key = op.get("after_step_key")
+            insert_after = resolve_step_index(doc, after_step_key) if after_step_key else None
+            skills = doc.get("skills") if isinstance(doc.get("skills"), list) else []
+            block0 = skills[0] if skills and isinstance(skills[0], dict) else {}
+            pre_len = len(block0.get("steps") or [])
+            action_kind = str(op.get("action_kind") or "").strip()
+            result = self.cmd_insert_step(
+                {"skill_id": skill_id, "action_kind": action_kind, "insert_after": insert_after}, rid
+            )
+            new_index = (insert_after + 1) if insert_after is not None else pre_len
+
+            identity_from_step_key = op.get("identity_from_step_key")
+            fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+            patch: dict[str, Any] = {}
+            if identity_from_step_key:
+                source_index = resolve_step_index(doc, identity_from_step_key)
+                source_step = (block0.get("steps") or [])[source_index]
+                patch["identity_bundle"] = source_step.get("identity_bundle")
+                patch["target"] = source_step.get("target")
+            for field, value in fields.items():
+                nested = patch
+                parts = field.split(".")
+                for part in parts[:-1]:
+                    nested = nested.setdefault(part, {})
+                nested[parts[-1]] = value
+            if patch:
+                result = self.cmd_patch_step({"skill_id": skill_id, "step_index": new_index, "patch": patch}, rid)
+            return result
+
+        if kind == "delete_step":
+            step_key = str(op.get("step_key") or "").strip()
+            step_index = resolve_step_index(doc, step_key)
+            return self.cmd_delete_step({"skill_id": skill_id, "step_index": step_index}, rid)
+
+        if kind == "move_step":
+            step_key = str(op.get("step_key") or "").strip()
+            after_step_key = op.get("after_step_key")
+            step_index = resolve_step_index(doc, step_key)
+            after_index = resolve_step_index(doc, after_step_key) if after_step_key else None
+            skills = doc.get("skills") if isinstance(doc.get("skills"), list) else []
+            block0 = skills[0] if skills and isinstance(skills[0], dict) else {}
+            n = len(block0.get("steps") or [])
+            order = [i for i in range(n) if i != step_index]
+            target_pos = 0 if after_index is None else (order.index(after_index) + 1)
+            new_order = order[:target_pos] + [step_index] + order[target_pos:]
+            return self.cmd_reorder_steps({"skill_id": skill_id, "new_order": new_order}, rid)
+
+        if kind == "update_inputs":
+            inputs = op.get("inputs") if isinstance(op.get("inputs"), list) else []
+            return self.cmd_update_workflow_inputs({"skill_id": skill_id, "inputs": inputs}, rid)
+
+        if kind == "replace_literals":
+            find = str(op.get("find") or "")
+            replace = str(op.get("replace") or "")
+            return self.cmd_replace_literals({"skill_id": skill_id, "find": find, "replace_with": replace}, rid)
+
+        raise _CommandError("unsupported_structural_op", f"Unknown structural op: {kind!r}")
+
+    def cmd_copilot_load_session(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
+        from conxa_compile.editor.copilot_sessions import load_last_session
+
+        skill_id = _safe_id(payload.get("skill_id"), "skill_id")
+        return {"messages": load_last_session(skill_id)}
 
     def cmd_copilot_save_session(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         from conxa_compile.editor.copilot_sessions import save_copilot_session

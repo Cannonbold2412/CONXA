@@ -2103,6 +2103,77 @@ undo presses to fully undo one accept, not a single compound entry. `cmd_reject_
 accepts a missing `step_key` for this proposal kind (it inserts rather than edits) and logs
 against `f"overlay:{overlay_id}"` instead, keeping `edits.jsonl` one shape.
 
+**Stage g — capability manifest, digest context, retrieval loop, structural ops, session
+resume.** Four additions, none changing the propose/dispose contract above.
+
+*Capability manifest* (`conxa_compile/editor/capability_manifest.py::build_capability_manifest`).
+Generated from the SAME data `patch_gate.py` enforces — the per-kind `*_ALLOWED_KEYS` constants
+`validate_editor_patch` itself now reads (extracted so gate and manifest can never drift, being
+one object rather than two hand-synced lists) plus `action_registry.py`'s kind/category/
+insertable/selector/value sets — so the model is told exactly what the gate will accept, never
+more. The only hand-maintained content is `RUNTIME_NOTES`, one line per kind naming what the
+runtime actually does with it (`ai_review` pauses and never enters recovery; `for_each` requires
+`max_iterations`; `recovery.max_attempts`/`no_recovery_block` are never read at all). Sent once
+per Copilot session, cached module-level.
+
+*Digest context* (`evidence.py`'s `detail="digest"` on `build_evidence_bundle`). Every step as a
+compact triage row — description, action kind, intent, phase, consequence, compile confidence,
+has-assertions/has-branch/has-for_each — with NO heavy fields (target/identity_bundle/
+compiled_selectors/validation/recorded_event) on any step, not even the failing one. Replaces the
+old always-full bundle on the copilot's own path (`handlers/copilot.py::cmd_copilot_turn`); every
+other caller keeps the original `detail="full"` behaviour unchanged. Also carries `inputs` and a
+new `prior_decisions` block (every prior copilot accept/reject for this skill, from `edits.jsonl`,
+capped at 30) so the model stops re-proposing what a reviewer already turned down.
+
+*Retrieval loop* (`conxa_compile/editor/copilot_retrieval.py` + `llm/copilot.py::copilot_turn`).
+The cloud proxy has no tool-calling primitive and the provider pool is uneven on the ones that do,
+so retrieval rides the existing `copilot_diagnose` JSON contract instead: the model may return a
+`need` array of `{tool, args}` entries — `expand_step`, `get_step_screenshot`,
+`get_failure_evidence`, `get_edit_history`, `list_workflows`, each a thin wrapper over a reader
+that already existed — resolved and folded back into the SAME base `user_text` as a `Fetched:`
+block for up to `MAX_RETRIEVAL_ROUNDS` (2) extra `copilot_diagnose` calls. The streamed
+`copilot_reply` call never participates — it gets the digest once and answers in prose
+immediately; only the `copilot_diagnose` proposals side loops. `get_step_screenshot`
+(`copilot_retrieval.py::_get_step_screenshot`) resolves a step's recorded screenshot to a
+filesystem path via `retarget.py::find_source_event` + `assets.py::resolve_skill_asset` — never a
+URL, since this is read server-side and re-encoded exactly like the failure screenshot
+(`llm/copilot.py::_encode_screenshot`).
+
+*A third proposal kind — typed structural ops* (`copilot_proposals.py::gate_structural_proposals`).
+`{op, why, evidence_refs, ...}` where `op` is `insert_step` / `delete_step` / `move_step` /
+`update_inputs` / `replace_literals`. Every op requires non-empty `evidence_refs` (unlike the two
+pre-existing kinds, which keep evidence_refs optional/cosmetic for backward compatibility) — a
+proposal with none is dropped before the reviewer ever sees it. The selector rule is enforced
+exactly once, here: `insert_step` of a kind in `SELECTOR_ACTIONS` is refused unless it names
+`identity_from_step_key`, an EXISTING step whose `identity_bundle`/`target` are then copied
+verbatim by Python — the model names a source, it never writes a signal. A kind outside
+`SELECTOR_ACTIONS` (`ai_review`, `handover`, `wait`, `check`, `assert`, `navigate`, `scroll`,
+`screenshot`) never needs one and is refused if one is given anyway (a model error, not silently
+ignored). The widened field allow-list for `patch_step`-style edits
+(`copilot_proposals.py::_ALLOWED_FIELDS`) now also covers `consequence`,
+`entity_binding.confirmed`, `branch.timeout_ms`, `for_each.max_iterations`,
+`for_each.on_row_error`, `handler_hints.hover_chain`, and the `ai_review_*`/`handover_*` families
+— every field that changes execution behaviour without touching an element address. `recovery`
+stays excluded: the runtime never reads its tunables (see CLAUDE.md's Key Invariants correction).
+
+Accept (`handlers/copilot.py::_accept_structural_proposal`) applies one or more ops as a single
+all-or-nothing batch: it snapshots the document once, runs each op through the SAME `cmd_*` RPC a
+manual edit uses (`cmd_insert_step`, `cmd_patch_step`, `cmd_delete_step`, `cmd_reorder_steps`,
+`cmd_update_workflow_inputs`, `cmd_replace_literals` — no new mutation logic), and on any failure
+restores the pre-batch snapshot and discards every undo entry the batch's own `cmd_*` calls
+pushed, so a partial structural change is never left half-applied. On success it collapses
+however many undo entries the batch pushed down to exactly ONE — the pre-batch snapshot — fixing
+the multi-undo-entry ceiling `_accept_overlay_branch_proposal` above accepted as unavoidable for
+its own (smaller, fixed-shape) composition.
+
+*Session resume* (`copilot_sessions.py::load_last_session`, new RPC `cmd_copilot_load_session`).
+The session archive (`copilot_sessions.jsonl`) was write-only before this — a reviewer reopening
+Human Edit always started the copilot cold. Reads the last archived transcript's `messages` back
+(scanning from the end, falling back past a corrupt trailing line rather than failing outright);
+`copilotStore.ts::ensureFor` now fires this fire-and-forget the first time a skill's panel opens
+in a session, guarding against a stale resume landing after a newer conversation has already
+started.
+
 ### 7.3 SkillPackage Output Schema
 
 ```python

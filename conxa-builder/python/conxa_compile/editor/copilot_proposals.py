@@ -22,13 +22,25 @@ from typing import Any
 
 from conxa_compile.compiler.second_opinion import build_try_dismiss_from_hint
 from conxa_compile.compiler.step_key import step_keys
+from conxa_compile.editor.action_registry import SELECTOR_ACTIONS, action_spec, is_supported_action
+from conxa_compile.editor.describe import describe_step
 from conxa_compile.editor.overlay_identity import bundle_from_descriptor
 from conxa_compile.editor.patch_gate import validate_editor_patch
 from conxa_compile.editor.workflow_mutations import _new_manual_step
 from conxa_compile.policy.bundle import get_policy_bundle
 
+# BUILD-26 stage g: widened from the original five to every field that actually changes
+# execution behaviour without ever touching an element address — see CLAUDE.md's correction that
+# recovery.max_attempts/no_recovery_block are NOT here because the runtime never reads them.
+# ai_review_*/handover_* aren't listed here since they're only meaningful on those two kinds —
+# `gate_proposals` below intersects this set against what `validate_editor_patch` accepts for the
+# step's actual kind, so an ai_review_* field proposed against a click step is dropped there.
 _ALLOWED_FIELDS = frozenset({
     "value", "input_binding", "intent", "semantic_description", "validation.assertions",
+    "consequence", "entity_binding.confirmed", "branch.timeout_ms",
+    "for_each.max_iterations", "for_each.on_row_error", "handler_hints.hover_chain",
+    "ai_review_prompt", "ai_review_output_schema", "ai_review_on_failure", "ai_review_default_value",
+    "handover_on_failure", "handover_resume_when", "handover_resume_when_timeout_ms",
 })
 
 
@@ -106,9 +118,19 @@ def gate_proposals(doc: dict[str, Any], raw_proposals: list[Any]) -> list[dict[s
             "field": field,
             "patch": patch,
             "why": str(raw.get("why") or "").strip(),
+            "evidence_refs": _evidence_refs(raw),
             "preview": {"before": _current_value(step, field), "after": value},
         })
     return out
+
+
+def _evidence_refs(raw: dict[str, Any]) -> list[str]:
+    """BUILD-26 stage g: cosmetic passthrough for the two pre-existing proposal kinds (their
+    system prompt now asks for evidence_refs too, but neither gate REQUIRES it — that would
+    silently break every proposal a model produced before this field existed). Required and
+    enforced only on the new structural-ops kind below, which has no legacy shape to preserve."""
+    refs = raw.get("evidence_refs")
+    return [str(r).strip() for r in refs if str(r).strip()] if isinstance(refs, list) else []
 
 
 def gate_overlay_proposals(
@@ -203,6 +225,7 @@ def gate_overlay_proposals(
             "patch": merged_patch,
             "nested_step": nested_step,
             "why": str(raw.get("why") or "").strip(),
+            "evidence_refs": _evidence_refs(raw),
             "preview": {
                 "before": None,
                 "after": f"Insert {primitive} after {'step ' + after_step_key if after_step_key else 'the last step'}",
@@ -222,3 +245,107 @@ def resolve_step_index(doc: dict[str, Any], step_key: str) -> int:
             "This step no longer exists — the workflow changed since this was proposed.",
         )
     return resolved[0]
+
+
+_STRUCTURAL_OPS = frozenset({"insert_step", "delete_step", "move_step", "update_inputs", "replace_literals"})
+
+
+def gate_structural_proposals(doc: dict[str, Any], raw_proposals: list[Any]) -> list[dict[str, Any]]:
+    """BUILD-26 stage g: a THIRD proposal kind — typed structural ops (insert/delete/move a step,
+    or a workflow-level input/literal edit) — gated the same way the other two are: pre-validated
+    here so an accepted op is never rejected by the gate a second later, dropped silently on any
+    failure, and re-resolved by step_key (never a baked index) at accept time.
+
+    Unlike the other two kinds, every op here REQUIRES a non-empty `evidence_refs` — this kind has
+    no legacy shape to preserve, so the plan's "no ref → the gate drops it" rule is enforced from
+    day one rather than only advisory.
+
+    The selector rule is enforced exactly once, here: `insert_step` of a kind in SELECTOR_ACTIONS
+    is dropped unless it names `identity_from_step_key`, an EXISTING step whose identity_bundle is
+    then copied verbatim — the model names a source, Python copies the signal, the model never
+    writes one. A kind not in SELECTOR_ACTIONS (ai_review, handover, wait, check, assert,
+    navigate, scroll, screenshot) never needs one.
+    """
+    policy = get_policy_bundle().data
+    out: list[dict[str, Any]] = []
+    for raw in raw_proposals:
+        if not isinstance(raw, dict):
+            continue
+        op = str(raw.get("op") or "").strip()
+        if op not in _STRUCTURAL_OPS:
+            continue
+        evidence_refs = _evidence_refs(raw)
+        if not evidence_refs:
+            continue
+        why = str(raw.get("why") or "").strip()
+        base = {"id": str(uuid.uuid4()), "command": "structural_op", "op": op, "why": why, "evidence_refs": evidence_refs}
+
+        if op == "insert_step":
+            action_kind = str(raw.get("action_kind") or "").strip().lower().replace("-", "_")
+            if not is_supported_action(action_kind) or not action_spec(action_kind).insertable:
+                continue
+            after_step_key = str(raw.get("after_step_key") or "").strip() or None
+            if after_step_key is not None and _resolve_step(doc, after_step_key) is None:
+                continue
+            identity_from_step_key = str(raw.get("identity_from_step_key") or "").strip() or None
+            if action_kind in SELECTOR_ACTIONS:
+                if not identity_from_step_key:
+                    continue
+                source = _resolve_step(doc, identity_from_step_key)
+                if source is None or not (source[1].get("identity_bundle") or {}):
+                    continue
+            elif identity_from_step_key:
+                continue  # a non-selector kind carries no target — a source here is a model error
+            raw_fields = raw.get("fields")
+            fields: dict[str, Any] = raw_fields if isinstance(raw_fields, dict) else {}
+            allowed_fields = {f: v for f, v in fields.items() if f in _ALLOWED_FIELDS}
+            # Best-effort pre-check against a scaffold of the right kind — the definitive check
+            # re-runs at accept time against the real inserted step, same as every other kind here.
+            try:
+                scaffold = _new_manual_step(action_kind, "")
+                for field, value in allowed_fields.items():
+                    validate_editor_patch(scaffold, _patch_for(field, value), policy)
+            except ValueError:
+                continue
+            out.append({
+                **base, "action_kind": action_kind, "after_step_key": after_step_key,
+                "fields": allowed_fields, "identity_from_step_key": identity_from_step_key,
+                "preview": {"before": None, "after": f"Insert {action_kind} after "
+                            f"{'step ' + after_step_key if after_step_key else 'the last step'}"},
+            })
+
+        elif op == "delete_step":
+            step_key = str(raw.get("step_key") or "").strip()
+            resolved = _resolve_step(doc, step_key)
+            if not step_key or resolved is None:
+                continue
+            out.append({**base, "step_key": step_key, "preview": {"before": describe_step(resolved[1], resolved[0]), "after": None}})
+
+        elif op == "move_step":
+            step_key = str(raw.get("step_key") or "").strip()
+            after_step_key = raw.get("after_step_key")
+            after_step_key = str(after_step_key).strip() if after_step_key else None
+            if not step_key or _resolve_step(doc, step_key) is None:
+                continue
+            if after_step_key is not None and _resolve_step(doc, after_step_key) is None:
+                continue
+            if after_step_key == step_key:
+                continue
+            out.append({**base, "step_key": step_key, "after_step_key": after_step_key,
+                        "preview": {"before": None, "after": f"Move to after "
+                                    f"{'step ' + after_step_key if after_step_key else 'the start'}"}})
+
+        elif op == "update_inputs":
+            inputs = raw.get("inputs")
+            if not isinstance(inputs, list):
+                continue
+            out.append({**base, "inputs": inputs, "preview": {"before": doc.get("inputs"), "after": inputs}})
+
+        elif op == "replace_literals":
+            find = str(raw.get("find") or "")
+            replace = str(raw.get("replace") or "")
+            if not find:
+                continue
+            out.append({**base, "find": find, "replace": replace, "preview": {"before": find, "after": replace}})
+
+    return out
