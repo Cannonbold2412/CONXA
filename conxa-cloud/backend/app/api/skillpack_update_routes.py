@@ -295,8 +295,9 @@ def _delta_impl(workspace_id: str, since: str, request: Request) -> dict[str, An
 
 @router.get("/{workspace_id}/delta")
 def get_skill_pack_delta(workspace_id: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
-    """Legacy, unversioned delta route. Kept permanently for already-deployed
-    runtimes — see ``get_skill_pack_delta_v2`` for the versioned equivalent."""
+    """Legacy, unversioned delta route. Kept permanently — see
+    ``get_skill_pack_delta_v2`` for the versioned equivalent, and
+    docs/TRD.md §3.2a for why this can never be removed."""
     return _delta_impl(workspace_id, since, request)
 
 

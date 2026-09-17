@@ -10,6 +10,7 @@ import {
   type RoiAssumptions,
 } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
+import { money } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,14 +18,6 @@ import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry, Upgr
 import { SectionCard } from './SectionCard'
 import { fmtNumber } from './dashboardData'
 import { rangeLongLabel, useRange } from './useRange'
-
-function money(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 0 }).format(amount)
-  } catch {
-    return `${fmtNumber(amount)} ${currency}`
-  }
-}
 
 /**
  * The assumptions behind the estimate, editable in place.
@@ -54,7 +47,7 @@ function AssumptionsEditor({ assumptions }: { assumptions: RoiAssumptions }) {
     onSuccess: () => {
       setEditing(false)
       queryClient.invalidateQueries({ queryKey: queryKeys.roiAssumptions() })
-      queryClient.invalidateQueries({ queryKey: ['tracking-dashboard'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.trackingDashboardAll })
     },
   })
 

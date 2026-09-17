@@ -22,6 +22,7 @@ from conxa_core.config import settings
 from conxa_core.storage.workflow_store import list_workflows
 from conxa_core.storage.skill_pack_store import list_skill_packs
 from app.services.entitlements import analytics_retention_cutoff_ms
+from app.services.manifest_signing import load_signing_key, sign_manifest
 from app.services.saas import (
     Principal,
     personal_workspace_id,
@@ -64,7 +65,7 @@ def _verify_token(company: str, token: str) -> dict[str, Any] | None:
 
 def _canonical_json(obj: dict[str, Any]) -> bytes:
     """Deterministic serialization — matches runtime/app/canonical_json.js and
-    manifest_signer.py's `_canonical_json` byte-for-byte (sorted keys, no whitespace)."""
+    manifest_signing.py's `_canonical_json` byte-for-byte (sorted keys, no whitespace)."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
@@ -178,18 +179,17 @@ def write_governance_policy(workspace_id: str, payload: dict[str, Any]) -> dict[
     """Validate, sign, and store a workspace's PROD-18 governance policy.
 
     Signed with the same Ed25519 key and canonical-JSON scheme as the runtime update
-    manifest (`app.api.manifest_signer`) — the runtime already carries and verifies against
-    that public key, so this adds no new trust anchor. `key_id` is carried but unused today;
-    it exists so a future key rotation is a data change instead of a wire-format break (see
-    docs/Security.md's SG-19 gap: this remains a single keypair with no rotation).
+    manifest (`app.services.manifest_signing`) — the runtime already carries and verifies
+    against that public key, so this adds no new trust anchor. `key_id` is carried but
+    unused today; it exists so a future key rotation is a data change instead of a
+    wire-format break (see docs/Security.md's SG-19 gap: this remains a single keypair
+    with no rotation).
 
     Windows are restrictions, not an allow-list: an unlisted skill is unaffected by them.
     `enforce: false` (default) ships the policy as audit-only — the runtime records what it
     WOULD have blocked without actually blocking, the recommended rollout per
     research-analysis/04-architecture/subsystems/enterprise.md §1.
     """
-    from app.api.manifest_signer import load_signing_key, sign_manifest
-
     windows = _validate_policy_windows(payload.get("windows"))
     denied_hosts_raw = payload.get("denied_hosts") or []
     if not isinstance(denied_hosts_raw, list) or not all(isinstance(h, str) for h in denied_hosts_raw):
@@ -494,7 +494,7 @@ def _record_time_ms(record: dict[str, Any]) -> int:
     return max(_epoch_ms(summary.get("started_at")), _epoch_ms(summary.get("server_ts")))
 
 
-def _event_recovery_type(evt: dict[str, Any]) -> str:
+def event_recovery_type(evt: dict[str, Any]) -> str:
     code = str(evt.get("e") or "").lower()
     # Agent-mediated (Tier B) escalation. The runtime ships digest + screenshots in one
     # request — so this is classified as "Vision", the more complete signal.
@@ -516,7 +516,7 @@ def _event_recovery_type(evt: dict[str, Any]) -> str:
     return ""
 
 
-def _event_recovery_tier(evt: dict[str, Any], recovery_type: str) -> str:
+def event_recovery_tier(evt: dict[str, Any], recovery_type: str) -> str:
     code = str(evt.get("e") or "").lower()
     if code == "tier_escalated":
         return "Tier B"
@@ -539,7 +539,7 @@ def _run_has_recovery(record: dict[str, Any]) -> bool:
     summary = record.get("summary") or {}
     if int(_number(summary.get("recovered_steps"))) > 0:
         return True
-    return any(_event_recovery_type(evt) for evt in record.get("events") or [])
+    return any(event_recovery_type(evt) for evt in record.get("events") or [])
 
 
 def _drift_review_queue(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -845,7 +845,7 @@ def _dashboard_metrics(
         company = str(record.get("company") or "")
         workflow = str(summary.get("workflow_id") or "Unknown workflow")
         for evt in record.get("events") or []:
-            recovery_type = _event_recovery_type(evt)
+            recovery_type = event_recovery_type(evt)
             if recovery_type:
                 recovery_counts[recovery_type] += 1
                 step_index = _event_step_index(evt)
@@ -854,7 +854,7 @@ def _dashboard_metrics(
                     workflow=workflow,
                     step_index=step_index,
                     recovery_type=recovery_type,
-                    tier=_event_recovery_tier(evt, recovery_type),
+                    tier=event_recovery_tier(evt, recovery_type),
                     count=1,
                     last_seen=_epoch_ms(evt.get("ts")) or _record_time_ms(record),
                 )

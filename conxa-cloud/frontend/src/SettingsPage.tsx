@@ -1,5 +1,6 @@
 'use client'
 import { errorMessage } from '@/lib/apiBase'
+import { formatIsoDateTime, titleCase } from '@/lib/format'
 import { queryKeys } from '@/lib/queryKeys'
 import { toneBadgeClasses, type Tone } from '@/lib/tone'
 
@@ -38,12 +39,6 @@ import {
   Users,
 } from 'lucide-react'
 
-
-function titleCase(value: string) {
-  return value
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
 
 function proxyStatusTone(status?: ProxyIdentityStatus): Tone {
   if (status === 'trusted') return 'good'
@@ -155,12 +150,7 @@ function AdminLink({
   )
 }
 
-function formatIsoTime(value?: string) {
-  if (!value) return 'Never'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-}
+const formatIsoTime = formatIsoDateTime
 
 function MachineDeviceList() {
   const queryClient = useQueryClient()

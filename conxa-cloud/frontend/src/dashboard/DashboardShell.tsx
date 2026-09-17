@@ -7,6 +7,7 @@ import { useIsFetching, useQueryClient } from '@tanstack/react-query'
 import { Activity, HeartPulse, LayoutGrid, RefreshCw, TrendingUp } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
+import { queryKeys } from '@/lib/queryKeys'
 import { cn } from '@/lib/utils'
 import { RANGES, useRange } from './useRange'
 
@@ -61,7 +62,7 @@ function RefreshButton() {
       variant="outline"
       size="sm"
       className="h-8 border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07] hover:text-white"
-      onClick={() => queryClient.invalidateQueries({ queryKey: ['tracking-dashboard'] })}
+      onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.trackingDashboardAll })}
       aria-label="Refresh dashboard data"
     >
       <RefreshCw className={cn('size-3.5', fetching > 0 && 'motion-safe:animate-spin')} aria-hidden />

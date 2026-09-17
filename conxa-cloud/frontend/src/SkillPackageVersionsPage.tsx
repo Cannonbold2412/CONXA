@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { errorMessage } from '@/lib/apiBase'
+import { formatEpochDateOnly } from '@/lib/format'
 import {
   fetchGroups,
   fetchInstallerVersions,
@@ -23,14 +24,7 @@ function formatBytes(size: number) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function formatDate(ts: number) {
-  if (!ts) return 'Unknown'
-  return new Date(ts * 1000).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
+const formatDate = formatEpochDateOnly
 
 function statusLabel(status: SkillPack['status']) {
   const labels: Record<SkillPack['status'], string> = {

@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
 import { errorMessage } from '@/lib/apiBase'
+import { formatCount } from '@/lib/format'
 import { fetchSkillPack, fetchGroups, type Group, type GroupWorkflowSummary } from '@/api/workflowsApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -14,11 +15,6 @@ import { Download, FolderKanban, FolderOpen } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '@/lib/queryKeys'
-
-function formatCount(value: number | null | undefined) {
-  if (value == null) return 'Unlimited'
-  return new Intl.NumberFormat().format(value)
-}
 
 /** ● published · ○ not yet released — glyph carries status as well as colour. */
 function workflowGlyph(w: GroupWorkflowSummary) {

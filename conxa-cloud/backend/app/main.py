@@ -162,6 +162,17 @@ app.add_middleware(ProductionRequestMiddleware)
 app.add_exception_handler(HTTPException, http_error_handler)
 app.add_exception_handler(Exception, unhandled_error_handler)
 
+# Five of these routers (publish, release, skillpack_update_versioned,
+# tracking_versioned, workflow) share the "/workflows" prefix, so their path
+# templates compete in one namespace resolved by FastAPI's first-match
+# registration order below — not by specificity. Two templates that shadow
+# each other (e.g. two routers both declaring "/{x}/installer/upload") are a
+# silent bug: the second is simply unreachable, no error at registration
+# time. This already happened once (see publish_routes.py's post_installer_
+# upload_v2 / get_installer_versions_v2, fixed 2026-09-17) and is exactly the
+# failure mode to check for before reordering any router below or adding a
+# new "/workflows/..." route. See docs/TRD.md's back-compat table for which
+# of these paths are permanent and cannot be renamed to avoid the collision.
 app.include_router(job_router, prefix="/api/v1")
 app.include_router(byok_router, prefix="/api/v1")
 app.include_router(entitlement_router, prefix="/api/v1")

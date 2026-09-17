@@ -89,9 +89,9 @@ async def _ingest_events_impl(workspace_id: str, request: Request) -> dict[str, 
 @router.post("/{workspace_id}/events", status_code=202)
 async def ingest_events(workspace_id: str, request: Request) -> dict[str, Any]:
     """Legacy ingest route, served at both the bare ``/api/tracking/...`` path
-    (permanent back-compat alias, not a bug — see CLAUDE.md Key Invariants) and
-    ``/api/v1/tracking/...``. See ``ingest_events_v2`` for the versioned,
-    workspace-scoped-by-installer-generation equivalent."""
+    (permanent back-compat alias, not a bug — see CLAUDE.md Key Invariants and
+    docs/TRD.md §3.2a) and ``/api/v1/tracking/...``. See ``ingest_events_v2``
+    for the versioned, workspace-scoped-by-installer-generation equivalent."""
     return await _ingest_events_impl(workspace_id, request)
 
 

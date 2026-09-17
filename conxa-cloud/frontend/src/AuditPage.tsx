@@ -1,5 +1,6 @@
 'use client'
 import { errorMessage } from '@/lib/apiBase'
+import { formatEpochDateTime, titleCase } from '@/lib/format'
 import { queryKeys } from '@/lib/queryKeys'
 
 import { useMemo, useState, type ComponentType } from 'react'
@@ -26,20 +27,8 @@ import {
 
 const ALL_ACTIONS = 'all'
 
-function formatAction(value: string) {
-  return value
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
-function formatTime(value: number) {
-  return new Date(value * 1000).toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
-}
+const formatAction = titleCase
+const formatTime = formatEpochDateTime
 
 function formatRelative(value: number) {
   const diff = Date.now() - value * 1000

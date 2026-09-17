@@ -5,8 +5,8 @@ Pure functions over the ``records`` list ``tracking._visible_run_records`` produ
 the runtime already emits — no new event codes, no LLM calls. ``_dashboard_metrics``
 composes these into one response so a single KV scan serves the whole dashboard.
 
-Recovery-tier classification is deliberately delegated to ``tracking._event_recovery_type``
-and ``tracking._event_recovery_tier`` rather than reimplemented, so the cascade view and the
+Recovery-tier classification is deliberately delegated to ``tracking.event_recovery_type``
+and ``tracking.event_recovery_tier`` rather than reimplemented, so the cascade view and the
 existing recovery-usage panels can never disagree about what counts as a recovery.
 """
 
@@ -23,8 +23,8 @@ from app.services.tracking import (
     _dashboard_metrics,
     _drift_review_queue,
     _epoch_ms,
-    _event_recovery_tier,
-    _event_recovery_type,
+    event_recovery_tier,
+    event_recovery_type,
     _event_step_index,
     _number,
     _record_time_ms,
@@ -262,10 +262,10 @@ def step_recovery_paths(record: dict[str, Any]) -> dict[int | None, dict[str, An
     paths: dict[int | None, dict[str, Any]] = {}
     for evt in events:
         step_index = _event_step_index(evt)
-        recovery_type = _event_recovery_type(evt)
+        recovery_type = event_recovery_type(evt)
         if recovery_type:
             entry = paths.setdefault(step_index, {"tiers": [], "failed": False})
-            tier = _event_recovery_tier(evt, recovery_type)
+            tier = event_recovery_tier(evt, recovery_type)
             if tier in _TIER_ORDER and (not entry["tiers"] or entry["tiers"][-1] != tier):
                 entry["tiers"].append(tier)
         if evt.get("e") == "step_fail" and step_index in paths:
@@ -446,10 +446,10 @@ def recovery_tier_totals(records: list[dict[str, Any]]) -> dict[str, int]:
     totals = {tier: 0 for tier in _TIER_ORDER}
     for record in records:
         for evt in record.get("events") or []:
-            recovery_type = _event_recovery_type(evt)
+            recovery_type = event_recovery_type(evt)
             if not recovery_type:
                 continue
-            tier = _event_recovery_tier(evt, recovery_type)
+            tier = event_recovery_tier(evt, recovery_type)
             if tier in totals:
                 totals[tier] += 1
     return totals
@@ -571,11 +571,11 @@ def step_analytics(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             code = str(evt.get("e") or "")
             ts = _epoch_ms(evt.get("ts")) or _record_time_ms(record)
 
-            recovery_type = _event_recovery_type(evt)
+            recovery_type = event_recovery_type(evt)
             if recovery_type:
                 entry = entry_for(step_index)
                 entry["recoveries"] += 1
-                tier = _event_recovery_tier(evt, recovery_type)
+                tier = event_recovery_tier(evt, recovery_type)
                 if tier in entry["tier_counts"]:
                     entry["tier_counts"][tier] += 1
                 entry["last_seen"] = max(entry["last_seen"], ts)
