@@ -1,37 +1,30 @@
-import type { ChatMode, Entitlement, Identity } from "./bridge";
-import { Button, Icon, TextField, paths } from "./ui";
+import type { ExecuteContext, Identity } from "./bridge";
+import { Button, Icon, paths } from "./ui";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  mode: ChatMode;
-  baseURL: string;
-  model: string;
-  apiKey: string;
-  hasKey: boolean;
-  onBaseURL: (v: string) => void;
-  onModel: (v: string) => void;
-  onApiKey: (v: string) => void;
-  onSave: () => void;
-  saveError: string;
   identity: Identity | null;
-  entitlement: Entitlement | null;
+  contexts: ExecuteContext[];
+  activeWorkspaceId: string;
+  onSwitchContext: (workspaceId: string) => void;
+  switchingContext: boolean;
   theme: "light" | "dark";
   onThemeChange: (theme: "light" | "dark") => void;
   onLogout: () => void;
-  redeemCode: string;
-  onRedeemCodeChange: (v: string) => void;
-  onRedeem: () => void;
-  redeeming: boolean;
-  redeemMsg: { type: "ok" | "err"; text: string } | null;
+};
+
+const KIND_LABEL: Record<ExecuteContext["kind"], string> = {
+  personal: "Personal",
+  member: "Team",
+  grant: "Granted access",
 };
 
 export function SettingsModal({
-  open, onClose, mode, baseURL, model, apiKey, hasKey,
-  onBaseURL, onModel, onApiKey, onSave, saveError, identity, entitlement, theme, onThemeChange, onLogout,
-  redeemCode, onRedeemCodeChange, onRedeem, redeeming, redeemMsg,
+  open, onClose, identity, contexts, activeWorkspaceId, onSwitchContext, switchingContext, theme, onThemeChange, onLogout,
 }: Props) {
   if (!open) return null;
+  const active = contexts.find((c) => c.workspace_id === activeWorkspaceId);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6" onClick={onClose}>
       <div
@@ -44,10 +37,6 @@ export function SettingsModal({
           <p className="mb-3 px-1 text-[13px] font-medium text-fg">CONXA</p>
           <p className="px-2 pb-1 text-[11px] text-fg-dim">Settings</p>
           <div className="rounded-lg bg-bg-active px-2.5 py-1.5 text-[13px]">General</div>
-          <p className="mt-4 px-2 pb-1 text-[11px] text-fg-dim">Mode</p>
-          <p className="px-2.5 py-1 text-[13px] text-fg-muted">
-            {mode === "byok" ? "Your key runs chat." : "CONXA runs chat for you."}
-          </p>
         </nav>
         <div className="min-w-0 flex-1 overflow-auto p-8">
           <div className="mb-6 flex items-start justify-between">
@@ -81,66 +70,38 @@ export function SettingsModal({
           </section>
 
           <section className="mb-8">
-            <h3 className="mb-1 text-[15px] font-medium">Execute seat</h3>
-            {entitlement?.mode === "workspace_pool" ? (
-              <p className="text-sm text-fg-muted">
-                ✓ Paid by {entitlement.workspace_name || "your workspace"}. Chat draws from their AI Usage Credits pool
-                {typeof entitlement.remaining === "number" ? ` — ${entitlement.remaining.toLocaleString()} credits left.` : "."}
-              </p>
-            ) : (
-              <>
-                <p className="mb-3 text-sm text-fg-muted">Have an invite code from a workspace admin? Redeem it to have your chat paid for by their AI Usage Credits pool.</p>
-                <div className="flex gap-2">
-                  <TextField
-                    value={redeemCode}
-                    onChange={(e) => onRedeemCodeChange(e.target.value)}
-                    placeholder="Invite code"
-                  />
-                  <Button disabled={!redeemCode.trim() || redeeming} onClick={onRedeem}>
-                    {redeeming ? "Redeeming…" : "Redeem"}
-                  </Button>
-                </div>
-                {redeemMsg && (
-                  <p className={`mt-2 text-sm ${redeemMsg.type === "err" ? "text-err" : "text-ok"}`}>{redeemMsg.text}</p>
-                )}
-              </>
-            )}
+            <h3 className="mb-1 text-[15px] font-medium">Execute access</h3>
+            <p className="mb-3 text-sm text-fg-muted">
+              Chat draws from this context's AI Usage Credits pool.
+              {active && typeof active.credits_remaining === "number"
+                ? ` ${active.credits_remaining.toLocaleString()} credits left.`
+                : ""}
+            </p>
+            <div className="space-y-1.5">
+              {contexts.map((c) => (
+                <button
+                  key={c.workspace_id}
+                  type="button"
+                  disabled={switchingContext || c.workspace_id === activeWorkspaceId}
+                  onClick={() => onSwitchContext(c.workspace_id)}
+                  className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm ${
+                    c.workspace_id === activeWorkspaceId
+                      ? "border-brand/50 bg-brand/10 text-fg"
+                      : "border-line text-fg-muted hover:bg-bg-hover hover:text-fg"
+                  }`}
+                >
+                  <span>{c.workspace_name}</span>
+                  <span className="text-[11px] text-fg-dim">{KIND_LABEL[c.kind]}</span>
+                </button>
+              ))}
+            </div>
           </section>
 
-          {mode === "byok" ? (
-            <section>
-              <h3 className="mb-1 text-[15px] font-medium">Your model</h3>
-              <p className="mb-4 text-sm text-fg-muted">Paste an OpenAI-compatible URL and key to use your own model for chat. Running a skill from the Form never needs this.</p>
-              <label className="mb-3 flex items-center justify-between gap-6 text-sm">
-                <span className="shrink-0 text-fg-muted">Base URL</span>
-                <TextField value={baseURL} onChange={(e) => onBaseURL(e.target.value)} placeholder="https://api.openai.com/v1" />
-              </label>
-              <label className="mb-3 flex items-center justify-between gap-6 text-sm">
-                <span className="shrink-0 text-fg-muted">Model</span>
-                <TextField value={model} onChange={(e) => onModel(e.target.value)} placeholder="gpt-4o-mini" />
-              </label>
-              <label className="mb-5 flex items-center justify-between gap-6 text-sm">
-                <span className="shrink-0 text-fg-muted">API key</span>
-                <TextField type="password" value={apiKey} onChange={(e) => onApiKey(e.target.value)} placeholder={hasKey ? "•••• saved" : "Required for chat"} />
-              </label>
-              <Button onClick={onSave}>Save</Button>
-              {saveError && <p className="mt-2 text-sm text-err">{saveError}</p>}
-            </section>
-          ) : (
-            <section>
-              <h3 className="mb-1 text-[15px] font-medium">Your CONXA account</h3>
-              <p className="mb-3 text-sm text-fg-muted">Signed in as {identity?.email || identity?.name || identity?.user_id}.</p>
-              {entitlement?.mode === "subscription" && (
-                <p className="mb-3 text-sm text-fg-muted">
-                  Plan {entitlement.plan_id} — {(entitlement.quota_used ?? 0).toLocaleString()} / {(entitlement.quota_total ?? 0).toLocaleString()} tokens used this period.
-                </p>
-              )}
-              {entitlement?.mode !== "subscription" && entitlement?.mode !== "workspace_pool" && (
-                <p className="mb-3 text-sm text-fg-muted">Balance: {(entitlement?.topup_balance ?? 0).toLocaleString()} tokens.</p>
-              )}
-              <Button variant="secondary" onClick={onLogout}>Sign out</Button>
-            </section>
-          )}
+          <section>
+            <h3 className="mb-1 text-[15px] font-medium">Your CONXA account</h3>
+            <p className="mb-3 text-sm text-fg-muted">Signed in as {identity?.email || identity?.name || identity?.user_id}.</p>
+            <Button variant="secondary" onClick={onLogout}>Sign out</Button>
+          </section>
         </div>
       </div>
     </div>

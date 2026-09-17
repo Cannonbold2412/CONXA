@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ChatMessage, ChatMode, Entitlement, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
+import type { ChatMessage, ExecuteContext, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
 import { BrowserPanel } from "./BrowserPanel";
@@ -71,28 +71,21 @@ export function App() {
   const [formDetailsOpen, setFormDetailsOpen] = useState(false);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [mode, setMode] = useState<Mode>("chat");
-  const [hasKey, setHasKey] = useState(false);
-  const [baseURL, setBaseURL] = useState("");
-  const [model, setModel] = useState("");
-  const [apiKey, setApiKey] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [chatLog, setChatLog] = useState<(ChatMessage & { error?: boolean })[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [chatMode, setChatMode] = useState<ChatMode>("byok");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [startupError, setStartupError] = useState("");
   const [identity, setIdentity] = useState<Identity | null>(null);
-  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
-  const [redeemCode, setRedeemCode] = useState("");
-  const [redeeming, setRedeeming] = useState(false);
-  const [redeemMsg, setRedeemMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [contexts, setContexts] = useState<ExecuteContext[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
+  const [switchingContext, setSwitchingContext] = useState(false);
   const [loginError, setLoginError] = useState("");
-  const [saveError, setSaveError] = useState("");
   const [sidebarError, setSidebarError] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("conxa-theme") === "light" ? "light" : "dark"),
@@ -121,11 +114,22 @@ export function App() {
     setSignedIn(status.signedIn);
     setIdentity(status.identity || null);
     if (!status.signedIn) {
-      setEntitlement(null);
+      setContexts([]);
+      setActiveWorkspaceId("");
       return;
     }
-    const e = await api.getEntitlement();
-    setEntitlement(e.entitlement || null);
+    const [settingsRes, contextsRes] = await Promise.all([api.getSettings(), api.getContexts()]);
+    const list = contextsRes.contexts || [];
+    setContexts(list);
+    const stored = settingsRes.activeWorkspaceId || "";
+    const serverDefault = contextsRes.active_workspace_id || "";
+    const resolved = list.some((c) => c.workspace_id === stored)
+      ? stored
+      : list.some((c) => c.workspace_id === serverDefault)
+        ? serverDefault
+        : list[0]?.workspace_id || "";
+    setActiveWorkspaceId(resolved);
+    if (resolved && resolved !== stored) await api.setContext({ workspaceId: resolved });
   }, [api]);
 
   const load = useCallback(async () => {
@@ -134,11 +138,6 @@ export function App() {
       const st = await api.runtimeStatus();
       setRuntimeOk(st.ok);
       setRuntimeMsg(st.ok ? "" : st.message || "Runtime missing");
-      const s = await api.getSettings();
-      setHasKey(Boolean(s.hasKey));
-      setBaseURL(s.baseURL || "");
-      setModel(s.model || "");
-      setChatMode(s.mode || "byok");
       await refreshHistory();
       await refreshAccount();
 
@@ -220,9 +219,10 @@ export function App() {
     () => chatLog.filter((m) => (m.role === "user" || m.role === "assistant") && m.content),
     [chatLog],
   );
-  // Past the sign-in gate below, `signedIn` is always true — every non-byok
-  // mode only ever runs inside a signed-in session.
-  const chatReady = chatMode !== "byok" || hasKey;
+  // Past the sign-in gate below, `signedIn` is always true — chat is ready
+  // as soon as an Execute context (personal or team) has resolved.
+  const chatReady = Boolean(activeWorkspaceId);
+  const activeContext = contexts.find((c) => c.workspace_id === activeWorkspaceId);
   const emptyChatHome = mode === "chat" && displayLog.length === 0 && !selected;
   const formPicker = mode === "form" && !selected;
   const displayName = userDisplayName(identity, signedIn);
@@ -266,33 +266,13 @@ export function App() {
     await refreshSessions();
   }
 
-  async function saveSettings() {
-    setSaveError("");
-    const r = await api.saveSettings({ baseURL, model, apiKey, mode: chatMode });
-    if (r.ok) {
-      setHasKey(Boolean(r.hasKey));
-      setApiKey("");
-      setShowSettings(false);
-    } else {
-      setSaveError(r.message || "Could not save settings.");
-    }
-  }
-
-  async function redeemGrant() {
-    const grantId = redeemCode.trim();
-    if (!grantId || redeeming) return;
-    setRedeeming(true);
-    setRedeemMsg(null);
-    const r = await api.redeemGrant({ grantId });
-    setRedeeming(false);
-    if (r.ok) {
-      setRedeemCode("");
-      setRedeemMsg({ type: "ok", text: r.workspaceName ? `Paid by ${r.workspaceName}.` : "Seat claimed." });
-      setChatMode("workspace_pool");
-      await refreshAccount();
-    } else {
-      setRedeemMsg({ type: "err", text: r.message || "Could not redeem that code." });
-    }
+  async function switchContext(workspaceId: string) {
+    if (workspaceId === activeWorkspaceId || switchingContext) return;
+    setSwitchingContext(true);
+    const r = await api.setContext({ workspaceId });
+    setSwitchingContext(false);
+    if (r.ok) setActiveWorkspaceId(workspaceId);
+    else setSidebarError(r.message || "Could not switch context.");
   }
 
   async function login() {
@@ -401,7 +381,7 @@ export function App() {
             }
           }}
           disabled={!runtimeOk || !chatReady || busy}
-          placeholder={chatReady ? "How can I help you today?" : "Add your API key in Settings to use chat"}
+          placeholder={chatReady ? "How can I help you today?" : "Waiting for Execute access…"}
         />
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
@@ -414,7 +394,7 @@ export function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 text-[12px] text-fg-dim">
-            <span>{chatMode === "byok" ? model || "Your model" : "CONXA"}</span>
+            <span>{activeContext && activeContext.kind !== "personal" ? `CONXA · ${activeContext.workspace_name}` : "CONXA"}</span>
             <button
               type="button"
               className="flex h-8 w-8 items-center justify-center rounded-full bg-fg text-bg disabled:opacity-30"
@@ -594,7 +574,7 @@ export function App() {
           <div className="flex min-h-0 flex-1 flex-col">
             {!chatReady && (
               <p className="mx-auto mt-4 max-w-[720px] rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
-                Chat needs your own API key. Open Settings — the form still runs skills with no model.
+                Waiting for Execute access — the form still runs skills without chat.
               </p>
             )}
             <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
@@ -615,26 +595,14 @@ export function App() {
       <SettingsModal
         open={showSettings}
         onClose={() => setShowSettings(false)}
-        mode={chatMode}
-        baseURL={baseURL}
-        model={model}
-        apiKey={apiKey}
-        hasKey={hasKey}
-        onBaseURL={setBaseURL}
-        onModel={setModel}
-        onApiKey={setApiKey}
-        onSave={saveSettings}
-        saveError={saveError}
         identity={identity}
-        entitlement={entitlement}
+        contexts={contexts}
+        activeWorkspaceId={activeWorkspaceId}
+        onSwitchContext={switchContext}
+        switchingContext={switchingContext}
         theme={theme}
         onThemeChange={setTheme}
         onLogout={logout}
-        redeemCode={redeemCode}
-        onRedeemCodeChange={setRedeemCode}
-        onRedeem={redeemGrant}
-        redeeming={redeeming}
-        redeemMsg={redeemMsg}
       />
       </div>
     </div>

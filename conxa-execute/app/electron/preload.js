@@ -19,8 +19,8 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   authLogin: () => ipcRenderer.invoke("auth:login"),
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   authStatus: () => ipcRenderer.invoke("auth:status"),
-  getEntitlement: () => ipcRenderer.invoke("account:entitlement"),
-  redeemGrant: (payload) => ipcRenderer.invoke("account:redeem-grant", payload),
+  getContexts: () => ipcRenderer.invoke("account:contexts"),
+  setContext: (payload) => ipcRenderer.invoke("account:set-context", payload),
   openExternal: (payload) => ipcRenderer.invoke("shell:openExternal", payload),
   panel: {
     setBounds: (payload) => ipcRenderer.invoke("panel:bounds", payload),

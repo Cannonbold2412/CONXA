@@ -39,6 +39,14 @@ function toOpenAITools(tools) {
  * @param {{role:string, content?:string, tool_calls?:any[], tool_call_id?:string}[]} opts.messages
  * @param {{name:string, description?:string, inputSchema?:object}[]} opts.tools
  * @param {(name: string, args: object) => Promise<string>} opts.executeTool
+ * @param {(body: object) => Promise<{ok: true, json: object} | {ok: false, error: string}>} [opts.chatCompletion]
+ *   Pluggable transport, for a caller whose provider isn't a real OpenAI-
+ *   compatible /chat/completions endpoint (e.g. Conxa Execute's cloud proxy,
+ *   which needs its own request/response shape and auth). Receives the exact
+ *   {model, messages, tools?, tool_choice?} body this loop would otherwise
+ *   POST itself, and must resolve to a normalized OpenAI-shaped response
+ *   ({choices: [{message: {...}}]}) or a {ok:false, error} pair. Omit for the
+ *   default behavior below (a real OpenAI-compatible baseURL/apiKey).
  */
 async function runTurn(opts) {
   const baseURL = opts.baseURL || DEFAULT_BASE_URL;
@@ -51,31 +59,37 @@ async function runTurn(opts) {
       messages,
       ...(tools.length ? { tools, tool_choice: "auto" } : {}),
     };
-    const res = await fetch(joinUrl(baseURL, PATH), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    const raw = await res.text();
     let json;
-    try {
-      json = JSON.parse(raw);
-    } catch {
-      // Not JSON at all — usually an HTML error page from a wrong baseURL, a
-      // proxy, or an outage. The raw body is genuinely useful for debugging
-      // but is never something a user should read verbatim; log it, don't
-      // return it.
-      console.error(`run_turn: non-JSON reply (HTTP ${res.status}):`, raw.slice(0, 2000));
-      return { ok: false, error: `Model returned an unreadable reply (HTTP ${res.status}).` };
-    }
-    if (!res.ok) {
-      const providerMsg = json && json.error && typeof json.error.message === "string" ? json.error.message : "";
-      console.error(`run_turn: model HTTP error ${res.status}:`, raw.slice(0, 2000));
-      const detail = providerMsg && providerMsg.length <= 300 ? `: ${providerMsg}` : "";
-      return { ok: false, error: `Model error (HTTP ${res.status})${detail}` };
+    if (typeof opts.chatCompletion === "function") {
+      const result = await opts.chatCompletion(body);
+      if (!result.ok) return { ok: false, error: result.error };
+      json = result.json;
+    } else {
+      const res = await fetch(joinUrl(baseURL, PATH), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${opts.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      const raw = await res.text();
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        // Not JSON at all — usually an HTML error page from a wrong baseURL, a
+        // proxy, or an outage. The raw body is genuinely useful for debugging
+        // but is never something a user should read verbatim; log it, don't
+        // return it.
+        console.error(`run_turn: non-JSON reply (HTTP ${res.status}):`, raw.slice(0, 2000));
+        return { ok: false, error: `Model returned an unreadable reply (HTTP ${res.status}).` };
+      }
+      if (!res.ok) {
+        const providerMsg = json && json.error && typeof json.error.message === "string" ? json.error.message : "";
+        console.error(`run_turn: model HTTP error ${res.status}:`, raw.slice(0, 2000));
+        const detail = providerMsg && providerMsg.length <= 300 ? `: ${providerMsg}` : "";
+        return { ok: false, error: `Model error (HTTP ${res.status})${detail}` };
+      }
     }
     const choice = json.choices && json.choices[0];
     const assistant = choice && choice.message;

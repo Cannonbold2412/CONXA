@@ -9,10 +9,11 @@ copyright: "Copyright © Conxa AI"
 
 # Public (non-secret) Clerk OAuth config for auth_service.js's PKCE flow — baked into the
 # packaged app's package.json since a packaged app doesn't inherit the builder's shell env.
-# main.js promotes these into process.env at startup if not already set. See EXEC-42 (TODO.md).
+# main.js promotes these into process.env at startup if not already set. Same Clerk instance
+# Build Studio uses (clerk.conxa.in), a separate OAuth client — see EXEC-43 (TODO.md).
 extraMetadata:
-  conxaExecuteClerkDomain: https://clerk.apis.conxa.in
-  conxaExecuteClerkClientId: pCbQVP1K15tVmQKP
+  conxaExecuteClerkDomain: https://clerk.conxa.in
+  conxaExecuteClerkClientId: Pas7EoTMro1jNvR0
 
 # Files to include in the app bundle
 files:

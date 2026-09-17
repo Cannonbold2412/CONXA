@@ -135,9 +135,7 @@ const ERROR_MESSAGES = {
   login_timeout: "Sign-in timed out. Try again.",
   auth_not_configured: "Sign-in isn't set up in this build.",
   login_identity_missing: "CONXA couldn't read your account details after sign-in. Try again.",
-  claim_failed: "Could not redeem that code.",
-  no_grant_id: "Paste an invite code first.",
-  no_byo_key: "Chat needs your own API key. Open Settings, paste a key and base URL.",
+  execute_context_not_available: "You don't have Conxa Execute access in that workspace anymore.",
   no_session: "No active chat session.",
 };
 
@@ -223,21 +221,12 @@ ipcMain.handle("auth:status", async () => {
   return { ok: true, signedIn: Boolean(identity), identity };
 });
 
-handle("account:entitlement", async () => ({
-  ok: true,
-  entitlement: await executeClient.getEntitlement(),
-  plansUrl: `${executeClient.baseUrl()}/plans`,
-}));
+handle("account:contexts", async () => ({ ok: true, ...(await executeClient.getContexts()) }));
 
-handle("account:redeem-grant", async (_e, payload) => {
-  const grantId = String(payload?.grantId || "").trim();
-  if (!grantId) return fail("no_grant_id");
-  const result = await executeClient.claimGrant(grantId);
-  // A claimed seat draws entirely from the granting workspace's pool — no
-  // personal BYOK/topup/subscription fallback, so local chat routing must
-  // switch away from whatever mode was previously saved.
-  settings.saveSettings({ mode: "workspace_pool" });
-  return { ok: true, workspaceName: result.workspace_name };
+handle("account:set-context", (_e, payload) => {
+  const workspaceId = String(payload?.workspaceId || "").trim();
+  if (!workspaceId) return fail("invalid_workspace");
+  return { ok: true, ...settings.saveSettings({ activeWorkspaceId: workspaceId }) };
 });
 
 ipcMain.handle("shell:openExternal", (_e, payload) => {
@@ -296,22 +285,9 @@ Rules:
 
 handle("chat:send", async (_e, payload) => {
   const full = settings.loadSettings();
-  const mode = full.mode || "byok";
   const sessionId = payload.sessionId;
   if (!sessionId) return fail("no_session");
   if (!resolveRuntimeCommand()) return fail("runtime_missing");
-
-  let baseURL, apiKey, model;
-  if (mode === "byok") {
-    if (!full.apiKey) return fail("no_byo_key");
-    baseURL = full.baseURL || "https://api.openai.com/v1";
-    apiKey = full.apiKey;
-    model = full.model || "gpt-4o-mini";
-  } else {
-    apiKey = await authService.getToken(); // throws not_authenticated/session_expired — caught by handle()
-    baseURL = `${executeClient.baseUrl()}/v1`;
-    model = "conxa-execute"; // advisory only — the backend picks the real provider/model per plan.
-  }
 
   const priorMessages = (await sessionsStore.loadSession(sessionId)).messages;
   const nextMessages = compaction.pruneIfNeeded([
@@ -321,12 +297,11 @@ handle("chat:send", async (_e, payload) => {
 
   const tools = await mcp.listChatTools();
   const result = await runTurn({
-    baseURL,
-    apiKey,
-    model,
+    model: "conxa-execute", // advisory only — the proxy picks the real provider/model per plan.
     system: SYSTEM_PROMPT,
     messages: nextMessages,
     tools,
+    chatCompletion: executeClient.makeChatCompletion({ targetWorkspaceId: full.activeWorkspaceId }),
     executeTool: async (name, args) => {
       if (name === "execute_skill") {
         args = { ...args, watch: true };
@@ -349,16 +324,6 @@ handle("chat:send", async (_e, payload) => {
   if (!result.ok) return fail("model_error", result.error);
 
   await sessionsStore.saveSessionMessages(sessionId, result.messages);
-  if (mode !== "byok") {
-    // ponytail: a sync-push failure shouldn't block the chat from working —
-    // local storage (just written above) is already this device's source
-    // of truth; the next successful sync catches it up. Still logged, so a
-    // persistently failing sync isn't invisible forever.
-    executeClient.updateSession(sessionId, result.messages).catch((err) => {
-      console.error("chat:send: session sync push failed", err);
-    });
-  }
-
   return { ok: true, text: result.text };
 });
 

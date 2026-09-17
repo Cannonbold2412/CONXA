@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type InputHTMLAttributes, type ButtonHTMLAttributes } from "react";
+import { useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes } from "react";
 
 export function Icon({ d, size = 16 }: { d: string; size?: number }) {
   return (
@@ -25,14 +25,6 @@ export const paths = {
   maximize: "M6 6h12v12H6z",
   restore: "M5 9V5h4M19 9V5h-4M5 15v4h4M19 15v4h-4",
 };
-
-const TEXT_FIELD_CLASS =
-  "w-[min(360px,55%)] rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]";
-
-export function TextField(props: InputHTMLAttributes<HTMLInputElement>) {
-  const { className = "", ...rest } = props;
-  return <input className={`${TEXT_FIELD_CLASS} ${className}`} {...rest} />;
-}
 
 const BUTTON_VARIANT_CLASS = {
   primary: "bg-fg text-bg hover:opacity-90",

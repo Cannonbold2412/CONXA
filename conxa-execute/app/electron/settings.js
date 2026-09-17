@@ -3,58 +3,39 @@ const fs = require("fs");
 const path = require("path");
 const { app, safeStorage } = require("electron");
 
-const VALID_MODES = new Set(["byok", "topup", "subscription", "workspace_pool"]);
-
 function settingsPath() {
   return path.join(app.getPath("userData"), "byo-settings.bin");
 }
 
 function loadSettings() {
   const p = settingsPath();
-  if (!fs.existsSync(p)) return { baseURL: "", model: "", hasKey: false, mode: "byok" };
+  if (!fs.existsSync(p)) return { activeWorkspaceId: "" };
   try {
     const buf = fs.readFileSync(p);
     if (!safeStorage.isEncryptionAvailable()) {
-      return {
-        baseURL: "",
-        model: "",
-        hasKey: false,
-        mode: "byok",
-        error: "OS encryption is not available; chat key was not loaded.",
-      };
+      return { activeWorkspaceId: "", error: "OS encryption is not available; settings were not loaded." };
     }
     const json = JSON.parse(safeStorage.decryptString(buf));
-    return {
-      baseURL: json.baseURL || "",
-      model: json.model || "",
-      hasKey: Boolean(json.apiKey),
-      apiKey: json.apiKey || "",
-      mode: VALID_MODES.has(json.mode) ? json.mode : "byok",
-    };
+    return { activeWorkspaceId: String(json.activeWorkspaceId || "") };
   } catch (e) {
-    return { baseURL: "", model: "", hasKey: false, mode: "byok", error: e.message };
+    return { activeWorkspaceId: "", error: e.message };
   }
 }
 
-function saveSettings({ baseURL, model, apiKey, mode }) {
+function saveSettings({ activeWorkspaceId }) {
   if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error("OS encryption is not available; the API key was not saved.");
+    throw new Error("OS encryption is not available; settings were not saved.");
   }
   const prev = loadSettings();
-  const next = {
-    baseURL: String(baseURL || prev.baseURL || "").trim(),
-    model: String(model || prev.model || "").trim(),
-    apiKey: apiKey != null && apiKey !== "" ? String(apiKey) : prev.apiKey || "",
-    mode: VALID_MODES.has(mode) ? mode : prev.mode || "byok",
-  };
+  const next = { activeWorkspaceId: String(activeWorkspaceId || prev.activeWorkspaceId || "").trim() };
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), safeStorage.encryptString(JSON.stringify(next)));
-  return { baseURL: next.baseURL, model: next.model, hasKey: Boolean(next.apiKey), mode: next.mode };
+  return next;
 }
 
 function publicSettings() {
   const s = loadSettings();
-  return { baseURL: s.baseURL, model: s.model, hasKey: s.hasKey, mode: s.mode, error: s.error || null };
+  return { activeWorkspaceId: s.activeWorkspaceId, error: s.error || null };
 }
 
 module.exports = { loadSettings, saveSettings, publicSettings };

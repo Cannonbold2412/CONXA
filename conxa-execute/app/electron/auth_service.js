@@ -1,16 +1,19 @@
 "use strict";
 /**
- * Clerk OAuth (PKCE) login for Conxa Execute's Top-up/Subscription modes.
- * Node port of conxa-builder/python/services/auth_service.py's flow: local
- * callback server on a fixed port range (pre-registrable redirect_uri), PKCE
- * S256, token exchange + refresh with a 60s leeway. Tokens are stored via
- * safeStorage.encryptString to userData/clerk-session.bin — the same
- * pattern settings.js already uses for BYOK credentials, no keytar needed.
+ * Clerk OAuth (PKCE) login for Conxa Execute — uses conxa-cloud's OWN Clerk
+ * application (clerk.conxa.in), a separate OAuth client from Build Studio's
+ * (its own redirect-URI port range so the two don't collide), NOT a second
+ * Clerk instance. Node port of conxa-builder/python/services/auth_service.py's
+ * flow: local callback server on a fixed port range (pre-registrable
+ * redirect_uri), PKCE S256, token exchange + refresh with a 60s leeway.
+ * Tokens are stored via safeStorage.encryptString to userData/clerk-session.bin.
  *
  * Requires CONXA_EXECUTE_CLERK_DOMAIN and CONXA_EXECUTE_CLERK_CLIENT_ID to
- * be set to a real Clerk OAuth application's values (deliberately a
- * SEPARATE Clerk application from conxa-cloud's, see backend/app/auth.py) —
- * login throws "auth_not_configured" until these are set.
+ * be set to that OAuth client's values — login throws "auth_not_configured"
+ * until these are set. Scope includes user:org:read + keeps org_id in the
+ * claims: Execute's personal/team context switcher (execute_client.js's
+ * getContexts()) needs to know which Clerk organizations this person
+ * belongs to, on top of email/name.
  */
 const crypto = require("crypto");
 const http = require("http");
@@ -169,7 +172,7 @@ async function fetchUserinfoWithRetry(accessToken) {
   // The freshly-issued access token sometimes isn't propagated through
   // Clerk's backend by the time we immediately call /oauth/userinfo — one
   // retry after a short pause handles that race (mirrors auth_service.py).
-  const keep = ["sub", "email", "name", "full_name"];
+  const keep = ["sub", "email", "name", "full_name", "org_id"];
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const raw = await fetchUserinfo(accessToken);
@@ -246,7 +249,7 @@ async function login() {
       response_type: "code",
       client_id: clientId(),
       redirect_uri: redirectUri,
-      scope: "profile email offline_access",
+      scope: "profile email offline_access user:org:read",
       state,
       code_challenge: challenge,
       code_challenge_method: "S256",
