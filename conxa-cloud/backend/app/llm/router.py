@@ -18,6 +18,7 @@ from conxa_core.llm.client import (
     _copilot_modality,
     _debug_log,
     _is_openai_compatible_endpoint,
+    _iter_sse_deltas,
     _iter_sse_text_deltas,
     _normalize_openai_response,
     _openai_body_dict,
@@ -614,9 +615,19 @@ class LLMRouter:
                 observed: dict[str, Any] = {}
                 with request.urlopen(req, timeout=timeout_s) as res:
                     status_code = getattr(res, "status", None) or getattr(res, "code", None)
-                    for chunk in _iter_sse_text_deltas(res, observed=observed):
-                        full_text_parts.append(chunk)
-                        on_delta(chunk)
+                    if task == "execute_chat":
+                        # Tool-call-aware: on_delta receives a tagged dict
+                        # ({"type": "text"|"tool_call", ...}) instead of a
+                        # bare string — only this task's callers expect that
+                        # shape (see llm_proxy_routes.py's _meter_and_stream).
+                        for item in _iter_sse_deltas(res, observed=observed):
+                            if item["type"] == "text":
+                                full_text_parts.append(item["text"])
+                            on_delta(item)
+                    else:
+                        for chunk in _iter_sse_text_deltas(res, observed=observed):
+                            full_text_parts.append(chunk)
+                            on_delta(chunk)
 
                 entry.requests_sent += 1
                 entry.last_used_at = now

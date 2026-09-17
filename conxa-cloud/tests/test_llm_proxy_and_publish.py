@@ -66,7 +66,7 @@ def test_estimate_request_tokens_plain_text_unchanged():
 def test_proxy_requires_studio_header():
     r = client.post("/api/v1/llm/proxy/text", json={"task": "intent", "payload": {}})
     assert r.status_code == 403
-    assert r.json()["detail"] == "proxy_requires_build_studio_client"
+    assert r.json()["detail"] == "proxy_requires_known_client"
 
 
 def test_proxy_forwards_and_meters(monkeypatch):
@@ -89,6 +89,47 @@ def test_proxy_forwards_and_meters(monkeypatch):
     assert r.json()["text"] == "ok"
     after = llm_metering.get_usage("wrk_local")["requests"]
     assert after == before + 1
+
+
+def test_proxy_execute_chat_meters_as_its_own_class(monkeypatch):
+    from app.api import llm_proxy_routes
+
+    class FakeRouter:
+        def route_text(self, task, payload, timeout_ms, *, error_detail=None, pool=None):
+            assert payload["messages"][0]["content"] == "hi"
+            return {"text": "hello there"}
+
+    monkeypatch.setattr(llm_proxy_routes, "get_router", lambda: FakeRouter())
+    r = client.post(
+        "/api/v1/llm/proxy/text",
+        json={
+            "task": "execute_chat",
+            "payload": {"messages": [{"role": "user", "content": "hi"}]},
+            "usage_class": "execute_chat",
+        },
+        headers={"X-Conxa-Client": "conxa-execute"},
+    )
+    assert r.status_code == 200, r.text
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    assert entitlements["meters"]["execute_chat_tokens"]["used"] > 0
+
+
+def test_proxy_execute_chat_rejects_workspace_caller_cannot_access(monkeypatch):
+    from app.api import llm_proxy_routes
+
+    monkeypatch.setattr(llm_proxy_routes, "get_router", lambda: object())
+    r = client.post(
+        "/api/v1/llm/proxy/text",
+        json={
+            "task": "execute_chat",
+            "payload": {"messages": [{"role": "user", "content": "hi"}]},
+            "usage_class": "execute_chat",
+            "target_workspace_id": "wrk_someone_elses",
+        },
+        headers={"X-Conxa-Client": "conxa-execute"},
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"] == "execute_context_not_available"
 
 
 def test_proxy_enforces_quota(monkeypatch):

@@ -86,12 +86,21 @@ def _is_public_path(path: str, method: str = "GET") -> bool:
     return False
 
 
-def _body_limit_for_path(path: str) -> int:
+_EXECUTE_CHAT_PROXY_PATHS = ("/api/v1/llm/proxy/text", "/api/v1/llm/proxy/text/stream")
+
+
+def _body_limit_for_path(path: str, request: Request | None = None) -> int:
     normalized = path.rstrip("/") or "/"
     if normalized.endswith(BUILD_ARTIFACT_UPLOAD_PATHS) or normalized == "/api/v1/workflows/publish":
         return settings.build_artifact_upload_max_bytes
     if normalized == "/api/v1/llm/proxy/vision":
         return settings.llm_vision_proxy_max_bytes
+    if normalized in _EXECUTE_CHAT_PROXY_PATHS and request is not None:
+        # A multi-turn chat history is a lot bigger than a one-shot compile
+        # prompt — reuses the vision proxy's already-higher cap rather than
+        # adding a third size knob for one caller.
+        if request.headers.get("x-conxa-client", "").strip() == "conxa-execute":
+            return settings.llm_vision_proxy_max_bytes
     return settings.max_json_body_bytes
 
 
@@ -160,7 +169,7 @@ class ProductionRequestMiddleware(BaseHTTPMiddleware):
                 size = int(content_length)
             except ValueError:
                 size = 0
-            if size > _body_limit_for_path(request.url.path):
+            if size > _body_limit_for_path(request.url.path, request):
                 return JSONResponse(
                     {"detail": "request_body_too_large", "request_id": rid},
                     status_code=413,

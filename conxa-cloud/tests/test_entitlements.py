@@ -623,6 +623,87 @@ def test_execute_grant_claim_rejects_email_mismatch_and_revoke_frees_slot(monkey
     assert execute_pool_binding_for_user("u_grantee") is None
 
 
+def test_execute_chat_shares_pool_with_human_edit_but_counts_separately(monkeypatch, tmp_path):
+    """execute_chat is its own usage_class for reporting, but must draw down
+    the exact same AI Usage Credits pool/limit as human_edit — not a second,
+    independent quota."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    from app.services.entitlements import record_llm_usage
+
+    _set_plan("free")  # 500_000 human_edit_tokens/mo
+    principal = Principal(
+        user_id="u1", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+    record_llm_usage(principal, usage_class="human_edit", input_tokens=100, output_tokens=50)
+    record_llm_usage(principal, usage_class="execute_chat", input_tokens=200, output_tokens=25)
+
+    entitlements = client.get("/api/v1/entitlements/current").json()
+    meters = entitlements["meters"]
+    # Same combined pool: the shared meter sums both classes.
+    assert meters["ai_usage_credits"]["used"] == 375
+    assert meters["human_edit_tokens"]["used"] == 375
+    # But reported separately for the execute_chat line item.
+    assert meters["execute_chat_tokens"]["used"] == 225
+    assert meters["execute_chat_tokens"]["unlimited"] is True
+
+
+def test_execute_chat_exhausts_shared_pool_gate(monkeypatch, tmp_path):
+    """A workspace already at its human_edit limit should also block a
+    subsequent execute_chat call (not skip the gate just because the class
+    label differs) — this is the "same pool" half of the design."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_human_edit", True)
+    from app.services.entitlements import EntitlementError, record_llm_usage
+
+    _set_plan("free")  # 500_000 human_edit_tokens/mo
+    principal = Principal(
+        user_id="u1", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+    record_llm_usage(principal, usage_class="human_edit", input_tokens=500_000, output_tokens=0)
+    with pytest.raises(EntitlementError) as exc_info:
+        record_llm_usage(principal, usage_class="execute_chat", input_tokens=1, output_tokens=0)
+    assert exc_info.value.code == "human_edit_pool_exceeded"
+
+
+def test_execute_grant_auto_claims_on_sign_in(monkeypatch, tmp_path):
+    """Replaces the old manual invite-code paste: a pending grant binds to a
+    Clerk user_id automatically once that verified email is seen, with no
+    grant_id involved at all."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    from app.services.entitlements import (
+        auto_claim_pending_grants_for,
+        create_execute_grant,
+        execute_pool_binding_for_user,
+        list_claimed_grant_workspaces_for,
+    )
+
+    _set_plan("pro")
+    principal = Principal(
+        user_id="u_admin", workspace_id="wrk_local", workspace_slug="local", workspace_name="Local",
+        role="owner", email=None, name=None, auth_provider="local",
+    )
+    create_execute_grant(principal, "grantee@example.com")
+
+    # A sign-in from an unrelated email is a no-op.
+    assert auto_claim_pending_grants_for(user_id="u_other", email="nobody@example.com") == []
+    assert execute_pool_binding_for_user("u_other") is None
+
+    claimed = auto_claim_pending_grants_for(user_id="u_grantee", email="grantee@example.com")
+    assert len(claimed) == 1
+    assert claimed[0]["status"] == "claimed"
+    binding = execute_pool_binding_for_user("u_grantee")
+    assert binding is not None and binding["workspace_id"] == "wrk_local"
+    assert [w["workspace_id"] for w in list_claimed_grant_workspaces_for("u_grantee")] == ["wrk_local"]
+
+    # Idempotent: signing in again finds nothing left pending.
+    assert auto_claim_pending_grants_for(user_id="u_grantee", email="grantee@example.com") == []
+
+
 def test_ops_tier_gates_dashboard_and_drift_by_plan(monkeypatch, tmp_path):
     """Free: no dashboard at all. Starter ("basic"): runs list yes, drift no.
     Pro ("full"): everything. Mirrors the capability ladder in docs/PRD.md §11."""

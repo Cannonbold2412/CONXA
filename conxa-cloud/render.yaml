@@ -39,12 +39,6 @@ services:
         sync: false
       - key: SKILL_API_PROXY_SHARED_SECRET
         sync: false
-      # Shared secret authenticating conxa-execute's internal calls into
-      # /api/v1/internal/execute/* (Execute seat grants + AI Usage Credits
-      # pool) — must match SKILL_EXECUTE_SERVICE_TOKEN on the conxa-execute
-      # backend exactly (docs/TRD.md §13.4c).
-      - key: SKILL_EXECUTE_SERVICE_TOKEN
-        sync: false
       # Manifest signing (Ed25519 private key, PEM PKCS8) + admin token for CI POSTs.
       - key: CONXA_MANIFEST_SIGNING_KEY
         sync: false

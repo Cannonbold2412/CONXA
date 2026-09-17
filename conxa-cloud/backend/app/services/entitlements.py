@@ -18,7 +18,15 @@ from sqlalchemy import text
 
 from conxa_core.config import settings
 from conxa_core.db import _get_engine, db_get, db_list, db_set  # type: ignore[attr-defined]
-from app.services.saas import Principal, billing_for, billing_for_workspace, membership_count_for, upsert_billing
+from app.services.saas import (
+    Principal,
+    billing_for,
+    billing_for_workspace,
+    clerk_user_organizations,
+    membership_count_for,
+    personal_workspace_id,
+    upsert_billing,
+)
 
 USAGE_NS = "entitlement_usage"
 RESERVATION_NS = "compile_reservations"
@@ -30,7 +38,18 @@ EXECUTE_GRANT_BY_USER_NS = "execute_grant_by_user"
 
 _DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 
-ALLOWED_USAGE_CLASSES = {"compile", "human_edit"}
+ALLOWED_USAGE_CLASSES = {"compile", "human_edit", "execute_chat"}
+
+# usage classes that draw from the same AI Usage Credits pool/wallet as
+# human_edit — separate *counters* for reporting, not separate quotas.
+_POOL_USAGE_CLASSES = ("human_edit", "execute_chat")
+
+
+def _combined_pool_used(usage: dict[str, Any]) -> int:
+    total = 0
+    for cls in _POOL_USAGE_CLASSES:
+        total += int(usage.get(f"{cls}_input_tokens") or 0) + int(usage.get(f"{cls}_output_tokens") or 0)
+    return total
 
 # The capability ladder (see docs/PRD.md §11): each tier is not just bigger
 # numbers, it unlocks what a workspace can *do*. There is no limit on how many
@@ -708,6 +727,63 @@ def claim_execute_grant(*, grant_id: str, user_id: str, email: str) -> dict[str,
     return {"workspace_id": workspace_id, "status": "claimed"}
 
 
+def list_claimed_grant_workspaces_for(user_id: str) -> list[dict[str, Any]]:
+    """Every workspace this Clerk user_id holds a claimed (non-revoked)
+    execute_grants row for — for Execute's personal/team context switcher,
+    which needs every grant a person holds, not just the single "active"
+    execute_grant_by_user pointer execute_pool_binding_for_user reads."""
+    with _locked_store("execute-grants:by-claimant") as store:
+        rows = [
+            row for row in store.list(EXECUTE_GRANT_NS)
+            if isinstance(row, dict) and row.get("status") == "claimed" and row.get("claimed_user_id") == user_id
+        ]
+    return [{"workspace_id": r["workspace_id"], "grant_id": r["grant_id"]} for r in rows]
+
+
+def auto_claim_pending_grants_for(*, user_id: str, email: str) -> list[dict[str, Any]]:
+    """Call right after a person signs into Execute: binds any pending
+    execute_grants invited under their verified email to their Clerk
+    user_id automatically. Replaces the old manual invite-code paste, which
+    only existed because Execute and Build Studio used to be separate Clerk
+    applications with no shared identity — now that they're one, the email
+    match Clerk already verified is enough. Safe to call on every sign-in;
+    a no-op once a matching grant is already claimed."""
+    email = str(email or "").strip().lower()
+    if not email:
+        return []
+    claimed: list[dict[str, Any]] = []
+    with _locked_store("execute-grants:auto-claim") as store:
+        pending = [
+            row for row in store.list(EXECUTE_GRANT_NS)
+            if isinstance(row, dict) and row.get("status") == "pending" and row.get("email") == email
+        ]
+        for grant in pending:
+            now_iso = _iso(_now())
+            updated = {**grant, "status": "claimed", "claimed_at": now_iso, "claimed_user_id": user_id}
+            store.set(EXECUTE_GRANT_NS, grant["grant_id"], updated)
+            store.set(
+                EXECUTE_GRANT_BY_USER_NS,
+                user_id,
+                {"grant_id": grant["grant_id"], "workspace_id": grant["workspace_id"], "email": email, "claimed_at": now_iso},
+            )
+            claimed.append(updated)
+    return claimed
+
+
+def execute_chat_access_for(user_id: str, workspace_id: str) -> bool:
+    """True if this Clerk user may run Execute chat against workspace_id —
+    their own personal workspace, a workspace they hold a claimed grant for,
+    or a Clerk org they're a real member of. Backs Execute's personal/team
+    context switcher: the client names which context is active, but the
+    server verifies it on every call rather than trusting that choice."""
+    if workspace_id == personal_workspace_id(user_id):
+        return True
+    if any(g["workspace_id"] == workspace_id for g in list_claimed_grant_workspaces_for(user_id)):
+        return True
+    orgs = clerk_user_organizations(user_id)
+    return bool(orgs) and any(o["workspace_id"] == workspace_id for o in orgs)
+
+
 def execute_pool_binding_for_user(user_id: str) -> dict[str, Any] | None:
     """Internal-only lookup: is this Clerk user_id bound to a workspace's
     shared AI Usage Credits pool via a claimed Execute grant? O(1) so it's
@@ -863,8 +939,9 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
         _expire_reservations(store, workspace_id, period)
         usage = _get_usage(store, workspace_id, period)
         reserved_compile = _active_reserved_amount(store, workspace_id, period)
-    human_edit_used = int(usage.get("human_edit_input_tokens") or 0) + int(
-        usage.get("human_edit_output_tokens") or 0
+    human_edit_used = _combined_pool_used(usage)
+    execute_chat_used = int(usage.get("execute_chat_input_tokens") or 0) + int(
+        usage.get("execute_chat_output_tokens") or 0
     )
     return {
         "workspace_id": workspace_id,
@@ -899,6 +976,11 @@ def current_entitlements(principal: Principal) -> dict[str, Any]:
             # the legacy key.
             "human_edit_tokens": _meter(human_edit_used, limits["human_edit_tokens"]),
             "ai_usage_credits": _meter(human_edit_used, limits["human_edit_tokens"]),
+            # Line-item breakdown only — execute_chat draws from the same pool/
+            # limit as human_edit above, it is not a separate quota. "limit"
+            # here is always None (unlimited) precisely because it isn't
+            # separately capped; ai_usage_credits is the real gate.
+            "execute_chat_tokens": _meter(execute_chat_used, None),
         },
         # The capability ladder (docs/PRD.md §11) — what this plan unlocks, not
         # just how much of it. Consumed by the pricing page, the dashboard nav,
@@ -1213,10 +1295,11 @@ def _record_llm_usage_for_workspace(
     period, _reset_at = usage_window_for_billing(billing)
     with _locked_store(f"llm-usage:{workspace_id}:{period}") as store:
         usage = _get_usage(store, workspace_id, period)
-        if usage_class == "human_edit":
-            used = int(usage.get("human_edit_input_tokens") or 0) + int(
-                usage.get("human_edit_output_tokens") or 0
-            )
+        if usage_class in _POOL_USAGE_CLASSES:
+            # human_edit and execute_chat share one pool/quota/wallet — the
+            # gate below checks their combined total; only the per-class
+            # counter fields below are kept separate, for reporting.
+            used = _combined_pool_used(usage)
             limit = limits["human_edit_tokens"]
             incoming = max(0, int(input_tokens)) + max(0, int(output_tokens))
             if settings.entitlements_enforce_human_edit and limit is not None and used >= int(limit):
@@ -1224,13 +1307,13 @@ def _record_llm_usage_for_workspace(
                 # (one-time add-on purchases) when it can cover this request.
                 if not _spend_wallet(workspace_id, human_edit_tokens=incoming):
                     raise EntitlementError("human_edit_pool_exceeded", 402)
-            usage["human_edit_input_tokens"] = int(usage.get("human_edit_input_tokens") or 0) + max(
+            usage[f"{usage_class}_input_tokens"] = int(usage.get(f"{usage_class}_input_tokens") or 0) + max(
                 0, int(input_tokens)
             )
-            usage["human_edit_output_tokens"] = int(usage.get("human_edit_output_tokens") or 0) + max(
+            usage[f"{usage_class}_output_tokens"] = int(usage.get(f"{usage_class}_output_tokens") or 0) + max(
                 0, int(output_tokens)
             )
-            usage["human_edit_requests"] = int(usage.get("human_edit_requests") or 0) + 1
+            usage[f"{usage_class}_requests"] = int(usage.get(f"{usage_class}_requests") or 0) + 1
         else:
             usage["compile_input_tokens"] = int(usage.get("compile_input_tokens") or 0) + max(
                 0, int(input_tokens)
@@ -1269,15 +1352,15 @@ def record_execute_pool_usage(workspace_id: str, *, input_tokens: int, output_to
     (read-only) rather than billing_for/a synthetic Principal — the latter
     would call ensure_principal and silently register the grantee as a Build
     Studio workspace member, inflating the workspace's own seats meter (see
-    create_execute_grant / claim_execute_grant docstrings). Always meters as
-    usage_class="human_edit" internally — same pool, same wallet fallback,
-    same lock key as the Build Studio Human Edit / AI Usage Credits path;
-    only the user-facing label differs (see current_entitlements' dual-emit)."""
+    create_execute_grant / claim_execute_grant docstrings). Meters as
+    usage_class="execute_chat" — same pool, same wallet fallback, same lock
+    key as the Build Studio Human Edit / AI Usage Credits path, tracked as
+    its own line item (see _combined_pool_used)."""
     billing = billing_for_workspace(workspace_id)
     return _record_llm_usage_for_workspace(
         workspace_id,
         billing,
-        usage_class="human_edit",
+        usage_class="execute_chat",
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
@@ -1293,7 +1376,7 @@ def _ensure_human_edit_available_for_billing(
     period, _reset_at = usage_window_for_billing(billing)
     with _locked_store(f"human-edit-check:{workspace_id}:{period}") as store:
         usage = _get_usage(store, workspace_id, period)
-    used = int(usage.get("human_edit_input_tokens") or 0) + int(usage.get("human_edit_output_tokens") or 0)
+    used = _combined_pool_used(usage)
     if settings.entitlements_enforce_human_edit and used >= int(limit):
         # Wallet fallback mirrors record_llm_usage — a positive never-expiring
         # balance keeps the AI Usage Credits pool open past the monthly
@@ -1326,7 +1409,7 @@ def execute_pool_status(workspace_id: str) -> dict[str, Any]:
     period, _reset_at = usage_window_for_billing(billing)
     with _locked_store(f"human-edit-check:{workspace_id}:{period}") as store:
         usage = _get_usage(store, workspace_id, period)
-    used = int(usage.get("human_edit_input_tokens") or 0) + int(usage.get("human_edit_output_tokens") or 0)
+    used = _combined_pool_used(usage)
     meter = _meter(used, limits["human_edit_tokens"])
     return {**meter, "wallet_balance": _wallet(billing)["human_edit_tokens"]}
 
