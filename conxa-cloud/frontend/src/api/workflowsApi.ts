@@ -102,47 +102,6 @@ export type TrackingRunSummary = {
   server_ts: number
 }
 
-export type TrackingCompany = {
-  company: string
-  workspace_id: string
-  run_count: number
-  last_seen: number
-}
-
-export type TrackingCompaniesResponse = {
-  companies: TrackingCompany[]
-  total: number
-  workspace_id: string
-}
-
-export type TrackingDiagnosticsResponse = {
-  workspace_id: string
-  user_id: string
-  personal_workspace_id: string
-  identity_source: 'trusted_proxy' | 'clerk_jwt' | 'local'
-  proxy_identity_trusted: boolean
-  proxy_identity_status:
-    | 'trusted'
-    | 'backend_secret_missing'
-    | 'proxy_secret_missing'
-    | 'proxy_secret_mismatch'
-    | 'proxy_user_missing'
-    | 'proxy_subject_mismatch'
-  visible_workspace_ids: string[]
-  visible_company_count: number
-  workflow_count: number
-  same_user_personal_company_count: number
-  hidden_same_user_personal_count: number
-}
-
-export type TrackingRunsResponse = {
-  runs: TrackingRunSummary[]
-  total: number
-  workspace_id?: string
-  total_all_workspaces?: number
-  hidden_workspace_runs?: number
-}
-
 export type TrackingRunDetail = {
   run_id: string
   company: string
@@ -534,26 +493,8 @@ export function saveRoiAssumptions(payload: Partial<RoiAssumptions>): Promise<Ro
   }).then((r) => json<RoiAssumptions>(r))
 }
 
-export function fetchTrackingRuns(
-  company: string,
-  limit = 50,
-  offset = 0,
-): Promise<TrackingRunsResponse> {
-  return apiFetch(`/tracking/${encodeURIComponent(company)}/runs?limit=${limit}&offset=${offset}`).then(
-    (r) => json<TrackingRunsResponse>(r),
-  )
-}
-
 export function fetchTrackingDashboard(range: TrackingDashboardRange): Promise<TrackingDashboardResponse> {
   return apiFetch(`/tracking/dashboard?range=${encodeURIComponent(range)}`).then((r) => json<TrackingDashboardResponse>(r))
-}
-
-export function fetchTrackingCompanies(): Promise<TrackingCompaniesResponse> {
-  return apiFetch('/tracking/companies').then((r) => json<TrackingCompaniesResponse>(r))
-}
-
-export function fetchTrackingDiagnostics(): Promise<TrackingDiagnosticsResponse> {
-  return apiFetch('/tracking/diagnostics').then((r) => json<TrackingDiagnosticsResponse>(r))
 }
 
 export function fetchTrackingRun(company: string, runId: string): Promise<TrackingRunDetail> {
@@ -594,30 +535,6 @@ export type StudioManifest = {
 
 export function getStudioManifest(): Promise<StudioManifest> {
   return apiFetch('/updates/studio-manifest').then((r) => json<StudioManifest>(r))
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Runtime registrations (2.1 device registration)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type RuntimeRegistration = {
-  company: string
-  platform: string
-  runtime_version: string
-  workspace_id: string
-  last_seen: number
-  first_seen: number
-  stale: boolean
-}
-
-export type RuntimeRegistrationsResponse = {
-  registrations: RuntimeRegistration[]
-  stale_count: number
-  version_distribution: Record<string, number>
-}
-
-export function fetchRuntimeRegistrations(): Promise<RuntimeRegistrationsResponse> {
-  return apiFetch('/telemetry/runtimes').then((r) => json<RuntimeRegistrationsResponse>(r))
 }
 
 // ── Release Center — Cloud is the release/deployment control plane ─────────

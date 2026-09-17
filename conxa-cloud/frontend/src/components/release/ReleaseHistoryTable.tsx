@@ -3,15 +3,13 @@
 import { useState } from 'react'
 import { Clock, Loader2 } from 'lucide-react'
 import type { ReleaseResult, RollbackResult, SkillPackVersion } from '@/api/workflowsApi'
+import { formatEpochTimestamp } from '@/lib/format'
 import { canReleaseTo, canRollbackTo } from '@/lib/releaseState'
 import { ReleaseStatusBadge } from './ReleaseStatusBadge'
 import { RollbackDialog } from './RollbackDialog'
 import { ReleaseDialog } from './ReleaseDialog'
 
-function formatTimestamp(seconds: number): string {
-  if (!seconds) return ''
-  return new Date(seconds * 1000).toLocaleString()
-}
+const formatTimestamp = formatEpochTimestamp
 
 /** Release History — what's current, what existed before, who published it,
  * when, what changed, is it deployed, can it be released or rolled back.

@@ -1,4 +1,6 @@
 'use client'
+import { errorMessage } from '@/lib/apiBase'
+import { formatEpochDateTime } from '@/lib/format'
 import { queryKeys } from '@/lib/queryKeys'
 import { toneBadgeClasses, type Tone } from '@/lib/tone'
 
@@ -35,8 +37,7 @@ const STATUS_LABEL: Record<RuntimeStatus, string> = {
 }
 
 function formatEpoch(seconds: number) {
-  if (!seconds) return 'Never'
-  return new Date(seconds * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  return formatEpochDateTime(seconds, 'Never')
 }
 
 function formatRelative(seconds: number) {
@@ -189,7 +190,7 @@ export function FleetPage() {
 
   const revokeM = useMutation({
     mutationFn: revokeRuntime,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['runtimes'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.runtimesAll }),
   })
 
   const registrations = useMemo(() => fleetQ.data?.registrations ?? [], [fleetQ.data?.registrations])
@@ -233,7 +234,7 @@ export function FleetPage() {
 
       <div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-4 sm:px-6">
         {fleetQ.isLoading ? <LoadingState /> : null}
-        {fleetQ.isError ? <ErrorState message={(fleetQ.error as Error).message} /> : null}
+        {fleetQ.isError ? <ErrorState message={errorMessage(fleetQ.error)} /> : null}
         {fleetQ.data ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

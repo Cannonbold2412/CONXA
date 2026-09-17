@@ -9,9 +9,6 @@ leaving only typed-input steps in events.jsonl.
 """
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
-
 from conxa_core.models.events import Selectors
 
 

@@ -25,6 +25,12 @@ export const queryKeys = {
   auditEvents: (scope?: string) =>
     (scope ? ['auditEvents', scope] : ['auditEvents']) as readonly string[],
   trackingDashboard: (range: string) => ['tracking-dashboard', range] as const,
+  // Root of the trackingDashboard family, for invalidating every range variant
+  // at once (TanStack Query prefix-matches queryKey arrays) — a page that
+  // just changed the underlying data doesn't know which range the viewer
+  // currently has selected. `queryKeys.trackingDashboard(range)[0]` would
+  // work too, but this is the deliberate, self-documenting way to say it.
+  trackingDashboardAll: ['tracking-dashboard'] as const,
   trackingDrift: () => ['tracking-drift'] as const,
   trackingActivity: () => ['tracking-activity'] as const,
   trackingWorkflow: (company: string, slug: string, range: string) =>
@@ -35,4 +41,6 @@ export const queryKeys = {
   executeGrants: ['execute-grants'] as const,
   llmKey: ['llm-key'] as const,
   runtimes: (limit?: number, offset?: number) => ['runtimes', limit, offset] as const,
+  // Root of the runtimes family, for invalidating every page/offset at once.
+  runtimesAll: ['runtimes'] as const,
 } as const

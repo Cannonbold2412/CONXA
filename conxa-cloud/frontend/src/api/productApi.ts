@@ -29,33 +29,6 @@ export type MeResponse = {
   proxy_identity_status?: ProxyIdentityStatus
 }
 
-export type DashboardResponse = {
-  workspace: Workspace
-  stats: {
-    skills: number
-    packages: number
-    workflows: number
-    active_jobs: number
-    published_packages: number
-  }
-  recent_workflows: Array<Record<string, unknown>>
-  recent_packages: Array<Record<string, unknown>>
-  active_jobs: JobRecord[]
-  package_health: Array<Record<string, unknown>>
-  usage: UsageResponse
-}
-
-export type UsageResponse = {
-  workspace_id: string
-  skills: number
-  packages: number
-  workflows: number
-  jobs: number
-  active_jobs: number
-  metrics: Record<string, unknown>
-  limits: Record<string, number | null>
-}
-
 export type EntitlementMeterKey =
   | 'seats'
   | 'skill_pack_slots'
@@ -94,31 +67,6 @@ export type SubscriptionResponse = {
   }
 }
 
-export type JobRecord = {
-  job_id: string
-  kind: string
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
-  resource_id?: string | null
-  retry_count: number
-  user_error?: string | null
-  internal_error_code?: string | null
-  result?: Record<string, unknown> | null
-  created_at: number
-  updated_at: number
-}
-
-export type PackageRelease = {
-  bundle_slug: string
-  workspace_id: string
-  state: 'draft' | 'published' | 'archived'
-  version: string
-  release_notes: string
-  published_by?: string | null
-  published_at?: number | null
-  archived_at?: number | null
-  updated_at?: number | null
-}
-
 export type AuditEvent = {
   id: string
   workspace_id: string
@@ -134,14 +82,6 @@ export function fetchMe(): Promise<MeResponse> {
   return apiFetch('/me').then((r) => json<MeResponse>(r))
 }
 
-export function fetchDashboard(): Promise<DashboardResponse> {
-  return apiFetch('/dashboard').then((r) => json<DashboardResponse>(r))
-}
-
-export function fetchUsage(): Promise<UsageResponse> {
-  return apiFetch('/usage').then((r) => json<UsageResponse>(r))
-}
-
 export function fetchEntitlements(): Promise<EntitlementsResponse> {
   return apiFetch('/entitlements/current').then((r) => json<EntitlementsResponse>(r))
 }
@@ -150,41 +90,12 @@ export function fetchSubscription(): Promise<SubscriptionResponse> {
   return apiFetch('/billing/subscription').then((r) => json<SubscriptionResponse>(r))
 }
 
-export function fetchInstallerDomain(): Promise<{ domain: string }> {
-  return apiFetch('/entitlements/installer-domain').then((r) => json<{ domain: string }>(r))
-}
-
 export function setInstallerDomain(domain: string): Promise<{ domain: string }> {
   return apiFetch('/entitlements/installer-domain', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ domain }),
   }).then((r) => json<{ domain: string }>(r))
-}
-
-export function fetchJobs(): Promise<{ jobs: JobRecord[] }> {
-  return apiFetch('/jobs').then((r) => json<{ jobs: JobRecord[] }>(r))
-}
-
-export function cancelJob(jobId: string): Promise<JobRecord> {
-  return apiFetch(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }).then((r) => json<JobRecord>(r))
-}
-
-export function fetchRelease(bundleSlug: string): Promise<{ release: PackageRelease }> {
-  return apiFetch(`/packages/bundles/${encodeURIComponent(bundleSlug)}/release`).then((r) =>
-    json<{ release: PackageRelease }>(r),
-  )
-}
-
-export function patchRelease(
-  bundleSlug: string,
-  body: Partial<Pick<PackageRelease, 'state' | 'version' | 'release_notes'>>,
-): Promise<{ release: PackageRelease }> {
-  return apiFetch(`/packages/bundles/${encodeURIComponent(bundleSlug)}/release`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then((r) => json<{ release: PackageRelease }>(r))
 }
 
 export function fetchAuditEvents(limit = 100): Promise<{ audit_events: AuditEvent[] }> {

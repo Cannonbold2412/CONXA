@@ -10,7 +10,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -21,6 +21,7 @@ from conxa_core.storage.snapshots_gc import cleanup_old_snapshots
 
 from app.api.byok_routes import router as byok_router
 from app.api.entitlement_routes import router as entitlement_router
+from app.api.errors import http_error_handler, unhandled_error_handler
 from app.api.job_routes import router as job_router
 from app.api.legal_routes import router as legal_router
 from app.api.llm_proxy_routes import router as llm_proxy_router
@@ -37,6 +38,11 @@ from app.api.tracking_routes import public_router as public_tracking_router
 from app.api.tracking_routes import router as tracking_router
 from app.api.tracking_routes import versioned_router as tracking_versioned_router
 from app.api.updates_routes import router as updates_router
+
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 def _validate_production_config() -> None:
@@ -84,20 +90,37 @@ def _validate_production_config() -> None:
 
 _logger = logging.getLogger(__name__)
 
+# Consecutive GC failure count. A single flaky pass logging the same exception
+# forever at the normal level would bury the signal that it's actually stuck —
+# past this many in a row, it's escalated so it can't just scroll by unnoticed.
+_GC_STUCK_THRESHOLD = 5
 
-async def _run_gc_once() -> None:
-    """Run every background GC pass off the event loop (they do blocking IO)."""
+
+async def _run_gc_once(consecutive_failures: int) -> int:
+    """Run every background GC pass off the event loop (they do blocking IO).
+    Returns the updated consecutive-failure count."""
     try:
         await asyncio.to_thread(cleanup_old_snapshots)
         await asyncio.to_thread(cleanup_expired_entries)
+        return 0
     except Exception:  # noqa: BLE001
-        _logger.exception("Background GC pass failed")
+        consecutive_failures += 1
+        if consecutive_failures >= _GC_STUCK_THRESHOLD:
+            _logger.error(
+                "Background GC pass has failed %d times in a row — it looks stuck, not transient",
+                consecutive_failures,
+                exc_info=True,
+            )
+        else:
+            _logger.exception("Background GC pass failed")
+        return consecutive_failures
 
 
 async def _gc_loop(interval_secs: int) -> None:
     """Run GC once at startup, then every ``interval_secs``."""
+    consecutive_failures = 0
     while True:
-        await _run_gc_once()
+        consecutive_failures = await _run_gc_once(consecutive_failures)
         await asyncio.sleep(interval_secs)
 
 
@@ -132,6 +155,24 @@ app.add_middleware(
 )
 app.add_middleware(ProductionRequestMiddleware)
 
+# One error response shape for every route: {"detail", "message", "request_id"}.
+# `detail` is untouched — two shipped clients (the frontend, Build Studio's
+# LLMProxyClient) parse it directly — `message`/`request_id` are additive.
+# See app/api/errors.py.
+app.add_exception_handler(HTTPException, http_error_handler)
+app.add_exception_handler(Exception, unhandled_error_handler)
+
+# Five of these routers (publish, release, skillpack_update_versioned,
+# tracking_versioned, workflow) share the "/workflows" prefix, so their path
+# templates compete in one namespace resolved by FastAPI's first-match
+# registration order below — not by specificity. Two templates that shadow
+# each other (e.g. two routers both declaring "/{x}/installer/upload") are a
+# silent bug: the second is simply unreachable, no error at registration
+# time. This already happened once (see publish_routes.py's post_installer_
+# upload_v2 / get_installer_versions_v2, fixed 2026-09-17) and is exactly the
+# failure mode to check for before reordering any router below or adding a
+# new "/workflows/..." route. See docs/TRD.md's back-compat table for which
+# of these paths are permanent and cannot be renamed to avoid the collision.
 app.include_router(job_router, prefix="/api/v1")
 app.include_router(byok_router, prefix="/api/v1")
 app.include_router(entitlement_router, prefix="/api/v1")
@@ -174,4 +215,15 @@ def readyz() -> JSONResponse:
             status_code=503,
             content={"status": "unavailable", "database": "down", "error": str(exc)[:200]},
         )
-    return JSONResponse(content={"status": "ready", "database": "up" if using_database() else "filesystem"})
+    on_database = using_database()
+    if settings.auth_required and not on_database:
+        # _validate_production_config already refuses to boot without a real
+        # database when auth is required, so this should be unreachable in
+        # practice — but readiness reporting "ready" while running on the
+        # filesystem store in production is exactly the silent-degrade this
+        # refactor is about. Agree with startup instead of contradicting it.
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "database": "filesystem", "error": "auth_required but no database configured"},
+        )
+    return JSONResponse(content={"status": "ready", "database": "up" if on_database else "filesystem"})

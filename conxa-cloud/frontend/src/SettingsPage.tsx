@@ -1,4 +1,6 @@
 'use client'
+import { errorMessage } from '@/lib/apiBase'
+import { formatIsoDateTime, titleCase } from '@/lib/format'
 import { queryKeys } from '@/lib/queryKeys'
 import { toneBadgeClasses, type Tone } from '@/lib/tone'
 
@@ -37,12 +39,6 @@ import {
   Users,
 } from 'lucide-react'
 
-
-function titleCase(value: string) {
-  return value
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
 
 function proxyStatusTone(status?: ProxyIdentityStatus): Tone {
   if (status === 'trusted') return 'good'
@@ -154,12 +150,7 @@ function AdminLink({
   )
 }
 
-function formatIsoTime(value?: string) {
-  if (!value) return 'Never'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-}
+const formatIsoTime = formatIsoDateTime
 
 function MachineDeviceList() {
   const queryClient = useQueryClient()
@@ -174,7 +165,7 @@ function MachineDeviceList() {
   return (
     <SettingsCard title="Build Studio Devices" icon={Monitor}>
       {machinesQ.isLoading ? <LoadingState /> : null}
-      {machinesQ.isError ? <ErrorState message={(machinesQ.error as Error).message} /> : null}
+      {machinesQ.isError ? <ErrorState message={errorMessage(machinesQ.error)} /> : null}
       {!machinesQ.isLoading && !machinesQ.isError && machines.length === 0 ? (
         <EmptyState title="No devices registered yet" description="Devices appear here the first time Build Studio compiles or signs in from a new machine." />
       ) : null}
@@ -373,7 +364,7 @@ function ByokPanel({ isAdmin }: { isAdmin: boolean }) {
   return (
     <SettingsCard title="Bring Your Own LLM Key (Enterprise BYOK)" icon={LockKeyhole}>
       {keyQ.isLoading ? <LoadingState /> : null}
-      {keyQ.isError ? <ErrorState message={(keyQ.error as Error).message} /> : null}
+      {keyQ.isError ? <ErrorState message={errorMessage(keyQ.error)} /> : null}
       {keyQ.isSuccess && status ? (
         editing ? (
           <ByokForm existing={status.configured ? status : undefined} onDone={() => setEditing(false)} />
@@ -493,7 +484,7 @@ export function SettingsPage() {
       />
       <div className="mx-auto w-full max-w-6xl px-4 py-4 sm:px-6">
         {meQ.isLoading ? <LoadingState /> : null}
-        {meQ.isError ? <ErrorState message={(meQ.error as Error).message} /> : null}
+        {meQ.isError ? <ErrorState message={errorMessage(meQ.error)} /> : null}
         {meQ.data ? <SettingsBody me={meQ.data} /> : null}
       </div>
     </div>

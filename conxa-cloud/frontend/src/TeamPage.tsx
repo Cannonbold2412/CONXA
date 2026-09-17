@@ -16,6 +16,8 @@ import {
   Users,
   type LucideIcon,
 } from 'lucide-react'
+import { errorMessage } from '@/lib/apiBase'
+import { formatCount, formatEpochDateTime, titleCase as sharedTitleCase } from '@/lib/format'
 import {
   createExecuteGrant,
   fetchAuditEvents,
@@ -39,24 +41,12 @@ import { queryKeys } from '@/lib/queryKeys'
 import { toneBadgeClasses, type Tone } from '@/lib/tone'
 
 
-function formatCount(value: number | null | undefined) {
-  if (value == null) return 'Unlimited'
-  return new Intl.NumberFormat().format(value)
-}
-
 function formatTime(value?: number | null) {
-  if (!value) return 'No activity yet'
-  return new Date(value * 1000).toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  return formatEpochDateTime(value, 'No activity yet')
 }
 
 function titleCase(value?: string | null) {
-  if (!value) return 'Member'
-  return value.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+  return value ? sharedTitleCase(value) : 'Member'
 }
 
 function seatPercent(meter?: EntitlementMeter) {
@@ -383,7 +373,7 @@ function ExecuteSeatsPanel({ seatMeter }: { seatMeter?: EntitlementMeter }) {
       </div>
 
       {grantsQ.isLoading ? <LoadingState /> : null}
-      {grantsQ.isError ? <ErrorState message={(grantsQ.error as Error).message} /> : null}
+      {grantsQ.isError ? <ErrorState message={errorMessage(grantsQ.error)} /> : null}
       {!grantsQ.isLoading && !grantsQ.isError && grants.length === 0 ? (
         <EmptyState
           title="No Execute seats granted yet"

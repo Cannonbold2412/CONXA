@@ -13,10 +13,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from conxa_core.config import settings
 
+from app.api.errors import message_for
+
 PUBLIC_PATHS = {
     "/",
     "/health",
     "/healthz",
+    # Render's deploy gate hits this directly (see Dockerfile) — it must be
+    # reachable with no auth or every deploy would sit "unhealthy" against a
+    # 401 that has nothing to do with DB readiness.
+    "/readyz",
     "/api/v1/health",
     # Runtime phonehome — installed runtimes have no Clerk session, only sync tokens.
     # This stores best-effort device registration; spoofing just inflates counts.
@@ -171,7 +177,7 @@ class ProductionRequestMiddleware(BaseHTTPMiddleware):
                 size = 0
             if size > _body_limit_for_path(request.url.path, request):
                 return JSONResponse(
-                    {"detail": "request_body_too_large", "request_id": rid},
+                    {"detail": "request_body_too_large", "message": message_for("request_body_too_large"), "request_id": rid},
                     status_code=413,
                     headers={"x-request-id": rid},
                 )
@@ -185,8 +191,9 @@ class ProductionRequestMiddleware(BaseHTTPMiddleware):
                 else:
                     claims = verify_clerk_jwt(token)
             except HTTPException as exc:
+                detail_msg = message_for(exc.detail) if isinstance(exc.detail, str) else str(exc.detail)
                 return JSONResponse(
-                    {"detail": exc.detail, "request_id": rid},
+                    {"detail": exc.detail, "message": detail_msg, "request_id": rid},
                     status_code=exc.status_code,
                     headers={"x-request-id": rid},
                 )

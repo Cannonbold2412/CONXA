@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from conxa_core.llm.client import (
 )
 from conxa_core.progress import append_current_job_event, has_active_job_sink
 
+
+logger = logging.getLogger(__name__)
 
 # The BYOK-path (for_vision is None) alias for conxa_core.llm.client.VISION_TASKS — see that
 # constant's docstring. Not a separate literal set; kept as a local name only so call sites in
@@ -883,6 +886,10 @@ def _decode_http_error_body(exc: error.HTTPError) -> str:
     try:
         return exc.read().decode("utf-8", errors="replace")
     except Exception:
+        # The provider's actual error text is the only diagnostic available when
+        # a provider starts failing — losing it here means every failure in the
+        # pool status/error_detail looks like a bare, unexplained HTTP code.
+        logger.warning("llm_error_body_decode_failed", exc_info=True)
         return ""
 
 

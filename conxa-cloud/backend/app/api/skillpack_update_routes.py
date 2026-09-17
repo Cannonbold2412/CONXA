@@ -12,6 +12,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import secrets
 import time
 import zipfile
@@ -28,6 +29,7 @@ from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
 from app.services.saas import principal_from_request, ensure_principal
 from app.services.rbac import require_admin
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
 # Versioned equivalent of the delta route below, nested under /workflows so it
 # shares one mental model with the other three per-company endpoints
@@ -178,13 +180,19 @@ def _artifact_entries(skill_dir: Path) -> list[dict[str, str]]:
 
 
 def _pack_version(workspace_id: str) -> str:
+    # No pack.json yet is a real, legitimate state (nothing published for this
+    # workspace) — "0" here means "everything is new", which is correct.
     pack_path = skill_packs_dir(workspace_id) / "pack.json"
     if not pack_path.is_file():
         return "0"
     try:
         return json.loads(pack_path.read_text(encoding="utf-8")).get("skill_pack_version", "0")
-    except Exception:
-        return "0"
+    except Exception as exc:
+        # A pack.json that exists but fails to parse is corruption, not absence.
+        # Silently returning "0" here made every runtime see "changed" forever —
+        # an infinite full-resync loop that looks like a healthy sync from the
+        # runtime's side. Raise so the corruption gets fixed instead of masked.
+        raise HTTPException(status_code=500, detail="pack_json_corrupted") from exc
 
 
 def _skill_version(workspace_id: str, slug: str) -> str:
@@ -273,16 +281,23 @@ def _delta_impl(workspace_id: str, since: str, request: Request) -> dict[str, An
     try:
         since_map = json.loads(since) if since else {}
         if not isinstance(since_map, dict):
+            logger.warning("skillpack_delta_since_not_a_dict workspace_id=%s", workspace_id)
             since_map = {}
     except (json.JSONDecodeError, TypeError):
+        # Falls back to "client knows nothing" — a full resync, not an error —
+        # since this is an unattended background sync loop with no one to see
+        # a 400. But a malformed `since` from a runtime's own saved state is
+        # still worth knowing about: it means something wrote bad state.
+        logger.warning("skillpack_delta_since_unparseable workspace_id=%s since=%r", workspace_id, since)
         since_map = {}
     return _build_delta(workspace_id, {str(k): str(v) for k, v in since_map.items()})
 
 
 @router.get("/{workspace_id}/delta")
 def get_skill_pack_delta(workspace_id: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
-    """Legacy, unversioned delta route. Kept permanently for already-deployed
-    runtimes — see ``get_skill_pack_delta_v2`` for the versioned equivalent."""
+    """Legacy, unversioned delta route. Kept permanently — see
+    ``get_skill_pack_delta_v2`` for the versioned equivalent, and
+    docs/TRD.md §3.2a for why this can never be removed."""
     return _delta_impl(workspace_id, since, request)
 
 

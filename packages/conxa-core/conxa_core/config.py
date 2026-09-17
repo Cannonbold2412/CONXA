@@ -217,6 +217,13 @@ class Settings(BaseSettings):
     llm_vision_proxy_max_bytes: int = 8 * 1024 * 1024
     build_artifact_upload_max_bytes: int = 250 * 1024 * 1024
 
+    # Root logging level. Nothing configures Python's root logger otherwise, so the
+    # effective level defaults to WARNING and every logger.info()/logger.warning()
+    # call in the cloud backend (tracking.py, saas.py, cashfree_routes.py, ...) is
+    # silently discarded. Cloud's main.py applies this via logging.basicConfig();
+    # Build Studio does not currently read it.
+    log_level: str = "INFO"
+
     # Clerk authentication. Local development leaves this disabled; production
     # deployments should set SKILL_AUTH_REQUIRED=true and the Clerk values below.
     auth_required: bool = False

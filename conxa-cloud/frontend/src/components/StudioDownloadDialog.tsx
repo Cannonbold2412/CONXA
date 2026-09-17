@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Monitor, Download, CheckCircle2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -10,6 +11,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
+import { errorMessage } from '@/lib/apiBase'
 import { getStudioManifest } from '@/api/workflowsApi'
 
 interface Props {
@@ -28,7 +30,17 @@ export function StudioDownloadDialog({ open, onOpenChange }: Props) {
       if (manifest.win_url) {
         window.open(manifest.win_url, '_blank', 'noopener')
         setDownloaded(true)
+      } else {
+        // Manifest fetched fine but has no Windows build listed — used to
+        // silently no-op, leaving someone staring at a button that appeared
+        // to do nothing.
+        toast.error("No Windows download is available right now. Try again shortly, or contact support.")
       }
+    } catch (err) {
+      // A try/finally with no catch used to let this reach the browser as an
+      // unhandled rejection: the spinner stopped, nothing downloaded, and no
+      // one saw why.
+      toast.error(errorMessage(err, "Couldn't get the download link. Try again shortly."))
     } finally {
       setDownloading(false)
     }

@@ -1,20 +1,8 @@
 'use client'
 
 import type { TrackingRoi } from '@/api/workflowsApi'
+import { money } from '@/lib/format'
 import { fmtNumber } from '../dashboardData'
-
-function money(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  } catch {
-    // An admin can store any currency string; an unknown code must not crash the panel.
-    return `${fmtNumber(amount)} ${currency}`
-  }
-}
 
 /**
  * Business impact, with the estimate and the measurement kept visibly apart.

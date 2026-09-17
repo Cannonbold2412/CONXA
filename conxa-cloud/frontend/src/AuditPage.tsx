@@ -1,4 +1,6 @@
 'use client'
+import { errorMessage } from '@/lib/apiBase'
+import { formatEpochDateTime, titleCase } from '@/lib/format'
 import { queryKeys } from '@/lib/queryKeys'
 
 import { useMemo, useState, type ComponentType } from 'react'
@@ -25,20 +27,8 @@ import {
 
 const ALL_ACTIONS = 'all'
 
-function formatAction(value: string) {
-  return value
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
-function formatTime(value: number) {
-  return new Date(value * 1000).toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
-}
+const formatAction = titleCase
+const formatTime = formatEpochDateTime
 
 function formatRelative(value: number) {
   const diff = Date.now() - value * 1000
@@ -278,7 +268,7 @@ export function AuditPage() {
 
       <div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-4 sm:px-6">
         {auditQ.isLoading ? <LoadingState /> : null}
-        {auditQ.isError && (auditQ.error as Error).message === 'ops_tier_required' ? (
+        {auditQ.isError && errorMessage(auditQ.error) === 'ops_tier_required' ? (
           <EmptyState
             title="Audit log isn't on your plan"
             description="Workspace event history for skill package operations, releases, billing, and administrative actions is a Starter-plan feature."
@@ -289,7 +279,7 @@ export function AuditPage() {
             }
           />
         ) : auditQ.isError ? (
-          <ErrorState message={(auditQ.error as Error).message} />
+          <ErrorState message={errorMessage(auditQ.error)} />
         ) : null}
         {auditQ.data ? (
           <>

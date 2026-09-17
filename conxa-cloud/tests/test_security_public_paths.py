@@ -25,6 +25,14 @@ def test_legacy_skill_pack_delta_still_public():
     assert _is_public_path("/api/v1/skill-packs/render/delta", "GET")
 
 
+def test_readyz_is_public():
+    """Regression: /readyz was missing from PUBLIC_PATHS, so Render's deploy
+    gate (Dockerfile: "readiness is gated by /readyz") would 401 against the
+    Clerk-auth middleware in production instead of ever reaching the actual
+    DB-readiness check."""
+    assert _is_public_path("/readyz", "GET")
+
+
 def test_workflow_dashboard_routes_stay_protected():
     assert not _is_public_path("/api/v1/workflows", "GET")
     assert not _is_public_path("/api/v1/workflows", "POST")

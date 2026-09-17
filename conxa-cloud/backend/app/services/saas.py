@@ -29,7 +29,7 @@ from app.services.jobs import job_store
 from conxa_core.storage.json_store import list_skill_summaries
 from conxa_core.storage.skill_packages import list_skill_bundle_summaries
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 LOCAL_USER_ID = "user_local"
 LOCAL_WORKSPACE_SLUG = "local"
@@ -171,7 +171,7 @@ def _clerk_org_role(user_id: str, org_id: str) -> str | None:
     """
     secret = settings.clerk_secret_key.strip()
     if not secret:
-        _log.warning("clerk_org_role: CLERK_SECRET_KEY not set — cannot resolve org role for %s", user_id)
+        logger.warning("clerk_org_role: CLERK_SECRET_KEY not set — cannot resolve org role for %s", user_id)
         return None
     url = f"https://api.clerk.com/v1/users/{user_id}/organization_memberships?limit=100"
     req = urllib.request.Request(url)
@@ -189,18 +189,18 @@ def _clerk_org_role(user_id: str, org_id: str) -> str | None:
         for m in data.get("data", []):
             if isinstance(m, dict) and m.get("organization", {}).get("id") == org_id:
                 role = str(m.get("role") or "")
-                _log.info("clerk_org_role: resolved %s in %s → %s", user_id, org_id, role)
+                logger.info("clerk_org_role: resolved %s in %s → %s", user_id, org_id, role)
                 return role
-        _log.warning("clerk_org_role: user %s has no membership in org %s", user_id, org_id)
+        logger.warning("clerk_org_role: user %s has no membership in org %s", user_id, org_id)
     except urllib.error.HTTPError as exc:
         body = b""
         try:
             body = exc.read()
         except Exception:
             pass
-        _log.error("clerk_org_role: Clerk API returned HTTP %s: %s", exc.code, body.decode("utf-8", errors="replace")[:300])
+        logger.error("clerk_org_role: Clerk API returned HTTP %s: %s", exc.code, body.decode("utf-8", errors="replace")[:300])
     except Exception as exc:
-        _log.error("clerk_org_role: unexpected error: %s", exc)
+        logger.error("clerk_org_role: unexpected error: %s", exc)
     return None
 
 
@@ -221,7 +221,11 @@ def clerk_user_organizations(user_id: str) -> list[dict[str, Any]] | None:
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except Exception:
+    except Exception as exc:
+        # The docstring's None/[] distinction only works if this is actually
+        # visible somewhere — it was silently returning None before, same
+        # failure mode as _clerk_org_role above except without even the log.
+        logger.error("clerk_user_organizations: lookup failed for user %s: %s", user_id, exc)
         return None
     out: list[dict[str, Any]] = []
     for m in data.get("data", []) if isinstance(data, dict) else []:

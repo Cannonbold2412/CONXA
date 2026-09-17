@@ -15,6 +15,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import re
 import secrets
 import time
@@ -73,6 +74,7 @@ from app.api.updates_routes import _require_admin
 router = APIRouter(prefix="/workflows", tags=["publish"])
 installers_router = APIRouter(prefix="/installers", tags=["installers"])
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
+logger = logging.getLogger(__name__)
 
 _SAFE_SLUG = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 _SEMVER_RE = re.compile(
@@ -436,8 +438,9 @@ def _publish_skill_pack_impl(
 
 @router.post("/publish")
 def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
-    """Legacy, unversioned publish route. Kept permanently for already-deployed
-    installers/tooling — see ``post_publish_v2`` for the versioned equivalent."""
+    """Legacy, unversioned publish route. Kept permanently — see
+    ``post_publish_v2`` for the versioned equivalent, and docs/TRD.md §3.2a
+    for why this can never be removed."""
     principal = current_principal(request)
     require_admin(principal)
     from conxa_core.workspace import workspace_dir_slug
@@ -544,13 +547,17 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
     filename = Path(filename).name  # strip any path components
     # Skill count for the installer's meta.json — read from the already-published
     # pack.json, the source of truth for what this slug's release actually contains.
-    workflow_count = 0
+    # A malformed pack.json is left out of meta entirely (the field is optional
+    # downstream) rather than reported as 0 — 0 reads as "this release has no
+    # skills," which is a different and misleading claim from "we couldn't count".
+    workflow_count: int | None = None
     published_pack_path = skill_packs_dir(slug) / "pack.json"
     if published_pack_path.is_file():
         try:
             workflow_count = len(json.loads(published_pack_path.read_text(encoding="utf-8")).get("skills") or [])
         except Exception:
-            workflow_count = 0
+            logger.warning("installer_upload_workflow_count_unreadable slug=%s", slug)
+            workflow_count = None
 
     out_dir = installer_dir(slug)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -564,7 +571,7 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
     tmp.replace(version_exe_path)
 
     uploaded_at = time.time()
-    meta = {
+    meta: dict[str, Any] = {
         "slug": slug,
         "filename": filename,
         "version": version,
@@ -574,10 +581,11 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
         "uploaded_at": uploaded_at,
         "workspace_id": principal.workspace_id,
         "is_latest": True,
-        "workflow_count": workflow_count,
         "distribution": distribution,
         "white_label": white_label,
     }
+    if workflow_count is not None:
+        meta["workflow_count"] = workflow_count
     (version_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     for other_meta_path in (out_dir / "versions").glob("*/meta.json"):
@@ -589,6 +597,11 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
                 other_meta["is_latest"] = False
                 other_meta_path.write_text(json.dumps(other_meta, indent=2), encoding="utf-8")
         except Exception:
+            # A version whose `is_latest` flag couldn't be cleared stays marked
+            # latest alongside the one just uploaded — two rows would claim
+            # is_latest. Log it so a stuck flag is visible instead of a silent
+            # display inconsistency the next time this list is viewed.
+            logger.warning("installer_meta_is_latest_clear_failed slug=%s path=%s", slug, other_meta_path)
             continue
 
     # Store metadata only — the binary is too large (~20 MB) to fit in a JSONB field.
@@ -649,13 +662,17 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
 @router.post("/{slug}/installer/upload")
 async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     """Legacy, unversioned installer-upload route. Kept permanently — see
-    ``post_installer_upload_v2`` for the versioned equivalent."""
+    ``post_installer_upload_v2`` for the versioned equivalent, and
+    docs/TRD.md §3.2a for why this can never be removed."""
     return await _upload_installer_impl(slug, request)
 
 
-@router.post("/{installer_version}/installer/upload")
-async def post_installer_upload_v2(installer_version: str, request: Request) -> dict[str, Any]:
-    validate_installer_version(installer_version)
+@router.post("/installer/upload")
+async def post_installer_upload_v2(request: Request) -> dict[str, Any]:
+    """Versioned-generation equivalent of ``post_installer_upload``. No path
+    parameter — the workspace (and thus slug) comes from the authenticated
+    principal, so there is nothing for ``{installer_version}``/``{slug}`` to
+    disambiguate. See docs/TRD.md's back-compat table."""
     principal = current_principal(request)
     require_admin(principal)
     from conxa_core.workspace import workspace_dir_slug
@@ -676,6 +693,12 @@ def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
         download_url = f"/api/v1/installers/{slug}/versions/{version}"
         if settings.installer_signing_key:
             download_url += f"?ts={ts}&sig={sig}"
+        # Every current upload always writes a real sha256/size (computed from the
+        # uploaded bytes, never absent) — an empty/zero value here means a row
+        # written by an older schema or a corrupted meta.json, not "verified
+        # empty". Log it so a genuinely missing checksum doesn't go unnoticed.
+        if not meta.get("sha256") or not meta.get("size"):
+            logger.warning("installer_meta_missing_integrity slug=%s version=%s", slug, version)
         row = {
             "slug": slug,
             "version": version,
@@ -701,6 +724,11 @@ def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
             except Exception:
+                # Skipped silently before — a corrupted meta.json just vanished
+                # from the version history with no trace. Postgres (below) is
+                # the durable source of truth, so the row usually still shows
+                # up from there; log so a disk-only gap is at least visible.
+                logger.warning("installer_meta_unreadable slug=%s path=%s", slug, meta_path)
                 continue
             if meta.get("workspace_id") != principal.workspace_id:
                 continue
@@ -720,13 +748,17 @@ def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
 @router.get("/{slug}/installer/versions")
 def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     """Legacy, unversioned route. Kept permanently — see
-    ``get_installer_versions_v2`` for the versioned equivalent."""
+    ``get_installer_versions_v2`` for the versioned equivalent, and
+    docs/TRD.md §3.2a for why this can never be removed."""
     return _installer_versions_impl(slug, request)
 
 
-@router.get("/{installer_version}/installer/versions")
-def get_installer_versions_v2(installer_version: str, request: Request) -> dict[str, Any]:
-    validate_installer_version(installer_version)
+@router.get("/installer/versions")
+def get_installer_versions_v2(request: Request) -> dict[str, Any]:
+    """Versioned-generation equivalent of ``get_installer_versions``. No path
+    parameter — the workspace (and thus slug) comes from the authenticated
+    principal. This is the URL the Cloud dashboard's Build Installer page
+    calls. See docs/TRD.md's back-compat table."""
     principal = current_principal(request)
     require_admin(principal)
     from conxa_core.workspace import workspace_dir_slug

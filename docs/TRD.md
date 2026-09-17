@@ -257,6 +257,31 @@ All under `/api/v1/` except health endpoints:
 | `GET /api/v1/workflows/skill-packs/{workspace_id}` | SkillPack detail (dashboard) | Clerk JWT |
 | `GET /api/v1/jobs/{job_id}` | Job status | Clerk JWT |
 
+### 3.2a Permanent Back-Compat Surfaces
+
+These are deliberately kept forever, not tech debt awaiting cleanup. Each exists because a
+shipped artifact — an installed runtime's `pack.json`, a Build Studio release already in the
+field, or the desktop client's own error-parsing code — depends on it directly, and there is
+no way to migrate that artifact after the fact. Every site in code that carries one of these
+points back here instead of repeating the reasoning.
+
+| Surface | Depended on by | What would have to happen first to remove it |
+|---|---|---|
+| Bare `POST /api/tracking/{workspace_id}/events` (no `/api/v1` prefix) | Any installer built before the versioned tracking-events route existed — its `pack.json.tracking.tracking_url` is baked in at install time and never rewritten | Every such installer replaced or self-updated to a `pack.json` pointing at a versioned URL — not practically achievable, hence permanent |
+| `POST /api/v1/workflows/publish` (unversioned) | Same as above — installers built before per-generation publish routes existed | Same as above |
+| `GET \| POST /api/v1/workflows/{slug}/installer/{upload,versions}` (unversioned, `{slug}` in the path but unused — slug is derived from the principal) | Build Studio's own Publish/Build Installer pages, which call these directly, and any installer generation minted before the versioned `{installer_version}/installer/...` pair existed | A Build Studio release that only ever calls the versioned pair, plus no installer relying on the unversioned pair remaining in the field |
+| `GET /api/v1/skill-packs/{workspace_id}/delta` (unversioned) | Same reasoning as the tracking-events alias — an installed runtime's `pack.json` URL is fixed at install time | Same as above |
+| `GET /api/v1/updates/conxa-runtime-manifest`, `GET /api/v1/updates/conxa-app-manifest` (deprecated shims) | Any runtime that hasn't yet picked up the unified, signed `/api/v1/manifest.json` self-updater | Every runtime confirmed migrated to the unified manifest — self-reinforcing since the shims are how a stale runtime updates itself into no longer needing them |
+| `human_edit_tokens` as a dual-emitted wire key alongside the canonical `ai_usage_credits` (`entitlements.py`'s `record_llm_usage`/`current_entitlements`, `productApi.ts`, `billingData.ts`) | Any Build Studio build reading the old key name from `GET /api/v1/entitlements/current`'s `wallet`/`meters` | Confirmation that no build in the field still reads `human_edit_tokens` — tracked as a TODO.md item, not yet scheduled |
+| `saas.py`'s static-secret proxy-identity path (`_trusted_proxy_identity`'s fallback branch below the HMAC one, no replay protection) | An older Conxa Execute deployment that predates the HMAC-signed proxy-identity scheme | That deployment generation confirmed fully retired |
+
+Two collision hazards worth knowing before touching any of these: the unversioned and versioned
+installer-upload/versions routes at `{slug}`/`{installer_version}` are the *same FastAPI path
+template* on the same router — one shadows the other, and this already broke silently once (the
+versioned pair was unreachable until 2026-09-17; see §17 and the "Permanent" row above). And five
+routers share the bare `/workflows` prefix (`main.py`'s `include_router` order matters — see the
+comment block directly above those calls).
+
 ### 3.3 Authentication Middleware
 
 `app/api/security.py` — `ProductionRequestMiddleware`:

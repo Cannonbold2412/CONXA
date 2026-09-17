@@ -1,4 +1,5 @@
 'use client'
+import { errorMessage } from '@/lib/apiBase'
 import { queryKeys } from '@/lib/queryKeys'
 import {
   displayPlanName,
@@ -168,9 +169,21 @@ export function BillingPage() {
       .then(async (res) => {
         await queryClient.invalidateQueries({ queryKey: queryKeys.entitlements })
         if (res.status === 'PAID') toast.success('Add-on credits added to your wallet')
+        // Any other status (pending, etc.) is a normal 200 response, not an
+        // error — the webhook or a later check covers it, no toast needed.
       })
-      .catch(() => {
-        // Not paid yet (or webhook already handled it) — entitlements refetch covers the rest.
+      .catch((err: unknown) => {
+        // The backend only ever throws here for a genuine verification failure
+        // (Cashfree unreachable, etc.) — "not paid yet" is a 200 handled above,
+        // never routed through this catch. This used to be silently swallowed
+        // with an outdated comment claiming otherwise: a real failure here
+        // meant a customer who paid saw nothing and had no idea their credits
+        // hadn't arrived.
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : "Couldn't verify your payment. If you were charged, contact support if credits don't appear shortly.",
+        )
       })
   }, [queryClient])
 
@@ -186,10 +199,13 @@ export function BillingPage() {
 
   const subscription = subscriptionQuery.data?.subscription
   const entitlements = entitlementsQuery.data
-  const currentPlan = normalizePlan(
-    subscription?.plan ?? entitlements?.plan ?? 'free',
-  )
   const hasError = plansQuery.isError || subscriptionQuery.isError || entitlementsQuery.isError
+  // A failed subscription/entitlements fetch used to fall through to "free" —
+  // a paying customer whose fetch failed would see their own plan grid
+  // highlight Free as current, with an Upgrade button on the tier they
+  // already have. `null` here means "we don't know", not "they're on Free".
+  const rawPlan = subscription?.plan ?? entitlements?.plan
+  const currentPlan = rawPlan != null ? normalizePlan(rawPlan) : subscriptionQuery.isError || entitlementsQuery.isError ? null : normalizePlan('free')
 
   async function refreshBilling() {
     await Promise.all([
@@ -324,7 +340,6 @@ export function BillingPage() {
                 Upgrade limits without changing local workflow creation.
               </p>
             </div>
-            {/* removed legacy plan badge per request */}
           </div>
 
           {plansQuery.isLoading ? (
@@ -404,7 +419,7 @@ function UsageMeterCard({
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-baseline gap-1.5 tabular-nums">
                   <span className="text-2xl font-semibold leading-none tracking-tight text-white">
-                    {formatMeterValue(meter?.used ?? 0, config.key)}
+                    {formatMeterValue(meter?.used, config.key)}
                   </span>
                   <span className="text-sm font-medium leading-none text-zinc-600">/</span>
                   <span className="truncate text-sm font-medium leading-none text-zinc-300">
@@ -499,7 +514,7 @@ function CompileCreditAddonPanel({
             ))}
           </div>
         ) : addonsQuery.isError ? (
-          <p className="pt-4 text-sm text-red-300">{(addonsQuery.error as Error).message}</p>
+          <p className="pt-4 text-sm text-red-300">{errorMessage(addonsQuery.error)}</p>
         ) : (
           <div className="grid gap-3 pt-4 md:grid-cols-2 xl:grid-cols-4">
             {addons.map((addon) => {
@@ -566,7 +581,7 @@ function PlanCard({
   onSubscribe,
 }: {
   plan: Plan
-  currentPlan: string
+  currentPlan: string | null
   processingTier: string | null
   onSubscribe: (tier: string) => void
 }) {
@@ -740,7 +755,7 @@ function PaymentOperationsPanel({
   currentPlan,
   currentPeriodEnd,
 }: {
-  currentPlan: string
+  currentPlan: string | null
   currentPeriodEnd?: number | null
 }) {
   return (
@@ -760,7 +775,7 @@ function PaymentOperationsPanel({
         <div className="rounded-md border border-white/8 bg-black/20 p-2.5">
           <p className="text-xs font-medium uppercase tracking-normal text-zinc-500">Account Timing</p>
           <div className="mt-2 grid gap-2">
-            <InfoRow label="Active plan" value={displayPlanName(currentPlan)} />
+            <InfoRow label="Active plan" value={currentPlan === null ? 'Unknown — retry above' : displayPlanName(currentPlan)} />
             <InfoRow label="Usage reset" value={formatUnixDate(currentPeriodEnd)} />
           </div>
         </div>

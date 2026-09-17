@@ -2,6 +2,7 @@
 
 import { Loader2 } from 'lucide-react'
 import type { ReleaseEvent } from '@/api/workflowsApi'
+import { formatEpochTimestamp } from '@/lib/format'
 
 const ACTION_LABELS: Record<string, string> = {
   skill_version_created: 'Created version',
@@ -22,10 +23,7 @@ function describeEvent(event: ReleaseEvent): string {
   return typeof version === 'string' ? `${label} v${version}` : label
 }
 
-function formatTimestamp(seconds: number): string {
-  if (!seconds) return ''
-  return new Date(seconds * 1000).toLocaleString()
-}
+const formatTimestamp = formatEpochTimestamp
 
 /** Audit — every consequential release action (publish, release, rollback),
  * never fabricated: this is release_channel.list_release_events() verbatim,

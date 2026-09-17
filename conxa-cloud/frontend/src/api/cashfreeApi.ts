@@ -24,14 +24,10 @@ export type VerifySubscriptionResponse = {
 
 export type CheckoutTier = 'starter' | 'pro'
 
-export type AddonOffer = {
-  tier: string
-  name: string
-  amount: number
-  currency: string
-  period?: string | null
-  features: string[]
-}
+// An add-on offer is shaped identically to a subscription Plan (tier, name,
+// price, features) — the backend describes both the same way, and the two
+// types had drifted into byte-for-byte duplicates under different names.
+export type AddonOffer = Plan
 
 export type AddonOrderResponse = {
   granted: boolean

@@ -280,7 +280,8 @@ def _ensure_plan(tier: str) -> str:
         if resp.status_code not in (200, 201) and body.get("status") != "OK":
             # 409 means plan already exists — treat as success
             if resp.status_code != 409:
-                raise HTTPException(status_code=500, detail=f"cashfree_plan_create_failed: {resp.text}")
+                logger.error("cashfree_plan_create_failed tier=%s response=%s", tier, resp.text)
+                raise HTTPException(status_code=500, detail="cashfree_plan_create_failed")
         store[plan_key] = plan_id
         _write_plan_store(store)
         return plan_id
@@ -289,7 +290,7 @@ def _ensure_plan(tier: str) -> str:
     except Exception as exc:
         detail = _exception_detail(exc)
         logger.exception("cashfree_plan_create_failed tier=%s error=%s", tier, detail)
-        raise HTTPException(status_code=500, detail=f"failed_to_create_plan: {detail}") from exc
+        raise HTTPException(status_code=500, detail="cashfree_plan_create_failed") from exc
 
 
 @router.get("/plans")
@@ -321,7 +322,19 @@ async def create_subscription(
         plan_id = _ensure_plan(tier)
         info = TIER_INFO[tier]
         sub_id = f"conxa_{principal.workspace_id}_{tier}_{int(time.time())}"
-        customer_email = body.get("customer_email") or "user@conxa.in"
+        # The frontend never sends customer_email/customer_phone today (see
+        # cashfreeApi.ts's single-argument createCashfreeSubscription call) — every
+        # real subscription was silently created under a fake "user@conxa.in"
+        # identity. Source the email from the signed-in principal (Clerk-verified)
+        # instead of fabricating one; require it explicitly rather than guess.
+        customer_email = body.get("customer_email") or principal.email
+        if not customer_email:
+            raise HTTPException(status_code=422, detail="customer_email_required")
+        # ponytail: no real phone number source exists anywhere in this system
+        # yet (Principal carries no phone field, Clerk's session doesn't require
+        # one). Cashfree's API requires a value, so this stays a placeholder
+        # until checkout collects a real one — add when Cashfree checkout gets
+        # its own phone-collection step.
         customer_phone = body.get("customer_phone") or "9999999999"
         return_url = f"{settings.app_url}/billing"
         resp = _cf_request("POST", "/api/v2/subscriptions/nonSeamless/subscription", json={
@@ -510,7 +523,11 @@ async def create_addon_order(
             "wallet": wallet,
         }
 
-    customer_email = body.get("customer_email") or "user@conxa.in"
+    customer_email = body.get("customer_email") or principal.email
+    if not customer_email:
+        raise HTTPException(status_code=422, detail="customer_email_required")
+    # ponytail: see the matching comment in create_subscription — no real phone
+    # number source exists yet.
     customer_phone = body.get("customer_phone") or "9999999999"
     link_id = f"conxa_{principal.workspace_id}_{tier}_{int(time.time())}"
     try:
@@ -567,12 +584,11 @@ async def verify_addon_order(
     try:
         resp = _cf_request("GET", f"/pg/links/{link_id}")
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"cashfree_addon_verify_failed: {_exception_detail(exc)}",
-        ) from exc
+        logger.exception("cashfree_addon_verify_failed link_id=%s error=%s", link_id, _exception_detail(exc))
+        raise HTTPException(status_code=500, detail="cashfree_addon_verify_failed") from exc
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"cashfree_addon_verify_failed: {resp.text}")
+        logger.error("cashfree_addon_verify_failed link_id=%s response=%s", link_id, resp.text)
+        raise HTTPException(status_code=502, detail="cashfree_addon_verify_failed")
     data = resp.json() if resp.content else {}
     status = str(data.get("link_status") or "").upper()
     granted = None
@@ -632,12 +648,18 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
                             "current_period_end": _parse_next_charge(payload),
                         },
                     )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "cashfree_webhook_billing_update_failed event=%s workspace_id=%s",
                     event_type,
                     workspace_id,
                 )
+                # A 200 here tells Cashfree the event was handled — it never
+                # retries a 2xx. Returning it after the actual billing update
+                # failed silently drops the event: the customer paid, and their
+                # plan never upgraded, with nothing to prompt a retry. A non-2xx
+                # makes Cashfree's own retry schedule do the recovery.
+                raise HTTPException(status_code=502, detail="webhook_billing_update_failed") from exc
     elif event_type == "SUBSCRIPTION_PAYMENT_CANCELLED" or (
         event_type == "SUBSCRIPTION_STATUS_CHANGE" and status in ("CANCELLED", "EXPIRED", "ONHOLD")
     ):
@@ -651,12 +673,13 @@ async def handle_cashfree_webhook(request: Request) -> dict[str, bool]:
                         "current_period_end": None,
                     },
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "cashfree_webhook_cancel_failed event=%s workspace_id=%s",
                     event_type,
                     workspace_id,
                 )
+                raise HTTPException(status_code=502, detail="webhook_cancel_failed") from exc
     else:
         logger.info(
             "cashfree_webhook_ignored event=%s subscription_id=%s status=%s",
@@ -704,8 +727,12 @@ async def handle_cashfree_order_webhook(request: Request) -> dict[str, bool]:
     if event_type == "PAYMENT_SUCCESS_WEBHOOK" and order_id:
         try:
             _grant_addon_order_once(order_id)
-        except Exception:
+        except Exception as exc:
             logger.exception("cashfree_order_webhook_grant_failed order_id=%s", order_id)
+            # Same reasoning as the subscription webhook above: a 200 here means
+            # Cashfree never retries, and the customer paid for credits that
+            # were never granted.
+            raise HTTPException(status_code=502, detail="webhook_grant_failed") from exc
     else:
         logger.info(
             "cashfree_order_webhook_ignored type=%s order_id=%s",

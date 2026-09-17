@@ -2986,6 +2986,16 @@ the new item below this one.
 - **Why required:** an enterprise customer's compliance/change-management expectations don't tolerate "the builder's laptop is the deploy button" — a distinct review-and-approve step, with its own audit trail, is table stakes.
 - **Success criteria (met):** publishing a version never changes what a runtime receives; only an explicit Release/Deploy call does. Verified by `conxa-cloud/tests/test_release_channel.py::test_publish_alone_leaves_the_version_ready_and_never_moves_stable` and `test_runtime_desired_version_follows_release_not_publish`.
 
+### CLOUD-16 — Untested cloud-backend routers
+- **Category:** Cloud
+- **Description:** Discovered during the 2026-09-17 conxa-cloud streamlining pass. Four routers/modules have zero test coverage: `app/api/job_routes.py` (4 endpoints), `app/services/jobs.py` (149 lines, never imported by a test), `app/api/workflow_routes.py` (6 endpoints — list/create/delete workflows, SkillPack list/detail), `app/api/machine_binding.py`, `app/api/product_ownership.py`, and the `POST /entitlements/admin/plan` branch of `entitlement_routes.py`.
+- **Why required:** these are real, reachable routes with no regression net — a change to any of them (including an unrelated refactor that happens to import through the same module) can silently break behavior with no test to catch it, unlike almost everything else in the 1550+-test suite.
+- **Technical value:** closing this gap is mechanical (the existing `TestClient(app)` pattern used throughout `tests/test_*.py` covers all of these), not a design question.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic — pick up alongside the next change that actually touches one of these files, rather than a dedicated sweep.
+- **Complexity:** S per router.
+- **Success criteria:** each listed router has at least one characterization test per endpoint (happy path + one auth/validation failure), matching the style already used for every other router in `tests/`.
+
 ---
 
 ## P3 Discovered Items (4 remaining / 4 total) (2026-08-12 Plugin→Workflow/SkillPack refactor)
