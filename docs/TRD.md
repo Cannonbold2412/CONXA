@@ -4520,7 +4520,7 @@ Production only ever receives releases promoted from Dev.
 | Env file | `.env.dev` | `.env.prod` | `CONXA_ENV` → `env_files()` |
 | Runtime install/data | `~/.conxa-dev` / `Conxa-Dev` | `~/.conxa` / `Conxa` | `CONXA_DIR`, `CONXA_DATA_DIR` |
 | Studio state | `~/.conxa-build-studio-dev` | `~/.conxa-build-studio` | `CONXA_STUDIO_HOME` |
-| Cloud API | `127.0.0.1:8000` / `dev-apis` | `apis.conxa.in` | `CONXA_CLOUD_API`, `CONXA_API_URL` |
+| Cloud API | `127.0.0.1:8000` | `apis.conxa.in` | `CONXA_CLOUD_API`, `CONXA_API_URL` |
 | Update channel | `dev` | `stable` | `CONXA_UPDATE_CHANNEL` → `?channel=` |
 | MCP server entry | `conxa-dev` | `conxa` | NSIS `MCP_SERVER` (build-time) |
 | Billing | Cashfree `TEST` | Cashfree `PROD` | `CASHFREE_ENV` |
@@ -4534,14 +4534,17 @@ publish time from the cloud's `SKILL_API_BASE_URL` (`skill_package_builder.py`).
 publishes against the dev cloud, dev-built installers embed dev URLs — a dev installer
 never phones home to prod. Both sync and tracking now derive from one env-consistent base.
 
-**Release flow (promotion, never rebuild):** dev prerelease tags (`app-v1.3.0-dev.1`,
-`host-…-dev.N`, `studio-…-dev.N`) build in CI and publish to the **dev** update channel on
-the dev cloud (`CLOUD_API_URL_DEV`). Once validated, `promote-release.yml` fetches the
-*exact signed artifact* from the dev channel, verifies its SHA-256 byte-for-byte,
-republishes the identical bytes under the clean stable tag, and posts the **stable**
-manifest record on the prod cloud. Signing is unchanged — the same server-side Ed25519 key
-signs both channels; the runtime's baked-in public key verifies both. Prod runtimes poll
-`?channel=stable` only, so un-promoted dev builds are invisible to them.
+**Release flow (direct-to-stable):** a clean semver tag (`app-vX.Y.Z`, `host-vX.Y.Z`)
+builds in CI and, on success, posts straight to the **stable** update channel on the prod
+cloud (`CLOUD_API_URL`/`CLOUD_ADMIN_TOKEN`). There is no hosted dev cloud to stage a build
+on first — `conxa-cloud/render.dev.yaml` was removed (commit `91eebe8`), and the dev lane
+now runs only on `127.0.0.1:8000`, unreachable from a GitHub-hosted runner. The
+`?channel=dev|stable` distinction still exists server-side (`updates_routes.py`) for a
+developer manually pointing a local runtime at their own dev backend, but CI no longer
+publishes to it, and there is no promotion step — the `promote-release.yml` workflow that
+used to bridge dev→stable was removed along with it. Signing is unchanged: the cloud
+re-signs the stable manifest with its Ed25519 key on every publish, and the runtime
+verifies against the public key baked in at build time.
 
 ### 16.1 Cloud Backend (Render)
 

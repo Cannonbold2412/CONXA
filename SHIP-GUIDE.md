@@ -248,26 +248,26 @@ in the isolated Dev environment.
 
 ---
 
-## Feature 12 — Promote a Dev release to Production (no rebuild)
+## Feature 12 — Ship a runtime release (direct to stable)
 
-**What it is.** The safe hand-off. A Dev build that passed testing is copied to the `stable`
-track **exactly as-is** — same signed file, checked byte-for-byte. Production is never handed
-something new or rebuilt.
+**What it is.** A clean semver tag (`app-vX.Y.Z` / `host-vX.Y.Z`) builds in CI and, on
+success, posts straight to the **stable** channel on the prod cloud. There used to be a
+Dev-channel staging step + a `promote-release.yml` promotion workflow, but the hosted Dev
+cloud service was removed (commit `91eebe8`) — the Dev lane now runs only on
+`127.0.0.1:8000`, which a GitHub-hosted runner can't reach, so there's no Dev target left to
+stage a build on before promoting it. `promote-release.yml` has been deleted accordingly.
 
 **How to ship it.**
-1. Tag a Dev build as a preview, e.g. `git tag app-v1.3.0-dev.1 && git push --tags`. CI builds
-   it and publishes to the **dev** channel.
-2. Test it thoroughly in Dev (install, run, auto-update).
-3. When it's good, run the **Promote Release** workflow (`promote-release.yml`) in GitHub,
-   giving it the tested Dev version and the clean target version (e.g. `app-v1.3.0`).
-4. It downloads the exact tested file, verifies the checksum, republishes the identical bytes
-   under the clean tag, and posts it to the **stable** channel.
+1. Tag a clean release, e.g. `git tag app-v1.3.0 && git push --tags`. CI builds it and, if
+   `CLOUD_API_URL`/`CLOUD_ADMIN_TOKEN` are configured, posts the manifest record straight to
+   `stable`.
+2. Confirm the version now appears on `GET /api/v1/manifest.json` (stable, no `?channel=`).
 
 **How to test it.**
-- After promotion, confirm the version now appears on `?channel=stable`.
-- Confirm the checksum on stable matches the one you tested on dev (the workflow fails if they
-  differ, which is the safety net).
-- Confirm a Production runtime now offers the update, and a Dev runtime is unaffected.
+- Confirm a Production runtime now offers the update.
+- If you need to test a build before it's customer-visible, point a local runtime at your own
+  `127.0.0.1:8000` dev backend and post the manifest record there by hand — there is no
+  automated Dev channel in CI to do this for you right now.
 
 ---
 
@@ -276,40 +276,29 @@ something new or rebuilt.
 This is Feature 12 above, written out as a full walkthrough for each of the three things you
 can actually ship a change in.
 
-### conxa-app (and conxa-runtime/host, if that changed too) — automated dev → stable pipeline
+### conxa-app (and conxa-runtime/host, if that changed too) — direct-to-stable pipeline
 
 1. **Commit your change** to whatever branch, then merge to main.
-2. **Cut a dev prerelease tag** and push it:
+2. **Cut a clean release tag** and push it:
    ```bash
-   git tag app-v1.3.0-dev.1
-   git push origin app-v1.3.0-dev.1
+   git tag app-v1.3.0
+   git push origin app-v1.3.0
    ```
-   (For a host-layer change, use `host-v1.3.0-dev.1` instead — same pattern.)
+   (For a host-layer change, use `host-v1.3.0` instead — same pattern. A `-dev.N`/`-beta.N`/
+   `-rc.N`/`-alpha.N` suffix still marks the GitHub Release as a prerelease, but no longer
+   routes anywhere different — there is no separate Dev channel in CI to route to.)
 
-   The `-(dev|beta|rc|alpha)` suffix is what routes it. Pushing this tag triggers
-   `build-runtime-app.yml` (or `build-runtime-host.yml` for the host), which builds,
-   obfuscates, zips, publishes a GitHub Release marked `prerelease`, and posts the manifest to
-   the **dev cloud** (`CLOUD_API_URL_DEV`). Production is untouched at this point.
-3. **Test it on dev.** Point a test runtime install at the dev channel, let it self-update via
-   `manifest.json?channel=dev`, and verify it behaves correctly end-to-end. `runtime/test/gate_replay.js`
-   (real skill replay) already ran in CI against the `MIN_HOST` exe before this tag published —
-   no manual pass needed. If that gate goes red, check `MIN_HOST` in `build-runtime-app.yml`
-   first: it's the compatibility promise stamped into `version.json`, and a stale value fails
-   the replay before it fails a customer.
-4. **Promote to stable** — manually trigger the **Promote Release** workflow
-   (`promote-release.yml`, run via `workflow_dispatch` in GitHub → Actions) with:
-   - `component`: `conxa_app` (or `conxa_runtime` for a host-layer change)
-   - `source_version`: `app-v1.3.0-dev.1` — must match what's *currently live* on dev, or the
-     workflow refuses to run.
-   - `target_version`: `app-v1.3.0` — a clean semver tag, no prerelease suffix.
-
-   This workflow does **not** rebuild anything. It fetches the exact dev artifact, re-verifies
-   its SHA-256, re-uploads the identical bytes under the clean stable tag, and posts the stable
-   manifest record to the **prod cloud admin API**, which re-signs `manifest.json?channel=stable`
-   with the Ed25519 key.
-5. **Production runtimes pick it up automatically** on their next update poll — signature
+   Pushing this tag triggers `build-runtime-app.yml` (or `build-runtime-host.yml` for the
+   host), which builds, obfuscates, zips, publishes the GitHub Release, and — if
+   `CLOUD_API_URL`/`CLOUD_ADMIN_TOKEN` are configured — posts the manifest straight to
+   **stable**. `runtime/test/gate_replay.js` (real skill replay against the `MIN_HOST` exe)
+   still runs in CI before the release/publish steps and fails the build if it doesn't pass —
+   this is now the only pre-prod gate. If it goes red, check `MIN_HOST` in
+   `build-runtime-app.yml` first: it's the compatibility promise stamped into `version.json`,
+   and a stale value fails the replay before it fails a customer.
+3. **Production runtimes pick it up automatically** on their next update poll — signature
    verified against the baked-in public key, SHA-256 verified, then `bootstrap.js` does the
-   atomic swap with `.bak` rollback if anything goes wrong.
+   atomic swap with rollback if anything goes wrong.
 
 ### conxa-runtime (the host exe) — when and how to ship it
 
@@ -326,23 +315,22 @@ config itself changes** — new stubbed dependency, a `min_host` semver bump, a 
 the host locates/loads the app layer, etc. Ordinary feature work never requires a host release.
 
 1. Commit your change, merge to main.
-2. Cut a dev prerelease tag the same way as conxa-app, just with the `host-` prefix:
+2. Cut a clean release tag the same way as conxa-app, just with the `host-` prefix:
    ```bash
-   git tag host-v1.1.0-dev.1
-   git push origin host-v1.1.0-dev.1
+   git tag host-v1.1.0
+   git push origin host-v1.1.0
    ```
    This triggers `build-runtime-host.yml`, which builds the exe with `--no-bytecode`,
-   publishes a `prerelease` GitHub Release, and posts the manifest to the **dev cloud**.
-3. **Test it on dev.** Install a Dev runtime, let it self-update: on startup the app layer
-   checks the manifest, and if `conxa_runtime` is newer it downloads the new host files,
-   runs `--selfcheck` against the new exe, then `activate()`s it — this never touches the
-   *running* process's own file, so the swap takes effect on the next launch. Confirm Claude
-   Desktop can still spawn it and the MCP handshake still works.
-4. **Promote to stable** via the same `promote-release.yml` workflow used for conxa-app, with
-   `component: conxa_runtime`, `source_version: host-v1.1.0-dev.1`, `target_version: host-v1.1.0`.
-   Same guarantee: no rebuild, exact tested bytes, checksum re-verified, re-signed onto the
-   stable manifest.
-5. Production runtimes pick it up on their next update poll, same as app-layer updates.
+   publishes the GitHub Release, and — if `CLOUD_API_URL`/`CLOUD_ADMIN_TOKEN` are configured —
+   posts the manifest straight to **stable**.
+3. **Test it before customers see it, if you need to.** Point a local runtime at your own
+   `127.0.0.1:8000` dev backend and post the manifest record there by hand — install a runtime
+   against it, let it self-update: on startup the app layer checks the manifest, and if
+   `conxa_runtime` is newer it downloads the new host files, runs `--selfcheck` against the new
+   exe, then `activate()`s it — this never touches the *running* process's own file, so the
+   swap takes effect on the next launch. Confirm Claude Desktop can still spawn it and the MCP
+   handshake still works.
+4. Production runtimes pick it up on their next update poll, same as app-layer updates.
 
 **Two things that make the host different from conxa-app in practice:**
 - New customer installers embed the host exe directly, so a customer who installs fresh
@@ -390,9 +378,9 @@ Same shape as Build Studio, its own tag prefix and env vars:
 
 ### If the source repo goes private, does any of this change?
 
-No — same tags, same triggers, same `workflow_dispatch` for promotion. The one thing that
-breaks is the **URLs these steps produce**. `promote-release.yml` and the cloud's
-`_release_url()` helper both build links like
+No — same tags, same triggers. The one thing that
+breaks is the **URLs these steps produce**. `build-runtime-host.yml`/`build-runtime-app.yml`
+and the cloud's `_release_url()` helper both build links like
 `https://github.com/<repo>/releases/download/...`, which become authenticated-fetch-only once
 the repo is private — a plain customer machine with no GitHub token gets a 404/401. That's the
 exact problem `research-analysis/ops/private-repo-migration.md` covers. Fix it once (point releases
@@ -441,14 +429,14 @@ values marked `sync: false` in `render.yaml` filled in.
 - [ ] `.env.dev` and `.env.prod` filled in; real files are git-ignored.
 - [ ] `make dev-env` and `make prod-env` print the correct, separate folders + channels.
 - [ ] Dev backend runs and `/healthz` + `/readyz` look right.
-- [ ] GitHub has the Dev cloud variables/secrets (`CLOUD_API_URL_DEV`, `CLOUD_ADMIN_TOKEN_DEV`)
-      alongside the existing Production ones (`CLOUD_API_URL`, `CLOUD_ADMIN_TOKEN`), plus the
-      manifest signing key (server-side) and public key (repo variable).
+- [ ] GitHub has the Production variables/secrets (`CLOUD_API_URL`, `CLOUD_ADMIN_TOKEN`), plus
+      the manifest signing key (server-side) and public key (repo variable). There is no hosted
+      Dev cloud to configure — the Dev lane runs on `127.0.0.1:8000` only.
 - [ ] A Dev installer installs into `~/.conxa-dev`, shows as `conxa-dev` in Claude Desktop,
       and its `pack.json` points only at the Dev cloud.
 - [ ] Full Dev run passes: record → compile → sandbox test → install → execute → auto-update.
-- [ ] Dev prerelease appears on `?channel=dev` only.
-- [ ] Promotion workflow copies it to `?channel=stable` with a matching checksum.
+- [ ] A clean release tag posts straight to `?channel=stable` — check `GET
+      /api/v1/manifest.json` shows the new version and matching checksum.
 - [ ] Production server refuses to start if a required value is missing (guard works).
 
 ---
@@ -464,13 +452,10 @@ make dev-runtime       make prod-runtime
 make dev-env           make prod-env        # dry run: print settings and exit
 
 # Release
-git tag app-v1.3.0-dev.1 && git push --tags     # build a Dev preview → dev channel
-# …test in Dev…
-# GitHub → Actions → "Promote Release (dev → stable)" → run with the tested version
+git tag app-v1.3.0 && git push --tags     # build + publish straight to stable
 
-# Check what each channel is serving
-curl "https://apis.conxa.in/api/v1/manifest.json"                 # stable (prod)
-curl "https://dev-apis.conxa.in/api/v1/manifest.json?channel=dev" # dev
+# Check what stable is serving
+curl "https://apis.conxa.in/api/v1/manifest.json"
 ```
 
 For the full technical design, see `docs/TRD.md` → "Dev/Prod Environment Isolation".
