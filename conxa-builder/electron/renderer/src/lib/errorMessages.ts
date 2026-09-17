@@ -21,6 +21,7 @@ export const errorMessages: Record<string, string> = {
   // Cloud / connectivity
   cloud_unreachable:
     "Can't reach Conxa Cloud right now. Check your internet connection and try again.",
+  cloud_auth_required: "Your sign-in has expired. Sign in to Conxa Build Studio and try again.",
   // Distinct from cloud_unreachable on purpose: the cloud answered, it just couldn't get an
   // answer out of any AI provider. Sending the reviewer to check a working network wastes
   // their time on the one failure a retry usually does fix.

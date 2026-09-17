@@ -265,12 +265,12 @@ class Backend(
         except Exception as exc:
             raise _CommandError(
                 "cloud_auth_required",
-                "Sign in to Conxa Build Studio before building a cloud-connected installer.",
+                "Sign in to Conxa Build Studio and try again.",
             ) from exc
         if not token:
             raise _CommandError(
                 "cloud_auth_required",
-                "Sign in to Conxa Build Studio before building a cloud-connected installer.",
+                "Sign in to Conxa Build Studio and try again.",
             )
         return token
 
@@ -299,9 +299,9 @@ class Backend(
                 detail = ""
             if detail:
                 raise _CommandError(detail, self._entitlement_error_message(detail)) from exc
-            raise _CommandError("entitlements_unavailable", f"Cloud entitlement check failed: HTTP {exc.code}") from exc
+            raise _CommandError("cloud_unreachable", f"Conxa Cloud returned HTTP {exc.code}.") from exc
         except Exception as exc:
-            raise _CommandError("entitlements_unavailable", f"Cloud entitlement service unavailable: {exc}") from exc
+            raise _CommandError("cloud_unreachable", f"Conxa Cloud is unreachable: {exc}") from exc
         return payload if isinstance(payload, dict) else {}
 
     def _entitlement_error_message(self, code: str) -> str:

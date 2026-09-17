@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed a confusing startup message that blamed your plan when the real problem was the internet — 2026-09-17
+When Build Studio couldn't reach Conxa Cloud on startup — say, on a bad connection — it showed a message claiming Conxa Cloud couldn't confirm your plan, even though your plan was never the issue. That happened because one shared piece of code used the "can't check your plan" label for every kind of connection failure, not just plan-related ones. It's like a delivery app blaming your payment method when the real problem is that it simply couldn't reach the server at all. The message now correctly says the connection failed, so people aren't sent chasing a billing problem that doesn't exist.
+
 ## Simplified how the AI reasoning setting is handled, removing an unnecessary workaround — 2026-09-17
 Right after the fix below this one shipped, we decided to go simpler still. The system used to try to tell some AI providers to turn off their "thinking out loud" step to save time and cost, then had to work around the providers that refused to allow that. Now it never asks any provider to turn that step off at all — it just lets each one behave the way it normally does. This removes the whole category of problem instead of patching around it, and keeps the code easier to maintain going forward.
 

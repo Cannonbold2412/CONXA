@@ -59,9 +59,9 @@ function LegalGate({ children }: { children: React.ReactNode }) {
   if (q.isError) {
     return (
       <BlockingNotice
-        title="Can't reach Conxa"
-        body="Build Studio needs to confirm you have accepted the current Terms and Privacy Policy before it can start."
-        detail={errorMessage(q.error, '')}
+        title="Build Studio can't start"
+        body={errorMessage(q.error, "Conxa Cloud didn't respond.")}
+        detail="Build Studio confirms your Terms and Privacy Policy acceptance with Conxa Cloud each time it starts, so it can't continue until the connection is back."
         actionLabel={q.isFetching ? 'Retrying…' : 'Try again'}
         onAction={() => void q.refetch()}
         disabled={q.isFetching}
