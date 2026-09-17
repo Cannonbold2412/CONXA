@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -76,3 +77,37 @@ def test_deps_manifest_env_override(monkeypatch):
     # The running app still has old values — just verify the module parses env correctly
     assert m._NSIS_VERSION == "3.99"
     assert m._NSIS_URL == "https://example.com/nsis-3.99.zip"
+
+
+def test_malformed_digest_env_var_refuses_to_import(monkeypatch):
+    """The exact bug found live: a release-notes "<filename>  <hash>" line pasted whole into a
+    *_SHA256 env var must fail fast at import time, not silently serve a manifest every client
+    then rejects on a checksum mismatch."""
+    import importlib
+    import app.api.updates_routes as m
+
+    monkeypatch.setenv(
+        "CONXA_APP_BUNDLE_SHA256",
+        "conxa-app-app-v3.2.0.zip dcd009bf8c1f87c8d500bc4e3f0a169720e31710fddaeace6ef0ab48a27a016f",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="CONXA_APP_BUNDLE_SHA256"):
+            importlib.reload(m)
+    finally:
+        monkeypatch.delenv("CONXA_APP_BUNDLE_SHA256", raising=False)
+        importlib.reload(m)  # restore the module to its clean state for later tests
+
+
+def test_bare_hex_digest_env_var_imports_cleanly(monkeypatch):
+    monkeypatch.setenv(
+        "CONXA_APP_BUNDLE_SHA256",
+        "dcd009bf8c1f87c8d500bc4e3f0a169720e31710fddaeace6ef0ab48a27a016f",
+    )
+    import importlib
+    import app.api.updates_routes as m
+    try:
+        importlib.reload(m)
+        assert m._APP_BUNDLE_SHA == "dcd009bf8c1f87c8d500bc4e3f0a169720e31710fddaeace6ef0ab48a27a016f"
+    finally:
+        monkeypatch.delenv("CONXA_APP_BUNDLE_SHA256", raising=False)
+        importlib.reload(m)

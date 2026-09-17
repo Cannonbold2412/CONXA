@@ -129,6 +129,42 @@ _EXECUTE_LATEST_YML_URL = os.environ.get(
     f"https://github.com/{_GITHUB_REPO}/releases/download/{_EXECUTE_VERSION}/latest.yml",
 )
 
+_HEX_DIGEST_RE = re.compile(r"^[0-9a-f]+$")
+# 32 bytes (sha256) or 64 bytes (sha512) of hex — anything else is not a digest.
+_VALID_HEX_LENGTHS = {64, 128}
+
+
+def _validate_digest_env_vars() -> None:
+    """Fail fast at import time on a malformed release-artifact digest.
+
+    A CI workflow that prints "<filename>  <hash>" (the two-column line GitHub's release
+    notes use) into one of these env vars — instead of the bare hash — used to be served
+    to every client verbatim. bootstrap.py/the runtime's own updater then reject the
+    download on a checksum mismatch forever, with no signal pointing back at the env var.
+    Catch the shape here, at the source, instead of downstream in N different clients.
+    """
+    digest_env_names = [
+        "CONXA_NSIS_SHA256", "CONXA_HOST_WIN_SHA256", "CONXA_KEYTAR_WIN_SHA256",
+        "CONXA_APP_BUNDLE_SHA256", "CONXA_STUDIO_WIN_SHA256", "CONXA_STUDIO_WIN_SHA512",
+        "CONXA_EXECUTE_WIN_SHA256", "CONXA_EXECUTE_WIN_SHA512",
+    ]
+    bad: list[str] = []
+    for name in digest_env_names:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            continue  # unset is allowed — the dependent manifest entry is simply skipped
+        normalized = value.lower()
+        if len(normalized) not in _VALID_HEX_LENGTHS or not _HEX_DIGEST_RE.match(normalized):
+            bad.append(f"{name}={value!r} (expected a bare 64- or 128-char hex digest)")
+    if bad:
+        raise RuntimeError(
+            "Refusing to start: malformed digest env var(s) — "
+            + "; ".join(bad)
+        )
+
+
+_validate_digest_env_vars()
+
 
 @router.get("/updates/deps-manifest", include_in_schema=False)
 def deps_manifest() -> dict:
