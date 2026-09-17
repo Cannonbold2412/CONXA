@@ -46,7 +46,11 @@ function toOpenAITools(tools) {
  *   {model, messages, tools?, tool_choice?} body this loop would otherwise
  *   POST itself, and must resolve to a normalized OpenAI-shaped response
  *   ({choices: [{message: {...}}]}) or a {ok:false, error} pair. Omit for the
- *   default behavior below (a real OpenAI-compatible baseURL/apiKey).
+ *   default behavior below (a real OpenAI-compatible baseURL/apiKey). Mid-step
+ *   streaming (e.g. live "thinking"/text deltas) is out of scope for this
+ *   loop — a transport that wants to expose it does so out-of-band via its
+ *   own closure (see execute_client.js's `onDelta`), since runTurn only ever
+ *   needs the resolved per-step message to decide the next step.
  */
 async function runTurn(opts) {
   const baseURL = opts.baseURL || DEFAULT_BASE_URL;

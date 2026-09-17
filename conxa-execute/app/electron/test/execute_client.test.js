@@ -69,6 +69,34 @@ describe("execute_client chatCompletion (Conxa Execute's cloud proxy transport)"
     }
   });
 
+  it("forwards text and reasoning chunks to onDelta as they arrive, without affecting the resolved value", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = mock.fn(async () =>
+      sseResponse([
+        { type: "reasoning", text: "pondering... " },
+        { type: "text", text: "Sure, " },
+        { type: "reasoning", text: "more thoughts" },
+        { type: "text", text: "running it now." },
+        { done: true, text: "Sure, running it now." },
+      ]),
+    );
+    try {
+      const seen = [];
+      const chatCompletion = makeChatCompletion({ onDelta: (chunk) => seen.push(chunk) });
+      const result = await chatCompletion({ model: "conxa-execute", messages: [] });
+      assert.equal(result.ok, true);
+      assert.equal(result.json.choices[0].message.content, "Sure, running it now.");
+      assert.deepEqual(seen, [
+        { type: "reasoning", text: "pondering... " },
+        { type: "text", text: "Sure, " },
+        { type: "reasoning", text: "more thoughts" },
+        { type: "text", text: "running it now." },
+      ]);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
   it("surfaces a stream error when nothing else came through", async () => {
     const orig = globalThis.fetch;
     globalThis.fetch = async () => sseResponse([{ error: "llm_all_providers_failed" }]);

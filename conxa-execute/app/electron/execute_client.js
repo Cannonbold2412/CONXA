@@ -42,9 +42,12 @@ async function getContexts() {
  * chat context — see run_turn.js's opts.chatCompletion docstring for the
  * contract it must satisfy: given an OpenAI-shaped {model, messages, tools?,
  * tool_choice?} body, resolve to {ok:true, json:{choices:[{message}]}} or
- * {ok:false, error}.
+ * {ok:false, error}. If `onDelta` is given, it also fires synchronously with
+ * {type:"text"|"reasoning", text} for each chunk as the stream arrives, so a
+ * caller can paint the reply live — the eventual resolved value is
+ * unaffected, still the full accumulated turn.
  */
-function makeChatCompletion({ targetWorkspaceId, timeoutMs } = {}) {
+function makeChatCompletion({ targetWorkspaceId, timeoutMs, onDelta } = {}) {
   return async function chatCompletion(openaiBody) {
     let resp;
     try {
@@ -102,6 +105,9 @@ function makeChatCompletion({ targetWorkspaceId, timeoutMs } = {}) {
           streamError = evt.error;
         } else if (evt.type === "text") {
           text += evt.text;
+          if (onDelta) onDelta({ type: "text", text: evt.text });
+        } else if (evt.type === "reasoning") {
+          if (onDelta) onDelta({ type: "reasoning", text: evt.text });
         } else if (evt.type === "tool_call") {
           const i = evt.index || 0;
           const call = toolCalls.get(i) || { id: null, type: "function", function: { name: null, arguments: "" } };

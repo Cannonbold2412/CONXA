@@ -296,12 +296,20 @@ handle("chat:send", async (_e, payload) => {
   ]);
 
   const tools = await mcp.listChatTools();
+  const requestId = payload.requestId;
+  const onDelta = requestId
+    ? (chunk) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("chat:delta", { requestId, ...chunk });
+        }
+      }
+    : undefined;
   const result = await runTurn({
     model: "conxa-execute", // advisory only — the proxy picks the real provider/model per plan.
     system: SYSTEM_PROMPT,
     messages: nextMessages,
     tools,
-    chatCompletion: executeClient.makeChatCompletion({ targetWorkspaceId: full.activeWorkspaceId }),
+    chatCompletion: executeClient.makeChatCompletion({ targetWorkspaceId: full.activeWorkspaceId, onDelta }),
     executeTool: async (name, args) => {
       if (name === "execute_skill") {
         args = { ...args, watch: true };

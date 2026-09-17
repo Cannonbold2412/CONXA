@@ -15,7 +15,9 @@ export type HistoryRow = {
   message?: string;
 };
 
-export type ChatMessage = { role: string; content: string };
+export type ChatMessage = { role: string; content: string; thinking?: string };
+
+export type ChatDelta = { requestId: string; type: "text" | "reasoning"; text: string };
 
 export type SessionSummary = { id: string; title: string; createdAt: string; updatedAt: string };
 
@@ -42,7 +44,8 @@ export type Bridge = {
   history: () => Promise<{ ok: boolean; items?: HistoryRow[] }>;
   deleteHistory: (p: { at: string }) => Promise<{ ok: boolean; items?: HistoryRow[]; message?: string }>;
   getSettings: () => Promise<{ ok: boolean; activeWorkspaceId?: string; error?: string }>;
-  chatSend: (p: { text: string; sessionId: string }) => Promise<{ ok: boolean; text?: string; message?: string }>;
+  chatSend: (p: { text: string; sessionId: string; requestId?: string }) => Promise<{ ok: boolean; text?: string; message?: string }>;
+  onChatDelta: (cb: (p: ChatDelta) => void) => () => void;
   listSessions: () => Promise<{ ok: boolean; sessions?: SessionSummary[]; message?: string }>;
   createSession: () => Promise<{ ok: boolean; session?: SessionSummary; message?: string }>;
   loadSession: (p: { id: string }) => Promise<{ ok: boolean; session?: SessionDetail; message?: string }>;

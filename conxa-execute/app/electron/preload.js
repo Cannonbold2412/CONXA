@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   getSettings: () => ipcRenderer.invoke("settings:get"),
   saveSettings: (payload) => ipcRenderer.invoke("settings:save", payload),
   chatSend: (payload) => ipcRenderer.invoke("chat:send", payload),
+  onChatDelta: (cb) => {
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on("chat:delta", listener);
+    return () => ipcRenderer.removeListener("chat:delta", listener);
+  },
   listSessions: () => ipcRenderer.invoke("sessions:list"),
   createSession: () => ipcRenderer.invoke("sessions:create"),
   loadSession: (payload) => ipcRenderer.invoke("sessions:load", payload),

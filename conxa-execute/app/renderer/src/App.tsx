@@ -75,6 +75,7 @@ export function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [chatLog, setChatLog] = useState<(ChatMessage & { error?: boolean })[]>([]);
+  const [streamingMsg, setStreamingMsg] = useState<{ content: string; thinking: string } | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -251,16 +252,32 @@ export function App() {
     setChatInput("");
     setChatLog((prev) => [...prev, { role: "user", content: text }]);
     setBusy(true);
-    const r = await api.chatSend({ text, sessionId });
-    setBusy(false);
-    if (r.ok) {
-      // Reload from the session store rather than hand-appending — main.js
-      // may have pruned/compacted the transcript for this turn, and that's
-      // the authoritative post-turn state.
-      const loaded = await api.loadSession({ id: sessionId });
-      setChatLog(loaded.session?.messages || []);
-    } else {
-      setChatLog((prev) => [...prev, { role: "assistant", content: r.message || "Something went wrong.", error: true }]);
+    setStreamingMsg({ content: "", thinking: "" });
+    const requestId = crypto.randomUUID();
+    const unsubscribe = api.onChatDelta((delta) => {
+      if (delta.requestId !== requestId) return;
+      setStreamingMsg((prev) => {
+        const base = prev || { content: "", thinking: "" };
+        return delta.type === "reasoning"
+          ? { ...base, thinking: base.thinking + delta.text }
+          : { ...base, content: base.content + delta.text };
+      });
+    });
+    try {
+      const r = await api.chatSend({ text, sessionId, requestId });
+      if (r.ok) {
+        // Reload from the session store rather than hand-appending — main.js
+        // may have pruned/compacted the transcript for this turn, and that's
+        // the authoritative post-turn state.
+        const loaded = await api.loadSession({ id: sessionId });
+        setChatLog(loaded.session?.messages || []);
+      } else {
+        setChatLog((prev) => [...prev, { role: "assistant", content: r.message || "Something went wrong.", error: true }]);
+      }
+    } finally {
+      unsubscribe();
+      setStreamingMsg(null);
+      setBusy(false);
     }
     await refreshHistory();
     await refreshSessions();
@@ -584,6 +601,17 @@ export function App() {
                   <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
                 </div>
               ))}
+              {streamingMsg && (
+                <div className="mx-auto max-w-[720px]">
+                  <div className="mb-1 text-[11px] text-fg-dim">CONXA</div>
+                  {streamingMsg.thinking && (
+                    <pre className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-dim">{streamingMsg.thinking}</pre>
+                  )}
+                  {streamingMsg.content && (
+                    <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{streamingMsg.content}</div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="px-6 pb-6">{composer}</div>
           </div>
