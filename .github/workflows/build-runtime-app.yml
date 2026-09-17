@@ -246,23 +246,39 @@ jobs:
         shell: pwsh
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.APP_VERSION }}
-          name: App Layer ${{ env.APP_VERSION }}
-          body: |
-            ## App Layer ${{ env.APP_VERSION }}
+        # gh release create/upload directly, with a manual retry around the asset
+        # upload — softprops/action-gh-release@v2 retries the "release not yet
+        # discoverable by tag" lookup but not the upload call itself, so a transient
+        # backend lag there fails the whole step with "Error saving asset". Same
+        # fix already applied to build-execute.yml (commit 7f8cbd1); mirrored here.
+        shell: pwsh
+        run: |
+          $tag = "$env:APP_VERSION"
+          $notes = @"
+          ## App Layer $tag
 
-            Lightweight obfuscated-JS app update (~60 KB).
-            Minimum host: ${{ env.MIN_HOST }}
+          Lightweight obfuscated-JS app update (~60 KB).
+          Minimum host: $env:MIN_HOST
 
-            ### SHA-256
-            ```
-            ${{ env.APP_BUNDLE_ZIP }}  ${{ env.APP_BUNDLE_SHA256 }}
-            ```
-          files: runtime/${{ env.APP_BUNDLE_ZIP }}
-          prerelease: ${{ env.IS_PRERELEASE }}
-          fail_on_unmatched_files: true
+          SHA-256: $env:APP_BUNDLE_ZIP  $env:APP_BUNDLE_SHA256
+          "@
+
+          gh release view $tag *>$null
+          if ($LASTEXITCODE -ne 0) {
+            $createArgs = @($tag, "--title", "App Layer $tag", "--notes", $notes)
+            if ($env:IS_PRERELEASE -eq "true") { $createArgs += "--prerelease" }
+            gh release create @createArgs
+            if ($LASTEXITCODE -ne 0) { Write-Error "gh release create failed"; exit 1 }
+          }
+
+          $uploaded = $false
+          for ($i = 1; $i -le 3; $i++) {
+            gh release upload $tag "runtime/$env:APP_BUNDLE_ZIP" --clobber
+            if ($LASTEXITCODE -eq 0) { $uploaded = $true; break }
+            Write-Warning "gh release upload attempt $i failed, retrying in 10s..."
+            Start-Sleep -Seconds 10
+          }
+          if (-not $uploaded) { Write-Error "gh release upload failed after 3 attempts"; exit 1 }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

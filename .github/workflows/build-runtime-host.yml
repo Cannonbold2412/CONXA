@@ -162,25 +162,40 @@ jobs:
         shell: pwsh
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.HOST_VERSION }}
-          name: Runtime Host ${{ env.HOST_VERSION }}
-          body: |
-            ## Runtime Host ${{ env.HOST_VERSION }}
+        # gh release create/upload directly, with a manual retry around the asset
+        # upload — softprops/action-gh-release@v2 retries the "release not yet
+        # discoverable by tag" lookup but not the upload call itself, so a transient
+        # backend lag there fails the whole step with "Error saving asset". Same
+        # fix already applied to build-execute.yml (commit 7f8cbd1); mirrored here.
+        shell: pwsh
+        run: |
+          $tag = "$env:HOST_VERSION"
+          $notes = @"
+          ## Runtime Host $tag
 
-            Large host binary (~85 MB). Ships quarterly or when Node/npm deps change.
+          Large host binary (~85 MB). Ships quarterly or when Node/npm deps change.
 
-            ### SHA-256 checksums
-            ```
-            conxa-runtime.exe  ${{ env.HOST_WIN_SHA256 }}
-            keytar.node           ${{ env.KEYTAR_SHA256 }}
-            ```
-          files: |
-            runtime/dist/conxa-runtime.exe
-            runtime/keytar.node
-          prerelease: ${{ env.IS_PRERELEASE }}
-          fail_on_unmatched_files: true
+          SHA-256 checksums:
+          conxa-runtime.exe  $env:HOST_WIN_SHA256
+          keytar.node           $env:KEYTAR_SHA256
+          "@
+
+          gh release view $tag *>$null
+          if ($LASTEXITCODE -ne 0) {
+            $createArgs = @($tag, "--title", "Runtime Host $tag", "--notes", $notes)
+            if ($env:IS_PRERELEASE -eq "true") { $createArgs += "--prerelease" }
+            gh release create @createArgs
+            if ($LASTEXITCODE -ne 0) { Write-Error "gh release create failed"; exit 1 }
+          }
+
+          $uploaded = $false
+          for ($i = 1; $i -le 3; $i++) {
+            gh release upload $tag runtime/dist/conxa-runtime.exe runtime/keytar.node --clobber
+            if ($LASTEXITCODE -eq 0) { $uploaded = $true; break }
+            Write-Warning "gh release upload attempt $i failed, retrying in 10s..."
+            Start-Sleep -Seconds 10
+          }
+          if (-not $uploaded) { Write-Error "gh release upload failed after 3 attempts"; exit 1 }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
