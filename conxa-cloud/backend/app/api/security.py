@@ -158,8 +158,10 @@ def verify_clerk_jwt(token: str) -> dict[str, Any]:
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="invalid_clerk_token") from exc
 
+    # Browser session tokens carry `azp` (the page origin); Clerk OAuth access
+    # tokens (Build Studio, Conxa Execute) carry no `azp`, only `client_id`.
     azp_values = settings.clerk_authorized_party_values
-    if azp_values and payload.get("azp") not in azp_values:
+    if azp_values and (payload.get("azp") or payload.get("client_id")) not in azp_values:
         raise HTTPException(status_code=403, detail="invalid_authorized_party")
     return dict(payload)
 
