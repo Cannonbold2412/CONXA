@@ -1796,7 +1796,8 @@ Response:
     "execute_seats": {"used": 4, "limit": 25, "remaining": 21, "unlimited": false},
     "compile_credits": {"used": 42, "limit": 200, "remaining": 158, "unlimited": false},
     "human_edit_tokens": {"used": 230000, "limit": 2500000, "remaining": 2270000, "unlimited": false},
-    "ai_usage_credits": {"used": 230000, "limit": 2500000, "remaining": 2270000, "unlimited": false}
+    "ai_usage_credits": {"used": 230000, "limit": 2500000, "remaining": 2270000, "unlimited": false},
+    "execute_chat_tokens": {"used": 12000, "limit": null, "remaining": null, "unlimited": true}
   },
   "capabilities": {
     "distribution": "external",
@@ -1851,21 +1852,31 @@ string, and the `human_edit_pool_exceeded` error code are all unchanged — zero
 Execute access to via `POST /entitlements/execute-grants` below, independent of Build Studio org
 membership. See `docs/TRD.md` §13.4c for the full grant/claim/shared-pool design.
 
+**Added 2026-09-17 — `execute_chat_tokens`.** Line-item breakdown only, always `limit: null,
+unlimited: true` — Conxa Execute's chat usage draws from the exact same pool `ai_usage_credits`
+gates, it is not a second quota. `ai_usage_credits`'s own `used` figure already includes it.
+
 **GET /api/v1/entitlements/execute-grants** (owner/admin) — `{"grants": [{grant_id, email, status,
 granted_at, claimed_at, revoked_at, ...}]}`, newest first. Includes revoked/claimed grants for history.
 
 **POST /api/v1/entitlements/execute-grants** (owner/admin) — `{"email": str}` → creates (or, for a
 repeat invite to the same still-pending email, idempotently returns) a `pending` grant, checked
-against the `execute_seats` cap. Response adds `invite_url` (`{app_url}/claim/{grant_id}`) — no
-transactional email sender exists in this repo, so the admin shares the link manually.
+against the `execute_seats` cap. No `invite_url` in the response (removed 2026-09-17) — since Conxa
+Execute and the Cloud Dashboard share one Clerk app, the grant auto-claims by verified email on that
+person's next Conxa Execute sign-in, nothing to send them.
 
 **POST /api/v1/entitlements/execute-grants/revoke** (owner/admin) — `{"grant_id": str}` → frees the
 slot immediately and clears the pool binding if it had already been claimed.
 
 **POST /api/v1/entitlements/execute-grants/claim** (any signed-in Cloud Dashboard user) — `{"grant_id":
-str}` → claims a grant made out to the caller's own email. Phase-1 fallback path; Conxa Execute's own
-claim screen (`POST /v1/execute-grants/claim` on `conxa-execute`'s backend) relays through the
-service-token-authenticated internal bridge instead — see `docs/TRD.md` §13.4c.
+str}` → claims a grant made out to the caller's own email. Phase-1 fallback path; the normal path is
+automatic (`GET /api/v1/execute/contexts` below).
+
+**GET /api/v1/execute/contexts** (any signed-in user, added 2026-09-17) — `{"contexts": [{workspace_id,
+workspace_name, kind: "personal"|"member"|"grant", credits_remaining}], "active_workspace_id": str}`.
+Conxa Execute's personal/team context switcher: every workspace the caller can use Execute under.
+Also auto-claims any `pending` grant matching the caller's verified email as a side effect. See
+`docs/TRD.md` §13.4c.
 
 **POST /api/v1/usage/compile/reserve**
 
@@ -2783,21 +2794,19 @@ erDiagram
 | `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |
 | `manifest` | `current` (composed+signed `UnifiedManifest`), `skill_pack_index` (list of `{company}:{skill}` identifiers), `minimum_versions`, `compatibility` | 5.8 unified manifest — `skill_pack_index` exists because the filesystem-fallback KV store hashes keys, so `component_versions` entries for skills can't be discovered by scanning keys directly |
 | `workspace_devices` | `{workspace_id}:{machine_hash}` | `{workspace_id, machine_hash, last_ip, first_seen, last_seen, revoked?}` | 5.3 machine binding — `machine_hash` is SHA-256 of the Windows `MachineGuid`, never the raw ID. Added 2026-08-08 |
-| `execute_grants` | `{grant_id}` | `{grant_id, workspace_id, email, status, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}` | §5.3 / `docs/TRD.md` §13.4c — Execute seat grants; `grant_id` also doubles as the invite-link token. Added 2026-09-16 |
-| `execute_grant_by_user` | `{claimed_user_id}` | `{grant_id, workspace_id, email, claimed_at}` | §5.3 / `docs/TRD.md` §13.4c — O(1) pool-binding lookup keyed by the claiming Execute Clerk `user_id`, written on claim, cleared on revoke. Added 2026-09-16 |
+| `execute_grants` | `{grant_id}` | `{grant_id, workspace_id, email, status, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}` | §5.3 / `docs/TRD.md` §13.4c — Execute seat grants, auto-claimed by email (no invite link since 2026-09-17). Added 2026-09-16 |
+| `execute_grant_by_user` | `{claimed_user_id}` | `{grant_id, workspace_id, email, claimed_at}` | §5.3 / `docs/TRD.md` §13.4c — O(1) primary-pool-binding lookup keyed by the claiming Clerk `user_id`, written on claim, cleared on revoke. Added 2026-09-16 |
 | `workspace_llm_keys` | `{workspace_id}` | `{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}` | Enterprise BYOK (§TRD 13.5) — the API key is AES-256-GCM encrypted at rest under `SKILL_BYOK_ENCRYPTION_KEY`; never stored or returned in plaintext. Added 2026-08-08 |
 | `legal_acceptances` | `{user_id}:{version}` | `{id, user_id, email, name, workspace_id, workspace_slug, workspace_name, role, auth_provider, identity_source, version, document_hashes, documents[], accepted_at, accepted_at_iso, client_ip, user_agent, app_version, machine_hash}` | §5.14 Build Studio legal acceptance — **write-once**, one row per (user, terms version); a repeat acceptance returns the existing row rather than overwriting it, so the stored timestamp is always the moment the person actually agreed. Deliberately *not* stored only in `saas.audit_events`, which is a global 500-entry ring buffer — an acceptance mirrored there for the Audit page (`legal.accepted`) would be evicted long before it was needed as evidence. Added 2026-08-29 |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |
 
-**Conxa Execute Cloud Backend (added 2026-09-05) — separate database, separate `kv_store` table:**
-
-| Namespace | Key | Value | Used by |
-|---|---|---|---|
-| `execute_wallet` | `{key_hash}` (sha256 of the raw Execute Key) | `{tokens_balance}` | conxa-execute token metering (`app/wallet.py`) — credited/debited via one atomic `UPDATE ... RETURNING` statement, no advisory lock needed for a single numeric balance |
-| `execute_order_key` | `{order_ref}` (Cashfree order/subscription reference id) | `{tier, key_hash}` (`key_hash` null when the order mints a brand-new key rather than topping up an existing one) | conxa-execute checkout — links a Cashfree order back to which key/tier it funds |
-| `execute_addon_granted` | `{order_ref}` | `{key_hash, tokens}` | conxa-execute one-time pack idempotency guard — grants exactly once across webhook + verify-page double delivery, same pattern as conxa-cloud's `cashfree_orders_granted` (§5.4) |
-| `execute_sub_charge_granted` | `{charge_id}` (per-charge, not per-subscription — see TRD §3.6's open item on the exact Cashfree field) | `{key_hash, tokens}` | conxa-execute subscription renewal idempotency guard — new namespace, since conxa-cloud's subscription webhook (§5.4) only ever set plan status and never needed per-charge idempotency |
-| `execute_cashfree_plans` | `"plans"` (single key) | `{tier: cashfree_plan_id}` | conxa-execute dev-mode fallback that auto-creates the 6 subscription tiers' Cashfree Plan objects when `CASHFREE_SUB_*_PLAN_ID` isn't configured and `SKILL_AUTH_REQUIRED` is false — mirrors conxa-cloud's `cashfree_plans.json`/`db_get("cashfree","plans")` dev fallback |
+**Conxa Execute's own database and KV namespaces (`execute_wallet`, `execute_order_key`,
+`execute_addon_granted`, `execute_sub_charge_granted`, `execute_cashfree_plans`, table
+`execute_chat_session`) no longer exist** — deleted 2026-09-17 along with the standalone
+`conxa-execute/backend` service. Execute has no wallet, no subscription, no BYOK, and no
+server-side session sync; billing/access run entirely through the `execute_grants`/
+`execute_grant_by_user` namespaces above, same as any other Build Studio workspace feature. See
+`docs/TRD.md` §3.6.
 
 ---
 

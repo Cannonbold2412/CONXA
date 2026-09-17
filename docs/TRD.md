@@ -303,27 +303,23 @@ Both identity paths (trusted proxy and Clerk JWT) pass `personal_workspace=not o
 
 Cashfree is the wired payment gateway (`app/api/cashfree_routes.py`, mounted at `/api/v1/subscriptions`; switched from Razorpay 2026-06-30). `POST /create` calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns an `auth_link` for the frontend to redirect to; the workspace↔subscription↔tier mapping is stored server-side (`cashfree_sub_workspace` KV) since Cashfree webhooks only carry the subscription reference id. `POST /verify` fetches the subscription from Cashfree and resolves the tier from its `planId`. `POST /webhooks/cashfree` verifies the signature by sorting all `cf_`-prefixed payload fields and comparing against the shared webhook secret. Activation/charge webhooks persist `current_period_end` so paid usage windows reset on the monthly payment date. **Compile add-on packs are one-time purchases, not subscriptions (rewritten 2026-08-22):** `POST /addon/order` creates a Cashfree Payment Link (`POST /pg/links`) and the frontend redirects to it; payment is confirmed either by the PG webhook (`POST /webhooks/cashfree-orders`, signature over `timestamp + raw body`) or by `POST /addon/verify` after the redirect back — both credit a never-expiring wallet on the billing record exactly once (`cashfree_orders_granted` KV guard). The wallet is drawn down only after the plan's monthly allowance runs out; no Cashfree *plan IDs* are needed for add-ons. See `docs/Backend-Schema.md` §5.4 for the full request/response contracts. Stripe was previously present as orphaned unwired config fields and has since been fully removed (see §17).
 
-### 3.6 Conxa Execute Cloud Backend (added 2026-09-05, identity/subscription/LLM-config/session reworked 2026-09-05)
+### 3.6 Conxa Execute (folded into conxa-cloud, 2026-09-17 — supersedes the standalone-backend design below)
 
-A separate, standalone Render service (`conxa-execute/backend/`, own `render.yaml`, own Postgres — not part of `conxa-cloud/backend`) backing the `conxa-execute` desktop app's managed chat. Identity is now a **Clerk user** (`app/auth.py::get_current_user`, a JWT-verification dependency mirroring `conxa-cloud/backend/app/api/security.py::verify_clerk_jwt` but kept as a separate, smaller copy — conxa-execute has no dependency on conxa-cloud's backend package). This is deliberately a **separate Clerk application** from conxa-cloud's dashboard: conxa-cloud's JWT claims are shaped around `org_id`/workspace (B2B multi-seat), foreign to Execute's single-consumer-user wallet — no SSO between the two products. Wallet, subscription, and session data all key off the Clerk `user_id`. The prior opaque **Execute Key** model (`app/keys.py`, HMAC-derived from a Cashfree order ref) has been removed — it was unlaunched, so no production data needed migrating.
+Conxa Execute has **no backend of its own**. The desktop app (`conxa-execute/app/`) is a thin client of `conxa-cloud/backend` — the same backend Build Studio and the Cloud Dashboard use — the same way those two already are. The earlier design (a standalone `conxa-execute/backend/` Render service with its own Postgres, its own Cashfree billing, its own dedicated LLM keys, and its own separate Clerk application) has been deleted entirely; every reason that design gave for the separation (see the archived text this section replaces, in git history at this file's prior revision) is answered by the points below.
 
-**Three modes, one desktop app:** BYOK / Top-up / Subscription (plus workspace-pool, §13.4c). `renderer/src/SettingsModal.tsx` currently only *displays* the active mode (`mode === "byok" ? "Your key runs chat." : "CONXA runs chat for you."`) — mode is set by redeeming a workspace-pool invite (`account:redeem-grant`) or read back from saved settings; there is no UI control to pick Top-up or Subscription yet (`main.js`'s `settings:save` IPC accepts a `mode` field, so the wiring exists once that picker is built). BYOK is unchanged — the existing `baseURL`/`apiKey`/`model` fields, zero backend involvement. Every mode requires being signed in to CONXA first (a full-screen sign-in gate — `app/renderer/src/App.tsx`), including BYOK; BYOK's chat requests still go straight from the device to the configured model endpoint, never through this backend. Top-up and Subscription both route through this backend's `/v1/chat/completions`, authenticated via Clerk (the desktop app performs a PKCE login — `conxa-execute/app/electron/auth_service.js`, a Node port of Build Studio's `conxa-builder/python/services/auth_service.py` flow: fixed-port localhost callback, PKCE S256, token refresh with 60s leeway, tokens encrypted via Electron `safeStorage` to `userData/clerk-session.bin`, no keytar needed).
+**Identity:** one Clerk application (`clerk.conxa.in`), shared with Build Studio. Execute's desktop app uses its own OAuth client under that same instance (a separate `client_id` and its own redirect-URI port range, `127.0.0.1:52841-52850/cb`, so the two apps' PKCE flows never collide) — not a second Clerk instance. Scope includes `user:org:read` so the token carries `org_id`. `conxa-execute/app/electron/auth_service.js` is otherwise unchanged: PKCE S256, token refresh with 60s leeway, tokens encrypted via Electron `safeStorage` to `userData/clerk-session.bin`.
 
-**Purchase flow:** `GET /plans` (server-rendered HTML) is now purely informational — the actual purchase happens via the authenticated `POST /v1/checkout/{tier}` JSON endpoint (`app/routes_checkout.py`), called by the signed-in Electron app, which opens the returned Cashfree hosted page in the OS browser (`shell.openExternal`) since no Clerk context exists once the browser takes over. `GET /checkout/success` is consequently an unauthenticated redirect target keyed by `order_ref` — it no longer reveals a key (there's nothing to paste anymore); it just confirms payment. One-time packs still credit `app/wallet.py`'s flat balance synchronously at `/checkout/success` (idempotent via `execute_addon_granted` KV). **Subscriptions are now real tiered plans, not recurring top-up:** a subscription charge (webhook only, `POST /webhooks/cashfree`) calls `app/subscription.py::activate_or_renew`, which sets a fresh `period_start`/`period_end` (30 days) and zeroes `quota_used` — a renewal charge starts a new billing period rather than adding to a forever-stacking balance. `app/plans.py::PLAN_TIERS` reuses the same 6 price tiers and pre-created Cashfree plan IDs the old `sub_*` tiers used.
+**No BYOK.** Every chat call goes through conxa-cloud's LLM proxy — there is no personal-API-key mode, no wallet, no subscription, no Cashfree integration specific to Execute. Access and billing are entirely the existing Build Studio team plan (see §13.4c): a full workspace member gets Execute for free as part of their plan; a non-member gets it via an Execute Seat grant. Both draw from the workspace's existing AI Usage Credits pool, metered as their own line item (`execute_chat_tokens`, `packages/conxa-core`'s shared meter code) but the same underlying quota/wallet as Human Edit — not a second, independent allowance.
 
-**Quota-reset scheduling** is event-driven, not cron: the renewal webhook advances the period on every successful charge, and `subscription.reset_if_period_elapsed` is a lazy safety-net check run on every proxy call (if `now() > period_end`, reset before checking quota) — no scheduled job exists or is needed at this volume.
+**Personal/team context switcher:** `GET /api/v1/execute/contexts` (`conxa-cloud/backend/app/api/entitlement_routes.py`) returns every workspace a signed-in person can use Execute under — their personal workspace (always present, free-tier pool), every Clerk org they're a real member of (via `saas.py::clerk_user_organizations`, the Clerk Backend API), and every workspace where they hold a `claimed` Execute grant (`entitlements.py::list_claimed_grant_workspaces_for`). The same call also auto-claims any `pending` grant matching the caller's verified email (`entitlements.py::auto_claim_pending_grants_for`) — see §13.4c, this replaces the old manual invite-code paste. The desktop app's Settings shows a picker built from this list; the chosen `workspace_id` is stored locally and sent as `target_workspace_id` on every chat/entitlement call, **re-verified server-side on every call** (`llm_proxy_routes.py::_resolve_execute_chat_workspace` → `entitlements.py::execute_chat_access_for`) rather than trusted from the client.
 
-**Chat proxy:** `POST /v1/chat/completions` (`app/routes_proxy.py`) is a generic OpenAI-compatible passthrough, deliberately **not** built on `conxa_core.llm`'s router or `conxa_core.config`'s `ProviderConfig` — both are shaped for conxa-cloud's compile-time structured JSON prompts, the wrong call shape for a real multi-turn tool-calling chat history, and conxa-execute is already a separately deployed service with its own provider keys. Provider/model/fallback resolution now lives in its own standalone module, `app/llm_config.py` (own env parsing, same var names as before — `GROQ_API_KEYS`/`GOOGLE_AI_STUDIO_API_KEYS`/`NVIDIA_NIM_API_KEYS` — plus new `*_FALLBACK_TEXT_MODEL` vars), with the retry loop in `app/llm_client.py::call_chat_completions`: on a provider's primary-model failure it retries once with that provider's fallback model (porting the mechanic from `conxa-cloud/backend/app/llm/router.py::_call_provider`) before moving to the next provider. Quota is checked in priority order — active subscription first (debited via `subscription.debit_quota_if_available`), then the top-up wallet — and actual `usage.total_tokens` is debited post-call, floored at 0; the very last request on a near-empty balance can still run slightly over, accepted for v1.
+**Chat proxy:** Execute's chat goes through the same endpoints Build Studio's compiler already uses — `POST /api/v1/llm/proxy/text/stream` (and the non-streaming `/text` for completeness), header `X-Conxa-Client: conxa-execute` alongside the existing `build-studio` value, `usage_class: "execute_chat"`. The proxy needed two additions for a real multi-turn tool-calling chat client, both scoped to a new `execute_chat` task so every other task's behavior is untouched: (1) `packages/conxa-core/conxa_core/llm/client.py::_openai_messages_for_task`'s `execute_chat` branch passes `payload["messages"]` straight through instead of building a single-turn prompt, and `_openai_body_dict` forwards `tools`/`tool_choice` when the payload carries them; (2) the streaming wire format gained a tool-call-aware sibling, `_iter_sse_deltas` (tagged `{"type":"text"|"tool_call",...}` chunks instead of `_iter_sse_text_deltas`'s bare strings), wired into `app/llm/router.py::_call_provider` and `app/api/llm_proxy_routes.py::_meter_and_stream` only when `task == "execute_chat"`. An Execute-originated call also skips `register_request_machine` (`execute_seats` is its cap, not `machines`) and gets a higher body-size ceiling (reuses `llm_vision_proxy_max_bytes`, since a chat history is bigger than a one-shot compile prompt) — see `app/api/security.py::_body_limit_for_path`.
 
-**Wallet storage:** one integer balance per Clerk `user_id`, `kv_store` namespace `execute_wallet` (`app/wallet.py`), credited/debited via a single atomic `UPDATE ... RETURNING` SQL statement — a single numeric balance doesn't need conxa-cloud's advisory-lock read-modify-write machinery, since the row lock during the `UPDATE` already serializes concurrent debits. Subscription rows live in the same `kv_store` under namespace `execute_subscription` (also a single-row-per-user lookup, no listing needed).
+`conxa-execute/app/vendor/opencode/loop/run_turn.js` (the tool-dispatch loop) is unchanged in behavior but gained an optional `opts.chatCompletion` pluggable transport — a caller-supplied `async (openaiBody) => {ok,json}|{ok:false,error}` function that replaces its default real-OpenAI-compatible `fetch` call. `conxa-execute/app/electron/execute_client.js::makeChatCompletion` is that plug: it translates run_turn's OpenAI-shaped request into the cloud proxy's `{task,payload,usage_class,target_workspace_id}` body, parses the tagged SSE stream, accumulates tool-call argument fragments by index (standard OpenAI streaming semantics), and hands back a normal `{choices:[{message}]}` shape — run_turn's own tool-dispatch logic needs no further changes.
 
-**Chat sessions (new, 2026-09-05; trimmed to its one live caller during a later cleanup pass):** `app/routes_sessions.py` (`PUT /v1/sessions/{id}`, Clerk-authenticated) is the cross-device sync *write* target for signed-in modes, backed by a dedicated `execute_chat_session` table (`app/db_schema.py`) — a per-user ordered-by-recency list needs an index `kv_store` doesn't provide, unlike the wallet/subscription's single-row lookups. `GET/POST /v1/sessions` and `GET/DELETE /v1/sessions/{id}` were removed: the Electron app never called them (there is no "restore from another device" UI yet), so they sat unreachable. This is a sync target, not the primary store: the Electron app's own local storage (below) is read/written on every turn in **every** mode including BYOK, and only pushes to this API afterward for Top-up/Subscription/workspace-pool.
+**Local session storage only** — `conxa-execute/app/vendor/opencode/storage/storage.js` (ported from opencode, see `conxa-execute/app/NOTICE`) remains the sole session store; the earlier design's cross-device sync target (`PUT /v1/sessions/{id}`, table `execute_chat_session`) was cut rather than migrated — nothing in the desktop app depended on it functionally (no "restore from another device" UI existed), and it's straightforward to re-add against conxa-cloud later if cross-device continuity becomes a real ask.
 
-**Local session/context persistence (Electron, new 2026-09-05):** ported from opencode's own storage/compaction implementation rather than written from scratch — see `conxa-execute/app/NOTICE` for full attribution and the specific substitutions made. `conxa-execute/app/vendor/opencode/storage/storage.js` mirrors `packages/opencode/src/storage/storage.ts`'s `read/update/write/list/remove` interface (JSON file per key, `session/<id>.json` + `message/<id>.json`) — locking is a plain promise-chain mutex per file path (one lock per target file, so unrelated sessions never contend), not opencode's `TxReentrantLock`; an earlier version of this file used the `effect` npm package's `Effect.makeSemaphore(1)` for the same one-permit behavior, which pulled the whole `effect` dependency in for six lines of actual logic and was replaced during a later cleanup pass. The cost, unchanged either way: concurrent reads of the same file serialize like writes, an acceptable, documented simplification at this app's scale. `conxa-execute/app/vendor/opencode/session/compaction.js` ports the pruning algorithm from `packages/opencode/src/session/compaction.ts`/`overflow.ts` (same `PRUNE_MINIMUM`/`PRUNE_PROTECT`/`TOOL_OUTPUT_MAX_CHARS` constants), adapted to conxa-execute's flat OpenAI-chat message array instead of opencode's parts-based schema. `main.js`'s `chat:send` now loads prior messages from local storage, prunes if needed, calls `run_turn.js` (unchanged — it already returned the full updated transcript, the gap was purely that nothing persisted it), writes the result back locally, and — for Top-up/Subscription/workspace-pool — pushes the same messages to `/v1/sessions/{id}` for sync (a failed push doesn't block the chat, and is now logged rather than silently discarded; local storage is already this device's source of truth).
-
-Cashfree vendor mechanics (auth headers, base URL, both webhook HMAC schemes) are deliberately duplicated from `conxa-cloud/backend/app/api/cashfree_routes.py` into `conxa-execute/backend/app/cashfree.py` rather than shared via `conxa_core` — see that file's header comment for the extraction plan once this is validated in production.
-
-**Workspace-pool mode (added 2026-09-16):** a fourth quota mode alongside BYOK/Top-up/Subscription — a Build Studio workspace admin can grant a person an Execute seat (`execute_seats` meter, §13.4c) whose chat usage draws entirely from that workspace's shared AI Usage Credits pool instead of a personal wallet/subscription. This is conxa-execute's first intentional network coupling back to conxa-cloud: `app/cloud_bridge.py` calls conxa-cloud's `/api/v1/internal/execute/*` bridge (shared-secret authenticated, `SKILL_EXECUTE_SERVICE_TOKEN`) on `GET /v1/entitlement` and every `POST /v1/chat/completions` for a pool-bound user. BYOK and personal wallet/subscription traffic are unaffected — no new coupling on those paths. See §13.4c for the full grant/claim/metering design.
+**What was deleted:** the entire `conxa-execute/backend/` directory and its `render.yaml` (own Postgres, own Cashfree webhooks, own dedicated LLM provider keys), `conxa-cloud/backend/app/api/execute_bridge_routes.py` (the shared-secret `SKILL_EXECUTE_SERVICE_TOKEN` HTTP bridge — collapsed into in-process function calls now that both live in one backend), `conxa-cloud/frontend/src/ClaimPage.tsx` and its `/claim/[grantId]` route (the manual invite-code redeem screen, unnecessary once auto-claim works), and the `execute_service_token`/`conxa_cloud_api_base_url` config fields (`packages/conxa-core/conxa_core/config.py`).
 
 ---
 
@@ -4198,30 +4194,40 @@ CBS-only (§13.4a).
   computed `status` (`active`/`stale`/`revoked`) per row, styled after the existing per-skill
   `DeploymentPanel.tsx`. See `docs/Backend-Schema.md` §5.9a for the full API contract.
 
-### 13.4c Execute Seat Grants (shared AI Usage Credits pool, added 2026-09-16)
+### 13.4c Execute Seat Grants (shared AI Usage Credits pool, added 2026-09-16, in-process since the 2026-09-17 Execute merge)
 
 A workspace's plan also caps how many people it can grant Conxa Execute (`conxa-execute/`, §3.6)
 access to — the `execute_seats` meter above. Unlike `seats`/`machines`, a grant is **standalone**:
-the granted person never needs to be a Build Studio Clerk org member, and Conxa Execute deliberately
-runs on its own separate Clerk application (no SSO between the two products — see §3.6). Binding
-happens by email string, not shared identity.
+the granted person never needs to be a Build Studio Clerk org member — a support/contractor seat
+must not inflate the `seats` meter. Since the 2026-09-17 merge, Execute and Build Studio share one
+Clerk application, so binding a grant no longer needs the invitee to paste a code: it auto-claims by
+verified email the moment that person is next seen signed in (see below). A full workspace member
+doesn't need a grant at all — Execute is bundled into the team plan for every member automatically.
 
-Data model — two new KV namespaces in `entitlements.py`, no new Postgres table (grant lookups are
-either "all grants for a workspace" or "one grant by its own key", both things `kv_store` already
-answers well, same reasoning as `db_schema.py`'s docstring for why Execute's wallet/subscription
-don't need dedicated tables either):
-- `execute_grants` — keyed by `grant_id` (a `secrets.token_urlsafe(32)` value that doubles as the
-  invite-link token). Record: `{grant_id, workspace_id, email, status: pending|claimed|revoked,
-  granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}`.
-- `execute_grant_by_user` — keyed by the claimed Execute Clerk `user_id`, written only on claim,
-  cleared on revoke. The O(1) lookup used on every Execute chat turn.
+Data model — two KV namespaces in `entitlements.py`, no Postgres table (grant lookups are either
+"all grants for a workspace" or "one grant by its own key", both things `kv_store` already answers
+well):
+- `execute_grants` — keyed by `grant_id` (a `secrets.token_urlsafe(32)` value; no longer exposed as
+  an invite-link token now that claiming is automatic). Record: `{grant_id, workspace_id, email,
+  status: pending|claimed|revoked, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at,
+  revoked_by}`.
+- `execute_grant_by_user` — keyed by the claimed Clerk `user_id`, written only on claim, cleared on
+  revoke. The O(1) "what's this person's primary bound pool" lookup (`execute_pool_binding_for_user`)
+  used by the hot chat-metering path when no explicit `target_workspace_id` is given.
 
 Cloud-side functions (`entitlements.py`): `create_execute_grant`, `revoke_execute_grant`,
 `list_execute_grants`, `execute_grant_count` mirror the existing machine-registry functions
 (`ensure_machine_slot`/`list_machines`/`revoke_machine`, §13.4a) exactly, same `_locked_store`
 locking discipline. `claim_execute_grant(*, grant_id, user_id, email)` and
 `execute_pool_binding_for_user(user_id)` deliberately take plain strings, not a `Principal` — see
-below for why.
+below for why. `auto_claim_pending_grants_for(*, user_id, email)` (new, 2026-09-17) scans for every
+`pending` grant matching an email and claims them in one pass — called from `GET
+/api/v1/execute/contexts` on every Execute sign-in, replacing the old manual invite-code redeem UI.
+`list_claimed_grant_workspaces_for(user_id)` (new) returns every workspace a user holds a claimed
+grant for — the context switcher (§3.6) needs the full list, not just the single "primary" binding
+`execute_grant_by_user` tracks. `execute_chat_access_for(user_id, workspace_id)` (new) is the
+switcher's access check: true for the user's own personal workspace, any workspace with a claimed
+grant, or any Clerk org they're a real member of (`saas.py::clerk_user_organizations`).
 
 **Correctness note (why not a synthetic Principal):** `ensure_human_edit_available`/`record_llm_usage`
 both call `billing_for(principal)` → `saas.ensure_principal(principal)`, which writes a `memberships`
@@ -4231,51 +4237,30 @@ row and would silently register an Execute grantee as a Build Studio workspace m
 using the existing **read-only** `billing_for_workspace(workspace_id)` (already used by delta-sync for
 exactly this "no Principal available" reason) instead. Both share the same `_locked_store(f"llm-usage:
 {workspace_id}:{period}")` advisory-lock key as the Build Studio path — this is why multiple Execute
-grantees sharing one pool concurrently is already safe, no new locking code needed. Internally this
-still meters as `usage_class="human_edit"` — same pool, same wallet fallback; only the customer-facing
-label differs (§13.4's "AI Usage Credits" rename note).
+grantees sharing one pool concurrently is already safe, no new locking code needed. This now meters
+as its own usage class, `usage_class="execute_chat"` — same pool, same wallet fallback as
+`human_edit`, tracked as a separate counter purely for reporting (`entitlements.py::_combined_pool_used`
+sums both when checking/displaying the shared limit — see §13.4's "AI Usage Credits" rename note).
 
-API surface:
+API surface — all in-process now, no service-token bridge:
 - Clerk-authenticated, admin-only (`entitlement_routes.py`): `GET /entitlements/execute-grants`,
   `POST /entitlements/execute-grants {email}` (checks the `execute_seats` cap, idempotent on a
-  repeat invite to the same pending email; returns `invite_url` — no transactional email sender
-  exists in this repo, so the admin shares the link manually), `POST
-  /entitlements/execute-grants/revoke {grant_id}`, and a Phase-1 fallback claim route `POST
-  /entitlements/execute-grants/claim {grant_id}` for a Cloud-Dashboard-authenticated user claiming
-  their own invite.
-- Service-token-authenticated (new file `app/api/execute_bridge_routes.py`, under `/api/v1/internal/
-  execute/*` — a different trust boundary than the Clerk-principal routes, kept separate the same way
-  `updates_routes.py`'s admin-token routes are): `POST /internal/execute/grants/claim`, `POST
-  /internal/execute/pool/check` (pre-flight, translates any `EntitlementError` into `ok:false` rather
-  than an HTTP error), `POST /internal/execute/pool/debit` (post-call, no-ops instead of erroring if
-  the binding was revoked between check and debit — mirrors the existing fail-soft post-hoc metering
-  precedent at `llm_proxy_routes.py`). The claim and pool/check responses both additionally carry
-  `workspace_name` (`saas.py::workspace_name_for`, a read-only display-name lookup by workspace_id
-  alone) and pool/check's `remaining` is a real count (`entitlements.py::execute_pool_status`, a
-  read-only twin of `ensure_execute_pool_available` that never raises) — added 2026-09-16 so Conxa
-  Execute's UI can show "Paid by `<workspace>`" with a real credits-left figure instead of a generic
-  string. Authenticated with a single shared bearer secret
-  (`SKILL_EXECUTE_SERVICE_TOKEN`, set identically on both Render services) rather than per-workspace
-  tokens — conxa-execute is a service Conxa itself operates end-to-end on behalf of many workspaces,
-  unlike the `sync_tokens`/`tracking_tokens` per-workspace tokens shipped to external runtime installs.
-- conxa-execute side (`routes_grants.py`, `cloud_bridge.py`, both new): `POST /v1/execute-grants/claim
-  {grant_id}` relays to the Cloud bridge's claim endpoint using the invitee's own Execute-side Clerk
-  claims (`auth.py::get_current_claims`, additive alongside the existing `get_current_user`). `GET
-  /v1/entitlement` gains a `mode: "workspace_pool"` branch, checked before subscription/topup. `POST
-  /v1/chat/completions` reroutes pre-flight/post-debit through the Cloud bridge instead of the
-  personal wallet/subscription when the calling user is pool-bound — a bound seat draws **only** from
-  the workspace's pool, no personal fallback.
+  repeat invite to the same pending email — the response no longer carries an `invite_url`, since
+  there's nothing to send; the grant just auto-claims on that email's next Execute sign-in), `POST
+  /entitlements/execute-grants/revoke {grant_id}`, and the Phase-1 fallback `POST
+  /entitlements/execute-grants/claim {grant_id}`.
+- `GET /api/v1/execute/contexts` (new, 2026-09-17) — the personal/team context switcher: every
+  workspace the signed-in caller can use Execute under, each with `credits_remaining`
+  (`execute_pool_status`), plus a side effect of auto-claiming any pending grant for their email.
 
-Claim flow: an admin invites by email → the invitee opens the link in Conxa Execute, signs in with
-that same email (a separate Clerk app from Build Studio's — no cross-app identity needed, matching is
-by email string) → Execute's backend relays the claim to Cloud's internal bridge, which validates the
-grant is `pending` and the email matches, marks it `claimed`, and writes the `execute_grant_by_user`
-pointer. From then on, that Clerk `user_id`'s Execute chat usage debits the granting workspace's AI
-Usage Credits pool via the bridge on every turn.
-
-This is conxa-execute's **first** intentional coupling back to conxa-cloud — §3.6 otherwise describes
-it as intentionally decoupled (own Postgres, own deploy). The coupling is narrow and synchronous only
-on the pool-bound chat path; BYOK and personal wallet/subscription usage never touch conxa-cloud.
+Claim flow (since 2026-09-17): an admin invites by email → nothing further needs sending → the
+invitee signs into Conxa Execute (or anywhere in Conxa, same Clerk app) with that email → the next
+call to `GET /api/v1/execute/contexts` sees the `pending` grant, matches the verified email from the
+JWT, and claims it automatically, writing the `execute_grant_by_user` pointer. From then on that
+workspace appears in their context switcher, and selecting it makes their Execute chat draw from that
+workspace's AI Usage Credits pool. This closes what used to be Execute's only network coupling back
+to conxa-cloud (a shared-secret HTTP bridge, `SKILL_EXECUTE_SERVICE_TOKEN`) — it's simply the same
+backend now, so "coupling" isn't a meaningful category here anymore.
 
 ### 13.5 Enterprise BYOK (Azure OpenAI)
 
@@ -4476,29 +4461,12 @@ deliberately absent from the required list above:
   purchases and need no plan IDs (only `CASHFREE_APP_ID` / `CASHFREE_SECRET_KEY` /
   `CASHFREE_WEBHOOK_SECRET`).
 
-### 16.1a Conxa Execute Cloud Backend (Render, added 2026-09-05)
+### 16.1a Conxa Execute (deleted, 2026-09-17)
 
-```
-Build root:        conxa-execute/backend/
-Build command:     ./build.sh
-  pip install ../../packages/conxa-core
-  pip install -r requirements.txt
-Start command:     ./start.sh
-  uvicorn app.main:app --host 0.0.0.0 --port $PORT
-Health check:      GET /healthz (liveness)
-Environment:       SKILL_AUTH_REQUIRED=true requires (app refuses to boot otherwise —
-                   app/main.py::_validate_production_config):
-  SKILL_DATABASE_URL, SKILL_API_BASE_URL, SKILL_EXECUTE_KEY_HMAC_SECRET,
-  CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_WEBHOOK_SECRET
-```
-
-A standalone service (see §3.6), own `render.yaml`, own Postgres (`conxa-execute-db`) — not
-part of the `conxa-api`/`conxa-db` service above. Reuses conxa-cloud's Cashfree merchant
-account (`CASHFREE_APP_ID`/`CASHFREE_SECRET_KEY`) but its own distinct `CASHFREE_WEBHOOK_SECRET`,
-its own 6 recurring-subscription Cashfree Plan IDs (`CASHFREE_SUB_250K_PLAN_ID` …
-`CASHFREE_SUB_10M_PLAN_ID` — one-time packs need none), and dedicated LLM provider keys
-(`GROQ_API_KEYS`/`GOOGLE_AI_STUDIO_API_KEYS`/`NVIDIA_NIM_API_KEYS`) kept separate from
-conxa-cloud's free-compile pool.
+There is no separate Render service for Conxa Execute anymore — see §3.6. The desktop app deploys
+as an Electron installer only (`.github/workflows/build-execute.yml`, same NSIS/electron-builder
+shape as Build Studio, §16.3) and talks to the same `conxa-api` service §16.1 describes. Nothing to
+provision here beyond the one new Clerk OAuth client under `clerk.conxa.in` (§3.6).
 
 ### 16.2 Cloud Frontend (Vercel)
 

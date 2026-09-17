@@ -488,6 +488,14 @@ internal Execute bridge return the workspace's display name and real remaining-c
 No transactional email sender exists in this repo — an admin still shares the invite link manually.
 See `docs/UI-UX-Brief.md` §3.7 and `TODO.md` CLOUD-22 for details.
 
+**Update (2026-09-17 — the standalone-backend/separate-Clerk-app premise above was reversed):**
+Conxa Execute's own backend (`conxa-execute/backend/`), its separate Clerk application, the
+`execute_bridge_routes.py` service-token bridge, BYOK mode, and the invite-link/claim-code UI
+described above are all **deleted**. Execute now shares conxa-cloud's backend and Clerk app
+directly; grants auto-claim by email with no code to paste; chat is metered as its own
+`execute_chat` usage class (same pool as `human_edit`, separate counter). See `docs/TRD.md` §3.6
+and §13.4c for the current design, and `TODO.md`'s Execute-merge item for the full change list.
+
 ---
 
 **Phase 1 status: COMPLETE except for 1.9, tracked above as new work discovered after this
