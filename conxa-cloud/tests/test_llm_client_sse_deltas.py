@@ -4,7 +4,7 @@ iterable of raw HTTP chunk-lines, matching what urlopen's response object yields
 
 from __future__ import annotations
 
-from conxa_core.llm.client import _iter_sse_text_deltas
+from conxa_core.llm.client import _iter_sse_deltas, _iter_sse_text_deltas
 
 
 def _lines(*raw: str) -> list[bytes]:
@@ -109,3 +109,20 @@ def test_observed_still_collects_content_alongside_reasoning():
     observed: dict = {}
     assert list(_iter_sse_text_deltas(response, observed=observed)) == ["answer"]
     assert observed["reasoning_chars"] == len("thinking")
+
+
+def test_iter_sse_deltas_tags_reasoning_chunks_for_execute_chat():
+    """_iter_sse_deltas (the tool-call-aware sibling, execute_chat only) surfaces reasoning as a
+    tagged {"type": "reasoning", ...} chunk instead of only counting it — Conxa Execute streams
+    these live as "thinking" in its chat UI."""
+    response = _lines(
+        'data: {"choices":[{"delta":{"reasoning":"pondering "}}]}',
+        'data: {"choices":[{"delta":{"content":"answer"}}]}',
+        "data: [DONE]",
+    )
+    observed: dict = {}
+    assert list(_iter_sse_deltas(response, observed=observed)) == [
+        {"type": "reasoning", "text": "pondering "},
+        {"type": "text", "text": "answer"},
+    ]
+    assert observed["reasoning_chars"] == len("pondering ")

@@ -354,7 +354,16 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
                     message = "llm_reasoning_only_no_content"
                 else:
                     message = "llm_all_providers_failed"
-                yield f"data: {json.dumps({'error': message})}\n\n"
+                # The blocking sibling (_meter_and_call) ships error_detail to the caller;
+                # this streaming path used to just drop it — a provider outage here left
+                # nothing in the logs and nothing on the wire, only the bare code. Log it
+                # server-side and send it along (same [:8] cap as the blocking path) so the
+                # real reason survives.
+                logger.warning(
+                    "llm_stream_failed org_id=%s task=%s message=%s error_detail=%s",
+                    org_id, body.task, message, error_detail[:8],
+                )
+                yield f"data: {json.dumps({'error': message, 'error_detail': error_detail[:8]})}\n\n"
                 return
 
             output_tokens = llm_metering.estimate_response_tokens({"text": full_text})

@@ -971,11 +971,16 @@ def _sse_choice_tool_call_deltas(first: Any) -> list[dict[str, Any]]:
 def _iter_sse_deltas(response: Any, *, observed: dict[str, Any] | None = None) -> Any:
     """Tagged sibling of _iter_sse_text_deltas for tasks that need tool-call
     deltas too (currently only execute_chat) — yields
-    {"type": "text", "text": ...} or {"type": "tool_call", ...} per chunk
-    instead of a bare string, so a caller can tell the two apart. Kept as a
-    separate function rather than changing _iter_sse_text_deltas' return
-    shape, so every existing caller (copilot_reply, etc., which never
-    request tools) is completely unaffected."""
+    {"type": "text", "text": ...}, {"type": "tool_call", ...}, or
+    {"type": "reasoning", "text": ...} per chunk instead of a bare string, so
+    a caller can tell them apart. The "reasoning" chunk carries hidden
+    chain-of-thought text (see _sse_choice_reasoning) for a caller that wants
+    to surface it live (Conxa Execute's chat "thinking" display) — unlike
+    _iter_sse_text_deltas, which only counts these chars via `observed` and
+    never yields them. Kept as a separate function rather than changing
+    _iter_sse_text_deltas' return shape, so every existing caller
+    (copilot_reply, etc., which never request tools or reasoning) is
+    completely unaffected."""
     for raw_line in response:
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line or not line.startswith("data:"):
@@ -995,6 +1000,11 @@ def _iter_sse_deltas(response: Any, *, observed: dict[str, Any] | None = None) -
             finish_reason = first.get("finish_reason") if isinstance(first, dict) else None
             if finish_reason:
                 observed["finish_reason"] = finish_reason
+        reasoning = _sse_choice_reasoning(first)
+        if reasoning:
+            if observed is not None:
+                observed["reasoning_chars"] = observed.get("reasoning_chars", 0) + len(reasoning)
+            yield {"type": "reasoning", "text": reasoning}
         text = _sse_choice_text(first)
         if text:
             yield {"type": "text", "text": text}

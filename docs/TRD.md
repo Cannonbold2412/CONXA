@@ -2034,13 +2034,30 @@ reasoning chars or `finish_reason == "length"`, it raises `_DeterministicRejecti
 returning `None` — `_route` already treats that as "every provider would fail this identically,"
 so it stops after one attempt without cooling the (healthy) entry, the same short-circuit the
 400/413/422 deterministic-rejection path uses. `_meter_and_stream` reports this distinctly as
-`llm_reasoning_only_no_content` rather than `llm_all_providers_failed`. Separately,
-`_NO_REASONING_TASKS` (today just `copilot_reply` — prose-only, streamed, no use for a reasoning
-prefix) sets OpenRouter's `reasoning: {"enabled": false}` body field when the target entry's
-endpoint is `openrouter.ai`, gated on the endpoint rather than `entry.provider` since other
-OpenAI-compatible endpoints reject an unrecognised body key. `copilot_diagnose` is deliberately
-excluded — it returns structured JSON with a larger `max_tokens` budget that already
-accommodates a reasoning prefix.
+`llm_reasoning_only_no_content` rather than `llm_all_providers_failed`. Separately, `_call_provider`
+sets OpenRouter's `reasoning: {"enabled": false}` body field whenever the target entry's endpoint
+is `openrouter.ai`, gated on the endpoint rather than `entry.provider` since other OpenAI-compatible
+endpoints reject an unrecognised body key — for every task except `execute_chat` (below), which
+wants the tokens rather than paying for wasted ones.
+
+**`execute_chat` reasoning deltas (thinking).** Conxa Execute's desktop chat is the one caller that
+keeps reasoning enabled on OpenRouter and surfaces it live, rather than suppressing it as wasted
+budget. `conxa_core/llm/client.py::_iter_sse_deltas` — the tool-call-aware sibling of
+`_iter_sse_text_deltas`, used only for `execute_chat` — yields a third tagged chunk shape,
+`{"type": "reasoning", "text": ...}`, alongside its existing `"text"`/`"tool_call"` chunks whenever
+a delta carries `delta.reasoning`/`delta.reasoning_content`. `_meter_and_stream` forwards it
+unchanged over SSE (only `"text"` chunks count toward the metered `full_text`/`saw_tool_call`
+state). On the desktop side, `conxa-execute/app/electron/execute_client.js::makeChatCompletion`
+takes an optional `onDelta({type, text})` callback invoked per `"text"`/`"reasoning"` chunk as the
+stream arrives — `main.js`'s `chat:send` handler wires it to `mainWindow.webContents.send("chat:delta", {requestId, ...chunk})`,
+keyed by a per-turn `requestId` the renderer generates and passes through so a stray delta from an
+abandoned turn is dropped instead of misapplied. The renderer (`App.tsx::sendChat`) subscribes via
+`onChatDelta` (added to `preload.js`/`bridge.d.ts`) and paints both the streaming answer and a
+"Thinking…" block into a transient `streamingMsg` state, replaced by the persisted transcript once
+`loadSession` resolves after the turn completes. The `runTurn` step loop itself
+(`vendor/opencode/loop/run_turn.js`) stays delta-agnostic — it still awaits one resolved message
+per step to decide on tool dispatch; streaming is entirely out-of-band via the transport's own
+`onDelta` closure, not a change to the loop's per-step contract.
 
 `handlers/copilot.py::cmd_copilot_turn` relays each delta over the existing generic
 `{"type": "event", "id": rid, ...}` channel (`handlers/protocol.py::_event_sink`) as
